@@ -40,6 +40,8 @@ const KNOWN_NOTIFICATIONS: ReadonlySet<string> = new Set(NOTIFICATION_NAMES);
 export interface AppwireClientLike {
   connect: AppwireClient["connect"];
   request: AppwireClient["request"];
+  forceStop: AppwireClient["forceStop"];
+  resumeThread: AppwireClient["resumeThread"];
   onNotification: AppwireClient["onNotification"];
   onReady: AppwireClient["onReady"];
   onStateChange: AppwireClient["onStateChange"];
@@ -81,6 +83,7 @@ const DEFAULT_INITIALIZE_RESPONSE: InitializeResponse = {
 export interface RecordedCall {
   method: MethodName;
   params: unknown;
+  opts?: { timeoutMs?: number };
 }
 
 export class FakeClient implements AppwireClientLike {
@@ -96,7 +99,7 @@ export class FakeClient implements AppwireClientLike {
   // generic methods below restore full per-method typing at the boundary.
   private readonly handlers = new Map<MethodName, RequestHandler<MethodName>>();
   private readonly notificationHandlers = new Set<(n: AnyNotification) => void>();
-  private readonly readyHandlers = new Set<() => void>();
+  private readonly readyHandlers = new Set<(initialize: InitializeResponse) => void>();
   private readonly stateChangeHandlers = new Set<(s: ConnectionState) => void>();
 
   // Deliberately independent of `state`/emitStateChange/emitReady below:
@@ -106,6 +109,7 @@ export class FakeClient implements AppwireClientLike {
   // that wants a state transition alongside a scripted connect() still
   // drives that explicitly, exactly as before.
   private connectHandler: ConnectHandler = () => DEFAULT_INITIALIZE_RESPONSE;
+  private latestInitialize: InitializeResponse = DEFAULT_INITIALIZE_RESPONSE;
 
   // Defaults to "ready": tests overwhelmingly want a client stores can
   // request() against immediately, without separately staging the
@@ -135,10 +139,19 @@ export class FakeClient implements AppwireClientLike {
   // synchronously-thrown handler become a normal rejection - same idiom as
   // request() below.
   connect(): Promise<InitializeResponse> {
-    return Promise.resolve().then(() => this.connectHandler());
+    return Promise.resolve()
+      .then(() => this.connectHandler())
+      .then((initialize) => {
+        this.latestInitialize = initialize;
+        return initialize;
+      });
   }
 
-  request<M extends MethodName>(method: M, params: MethodTypes[M]["params"]): Promise<MethodTypes[M]["result"]> {
+  request<M extends MethodName>(
+    method: M,
+    params: MethodTypes[M]["params"],
+    opts?: { timeoutMs?: number },
+  ): Promise<MethodTypes[M]["result"]> {
     // Checked before the ready-gate below: a method the hub does not serve is
     // a bug regardless of connection state, and reporting "not ready" for it
     // would hide the real defect behind a plausible-looking one.
@@ -156,7 +169,11 @@ export class FakeClient implements AppwireClientLike {
     if (this.state !== "ready") {
       return Promise.reject(new Error(`FakeClient: cannot call "${method}" while state is "${this.state}"`));
     }
-    this.calls.push({ method, params });
+    if (opts === undefined) {
+      this.calls.push({ method, params });
+    } else {
+      this.calls.push({ method, params, opts });
+    }
     const handler = this.handlers.get(method);
     if (!handler) {
       return Promise.reject(new Error(`FakeClient: no handler scripted for "${method}"`));
@@ -171,7 +188,7 @@ export class FakeClient implements AppwireClientLike {
     return () => this.notificationHandlers.delete(cb);
   }
 
-  onReady(cb: () => void): () => void {
+  onReady(cb: (initialize: InitializeResponse) => void): () => void {
     this.readyHandlers.add(cb);
     return () => this.readyHandlers.delete(cb);
   }
@@ -189,6 +206,14 @@ export class FakeClient implements AppwireClientLike {
   retryNowCalls = 0;
   retryNow(): void {
     this.retryNowCalls += 1;
+  }
+
+  async resumeThread(ref: string): ReturnType<AppwireClient["resumeThread"]> {
+    return this.request("thread/resume", { ref });
+  }
+
+  async forceStop(ref: string): Promise<void> {
+    await this.request("evener/thread/forceStop", { ref });
   }
 
   // --- test-side injection: simulates the server/transport side ---
@@ -234,18 +259,19 @@ export class FakeClient implements AppwireClientLike {
   // call, since that is the only path AppwireClient ever reaches ready
   // through (dialAndHandshake, on both the first connect and every
   // reconnect).
-  emitStateChange(next: ConnectionState): void {
+  emitStateChange(next: ConnectionState, initialize: InitializeResponse = this.latestInitialize): void {
     if (this.state === next) return;
     this.state = next;
     for (const cb of Array.from(this.stateChangeHandlers)) cb(next);
     if (next === "ready") {
-      for (const cb of Array.from(this.readyHandlers)) cb();
+      this.latestInitialize = initialize;
+      for (const cb of Array.from(this.readyHandlers)) cb(initialize);
     }
   }
 
   // emitReady simulates a (re)connect succeeding — the common case tests
   // reach for — as a shorthand for emitStateChange("ready").
-  emitReady(): void {
-    this.emitStateChange("ready");
+  emitReady(initialize: InitializeResponse = this.latestInitialize): void {
+    this.emitStateChange("ready", initialize);
   }
 }

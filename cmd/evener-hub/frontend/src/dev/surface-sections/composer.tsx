@@ -11,7 +11,8 @@
 // threadsStore.subscribe wiring), so seeding a thread whose transcript ends
 // on an unanswered ask_user call is what makes the real dock populate -
 // exactly the mechanism a live ask_user call would use.
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { AskDock } from "../../panes/session/composer/askDock";
 import { Composer } from "../../panes/session/composer/Composer";
 import { writeDraft } from "../../panes/session/composer/draft";
 import { hydrateThread } from "../../protocol/reducer";
@@ -21,6 +22,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { putThreadModel } from "../../stores/threads";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
+import layout from "./composer-surface.module.css";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -115,8 +117,10 @@ function seedComposerFixtures(): void {
 }
 
 export default function ComposerSurfaceSection() {
+  const [seeded, setSeeded] = useState(false);
   useEffect(() => {
     seedComposerFixtures();
+    setSeeded(true);
   }, []);
 
   return (
@@ -124,24 +128,28 @@ export default function ComposerSurfaceSection() {
       <h2>Composer</h2>
       <p className={styles.note}>
         Real Composer, fed by a threadsStore seeded directly (hydrateThread over fixture wire data - no network).
-        Resting, with drafted text, and with a pending ask_user question (AskDock reconciles itself off the seeded
-        thread's transcript, the same way it would off a live ask_user call).
+        Resting, with drafted text, and with a pending ask_user question. The answering surface (AskDock) renders as the
+        transcript's trailing row in a real session pane (Session.tsx), so it is shown directly here; AskDock reconciles
+        itself off the seeded thread's transcript, the same way it would off a live ask_user call, and the composer's
+        own input row hides while the question is pending.
       </p>
       <ClientProvider client={client}>
-        <ThemeFlip>
-          <div className={styles.row}>
-            <p className={styles.rowLabel}>resting</p>
-            <Composer ref={RESTING_REF} />
-          </div>
-          <div className={styles.row}>
-            <p className={styles.rowLabel}>drafted</p>
-            <Composer ref={DRAFTED_REF} />
-          </div>
-          <div className={styles.row}>
-            <p className={styles.rowLabel}>ask pending</p>
-            <Composer ref={ASK_REF} />
-          </div>
-        </ThemeFlip>
+        {seeded && (
+          <ThemeFlip>
+            <div className={layout.paneFixture}>
+              <p className={styles.rowLabel}>resting</p>
+              <Composer ref={RESTING_REF} />
+            </div>
+            <div className={layout.paneFixture}>
+              <p className={styles.rowLabel}>drafted</p>
+              <Composer ref={DRAFTED_REF} />
+            </div>
+            <div className={layout.paneFixture}>
+              <p className={styles.rowLabel}>ask pending (transcript trailing row)</p>
+              <AskDock ref={ASK_REF} />
+            </div>
+          </ThemeFlip>
+        )}
       </ClientProvider>
     </section>
   );

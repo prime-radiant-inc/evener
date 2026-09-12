@@ -112,7 +112,7 @@ Spec: `docs/specs/2026-05-20-session-auto-naming.md`
   go test ./cmd/evener-hub -run 'Spawn|FastCheapModel' -count=1
   ```
 
-## Task 4: Add serve flag and same-provider cheap model override
+## Task 4: Add serve flag and cheap model override
 
 **Files:**
 - Test: `agent/profile_test.go`
@@ -120,13 +120,14 @@ Spec: `docs/specs/2026-05-20-session-auto-naming.md`
 - Modify: `agent/profile.go`
 - Modify: `cmd/evener/serve.go`
 
-Smallest YAGNI decision: support same-provider overrides first. If `--fast-cheap-model` names a different provider than `--model`, return a clear error. Do not build a cross-provider cheap client yet.
+Support bare same-provider model names and qualified cross-provider refs. A
+qualified ref must name a provider registered in the active client.
 
 - [ ] **Red:** add profile test for a cheap model override helper.
   - Preferred minimal API:
     ```go
-    profile = agent.WithFastCheapModel(profile, "gpt-5-mini")
-    if profile.CheapModel() != "gpt-5-mini" { ... }
+    profile = agent.WithCheapModel(profile, "gpt-5-mini")
+    if profile.ConfiguredCheapModel() != "gpt-5-mini" { ... }
     ```
   - If an existing profile option pattern is better, use that instead.
 
@@ -138,10 +139,11 @@ Smallest YAGNI decision: support same-provider overrides first. If `--fast-cheap
 
 - [ ] **Green:** add `fs.String("fast-cheap-model", "", ...)` in `cmd/evener/serve.go`, resolve it, and apply the override before session creation/restore.
 
-- [ ] **Red:** add mismatch test.
-  - `--model openai/gpt-5.5 --fast-cheap-model anthropic/claude-haiku...` returns a clear error.
+- [ ] **Red:** add unavailable-provider test.
+  - `--model openai/gpt-5.5 --fast-cheap-model anthropic/claude-haiku...`
+    returns a clear error when the Anthropic provider is not registered.
 
-- [ ] **Green:** validate provider match for now. Document in error that cross-provider fast cheap model calls are not supported yet.
+- [ ] **Green:** validate that a qualified cheap-model provider is registered.
 
 - [ ] Run:
   ```sh
@@ -360,7 +362,6 @@ YAGNI approach: add a small method that can be called synchronously in tests, th
 
 Explicitly do not implement in this feature unless later requested:
 
-- cross-provider cheap side-call client if same-provider validation is acceptable
 - manual rename UI/API
 - bulk backfill of old session names
 - user-configurable naming prompt

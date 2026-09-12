@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 )
@@ -27,10 +28,16 @@ const (
 	maxNavigationManifestBytes = 256 * 1024
 	maxNavigationCatalogBytes  = 512 * 1024
 
-	maxNavigationTitleRunes      = 200
-	maxNavigationLabelRunes      = 512
-	maxNavigationIdentityBytes   = 1_024
-	maxNavigationWorkingDirBytes = 4_096
+	maxNavigationTitleRunes = 200
+	maxNavigationLabelRunes = 512
+	// maxNavigationFullCommandRunes bounds FullCommand, the tooltip-sized
+	// untruncated command. Generous rather than label-tight: a tooltip can
+	// wrap, but it must not lie — a cut-off "full" command is worse than a
+	// long one. Still bounded so one pathological command cannot dominate
+	// the response's byte budget (navigationJSONFits).
+	maxNavigationFullCommandRunes = 4_096
+	maxNavigationIdentityBytes    = 1_024
+	maxNavigationWorkingDirBytes  = 4_096
 )
 
 type navigationResourceKind string
@@ -260,7 +267,10 @@ func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 	out := make([]hubcore.LiveEntry, len(in))
 	for i, entry := range in {
 		out[i] = entry
+		out[i].ActiveFlags = append([]string(nil), entry.ActiveFlags...)
 		out[i].RunningSubagentIDs = append([]string(nil), entry.RunningSubagentIDs...)
+		out[i].RunningJobs = appwire.CloneEvenerJobs(entry.RunningJobs)
+		out[i].CompletedJobs = appwire.CloneEvenerJobs(entry.CompletedJobs)
 		if entry.RunningSubagentStates != nil {
 			out[i].RunningSubagentStates = make(map[string]string, len(entry.RunningSubagentStates))
 			maps.Copy(out[i].RunningSubagentStates, entry.RunningSubagentStates)
@@ -418,6 +428,13 @@ func validateNavigationNodesContext(ctx context.Context, rows []hubcore.TreeNode
 		}
 		if _, err := navigationNodeRef(node); err != nil {
 			return err
+		}
+		for _, jobs := range [2][]appwire.EvenerJobInfo{node.RunningJobs, node.CompletedJobs} {
+			for _, job := range jobs {
+				if err := validateNavigationIdentity("job ID", job.JobID, false); err != nil {
+					return err
+				}
+			}
 		}
 		if err := validateNavigationNodesContext(ctx, node.Children); err != nil {
 			return err
@@ -739,6 +756,37 @@ func (p navigationProjection) Location(ref string) (hubapi.NavigationSessionLoca
 	return location, true
 }
 
+type navigationPageProgressInvariantError struct {
+	kind navigationResourceKind
+}
+
+func (err navigationPageProgressInvariantError) Error() string {
+	return fmt.Sprintf("navigation page progress invariant: %s returned no rows with remaining data", err.kind)
+}
+
+func validateNavigationPageProgress(kind navigationResourceKind, resource any) error {
+	var rows, remaining int
+	switch value := resource.(type) {
+	case hubapi.NavigationSectionResource:
+		rows, remaining = len(value.Sessions), value.Remaining
+	case hubapi.NavigationPinSectionCatalog:
+		rows, remaining = len(value.PinSections), value.Remaining
+	case hubapi.NavigationProjectCatalog:
+		rows, remaining = len(value.Projects), value.Remaining
+	case hubapi.NavigationProjectResource:
+		rows = len(value.Current.Sessions) + len(value.Recent.Sessions) + len(value.Archived.Sessions)
+		remaining = value.Current.Remaining + value.Recent.Remaining + value.Archived.Remaining
+	case hubapi.NavigationProjectPage:
+		rows, remaining = len(value.Sessions), value.Remaining
+	default:
+		return nil
+	}
+	if rows == 0 && remaining > 0 {
+		return navigationPageProgressInvariantError{kind: kind}
+	}
+	return nil
+}
+
 func (p navigationProjection) Resource(key navigationResourceKey) (any, navigationFingerprint, error) {
 	var resource any
 	var err error
@@ -784,6 +832,9 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 		return nil, navigationFingerprint{}, err
 	}
 	resource = navigationResourceWithRevision(resource, key.Revision)
+	if err := validateNavigationPageProgress(key.Kind, resource); err != nil {
+		return nil, navigationFingerprint{}, err
+	}
 	encoded, err := json.Marshal(resource)
 	if err != nil {
 		return nil, navigationFingerprint{}, fmt.Errorf("encode navigation resource: %w", err)
@@ -1037,7 +1088,50 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		updatedAt = &updated
 	}
 	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
-	return hubapi.NavigationSessionSummary{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID, Title: truncateNavigationRunes(node.Title, maxNavigationTitleRunes), Project: truncateNavigationRunes(node.Project, maxNavigationLabelRunes), State: node.State, Kind: node.Kind, Branch: truncateNavigationRunes(node.Branch, maxNavigationLabelRunes), ClusterCount: node.ClusterCount, Favorite: !pinned && p.projection.sessionFavorite(node.ID, ref.String()), Rename: p.projection.renameable(node.ID, ref.String()), Live: p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended", AskPending: node.AskPending, Dormant: node.Dormant, UpdatedAt: updatedAt, MoreSubagents: node.MoreSubagents, Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}
+	return hubapi.NavigationSessionSummary{
+		Ref:           ref.String(),
+		HostID:        ref.HostID,
+		SessionID:     ref.SessionID,
+		Title:         truncateNavigationRunes(node.Title, maxNavigationTitleRunes),
+		Project:       truncateNavigationRunes(node.Project, maxNavigationLabelRunes),
+		State:         node.State,
+		Kind:          node.Kind,
+		Branch:        truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
+		ClusterCount:  node.ClusterCount,
+		Favorite:      !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
+		Rename:        p.projection.renameable(node.ID, ref.String()),
+		Live:          p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
+		AskPending:    node.AskPending,
+		Dormant:       node.Dormant,
+		UpdatedAt:     updatedAt,
+		MoreSubagents: node.MoreSubagents,
+		RunningJobs:   navigationJobs(node.RunningJobs),
+		CompletedJobs: navigationJobs(node.CompletedJobs),
+		Children:      hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+	}
+}
+
+func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.NavigationJobSummary] {
+	out := make(hubapi.NavigationArray[hubapi.NavigationJobSummary], 0, len(jobs))
+	for _, job := range jobs {
+		summary := hubapi.NavigationJobSummary{
+			JobID:   job.JobID,
+			JobType: job.JobType,
+			Status:  job.Status,
+			Command: truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
+			Task:    truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
+			Reason:  truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
+			Intent:  truncateNavigationRunes(job.Intent, maxNavigationLabelRunes),
+		}
+		// Emit FullCommand only when the label bound actually cut the
+		// command, so a short command isn't duplicated and a tooltip never
+		// shows less than the label.
+		if summary.Command != job.Command {
+			summary.FullCommand = truncateNavigationRunes(job.Command, maxNavigationFullCommandRunes)
+		}
+		out = append(out, summary)
+	}
+	return out
 }
 
 func (p navigationProjection) isLive(id, ref string) bool {
@@ -1079,6 +1173,8 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		updated := *summary.UpdatedAt
 		clone.UpdatedAt = &updated
 	}
+	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
+	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)

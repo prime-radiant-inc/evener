@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -111,10 +110,8 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 		case 9:
 		case 11:
 			_, _ = hubModelList(context.Background(), web.cfg, web.sources, appwire.ModelListParams{Harness: "unknown"})
-			models := enrichModelDescriptors([]appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}, {}, {Provider: "z", Model: "m-20251101"}}, nil)
+			models := withDisplayNames([]appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}, {}, {Provider: "z", Model: "m-20251101"}})
 			_ = attachRecentModels(web.cfg, appwire.ModelListResponse{Data: models})
-			_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "", text)
-			_ = behaviorTagFor(nil, text)
 			_ = prettifyModelDisplayName(text)
 			_ = isDatedSnapshotModelID(text)
 			_ = isDatedSnapshotModelID("provider/model-20251101-v1")

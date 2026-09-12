@@ -37,7 +37,7 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 				t.Fatalf("nil-send snapshot changed delivery: %+v", got)
 			}
 		case 2:
-			cfg, err := newWatchConfig(watchArgs{Target: "job_target", Send: &watchSendArgs{To: runtimeMessageAliasWatched}}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "job_target", Send: &watchSendArgs{To: runtimeMessageAliasWatched}}, jm.now(), "")
 			if err != nil {
 				t.Fatalf("new watch config: %v", err)
 			}
@@ -85,7 +85,7 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 				t.Fatalf("invalid delivery = (ok=%v, err=%v)", ok, err)
 			}
 		case 7:
-			cfg, err := newWatchConfig(watchArgs{Target: "job_terminal", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "job_terminal", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now(), "")
 			if err != nil {
 				t.Fatalf("new terminal config: %v", err)
 			}
@@ -102,7 +102,7 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 				t.Fatalf("unpersisted terminal pending not retained: %+v", cfg.pending)
 			}
 		case 8:
-			cfg, err := newWatchConfig(watchArgs{Target: "job_settled", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "job_settled", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now(), "")
 			if err != nil {
 				t.Fatalf("new settled config: %v", err)
 			}
@@ -116,7 +116,7 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 				t.Fatalf("settled delivery = (ok=%v, err=%v)", ok, err)
 			}
 		case 9:
-			cfg, err := newWatchConfig(watchArgs{Target: "job_runaway", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "job_runaway", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now(), "")
 			if err != nil {
 				t.Fatalf("new runaway config: %v", err)
 			}

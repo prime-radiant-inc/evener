@@ -1,11 +1,11 @@
 // Descriptors for job_* and delegate_send follow-up calls.
-import { useEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
-import { IconButton } from "../../../../widgets";
+import { CopyButton } from "../../../../widgets";
 import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
+import { DelegateStatusBody } from "./delegateStatus";
 import { clip, clipJobID, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
 import { statusWordFromText } from "./subagentModule";
 
@@ -15,52 +15,6 @@ type JsonObject = Record<string, unknown>;
 
 function asJsonObject(value: unknown): JsonObject | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined;
-}
-
-const COPIED_RESET_MS = 2_000;
-
-function CopyGlyph() {
-  return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
-      <rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
-      <path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
-    </svg>
-  );
-}
-
-function CopiedGlyph() {
-  return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
-      <path d="M2 7.5 L5.5 11 L12 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-// CopyTextButton is the CodeBlock copy control's idiom (clipboard guard,
-// "Copied" feedback with a timed reset) as a standalone header action: the
-// chat bubbles carry prose, not a code block, so the affordance moves into
-// the bubble header's actions slot.
-function CopyTextButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), COPIED_RESET_MS);
-    return () => clearTimeout(timer);
-  }, [copied]);
-  return (
-    <IconButton
-      label={copied ? "Copied" : label}
-      icon={copied ? <CopiedGlyph /> : <CopyGlyph />}
-      variant="quiet"
-      size="xs"
-      onClick={() => {
-        // Clipboard access requires a secure context and isn't implemented by
-        // every test/embed environment - degrade to a no-op rather than throw.
-        if (!navigator.clipboard?.writeText) return;
-        void navigator.clipboard.writeText(text).then(() => setCopied(true));
-      }}
-    />
-  );
 }
 
 interface JobListState {
@@ -143,18 +97,22 @@ function jobControlTarget(item: ItemModel): string {
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
   icon: "job",
+  // Background work is state a reader tracks across a turn, so every job
+  // row stays on its own line rather than folding into a run.
+  fold: "never",
   summary(item: ItemModel) {
     const parsedOutput = parseJSONObject(item.output);
     const jobId = jobControlTarget(item);
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
     return status ? `Checked ${clipJobID(jobId)} · ${status}` : `Checked ${clipJobID(jobId)}`;
   },
-  body: HeadClippedOutputBody,
+  body: DelegateStatusBody,
 });
 
 registerToolRenderer({
   match: "job_list",
   icon: "job",
+  fold: "never",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const status = args.status;
@@ -167,6 +125,7 @@ registerToolRenderer({
 registerToolRenderer({
   match: "job_stop",
   icon: "job",
+  fold: "never",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const jobId = str(args, "target") ?? str(args, "job_id") ?? "";
@@ -321,12 +280,19 @@ function delegateSendTranscriptRef(item: ItemModel): string | undefined {
 // metadata (delegate_id echo, started_job_id, "running in background") is
 // noise on a one-line summary and stays out of it.
 function delegateSendSummary(item: ItemModel): string {
+  return delegateSendBase(item) + delegateSendStatusSuffix(item);
+}
+
+function delegateSendBase(item: ItemModel): string {
   const args = parseArgs(item.argumentsJSON);
   const target = clip(delegateSendTarget(args), ID_CLIP);
-  const base = target === "" ? "Sent a message to a delegate" : `Sent a message to delegate ${target}`;
+  return target === "" ? "Sent a message to a delegate" : `Sent a message to delegate ${target}`;
+}
+
+function delegateSendStatusSuffix(item: ItemModel): string {
   const footer = delegateSendFooter(item.output ?? "");
   const status = footer ? statusWordFromText(footer.text) : undefined;
-  return status ? `${base} · ${status}` : base;
+  return status ? ` · ${status}` : "";
 }
 
 // DelegateSendBody renders the exchange as a two-party conversation through
@@ -354,7 +320,7 @@ function DelegateSendBody(props: ToolRenderProps) {
             name={target === "" ? "Agent → delegate" : `Agent → ${target}`}
             timeIso={item.startedAt}
             opensExchange={false}
-            actions={<CopyTextButton text={message} label="Copy message" />}
+            actions={<CopyButton text={message} label="Copy message" />}
           />
         </section>
       ) : null}
@@ -366,7 +332,7 @@ function DelegateSendBody(props: ToolRenderProps) {
             name={target === "" ? "Delegate" : `${target} (delegate)`}
             timeIso={item.completedAt ?? item.startedAt}
             opensExchange={false}
-            actions={<CopyTextButton text={response} label="Copy response" />}
+            actions={<CopyButton text={response} label="Copy response" />}
           />
         </section>
       ) : null}
@@ -378,19 +344,32 @@ function DelegateSendBody(props: ToolRenderProps) {
 registerToolRenderer({
   match: (name) => name === "delegate_send" || name === "job_send_message",
   icon: "send",
+  fold: "never",
   summary: delegateSendSummary,
   openTranscriptRef: delegateSendTranscriptRef,
+  // The summary quotes the delegate target verbatim before the status meta
+  // ("Sent a message to delegate <id> · <status>"), so the "open transcript"
+  // control rides INLINE between the delegate it opens and the running-state
+  // words that describe it (toolRenderers.ts's openTranscriptInline
+  // contract) - the complete base prefix, matching summary()'s own text
+  // exactly, so ToolRow can verify it with startsWith rather than search for
+  // it. Undefined when there is no transcript to open, so the row never
+  // builds a dead anchor-split wrapper for a button it will render nothing
+  // for (ToolCallItem's own fileDocParams-gating idiom).
+  openTranscriptInline: (item) => (delegateSendTranscriptRef(item) !== undefined ? delegateSendBase(item) : undefined),
   body: DelegateSendBody,
 });
 
-// Generic fallback for any other job_*-family tool (e.g. job_watch) not
-// explicitly registered above - "match by predicate" per this project's
-// own locked ToolRendererDescriptor doc comment. Exact matches above
+// Generic fallback for any other job_*-family tool not explicitly
+// registered anywhere - "match by predicate" per this project's own locked
+// ToolRendererDescriptor doc comment. job_watch has its own exact-match
+// descriptor (jobWatch.tsx, mockups 23-job-watch §A-D); exact matches
 // always win (toolRenderers.ts's own precedence rule), so this only ever
 // resolves for a job_* name none of the specific descriptors claimed.
 registerToolRenderer({
   match: (name) => name.startsWith("job_"),
   icon: "job",
+  fold: "never",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const operation = str(args, "operation");

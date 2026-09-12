@@ -8,6 +8,8 @@ import { afterAll, afterEach, expect, test, vi } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { navigationStore } from "../../../../stores/navigation/store";
+import { keyID } from "../../../../stores/navigation/types";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { SteeringItem } from "./SteeringItem";
@@ -16,6 +18,7 @@ afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
   resetWorkspaceStoreForTests();
+  navigationStore.setState({ resources: new Map() });
 });
 
 afterAll(
@@ -280,7 +283,7 @@ test("a job-notification steer renders a notification card (not a steering divid
 
 test("a job-notification steer expands the notification before asserting card body content", () => {
   render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-card-root")).toBeTruthy();
   expect(screen.getByText("Job completed")).toBeTruthy();
 });
@@ -293,7 +296,7 @@ excerpt:
 </job-notification>`;
   render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
 
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
 
   const excerpt = screen.getByTestId("notification-field-excerpt");
   expect(excerpt.textContent).toBe(" Test Files  1 failed | 283 passed");
@@ -327,7 +330,7 @@ excerpt:
 ${decoded}
 </job-notification>`;
   render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
 
   const excerpt = screen.getByTestId("notification-field-excerpt");
   // Explicit truncation affordance, final content visible, older content
@@ -350,7 +353,7 @@ excerpt:
 {"message":"**literal shell output**","data":{"status":"ok","concerns":["from stdout"]}}
 </job-notification>`;
   render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
 
   const root = screen.getByTestId("notification-card-root");
   // The raw JSON text is reader-visible verbatim (not consumed as an envelope).
@@ -375,12 +378,33 @@ excerpt:
 {not json} [31mFAIL[39m
 </job-notification>`;
   render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
 
   expect(screen.getByText("FAIL").closest('[data-ansi-fg="red"]')).toBeTruthy();
 });
 
 test("a notification restores its owning session to main before opening the child beside it", async () => {
+  const key = { kind: "location", ref: "local:owner" } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: {
+      generation_id: "generation_test",
+      revision: 1,
+      ref: "local:owner",
+      top_level_ref: "local:owner",
+      top_level: true,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "etag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  });
+  navigationStore.setState({ resources });
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   const user = userEvent.setup();
   render(
@@ -405,7 +429,7 @@ test("a notification restores its owning session to main before opening the chil
 
 test("a notification card always keeps the verbatim block inspectable in a raw disclosure", () => {
   render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-raw").textContent).toContain("job_7");
 });
 

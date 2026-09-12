@@ -1,11 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ItemModel, ThreadModel } from "../../../protocol/model";
+import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { threadsStore } from "../../../stores/threads";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
-import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import {
@@ -13,7 +12,7 @@ import {
   resetTranscriptViewRegistryForTests,
   transitionTranscriptViews,
 } from "./flow/transcriptViewRegistry";
-import { ToolCallCluster } from "./ToolCallCluster";
+import * as flowModule from "./flow/useTranscriptScroll";
 import { TranscriptBody } from "./TranscriptBody";
 import { threadFingerprintForItem } from "./types";
 
@@ -87,43 +86,6 @@ const ordinaryToolFixture = {
           status: "completed",
         },
         { id: "ordinary_agent_2", turnId: "ordinary_turn", type: "agentMessage", text: "read", status: "completed" },
-      ],
-    },
-  ],
-} as unknown as ThreadModel;
-
-const previewClusterFixture = {
-  ...fixture,
-  turns: [
-    {
-      ...fixture.turns[0],
-      items: [
-        fixture.turns[0]?.items[0],
-        {
-          id: "cluster_1",
-          turnId: "turn_1",
-          type: "commandExecution",
-          toolName: "shell",
-          argumentsJSON: '{"command":"pwd"}',
-          status: "completed",
-        },
-        {
-          id: "cluster_2",
-          turnId: "turn_1",
-          type: "commandExecution",
-          toolName: "shell",
-          argumentsJSON: '{"command":"ls"}',
-          status: "completed",
-        },
-        {
-          id: "cluster_3",
-          turnId: "turn_1",
-          type: "commandExecution",
-          toolName: "shell",
-          argumentsJSON: '{"command":"git status"}',
-          status: "completed",
-        },
-        fixture.turns[0]?.items.at(-1),
       ],
     },
   ],
@@ -324,7 +286,10 @@ describe("TranscriptBody", () => {
 
     expect(screen.getByText("Inspect the tree")).toBeTruthy();
     expect(screen.getByText("The tree is ready")).toBeTruthy();
-    expect(screen.queryByTestId("tool-call-item")).toBeNull();
+    // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
+    // <details> children). The body (raw tool output) is still collapsed.
+    expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+    expect(screen.queryByText("tree output")).toBeNull();
   });
 
   test.each(["live", "readOnly"] as const)("uses the projected VirtualList for %s", (surface) => {
@@ -546,7 +511,7 @@ describe("TranscriptBody", () => {
       text: "",
       toolName: "delegate",
       description: "Inspect a child session",
-      argumentsJSON: '{"task":"inspect"}',
+      argumentsJSON: '{"prompt":"inspect"}',
       output: JSON.stringify({ delegate_id: "dlg_ordinary", status: "running", transcript_ref: "local:child" }),
       status: "completed",
     };
@@ -612,7 +577,7 @@ describe("TranscriptBody", () => {
     const firstToolExpanded = () =>
       screen
         .getAllByTestId("tool-call-item")[0]
-        ?.querySelector('[data-testid="tool-row-trigger"]')
+        ?.querySelector('[data-testid="tool-row-body-trigger"]')
         ?.getAttribute("aria-expanded");
     rerender(
       <TranscriptBody
@@ -634,57 +599,94 @@ describe("TranscriptBody", () => {
     expect(firstToolExpanded()).toBe("false");
   });
 
-  test("Tools/Full previews mount item and cluster renderers without threadsStore or RPC access", () => {
+  test("refreshes delegate attention, resumability, and run timing without status or outcome changes", async () => {
+    const delegateItem = {
+      id: "attention_delegate",
+      turnId: "attention_turn",
+      type: "commandExecution",
+      text: "",
+      toolName: "delegate",
+      description: "Inspect a settled child",
+      argumentsJSON: '{"prompt":"inspect"}',
+      output: JSON.stringify({ delegate_id: "dlg_attention", status: "done", transcript_ref: "local:child" }),
+      status: "completed",
+    };
+    const settledDelegate = {
+      delegateId: "dlg_attention",
+      status: "done",
+      outcome: "done",
+      terminal: true,
+      needsAttention: false,
+      projectionRevision: 1,
+    };
+    const attentionBefore = {
+      ...ordinaryToolFixture,
+      delegates: [settledDelegate],
+      turns: [{ id: "attention_turn", status: "completed", items: [delegateItem] }],
+    } as unknown as ThreadModel;
+    const { rerender } = render(
+      <TranscriptBody
+        model={attentionBefore}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="ordinary:attention"
+        sessionRef="ordinary:attention"
+      />,
+    );
+    const settledLifecycle = screen.getByTestId("delegate-lifecycle");
+    expect(settledLifecycle.getAttribute("data-attention")).toBeNull();
+    expect(settledLifecycle.textContent).not.toContain("Needs attention");
+
+    // Every field the memoized delegate row renders but the old fingerprint
+    // omitted: attention, resumability, exhaustion evidence, failure reason,
+    // usage, run timing, and the reducer's own revision.
+    const onlyChange = (changes: Record<string, unknown>): ThreadModel =>
+      ({
+        ...attentionBefore,
+        delegates: [{ ...settledDelegate, ...changes }],
+      }) as unknown as ThreadModel;
+    const before = threadFingerprintForItem(delegateItem, attentionBefore);
+    for (const change of [
+      { needsAttention: true, projectionRevision: 2 },
+      { resumable: false, notResumableReason: "budget spent", projectionRevision: 2 },
+      { exhaustionResumable: true, exhaustionBudget: "0 of 3", exhaustionLimit: 3, projectionRevision: 2 },
+      { reason: "exhausted", projectionRevision: 2 },
+      { usage: { inputTokens: 100, outputTokens: 20 }, projectionRevision: 2 },
+      { runStartedAt: "2026-09-10T00:00:00Z", runEndedAt: "2026-09-10T00:01:00Z", projectionRevision: 2 },
+    ]) {
+      expect(threadFingerprintForItem(delegateItem, onlyChange(change))).not.toBe(before);
+    }
+
+    const attentionAfter = onlyChange({ needsAttention: true, projectionRevision: 2 });
+    rerender(
+      <TranscriptBody
+        model={attentionAfter}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="ordinary:attention"
+        sessionRef="ordinary:attention"
+      />,
+    );
+    await waitFor(() => {
+      const alertedLifecycle = screen.getByTestId("delegate-lifecycle");
+      expect(alertedLifecycle.getAttribute("data-attention")).toBe("true");
+      expect(alertedLifecycle.textContent).toContain("Needs attention");
+    });
+  });
+
+  test("Tools/Full previews mount item renderers without threadsStore or RPC access", () => {
     const getState = vi.spyOn(threadsStore, "getState");
     const subscribe = vi.spyOn(threadsStore, "subscribe");
     const getInitialState = vi.spyOn(threadsStore, "getInitialState");
     const fake = new FakeClient("ready");
     const request = vi.spyOn(fake, "request");
-    const previewTurn = previewClusterFixture.turns[0];
-    if (previewTurn === undefined) throw new Error("preview cluster turn did not render");
-    const clusterItems = previewTurn.items.slice(1, 4) as ItemModel[];
     render(
       <>
-        <TranscriptBody
-          model={previewClusterFixture}
-          config={preset("tools")}
-          surface="preview"
-          disclosureScope="preview:one"
-        />
-        <TranscriptBody
-          model={previewClusterFixture}
-          config={preset("full")}
-          surface="preview"
-          disclosureScope="preview:two"
-        />
-        <TranscriptRenderProvider
-          config={preset("tools")}
-          surface="preview"
-          disclosureScope="preview:explicit-cluster"
-          thread={previewClusterFixture}
-        >
-          <ToolCallCluster
-            items={clusterItems}
-            turn={previewTurn}
-            sessionRef="preview:explicit-cluster"
-            renderContext={createTranscriptRenderContext({
-              config: preset("tools"),
-              surface: "preview",
-              disclosureScope: "preview:explicit-cluster",
-              thread: previewClusterFixture,
-            })}
-          />
-        </TranscriptRenderProvider>
+        <TranscriptBody model={fixture} config={preset("tools")} surface="preview" disclosureScope="preview:one" />
+        <TranscriptBody model={fixture} config={preset("full")} surface="preview" disclosureScope="preview:two" />
       </>,
     );
-    expect(screen.getAllByTestId("tool-call-item").length).toBeGreaterThan(0);
-    expect(screen.getAllByTestId("tool-call-cluster")).toHaveLength(1);
-    const cluster = screen.getByTestId("tool-call-cluster");
-    const clusterTrigger = cluster.querySelector('[data-testid="tool-row-trigger"]');
-    if (!(clusterTrigger instanceof HTMLElement)) throw new Error("preview cluster trigger did not render");
-    fireEvent.click(clusterTrigger);
-    expect(clusterTrigger.getAttribute("aria-expanded")).toBe("true");
-    expect(cluster.querySelector('[data-testid="tool-call-cluster-body"]')).toBeTruthy();
+    expect(screen.getAllByTestId("tool-call-item").length).toBeGreaterThanOrEqual(2);
     expect(getState).not.toHaveBeenCalled();
     expect(subscribe).not.toHaveBeenCalled();
     expect(getInitialState).not.toHaveBeenCalled();
@@ -763,7 +765,9 @@ describe("TranscriptBody", () => {
     expect(group[0]?.textContent).toContain("One");
     expect(group[0]?.textContent).toContain("Two");
     expect(group[0]?.textContent).toContain("Three");
-    expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
+    // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
+    // <details> children), so 3 tool-call-items are present for 3 coalesced actions.
+    expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
     expect(screen.getAllByTestId("transcript-row")).toHaveLength(2);
     expect(screen.getAllByTestId("transcript-row")[0]?.getAttribute("data-row-id")).toBe("intent-group:intent:tool_a");
     expect(
@@ -1046,5 +1050,88 @@ describe("TranscriptBody", () => {
     expect(bodyText.indexOf("Local intent")).toBeLessThan(bodyText.indexOf("critical boundary"));
     expect(bodyText.indexOf("critical boundary")).toBeLessThan(bodyText.indexOf("Cross A"));
     expect(screen.queryAllByTestId("intent-group")).toHaveLength(2);
+  });
+});
+
+describe("trailingRow", () => {
+  test("renders the trailing row as the last virtual transcript row on the live surface", () => {
+    render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+
+    const rows = screen.getAllByTestId("transcript-row");
+    expect(rows).toHaveLength(2);
+    const last = rows.at(-1);
+    expect(last?.getAttribute("data-row-id")).toBe("ask-dock");
+    const sentinel = screen.getByTestId("trailing-sentinel");
+    expect(last?.contains(sentinel)).toBe(true);
+  });
+
+  test("a rerender keeps the trailing row's identity stable and after every transcript row", () => {
+    const { rerender } = render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row-stable"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+    const before = screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"));
+    rerender(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row-stable"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+    expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(before);
+  });
+
+  test("omitting trailingRow renders exactly the transcript rows", () => {
+    render(
+      <TranscriptBody model={fixture} config={preset("tools")} surface="live" disclosureScope="live:no-trailing" />,
+    );
+    const rows = screen.getAllByTestId("transcript-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.getAttribute("data-row-id")).toBe("turn_1");
+  });
+});
+
+describe("trailingRow scroll coordination", () => {
+  test("the view registration's rendered row count includes the trailing row", () => {
+    const realRegistration = flowModule.useTranscriptViewRegistration;
+    const capturedCounts: Array<number | undefined> = [];
+    const spy = vi
+      .spyOn(flowModule, "useTranscriptViewRegistration")
+      .mockImplementation((options: Parameters<typeof realRegistration>[0]) => {
+        capturedCounts.push(options.renderedRowCount);
+        return realRegistration(options);
+      });
+    try {
+      render(
+        <TranscriptBody
+          model={fixture}
+          config={preset("tools")}
+          surface="live"
+          disclosureScope="live:trailing-count"
+          trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel" /> }}
+        />,
+      );
+      // One turn row + the synthetic trailing row: following-bottom view
+      // restores scroll to renderedRowCount - 1, so the count must cover the
+      // trailing row or a pending ask's dock restores one row short.
+      expect(capturedCounts.at(-1)).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

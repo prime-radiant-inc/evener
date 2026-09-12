@@ -18,6 +18,7 @@ import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "..
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   discardRecoveryPendingTurn,
+  resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
   submitWithPendingTracking,
   useBlockedMutationEntries,
@@ -139,6 +140,7 @@ export function QueueStrip({
   onDrainBusyChange,
 }: QueueStripProps): ReactNode {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
+  const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
     (entry) => entry.state !== "blockedUnknown",
   );
@@ -235,20 +237,35 @@ export function QueueStrip({
       toasts.push("error", "Image attachment is still processing");
       return;
     }
+    let wonRecoveryResend = true;
     onDrainBusyChange(true);
     try {
       await submitWithPendingTracking(
         {
           ref: sessionRef,
           method: "drain",
+          recoveryId: activeRecoveryId,
           text,
           attachments,
           onFailure: (err) => {
             toasts.push("error", sessionActionError("Drain failed", err));
           },
         },
-        () => threadsStore.getState().drainAsSteer(sessionRef, text, attachments),
+        async () => {
+          if (activeRecoveryId) {
+            wonRecoveryResend = await resendRecoveryPendingTurn(
+              activeRecoveryId,
+              sessionRef,
+              "drain",
+              text,
+              attachments ?? [],
+            );
+            return;
+          }
+          return threadsStore.getState().drainAsSteer(sessionRef, text, attachments);
+        },
       );
+      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
       onDrainSuccess();
     } catch {
       // Already reported via onFailure above; swallow so the rejection
@@ -377,7 +394,18 @@ export function QueueStrip({
                   <span>{recordPreview(record)}</span>
                 </span>
                 <div className={CLASS.rowActions}>
-                  <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleRetry(record)}>
+                  <Button
+                    size="sm"
+                    variant="quiet"
+                    disabled={
+                      rowBusy ||
+                      !mutationAuthority ||
+                      !model ||
+                      model.status.type === "restartRequired" ||
+                      model.status.type === "notLoaded"
+                    }
+                    onClick={() => void handleRetry(record)}
+                  >
                     Retry
                   </Button>
                 </div>

@@ -17,11 +17,11 @@ var (
 		t := time.NewTicker(d)
 		return t.C, t.Stop
 	}
-	hubSeedDefaults = func() error {
-		_, err := plugins.NewManager("").SeedDefaultMarketplaces()
+	hubSeedDefaults = func(ctx context.Context) error {
+		_, err := plugins.NewManager("").SeedDefaultMarketplaces(ctx)
 		return err
 	}
-	hubPluginGC     = func() ([]string, error) { return plugins.NewManager("").Gc() }
+	hubPluginGC     = func(ctx context.Context) ([]string, error) { return plugins.NewManager("").Gc(ctx) }
 	hubStartUpgrade = func(ctx context.Context, cfg Config, web *WebServer) {
 		startPluginAutoUpgradeDaemon(ctx, plugins.NewManager(""), cfg.PluginAutoUpgradeInterval, web.appRPC)
 	}
@@ -67,8 +67,8 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 	}
 }
 
-func seedHubMarketplaces() {
-	if err := hubSeedDefaults(); err != nil {
+func seedHubMarketplaces(ctx context.Context) {
+	if err := hubSeedDefaults(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] warning: seeding default marketplaces: %v\n", err)
 	}
 }
@@ -77,7 +77,7 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, 
 	if cfg.PluginAutoUpgrade {
 		startBackground(func() { hubStartUpgrade(ctx, cfg, web) })
 	}
-	if removed, err := hubPluginGC(); err != nil {
+	if removed, err := hubPluginGC(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
 	} else if len(removed) > 0 {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: removed %d superseded cache dir(s)\n", len(removed))

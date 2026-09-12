@@ -112,10 +112,11 @@ func (s *Session) runLaneResidueSweep(ctx context.Context) (budgetHit bool) {
 	if st.env == nil || st.mainRepoRoot == "" || st.worktreeRoot == "" {
 		return false
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return false
 	}
+	defer done()
 	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)
 

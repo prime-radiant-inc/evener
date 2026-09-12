@@ -156,6 +156,42 @@ test("the trigger shows the done/total counts once the aggregate has arrived", (
   expect(screen.getByRole("button", { name: "Tasks 3/7" })).toBeTruthy();
 });
 
+test("outcome aggregates show terminal counts instead of done/total", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: [] }));
+  const model = testModel({ tasks: { total: 7, done: 1, cancelled: 5, remaining: 1 } });
+
+  render(
+    <>
+      <TasksPanel sessionRef="ref_a" model={model} />
+      <TasksPanelBody sessionRef="ref_a" model={model} />
+    </>,
+  );
+
+  expect(screen.getByRole("button", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 done, 5 cancelled, 1 remaining (7 total)");
+  expect(screen.queryByRole("meter")).toBeNull();
+});
+
+test("outcome aggregates infer an omitted zero outcome for labels", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: [] }));
+  const cancelledOnly = testModel({ tasks: { total: 7, done: 1, cancelled: 5 } });
+  const { unmount } = render(<TasksPanelBody sessionRef="ref_cancelled" model={cancelledOnly} />);
+
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 done, 5 cancelled, 0 remaining (7 total)");
+  expect(screen.queryByRole("meter")).toBeNull();
+  unmount();
+
+  const remainingOnly = testModel({ tasks: { total: 7, done: 1, remaining: 5 } });
+  render(<TasksPanelBody sessionRef="ref_remaining" model={remainingOnly} />);
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 done, 0 cancelled, 5 remaining (7 total)");
+  expect(screen.queryByRole("meter")).toBeNull();
+});
+
 // --- STATUS_TONE: pinning test (review finding) --------------------------
 // The mapping shipped entirely untested, which is how `cancelled: "danger"`
 // slipped through: the legacy comment cited for that choice
@@ -198,7 +234,7 @@ test("opening the panel fetches via listTasks(ref) and shows a loading state unt
   await waitFor(() => expect(screen.queryByText(/loading tasks/i)).toBeNull());
 });
 
-test("rows group by status: in progress, then open, then the collapsed settled group; wire order holds within a group", async () => {
+test("rows group by status: the collapsed settled group first, then in progress, then open; wire order holds within a group", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
@@ -209,7 +245,14 @@ test("rows group by status: in progress, then open, then the collapsed settled g
   await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(2));
   const liveGroups = screen.getAllByTestId("task-group-live");
   expect(liveGroups.map((group) => group.getAttribute("data-status"))).toEqual(["in_progress", "open"]);
-  expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
+  const settled = screen.getByTestId("task-settled-group");
+  expect(settled.textContent).toContain("1");
+  // The folded-away settled group sits above the current work, not at the bottom.
+  const body = settled.parentElement;
+  expect(body).toBeTruthy();
+  const settledIndex = Array.from(body!.children).indexOf(settled);
+  const firstLiveIndex = Array.from(body!.children).indexOf(liveGroups[0]!);
+  expect(settledIndex).toBeLessThan(firstLiveIndex);
 
   await user.click(screen.getByTestId("task-settled-group-summary"));
   await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(3));
@@ -300,7 +343,7 @@ test("the settled group defaults to collapsed and remembers being opened per ses
   expect(await screen.findByText("Implement artifact store")).toBeTruthy();
 });
 
-test("the body header shows the meter and count when the aggregate is known", async () => {
+test("the body header shows the count when the aggregate is known, with no progress bar", async () => {
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [TASKS_DATA[0]] }));
 
@@ -312,7 +355,7 @@ test("the body header shows the meter and count when the aggregate is known", as
   );
   await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
   expect(screen.getByTestId("tasks-body-head").textContent).toContain("16/20 done");
-  expect(screen.getByRole("meter", { name: "Task progress: 16 of 20 complete" })).toBeTruthy();
+  expect(screen.queryByRole("meter")).toBeNull();
 });
 
 test("the body header is absent while no aggregate has arrived", async () => {
@@ -629,18 +672,18 @@ test("does not fetch at all while the panel is closed, even if the aggregate cha
   expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(0);
 });
 
-// --- Codex-source unsupported state (actionUnavailable) -------------------
+// --- source-backed unsupported state (actionUnavailable) ------------------
 
-test("a Codex-source actionUnavailable rejection shows the honest unsupported state, with no error toast (it's not a bug)", async () => {
+test("a source-backed actionUnavailable rejection shows the honest unsupported state, with no error toast (it's not a bug)", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => {
-    throw new WireError("codex source does not expose evener tasks", -32014, { evenerErrorInfo: "actionUnavailable" });
+    throw new WireError("remote source does not expose evener tasks", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
 
   render(
     <>
-      <TasksPanel sessionRef="ref_codex" model={testModel()} />
+      <TasksPanel sessionRef="ref_remote" model={testModel()} />
       <Toast />
     </>,
   );

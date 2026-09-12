@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // toolResultContent extracts string content from a TurnTool.
@@ -256,7 +257,7 @@ func TestSummarizeToolResult_Delegate(t *testing.T) {
 }
 
 func TestSummarizeToolResult_TaskList(t *testing.T) {
-	got := summarizeToolResult("task_list", `[{"id":1},{"id":2},{"id":3}]`, json.RawMessage(`{"action":"view"}`))
+	got := summarizeToolResult("task_list", `[{"id":1},{"id":2},{"id":3}]`, json.RawMessage(`{}`))
 	want := "[task_list: view → 3 tasks]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -1550,6 +1551,46 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 	}
 }
 
+func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t *testing.T) {
+	profile := testProfile("openai", "gpt-5.2", 0)
+	resolved := profile.Resolved()
+
+	t.Run("same target", func(t *testing.T) {
+		cm := NewManager(profile, nil, cheapmodel.New(nil))
+		cm.RecordInputTokens(321, 7)
+		cm.SetProfile(profile.WithResolved(resolved))
+		if got := cm.LastInputTokens(); got != 321 {
+			t.Fatalf("LastInputTokens = %d, want retained measurement 321", got)
+		}
+		if got := cm.historyLenAtMeasure; got != 7 {
+			t.Fatalf("historyLenAtMeasure = %d, want retained measurement length 7", got)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*registry.Resolved)
+	}{
+		{name: "instance", mutate: func(res *registry.Resolved) { res.Instance = "other" }},
+		{name: "model", mutate: func(res *registry.Resolved) { res.ModelID = "other-model" }},
+		{name: "protocol", mutate: func(res *registry.Resolved) { res.Protocol = registry.ProtocolAnthropic }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cm := NewManager(profile, nil, cheapmodel.New(nil))
+			cm.RecordInputTokens(321, 7)
+			next := resolved
+			tc.mutate(&next)
+			cm.SetProfile(provider.FromResolved(next, nil))
+			if got := cm.LastInputTokens(); got != 0 {
+				t.Fatalf("LastInputTokens = %d after target change, want 0", got)
+			}
+			if got := cm.historyLenAtMeasure; got != 0 {
+				t.Fatalf("historyLenAtMeasure = %d after target change, want 0", got)
+			}
+		})
+	}
+}
+
 // Token-based pressure: Manager should use actual InputTokens from API
 // responses for pressure calculation instead of relying solely on char/4.
 func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
@@ -2113,7 +2154,8 @@ func TestPressure_ZeroContextWindow(t *testing.T) {
 // --- SetProfile tests ---
 
 func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
-	// Start with a 200K profile, switch to 1M. Pressure should reflect new window.
+	// Start with a 200K profile, then update the same target to 1M. Pressure
+	// should retain that target's measurement and reflect the new window.
 	smallProfile := testProfile("anthropic", "claude-opus-4-6", 200_000)
 	cm := NewManager(smallProfile, nil, cheapmodel.New(nil))
 
@@ -2130,8 +2172,8 @@ func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 		t.Fatalf("pressure before SetProfile = %.2f, expected ~0.50", p1)
 	}
 
-	// Switch to 1M profile.
-	bigProfile := testProfile("anthropic", "claude-opus-4-6[1m]", 1_000_000)
+	// Apply a 1M window override without changing the target identity.
+	bigProfile := provider.WithContextWindow(smallProfile, 1_000_000)
 	cm.SetProfile(bigProfile)
 
 	// With 1M window: pressure ≈ 100K/1M = 0.10
@@ -2553,5 +2595,37 @@ func TestBuildSummaryPrompt_WithInstructions(t *testing.T) {
 	}
 	if !strings.Contains(p, "CALLER INSTRUCTIONS (these take precedence)") {
 		t.Fatal("expected the instruction-led header")
+	}
+}
+
+// TestUnknownContextWindowNeverCompacts pins spec §7.3: a row whose window the
+// registry does not know reports 0, and 0 means unknown, not tiny. With no
+// window there is no budget, so pressure is 0, the metrics report nothing, and
+// no layer of MaybeCompact runs however long the history grows.
+func TestUnknownContextWindowNeverCompacts(t *testing.T) {
+	t.Parallel()
+	profile := provider.FromResolved(registry.Resolved{Instance: "gw", ModelID: "nobody-knows-this-one"}, nil)
+	if profile.ContextWindowSize() != 0 {
+		t.Fatalf("fixture window = %d, want 0 (unknown)", profile.ContextWindowSize())
+	}
+	cm := NewManager(profile, nil, cheapmodel.New(nil))
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 200_000))),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("reply ", 200_000))),
+	}
+	before := len(history)
+
+	if got := cm.Pressure(history, 100_000); got != 0 {
+		t.Fatalf("Pressure = %v, want 0 with no known window", got)
+	}
+	if got := cm.EstimateUsage(history, 100_000); got != (schema.ContextMetrics{}) {
+		t.Fatalf("EstimateUsage = %+v, want the zero metrics with no known window", got)
+	}
+
+	var events0 int
+	cm.MaybeCompact(context.Background(), &history, 100_000, func(events.EventKind, events.EventData) { events0++ })
+	if len(history) != before || events0 != 0 {
+		t.Fatalf("MaybeCompact compacted %d turns and emitted %d events with no known window", before-len(history), events0)
 	}
 }

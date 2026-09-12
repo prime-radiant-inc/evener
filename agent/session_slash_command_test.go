@@ -227,7 +227,10 @@ func TestEvenerwideCommand_ShadowsPluginBareName(t *testing.T) {
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("ok") },
 	}})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{PluginDirs: []string{pluginDir}})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
+		PluginDirs: []string{pluginDir},
+		testOnly:   testConfig{skipGitSnapshot: true},
+	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

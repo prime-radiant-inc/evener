@@ -24,7 +24,7 @@
 ## File Structure
 
 - **Create** `internal/providerconfig/providerconfig.go` — leaf package: `Type`, `APIStyle`, `InstanceConfig`, `Config`, `BehaviorTag(type, apiStyle) string`, `NameToTag(Config) map[string]string`, `DefaultStateRoot() string` (relocated `hubStateRoot` resolver). No imports of `llm`/`agent`/`cmdutil`.
-- **Modify** `agent/profile.go` — add `behaviorTag` field + `BehaviorTag()` to `baseProfile`/`anthropicProfile`; recipes stamp it; re-key `CheapModel`, `decidePrefixAction`, `rebuildOnSameProviderChange`, `WithModel` (×2), the `:930`/`:1007` helpers, the catalog lookup; remove the cross-provider switch arm.
+- **Modify** `agent/profile.go` — add `behaviorTag` field + `BehaviorTag()` to `baseProfile`/`anthropicProfile`; recipes stamp it; re-key `decidePrefixAction`, `rebuildOnSameProviderChange`, `WithModel` (×2), the `:930`/`:1007` helpers, and the catalog lookup; remove the cross-provider switch arm.
 - **Create** `agent/resolve.go` — `ResolveProfileFromConfig(cfg, ref) (ProviderProfile, error)` and the behavior-preserving re-application of session overrides.
 - **Modify** `agent/session.go` — re-key prompt-cache/gemini/prompt-section/fallback sites onto `BehaviorTag()`; `SetModel`/subagent/fallback switch via the resolver + preserve overrides + re-run provider-conditional tools; `resp.Provider` identity.
 - **Modify** `agent/subagents.go` — model override via the resolver.
@@ -184,9 +184,10 @@ func TestRenamedInstance_BehaviorByTag_IdentityByName(t *testing.T) {
 	if !openAIBehavior(p) { // helper asserting the §4.2 :1382 path treats p as openai
 		t.Fatalf("renamed openai instance lost prompt-cache eligibility")
 	}
-	// CheapModel keys on the tag:
-	if p.CheapModel() != "gpt-4.1-nano" {
-		t.Fatalf("CheapModel()=%q want gpt-4.1-nano (tag-keyed)", p.CheapModel())
+	// An unset auxiliary route uses the renamed active instance, not its tag:
+	providerName, model := p.CheapModelRef()
+	if providerName != "work" || model != p.Model() {
+		t.Fatalf("CheapModelRef()=(%q, %q) want (work, %q)", providerName, model, p.Model())
 	}
 }
 ```
@@ -208,7 +209,7 @@ func TestRenamedInstance_BehaviorByTag_IdentityByName(t *testing.T) {
 - [ ] **Step 1: Write failing tests** asserting each constructor stamps the right tag: `NewOpenAIProfile(...).BehaviorTag()=="openai"`, `NewAnthropicProfile`→`anthropic`, `NewGeminiProfile`→`google`, `NewOpenAICompatProfile("openrouter",...)`→`openrouter`, etc. Include a `WithProviderID`/named variant returning `ID()=="work"`, `BehaviorTag()=="openai"`.
 - [ ] **Step 2: Run, verify fail** (`BehaviorTag` undefined).
 - [ ] **Step 3: Implement.** Add `behaviorTag string` to `baseProfile` and `anthropicProfile`; add `func (p *baseProfile) BehaviorTag() string { return p.behaviorTag }` (and anthropic). Add `behaviorTag` to `profileSpec`; `buildBaseProfile` copies it. Each constructor sets it via `providerconfig.BehaviorTag(type, style)`. Add a `WithProviderID(p, name)` wrapper (mirroring `WithCommunicateOutputSchema`) that overrides `id` while keeping the tag. Add `BehaviorTag()` to the `ProviderProfile` interface (`profile.go:40`).
-- [ ] **Step 4: Run profile tests + the Task 2 backstop.** Run: `go test ./agent/ -run 'Profile|RenamedInstance' -v`. Task 2's `BehaviorTag()`/`CheapModel` assertions should now compile; `CheapModel` still keyed on `id` so it may fail — that's Task 4.
+- [ ] **Step 4: Run profile tests + the Task 2 backstop.** Run: `go test ./agent/ -run 'Profile|RenamedInstance' -v`. Task 2's `BehaviorTag()` and active-route assertions should now compile.
 - [ ] **Step 5: Commit.** `git add agent/profile.go agent/profile_test.go && git commit -m "feat(agent): BehaviorTag on profiles, recipes stamp it (PRI-1880)"`
 
 ---
@@ -218,12 +219,12 @@ func TestRenamedInstance_BehaviorByTag_IdentityByName(t *testing.T) {
 Per spec §4.2 rows for `profile.go`. Each is `switch p.id`→`switch p.behaviorTag` (and the `case "gemini"`→`case "google"`), plus the catalog lookup and the prefix helpers.
 
 **Files:**
-- Modify: `agent/profile.go` (`:344 CheapModel`, `:396 decidePrefixAction`, `:498 rebuildOnSameProviderChange`, `:519/533/562 WithModel`, `:649 anthropic WithModel`, `:930`, `:955/964 catalog`, `:1007`)
+- Modify: `agent/profile.go` (`:396 decidePrefixAction`, `:498 rebuildOnSameProviderChange`, `:519/533/562 WithModel`, `:649 anthropic WithModel`, `:930`, `:955/964 catalog`, `:1007`)
 - Test: `agent/profile_test.go`
 
-- [ ] **Step 1: Write failing tests** with *renamed* instances: a `kimi`-behavior profile named `work` whose `CheapModel`, catalog context-window lookup, and `rebuildOnSameProviderChange` all behave as `kimi`; a `google`-named instance whose `CheapModel` returns `gemini-2.5-flash-lite`; an `openrouter`-named-`work` instance whose Codex/minimax gate (`:1007`) and meta-namespace keep (`:405`) fire by tag.
+- [ ] **Step 1: Write failing tests** with *renamed* instances: a `kimi`-behavior profile named `work` whose catalog context-window lookup and `rebuildOnSameProviderChange` behave as `kimi`; a `google`-named instance whose catalog lookup uses the Google tag; an `openrouter`-named-`work` instance whose Codex/minimax gate (`:1007`) and meta-namespace keep (`:405`) fire by tag. Assert separately that an unset `CheapModelRef()` returns the renamed active provider/model rather than a tag-derived default.
 - [ ] **Step 2: Run, verify fail** (still keyed on `id`).
-- [ ] **Step 3: Implement.** Mechanically apply each §4.2 row: `CheapModel` `switch p.behaviorTag` with `case "google"`; `decidePrefixAction(behaviorTag, instanceName, prefix)` — **keep** uses `behaviorTag` (meta-providers), self-prefix **strip** compares `prefix == instanceName`; `rebuildOnSameProviderChange(behaviorTag)`; `WithModel` passes `p.behaviorTag` + `p.id` and the rebuild constructor (`NewOpenAICompatProfile`) takes both name and tag (extend its signature or add a named variant); `:930` `behaviorTag == "ollama"`; catalog lookup uses `behaviorTag + "/" + model`; `:1007` `behaviorTag == "openrouter"`. **Remove the cross-provider switch arm** from both `WithModel`s (the `prefixActionSwitch` outcome) — switching now lives in the session (Task 8). `WithModel` returns within-instance results only.
+- [ ] **Step 3: Implement.** Mechanically apply each §4.2 row: `decidePrefixAction(behaviorTag, instanceName, prefix)` — **keep** uses `behaviorTag` (meta-providers), self-prefix **strip** compares `prefix == instanceName`; `rebuildOnSameProviderChange(behaviorTag)`; `WithModel` passes `p.behaviorTag` + `p.id` and the rebuild constructor (`NewOpenAICompatProfile`) takes both name and tag (extend its signature or add a named variant); `:930` `behaviorTag == "ollama"`; catalog lookup uses `behaviorTag + "/" + model`; `:1007` `behaviorTag == "openrouter"`. **Remove the cross-provider switch arm** from both `WithModel`s (the `prefixActionSwitch` outcome) — switching now lives in the session (Task 8). `WithModel` returns within-instance results only. Auxiliary routing is not tag-keyed.
 - [ ] **Step 4: Run** `go test ./agent/ -run 'Profile|RenamedInstance|WithModel' -v`. Rewrite the now-obsolete cross-provider `WithModel` unit tests (`TestProviderProfile_WithModel_CrossProvider` `:366`, `:379`, `TestBaseProfile_WithModel_PreservesSlashOnMetaProviders` `:658`) — the meta-namespace *keep* test stays (assert verbatim within instance); the cross-provider *switch* tests move to Task 8 (session-level). Confirm the catalog rebuild still recomputes the context window for a same-instance model change.
 - [ ] **Step 5: Commit.** `git add agent/profile.go agent/profile_test.go && git commit -m "refactor(agent): key profile.go behaviors on behaviorTag, drop WithModel switch (PRI-1880)"`
 

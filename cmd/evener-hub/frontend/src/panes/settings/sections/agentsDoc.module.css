@@ -1,0 +1,41 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 720px;
+}
+
+.help {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.error {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}
+
+/* The file is Markdown the user hand-edits elsewhere too, so it reads in
+ * mono here as it does in their editor. The shared Textarea has no font
+ * prop; scoping the face to this section's own control is the narrowest
+ * override. */
+.editor textarea {
+  width: 100%;
+  font-family: var(--font-mono);
+}
+
+.note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+}

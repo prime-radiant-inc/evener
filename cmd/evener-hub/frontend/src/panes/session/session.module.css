@@ -23,6 +23,15 @@
  * every TranscriptBody surface, including read-only and preview. */
 .intentGroup {
   width: 100%;
+  /* A trailing or cross-turn intent run is promoted to its own virtual-list
+   * row (TranscriptBody's transcriptRowsForProjection) and renders WITHOUT
+   * TurnBlock's .turn wrapper, so it must read the reading measure itself or
+   * it spans the full pane while every turn above stays clamped and centered
+   * (the reload-shaped misalignment overflowguard's "intent group column"
+   * check measures). Inside .turn this is a no-op: the parent is already
+   * exactly this wide. */
+  max-width: var(--session-measure);
+  margin-inline: auto;
 }
 
 .intentGroupSummary {
@@ -53,26 +62,24 @@
 .intentGroupItems {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding-bottom: var(--space-2);
+  gap: 0;
 }
 
-.intent {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  padding: 0 var(--space-3);
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  font-style: italic;
-  line-height: var(--line-height-title);
-  overflow-wrap: anywhere;
+/* Above the breakpoint, the intent group items need the same
+ * --speaker-gutter padding that .runContent provides for regular
+ * tool-call rows. Without it, the .rowIcon's negative margin
+ * (margin-left: calc(-1 * var(--speaker-gutter))) pulls the icon
+ * out of the container — making icons invisible and rows appear
+ * outdented. This matches the .runContent indent at turnblock.module.css:42-46. */
+@media (min-width: 700px) {
+  .intentGroupItems {
+    padding-left: var(--speaker-gutter);
+  }
 }
 
 .coldStart {
   width: 100%;
-  max-width: 76rem;
+  max-width: var(--session-measure);
   margin-inline: auto;
   padding: var(--space-6) var(--space-4);
 }
@@ -91,9 +98,8 @@
 }
 
 .measure {
-  /* matches transcript measure — consolidate to a token after the UX settles */
   width: 100%;
-  max-width: 76rem;
+  max-width: var(--session-measure);
   margin-inline: auto;
   flex: 1 1 auto;
   min-height: 0;

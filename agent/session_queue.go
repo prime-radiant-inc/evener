@@ -326,12 +326,34 @@ func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *prove
 }
 
 func (s *Session) trySteerMessage(entry steeringMessage) bool {
+	return s.trySteerMessageUnlessSuperseded(entry, ungatedFoldRevision)
+}
+
+// steerKindForFold is SteerKind for a fold flush's last-write-wins steering
+// (the task-list and transcript reminders): the steering is refused, at the
+// moment it would be enqueued, once a newer fold has published.
+func (s *Session) steerKindForFold(msg, kind string, publishedRevision int) {
+	_ = s.trySteerMessageUnlessSuperseded(steeringMessage{Text: msg, Kind: kind}, publishedRevision)
+}
+
+// trySteerMessageUnlessSuperseded enqueues entry unless publishedRevision
+// (a fold's publication revision, or ungatedFoldRevision for steering that
+// is not tied to a fold) is older than the newest published fold. The
+// publication-order check runs under the SAME s.mu hold that appends to the
+// queue, so a newer publication cannot slip in between the check and the
+// enqueue: a stale fold's steering is refused rather than landing after
+// the newer fold's own.
+func (s *Session) trySteerMessageUnlessSuperseded(entry steeringMessage, publishedRevision int) bool {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return false
 	}
 	if strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0 {
+		s.mu.Unlock()
+		return false
+	}
+	if publishedRevision != ungatedFoldRevision && publishedRevision < s.newestPublishedFoldRevision {
 		s.mu.Unlock()
 		return false
 	}
@@ -962,16 +984,25 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
+	if s.clientMutations != nil {
+		// ActiveTurnID is the actual logical owner at delivery time. For an
+		// inline steer it is the already-running turn; for a carrier it is the
+		// carrier's reserved mutation turn. Both identities must be durable so
+		// replay can distinguish the two boundaries. System steering uses the
+		// same active turn when it is drained by a named daemon turn.
+		t.OwningTurnID = s.clientMutations.snapshot().ActiveTurnID
+	}
 	if msg.ClientMutationID != "" {
-		if err := s.appendClientMutationTranscript(t); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			t,
+			func() error { return s.appendClientMutationTranscriptLocked(t) },
+			func() { s.history = append(s.history, t) },
+		); err != nil {
 			_ = s.returnClaimedSteering(msg.ClientMutationID)
 			s.reflectDurableClientSteering()
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			return false
 		}
-		s.mu.Lock()
-		s.history = append(s.history, t)
-		s.mu.Unlock()
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
 			return true
@@ -979,12 +1010,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		return true
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	if err := s.writeTranscript(t); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-	}
+	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	return true
 }
@@ -1014,8 +1040,16 @@ func (s *Session) returnClaimedSteering(clientMutationID string) error {
 func (s *Session) appendSteeringTurn(text, kind string) {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
+	t.OwningTurnID = s.activeTurnOwner()
 	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
+}
+
+func (s *Session) activeTurnOwner() string {
+	if s.clientMutations == nil {
+		return ""
+	}
+	return s.clientMutations.snapshot().ActiveTurnID
 }
 
 // appendSteeringTurnDurably is appendSteeringTurn's durable counterpart for
@@ -1026,16 +1060,26 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 // for a turn that never made it to disk. The durable write happens before the
 // in-memory history append, preserving the crash-window ordering.
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
+	return s.appendSteeringTurnDurablyForOwner(text, kind, s.activeTurnOwner())
+}
+
+// appendSteeringTurnDurablyForOwner durably records a daemon steering turn
+// with the logical turn that owns it. Notification reminders use the caller's
+// supplied turn id because client steering arriving during that notification
+// turn is grouped by the same durable owner.
+func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID string) error {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
-	if err := s.writeTranscriptDurable(t); err != nil {
+	t.OwningTurnID = owningTurnID
+	err := s.appendTurnAfterTranscriptWrite(
+		t,
+		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() { s.history = append(s.history, t) },
+	)
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 func (s *Session) hasPendingSteering() bool {

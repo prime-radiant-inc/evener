@@ -6,75 +6,33 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
+	"primeradiant.com/evener/llm/registry"
 )
 
-// fallbackMaxTokens is the output cap requested for models the catalog does
-// not cover. Liberal on purpose: a model that can't honor it fails loudly
-// with a 400 (a catalog gap to fix) instead of silently truncating output.
+// fallbackMaxTokens is the output cap requested when the caller names none.
+// Liberal on purpose: a model that can't honor it fails loudly with a 400
+// (a registry row to fix) instead of silently truncating output.
 const fallbackMaxTokens = 32000
 
-// buildRequestBody constructs the Anthropic Messages API request body from a
-// unified llm.Request.
-func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
-	system, messages, err := toAnthropicMessages(req.Messages)
-	if err != nil {
-		return nil, err
+// cacheMarker returns an ephemeral cache_control marker, adding ttl when the
+// caller has one (the extended-cache-ttl beta; the old builder always passes
+// "").
+func cacheMarker(ttl string) map[string]any {
+	m := map[string]any{"type": "ephemeral"}
+	if ttl != "" {
+		m["ttl"] = ttl
 	}
-	system, err = applyAnthropicResponseFormat(system, req.ResponseFormat)
-	if err != nil {
-		return nil, err
-	}
+	return m
+}
 
-	// Strip the [1m] suffix — it's a client-side convention, not an API model ID.
-	apiModel := strings.TrimSuffix(req.Model, "[1m]")
-	claude5 := isClaude5OrNewer(apiModel)
-
-	// Output cap: explicit request value, else the model's real maximum from
-	// the catalog, else a liberal fallback. An arbitrary small default silently
-	// truncates large tool calls mid-stream (stop_reason max_tokens), which
-	// surfaces downstream as unparseable tool JSON.
-	catalogMax := llm.EmbeddedModelCatalog().MaxOutputTokensFor(apiModel)
-	maxTokens := catalogMax
-	if maxTokens == 0 {
-		maxTokens = fallbackMaxTokens
-	}
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		maxTokens = *req.MaxTokens
-	}
-
-	body := map[string]any{
-		"model":         apiModel,
-		"max_tokens":    maxTokens,
-		"messages":      messages,
-		"cache_control": map[string]any{"type": "ephemeral"},
-	}
-	if strings.TrimSpace(system) != "" {
-		body["system"] = []map[string]any{{
-			"type":          "text",
-			"text":          system,
-			"cache_control": map[string]any{"type": "ephemeral"},
-		}}
-	}
-	// Claude 5+ models reject sampling params (Sonnet 5 400s on non-default
-	// temperature/top_p; Fable removed them), so they are omitted there.
-	if req.Temperature != nil && !claude5 {
-		body["temperature"] = *req.Temperature
-	}
-	if req.TopP != nil && !claude5 {
-		body["top_p"] = *req.TopP
-	}
-	if len(req.StopSequences) > 0 {
-		body["stop_sequences"] = req.StopSequences
-	}
-	if strings.TrimSpace(req.ServiceTier) != "" {
-		body["service_tier"] = strings.TrimSpace(req.ServiceTier)
-	}
-
+// applyAnthropicTools writes tool_choice, tools, and the web-search tool
+// (when webSearch is on), and marks the last tool for caching.
+func applyAnthropicTools(body map[string]any, req llm.Request, webSearch bool) error {
 	includeTools := len(req.Tools) > 0
 	if req.ToolChoice != nil {
 		switch strings.ToLower(strings.TrimSpace(req.ToolChoice.Mode)) {
@@ -90,20 +48,20 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			}
 		case "named":
 			if strings.TrimSpace(req.ToolChoice.Name) == "" {
-				return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
+				return &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
 			}
 			if includeTools {
 				body["tool_choice"] = map[string]any{"type": "tool", "name": req.ToolChoice.Name}
 			}
 		default:
-			return nil, llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
+			return llm.NewUnsupportedToolChoiceError("anthropic", req.ToolChoice.Mode)
 		}
 	}
-	if includeTools || req.WebSearch {
+	if includeTools || webSearch {
 		var tools []map[string]any
 		if includeTools {
 			toolDefs := req.Tools
-			if req.WebSearch {
+			if webSearch {
 				// Strip any function-type "web_search" tool to avoid a
 				// duplicate name collision with the server-side web_search
 				// tool injected below.
@@ -117,158 +75,93 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			}
 			tools = toAnthropicTools(toolDefs)
 		}
-		if req.WebSearch {
+		if webSearch {
 			tools = append(tools, map[string]any{
 				"type": "web_search_20250305",
 				"name": "web_search",
 			})
 		}
 		if len(tools) > 0 {
-			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
+			tools[len(tools)-1]["cache_control"] = cacheMarker("")
 		}
 		body["tools"] = tools
 	}
-	// Determine model capabilities from catalog.
-	var adaptiveThinking, supportsEffort bool
-	var effortLevels []string
-	thinkingBudget := 0
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		// LookupModelInfo canonicalizes a provider namespace (openrouter-anthropic
-		// sends "anthropic/…") and dated snapshots so effort capabilities resolve
-		// for qualified/dated models too.
-		if mi := cat.LookupModelInfo(apiModel); mi != nil {
-			adaptiveThinking = mi.SupportsAdaptiveThinking
-			supportsEffort = mi.SupportsEffortParameter
-			effortLevels = mi.ReasoningEffortLevels
-		}
-	}
+	return nil
+}
 
-	if adaptiveThinking || claude5 {
-		// New path: Opus 4.6, Sonnet 4.6, Mythos, and all Claude 5+ models
-		// (Sonnet 5, Fable 5) — adaptive thinking. Claude 5 takes this path
-		// even without a catalog entry: budget_tokens 400s on those models.
-		thinking := map[string]any{"type": "adaptive"}
-		if claude5 {
-			// Claude 5 defaults thinking display to "omitted" (empty thinking
-			// text); evener's UI shows live thinking, so request summaries.
-			// Older adaptive models must stay byte-identical: no display field.
-			thinking["display"] = "summarized"
-		}
-		body["thinking"] = thinking
-		if req.ReasoningEffort != nil {
-			effort := clampEffort(*req.ReasoningEffort, effortLevels)
-			body["output_config"] = map[string]any{"effort": effort}
-		}
-	} else if req.ReasoningEffort != nil {
-		// Legacy manual thinking path.
-		effort := clampEffort(*req.ReasoningEffort, effortLevels)
-		budget := llm.ReasoningBudget(effort)
-		if budget > 0 {
-			body["thinking"] = map[string]any{
-				"type":          "enabled",
-				"budget_tokens": budget,
-			}
-			thinkingBudget = budget
-		}
-		// Hybrid: Opus 4.5 accepts effort even with manual thinking.
-		if supportsEffort {
-			body["output_config"] = map[string]any{"effort": effort}
-		}
-	}
-	if req.ProviderOptions != nil {
-		if ov, ok := req.ProviderOptions["anthropic"].(map[string]any); ok {
-			for k, v := range ov {
-				if k == "beta_headers" {
-					continue
-				}
-				body[k] = v
-			}
-		}
-	}
-	// Anthropic rejects a forced tool_choice ("any"/"tool") when extended thinking
-	// is enabled — "Thinking may not be enabled when tool_choice forces tool use".
-	// When effort turned thinking on, downgrade forcing to "auto" so the request
-	// is accepted; the model still reasons and then chooses its tools. Done AFTER
-	// the provider-option merge, which can itself set a forcing tool_choice (or
-	// thinking) that would otherwise slip past this guard and 400.
-	if _, thinking := body["thinking"]; thinking {
+// normalizeThinkingToolChoice applies the tool-choice restriction shared by
+// completion and token-count requests whenever thinking is active.
+func normalizeThinkingToolChoice(body map[string]any) {
+	if finalThinkingActive(body) {
 		if tc, ok := body["tool_choice"].(map[string]any); ok {
 			if t, _ := tc["type"].(string); t == "any" || t == "tool" {
 				body["tool_choice"] = map[string]any{"type": "auto"}
 			}
 		}
 	}
-	// Anthropic requires max_tokens > thinking.budget_tokens. Reconcile AFTER
-	// provider options, which may set their own max_tokens floor that would
-	// otherwise drop below the budget. max_tokens carries the desired output, so
-	// the budget is added on top of it.
+}
+
+// reconcileThinkingContract enforces the completion-only Anthropic request
+// contracts that depend on the FINAL overlaid body state.
+func reconcileThinkingContract(body map[string]any, req llm.Request, res registry.Resolved) error {
+	normalizeThinkingToolChoice(body)
+	thinkingBudget := finalThinkingBudget(body)
+	requestutil.ReconcileOutputField(body, "max_tokens", req.MaxTokens, res.Caps.MaxOutputTokens)
 	if thinkingBudget > 0 {
-		out, ok := body["max_tokens"].(int)
-		if !ok || out < 1 {
-			// No usable output budget (unset, non-int, or a provider option set it
-			// to <= 0). Fall back to the default so the sum strictly exceeds the
-			// thinking budget — budget + 0 == budget would itself 400.
-			out = maxTokens
-		}
-		if out <= thinkingBudget {
-			raised := thinkingBudget + out
-			// With max_tokens now defaulting to the model's real maximum,
-			// budget + max can exceed the model ceiling and 400. Clamp to the
-			// catalog cap when that still satisfies max_tokens > budget.
-			if catalogMax > thinkingBudget && raised > catalogMax {
-				raised = catalogMax
-			}
-			body["max_tokens"] = raised
+		mt := intFromAny(body["max_tokens"])
+		if mt <= thinkingBudget {
+			return anthropicThinkingBudgetError(req, res, thinkingBudget+1, mt)
 		}
 	}
 	if invariant.Enabled {
-		// Anthropic rejects (HTTP 400) a request that BOTH enables extended
-		// thinking and forces tool use, or whose max_tokens does not strictly
-		// exceed the thinking budget. The guards above establish both contracts;
-		// assert they survived everything that runs after them (notably the
-		// provider-option merge, which can re-set tool_choice / max_tokens).
-		if _, thinking := body["thinking"]; thinking {
+		// When the final body carries a positive thinking budget, Anthropic rejects
+		// a request that also forces tool use, or whose max_tokens does not
+		// strictly exceed that budget. The guards above establish both contracts;
+		// assert they survived everything that runs after them.
+		if thinkingBudget > 0 {
 			if tc, ok := body["tool_choice"].(map[string]any); ok {
 				t, _ := tc["type"].(string)
 				invariant.Hold(t != "any" && t != "tool",
-					"anthropic request contract: tool_choice %q forces tool use while thinking is enabled", t)
+					"anthropic request contract: tool_choice %q forces tool use while budget thinking is enabled", t)
 			}
-		}
-		if thinkingBudget > 0 {
 			mt, _ := body["max_tokens"].(int)
 			invariant.Hold(mt > thinkingBudget,
 				"anthropic request contract: max_tokens %d does not exceed thinking budget %d", mt, thinkingBudget)
 		}
 	}
-	return body, nil
+	return nil
 }
 
-// isClaude5OrNewer reports whether a model belongs to the Claude 5+
-// generation (claude-sonnet-5, claude-opus-5, claude-fable-5, and future 5+
-// families). These models only accept adaptive thinking (budget_tokens 400s),
-// reject sampling params (temperature/top_p/top_k), and need thinking
-// display:"summarized" for visible thinking text.
-//
-// The catalog's Claude5RequestShape flag decides it whenever an entry
-// resolves, which covers the aliased, provider-qualified and dated refs a
-// model ID alone misclassifies. Only a model the catalog has never heard of
-// falls back to reading the generation out of the ID, so an unreleased 5+
-// family still gets the safe request shape.
-func isClaude5OrNewer(model string) bool {
-	if mi := llm.EmbeddedModelCatalog().LookupModelInfo(model); mi != nil {
-		return mi.Claude5RequestShape
-	}
-	if !strings.HasPrefix(model, "claude-") {
+func finalThinkingActive(body map[string]any) bool {
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
 		return false
 	}
-	// The first numeric segment after "claude-" is the major generation:
-	// claude-fable-5 -> 5, claude-sonnet-4-6 -> 4, claude-3-5-sonnet -> 3.
-	for seg := range strings.SplitSeq(strings.TrimPrefix(model, "claude-"), "-") {
-		if n, err := strconv.Atoi(seg); err == nil {
-			return n >= 5
-		}
+	typ, _ := thinking["type"].(string)
+	return !strings.EqualFold(strings.TrimSpace(typ), "disabled")
+}
+
+func finalThinkingBudget(body map[string]any) int {
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking == nil {
+		return 0
 	}
-	return false
+	if typ, _ := thinking["type"].(string); !strings.EqualFold(strings.TrimSpace(typ), "enabled") {
+		return 0
+	}
+	return intFromAny(thinking["budget_tokens"])
+}
+
+func anthropicThinkingBudgetError(req llm.Request, res registry.Resolved, requiredOutput, maximum int) error {
+	provider, model := llm.ResolveContextBudgetIdentity(req, res)
+	return &llm.ContextBudgetError{
+		Provider:     provider,
+		Model:        model,
+		Limit:        "max_output_tokens",
+		InputTokens:  0,
+		OutputTokens: requiredOutput,
+		Maximum:      maximum,
+	}
 }
 
 func applyAnthropicResponseFormat(system string, rf *llm.ResponseFormat) (string, error) {

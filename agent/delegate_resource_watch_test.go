@@ -200,7 +200,7 @@ func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing
 	}
 	cfg := deliveries[0].cfg
 	jm.mu.Lock()
-	cfg.deliveries = watchDeliveryBudget - 1
+	cfg.conditionFires = watchDeliveryBudget
 	crossed := jm.recordWatchDeliveryLocked(cfg)
 	jm.mu.Unlock()
 	if !crossed {

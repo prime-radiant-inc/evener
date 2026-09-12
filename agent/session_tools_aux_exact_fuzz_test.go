@@ -97,7 +97,7 @@ func auxWebFetchExact(t *testing.T) {
 
 func auxRepairExact(t *testing.T) {
 	call := llm.ToolCallData{Arguments: json.RawMessage(`{"x":1}`)}
-	if got := prepareToolCall(call, nil, []string{"known"}, "missing", ""); got.Call.ID == "" || got.PrevalErr == "" {
+	if got := prepareToolCall(call, nil, []string{"known"}, "missing", "communicate", ""); got.Call.ID == "" || got.PrevalErr == "" {
 		t.Fatalf("unknown repair = %#v", got)
 	}
 	if got := offendingField(errors.New("plain")); got != "" {
@@ -154,9 +154,7 @@ func auxCommunicateExact(t *testing.T) {
 	}}}) {
 		t.Fatal("incomplete communicate requirements accepted")
 	}
-	if communicateSchemaContains([]string{"x"}, "y") {
-		t.Fatal("schema contains absent value")
-	}
+
 	if got := canonicalNodeOutputTextWithMarshal(nil, func(any) ([]byte, error) { return nil, errors.New("marshal") }); got != "{}" {
 		t.Fatalf("unmarshalable canonical output = %q", got)
 	}
@@ -177,8 +175,17 @@ func auxCommunicateExact(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: fixture\ndescription: fixture\n---\nbody\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := h(context.Background(), nil, map[string]any{"skill_name": "fixture"}); err != nil || !strings.Contains(got.(string), "body") {
+	if got, err := h(context.Background(), nil, map[string]any{"skill_name": "fixture"}); err != nil {
 		t.Fatalf("skill load = %#v, %v", got, err)
+	} else {
+		s := got.(string)
+		if !strings.Contains(s, "body") {
+			t.Fatalf("skill load missing body: %q", s)
+		}
+		wantNotif := systemNotificationf("Paths referenced in this skill are relative to the skill directory: %q", root)
+		if !strings.HasPrefix(s, wantNotif) {
+			t.Fatalf("skill load prefix = %q, want %q", s, wantNotif)
+		}
 	}
 }
 
@@ -193,8 +200,8 @@ func auxGoalTaskExact(t *testing.T) {
 	registerTaskTools(reg, newToolDeps(s))
 	h := reg.Get("task_list").Exec
 	for _, args := range []map[string]any{
-		{"action": "append", "tasks": []any{"bad"}},
-		{"action": "update", "updates": []any{"bad"}},
+		{"add": []any{"bad"}},
+		{"update": []any{"bad"}},
 		{"action": "unknown"},
 	} {
 		if _, err := h(context.Background(), nil, args); err == nil {
@@ -206,7 +213,7 @@ func auxGoalTaskExact(t *testing.T) {
 	}
 	_ = formatTaskList([]taskpkg.Task{{ID: 1, Type: taskpkg.TaskTypeImplement, Description: "x", Status: taskpkg.TaskDone, DependsOn: []int{2}, ReasoningEffort: "high", Notes: []string{"n"}}})
 	_ = goalStateView(goal.Snapshot{})
-	if taskListAllDone([]taskpkg.Task{{Status: taskpkg.TaskOpen}}) || !taskListAllDone([]taskpkg.Task{{Status: taskpkg.TaskDone}}) {
+	if taskpkg.Summarize([]taskpkg.Task{{Status: taskpkg.TaskOpen}}).NoActionableTasks() || !taskpkg.Summarize([]taskpkg.Task{{Status: taskpkg.TaskDone}}).NoActionableTasks() {
 		t.Fatal("task completion classifier mismatch")
 	}
 }

@@ -34,27 +34,23 @@
 // (row hover, treeitem focus, open-menu, and the <900px touch fallback that
 // keeps the actions visible beside the occupant - in flow, not stacked -
 // with no hover to reveal them).
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 
-import {
-  Badge,
-  Cadence,
-  type CadenceState,
-  Chevron,
-  IconButton,
-  Menu,
-  type MenuItem,
-  type TreeRowInfo,
-} from "../../widgets";
+import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { Menu, type MenuItem } from "../../widgets/menu";
+import type { TreeRowInfo } from "../../widgets/tree";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
+  activeWorkSummary,
+  type CompletedJobsFoldRailNode,
   displayState,
   type InactiveFoldRailNode,
+  type JobRailNode,
   needsYouDescendantCount,
   type OverflowRailNode,
   type ProjectRailNode,
@@ -62,9 +58,10 @@ import {
   type RailProject,
   type RailSession,
   type SessionRailNode,
-  workingDescendantCount,
 } from "./railNodes";
+import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
+import { humanizeState } from "./sessionState";
 
 export { isTopLevelSession } from "./sessionKind";
 
@@ -118,49 +115,10 @@ export function cadenceStateFor(wireState: string): CadenceState {
       return "failed";
     case "awaiting":
     case "warning":
+    case "restartRequired":
       return "needs-you";
     case "active":
       return "working";
-    case "ended":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
-      return "idle";
-  }
-}
-
-// The humanized wire state a row's second line leads with (§2.3) - the same
-// wire state vocabulary cadenceStateFor reads, worded for a person rather
-// than mapped to a Cadence family.
-//
-// "awaiting" itself splits on askPending: hubapi.StateWord (hubapi/
-// attention.go, Track A §2 ask-tiering) already draws this same line for the
-// TUI and the older web surface - "Question waiting" when the agent is
-// genuinely blocked on an answer, "Your move" when a turn simply ended with
-// nothing further queued - because those are different urgencies wearing the
-// identical amber dot. This rail's own row never read askPending before,
-// so every "awaiting" row rendered as the same generic "waiting on you" -
-// a person scanning the list for the one session that's actually blocked on
-// them had to open every amber row to find out which. Lowercased to match
-// this line's existing casing ("working"/"failed"/"idle"), not the Go
-// vocabulary's sentence case verbatim.
-//
-// "warning" gets its own word for the same reason (kata 59mx): StateWord
-// already gives it a dedicated "Warning", distinct from either awaiting
-// band, so a warning row reading as generic "waiting on you" was this
-// gloss never having read that vocabulary for this state either - the same
-// gap ask_pending closed for "awaiting" above. Sharing Cadence's "needs-you"
-// dot family (cadenceStateFor) is still correct: that comment's own text
-// says only the dot family is shared by design, never the word.
-function humanizeState(wireState: string, askPending: boolean): string {
-  switch (wireState) {
-    case "active":
-      return "working";
-    case "awaiting":
-      return askPending ? "question waiting" : "your move";
-    case "warning":
-      return "warning";
-    case "errored":
-      return "failed";
     case "ended":
       return "ended";
     default: // "idle", "notLoaded", "", and any future/unknown value
@@ -242,13 +200,17 @@ function Signal({ wireState }: { wireState: string }) {
 // on the main line it charged its width to the title at the rail's default
 // 280px. Exported for direct testing of the join, which the rendered line can
 // only assert on as one flat string.
-export function activityGloss(session: RailSession): string {
-  const workingCount = workingDescendantCount(session);
-  const parts = [
-    workingCount === 0
-      ? humanizeState(session.state, session.ask_pending === true)
-      : `${workingCount} subagent${workingCount === 1 ? "" : "s"} working`,
-  ];
+export function activityGloss(session: RailSession, activity = activeWorkSummary(session)): string {
+  const workingCount = activity.workingSubagents;
+  const jobCount = activity.runningJobs;
+  const parts: string[] = [];
+  if (session.state === "restartRequired") parts.push(humanizeState(session.state, session.ask_pending === true));
+  if (workingCount > 0) {
+    parts.push(`${workingCount} subagent${workingCount === 1 ? "" : "s"} working`);
+  } else if (session.state !== "restartRequired" && (jobCount === 0 || session.state === "active")) {
+    parts.push(humanizeState(session.state, session.ask_pending === true));
+  }
+  if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
   return parts.join(" · ");
 }
@@ -262,12 +224,17 @@ export function activityGloss(session: RailSession): string {
 // the project it belongs to is the row it is indented under. Project leads
 // the line (state is what's happening, project is where) the same way
 // activityGloss already leads with state before branch.
-function secondLine(session: RailSession, showsGloss: boolean, showsProject: boolean): string {
+function secondLine(
+  session: RailSession,
+  showsGloss: boolean,
+  showsProject: boolean,
+  activity?: ReturnType<typeof activeWorkSummary>,
+): string {
   const parts: string[] = [];
   // An empty project name has nothing to join, so it must not contribute a
   // leading " · " separator with no text before it (UX fix).
   if (showsProject && session.project !== "") parts.push(session.project);
-  if (showsGloss) parts.push(activityGloss(session));
+  if (showsGloss) parts.push(activityGloss(session, activity));
   return parts.join(" · ");
 }
 
@@ -275,6 +242,7 @@ export interface RailRowActions {
   onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
+  onForceStopSession(session: RailSession): Promise<void>;
   onPinSession(
     session: RailSession,
     target: PinTarget,
@@ -296,6 +264,8 @@ export interface RailRowProps {
   node: RailNode;
   info: TreeRowInfo;
   actions: RailRowActions;
+  resourceError?: string;
+  retry?: () => void;
 }
 
 // The row's trailing chevron: a toggle rendered INLINE, right after the
@@ -476,13 +446,21 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       title={session.title}
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
-      canShutdown={session.live}
+      canShutdown={session.live && session.state !== "restartRequired"}
       treeNode={session}
       panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
       actions={{
         onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
         onRename: (name) => actions.onRenameSession(session, name),
         onShutdown: () => actions.onShutdownSession(session),
+        onForceStop:
+          ref.startsWith("local:") &&
+          session.host_id === "local" &&
+          session.kind === "session" &&
+          session.state !== "notLoaded" &&
+          session.state !== "closed"
+            ? () => actions.onForceStopSession(session)
+            : undefined,
         onPin: (target, section) => actions.onPinSession(session, target, section),
         onUnpin: () => actions.onUnpinRequest(session),
         onToggleArchive: () => actions.onToggleArchiveSession(session),
@@ -508,8 +486,16 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // gloss, and with it its second line - which makes signal rows physically
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
-  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(presented));
-  const hasWorkingDescendants = workingDescendantCount(session) > 0;
+  const activity = activeWorkSummary(session);
+  const hasWorkingDescendants = activity.workingSubagents > 0;
+  const hasRunningJobs = activity.runningJobs > 0;
+  const hasActiveWork = session.state === "active" || hasWorkingDescendants || hasRunningJobs;
+  // Descendant/job activity is a working signal for the owning session. A
+  // failed session still wins over that rollup so an error cannot disappear
+  // behind a green child.
+  let effectiveState = presented;
+  if (effectiveState !== "errored" && effectiveState !== "restartRequired" && hasActiveWork) effectiveState = "active";
+  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
   // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
   // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/
   // Archived session is always nested under its own ProjectRow, never a depth-0
@@ -519,14 +505,14 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // above, made for exactly the fact that rule can't otherwise carry.
   const showsProject = info.depth === 0;
   const notStarted = saysNotStarted(session, showsGloss);
-  const showsActivity = showsGloss || hasWorkingDescendants;
-  const gloss = secondLine(session, showsActivity, showsProject);
+  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs;
+  const gloss = secondLine(session, showsActivity, showsProject, activity);
   const showsSecondLine = showsActivity || showsProject;
   // Only a genuine signal row (showsGloss) carries a state to tint - the
   // depth-0-only "just the project name" line (showsProject with no signal)
   // has no state family to color, so it stays the plain --ink-low default.
   const activityClass = showsGloss
-    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(presented)] ?? ""}`.trim()
+    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(effectiveState)] ?? ""}`.trim()
     : CLASS.activity;
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
@@ -550,7 +536,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             unreachable. The title's tooltip also carries what the visible row
             drops (rowTooltip). */}
         <span className={CLASS.titleLine}>
-          <Signal wireState={presented} />
+          <Signal wireState={effectiveState} />
           <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
             {session.title}
           </span>
@@ -614,7 +600,19 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   );
 }
 
-function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: TreeRowInfo; actions: RailRowActions }) {
+function ProjectRow({
+  node,
+  info,
+  actions,
+  resourceError,
+  retry,
+}: {
+  node: ProjectRailNode;
+  info: TreeRowInfo;
+  actions: RailRowActions;
+  resourceError?: string;
+  retry?: () => void;
+}) {
   const { project } = node;
   const attentionCount = project.rollup_attn ?? 0;
   return (
@@ -634,12 +632,12 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
           <span className={CLASS.label} onClick={info.activate}>
             {node.displayName ?? project.name}
           </span>
-          {node.resourceError && node.retry && (
+          {resourceError && retry && (
             <button
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
-                node.retry?.();
+                retry();
               }}
             >
               Retry
@@ -684,17 +682,15 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
 // hides carry their own. Its label sits at the same x as every other row at
 // its nesting depth - the trailing chevron after the label is its toggle,
 // the same inline affordance session and project rows use.
-function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
-  const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
+function DisclosureFoldRow({ label, testId, info }: { label: string; testId: string; info: TreeRowInfo }) {
   return (
-    <span className={CLASS.railRow} data-testid="rail-row-inactive-fold">
+    <span className={CLASS.railRow} data-testid={testId}>
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          {/* Same mouse-only shortcut for the toggle the chevron already offers,
-              and the same a11y reasoning as SessionRow's own label: this text is
-              the treeitem's accessible name, so it can't be aria-hidden. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+          {/* The label is the accessible activation target; the chevron is a
+              decorative shortcut for the same treeitem toggle. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling */}
           <span className={CLASS.label} onClick={info.toggle}>
             {label}
           </span>
@@ -702,6 +698,59 @@ function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: Tre
         </span>
       </span>
     </span>
+  );
+}
+
+function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
+  const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
+  return <DisclosureFoldRow label={label} testId="rail-row-inactive-fold" info={info} />;
+}
+
+function jobLabel(job: JobRailNode["job"]): string {
+  return job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
+}
+
+// jobTitle is the job row's hover tooltip: the full command that actually ran
+// (full_command, untruncated, when the label's command was cut by the wire's
+// label bound) plus the tool call's `intent` — why the model said it is
+// running the command. Status rides along the same way the old single-line
+// title carried it, so a hover still answers "what is this doing" end to end.
+function jobTitle(job: JobRailNode["job"], status: string): string {
+  const command =
+    job.full_command?.trim() || job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
+  const intent = job.intent?.trim();
+  if (intent) {
+    return `${command} · ${intent} · ${status}`;
+  }
+  return `${command} · ${status}`;
+}
+
+function JobRow({ node }: { node: JobRailNode }) {
+  const active = node.active;
+  const status = node.job.status.trim() || (active ? "running" : "completed");
+  return (
+    <span className={CLASS.railRow} data-testid="rail-row-job" data-job-id={node.job.job_id}>
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          <Signal wireState={active ? "active" : status === "failed" ? "errored" : "ended"} />
+          <span className={CLASS.label} title={jobTitle(node.job, status)}>
+            {jobLabel(node.job)}
+          </span>
+        </span>
+        <span
+          data-testid="rail-row-job-status"
+          className={active ? `${CLASS.activity} ${CLASS.activityAlive}` : CLASS.activity}
+        >
+          {status}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode; info: TreeRowInfo }) {
+  return (
+    <DisclosureFoldRow label={`Completed jobs (${node.count})`} testId="rail-row-completed-jobs-fold" info={info} />
   );
 }
 
@@ -737,17 +786,61 @@ function LoadingRow(): ReactNode {
   );
 }
 
-export function RailRow({ node, info, actions }: RailRowProps) {
+function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean {
+  if (
+    previous.info !== next.info ||
+    previous.actions !== next.actions ||
+    previous.resourceError !== next.resourceError ||
+    previous.retry !== next.retry
+  )
+    return false;
+  if (previous.node === next.node) return true;
+  if (previous.node.kind !== "project" || next.node.kind !== "project") return false;
+  const previousProject = previous.node.project;
+  const nextProject = next.node.project;
+  // Keep this list in lockstep with ProjectRow, projectMenuItems, and
+  // spawnInProject. Descendant/page fields are Tree recursion inputs, not row
+  // presentation or action inputs, so they deliberately do not cross this
+  // memo boundary.
+  return (
+    previous.node.id === next.node.id &&
+    previous.node.displayName === next.node.displayName &&
+    previous.node.resourceError === next.node.resourceError &&
+    previous.node.retry === next.node.retry &&
+    previousProject.key === nextProject.key &&
+    previousProject.name === nextProject.name &&
+    previousProject.working_dir === nextProject.working_dir &&
+    previousProject.rollup_state === nextProject.rollup_state &&
+    previousProject.rollup_attn === nextProject.rollup_attn &&
+    previousProject.favorite === nextProject.favorite &&
+    previousProject.is_archived === nextProject.is_archived
+  );
+}
+
+export const RailRow = memo(function RailRow({ node, info, actions, resourceError, retry }: RailRowProps) {
+  useRailRenderObserver()?.(node.id);
   switch (node.kind) {
     case "loading":
       return LoadingRow();
+    case "job":
+      return <JobRow node={node} />;
     case "inactiveFold":
       return <InactiveFoldRow node={node} info={info} />;
+    case "completedJobsFold":
+      return <CompletedJobsFoldRow node={node} info={info} />;
     case "overflow":
       return <OverflowRow node={node} info={info} />;
     case "project":
-      return <ProjectRow node={node} info={info} actions={actions} />;
+      return (
+        <ProjectRow
+          node={node}
+          info={info}
+          actions={actions}
+          resourceError={resourceError ?? node.resourceError}
+          retry={retry ?? node.retry}
+        />
+      );
     case "session":
       return <SessionRow node={node} info={info} actions={actions} />;
   }
-}
+}, railRowPropsEqual);

@@ -147,6 +147,22 @@ type TurnFailureCause struct {
 	Status   int    `json:"status,omitempty"`
 }
 
+// ModelSwitchInfo records the resolved provider instances and model IDs on
+// either side of a successful model switch. These are configuration identities,
+// not model aliases reported by a provider response.
+type ModelSwitchInfo struct {
+	OldProvider string `json:"old_provider"`
+	OldModel    string `json:"old_model"`
+	NewProvider string `json:"new_provider"`
+	NewModel    string `json:"new_model"`
+}
+
+// GoalContinuationInfo keeps the human-facing notice separate from the full
+// continuation input in Message, which remains available to resumed models.
+type GoalContinuationInfo struct {
+	Text string `json:"text"`
+}
+
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
@@ -165,23 +181,31 @@ type Turn struct {
 	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
 	// so a reloaded transcript labels a steer the same way the live path did.
 	SteeringKind string `json:"steering_kind,omitempty"`
+	// GoalContinuation marks goal-engine steering that opens a fresh logical
+	// turn and displays a compact notice rather than its model instructions.
+	GoalContinuation *GoalContinuationInfo `json:"goal_continuation,omitempty"`
 	// AttentionID identifies steering that requires durable terminal cleanup.
 	// It is empty for ordinary steering and all non-steering turns.
 	AttentionID string `json:"attention_id,omitempty"`
 	// AttentionResolution is set only on TurnAttentionResolution turns.
 	AttentionResolution     *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
 	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
-	// ClientMutationID and StableTurnID identify retry-safe client-authored
-	// user and steering turns across live events, transcript recovery, and
-	// mutation replay.
+	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
+	// preserves the logical turn identity across live events and transcript
+	// recovery for both client input and daemon goal continuations.
 	ClientMutationID string `json:"client_mutation_id,omitempty"`
 	StableTurnID     string `json:"stable_turn_id,omitempty"`
+	// OwningTurnID identifies the logical turn that owns an ordinary steering
+	// entry. It differs from StableTurnID, which identifies the client mutation.
+	OwningTurnID string `json:"owning_turn_id,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`
 	// Hook carries the detail of one completed plugin hook. Set only on
 	// TurnHookCompleted turns; nil everywhere else.
 	Hook *HookInfo `json:"hook,omitempty"`
+	// ModelSwitch carries resolved identities on TurnModelSwitch turns.
+	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`
@@ -191,6 +215,7 @@ type Turn struct {
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	AttemptGroupID                  string `json:"attempt_group_id,omitempty"`
 	ResponseEndpointFamily          string `json:"response_endpoint_family,omitempty"`
+	ResponseProtocol                string `json:"response_protocol,omitempty"`
 	ResponseEndpoint                string `json:"response_endpoint,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`

@@ -87,6 +87,48 @@ func TestSetModel_AppendsMarkerTurnOnSuccess(t *testing.T) {
 	}
 }
 
+// TestSetModel_PersistsModelSwitchIdentity exercises the durable semantic record,
+// including two transitions whose intermediate model is absent from meta.json.
+func TestSetModel_PersistsModelSwitchIdentity(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "anthropic"}),
+		withConfig(SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true,
+			ResolveProfile: testResolver, testOnly: testConfig{skipGitSnapshot: true}}),
+	)
+	for _, model := range []string{"openai/gpt-5.2", "anthropic/claude-opus-4-6"} {
+		if err := sess.SetModel(model); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := readTranscriptFull(sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []schema.ModelSwitchInfo
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind != schema.TurnModelSwitch {
+			continue
+		}
+		if entry.Turn.ModelSwitch == nil {
+			t.Fatal("persisted model switch has no structured identity")
+		}
+		got = append(got, *entry.Turn.ModelSwitch)
+	}
+	want := []schema.ModelSwitchInfo{
+		{OldProvider: "openai", OldModel: "gpt-5.4", NewProvider: "openai", NewModel: "gpt-5.2"},
+		{OldProvider: "openai", OldModel: "gpt-5.2", NewProvider: "anthropic", NewModel: "claude-opus-4-6"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("persisted transitions = %+v, want %+v", got, want)
+	}
+	if marker := lastMarkerTurn(t, sess); marker.ModelSwitch == nil || *marker.ModelSwitch != want[1] {
+		t.Fatalf("live history transition = %+v, want %+v", marker.ModelSwitch, want[1])
+	}
+}
+
 // TestSetModel_FailedSwitchAppendsNoMarker verifies a rejected switch never
 // appends a marker turn.
 func TestSetModel_FailedSwitchAppendsNoMarker(t *testing.T) {
@@ -202,10 +244,16 @@ func TestSetModel_MarkerWarnsOnDroppedFallbacks(t *testing.T) {
 // knowledge cutoff, not the launch model's.
 func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
 	t.Parallel()
+	launch := NewOpenAIProfile("gpt-5.4")
+	switched := newAnthropicProfile("claude-opus-4-6")
+	launchCutoff, switchedCutoff := launch.KnowledgeCutoff(), switched.KnowledgeCutoff()
+	if launchCutoff == "" || switchedCutoff == "" || launchCutoff == switchedCutoff {
+		t.Fatalf("fixture models must carry two different cutoffs: %q and %q", launchCutoff, switchedCutoff)
+	}
 	sess := newSession(t,
-		withProfile(NewOpenAIProfile("gpt-5.4")), // knowledge cutoff 2025-06-01
+		withProfile(launch),
 		withAdapter(&fakeAdapter{name: "openai"}),
-		withAdapter(&fakeAdapter{name: "anthropic"}), // knowledge cutoff 2025-04-01
+		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withConfig(SessionConfig{
 			NoProjectPrompts: true,
 			ResolveProfile:   testResolver,
@@ -213,24 +261,24 @@ func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
 		}),
 	)
 
-	if got := sess.envInfo.KnowledgeCutoff; got != "2025-06-01" {
-		t.Fatalf("launch KnowledgeCutoff = %q, want 2025-06-01", got)
+	if got := sess.envInfo.KnowledgeCutoff; got != launchCutoff {
+		t.Fatalf("launch KnowledgeCutoff = %q, want %q", got, launchCutoff)
 	}
-	if !strings.Contains(sess.cachedSystemPrompt, "2025-06-01") {
-		t.Fatalf("launch cachedSystemPrompt does not mention 2025-06-01:\n%s", sess.cachedSystemPrompt)
+	if !strings.Contains(sess.cachedSystemPrompt, launchCutoff) {
+		t.Fatalf("launch cachedSystemPrompt does not mention %s:\n%s", launchCutoff, sess.cachedSystemPrompt)
 	}
 
 	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
-	if got := sess.envInfo.KnowledgeCutoff; got != "2025-04-01" {
-		t.Fatalf("post-switch KnowledgeCutoff = %q, want 2025-04-01", got)
+	if got := sess.envInfo.KnowledgeCutoff; got != switchedCutoff {
+		t.Fatalf("post-switch KnowledgeCutoff = %q, want %q", got, switchedCutoff)
 	}
-	if !strings.Contains(sess.cachedSystemPrompt, "2025-04-01") {
-		t.Fatalf("post-switch cachedSystemPrompt does not mention the new cutoff 2025-04-01:\n%s", sess.cachedSystemPrompt)
+	if !strings.Contains(sess.cachedSystemPrompt, switchedCutoff) {
+		t.Fatalf("post-switch cachedSystemPrompt does not mention the new cutoff %s:\n%s", switchedCutoff, sess.cachedSystemPrompt)
 	}
-	if strings.Contains(sess.cachedSystemPrompt, "2025-06-01") {
-		t.Fatalf("post-switch cachedSystemPrompt still mentions the launch model's cutoff 2025-06-01:\n%s", sess.cachedSystemPrompt)
+	if strings.Contains(sess.cachedSystemPrompt, launchCutoff) {
+		t.Fatalf("post-switch cachedSystemPrompt still mentions the launch model's cutoff %s:\n%s", launchCutoff, sess.cachedSystemPrompt)
 	}
 }

@@ -12,10 +12,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -75,7 +77,7 @@ func messagesText(messages []llm.Message) string {
 }
 
 func scriptedDelegateCall(id, task string) llm.Response {
-	args, _ := json.Marshal(map[string]any{"task": task})
+	args, _ := json.Marshal(map[string]any{"prompt": task})
 	return scriptedToolCalls(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 
@@ -137,16 +139,17 @@ func (e *shellExecutorEnvironment) StreamCommand(ctx context.Context, command, w
 // running makes the session yield so the completion is delivered as a
 // notification turn (session_lifecycle.go post-tool seam), which would fold the
 // notification into the tool-result request and race these scripted steps
-// against a fast local process. waitForCompletion, when supplied, is the
-// executor's completion event, not a timing assumption about when finalization
-// will happen.
-func releaseOnDrainStart(t *testing.T, release func(), waitForCompletion func()) {
+// against a fast local process. waitForCompletion, when supplied, blocks until
+// the job manager has finalized the shell (its terminal record is durable and
+// it has left the running map), not merely until the executor reported
+// completion, so the drain never starts mid-finalization.
+func releaseOnDrainStart(t *testing.T, release func(), waitForCompletion func(*agent.Session)) {
 	t.Helper()
 	oldDrainJobTree := runDrainJobTree
 	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
 		release()
 		if waitForCompletion != nil {
-			waitForCompletion()
+			waitForCompletion(sess)
 		}
 		return oldDrainJobTree(sess, ctx)
 	}
@@ -163,7 +166,71 @@ func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
 		return oldNewSession(client, profile, &shellExecutorEnvironment{ExecutionEnvironment: env, executor: executor}, cfg)
 	}
 	t.Cleanup(func() { runNewSession = oldNewSession })
-	releaseOnDrainStart(t, executor.releaseShell, func() { <-executor.waitReturned })
+	releaseOnDrainStart(t, executor.releaseShell, func(sess *agent.Session) {
+		<-executor.waitReturned
+		awaitDurableJobCompletion(t, sess)
+	})
+}
+
+// awaitDurableJobCompletion waits until every managed job the session started
+// has committed a terminal record AND been released by the job manager. That is
+// the state the drain has to start from, and the executor's own completion event
+// does not establish it: runShell calls SignalName from the wait goroutine
+// BEFORE it hands the result to finalizeShellWhenDone (agent/job_shell.go), so
+// waitReturned closes while the terminal record is still uncommitted and no
+// owner notification exists yet.
+//
+// A drain that starts inside that window sees a job that is merely running. It
+// parks, arms the undisposed-background-job ladder on the pass that found it,
+// and on the next recheck tick announces to the model instead of delivering the
+// completion — a different turn from the one these scripts answer.
+//
+// The terminal record alone would keep the drain from announcing — a job with
+// its terminal record written is no longer a background candidate even while
+// it remains in the running map — but the barrier still waits for the running
+// entry to go, so the drain starts with the completion on its way to the queue
+// rather than mid-finalization. ManagedJobsFinalizedForTest is that half: the
+// running entry is deleted only after the durable owner notification has been
+// appended.
+func awaitDurableJobCompletion(t *testing.T, sess *agent.Session) {
+	t.Helper()
+	// TRIPWIRE: finalization is one goroutine hop and one store append past a
+	// process that has already exited, so this bound only fires when the
+	// terminal record is never going to be committed at all.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		done, err := managedJobsTerminal(sess)
+		if err != nil {
+			t.Fatalf("read job activity tree: %v", err)
+		}
+		if done && sess.ManagedJobsFinalizedForTest() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("managed job never finished finalizing before the drain started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// managedJobsTerminal reports whether the session has at least one managed job
+// and every one of them is terminal.
+func managedJobsTerminal(sess *agent.Session) (bool, error) {
+	tree, err := sess.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		return false, err
+	}
+	seen := false
+	for _, entry := range tree.Root.Entries {
+		if entry.Job == nil {
+			continue
+		}
+		seen = true
+		if !entry.Job.Terminal {
+			return false, nil
+		}
+	}
+	return seen, nil
 }
 
 // TestRunDrainsDelegatedJobTreeBeforeExit is the PRI-2441 B1 regression: a

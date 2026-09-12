@@ -301,6 +301,17 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		appwire.MethodThreadRead:            true,
 		appwire.MethodThreadTurnsList:       true,
 		appwire.MethodEvenerSubagentPreview: true,
+		// evener/update/check does synchronous GitHub I/O (up to two
+		// 10s timeouts); inline dispatch would block unrelated RPCs
+		// on the connection. Read-only, frontend discards stale results.
+		appwire.MethodEvenerUpdateCheck: true,
+		// evener/update/apply does a multi-minute download, verify, and
+		// install under the overall upgrade deadline; inline dispatch
+		// would hold the connection's serial worker that whole time.
+		// Safe out of order: hubUpdateMu plus the cross-process install
+		// lock fail a concurrent apply fast, and the restart waits on
+		// its own response flush rather than connection order.
+		appwire.MethodEvenerUpdateApply: true,
 	}
 	for _, spec := range appwire.Methods {
 		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {
@@ -510,6 +521,165 @@ func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 	}
 	if len(seen) != 4 {
 		t.Fatalf("distinct notifications received=%d of 4 (markers %v): records lost", len(seen), seenMarkers(seen))
+	}
+}
+
+func TestServeWebSocketReadAdmissionCanceledByFollowingUnsubscribe(t *testing.T) {
+	const threadID = "th_admission"
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local", SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+		if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
+			return threadID, true
+		}
+		return "", false
+	}})
+	notifier := NewNotifier(16)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unsubStarted := make(chan struct{})
+	var once sync.Once
+	server.beforeSubscriptionRegistration = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if !Subscribe(ctx, "th_unrelated") {
+			return appwire.ThreadReadResponse{}, nil
+		}
+		if !CaptureSubscription(ctx, false, func() string { return params.ThreadID }, notifier.CurrentSequence, func() bool { return true }) {
+			return appwire.ThreadReadResponse{}, nil
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: params.ThreadID}}, nil
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
+		close(unsubStarted)
+		Unsubscribe(ctx, params.ThreadID)
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: threadID, Subscribe: true})
+		readDone <- err
+	}()
+	waitFor(t, "read admission barrier", entered)
+	unsubDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: threadID})
+		unsubDone <- err
+	}()
+	if err := waitFor(t, "following unsubscribe response", unsubDone); err != nil {
+		t.Fatalf("unsubscribe failed: %v", err)
+	}
+	close(release)
+	if err := waitFor(t, "older read response", readDone); err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	server.subs.mu.RLock()
+	if len(server.subs.byThread[threadID]) != 0 {
+		server.subs.mu.RUnlock()
+		t.Fatal("canceled older read registered a subscription")
+	}
+	if len(server.subs.byThread["th_unrelated"]) != 1 {
+		server.subs.mu.RUnlock()
+		t.Fatal("unrelated subscription was removed")
+	}
+	server.subs.mu.RUnlock()
+
+	server.beforeSubscriptionRegistration = nil
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{ThreadID: threadID, Subscribe: true}); err != nil {
+		t.Fatalf("later read failed: %v", err)
+	}
+	server.subs.mu.RLock()
+	defer server.subs.mu.RUnlock()
+	if len(server.subs.byThread[threadID]) != 1 {
+		t.Fatalf("later read subscription count = %d, want 1", len(server.subs.byThread[threadID]))
+	}
+}
+
+func TestServeWebSocketUnsubscribeWaitsThroughSubscriptionRegistration(t *testing.T) {
+	const threadID = "th_registration_barrier"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unsubStarted := make(chan struct{})
+	captureResolved := make(chan error, 1)
+	server := NewServer(ServerConfig{
+		ServerName: "test-server", SourceID: "local",
+		SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+			if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
+				return threadID, true
+			}
+			return "", false
+		},
+	})
+	server.beforeSubscriptionBeginBuffered = func() {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+		}
+		<-release
+	}
+	HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return params.ThreadID },
+			func() uint64 { return 0 },
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() { captureResolved <- nil },
+				Abort:  func() { captureResolved <- errors.New("the read capture was withdrawn") },
+			},
+		) {
+			return appwire.ThreadReadResponse{}, nil
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: params.ThreadID}}, nil
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
+		close(unsubStarted)
+		Unsubscribe(ctx, params.ThreadID)
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: threadID, Subscribe: true})
+		readDone <- err
+	}()
+	waitFor(t, "claim/register barrier", entered)
+	unsubDone := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{ThreadID: threadID})
+		unsubDone <- err
+	}()
+	waitFor(t, "unsubscribe handler", unsubStarted)
+	select {
+	case err := <-unsubDone:
+		t.Fatalf("unsubscribe completed before registration release: %v", err)
+	default:
+	}
+	close(release)
+	if err := waitFor(t, "unsubscribe after registration", unsubDone); err != nil {
+		t.Fatalf("unsubscribe failed: %v", err)
+	}
+	if err := waitFor(t, "read after registration", readDone); err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	// An unsubscribe that lands while the read's generation is still buffering
+	// marks that entry withdrawn and leaves the capture to drop it (see
+	// subscription.withdrawn). The capture resolves after its response reaches
+	// the send queue, so the client's read response is not an ordering signal
+	// for the registry; the capture handoff is.
+	if err := waitFor(t, "read capture resolution", captureResolved); err != nil {
+		t.Fatalf("read capture failed: %v", err)
+	}
+	server.subs.mu.RLock()
+	defer server.subs.mu.RUnlock()
+	if len(server.subs.byThread[threadID]) != 0 {
+		t.Fatal("unsubscribe left a stale registered subscription")
 	}
 }
 

@@ -40,6 +40,10 @@ export function isHubLaunchError(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === "hubLaunch";
 }
 
+export function isStaleCursorError(error: unknown): boolean {
+  return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
+}
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/
@@ -111,7 +115,7 @@ export class ClientNotReadyError extends Error {
 // recognized client-unreachable rejection gets this, never the error's own
 // text - an arbitrary JS exception's message can name a class, a method, a
 // file path, none of which means anything to the person looking at it.
-const GENERIC_ERROR_MESSAGE = "Something went wrong.";
+export const GENERIC_ERROR_MESSAGE = "Something went wrong.";
 
 // HUB_UNREACHABLE_MESSAGE covers the family of rejections AppwireClient (and
 // its testing/fakeClient.ts stand-in) throws locally when a request is
@@ -119,7 +123,7 @@ const GENERIC_ERROR_MESSAGE = "Something went wrong.";
 // connection dropped, or a call landed before the handshake finished. None
 // of that is meaningful to a person - "the hub" is the concept they
 // understand, not "the client's internal state".
-const HUB_UNREACHABLE_MESSAGE = "Can't reach the hub right now.";
+export const HUB_UNREACHABLE_MESSAGE = "Can't reach the hub right now.";
 
 // CLIENT_UNREACHABLE_PATTERN matches the shape both AppwireClient
 // (protocol/client.ts's request()/close()) and FakeClient (protocol/testing/
@@ -195,8 +199,8 @@ export function errorKind(error: unknown): ErrorKind {
 }
 
 // Within the hubLaunch family (appwire.HubLaunchError, stamped from
-// cmd/evener-hub/spawn.go, app_threadlifecycle.go, app_models.go, AND
-// internal/codexlaunch), almost every message carries its own diagnosis —
+// cmd/evener-hub/spawn.go, app_threadlifecycle.go, and app_models.go), almost
+// every message carries its own diagnosis —
 // config failures ("provider credentials missing for ..."), resume advice
 // (resumeFailureError's kill-the-old-daemon instructions), and crucially
 // the daemon's own redacted stderr ("evener launch-check failed: <stderr>",

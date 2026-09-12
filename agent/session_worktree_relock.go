@@ -108,12 +108,11 @@ func (s *Session) reLockOwnLane(local *execenv.LocalExecutionEnvironment, lane i
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return reLockSkipped // lane directory gone (disposed/pruned): nothing to re-lock
 	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
 		return reLockSkipped // no longer part of a git repository
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer done()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 
 	locked, reason, lsErr := lockStateOf(run, lanePath)

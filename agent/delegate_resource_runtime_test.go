@@ -1251,10 +1251,12 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	if appended, err := sub.sess.appendDelegateNotificationDurably("attention-before-stop", "stop must discard this pending attention"); err != nil || !appended {
 		t.Fatalf("append pending stop attention: appended=%t err=%v", appended, err)
 	}
-	sub.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
-		close(finalStatePublished)
-		<-releaseFinalization
-	}
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(*subagent) {
+			close(finalStatePublished)
+			<-releaseFinalization
+		}
+	})
 	waitCtx := newDelegateStopWaitBarrierContext()
 	result := make(chan stableJobStopInvocation, 1)
 	go func() {
@@ -1399,10 +1401,12 @@ func TestDelegateResourceRuntime_StableStopRetryPreservesAdmissionClassification
 		_ = controller.AbortShellWork(work)
 		releaseFinalizationNow()
 	})
-	sub.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
-		close(finalStatePublished)
-		<-releaseFinalization
-	}
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(*subagent) {
+			close(finalStatePublished)
+			<-releaseFinalization
+		}
+	})
 
 	first, err := jobStopTool(context.Background(), harness.root, map[string]any{
 		"target": harness.fixture.delegateID,
@@ -1608,6 +1612,27 @@ func currentDelegateStop(t *testing.T, controller *delegateTreeController) *dele
 		t.Fatal("stable stop was not durably admitted")
 	}
 	return controller.stop
+}
+
+// awaitDelegateStopAdmission blocks until the controller durably admits a
+// subtree stop and returns that stop. A test that goes on to trigger
+// settlement (FinishGeneration, releasing the provider) MUST hold the stop it
+// captured here rather than reading controller.stop back afterwards: the
+// reconcile driver clears controller.stop the instant the stop settles, so the
+// later read races the completion it is waiting for.
+func awaitDelegateStopAdmission(t *testing.T, controller *delegateTreeController) *delegateStopState {
+	t.Helper()
+	var stop *delegateStopState
+	// TRIPWIRE: admission is a durable fsync + local drive, measured at
+	// 5-17ms across 1200 samples with the whole module under -race on a
+	// saturated box; 5s only absorbs pathological CI stalls.
+	waitForCondition(t, 5*time.Second, "stable stop admission", func() bool {
+		controller.mu.Lock()
+		defer controller.mu.Unlock()
+		stop = controller.stop
+		return stop != nil
+	})
+	return stop
 }
 
 func stableJobStopState(t *testing.T, invocation stableJobStopInvocation) jobStopResult {

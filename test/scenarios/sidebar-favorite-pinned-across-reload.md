@@ -20,7 +20,7 @@ A session row is addressed by `[data-session-ref="local:<SID>"]`. Section headin
    - `local:<SID_A>` and `local:<SID_B>`: ordinary ended or idle top-level sessions that can be pinned.
    - `local:<SID_C>`: another top-level session used to reopen the picker after a section becomes hidden.
    - one visible project row whose favorite star/menu behavior can still be toggled.
-4. Browser-auth to the test hub with a fresh top-level navigation to `/auth?token=$TOKEN&next=/` using that dedicated profile.
+4. Browser-auth to the test hub with a fresh top-level navigation to `/auth/$TOKEN?next=/` using that dedicated profile.
 5. Keep an authenticated AppWire connection open using the direct-driving recipe in `docs/developing-evener/agentic-testing.md`. Match responses by request ID because notifications can arrive between them.
 
 6. Record the expected hub port once for later `eval` checks:
@@ -63,7 +63,7 @@ Every browser `eval` below must return `location.port` and the check must assert
 ### 3. Create **Research**, hard reload, and verify alphabetical top-level headings plus durable assignments
 
 1. Pin `local:<SID_C>` into a new section named **Research** through **Pin this session… → New section…**.
-2. Hard reload with a fresh top-level navigation to `/auth?token=$TOKEN&next=/`.
+2. Hard reload with a fresh top-level navigation to `/auth/$TOKEN?next=/`.
 3. Browser `eval`:
 
 ```javascript
@@ -87,7 +87,7 @@ Every browser `eval` below must return `location.port` and the check must assert
 
 1. In the browser collapse **Research**.
 2. Confirm `aria-expanded="false"` on the **Research** disclosure.
-3. Hard reload again via `/auth?token=$TOKEN&next=/`.
+3. Hard reload again via `/auth/$TOKEN?next=/`.
 4. Browser `eval` returns `port`, the **Research** disclosure's `aria-expanded`, and whether `local:<SID_C>` is visible.
 5. Assert the port matches, **Research** remains collapsed, and `local:<SID_C>` is hidden until re-expanded.
 
@@ -172,7 +172,7 @@ PY
 
 2. Force the hub to capture the direct SQLite fixture by renaming the section to a temporary name through `evener/pin-section/rename`, then renaming it back to **Client renamed**. Await each navigation receipt before continuing. Re-read the AppWire `pin_catalog` and assert that `CLIENT_SECTION_ID` has `count >= 2` even though the new member stays hidden from the navigation rail.
 
-3. Hard reload the browser at `/auth?token=$TOKEN&next=/`, then open the heading overflow menu for **Client renamed** and choose **Delete**.
+3. Hard reload the browser at `/auth/$TOKEN?next=/`, then open the heading overflow menu for **Client renamed** and choose **Delete**.
 4. Assert the confirmation text counts **all durable members**, including the dormant hidden one.
    - Example: if only one visible row is under the section but the dormant seeded assignment makes two durable members, the dialog must say it will unpin `2 sessions`.
 5. Cancel the dialog.
@@ -186,7 +186,7 @@ PY
    - the `evener/pin-section/delete` receipt reports the durable `member_count` and a changed navigation mutation;
    - the refreshed `pin_catalog` no longer lists that section;
    - the affected sessions' `location` resources no longer carry its `pin_section_id`.
-4. Hard reload via `/auth?token=$TOKEN&next=/`.
+4. Hard reload via `/auth/$TOKEN?next=/`.
 5. Browser `eval` must confirm the same port and that the deleted section heading is still absent.
 
 ### 11. Favorite and unfavorite a project; verify project behavior is unchanged

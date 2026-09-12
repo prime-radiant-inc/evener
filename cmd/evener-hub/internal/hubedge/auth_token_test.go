@@ -72,7 +72,7 @@ func checkLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 // separately authorized another hub on the same host. Cookies are not
 // isolated by port (RFC 6265), so a shared cookie name lets the most recent
 // hub's /auth overwrite the earlier hub's cookie — 401ing the earlier hub on
-// its very next reload until the user re-visits its /auth?token= URL. This
+// its very next reload until the user re-visits its /auth/<token> URL. This
 // models the browser's by-name cookie jar to prove reloads survive it.
 func checkAuthGuard_ReloadSurvivesAnotherSameHostHub(t *testing.T) {
 	// The browser stores one cookie per (host, path, name); a later Set-Cookie
@@ -81,7 +81,7 @@ func checkAuthGuard_ReloadSurvivesAnotherSameHostHub(t *testing.T) {
 	jar := map[string]*http.Cookie{}
 	authorize := func(token string) {
 		rec := httptest.NewRecorder()
-		HandleAuth(token)(rec, httptest.NewRequest(http.MethodGet, "/auth?token="+token, nil))
+		HandleAuth(token)(rec, httptest.NewRequest(http.MethodGet, "/auth/"+token, nil))
 		for _, c := range rec.Result().Cookies() {
 			jar[c.Name] = c
 		}
@@ -123,9 +123,11 @@ func checkCookieName_DistinctPerToken(t *testing.T) {
 func checkAuthGuard_AllowsExemptRoutes(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
-	// /auth + health bootstrap, plus the non-sensitive PWA icons (so the OS can
-	// fetch the home-screen icon without credentials at install time).
-	for _, path := range []string{"/auth", "/api/health", "/assets/icon.svg", "/assets/icon-192.png", "/assets/icon-512.png", "/assets/icon-maskable-512.png"} {
+	// /auth/<token> bootstrap (exempt by path prefix, not exact match — the
+	// token itself is irrelevant here since isAuthExempt never inspects it),
+	// plus health and the non-sensitive PWA icons (so the OS can fetch the
+	// home-screen icon without credentials at install time).
+	for _, path := range []string{"/auth/x", "/api/health", "/assets/icon.svg", "/assets/icon-192.png", "/assets/icon-512.png", "/assets/icon-maskable-512.png"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -139,6 +141,45 @@ func checkAuthGuard_AllowsExemptRoutes(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("manifest should require auth (it carries the token), got %d", rec.Code)
+	}
+}
+
+// The path-form bootstrap must work through the full AuthGuard + HandleAuth
+// stack: the guard lets /auth/<token> through un-checked (the token in the
+// path IS the credential, verified by HandleAuth itself), and HandleAuth
+// then authenticates it and sets the cookie. This is the fixed QR-pairing
+// path: a path segment survives the iOS system scanner's query-string
+// truncation before handoff to Safari, where the old ?token= form did not.
+func checkAuthGuard_PathFormAuthenticatesEndToEnd(t *testing.T) {
+	h := AuthGuard("secret")(HandleAuth("secret"))
+	req := httptest.NewRequest(http.MethodGet, "/auth/secret", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != cookieName("secret") || cookies[0].Value != "secret" {
+		t.Errorf("path-form auth should set the auth cookie, got %+v", cookies)
+	}
+}
+
+// The query form is dead: JESSE'S RULING (2026-09-01) replaces it outright,
+// with no backward compatibility. A GET to /auth?token=<valid> must not
+// authenticate — not via HandleAuth (which no longer reads the query at
+// all, see checkHandleAuth_IgnoresQueryToken) and not via AuthGuard's own
+// any-route query-token self-heal (checkAuthGuard_AcceptsQueryTokenOnAnyGET),
+// which excludes /auth specifically so it can't resurrect the old form.
+func checkAuthGuard_RejectsQueryFormOnAuthEndpoint(t *testing.T) {
+	h := AuthGuard("secret")(HandleAuth("secret"))
+	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("code = %d, want 401 (query-form auth must be refused)", rec.Code)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Errorf("refused query-form auth must not set a cookie, got %+v", rec.Result().Cookies())
 	}
 }
 
@@ -203,7 +244,7 @@ func checkAuthGuard_EmptyTokenBypassesAuth(t *testing.T) {
 
 func checkHandleAuth_ValidatesAndSetsCookie(t *testing.T) {
 	h := HandleAuth("secret")
-	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/secret", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	if rec.Code != http.StatusFound {
@@ -229,7 +270,7 @@ func checkHandleAuth_ValidatesAndSetsCookie(t *testing.T) {
 
 func checkHandleAuth_RejectsWrongToken(t *testing.T) {
 	h := HandleAuth("secret")
-	req := httptest.NewRequest(http.MethodGet, "/auth?token=nope", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/nope", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -237,9 +278,22 @@ func checkHandleAuth_RejectsWrongToken(t *testing.T) {
 	}
 }
 
+// The query form is gone: JESSE'S RULING (2026-09-01) replaces it outright,
+// with no backward compatibility. A valid token in ?token= with nothing in
+// the path must not authenticate — HandleAuth reads the path only.
+func checkHandleAuth_IgnoresQueryToken(t *testing.T) {
+	h := HandleAuth("secret")
+	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret", nil)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401 (HandleAuth must not read the query token)", rec.Code)
+	}
+}
+
 func checkHandleAuth_HonorsNextParam(t *testing.T) {
 	h := HandleAuth("secret")
-	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret&next=/settings/launch", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/secret?next=/settings/launch", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	if rec.Code != http.StatusFound {
@@ -252,7 +306,7 @@ func checkHandleAuth_HonorsNextParam(t *testing.T) {
 
 func checkHandleAuth_RejectsExternalNext(t *testing.T) {
 	h := HandleAuth("secret")
-	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret&next=http://evil.example.com/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/secret?next=http://evil.example.com/", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	if loc := rec.Header().Get("Location"); loc != "/" {
@@ -262,15 +316,19 @@ func checkHandleAuth_RejectsExternalNext(t *testing.T) {
 
 func checkAuthURLFor(t *testing.T) {
 	got := AuthURLFor("http://magic-kingdom:9180/", "tok")
-	want := "http://magic-kingdom:9180/auth?token=tok"
+	want := "http://magic-kingdom:9180/auth/tok"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
+// The token is a path segment now, so it's escaped with url.PathEscape (not
+// url.QueryEscape): "&" is unreserved in a path segment and stays literal,
+// while "#" (fragment start) and "%" (the escape character itself) are
+// still escaped.
 func TestAuthURLFor_EncodesSpecialCharacters(t *testing.T) {
 	got := AuthURLFor("http://hub.example.test:9180", "tok&en#frag%ile")
-	want := "http://hub.example.test:9180/auth?token=tok%26en%23frag%25ile"
+	want := "http://hub.example.test:9180/auth/tok&en%23frag%25ile"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -278,7 +336,7 @@ func TestAuthURLFor_EncodesSpecialCharacters(t *testing.T) {
 
 func TestHandleAuth_RedirectIsNoStore(t *testing.T) {
 	h := HandleAuth("secret")
-	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/secret", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 	if rec.Code != http.StatusFound {
@@ -378,6 +436,8 @@ func checkAuthGuard_ReturnsHTMLForBrowser(t *testing.T) {
 // self-authenticate: set the cookie and redirect to the same URL with the
 // token stripped. This is the self-heal for an iOS standalone relaunch that
 // restores a deep URL (e.g. /s/<id>) into a cookie jar that lost the cookie.
+// /auth itself is excluded from this self-heal (checkAuthGuard_RejectsQueryFormOnAuthEndpoint)
+// since its own token now lives in the path.
 func checkAuthGuard_AcceptsQueryTokenOnAnyGET(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())

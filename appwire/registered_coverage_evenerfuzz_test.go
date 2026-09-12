@@ -49,6 +49,7 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"Cost", TestEstimateCost_FormatsToCents},
 		{"CostNil", TestEstimateCost_NilUsageReturnsEmpty},
 		{"CostUnpriced", TestEstimateCost_UnpricedModelReturnsEmpty},
+		{"CostCacheRead", TestEstimateCost_CacheReadPricesAtItsOwnRate},
 		{"FrameRecorder", TestFrameRecorderRoundTrip},
 		{"FrameRecorderJSONL", TestFrameRecorderWritesJSONL},
 		{"IDLess", TestIDLessFrameRoundTrips},
@@ -72,8 +73,6 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"NilRecorder", TestNilFrameRecorderIsNoOp},
 		{"NotificationCatalog", TestNotificationCatalogWellFormed},
 		{"Notification", TestNotificationRoundTrip},
-		{"PageClamped", TestPageTurnsEmptyAndClamped},
-		{"PageBackward", TestPageTurnsWalksBackwardToHead},
 		{"ParseRef", TestParseRefRejectsUnsafeValues},
 		{"PendingRef", TestPendingTargetRefFallsBackToThreadID},
 		{"RecorderRoot", TestRecorderStateRoot},
@@ -95,7 +94,6 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"ThreadItemUnmarshal", TestThreadItemUnmarshalUsesCodexItemTypes},
 		{"ThreadNameCatalog", TestThreadNameSetInCatalog},
 		{"ThreadStatus", TestThreadStatusHelpersUseCodexVocabulary},
-		{"PagingSanity", TestTurnPagingEquivalenceSanity},
 		{"TurnStatus", TestTurnStatusHelpersUseCodexVocabulary},
 		{"UsageCost", TestTurnUsageCostJSONRoundTrip},
 		{"UsageCostOmit", TestTurnUsageCostOmitEmpty},
@@ -103,8 +101,6 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"WSLarge", TestWSTransportReceivesLargeAppWireMessage},
 		{"WSRecorder", TestWSTransportRecordsFrames},
 		{"WSRoundTrip", TestWSTransportRoundTrip},
-		{"WindowLatest", TestWindowTurnsBoundsToLatest},
-		{"WindowUnbounded", TestWindowTurnsUnboundedWhenLimitZeroOrLarger},
 		{"WireErrors", TestWireErrorConstructors},
 		{"WireRegistry", TestWireTypeRegistryCoverage},
 		{"ZeroRecorder", TestZeroValueFrameRecorderIsNoOp},
@@ -126,7 +122,7 @@ func coverFailureBranches(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	runClientKeepalive(ctx, nil, func() error { return nil }, time.Hour, time.Hour)
+	runClientKeepalive(ctx, nil, func() error { return nil }, time.Hour, time.Hour, nil)
 
 	failedTransport := &sendErrTransport{memoryTransport: newMemoryTransport(), err: errors.New("send")}
 	c := NewClient(failedTransport)

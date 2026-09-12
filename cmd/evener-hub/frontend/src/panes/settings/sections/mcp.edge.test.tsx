@@ -54,7 +54,7 @@ test("adding a config file with invalid path shows error without saving", async 
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No MCP config files. Add one below.");
-  await user.click(screen.getByRole("button", { name: "New config file" }));
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.keyboard("/bad/path");
   await user.keyboard("{Enter}");
   const addButtons = screen.getAllByRole("button", { name: "Add" });
@@ -75,7 +75,7 @@ test("adding a config file when setLayer fails returns error to PathListEditor",
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No MCP config files. Add one below.");
-  await user.click(screen.getByRole("button", { name: "New config file" }));
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.keyboard("/etc/mcp.json");
   await user.keyboard("{Enter}");
   const addButtons = screen.getAllByRole("button", { name: "Add" });

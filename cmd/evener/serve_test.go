@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/transcript"
@@ -30,7 +32,7 @@ import (
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -58,11 +60,15 @@ func shutdownServeTestDaemon(ctx context.Context, address, sessionID string) err
 	return client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()})
 }
 
-func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+// A selection that cannot be honoured stops the startup before it seeds
+// marketplaces. Ensuring the config dirs runs first and is not that work: it
+// carries the legacy-data guard, which has to see the config root before
+// anything — plugin resolution included — creates it.
+func TestServePluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 	root := t.TempDir()
 	var order []string
 	deps := defaultServeDeps()
-	deps.resolvePlugins = func(dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+	deps.resolvePlugins = func(_ context.Context, dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
 		order = append(order, "resolve")
 		if !reflect.DeepEqual(dirs, []string{root}) || selected == nil || !reflect.DeepEqual(*selected, []string{"missing-plugin"}) {
 			t.Fatalf("resolver args = dirs %v selected %v", dirs, selected)
@@ -70,14 +76,14 @@ func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
 	}
 	deps.ensureConfigDirs = func() error { order = append(order, "ensure-config"); return nil }
-	deps.seedMarketplaces = func() error { order = append(order, "seed-marketplaces"); return nil }
+	deps.seedMarketplaces = func(context.Context) error { order = append(order, "seed-marketplaces"); return nil }
 
 	err := runServeWithDeps([]string{"--plugin-dir", root, "--enabled-plugins=missing-plugin"}, deps)
 	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
 		t.Fatalf("serve error = %v, want strict selection error", err)
 	}
-	if !reflect.DeepEqual(order, []string{"resolve"}) {
-		t.Fatalf("startup order = %v, want resolver only", order)
+	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
+		t.Fatalf("startup order = %v, want the config-dir guard and then the resolver", order)
 	}
 }
 
@@ -86,8 +92,8 @@ func TestServePassesResolvedPluginDirsToSessionConfig(t *testing.T) {
 	selectedDir := t.TempDir()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.resolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.resolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
 	}
 	var got []string
@@ -124,7 +130,7 @@ func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.
 		t.Fatalf("SaveRegistry(enabled): %v", err)
 	}
 	selected := []string{"alpha"}
-	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(nil, &selected); err != nil {
+	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(context.Background(), nil, &selected); err != nil {
 		t.Fatalf("hub validation ResolveForLaunch: %v", err)
 	}
 	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{
@@ -160,7 +166,7 @@ func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.
 
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 
 	err := runServeWithDeps([]string{
 		"--model", "openai/gpt-test",
@@ -257,35 +263,39 @@ func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T)
 	}
 }
 
+// serveTestClient is a client on a hermetic registry carrying one custom
+// instance, "work", behind openai.
+func serveTestClient(t *testing.T) *llm.Client {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{"work": {Base: "openai", APIKey: "test"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return llm.NewClient(llm.WithRegistry(r))
+}
+
 // TestBuildInitialProfile_ConfigPath verifies that buildInitialProfile resolves
 // a custom instance name (e.g. "work" defined in providers.toml) to a profile
-// whose ID matches the instance name, not the provider type.
+// whose ID matches the instance name, not the provider id behind it.
 func TestBuildInitialProfile_ConfigPath(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	profile, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
+	profile, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
-	if profile.ID() != "work" {
-		t.Fatalf("profile.ID() = %q, want %q", profile.ID(), "work")
+	if profile.ID() != "work" || profile.ProviderID() != "openai" {
+		t.Fatalf("profile = %s/%s, want work/openai", profile.ID(), profile.ProviderID())
 	}
 }
 
 // TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
 // --output-schema returns an error.
 func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	_, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
+	_, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
@@ -297,13 +307,7 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 // TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
 // instance name returns the expected error.
 func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	_, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
+	_, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("expected error for unknown instance name")
 	}
@@ -312,19 +316,10 @@ func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 	}
 }
 
-// TestBuildInitialProfile_MaterializedInstance verifies that buildInitialProfile
-// resolves a type-named instance (e.g. "openai/gpt-5") through the config path,
-// matching the contract that LoadClient materializes a config before callers see it.
-func TestBuildInitialProfile_MaterializedInstance(t *testing.T) {
-	// Simulate a materialized config where the instance name equals the type name,
-	// which is what materializeProvidersConfig produces.
-	cfg := providercfg.Config{
-		Default: "openai",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "openai", Type: "openai"},
-		},
-	}
-	profile, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
+// TestBuildInitialProfile_CuratedInstance verifies that a curated implicit id
+// resolves the same way a configured instance does.
+func TestBuildInitialProfile_CuratedInstance(t *testing.T) {
+	profile, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -448,16 +443,10 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 
 func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
@@ -523,6 +512,54 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 	}
 }
 
+func TestRunServeRecordsAbsoluteStateDirectory(t *testing.T) {
+	for _, fromEnv := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fromEnv), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			stateDir := "relative-state"
+			want, err := filepath.Abs(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runDir := t.TempDir()
+			args := []string{"--model", "openai/test", "--addr", "127.0.0.1:0", "--dir", t.TempDir(), "--run-dir", runDir}
+			if fromEnv {
+				t.Setenv("EVENER_STATE_DIR", stateDir)
+			} else {
+				args = append(args, "--state-dir", stateDir)
+			}
+			deps := defaultServeDeps()
+			deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+				client := llm.NewClient()
+				client.Register(serveLoggingAdapter{})
+				return client, func() error { return nil }, nil
+			}
+			done := make(chan error, 1)
+			go func() { done <- runServeWithDeps(args, deps) }()
+			entry := waitForServeTestRendezvous(t, runDir)
+			if err := shutdownServeTestDaemon(t.Context(), entry.Address, entry.SessionID); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("serve failed to shut down")
+			}
+			if entry.StateDir != want {
+				t.Fatalf("rendezvous stateDir=%q, want %q", entry.StateDir, want)
+			}
+			for _, suffix := range []string{".transcript.jsonl", ".api.jsonl"} {
+				if _, err := os.Stat(filepath.Join(entry.StateDir, "sessions", entry.SessionID+suffix)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	adapter := &shutdownBlockingAdapter{
 		entered:   make(chan struct{}, 1),
@@ -538,16 +575,10 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	t.Cleanup(releaseAdapter)
 
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
@@ -586,6 +617,18 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	}
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
+	closed := make(chan appwire.Notification, 1)
+	go func() {
+		for notification := range client.Notifications() {
+			if notification.Method == appwire.NotifyThreadClosed {
+				closed <- notification
+				return
+			}
+		}
+	}()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
 		ClientMutationID:   "shutdown-in-flight",
 		ExpectedInstanceID: entry.SessionID,
@@ -626,6 +669,18 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runServe did not exit after in-flight input was released")
+	}
+	select {
+	case notification := <-closed:
+		var params appwire.ThreadClosedParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatalf("decode thread/closed params: %v", err)
+		}
+		if params.Ref != ref || params.ThreadID != entry.SessionID {
+			t.Fatalf("thread/closed params = %+v, want ref=%q threadId=%q", params, ref, entry.SessionID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscribed client did not receive thread/closed before serve shutdown")
 	}
 }
 
@@ -693,16 +748,16 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 	called := make(chan struct{}, 1)
 
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{called: called})
-		return client, providercfg.Config{}, false, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
 	})
 
-	client, _, _, closeAPILog, err := newServeLLMClient(stateDir, nil)
+	client, closeAPILog, err := newServeLLMClient(stateDir, nil)
 	if err != nil {
 		t.Fatalf("newServeLLMClient: %v", err)
 	}
@@ -1022,16 +1077,10 @@ func TestEvenerUsageFromLLM_NonZeroCacheReadOnlyStillReturns(t *testing.T) {
 
 func TestRunServe_ResumeNonexistent(t *testing.T) {
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() { serveLoadClient = oldLoadClient })
 
@@ -1093,7 +1142,7 @@ func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
 			restoreCalled := false
 			deps := defaultServeDeps()
 			deps.ensureConfigDirs = func() error { return nil }
-			deps.seedMarketplaces = func() error { return nil }
+			deps.seedMarketplaces = func(context.Context) error { return nil }
 			deps.restoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
 				restoreCalled = true
 				return nil, errors.New("restore reached")
@@ -1118,5 +1167,557 @@ func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
 				t.Fatalf("resume lock conflict mutated session artifacts:\n before=%q\n  after=%q", before, after)
 			}
 		})
+	}
+}
+
+// Resolving plugins can wait on the plugin store lock, so the wait has to be
+// one an interrupt ends. That means the signal-derived context exists before
+// plugin resolution rather than after it, when the daemon starts listening.
+func TestServeResolvesPluginsOnTheSignalContext(t *testing.T) {
+	deps := defaultServeDeps()
+	var stopSignals context.CancelFunc
+	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		next, stop := context.WithCancel(ctx)
+		stopSignals = stop
+		return next, stop
+	}
+	var resolveCtx context.Context
+	deps.resolvePlugins = func(ctx context.Context, _ []string, _ *[]string) (plugins.LaunchPluginResolution, error) {
+		resolveCtx = ctx
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+
+	err := runServeWithDeps([]string{"--enabled-plugins=missing-plugin"}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("serve error = %v, want the selection error that stops this startup", err)
+	}
+	if resolveCtx == nil {
+		t.Fatal("plugin resolution never ran")
+	}
+	if stopSignals == nil {
+		t.Fatal("the interrupt handler was not installed before plugin resolution")
+	}
+	stopSignals()
+	if resolveCtx.Err() == nil {
+		t.Error("plugin resolution ran on a context an interrupt cannot reach")
+	}
+}
+
+// An interrupt that arrives during startup ends the startup. The steps between
+// resolving plugins and binding the listener are the slow ones — seeding
+// marketplaces takes the same store lock a plugin install holds, probing the
+// login shell PATH and provisioning the sandbox run subprocesses — and
+// net.ListenConfig.Listen on a literal address binds happily with a cancelled
+// context, so without an explicit read of the context the daemon finishes
+// startup, binds, shuts down again and exits 0 with nothing said.
+func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
+	tests := []struct {
+		name string
+		// step names the gate the interrupt has to trip, so each arm proves
+		// its own gate rather than being caught by a later one.
+		step string
+		arm  func(t *testing.T, deps *serveDeps, interrupt func())
+	}{
+		{
+			name: "seeding marketplaces",
+			step: "seeding default marketplaces",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				var seedCtx context.Context
+				deps.seedMarketplaces = func(ctx context.Context) error {
+					interrupt()
+					seedCtx = ctx
+					return nil
+				}
+				t.Cleanup(func() {
+					if seedCtx == nil || seedCtx.Err() == nil {
+						t.Errorf("seeding ran on %v, want the context an interrupt cancels", seedCtx)
+					}
+				})
+			},
+		},
+		{
+			name: "probing the login shell PATH",
+			step: "probing the login shell PATH",
+			arm: func(_ *testing.T, deps *serveDeps, interrupt func()) {
+				// The probe takes no context, so an interrupt during it (or
+				// during the profile work just before it) is only noticed by
+				// the gate that follows it.
+				applyCheap := deps.applyCheap
+				deps.applyCheap = func(profile *provider.Profile, cheap string, client *llm.Client) (*provider.Profile, error) {
+					interrupt()
+					return applyCheap(profile, cheap, client)
+				}
+			},
+		},
+		{
+			name: "provisioning the sandbox",
+			step: "provisioning the sandbox",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				provisionServeScratchThatMustBeDisposed(t, deps, interrupt)
+			},
+		},
+		{
+			name: "creating the session",
+			step: "creating the session",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				var sess *agent.Session
+				newSession := deps.newSession
+				deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+					created, err := newSession(client, profile, env, cfg)
+					sess = created
+					interrupt()
+					return created, err
+				}
+				// The session is live by the time this gate reads the context,
+				// so ending the startup has to take it down: a returned-from
+				// startup that leaves a session running leaks its environment
+				// and its child processes.
+				t.Cleanup(func() {
+					if sess == nil {
+						t.Error("the session was never created")
+						return
+					}
+					if state := sess.State(); state != agent.SessionClosed {
+						t.Errorf("session state = %v, want %v after the startup ended", state, agent.SessionClosed)
+					}
+				})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+			deps := defaultServeDeps()
+			var stopSignals context.CancelFunc
+			deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+				next, stop := context.WithCancel(ctx)
+				stopSignals = stop
+				return next, stop
+			}
+			deps.ensureConfigDirs = func() error { return nil }
+			deps.seedMarketplaces = func(context.Context) error { return nil }
+			listened := false
+			deps.listen = func(context.Context, string, string) (net.Listener, error) {
+				listened = true
+				return nil, errors.New("a listener was bound after the interrupt")
+			}
+			tt.arm(t, &deps, func() { stopSignals() })
+
+			err := runServeWithDeps([]string{
+				"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+			}, deps)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("serve error = %v, want the interrupt that ended startup", err)
+			}
+			if want := "interrupted while " + tt.step; !strings.Contains(err.Error(), want) {
+				t.Errorf("serve error = %q, want it to say %q", err, want)
+			}
+			if listened {
+				t.Error("bound a listener for a startup an interrupt had already ended")
+			}
+		})
+	}
+}
+
+// launchScratchThatMustBeDisposed gives env the owned session scratch a
+// sandboxed startup provisions — a write-blocked off policy takes that path
+// without needing a kernel backend this host may not have — and holds the
+// startup to disposing of it. Nothing releases the directory or the flock
+// lease under it until a session owns the environment and its Close does, so
+// every way out before that hand-off owes them.
+func launchScratchThatMustBeDisposed(t *testing.T, env *execenv.LocalExecutionEnvironment) error {
+	t.Helper()
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		return err
+	}
+	scratch := env.SessionScratchDir()
+	// Registered before the assertion so it runs after it: a failing test must
+	// not leave the scratch behind either.
+	t.Cleanup(env.DisposeSandboxScratch)
+	t.Cleanup(func() {
+		if scratch == "" {
+			t.Error("provisioning left no session scratch to dispose")
+			return
+		}
+		if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("session scratch %s survived the abandoned startup: stat err = %v", scratch, err)
+		}
+	})
+	return nil
+}
+
+// provisionServeScratchThatMustBeDisposed is launchScratchThatMustBeDisposed as
+// a startup's sandbox-provisioning step, running then once the scratch is in
+// place.
+func provisionServeScratchThatMustBeDisposed(t *testing.T, deps *serveDeps, then func()) {
+	t.Helper()
+	deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
+		if err := launchScratchThatMustBeDisposed(t, env); err != nil {
+			return err
+		}
+		then()
+		return nil
+	}
+}
+
+// A session that was never built never takes the environment over, so the
+// startup that provisioned its scratch is the one that owes its disposal.
+func TestServeDisposesTheSandboxScratchWhenNoSessionIsCreated(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	provisionServeScratchThatMustBeDisposed(t, &deps, func() {})
+	deps.newSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		return nil, errors.New("no session today")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a startup that has no session")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("serve error = %v, want the session-creation failure", err)
+	}
+}
+
+// A resume provisions the environment's sandbox from the session's PERSISTED
+// mode inside the restore (provisionRestoredSandbox), and the restore can
+// still fail after that — env.Initialize, the transcript, the artifact store —
+// with no session built to own what was provisioned.
+func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Fatalf("restore got a %T, want the local environment serve built", env)
+		}
+		if err := launchScratchThatMustBeDisposed(t, local); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("restore failed after the sandbox was provisioned")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a resume that never restored")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
+	}
+}
+
+// A hub hands every session it spawns the hub's own concrete AGENTS.md path,
+// the way it hands over the plugin root, so a per-launch XDG_CONFIG_HOME
+// override cannot make Settings and the session read different files.
+func TestServeAgentsDocFlagReachesTheSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	wantPath := filepath.Join(t.TempDir(), "AGENTS.md")
+	got := ""
+	deps.newSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		got = cfg.AgentsDocPath
+		return nil, errors.New("no session today")
+	}
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+		"--agents-doc", wantPath,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("serve error = %v, want the session-creation failure", err)
+	}
+	if got != wantPath {
+		t.Fatalf("SessionConfig.AgentsDocPath = %q, want %q", got, wantPath)
+	}
+}
+
+// A resume takes the flag too: the hub passes --agents-doc on every resume it
+// spawns (buildResumeArgs), and the restore has to prefer it over the path
+// frozen in the snapshot, which a pre-feature session never had and a moved
+// hub no longer uses.
+func TestServeAgentsDocFlagReachesTheRestoredSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	wantPath := filepath.Join(t.TempDir(), "AGENTS.md")
+	got := ""
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		got = restoreCfg.AgentsDocPath
+		return nil, errors.New("no session today")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+		"--agents-doc", wantPath,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
+	}
+	if got != wantPath {
+		t.Fatalf("RestoreSessionConfig.AgentsDocPath = %q, want %q", got, wantPath)
+	}
+}
+
+// TestRunServeRetriesBlockedRendezvousRemoval proves the exiting daemon does
+// not leave its rendezvous entry behind after a removal that failed once.
+//
+// Registration.Remove deliberately stays retryable after a failure -- it keeps
+// the entry registered so a later attempt can finish the job -- and shutdown
+// spending exactly one attempt, with the error discarded, made that dead code.
+// What is left behind is a PID artifact that discovery reads as a live daemon,
+// at a PID the OS is free to hand to something else.
+//
+// The blocker is the real refusal: the artifact path replaced by a non-empty
+// directory, which os.Remove will not take. It is cleared from inside the retry
+// pause, so the removal is performed by the retry rather than by a test racing
+// a timer.
+func TestRunServeRetriesBlockedRendezvousRemoval(t *testing.T) {
+	runDir := t.TempDir()
+	artifact := filepath.Join(runDir, strconv.Itoa(os.Getpid())+".json")
+	blocker := filepath.Join(artifact, "blocker")
+
+	deps := defaultServeDeps()
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{})
+		return client, func() error { return nil }, nil
+	}
+	pauses := 0
+	deps.rendezvousRetryPause = func() <-chan time.Time {
+		pauses++
+		if pauses == 1 {
+			if err := os.Remove(blocker); err != nil {
+				t.Errorf("clear rendezvous blocker: %v", err)
+			}
+		}
+		elapsed := make(chan time.Time, 1)
+		elapsed <- time.Now()
+		return elapsed
+	}
+
+	args := []string{
+		"--model", "openai/test",
+		"--addr", "127.0.0.1:0",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--run-dir", runDir,
+	}
+	done := make(chan error, 1)
+	go func() { done <- runServeWithDeps(args, deps) }()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	if err := os.Remove(artifact); err != nil {
+		t.Fatalf("take the rendezvous artifact: %v", err)
+	}
+	if err := os.Mkdir(artifact, 0o700); err != nil {
+		t.Fatalf("replace the rendezvous artifact with a directory: %v", err)
+	}
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write the blocker: %v", err)
+	}
+	if err := shutdownServeTestDaemon(t.Context(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runServeWithDeps: %v", err)
+	}
+
+	if pauses == 0 {
+		t.Fatal("shutdown never retried the blocked rendezvous removal")
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("shutdown left a stale rendezvous artifact behind: stat err=%v", err)
+	}
+}
+
+// TestRemoveRendezvousAtShutdownReportsAnExhaustedBudget covers the other arm:
+// a removal that fails every attempt is named rather than discarded, and it is
+// bounded -- an exiting daemon does not retry forever over a directory that is
+// never going to let go.
+func TestRemoveRendezvousAtShutdownReportsAnExhaustedBudget(t *testing.T) {
+	wantErr := errors.New("remove rendezvous file: device busy")
+	attempts, pauses := 0, 0
+	var reported error
+	reports := 0
+	removeRendezvousAtShutdown(
+		func() error { attempts++; return wantErr },
+		func() <-chan time.Time {
+			pauses++
+			elapsed := make(chan time.Time, 1)
+			elapsed <- time.Now()
+			return elapsed
+		},
+		func(err error) { reports++; reported = err },
+	)
+	if attempts != rendezvousRemovalAttempts {
+		t.Fatalf("removal attempts = %d, want %d", attempts, rendezvousRemovalAttempts)
+	}
+	if pauses != rendezvousRemovalAttempts-1 {
+		t.Fatalf("retry pauses = %d, want %d: the last attempt must not pause before giving up", pauses, rendezvousRemovalAttempts-1)
+	}
+	if reports != 1 || !errors.Is(reported, wantErr) {
+		t.Fatalf("reports = %d with err = %v, want exactly one carrying %v", reports, reported, wantErr)
+	}
+}
+
+// TestServeSessionLifetimeEndsWhenShutdownStarts pins what the daemon's
+// session tree is allowed to outlive. Shutdown waits for the input loop before
+// it closes the session, and work that runs synchronously on that loop -- a
+// Notification hook is the one that can run for its own timeout -- is reached
+// by nothing else. So the session's lifetime has to be the daemon's shutdown
+// context, cancelled the moment shutdown starts rather than after the wait it
+// is holding up.
+//
+// The HTTP server is closed by the shutdown goroutine before that wait, so
+// serveHTTP returning is the observation point: whatever the lifetime context
+// says there, it said at the start of shutdown.
+func TestServeSessionLifetimeEndsWhenShutdownStarts(t *testing.T) {
+	runDir := t.TempDir()
+	deps := defaultServeDeps()
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{})
+		return client, func() error { return nil }, nil
+	}
+	var lifetime context.Context
+	buildSession := deps.newSession
+	deps.newSession = func(c *llm.Client, p *provider.Profile, e execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		lifetime = cfg.LifetimeContext
+		return buildSession(c, p, e, cfg)
+	}
+	var lifetimeAtShutdown error
+	var observedAtShutdown bool
+	runHTTP := deps.serveHTTP
+	deps.serveHTTP = func(s *http.Server, l net.Listener) error {
+		err := runHTTP(s, l)
+		if lifetime != nil {
+			observedAtShutdown = true
+			lifetimeAtShutdown = lifetime.Err()
+		}
+		return err
+	}
+
+	args := []string{
+		"--model", "openai/test",
+		"--addr", "127.0.0.1:0",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--run-dir", runDir,
+	}
+	done := make(chan error, 1)
+	go func() { done <- runServeWithDeps(args, deps) }()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	if err := shutdownServeTestDaemon(t.Context(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runServeWithDeps: %v", err)
+	}
+
+	if !observedAtShutdown {
+		t.Fatal("the daemon's session was built with no lifetime context; nothing shutdown cancels reaches work parked outside a turn")
+	}
+	if lifetimeAtShutdown == nil {
+		t.Fatal("the session's lifetime context was still live when shutdown closed the listener; it does not end when shutdown starts")
+	}
+}
+
+// The resumed daemon owes the same thing: --resume builds its session through
+// RestoreSessionFromMetaWithConfig, which carries its own lifetime field.
+func TestServeResumedSessionLifetimeIsTheShutdownContext(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	var lifetime context.Context
+	var liveAtRestore bool
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		lifetime = restoreCfg.LifetimeContext
+		liveAtRestore = lifetime != nil && lifetime.Err() == nil
+		return nil, errors.New("no session today")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
+	}
+	if lifetime == nil {
+		t.Fatal("the resumed session was built with no lifetime context")
+	}
+	if !liveAtRestore {
+		t.Fatal("the resumed session's lifetime context was already over when the restore ran")
+	}
+	if lifetime.Err() == nil {
+		t.Fatal("the resumed session's lifetime context outlives the daemon; it is not the shutdown context")
+	}
+}
+
+// thread/clear builds the replacement session from a copy of the daemon's own
+// SessionConfig, so the cleared thread has to inherit the same shutdown
+// lifetime the session it replaces had. A replacement rooted at Background
+// would put the daemon straight back into the state this branch fixes, for
+// every thread after the first clear.
+func TestRunServeClearSessionInheritsTheShutdownLifetime(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var lifetime context.Context
+	var liveAtClear bool
+	buildClearSession := deps.newClearSession
+	deps.newClearSession = func(c *llm.Client, p *provider.Profile, e execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		lifetime = cfg.LifetimeContext
+		liveAtClear = lifetime != nil && lifetime.Err() == nil
+		return buildClearSession(c, p, e, cfg)
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+	if obs.clearErr != nil {
+		t.Fatalf("thread/clear: %v", obs.clearErr)
+	}
+	if lifetime == nil {
+		t.Fatal("the cleared session was built with no lifetime context")
+	}
+	if !liveAtClear {
+		t.Fatal("the cleared session's lifetime context was already over when the clear ran")
 	}
 }

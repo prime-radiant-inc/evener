@@ -160,6 +160,8 @@ func (t *lockedTx) Rollback() error {
 // can delegate to it after injecting failures.
 func setupLockedStore(t *testing.T) *PinSectionStore {
 	t.Helper()
+	resetLockedCounters()
+	t.Cleanup(resetLockedCounters)
 	initLockedDriver()
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	seed := NewPinSectionStore(dbPath)

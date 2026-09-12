@@ -18,6 +18,10 @@
  * directly to prove the load path tolerates them. */
 export const EXPANSION_STORAGE_KEY = "evener.rail.expanded.v1";
 
+export function projectNodeExpansionKey(projectKey: string): string {
+  return `projectnode:${projectKey}`;
+}
+
 /** Entries kept before the oldest are evicted. The map only ever holds ids
  * the user explicitly toggled, but rows outlive the sessions they name, so on
  * a long-lived hub it would otherwise grow without bound. Generous enough

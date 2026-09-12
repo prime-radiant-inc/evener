@@ -1,8 +1,8 @@
 // Edge cases for CredentialsSection.tsx uncovered lines:
 // - handleConfirmedAction clear failure error toast
+// - handleConfirmedAction clear stored key failure error toast
 // - handleConfirmedAction remove failure error toast
 // - findInstance returns undefined for apiKey dialog when instance is gone
-// - findInstance returns undefined for edit dialog when instance is gone
 
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -21,12 +21,13 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "type">): InstanceEntry {
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
-    apiStyle: "",
-    baseUrl: "",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
     isDefault: false,
-    activeSource: "absent",
+    activeSource: "none",
     hasStoredOAuth: false,
     credentialRequired: true,
     ...overrides,
@@ -35,14 +36,19 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
 
 const WORK = instance({
   name: "work",
-  type: "anthropic",
+  providerId: "anthropic",
   authModes: ["apiKey"],
   isDefault: true,
   hasStoredFile: true,
-  activeSource: "file",
+  activeSource: "store",
 });
-const PERSONAL = instance({ name: "personal", type: "openai", authModes: ["apiKey", "oauth"] });
-const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableTypes: ["anthropic", "openai"] };
+const PERSONAL = instance({
+  name: "personal",
+  providerId: "openai-codex",
+  auth: "oauth-openai-codex",
+  authModes: ["oauth"],
+});
+const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableProviders: [] };
 
 // Same detail-sheet navigation path as CredentialsSection.test.tsx: every
 // per-instance action is reached through the row's inspector.
@@ -58,8 +64,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -79,13 +85,44 @@ describe("CredentialsSection edge cases", () => {
     );
     await screen.findByText("work");
     const user = userEvent.setup();
-    // WORK has stored file → its sheet offers Clear.
+    // WORK has a stored key → its sheet offers Clear.
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("button", { name: "Clear" }));
     const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
     await screen.findByText("Clear failed: Something went wrong.");
     expect(screen.getByRole("dialog", { name: "Clear credentials" })).toBeTruthy();
+  });
+
+  test("clear stored key failure shows error toast", async () => {
+    const fake = connectFakeClient();
+    const SHADOWED = instance({
+      name: "shadowed",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      hasStoredFile: true,
+    });
+    fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/clear", () => {
+      throw new Error("clear denied");
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("shadowed");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "shadowed");
+    await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Clear stored key failed: Something went wrong.");
+    expect(screen.getByRole("dialog", { name: "Clear stored key" })).toBeTruthy();
   });
 
   test("remove failure shows error toast", async () => {
@@ -124,21 +161,5 @@ describe("CredentialsSection edge cases", () => {
     act(() => credentialsStore.setState({ instances: [PERSONAL] }));
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Set API key for work" })).toBeNull());
-  });
-
-  // An open edit dialog stops rendering if its instance disappears.
-  test("an edit dialog closes when a refreshed list removes its instance", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/instance/list", () => LIST);
-    render(<CredentialsSection sectionId="credentials" />);
-    await screen.findByText("work");
-    const user = userEvent.setup();
-    const inspector = await openSheet(user, "work");
-    await user.click(within(inspector).getByRole("button", { name: "Edit" }));
-    await screen.findByRole("dialog", { name: "Edit work" });
-
-    act(() => credentialsStore.setState({ instances: [PERSONAL] }));
-
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit work" })).toBeNull());
   });
 });

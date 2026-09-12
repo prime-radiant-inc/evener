@@ -158,7 +158,7 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 	// The initial session creates the real metadata/transcript pair. Its plugin
 	// matches only resume, so construction cannot consume a hook response.
 	freshClient, _ := rttClient()
-	fresh, err := NewSession(freshClient, NewOpenAIProfile("gpt-5.2"), &agenttest.DenyEnv{WorkDir: workspace}, cfg)
+	fresh, err := NewSession(freshClient, withTestSessionNamer(freshClient, NewOpenAIProfile("gpt-5.2")), &agenttest.DenyEnv{WorkDir: workspace}, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -168,7 +168,7 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 	restoreClient, adapter := rttClient()
 	restored, err := RestoreSessionFromMetaWithConfig(
 		restoreClient,
-		NewOpenAIProfile("gpt-5.2"),
+		withTestSessionNamer(restoreClient, NewOpenAIProfile("gpt-5.2")),
 		&agenttest.DenyEnv{WorkDir: workspace},
 		meta,
 		RestoreSessionConfig{

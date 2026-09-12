@@ -17,8 +17,7 @@ import { parseTaskListData } from "./taskData";
 //     (wired unconditionally by every real evener daemon session).
 //   - server/appwire_runtime.go:713-721 (handleAppTasksList: Data is nil
 //     only when no tasksFn is registered at all - an old daemon or a
-//     source with no task support, e.g. cmd/evener-hub/internal/appsource/
-//     codex_source.go:405-407 which instead rejects the call outright).
+//     source with no task support, which instead rejects the call outright).
 // This is the wire-true fixture the panel renders from once a store action
 // exists to fetch it (see this stream's report for the NEEDS_CONTEXT gap).
 

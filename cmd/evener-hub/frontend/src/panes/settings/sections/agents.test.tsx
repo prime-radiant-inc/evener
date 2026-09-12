@@ -1,9 +1,17 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { AgentsSection } from "./agents";
 import type { SettingsOverviewStore } from "./overviewSeam";
+
+// The repo's CSS-source pin idiom (difftable.test.tsx, select.test.tsx):
+// jsdom has no layout, so placement contracts are pinned against the
+// stylesheet's own source.
+const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "agents.module.css"), "utf8");
 
 afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -67,9 +75,14 @@ describe("AgentsSection", () => {
   });
 
   test("renders every agent by name", () => {
-    const data: SettingsOverviewResponse = { agents: [{ name: "evener" }, { name: "codex" }] };
+    const data: SettingsOverviewResponse = { agents: [{ name: "evener" }, { name: "explorer" }] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
     expect(screen.getByText("evener")).toBeTruthy();
-    expect(screen.getByText("codex")).toBeTruthy();
+    expect(screen.getByText("explorer")).toBeTruthy();
+  });
+
+  test("the open-in-editor anchor rides beside the agent name, not the row's far edge", () => {
+    expect(css).not.toMatch(/\.row\s*\{[^}]*justify-content:\s*space-between/);
+    expect(css).toMatch(/\.builtin\s*\{[^}]*margin-left:\s*auto/);
   });
 });

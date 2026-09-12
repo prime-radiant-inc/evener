@@ -1,11 +1,41 @@
-import { QRCodeSVG } from "qrcode.react";
-import { useState } from "react";
+import { Component, lazy, type ReactNode, Suspense, useState } from "react";
 import { WireError } from "../../../protocol/errors";
 import type { AppwireClientLike } from "../../../protocol/testing/fakeClient";
 import { useClient } from "../../../shell/clientContext";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { copyText } from "./credentials/clipboard";
 import { useConnectedEffect } from "./useConnectedEffect";
+
+// qrcode.react rides its own split chunk: MobileSection itself stays in the
+// Settings chunk (Settings.tsx imports it statically), but the QR renderer
+// downloads only once this section actually renders. The Suspense fallback
+// is scoped to the QR slot so a slow chunk shows a placeholder in this
+// section only, never the whole pane.
+const QRCodeSVG = lazy(() => import("qrcode.react").then((m) => ({ default: m.QRCodeSVG })));
+
+// A failed chunk load rejects the lazy promise, which Suspense does not
+// catch: without a boundary React unmounts the whole tree. Scope the blast
+// radius to the QR slot and keep the pairing link (already loaded) usable via
+// the copy button below.
+class QRChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  render(): ReactNode {
+    if (this.state.failed) {
+      return (
+        <EmptyState
+          title="Couldn't load the QR renderer"
+          hint="The pairing link below still works — copy it instead, or reload this page to try again."
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type PairingState =
   | { kind: "loading" }
@@ -52,9 +82,13 @@ export function MobileSection() {
     <section aria-labelledby="mobile-app-pairing-heading">
       <h2 id="mobile-app-pairing-heading">Mobile app</h2>
       <p>Scan this code from the Evener mobile app to pair another device.</p>
-      <div role="img" aria-label="Mobile app pairing QR code">
-        <QRCodeSVG value={state.authURL} includeMargin level="M" />
-      </div>
+      <QRChunkBoundary>
+        <Suspense fallback={<Skeleton lines={1} />}>
+          <div role="img" aria-label="Mobile app pairing QR code">
+            <QRCodeSVG value={state.authURL} includeMargin level="M" />
+          </div>
+        </Suspense>
+      </QRChunkBoundary>
       <Button size="sm" variant="secondary" onClick={() => void copyText(state.authURL)}>
         Copy pairing link
       </Button>

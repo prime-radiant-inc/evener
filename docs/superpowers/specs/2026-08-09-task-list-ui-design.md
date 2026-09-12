@@ -41,15 +41,15 @@ A new small helper, `chrome/taskTime.ts`:
 
 ### Panel body header
 
-Above the groups, one compact summary row: the `Meter` widget (neutral tone) plus `16/20 done`, sourced from `model.tasks`. Rendered only when `model.tasks` is non-null. The trigger button already shows this aggregate; the body repeats it so an open panel reads as a whole.
+Above the groups, one compact summary row: `16/20 done`, sourced from `model.tasks`. Rendered only when `model.tasks` is non-null. The trigger button already shows this aggregate; the body repeats it so an open panel reads as a whole. (No progress bar: the count alone carries the summary.)
 
 ### Groups
 
 Rows render in three groups, in this order:
 
-1. **In progress** — tasks with `status === "in_progress"`.
-2. **Open** — tasks with `status === "open"`.
-3. **Done · settled N** — tasks with `status === "done"` or `"cancelled"`, behind a single collapsed-by-default disclosure line. "Settled" covers both because the distinction still shows per row (✓ vs ✕, struck title).
+1. **Done · settled N** — tasks with `status === "done"` or `"cancelled"`, behind a single collapsed-by-default disclosure line. "Settled" covers both because the distinction still shows per row (✓ vs ✕, struck title). The folded-away history sits above the current work, not at the bottom.
+2. **In progress** — tasks with `status === "in_progress"`.
+3. **Open** — tasks with `status === "open"`.
 
 Within each group, rows keep wire order (task id order). Empty groups render nothing — no header, no placeholder. A list that is entirely settled shows only the settled disclosure line.
 
@@ -95,7 +95,7 @@ All in `cmd/evener-hub/frontend/src/panes/session/chrome/`, styles in `taskspane
 
 ## Edge cases
 
-- **No in-progress tasks** — the In progress header is omitted; Open leads.
+- **No in-progress tasks** — the In progress header is omitted; with no settled tasks either, Open leads.
 - **All tasks settled** — only the collapsed settled line shows. The reader opens it to audit history.
 - **Empty list, unsupported source, daemon gone, failed fetch** — exactly as today; this redesign changes none of those states.
 - **`updated_at` equal to `created_at`** (never touched after append) — the timestamps line omits `updated`; the collapsed row still shows the relative creation time, since the row's time is `updatedAt` and the two are equal.
@@ -115,7 +115,7 @@ Follow `docs/testing.md` and the repo's frontend gates.
   - settled group defaults to collapsed and remembers toggles per session;
   - expanded row shows meta strip, timestamps line (fields omitted correctly), updates timeline with N notes, and "No updates yet.";
   - prompt disclosure shows the one-line markdown preview collapsed and the full markdown body open; absent prompt renders no disclosure;
-  - body header shows `Meter` + count only when `model.tasks` is non-null.
+  - body header shows the count only when `model.tasks` is non-null (no progress bar).
 - Gates: `npx biome check --write` on touched files, then `make test-web`; `make test-web-browser` on this Chrome-capable host. The token-contract test forbids new color literals and gates `--attention`/`--alive`/`--danger` to allowlisted widget stylesheets. `taskspanel.module.css` is not a widget stylesheet, so its one semantic reach (`--alive` on the latest-note dot) earns an exact-path exception in `token-contract.test.ts` following the `taskcheck.module.css` precedent (kata entry, exact path, glyph-level color only; every piece of text in the panel stays on neutral ink).
 
 ## Out of scope

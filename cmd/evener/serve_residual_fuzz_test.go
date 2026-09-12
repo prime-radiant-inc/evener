@@ -22,7 +22,6 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -210,7 +209,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			*a = []string{"-h"}
 		}},
 		{"seed warning", func(_ *testing.T, d *serveDeps, _ *[]string) {
-			d.seedMarketplaces = func() error { return boom }
+			d.seedMarketplaces = func(context.Context) error { return boom }
 			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, boom }
 		}},
 		{"computed state dir", func(t *testing.T, d *serveDeps, a *[]string) {
@@ -228,7 +227,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			}
 		}},
 		{"build profile", func(_ *testing.T, d *serveDeps, _ *[]string) {
-			d.buildProfile = func(providercfg.Config, cmdutil.ModelRef, string) (*provider.Profile, error) { return nil, boom }
+			d.buildProfile = func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error) { return nil, boom }
 		}},
 		{"cheap profile", func(_ *testing.T, d *serveDeps, _ *[]string) {
 			d.applyCheap = func(*provider.Profile, string, *llm.Client) (*provider.Profile, error) { return nil, boom }

@@ -351,7 +351,6 @@ type Request struct {
 
 	HistoryMode                    HistoryMode           `json:"-"`
 	Continuation                   *ContinuationMetadata `json:"-"`
-	FullHistoryFallbackMessages    []Message             `json:"-"`
 	InputTokensEstimate            int                   `json:"-"`
 	FullHistoryInputTokensEstimate int                   `json:"-"`
 	ContinuationDiagnostic         string                `json:"-"`
@@ -523,16 +522,16 @@ type RateLimitInfo struct {
 // AdapterTimeout defines granular timeout configuration for adapter-level HTTP operations.
 type AdapterTimeout struct {
 	Connect    time.Duration `json:"connect"`     // time to establish the network connection (default: 10s)
-	Request    time.Duration `json:"request"`     // whole non-stream call or streaming HTTP attempt, including body lifetime (default: 120s)
-	StreamRead time.Duration `json:"stream_read"` // max time between consecutive stream events (default: 30s)
+	Request    time.Duration `json:"request"`     // optional whole-attempt deadline, including body lifetime (default: disabled)
+	StreamRead time.Duration `json:"stream_read"` // max idle time between incoming response bytes, streaming or not (default: 10m)
 }
 
-// DefaultAdapterTimeout returns the spec-recommended defaults.
+// DefaultAdapterTimeout returns bounded connection and response-idle defaults, without a total deadline.
 func DefaultAdapterTimeout() AdapterTimeout {
 	return AdapterTimeout{
 		Connect:    10 * time.Second,
-		Request:    120 * time.Second,
-		StreamRead: 30 * time.Second,
+		Request:    0,
+		StreamRead: 10 * time.Minute,
 	}
 }
 
@@ -600,14 +599,17 @@ func (req Request) Validate() error {
 	return nil
 }
 
+// MinimumThinkingBudgetTokens is the smallest thinking budget Anthropic
+// documents accepting; a lower value is wire-rejectable on budget-shaped
+// rows (#714).
+const MinimumThinkingBudgetTokens = 1024
+
 // ReasoningBudget converts a reasoning effort level to a token budget.
 // Returns 0 for unrecognized values.
 func ReasoningBudget(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "minimal":
-		return 512
-	case "low":
-		return 1024
+	case "minimal", "low":
+		return MinimumThinkingBudgetTokens
 	case "medium":
 		return 8192
 	case "high":

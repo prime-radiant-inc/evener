@@ -1,16 +1,8 @@
 .turn {
-  /* Centered reading measure (webui-ux-transcript C2): the composer pins
-   * its own max-width to this SAME 76rem literal (composer.module.css, a
-   * sibling stream's file - out of this manifest's reach) so the input
-   * aligns with the conversation column above it; keep the two literals in
-   * sync until both consolidate onto a shared tokens.css custom property
-   * once the UX has settled. Declared and used on this one rule (not
-   * inherited from an ancestor) because .turn is also reused by the
-   * read-only "open beside" transcript pane (panes/transcript/
-   * Transcript.tsx), which doesn't sit under this stream's own FlowOverlay
-   * wrap - a single ancestor declaration wouldn't reach it there.
-   */
-  --session-measure: 76rem;
+  /* Centered reading measure: --session-measure is declared on <body> in
+   * tokens.css (44rem, or 64rem under the Transcript width preference), so
+   * this column, the composer's .measure and the cold-start block all read
+   * one value and stay aligned. */
   /* Speaker geometry (--speaker-avatar-size/-gap/-gutter) comes from
    * tokens.css: .turn and the focused view are sibling render trees, so no
    * component class could be the single source for both. */
@@ -24,23 +16,6 @@
    * 100%-width item wider than its scroller (overflow containment,
    * 2026-07-30-mobile-session-layout-design.md, decision 5). */
   min-width: 0;
-}
-
-/* A collapsed tool run keeps one quiet row; its expanded members inherit the
- * same vertical flow and gain a hairline inset so the cluster reads as one
- * action history without changing ToolCallItem's one-call row grammar. */
-.cluster {
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-1) 0;
-}
-
-.clusterBody {
-  display: flex;
-  flex-direction: column;
-  margin-left: var(--space-3);
-  padding-left: var(--space-3);
-  border-left: 2px solid var(--edge);
 }
 
 /* Run content column (layout roles, layoutRoles.ts): TurnBlock wraps every

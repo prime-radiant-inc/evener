@@ -10,21 +10,20 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
-import { ClientNotReadyError, mutationErrorData, WireError } from "../protocol/errors";
+import { ClientNotReadyError, isStaleCursorError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
   hydrateThread,
+  mergeOlderItemPage,
   notificationRoutingKey,
-  prependOlderTurns,
   resolvePendingEscalation,
 } from "../protocol/reducer";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
   GoalSetResponse,
-  InputItem,
   ModelListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
@@ -33,7 +32,7 @@ import type {
 } from "../protocol/types.gen";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { translateAttachmentMarkers } from "./attachmentMarkers";
+import { buildComposerInput, buildInput, type InputAttachment } from "./composerInput";
 import { connectionStore } from "./connection";
 import { MutationDispatcher } from "./mutationDispatcher";
 import {
@@ -48,6 +47,8 @@ import {
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
+
+export type { InputAttachment } from "./composerInput";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
 // hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER
@@ -66,13 +67,6 @@ import { resetTasksPanelStoreForTests } from "./tasksPanel";
 // durable outbox record, the recovery draft that rebuilds a composer - pairs
 // text and attachment by identity instead of re-deriving the pairing from
 // array position. buildInput drops it when it assembles the wire input.
-export interface InputAttachment {
-  marker: number;
-  mediaType: string;
-  data: string; // base64-encoded bytes (wire InputItem.data)
-  name?: string;
-}
-
 export type ComposerMutationRoute = "send" | "queue" | "steer" | "drain";
 
 // ForkFromTurnOptions mirrors ThreadForkParams verbatim (appwire/types.go:
@@ -102,6 +96,10 @@ export class ConflictError extends Error {
 
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
+  mutationWriteStalled: boolean;
+  mutationReconciliationFailures: ReadonlySet<string>;
+  restartBlockingObligations: ReadonlyMap<string, symbol>;
+  mutationAuthorityRefs: ReadonlySet<string>;
   // Per-ref ring of live-notification arrival timestamps, for
   // widgets/cadence's Cadence trace - see appendFrameTime below. Deliberately
   // NOT part of ThreadModel/the reducer: it is display-liveness bookkeeping
@@ -135,6 +133,7 @@ export interface ThreadsStoreState {
   // an ordinary transient one.
   deletedRefs: Set<string>;
   ensureThread(ref: string): Promise<void>;
+  refreshThread(ref: string): Promise<void>;
   releaseThread(ref: string): void;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -185,6 +184,7 @@ export interface ThreadsStoreState {
   // views switch to the new instance together.
   clearThread(ref: string): Promise<void>;
   shutdown(ref: string): Promise<void>;
+  forceStop(ref: string): Promise<void>;
   // Forks a thread from a source turn, or - with opts.aside - forks the
   // session at its current tip into a side thread (same wire method,
   // mutually exclusive param sets - see ForkFromTurnOptions). The response
@@ -204,7 +204,7 @@ export interface ThreadsStoreState {
   // `any` on the wire catalog (appwire/types.go:896-898) - this returns
   // that raw field verbatim, never wrapped, so the store stays shape-
   // agnostic; the caller owns interpreting it (the chrome stream's own
-  // parseTaskListData). A Codex-source thread rejects this call
+  // parseTaskListData). A source that omits the capability rejects this call
   // (appwire.Unavailable, "actionUnavailable") - that typed error
   // propagates unchanged, same as every other read-only action here; the
   // caller renders the empty/unsupported state for it.
@@ -257,6 +257,7 @@ function invalidateGoalResponseFallback(ref: string): void {
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
+const trackedHydrationCompletions = new Map<string, Promise<void>>();
 // The identity a pending hydration accepts frames for. Both facts come from an
 // authority, never from the stream: the routing is seeded from the published
 // model when the read starts and re-seeded from the authoritative snapshot at
@@ -284,6 +285,7 @@ type PendingThreadHydration = {
 // response. Keep the newest hydration's notifications out of the old model,
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
+const pendingMutationReconciliations = new Map<string, Promise<void>>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 
 // --- Notification routing index ---------------------------------------------
@@ -548,6 +550,7 @@ let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
+const olderPageGenerations = new Map<string, number>();
 
 // Refs this connection generation holds a wire subscription for. thread/read
 // with subscribe:true is how a subscription is created, and every re-read of
@@ -569,18 +572,32 @@ interface MutationRuntime {
 let mutationRuntime: MutationRuntime | null = null;
 let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
 let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
-const mutationPersistenceListeners = new Set<(targetRefs: string[]) => void>();
+interface MutationCommit {
+  record: MutationOutboxRecord;
+  recoveryId?: string;
+}
+
+type MutationPersistenceListener = (targetRefs: string[], committed?: MutationCommit) => void;
+const mutationPersistenceListeners = new Set<MutationPersistenceListener>();
 
 function isCurrentMutationRuntime(runtime: MutationRuntime | null): runtime is MutationRuntime {
   return runtime?.active === true && mutationRuntime === runtime;
 }
 
-function notifyMutationPersistence(targetRefs: Iterable<string>): void {
+function notifyMutationPersistence(targetRefs: Iterable<string>, committed?: MutationCommit): void {
   const refs = [...new Set(targetRefs)];
-  for (const listener of mutationPersistenceListeners) listener(refs);
+  for (const listener of mutationPersistenceListeners) {
+    try {
+      listener(refs, committed);
+    } catch (error) {
+      // A projection listener cannot change the result of a durable write.
+      console.error("Mutation persistence listener failed", error);
+    }
+  }
 }
 
 function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
+  invalidateGoalResponseFallback(targetRef);
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
   // A clear response is a newer authoritative cut than any thread/read that
@@ -597,16 +614,30 @@ function applyClearResponse(targetRef: string, response: ThreadClearResponse): v
     stateBefore.threads.has(targetRef) ? model : undefined,
     stateBefore.watchedThreads.has(targetRef) ? model : undefined,
   );
-  if (stateBefore.threads.has(targetRef)) {
-    threadsStore.setState((state) => ({
-      hydrations: new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1),
-    }));
-  }
+  threadsStore.setState((state) => {
+    const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
+    if (response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(targetRef);
+    else mutationAuthorityRefs.delete(targetRef);
+    return {
+      mutationAuthorityRefs,
+      hydrations: stateBefore.threads.has(targetRef)
+        ? new Map(state.hydrations).set(targetRef, (state.hydrations.get(targetRef) ?? 0) + 1)
+        : state.hydrations,
+    };
+  });
 }
 
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  if (
+    targetRef &&
+    (pendingMutationReconciliations.has(targetRef) ||
+      threadsStore.getState().restartBlockingObligations.has(targetRef) ||
+      threadsStore.getState().mutationReconciliationFailures.has(targetRef))
+  )
+    return null;
+  if (targetRef && threadsStore.getState().threads.get(targetRef)?.status.type === "restartRequired") return null;
   return wiredClient?.state === "ready" ? wiredClient : null;
 }
 
@@ -668,7 +699,7 @@ function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable
 
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
-  const refs = [...new Set(targetRefs)];
+  const refs = [...new Set([...targetRefs, ...threadsStore.getState().mutationReconciliationFailures])];
   for (const targetRef of refs) pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence(refs);
   scheduleMutationDispatch(runtime, refs);
@@ -677,23 +708,70 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
   if (!client) return;
   const epoch = dispatchReadyEpoch;
   for (const targetRef of refs) {
-    if (dispatchableMutationRefs.has(targetRef)) continue;
+    if (pendingMutationReconciliations.has(targetRef)) continue;
+    if (
+      dispatchableMutationRefs.has(targetRef) &&
+      !threadsStore.getState().mutationReconciliationFailures.has(targetRef)
+    ) {
+      // Another tab can block a shared record after this tab's snapshot.
+      // Cached authority cannot settle that newly uncertain send.
+      void refreshUncertainMutationAuthority(runtime, client, epoch, targetRef).catch(() => {
+        // The next discovery pass retries after storage or transport recovers.
+      });
+      continue;
+    }
     const pending = pendingThreadHydrations.get(targetRef);
     if (pending?.client === client && pending.epoch === epoch) continue;
     void handleReady(client, epoch, targetRef);
   }
 }
 
+async function refreshUncertainMutationAuthority(
+  runtime: MutationRuntime,
+  client: AppwireClientLike,
+  epoch: number,
+  targetRef: string,
+): Promise<void> {
+  const records = await runtime.storage.listOutbox(targetRef);
+  if (!records.some((record) => record.state === "blockedUnknown")) return;
+  if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch) return;
+  if (pendingMutationReconciliations.has(targetRef) || pendingThreadHydrations.has(targetRef)) return;
+  await handleReady(client, epoch, targetRef);
+}
+
 function getMutationRuntime(): MutationRuntime | null {
   if (mutationRuntime) return mutationRuntime;
   if (!globalThis.indexedDB) return null;
 
-  const storage = mutationStorageForTests ?? new MutationOutboxIndexedDB();
   let runtime: MutationRuntime | null = null;
+  const storage =
+    mutationStorageForTests ??
+    new MutationOutboxIndexedDB({
+      onWriteStalled: (waiting) => {
+        if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
+      },
+    });
   const dispatcher = new MutationDispatcher(storage, {
     getClient: (targetRef) => (isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null),
     onStorageChange: (targetRefs) => {
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
+    },
+    onBlockedMutation: (targetRef, client) => {
+      if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client) return;
+      threadsStore.setState((state) => {
+        const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
+        mutationAuthorityRefs.delete(targetRef);
+        // The durable blocking write may have failed, leaving a submitting
+        // record. New enqueues must wait for successful reconciliation too.
+        return {
+          mutationAuthorityRefs,
+          mutationReconciliationFailures: new Set(state.mutationReconciliationFailures).add(targetRef),
+        };
+      });
+      // Let the periodic discovery pass refresh and reconcile. An immediate
+      // read can prove absence while journal writes still fail, creating a
+      // read/retry loop without giving persistence time to recover.
+      dispatchableMutationRefs.delete(targetRef);
     },
     onClearResponse: applyClearResponse,
   });
@@ -729,7 +807,7 @@ export interface MutationPersistenceSnapshot {
   recovery: MutationRecoveryRecord[];
 }
 
-export function subscribeMutationPersistence(listener: (targetRefs: string[]) => void): () => void {
+export function subscribeMutationPersistence(listener: MutationPersistenceListener): () => void {
   mutationPersistenceListeners.add(listener);
   return () => mutationPersistenceListeners.delete(listener);
 }
@@ -751,10 +829,26 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
-  await runtime.storage.markUnknown(clientMutationId, "submitting");
-  notifyMutationPersistence([record.targetRef]);
-  handleDiscoveredMutations(runtime, [record.targetRef]);
-  return true;
+  if (!threadsStore.getState().mutationAuthorityRefs.has(record.targetRef)) return false;
+  const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
+  if (!status || status === "restartRequired" || status === "notLoaded") return false;
+  if (
+    pendingMutationReconciliations.has(record.targetRef) ||
+    pendingThreadHydrations.has(record.targetRef) ||
+    threadsStore.getState().restartBlockingObligations.has(record.targetRef) ||
+    threadsStore.getState().mutationReconciliationFailures.has(record.targetRef)
+  )
+    return false;
+  const client = currentDispatchClient();
+  if (!client) return false;
+  const epoch = dispatchReadyEpoch;
+  // Shared storage can become blocked after this tab's authoritative snapshot.
+  // Only fresh reconciliation may settle it or restore it for dispatch.
+  await handleReady(client, epoch, record.targetRef);
+  if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
+    return false;
+  const current = await runtime.storage.getOutbox(clientMutationId);
+  return current?.state !== "blockedUnknown";
 }
 
 export async function updateRecoveryMutation(
@@ -801,7 +895,7 @@ export async function resendRecoveryMutation(
   const record = await runtime.storage.resendRecovery(clientMutationId, intent);
   if (!record) return undefined;
   pinnedMutationRefs.add(targetRef);
-  notifyMutationPersistence([targetRef]);
+  notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
   return record;
 }
@@ -817,9 +911,17 @@ export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): vo
 // same way inflightHydrates does for ensureThread. A rejection is never
 // written to modelsCache (so a prior good cache survives a later failed
 // refresh, and a first-ever failure leaves nothing stale to keep serving),
-// and inflightModelsList is always cleared in a `finally` so a failed call
-// never poisons the next one with a repeated rejection.
+// and the call that owns inflightModelsList clears it in a `finally` so a
+// failed call never poisons the next one with a repeated rejection — only
+// while the slot still holds its own request, because evener/auth/updated
+// drops the slot and a newer call may have claimed it since.
 let modelsCache: ModelListResponse | null = null;
+// modelsEpoch advances on every evener/auth/updated: a credential change can
+// make models discoverable (a stored Vertex credential JSON enables the
+// publisher-model listing) or take them away, so a listing cached before it
+// is stale, and a listing still in flight answers the old credentials and
+// must not become the cache either.
+let modelsEpoch = 0;
 let inflightModelsList: Promise<ModelListResponse> | null = null;
 
 // watchThread's own refcount/inflight bookkeeping - independent of
@@ -855,6 +957,8 @@ const watchHydratedIncludeTurns = new Map<string, boolean>();
 // already-subscribed ref sends subscribe:false so the server skips the
 // buffered-capture cycle a second subscribe would run, and
 // releaseThread's unsubscribe is what drops the entry again.
+const TRANSCRIPT_ITEM_PAGE_SIZE = 40;
+
 function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean) {
   return {
     ref,
@@ -862,7 +966,7 @@ function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean
     itemsView: "full",
     subscribe,
     replaceSubscription: false,
-    turnLimit: 40,
+    itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE,
   } as const;
 }
 
@@ -990,15 +1094,8 @@ async function hydrateAndSubscribeWatch(
   return model;
 }
 
-// Older-turn paging (loadOlderTurns): same 30-turn page size as the legacy
-// renderer's own OLDER_TURN_PAGE (cmd/evener-hub/assets/renderer.js, cited in
-// docs/web-ui/parity/parity-m4-transcript.md §18) - not load-bearing for
-// correctness, just a reasonable, parity-matching default a later wave can
-// retune once it owns the scroll-triggered paging UX (T4).
-const OLDER_TURNS_PAGE_SIZE = 30;
-
-function olderTurnsParams(ref: string, cursor: string) {
-  return { ref, cursor, itemsView: "full", limit: OLDER_TURNS_PAGE_SIZE } as const;
+function olderItemsParams(ref: string, cursor: string) {
+  return { ref, cursor, itemsView: "full", itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE } as const;
 }
 
 // FRAME_TIMES_WINDOW_MS matches widgets/cadence's own WINDOW_MS exactly
@@ -1020,24 +1117,6 @@ export function appendFrameTime(times: number[], now: number): number[] {
   const kept = times.filter((t) => now - t <= FRAME_TIMES_WINDOW_MS);
   const next = [...kept, now];
   return next.length > FRAME_TIMES_MAX_ENTRIES ? next.slice(next.length - FRAME_TIMES_MAX_ENTRIES) : next;
-}
-
-// buildInput assembles the wire turn/start|steer|queue|drainAsSteer input
-// array: an optional leading text item (queueText allows empty/whitespace-
-// only text when attachments are present - parity finding §B, "image-only
-// queue entries are valid" - so this only omits the text item, never
-// rejects the call), then one image item per attachment. The text arrives
-// verbatim: any new SUBMIT path through here owes it the same
-// translateAttachmentMarkers pass composerMutationIntent applies.
-function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] {
-  const input: InputItem[] = [];
-  if (text.trim()) input.push({ type: "text", text });
-  for (const att of attachments ?? []) {
-    const image: InputItem = { type: "image", mediaType: att.mediaType, data: att.data };
-    if (att.name !== undefined) image.name = att.name;
-    input.push(image);
-  }
-  return input;
 }
 
 function attachmentBlob(attachment: InputAttachment): Blob {
@@ -1075,7 +1154,7 @@ function composerMutationIntent(
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
-  const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
+  const input = buildComposerInput(text, attachments);
   const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,
@@ -1118,13 +1197,21 @@ async function enqueueMutationIntent(intent: MutationIntent): Promise<void> {
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
   const runtime = requireMutationRuntime();
   await runtime.start;
-  pinnedMutationRefs.add(ref);
+  // Enqueue schedules discovery before returning; preserve the hydrated replay
+  // gate now, but only a durable commit may pin this ref after its pane closes.
   const pending = pendingThreadHydrations.get(ref);
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
-  await runtime.outbox.enqueueIntent(intent);
-  notifyMutationPersistence([ref]);
+  let record: MutationOutboxRecord;
+  try {
+    record = await runtime.outbox.enqueueIntent(intent);
+  } catch (error) {
+    if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+    throw error;
+  }
+  pinnedMutationRefs.add(ref);
+  notifyMutationPersistence([ref], { record });
 }
 
 async function enqueueMutation(
@@ -1321,16 +1408,11 @@ function replayHydrationNotifications(
   return { model: hydrated, appliedAt };
 }
 
-// A snapshot may only publish into the ready generation it was cut on, and the
-// epoch alone says that for the client too: rewireClient bumps readyEpoch
-// before it assigns wiredClient, the epoch only ever increases, and every
-// hydration captures its client and its epoch in the same synchronous step —
-// the one site that used to capture them either side of an await now re-reads
-// the client, and a test pins it there. So a hydration under a superseded
-// client necessarily carries a superseded epoch.
+// A snapshot may publish only for the client and ready generation that own
+// its hydration. Retired connections cannot overwrite replacement state.
 function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
   if (pendingThreadHydrations.get(ref) !== pending) return null;
-  if (readyEpoch !== pending.epoch) return null;
+  if (readyEpoch !== pending.epoch || wiredClient !== pending.client) return null;
   if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) {
     pendingThreadHydrations.delete(ref);
     return null;
@@ -1362,6 +1444,18 @@ async function publishAndReconcileThreadHydration(
 ): Promise<ThreadModel | null> {
   const published = publishThreadHydration(ref, pending, hydration.model);
   if (!published) return null;
+  threadsStore.setState((state) => {
+    const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
+    if (hydration.response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
+    else mutationAuthorityRefs.delete(ref);
+    return { mutationAuthorityRefs };
+  });
+  if (published.status.type === "restartRequired" || hydration.response.thread.evener.resumeRequired === true) {
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+    }));
+  }
+  const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);
   // The authoritative read has succeeded, so the replay gate opens HERE — in
   // the same synchronous step publishThreadHydration deleted the ref's
   // pending-hydration entry — not after the storage hygiene below. Between
@@ -1373,14 +1467,102 @@ async function publishAndReconcileThreadHydration(
   if (pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
   const runtime = getMutationRuntime();
   if (runtime) {
-    const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
-    await runtime.dispatcher.reconcileIdentities(authoritativeIds);
-    // The same read that settles what the authority knows also proves what it
-    // does not: a blockedUnknown record absent from every authoritative set
-    // was never journaled, so it returns to dispatch here rather than parking
-    // forever behind an outage that has since recovered (kata gwea).
-    await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
-    await refreshMutationPins(runtime, [ref]);
+    // A newer snapshot may publish while an older storage transaction is in
+    // flight. Serialize reconciliation and keep dispatch closed until the
+    // latest snapshot has reconciled; older writes then cannot undo recovery.
+    const previous = pendingMutationReconciliations.get(ref) ?? Promise.resolve();
+    const reconciliation: Promise<void> = previous
+      .catch(() => undefined)
+      .then(async () => {
+        // A published incompatibility remains a blocking obligation across
+        // later saved snapshots and reconnects. Process it in order; only a
+        // compatible snapshot afterward can prove that dispatch may resume.
+        const current = () =>
+          isCurrentMutationRuntime(runtime) &&
+          (published.status.type === "restartRequired" ||
+            (pending.epoch === readyEpoch && pending.client === wiredClient));
+        if (!current()) return;
+        const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
+        const mutationStateAuthoritative = hydration.response.thread.evener.mutationStateAuthoritative === true;
+        await runtime.dispatcher.reconcileIdentities(authoritativeIds);
+        if (!current()) return;
+        // A bounded transcript or a clear can omit an accepted mutation from
+        // the live projection. Retry unresolved records with their original
+        // mutation ID and payload: the daemon journal replays accepted work,
+        // and the original instance fence rejects a retry after a clear.
+        // Saved snapshots contain no authoritative daemon receipt history, even
+        // after an incompatible daemon has been stopped. Persist uncertainty so
+        // reopening that saved snapshot cannot release an already accepted send.
+        if (
+          !mutationStateAuthoritative ||
+          published.status.type === "restartRequired" ||
+          published.status.type === "notLoaded"
+        ) {
+          for (const record of await runtime.storage.listOutbox(ref)) {
+            if (!current()) return;
+            if (record.state === "submitting")
+              await runtime.storage.markUnknown(record.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+          }
+          notifyMutationPersistence([ref]);
+        } else {
+          await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+        }
+        if (!current()) return;
+        await refreshMutationPins(runtime, [ref]);
+        // Descendant reads cannot prove an uncertain mutation absent. Explicitly
+        // never-attempted intents need no receipt authority before first delivery.
+        const mutationsReconciled =
+          mutationStateAuthoritative ||
+          (await runtime.storage.listOutbox(ref)).every((record) => record.attempted === false);
+        // A newer incompatible snapshot owns a different obligation. An older
+        // successful reconciliation cannot clear that newer restriction.
+        if (
+          current() &&
+          mutationsReconciled &&
+          published.status.type !== "restartRequired" &&
+          hydration.response.thread.evener.resumeRequired !== true &&
+          published.status.type !== "notLoaded" &&
+          threadsStore.getState().restartBlockingObligations.get(ref) === blockingObligation
+        ) {
+          threadsStore.setState((state) => {
+            const restartBlockingObligations = new Map(state.restartBlockingObligations);
+            restartBlockingObligations.delete(ref);
+            return { restartBlockingObligations };
+          });
+        }
+      });
+    pendingMutationReconciliations.set(ref, reconciliation);
+    try {
+      await reconciliation;
+      if (
+        pendingMutationReconciliations.get(ref) === reconciliation &&
+        isCurrentMutationRuntime(runtime) &&
+        pending.epoch === readyEpoch &&
+        pending.client === wiredClient
+      ) {
+        threadsStore.setState((state) => {
+          const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
+          mutationReconciliationFailures.delete(ref);
+          return { mutationReconciliationFailures };
+        });
+      }
+    } catch (error) {
+      if (
+        pendingMutationReconciliations.get(ref) === reconciliation &&
+        isCurrentMutationRuntime(runtime) &&
+        pending.epoch === readyEpoch &&
+        pending.client === wiredClient
+      ) {
+        // Discovery retries the authoritative read after storage recovers.
+        // Keep the failure visible and dispatch closed until that succeeds.
+        threadsStore.setState((state) => ({
+          mutationReconciliationFailures: new Set(state.mutationReconciliationFailures).add(ref),
+        }));
+      }
+      throw error;
+    } finally {
+      if (pendingMutationReconciliations.get(ref) === reconciliation) pendingMutationReconciliations.delete(ref);
+    }
   }
   return published;
 }
@@ -1474,6 +1656,11 @@ function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
     return;
+  }
+  if (n.method === "evener/auth/updated") {
+    modelsEpoch += 1;
+    modelsCache = null;
+    inflightModelsList = null;
   }
   const mutationIdentities = notificationMutationIdentities(n);
   if (mutationIdentities.length > 0) {
@@ -1703,6 +1890,7 @@ async function refreshTrackedThread(
   epoch: number,
   ref: string,
   targetedResync: boolean,
+  reportFailure = false,
 ): Promise<void> {
   if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return;
   const previous = pendingThreadHydrations.get(ref);
@@ -1715,6 +1903,14 @@ async function refreshTrackedThread(
   const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) =>
     publishAndReconcileThreadHydration(ref, pending, result),
   );
+  const completion = hydration.then(
+    () => undefined,
+    () => undefined,
+  );
+  trackedHydrationCompletions.set(ref, completion);
+  void completion.then(() => {
+    if (trackedHydrationCompletions.get(ref) === completion) trackedHydrationCompletions.delete(ref);
+  });
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
   // A failed targeted predecessor may already have removed `previous`.
   // Keep the newest targeted read adoptable by the still-active initial
@@ -1737,7 +1933,8 @@ async function refreshTrackedThread(
   try {
     const model = await hydration;
     if (model && pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
-  } catch {
+  } catch (error) {
+    if (reportFailure) throw error;
     // The stale model stays published. Convergence is the owned hydration
     // lifecycle's job now (scheduleOwnedHydrationRetry, above).
   } finally {
@@ -1875,6 +2072,7 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
   readyEpoch += 1;
+  threadsStore.setState({ mutationAuthorityRefs: new Set() });
   // A different client is a different connection: every wire subscription
   // this generation tracked belongs to a socket that is gone, so drop the
   // whole set — handleReady's re-reads re-subscribe the still-tracked refs on
@@ -1890,6 +2088,7 @@ function rewireClient(client: AppwireClientLike): void {
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(() => {
     readyEpoch += 1;
+    threadsStore.setState({ mutationAuthorityRefs: new Set() });
     // onReady is the SAME client reconnecting: its old connection's
     // subscriptions are server-side gone too, even though the client object
     // survives. handleReady re-subscribes the still-tracked refs.
@@ -1918,6 +2117,9 @@ function rewireClient(client: AppwireClientLike): void {
 // Registered once, at module load, same lifetime as this module's other
 // singleton bookkeeping (refCounts, wiredClient, ...).
 connectionStore.subscribe((state) => {
+  if (state.client?.state !== "ready" && threadsStore.getState().mutationAuthorityRefs.size > 0) {
+    threadsStore.setState({ mutationAuthorityRefs: new Set() });
+  }
   if (state.client) rewireClient(state.client);
 });
 
@@ -2039,6 +2241,10 @@ function replaceThread(
 
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
+  mutationWriteStalled: false,
+  mutationReconciliationFailures: new Set(),
+  restartBlockingObligations: new Map(),
+  mutationAuthorityRefs: new Set(),
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),
@@ -2103,6 +2309,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             continue;
           }
           if (lifecycleActive && threadsStore.getState().threads.has(ref)) return;
+          // Release is terminal even when the failed read belongs to an old
+          // connection. A reconnect cannot re-arm a pane that no longer exists.
+          if (!lifecycleActive) return;
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
             // requireReadyClient re-reads the CURRENT client on the way out,
@@ -2110,12 +2319,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // hydration that outlived it. Same shape as the re-arm below and
             // as both of watchThread's.
             client = await requireReadyClient();
+            if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client);
             continue;
           }
-          // Release is terminal for this owner generation: this call's claim is
-          // already gone, so there is nothing left to retry or to report.
-          if (!lifecycleActive) return;
           // Same client, same ready epoch: the read failed in transport, not
           // because this pane lost the ref. The failed attempt owns one
           // scheduled retry for this owner generation, and every concurrent
@@ -2132,6 +2339,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if (threadsStore.getState().threads.has(ref)) return;
 
         client = await requireReadyClient();
+        if ((refCounts.get(ref) ?? 0) <= 0) return;
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client);
       }
@@ -2172,6 +2380,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightHydrates.delete(ref);
     inflightHydrateClients.delete(ref);
     inflightHydrateEpochs.delete(ref);
+    trackedHydrationCompletions.delete(ref);
     pendingThreadHydrations.delete(ref);
     // A watched lifecycle may still hold this ref (watchRefCounts), and its
     // model stays; only the pane's own tracking goes. Unsubscribe the wire
@@ -2326,24 +2535,76 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     removeWatchedThreadModel(ref);
   },
 
+  async refreshThread(ref): Promise<void> {
+    const deadline = Date.now() + REQUIRE_READY_TIMEOUT_MS;
+    let client: AppwireClientLike;
+    do {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new ClientNotReadyError("threads store: timed out waiting for a ready client");
+      }
+      await requireReadyClient(remaining);
+      client = requireClient();
+    } while (client.state !== "ready");
+    await refreshTrackedThread(client, readyEpoch, ref, true, true);
+    const runtime = getMutationRuntime();
+    if (runtime) scheduleMutationDispatch(runtime, [ref]);
+  },
+
   async loadOlderTurns(ref) {
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
+    await requireReadyClient();
+    await trackedHydrationCompletions.get(ref);
     const client = await requireReadyClient();
+    const capturedEpoch = readyEpoch;
     const model = threadsStore.getState().threads.get(ref);
     if (!model?.olderCursor) return; // untracked, or no more history to page in
-    const resp: ThreadTurnsListResponse = await client.request(
-      "thread/turns/list",
-      olderTurnsParams(ref, model.olderCursor),
-    );
+    const capturedRef = model.ref;
+    const capturedCursor = model.olderCursor;
+    const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
+    const capturedPageGeneration = olderPageGenerations.get(ref) ?? 0;
+    let resp: ThreadTurnsListResponse;
+    try {
+      resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
+    } catch (error) {
+      if (isStaleCursorError(error)) {
+        const current = threadsStore.getState().threads.get(ref);
+        if (
+          !current ||
+          wiredClient !== client ||
+          readyEpoch !== capturedEpoch ||
+          current.ref !== capturedRef ||
+          current.olderCursor !== capturedCursor ||
+          (threadsStore.getState().hydrations.get(ref) ?? 0) !== capturedHydrations ||
+          (olderPageGenerations.get(ref) ?? 0) !== capturedPageGeneration ||
+          pendingThreadHydrations.has(ref)
+        )
+          return;
+        await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+        return;
+      }
+      throw error;
+    }
     // A concurrent releaseThread() may have dropped this ref while the page
     // was in flight; don't resurrect it. Re-read (rather than reusing
     // `model`) so a live notification that arrived during the await isn't
     // clobbered by prepending onto a stale snapshot.
     const current = threadsStore.getState().threads.get(ref);
-    if (!current) return;
-    putThreadModel(ref, prependOlderTurns(current, resp));
+    if (
+      !current ||
+      wiredClient !== client ||
+      readyEpoch !== capturedEpoch ||
+      current.ref !== capturedRef ||
+      current.olderCursor !== capturedCursor ||
+      (threadsStore.getState().hydrations.get(ref) ?? 0) !== capturedHydrations ||
+      (olderPageGenerations.get(ref) ?? 0) !== capturedPageGeneration ||
+      pendingThreadHydrations.has(ref)
+    )
+      return;
+    olderPageGenerations.set(ref, capturedPageGeneration + 1);
+    putThreadModel(ref, mergeOlderItemPage(current, resp));
   },
 
   async send(ref, text, attachments) {
@@ -2475,6 +2736,27 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await refreshMutationPins(runtime, [ref]);
   },
 
+  async forceStop(ref) {
+    try {
+      await requireClient().forceStop(ref);
+    } catch (error) {
+      // The signal may have succeeded despite failed exit confirmation.
+      // Retain the recovery fence until a fresh snapshot proves it can clear.
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+      }));
+      // Reconcile the hub's recovery requirement without delaying this error.
+      void threadsStore
+        .getState()
+        .refreshThread(ref)
+        .catch(() => {});
+      throw error;
+    }
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+    }));
+  },
+
   async shutdown(ref) {
     const client = requireClient();
     try {
@@ -2517,6 +2799,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // No mapConflict here: model/list is a read-only listing with no
     // turn-CAS concept (verified against every server-side handler - see
     // this file's own describe block for the exact citations).
+    const epoch = modelsEpoch;
     const request = (async () => {
       const client = await requireReadyClient();
       return client.request("model/list", {});
@@ -2524,10 +2807,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (!refresh) inflightModelsList = request;
     try {
       const resp = await request;
-      modelsCache = resp;
+      if (epoch === modelsEpoch) modelsCache = resp;
       return resp;
     } finally {
-      if (!refresh) inflightModelsList = null;
+      if (!refresh && inflightModelsList === request) inflightModelsList = null;
     }
   },
 
@@ -2641,11 +2924,14 @@ export function resetThreadsStoreForTests(): void {
   dispatchReadyEpoch = -1;
   refCounts.clear();
   ensureGenerations.clear();
+  olderPageGenerations.clear();
   goalUpdateGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();
+  trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
+  pendingMutationReconciliations.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
   inflightWatchHydrateClients.clear();

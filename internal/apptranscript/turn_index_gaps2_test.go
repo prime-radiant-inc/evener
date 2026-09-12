@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -45,7 +46,7 @@ func TestLatestFromFileLimitNegative(t *testing.T) {
 // file does not exist (loadTurnIndex returns an error).
 func TestLatestFromFileMissingFile(t *testing.T) {
 	cache := NewTurnCache()
-	_, _, err := cache.LatestFromFile(filepath.Join(t.TempDir(), "missing.transcript.jsonl"), testMaxLineBytes, 5, boundedTestProjector)
+	_, _, err := latestFromFileForTest(cache, filepath.Join(t.TempDir(), "missing.transcript.jsonl"), testMaxLineBytes, 5, boundedTestProjector)
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -93,7 +94,7 @@ func TestPageFromFileCursorNegative(t *testing.T) {
 	_ = requirePageFromFile(t, cache, path, testMaxLineBytes, "", 2, boundedTestProjector)
 	// Negative cursor clamps to 0, so lo=max(0-2,0)=0, hi=0, range is empty.
 	// This covers the hi<0 clamp path without error.
-	page, err := cache.PageFromFile(path, testMaxLineBytes, "-5", 2, boundedTestProjector)
+	page, err := pageFromFileForTest(cache, path, testMaxLineBytes, "-5", 2, boundedTestProjector)
 	if err != nil {
 		t.Fatalf("negative cursor should not error, got %v", err)
 	}
@@ -118,7 +119,7 @@ func TestPageFromFileNonNumericCursor(t *testing.T) {
 // TestPageFromFileMissingFile covers the error path for a missing file.
 func TestPageFromFileMissingFile(t *testing.T) {
 	cache := NewTurnCache()
-	_, err := cache.PageFromFile(filepath.Join(t.TempDir(), "missing.transcript.jsonl"), testMaxLineBytes, "", 5, boundedTestProjector)
+	_, err := pageFromFileForTest(cache, filepath.Join(t.TempDir(), "missing.transcript.jsonl"), testMaxLineBytes, "", 5, boundedTestProjector)
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -159,7 +160,7 @@ func TestScanTurnIndexBlankLine(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	turns := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	turns := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	if len(turns) == 0 {
 		t.Fatalf("expected turns from transcript with blank line")
 	}
@@ -193,7 +194,7 @@ func TestUsableTurnIndexBadRecordKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	got, start, _ := usableTurnIndex(f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	got, start, _, _ := usableTurnIndex(context.Background(), f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for bad record kind, got %d", start)
 	}
@@ -229,7 +230,7 @@ func TestUsableTurnIndexBadVisibleCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for bad visible count, got %d", start)
 	}
@@ -262,7 +263,7 @@ func TestUsableTurnIndexBadVisibleIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for bad visible index, got %d", start)
 	}
@@ -296,7 +297,7 @@ func TestUsableTurnIndexBadOffset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for bad offset, got %d", start)
 	}
@@ -330,7 +331,7 @@ func TestUsableTurnIndexBadIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for bad index, got %d", start)
 	}
@@ -365,7 +366,7 @@ func TestUsableTurnIndexBadToolSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for bad tool seed, got %d", start)
 	}
@@ -398,7 +399,7 @@ func TestUsableTurnIndexZeroLength(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 100, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for zero length, got %d", start)
 	}
@@ -427,7 +428,7 @@ func TestUsableTurnIndexTrustedMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	got, start, _ := usableTurnIndex(f, 0, testMaxLineBytes, index.ProjectionID, &index, true, false, true, nil)
+	got, start, _, _ := usableTurnIndex(context.Background(), f, 0, testMaxLineBytes, index.ProjectionID, &index, true, false, true, nil)
 	if start != 0 {
 		t.Fatalf("trusted memory should return start=CompleteSize=0, got %d", start)
 	}
@@ -467,7 +468,7 @@ func TestUsableTurnIndexAppendOnlyAnchorsMismatch(t *testing.T) {
 	}
 	defer f.Close()
 	// appendOnly=true, anchors won't match (wrong stamp)
-	_, start, _ := usableTurnIndex(f, 10, testMaxLineBytes, index.ProjectionID, &index, false, true, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 10, testMaxLineBytes, index.ProjectionID, &index, false, true, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for anchor mismatch, got %d", start)
 	}
@@ -495,7 +496,7 @@ func TestUsableTurnIndexTranscriptSizeTooLarge(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 5, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 5, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for transcript size too large, got %d", start)
 	}
@@ -523,7 +524,7 @@ func TestUsableTurnIndexCompleteSizeNegative(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 5, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 5, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for negative complete size, got %d", start)
 	}
@@ -551,7 +552,7 @@ func TestUsableTurnIndexCompleteExceedsTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 5, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 5, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for complete>transcript, got %d", start)
 	}
@@ -579,7 +580,7 @@ func TestUsableTurnIndexBadIntegrityStamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 5, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 5, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for bad integrity stamp, got %d", start)
 	}
@@ -604,7 +605,7 @@ func TestUsableTurnIndexVersionMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	_, start, _ := usableTurnIndex(f, 1, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
+	_, start, _, _ := usableTurnIndex(context.Background(), f, 1, testMaxLineBytes, index.ProjectionID, &index, false, false, false, nil)
 	if start != -1 {
 		t.Fatalf("expected start=-1 for version mismatch, got %d", start)
 	}
@@ -883,7 +884,7 @@ func TestPrefixStampZeroSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	stamp, readBytes := prefixStamp(f, 0)
+	stamp, readBytes, _ := prefixStamp(context.Background(), f, 0)
 	if stamp == "" {
 		t.Fatalf("expected non-empty initial stamp for zero-size file")
 	}
@@ -898,7 +899,7 @@ func TestProjectIndexedRangeObservedOpenError(t *testing.T) {
 	index := turnIndexDisk{
 		VisibleRecords: 3,
 		Records: []indexedTurn{
-			{Offset: 0, Length: 10, Index: 1, Kind: "entry", Visible: true, VisibleIndex: 1},
+			{Offset: 0, Length: 10, Index: 1, Kind: "entry", TurnKind: schema.TurnUserInput, TurnID: "turn_1", Visible: true, VisibleIndex: 1, GroupItems: 1},
 		},
 	}
 	_, _, err := projectIndexedRangeObserved(filepath.Join(t.TempDir(), "missing.transcript.jsonl"), index, 0, 3, nil, nil)

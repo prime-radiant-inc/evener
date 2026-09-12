@@ -93,9 +93,9 @@ test("shows a quiet loading state while a page is in flight", () => {
   expect(screen.getByTestId("load-older-row").textContent).toMatch(/loading older turns/i);
 });
 
-test("idle with more history to fetch, it still says what it is - never an empty row", () => {
+test("idle with more history to fetch, it shows no banner at all", () => {
   render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} />);
-  expect(screen.getByTestId("load-older-row").textContent).toMatch(/older turns/i);
+  expect(screen.queryByText(/older turns/i)).toBeNull();
 });
 
 test("a failed fetch surfaces inline, announced, with a Retry - never silently", () => {

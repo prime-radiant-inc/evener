@@ -14,7 +14,7 @@ import (
 // projection paths follow: a persisted StableTurnID is the turn's id, and entry
 // -index numbering is only the fallback for entries that carry none.
 //
-// The full reader (TurnsFromFile) has always honored it. The bounded reader
+// The full reader (ItemTurnsFromFile) has always honored it. The bounded reader
 // numbered purely by entry index, so the SAME dormant session answered with
 // different turn ids depending on whether the read was windowed — and since
 // reserved client-mutation ids live in their own "turn_mN" namespace (kata
@@ -33,15 +33,17 @@ func TestBoundedReadsHonorPersistedStableTurnIDs(t *testing.T) {
 		assistantTextEntry(8, "out-3"),
 	)
 
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-	wantIDs := []string{"turn_1", "turn_2", older, "turn_4", "turn_5", "turn_6", newer, "turn_8"}
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	// Logical grouping: each reserved user input opens one turn that swallows
+	// its assistant continuation, so the fallback entries renumber.
+	wantIDs := []string{"turn_1", older, "turn_5", newer}
 	if gotIDs := turnIDs(full); !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("full read turn IDs = %v, want %v", gotIDs, wantIDs)
 	}
 
 	cache := NewTurnCache()
 	latest, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 3, boundedTestProjector)
-	wantLatest, wantCursor := appwire.WindowTurns(full, 3)
+	wantLatest, wantCursor := latestGroupedTurns(full, 3)
 	if gotIDs := turnIDs(latest); !reflect.DeepEqual(gotIDs, turnIDs(wantLatest)) {
 		t.Fatalf("windowed read turn IDs = %v, want the full read's %v", gotIDs, turnIDs(wantLatest))
 	}
@@ -50,7 +52,7 @@ func TestBoundedReadsHonorPersistedStableTurnIDs(t *testing.T) {
 	}
 
 	page := requirePageFromFile(t, cache, path, testMaxLineBytes, cursor, 3, boundedTestProjector)
-	wantPage := appwire.PageTurns(full, cursor, 3)
+	wantPage := pageGroupedTurns(full, cursor, 3)
 	if gotIDs := turnIDs(page.Turns); !reflect.DeepEqual(gotIDs, turnIDs(wantPage.Data)) {
 		t.Fatalf("paged read turn IDs = %v, want the full read's %v", gotIDs, turnIDs(wantPage.Data))
 	}
@@ -79,7 +81,7 @@ func TestBoundedReadsMatchTheFullReadOnDuplicatePersistedTurnIDs(t *testing.T) {
 	}
 	path := writeEntries(t, entries...)
 
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	occurrences := 0
 	for _, id := range turnIDs(full) {
 		if id == "turn_11" {
@@ -92,14 +94,14 @@ func TestBoundedReadsMatchTheFullReadOnDuplicatePersistedTurnIDs(t *testing.T) {
 
 	cache := NewTurnCache()
 	latest, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 4, boundedTestProjector)
-	wantLatest, wantCursor := appwire.WindowTurns(full, 4)
+	wantLatest, wantCursor := latestGroupedTurns(full, 4)
 	if !reflect.DeepEqual(latest, wantLatest) || cursor != wantCursor {
 		t.Fatalf("windowed read IDs = %v (cursor %q), want the full read's %v (cursor %q)", turnIDs(latest), cursor, turnIDs(wantLatest), wantCursor)
 	}
 
 	for cursor != "" {
 		page := requirePageFromFile(t, cache, path, testMaxLineBytes, cursor, 4, boundedTestProjector)
-		wantPage := appwire.PageTurns(full, cursor, 4)
+		wantPage := pageGroupedTurns(full, cursor, 4)
 		if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
 			t.Fatalf("paged read at cursor %q = %v (next %q), want the full read's %v (next %q)",
 				cursor, turnIDs(page.Turns), page.NextCursor, turnIDs(wantPage.Data), wantPage.NextCursor)

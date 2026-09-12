@@ -78,7 +78,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
 
 ### Browser (the UI half: does the pane actually offer the blank submit, and does the rail say so)
 
-5. Navigate to `/auth?token=$TOKEN&next=/new`. Leave the prompt textarea
+5. Navigate to `/auth/$TOKEN?next=/new`. Leave the prompt textarea
    (`[data-testid="spawn-prompt-card"]`, `aria-label="Prompt"`)
    completely empty. Attach nothing. Set the working directory to a path
    that exists.

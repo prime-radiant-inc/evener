@@ -16,12 +16,14 @@
     "layoutguard": "node scripts/layoutguard/run.mjs",
     "overflowguard": "node scripts/overflowguard/run.mjs",
     "shellguard": "node scripts/shellguard/run.mjs",
-    "spawnguard": "node scripts/spawnguard/run.mjs"
+    "spawnguard": "node scripts/spawnguard/run.mjs",
+    "transcriptscrollguard": "node scripts/transcriptscrollguard/run.mjs"
   },
   "license": "ISC",
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/source-serif-4": "^5.3.0",
     "@tanstack/react-virtual": "^3.14.7",
     "anser": "^2.3.5",
     "dockview": "^7.0.2",
@@ -31,7 +33,7 @@
     "qrcode.react": "4.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-router": "^8.3.0",
+    "tinykeys": "^4.0.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -44,11 +46,11 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "fake-indexeddb": "6.2.5",
     "jsdom": "^29.1.1",
     "typescript": "^6.0.3",
     "vite": "^8.1.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

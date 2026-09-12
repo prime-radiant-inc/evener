@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
@@ -113,6 +113,94 @@ test("the panel pre-fills and marks the caller's value, which need not be the la
   await user.click(screen.getByTestId("trigger"));
   const combobox = (await screen.findByRole("combobox")) as HTMLInputElement;
   expect(combobox.value).toBe("openai/gpt-5.5");
+});
+
+// A superseded load must never overwrite the open picker: open, close while
+// the catalog is in flight (cwd/harness/credential change), reopen against a
+// new loader scope, then let the STALE request land - the panel keeps the
+// fresh catalog, not the dead one.
+// A loader-identity change while the picker is OPEN (Spawn recreates
+// loadCatalog on cwd/harness/credential change) restarts the load against
+// the new scope: the stale in-flight request must neither populate the
+// panel nor clobber the fresh catalog when it lands late.
+test("a loader change while open reloads against the new scope", async () => {
+  const user = userEvent.setup();
+  const stale: { resolve: ((c: ModelCatalog) => void) | null } = { resolve: null };
+  const fresh: { resolve: ((c: ModelCatalog) => void) | null } = { resolve: null };
+  const freshCatalog: ModelCatalog = {
+    models: [{ provider: "fresh", model: "fresh-model", displayName: "fresh/fresh-model" }],
+    recent: [],
+  };
+  const staleLoad = vi.fn(() => new Promise<ModelCatalog>((resolve) => (stale.resolve = resolve)));
+  const freshLoad = vi.fn(() => new Promise<ModelCatalog>((resolve) => (fresh.resolve = resolve)));
+  const { rerender } = renderTrigger({ loadCatalog: staleLoad });
+
+  await user.click(screen.getByTestId("trigger"));
+  await screen.findByRole("combobox");
+  // The scope changes under the open picker: new loader identity, same mount.
+  rerender(
+    <ModelSwitchTrigger
+      label="anthropic/claude-sonnet-4-5"
+      value="anthropic/claude-sonnet-4-5"
+      loadCatalog={freshLoad}
+      onPick={vi.fn()}
+      data-testid="trigger"
+      valueTestId="trigger-value"
+    />,
+  );
+
+  // The new scope's loader runs without reopening.
+  await waitFor(() => expect(freshLoad).toHaveBeenCalledTimes(1));
+  const optionTexts = () => screen.queryAllByRole("option").map((o) => o.textContent);
+  fresh.resolve?.(freshCatalog);
+  await waitFor(() => expect(optionTexts()).toContain("fresh/fresh-model"));
+  // The dead request lands late and must change nothing.
+  stale.resolve?.(catalog());
+  await act(async () => {});
+
+  await waitFor(() => expect(optionTexts()).toContain("fresh/fresh-model"));
+  expect(optionTexts().some((t) => t?.includes("GPT-5.5"))).toBe(false);
+});
+
+test("a stale catalog load never overwrites the reopened picker", async () => {
+  const user = userEvent.setup();
+  const stale: { resolve: ((c: ModelCatalog) => void) | null } = { resolve: null };
+  const fresh: { resolve: ((c: ModelCatalog) => void) | null } = { resolve: null };
+  const staleCatalog = catalog();
+  const freshCatalog: ModelCatalog = {
+    models: [{ provider: "fresh", model: "fresh-model", displayName: "fresh/fresh-model" }],
+    recent: [],
+  };
+  const { rerender } = renderTrigger({
+    loadCatalog: vi.fn(() => new Promise<ModelCatalog>((resolve) => (stale.resolve = resolve))),
+  });
+
+  await user.click(screen.getByTestId("trigger"));
+  // Wait for the panel before dismissing: Escape must reach the mounted
+  // panel's own handler, not the body behind a still-loading open.
+  await screen.findByRole("combobox");
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
+  rerender(
+    <ModelSwitchTrigger
+      label="anthropic/claude-sonnet-4-5"
+      value="anthropic/claude-sonnet-4-5"
+      loadCatalog={vi.fn(() => new Promise<ModelCatalog>((resolve) => (fresh.resolve = resolve)))}
+      onPick={vi.fn()}
+      data-testid="trigger"
+      valueTestId="trigger-value"
+    />,
+  );
+  await user.click(screen.getByTestId("trigger"));
+  // Fresh lands first, then the dead request: the stale one must not clobber it.
+  const optionTexts = () => screen.queryAllByRole("option").map((o) => o.textContent);
+  fresh.resolve?.(freshCatalog);
+  await waitFor(() => expect(optionTexts()).toContain("fresh/fresh-model"));
+  stale.resolve?.(staleCatalog);
+  await act(async () => {});
+
+  await waitFor(() => expect(optionTexts()).toContain("fresh/fresh-model"));
+  expect(optionTexts().some((t) => t?.includes("GPT-5.5"))).toBe(false);
 });
 
 test("opening shows a loading state until the catalog resolves", async () => {

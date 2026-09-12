@@ -2,8 +2,8 @@
 // docs/superpowers/specs/2026-08-17-dev-tooling-in-go-design.md): one
 // subcommand per retired script, invoked from the Makefile and the remaining
 // scripts as `go run ./cmd/evener-dev <subcommand> ...`. Subcommand env and
-// output contracts are the retired scripts' contracts; their Go tests are the
-// selftests those scripts used to fake with PATH stubs.
+// output contracts are the retired scripts' contracts; their Go tests are
+// what those scripts used to fake with PATH stubs.
 package dev
 
 import (

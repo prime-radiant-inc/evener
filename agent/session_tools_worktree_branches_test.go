@@ -619,6 +619,39 @@ func TestWorktreeListSummaryDirtyUnknown(t *testing.T) {
 	}
 }
 
+// TestWorktreeListZeroAheadLaneNotMergedThroughList exercises the 0-commit
+// lane skip through the real list operation: a lane whose branch was created
+// at the base commit and never advanced must report 0 ahead and NOT carry the
+// merged label — isAncestor(base, main) is trivially true for such a lane but
+// is not evidence of a merge.
+func TestWorktreeListZeroAheadLaneNotMergedThroughList(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	r.addManagedWorktreeFixture(t, "fresh-lane") // branch at base, no commits
+
+	out, err := r.listOp(t)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	entries := listEntries(t, out)
+	var found bool
+	for _, e := range entries {
+		if e["name"] != "fresh-lane" {
+			continue
+		}
+		found = true
+		if got := e["ahead_commits"]; got != 0 {
+			t.Errorf("fresh lane ahead_commits = %v, want 0", got)
+		}
+		if merged, ok := e["merged"].(bool); ok && merged {
+			t.Errorf("0-commit lane must not report merged: %+v", e)
+		}
+	}
+	if !found {
+		t.Fatalf("fresh-lane not listed: %+v", entries)
+	}
+}
+
 func TestWorktreeListSummaryWithUnmanaged(t *testing.T) {
 	entries := []WorktreeListEntry{
 		{Name: "wt1", AheadCommits: 0, Merged: true},

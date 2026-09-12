@@ -33,7 +33,7 @@ func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[
 
 	cfg := SessionConfig{}
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -49,9 +49,9 @@ func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[
 	maps.Copy(sess.pluginAgents, agents)
 
 	resolver := &sectionResolver{
-		provider: sess.profile.ID(),
-		agent:    defaultAgentName,
-		agentFS:  bundled.Agents(),
+		surface: sess.profile.ID(),
+		agent:   defaultAgentName,
+		agentFS: bundled.Agents(),
 		sources: []sectionSource{
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},
@@ -82,7 +82,7 @@ func renderSubagentPromptWithAllowanceAndTools(t *testing.T, allowance int, allo
 	cfg.spawn.delegationAllowance = allowance
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 		},
 	}})
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 3,
 		NoProjectPrompts: true,
 		StateDir:         t.TempDir(),
@@ -184,7 +184,7 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 
 	res := sess.createDelegate(context.Background(), delegateArgs{
 		Task:                "coordinate follow-up work",
-		DelegationAllowance: 1,
+		DelegationAllowance: new(1),
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)

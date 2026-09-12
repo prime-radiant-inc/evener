@@ -1,4 +1,14 @@
-import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type CSSProperties,
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { errorText } from "../../protocol/errors";
 import type {
@@ -10,12 +20,23 @@ import type {
 } from "../../protocol/types.gen";
 import { useConnectionStore } from "../../stores/connection";
 import {
+  nextNavigationOffset,
+  relativeAge,
   selectAttentionSummary,
   selectPinSectionSummaries,
   selectPinSections,
+  selectRailModel,
 } from "../../stores/navigation/selectors";
+import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
+import {
+  isSettledGone,
+  keyID,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  type ResourceKey,
+  type ResourceState,
+} from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
 import {
   Badge,
@@ -25,17 +46,17 @@ import {
   EmptyState,
   IconButton,
   Input,
-  Menu,
   Skeleton,
   Tooltip,
-  Tree,
-  type TreeRowInfo,
   useToasts,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { Menu } from "../../widgets/menu";
+import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate, paneToURL } from "../routing";
+import { useIsMobile } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import {
   assignSessionPin,
@@ -52,7 +73,8 @@ import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import dialogStyles from "./railDialog.module.css";
-import { loadExpansion, saveExpansion } from "./railExpansion";
+import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "./railExpansion";
+import { GearIcon, SearchIcon, SidebarIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
@@ -78,13 +100,14 @@ const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
-  brandSpacer: requireClass(styles.brandSpacer, "Rail.module.css", "brandSpacer"),
+  brandIdentity: requireClass(styles.brandIdentity, "Rail.module.css", "brandIdentity"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
-  footer: requireClass(styles.footer, "Rail.module.css", "footer"),
-  footerIdentity: requireClass(styles.footerIdentity, "Rail.module.css", "footerIdentity"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
+  parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
+  parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
+  staticSectionLabel: requireClass(styles.staticSectionLabel, "Rail.module.css", "staticSectionLabel"),
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
   sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
@@ -96,6 +119,21 @@ const CLASS = {
 
 const ARCHIVED_SECTION_KEY = "section:archived";
 type CatalogKind = keyof NavigationCatalogs;
+const sessionModelCache = new WeakMap<object, Map<string, RailSession>>();
+type ProjectPageDependency = Readonly<{
+  id: string;
+  tier: "current" | "recent" | "archived";
+  graphOrData: object | null;
+}>;
+type ProjectModelCacheEntry = Readonly<{
+  mode: "compatibility" | "graph";
+  root: object | null;
+  pages: readonly ProjectPageDependency[];
+  compatibilityError?: string;
+  result: RailProject;
+}>;
+const projectModelCache = new WeakMap<object, ProjectModelCacheEntry>();
+const archivedProjectModelCache = new WeakMap<object, RailProject>();
 
 interface RailSectionProps {
   title: string;
@@ -103,16 +141,77 @@ interface RailSectionProps {
   onToggle: (node: RailNode) => void;
   onActivate: (node: RailNode) => void;
   actions: RailRowActions;
+  projectRetryCallback: (key: string) => () => void;
 }
-function renderRailRow(actions: RailRowActions) {
-  return (node: RailNode, info: TreeRowInfo) => <RailRow node={node} info={info} actions={actions} />;
+interface NavigationRailRowProps {
+  node: RailNode;
+  info: TreeRowInfo;
+  actions: RailRowActions;
+  projectRetryCallback: (key: string) => () => void;
 }
-function RailSection({ title, nodes, onToggle, onActivate, actions }: RailSectionProps) {
+function ProjectNavigationRailRow({
+  node,
+  info,
+  actions,
+  projectRetryCallback,
+}: NavigationRailRowProps & {
+  node: Extract<RailNode, { kind: "project" }>;
+}) {
+  const projectKey = node.project.key;
+  const resourceError = useNavigationStore((state) => {
+    const error = state.resources.get(keyID({ kind: "project", projectKey }))?.error;
+    return error ? errorText(error) : undefined;
+  });
+  return (
+    <RailRow
+      node={node}
+      info={info}
+      actions={actions}
+      resourceError={resourceError}
+      retry={resourceError ? projectRetryCallback(projectKey) : undefined}
+    />
+  );
+}
+const NavigationRailRow = memo(function NavigationRailRow({
+  node,
+  info,
+  actions,
+  projectRetryCallback,
+}: NavigationRailRowProps) {
+  return node.kind === "project" ? (
+    <ProjectNavigationRailRow node={node} info={info} actions={actions} projectRetryCallback={projectRetryCallback} />
+  ) : (
+    <RailRow node={node} info={info} actions={actions} />
+  );
+});
+function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: string) => () => void) {
+  return (node: RailNode, info: TreeRowInfo) => (
+    <NavigationRailRow node={node} info={info} actions={actions} projectRetryCallback={projectRetryCallback} />
+  );
+}
+function isPassiveRailNode(node: RailNode): boolean {
+  return node.kind === "loading" || node.kind === "job";
+}
+
+// One shared Tree wrapper for the rail's sections: the rail renders on
+// desktop (RailHost) AND mobile (StackHost's rail slot), but the global Alt
+// chords are desktop-only - so only the desktop instance releases
+// Alt-held arrows/Home/End from the tree. On mobile the chords are inert,
+// and released Alt+ArrowLeft/Right would fall through to the browser's
+// history navigation, so the tree keeps them tree-owned (roborev PR #1044
+// round-9 medium 1).
+function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
+  const isMobile = useIsMobile();
+  return <Tree {...props} releaseModifierKeys={!isMobile} />;
+}
+
+function RailSection({ title, nodes, onToggle, onActivate, actions, projectRetryCallback }: RailSectionProps) {
+  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   if (nodes.length === 0) return null;
   return (
     <section className={CLASS.section}>
-      <h3 className={CLASS.sectionTitle}>{title}</h3>
-      <Tree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRailRow(actions)} />
+      <h3 className={`${CLASS.sectionTitle} ${CLASS.staticSectionLabel}`}>{title}</h3>
+      <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />
     </section>
   );
 }
@@ -123,6 +222,7 @@ interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes
   onRename: () => void;
   onDelete: () => void;
   isExpanded: ReturnType<typeof overrideLookup>;
+  projectRetryCallback: (key: string) => () => void;
 }
 function PinnedRailSection({
   section,
@@ -134,7 +234,9 @@ function PinnedRailSection({
   onToggle,
   onActivate,
   actions,
+  projectRetryCallback,
 }: PinnedRailSectionProps) {
+  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   return (
     <section className={CLASS.section}>
       <div className={CLASS.sectionHeadingRow}>
@@ -160,7 +262,7 @@ function PinnedRailSection({
         </div>
       </div>
       {open && (
-        <Tree
+        <RailTree
           nodes={[
             ...sessionNodes(section.sessions ?? [], isExpanded),
             ...pinSectionOverflowNode(
@@ -173,7 +275,7 @@ function PinnedRailSection({
           ]}
           onToggle={onToggle}
           onActivate={onActivate}
-          renderRow={renderRailRow(actions)}
+          renderRow={renderRow}
         />
       )}
     </section>
@@ -183,14 +285,30 @@ interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
   count: number;
   open: boolean;
   onToggleOpen: () => void;
+  projectRetryCallback: (key: string) => () => void;
 }
-function ArchivedSection({ count, open, onToggleOpen, nodes, onToggle, onActivate, actions }: ArchivedSectionProps) {
+function ArchivedSection({
+  count,
+  open,
+  onToggleOpen,
+  nodes,
+  onToggle,
+  onActivate,
+  actions,
+  projectRetryCallback,
+}: ArchivedSectionProps) {
+  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   return (
     <section className={CLASS.section}>
-      <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
+      <button
+        type="button"
+        className={`${CLASS.sectionDisclosure} ${CLASS.staticSectionLabel}`}
+        aria-expanded={open}
+        onClick={onToggleOpen}
+      >
         <Chevron direction={open ? "down" : "right"} /> {`Archived sessions (${count})`}
       </button>
-      {open && <Tree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRailRow(actions)} />}
+      {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
     </section>
   );
 }
@@ -201,22 +319,15 @@ export interface RailProps {
   onWidthChange?: (width: number) => void;
   revealTarget?: string | null;
   onRevealConsumed?: () => void;
+  /** The normal rail owns its list scrolling. Mobile's Sheet can opt to own
+   * the whole rail instead, so the rail grows with its content. */
+  scrollOwner?: "rail" | "parent";
 }
 interface RevealRequestGuard {
   target: string;
   token: symbol;
 }
 
-function relativeAge(updatedAt?: string): string | undefined {
-  if (!updatedAt) return undefined;
-  const timestamp = Date.parse(updatedAt);
-  if (!Number.isFinite(timestamp)) return undefined;
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return "now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
 function summarySession(
   summary: NavigationSessionSummary,
   scope: string,
@@ -224,8 +335,11 @@ function summarySession(
   pinSectionID?: string,
   projectKey?: string,
 ): RailSession {
+  const context = `${scope}\0${tier ?? ""}\0${pinSectionID ?? ""}\0${projectKey ?? ""}`;
+  const cached = sessionModelCache.get(summary as object)?.get(context);
+  if (cached) return cached;
   const children = summary.children.map((child) => summarySession(child, scope, tier, pinSectionID, projectKey));
-  return {
+  const result = {
     ...summary,
     row_id: `navigation:${scope}:${summary.ref}`,
     tier,
@@ -234,6 +348,13 @@ function summarySession(
     age: relativeAge(summary.updated_at),
     children,
   };
+  let entries = sessionModelCache.get(summary as object);
+  if (!entries) {
+    entries = new Map();
+    sessionModelCache.set(summary as object, entries);
+  }
+  entries.set(context, result);
+  return result;
 }
 function sessions(
   summaries: readonly NavigationSessionSummary[],
@@ -252,8 +373,93 @@ function dedupeSessions(rows: readonly RailSession[]): RailSession[] {
     return true;
   });
 }
+function resourceState(
+  state: ReturnType<typeof navigationStore.getState>,
+  key: ResourceKey,
+): ResourceState | undefined {
+  return state.resources.get(keyID(key));
+}
 function resourceData<T>(state: ReturnType<typeof navigationStore.getState>, key: ResourceKey): T | null {
-  return (state.resources.get(keyID(key))?.data as T | undefined) ?? null;
+  const resource = resourceState(state, key);
+  if (resource?.normalized?.presence === "gone") return null;
+  return (resource?.data as T | undefined) ?? null;
+}
+function returnedRootRows(resource: ResourceState, slot: string, field: string): number {
+  const normalized = resource.normalized;
+  if (normalized)
+    return normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
+  const data = resource.data as Record<string, unknown> | null;
+  const rows = data?.[field];
+  return Array.isArray(rows) ? rows.length : 0;
+}
+const PROJECT_TIERS = ["current", "recent", "archived"] as const;
+function projectPageStates(
+  pages: ReadonlyMap<string, ResourceState>,
+  projectKey: string,
+): Array<ResourceState & { key: Extract<ResourceKey, { kind: "project_page" }> }> {
+  const tierOrder = { current: 0, recent: 1, archived: 2 } as const;
+  return [...pages.values()]
+    .filter(
+      (state): state is ResourceState & { key: Extract<ResourceKey, { kind: "project_page" }> } =>
+        state.key.kind === "project_page" &&
+        state.key.projectKey === projectKey &&
+        state.data !== null &&
+        state.normalized?.presence !== "gone",
+    )
+    .sort(
+      (a, b) =>
+        tierOrder[a.key.tier] - tierOrder[b.key.tier] ||
+        a.key.offset - b.key.offset ||
+        a.key.limit - b.key.limit ||
+        keyID(a.key).localeCompare(keyID(b.key)),
+    );
+}
+function projectPageDependencies(states: readonly ResourceState[]): ProjectPageDependency[] {
+  return states.flatMap((state) => {
+    if (state.key.kind !== "project_page") return [];
+    const graphOrData = state.normalized?.graph ?? (typeof state.data === "object" ? state.data : null);
+    return [{ id: keyID(state.key), tier: state.key.tier, graphOrData }];
+  });
+}
+function sameProjectPageDependencies(
+  left: readonly ProjectPageDependency[],
+  right: readonly ProjectPageDependency[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (dependency, index) =>
+        dependency.id === right[index]?.id &&
+        dependency.tier === right[index]?.tier &&
+        dependency.graphOrData === right[index]?.graphOrData,
+    )
+  );
+}
+function cachedProject(
+  summary: NavigationProjectSummary,
+  mode: ProjectModelCacheEntry["mode"],
+  root: object | null,
+  pages: readonly ProjectPageDependency[],
+  compatibilityError?: string,
+): RailProject | undefined {
+  const cached = projectModelCache.get(summary as object);
+  return cached?.mode === mode &&
+    cached.root === root &&
+    sameProjectPageDependencies(cached.pages, pages) &&
+    (mode === "graph" || cached.compatibilityError === compatibilityError)
+    ? cached.result
+    : undefined;
+}
+function cacheProject(
+  summary: NavigationProjectSummary,
+  mode: ProjectModelCacheEntry["mode"],
+  root: object | null,
+  pages: readonly ProjectPageDependency[],
+  result: RailProject,
+  compatibilityError?: string,
+): RailProject {
+  projectModelCache.set(summary as object, { mode, root, pages, compatibilityError, result });
+  return result;
 }
 interface LoadedSection {
   sessions: RailSession[];
@@ -273,21 +479,31 @@ function loadedSection(
         : 0,
     );
   const seen = new Set<string>();
-  const rows = pages.flatMap((resource) =>
-    (resource.data as { sessions: NavigationSessionSummary[] }).sessions.flatMap((summary) => {
+  const rows = pages.flatMap((resource) => {
+    const normalized = resource.normalized;
+    if (normalized) {
+      const model = selectRailModel(normalized);
+      const root = normalized.graph.containers.get(navigationRootContainerKey(resource.key, "sessions"));
+      return (root?.children ?? []).flatMap((entityKey) => {
+        const session = model.sessions.get(entityKey);
+        if (!session || seen.has(session.ref)) return [];
+        seen.add(session.ref);
+        return [session];
+      });
+    }
+    return (resource.data as { sessions: NavigationSessionSummary[] }).sessions.flatMap((summary) => {
       if (seen.has(summary.ref)) return [];
       seen.add(summary.ref);
       return [summarySession(summary, section)];
-    }),
-  );
+    });
+  });
   const last = pages.at(-1);
   const data = last?.data as { remaining?: number } | null;
   const pageKey = last?.key.kind === "section" ? last.key : { offset: 0, limit: 50 };
   return {
     sessions: rows,
     remaining: data?.remaining ?? 0,
-    // Canonical page limit is the stride; the backend may truncate rows.
-    offset: pageKey.offset + pageKey.limit,
+    offset: nextNavigationOffset(pageKey.offset, last ? returnedRootRows(last, "sessions", "sessions") : 0),
     limit: pageKey.limit,
   };
 }
@@ -297,24 +513,17 @@ function projectFromSummary(
   rootError: string | undefined,
   pages: ReadonlyMap<string, ResourceState>,
 ): RailProject {
+  const rootObject = root as object | null;
+  const allPageStates = projectPageStates(pages, summary.key);
+  const pageDependencies = projectPageDependencies(allPageStates);
+  const cached = cachedProject(summary, "compatibility", rootObject, pageDependencies, rootError);
+  if (cached) return cached;
   const all: RailSession[] = [];
   const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
   const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
-  for (const tier of ["current", "recent", "archived"] as const) {
+  for (const tier of PROJECT_TIERS) {
     const base = root?.[tier];
-    const pageStates = [...pages.values()]
-      .filter(
-        (state) =>
-          state.key.kind === "project_page" &&
-          state.key.projectKey === summary.key &&
-          state.key.tier === tier &&
-          state.data !== null,
-      )
-      .sort((a, b) =>
-        a.key.kind === "project_page" && b.key.kind === "project_page"
-          ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-          : 0,
-      );
+    const pageStates = allPageStates.filter((state) => state.key.tier === tier);
     const rows = [...(base?.sessions ?? [])];
     let remaining = base?.remaining ?? summary[`more_${tier}`] ?? 0;
     for (const pageState of pageStates) {
@@ -323,14 +532,14 @@ function projectFromSummary(
       remaining = Math.min(remaining, page.remaining);
     }
     const lastPage = pageStates.at(-1);
-    // Use the canonical page limit as the stride, not the actual returned row
-    // count: the backend may truncate rows, and offset + rows.length would
-    // overlap or repeat rows on the next page.
-    nextOffsets[tier] = lastPage?.key.kind === "project_page" ? lastPage.key.offset + lastPage.key.limit : rows.length;
+    nextOffsets[tier] =
+      lastPage?.key.kind === "project_page"
+        ? nextNavigationOffset(lastPage.key.offset, returnedRootRows(lastPage, "sessions", "sessions"))
+        : rows.length;
     all.push(...sessions(rows, `project:${summary.key}:${tier}`, tier, undefined, summary.key));
     more[tier] = remaining;
   }
-  return {
+  const result = {
     ...summary,
     loaded: root !== null,
     resourceError: rootError,
@@ -340,22 +549,127 @@ function projectFromSummary(
     more_recent: more.recent,
     more_archived: more.archived,
   };
+  return cacheProject(summary, "compatibility", rootObject, pageDependencies, result, rootError);
+}
+function graphSessionsForResource(resource: ResourceState): RailSession[] {
+  const normalized = resource.normalized;
+  if (!normalized) return [];
+  const model = selectRailModel(normalized);
+  const root = normalized.graph.containers.get(navigationRootContainerKey(resource.key, "sessions"));
+  return (root?.children ?? []).flatMap((entityKey) => {
+    const session = model.sessions.get(entityKey);
+    return session ? [session] : [];
+  });
+}
+function projectFromGraph(
+  summary: NavigationProjectSummary,
+  resource: ResourceState,
+  pages: ReadonlyMap<string, ResourceState>,
+): RailProject | null {
+  const normalized = resource.normalized;
+  if (!normalized || normalized.presence === "gone") return null;
+  const allPageStates = projectPageStates(pages, summary.key);
+  const pageDependencies = projectPageDependencies(allPageStates);
+  const cached = cachedProject(summary, "graph", normalized.graph as object, pageDependencies);
+  if (cached) return cached;
+  const projectEntity = [...normalized.graph.entities.values()].find(
+    (entity) =>
+      entity.kind === "project" &&
+      entity.value !== null &&
+      typeof entity.value === "object" &&
+      (entity.value as Record<string, unknown>).key === summary.key,
+  );
+  if (!projectEntity) return null;
+  const metadata = normalized.graph.metadata;
+  const all: RailSession[] = [];
+  const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  for (const tier of PROJECT_TIERS) {
+    const container = normalized.graph.containers.get(navigationOwnedContainerKey(projectEntity.key, tier));
+    const rootSessions = (container?.children ?? []).flatMap((entityKey) => {
+      const session = selectRailModel(normalized).sessions.get(entityKey);
+      return session ? [session] : [];
+    });
+    const pageStates = allPageStates.filter((page) => page.key.tier === tier);
+    const seen = new Set(rootSessions.map((session) => session.ref));
+    const sessions = [...rootSessions];
+    for (const page of pageStates) {
+      for (const session of graphSessionsForResource(page)) {
+        if (seen.has(session.ref)) continue;
+        seen.add(session.ref);
+        sessions.push(session);
+      }
+    }
+    all.push(...sessions);
+    const lastPage = pageStates.at(-1);
+    nextOffsets[tier] =
+      lastPage?.key.kind === "project_page"
+        ? nextNavigationOffset(lastPage.key.offset, returnedRootRows(lastPage, "sessions", "sessions"))
+        : (container?.children.length ?? 0);
+    const pageRemaining = pageStates.at(-1)?.data as { remaining?: number } | undefined;
+    const metadataRemaining = metadata[`${tier}_remaining`];
+    more[tier] = pageRemaining?.remaining ?? (typeof metadataRemaining === "number" ? metadataRemaining : 0);
+  }
+  return cacheProject(summary, "graph", normalized.graph as object, pageDependencies, {
+    ...summary,
+    loaded: true,
+    sessions: all,
+    nextOffsets,
+    more_current: more.current,
+    more_recent: more.recent,
+    more_archived: more.archived,
+  });
+}
+function asArchivedProject(project: RailProject): RailProject {
+  if (project.is_archived === true) return project;
+  const cached = archivedProjectModelCache.get(project as object);
+  if (cached) return cached;
+  const archived = { ...project, is_archived: true };
+  archivedProjectModelCache.set(project as object, archived);
+  return archived;
 }
 function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
   const output: RailProject[] = [];
   const catalogResources = [...state.resources.values()]
-    .filter((resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null)
+    .filter(
+      (resource) =>
+        resource.key.kind === "catalog" &&
+        resource.key.catalog === catalog &&
+        resource.data !== null &&
+        resource.normalized?.presence !== "gone",
+    )
     .sort((a, b) =>
       a.key.kind === "catalog" && b.key.kind === "catalog"
         ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
         : 0,
     );
   for (const resource of catalogResources) {
+    const normalizedCatalog = resource.normalized;
     const data = resource.data as { projects: NavigationProjectSummary[] };
-    for (const summary of data.projects) {
+    const summaries = normalizedCatalog
+      ? (() => {
+          const root = normalizedCatalog.graph.containers.get(navigationRootContainerKey(resource.key, "projects"));
+          return (root?.children ?? []).flatMap((entityKey) => {
+            const entity = normalizedCatalog.graph.entities.get(entityKey);
+            if (entity?.kind !== "project" || !entity.value || typeof entity.value !== "object") return [];
+            return [entity.value as NavigationProjectSummary];
+          });
+        })()
+      : data.projects;
+    for (const summary of summaries) {
       if (output.some((project) => project.key === summary.key)) continue;
       const rootState = state.resources.get(keyID({ kind: "project", projectKey: summary.key }));
-      const root = (rootState?.data as NavigationProjectResource | null | undefined) ?? null;
+      if (normalizedCatalog && rootState) {
+        const graphProject = projectFromGraph(summary, rootState, state.resources);
+        if (graphProject) {
+          output.push(graphProject);
+          continue;
+        }
+      }
+      const root =
+        rootState?.normalized?.presence === "gone"
+          ? null
+          : ((rootState?.data as NavigationProjectResource | null | undefined) ?? null);
       output.push(
         projectFromSummary(summary, root, rootState?.error ? errorText(rootState.error) : undefined, state.resources),
       );
@@ -368,7 +682,13 @@ function catalogOverflowFor(
   catalog: CatalogKind,
 ): { remaining: number; offset: number; limit: number } | undefined {
   const pages = [...state.resources.values()]
-    .filter((resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null)
+    .filter(
+      (resource) =>
+        resource.key.kind === "catalog" &&
+        resource.key.catalog === catalog &&
+        resource.data !== null &&
+        resource.normalized?.presence !== "gone",
+    )
     .sort((a, b) =>
       a.key.kind === "catalog" && b.key.kind === "catalog"
         ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
@@ -379,7 +699,11 @@ function catalogOverflowFor(
   const remaining = (last.data as { remaining?: number } | null)?.remaining ?? 0;
   if (remaining <= 0) return undefined;
   const pageKey = last.key.kind === "catalog" ? last.key : { offset: 0, limit: 100 };
-  return { remaining, offset: pageKey.offset + pageKey.limit, limit: pageKey.limit };
+  return {
+    remaining,
+    offset: nextNavigationOffset(pageKey.offset, returnedRootRows(last, "projects", "projects")),
+    limit: pageKey.limit,
+  };
 }
 function railResources(state: ReturnType<typeof navigationStore.getState>): RailResources {
   const live = loadedSection(state, "live");
@@ -409,15 +733,19 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
       const last = pages.at(-1);
       const pageKey = last?.key.kind === "pin_section" ? last.key : { offset: 0, limit: 50 };
       const remaining = (last?.data as { remaining?: number } | null)?.remaining ?? 0;
+      const normalizedPages = pages.filter((resource) => resource.normalized);
+      const graphSessions = normalizedPages.length
+        ? dedupeSessions(normalizedPages.flatMap((resource) => graphSessionsForResource(resource)))
+        : null;
       return {
         id: section.id,
         name: section.name,
         member_count: pinCounts.get(section.id) ?? section.sessions.length,
         remaining,
-        // Canonical page limit is the stride; the backend may truncate rows.
-        offset: pageKey.offset + pageKey.limit,
+        offset: nextNavigationOffset(pageKey.offset, last ? returnedRootRows(last, "sessions", "sessions") : 0),
         limit: pageKey.limit,
-        sessions: dedupeSessions(sessions(section.sessions, `pin:${section.id}`, undefined, section.id)),
+        sessions:
+          graphSessions ?? dedupeSessions(sessions(section.sessions, `pin:${section.id}`, undefined, section.id)),
       };
     })
     .filter((section) => section.sessions.length > 0);
@@ -428,7 +756,7 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
     needsYouOverflow: { remaining: needsYou.remaining, offset: needsYou.offset, limit: needsYou.limit },
     pinSections,
     projects: projectsFor(state, "projects"),
-    archivedProjects: projectsFor(state, "archived_projects").map((project) => ({ ...project, is_archived: true })),
+    archivedProjects: projectsFor(state, "archived_projects").map(asArchivedProject),
     testRuns: projectsFor(state, "test_runs"),
     catalogOverflow: {
       projects: catalogOverflowFor(state, "projects"),
@@ -465,7 +793,14 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
   );
 }
 
-function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
+function NavigationRail({
+  onHide,
+  width,
+  onWidthChange,
+  revealTarget,
+  onRevealConsumed,
+  scrollOwner = "rail",
+}: RailProps = {}) {
   const client = useClient();
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
@@ -545,7 +880,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
   }, [revealTarget, onRevealConsumed]);
 
   useEffect(() => {
-    if (navigationMode !== "v1") return;
+    if (navigationMode !== "v2") return;
     if (!manifest)
       void navigationStore
         .getState()
@@ -579,20 +914,43 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       .catch(() => undefined)
       .finally(() => rootLoadsInFlight.current.delete(key));
   }, []);
+  const currentLoadProjectRoot = useRef(loadProjectRoot);
+  const projectRetryCallbacks = useRef(new Map<string, () => void>());
+  const projectRetryCallback = useCallback((key: string): (() => void) => {
+    const cached = projectRetryCallbacks.current.get(key);
+    if (cached) return cached;
+    const retry = () => {
+      rootLoadsInFlight.current.delete(key);
+      currentLoadProjectRoot.current(key);
+    };
+    projectRetryCallbacks.current.set(key, retry);
+    return retry;
+  }, []);
   useEffect(() => {
-    if (navigationMode !== "v1") return;
+    currentLoadProjectRoot.current = loadProjectRoot;
+    const ownedKeys = new Set(
+      [...resources.projects, ...resources.archivedProjects, ...resources.testRuns].map((project) => project.key),
+    );
+    for (const key of projectRetryCallbacks.current.keys()) {
+      if (!ownedKeys.has(key)) projectRetryCallbacks.current.delete(key);
+    }
+  }, [loadProjectRoot, resources]);
+  useEffect(() => {
+    if (navigationMode !== "v2") return;
     const generation = navigationStore.getState().clientGenerationID;
     if (generation !== rootGeneration.current) {
       rootLoadsInFlight.current.clear();
       rootGeneration.current = generation;
     }
     for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
-      const expanded = isExpanded(`projectnode:${project.key}`, project.default_expanded ?? false);
+      const expanded = isExpanded(projectNodeExpansionKey(project.key), project.default_expanded ?? false);
       if (
         !expanded ||
         project.loaded === true ||
         project.resourceError !== undefined ||
         (project.session_count ?? 0) === 0 ||
+        resourceState(navigationStore.getState(), { kind: "project", projectKey: project.key })?.normalized
+          ?.presence === "gone" ||
         rootLoadsInFlight.current.has(project.key)
       )
         continue;
@@ -617,12 +975,18 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       setExpanded(projectID, true);
       return;
     }
+    const currentState = navigationStore.getState();
+    const locationKey = { kind: "location", ref: revealTarget } as const;
+    // Only a settled tombstone consumes the reveal: a stale one retained
+    // across a generation reset may precede the fresh response showing the
+    // session present again, and consuming here is irreversible.
+    if (isSettledGone(resourceState(currentState, locationKey))) {
+      consumeReveal();
+      return;
+    }
     const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
-      navigationStore.getState(),
-      {
-        kind: "location",
-        ref: revealTarget,
-      },
+      currentState,
+      locationKey,
     );
     if (!location) {
       if (revealLookupInFlight.current?.target !== revealTarget) {
@@ -649,7 +1013,12 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       return;
     }
     if (location.project_key) {
-      const projectID = `projectnode:${location.project_key}`;
+      const projectState = resourceState(currentState, { kind: "project", projectKey: location.project_key });
+      if (isSettledGone(projectState)) {
+        consumeReveal();
+        return;
+      }
+      const projectID = projectNodeExpansionKey(location.project_key);
       if (expandedOverrides.get(projectID) !== true) {
         setExpanded(projectID, true);
         return;
@@ -673,13 +1042,14 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
   }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, requestRevealResource]);
 
   function handleToggle(node: RailNode) {
-    if (node.kind === "loading") return;
+    if (isPassiveRailNode(node)) return;
     const value = !node.expanded;
     setExpanded(node.id, value);
     if (!value && node.kind === "project") rootLoadsInFlight.current.delete(node.project.key);
     if (
       value &&
       node.kind === "project" &&
+      resourceState(state, { kind: "project", projectKey: node.project.key })?.normalized?.presence !== "gone" &&
       !resourceData(state, { kind: "project", projectKey: node.project.key }) &&
       !rootLoadsInFlight.current.has(node.project.key)
     ) {
@@ -691,7 +1061,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     if (url) navigate(url);
   }
   function handleActivate(node: RailNode) {
-    if (node.kind === "loading") return;
+    if (isPassiveRailNode(node)) return;
     if (node.kind === "overflow") {
       void revealOverflow(node);
       return;
@@ -735,151 +1105,159 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       });
     }
   }
-  async function runAction<T>(
-    fn: () => Promise<T>,
-    failure: string,
-    optimistic?: PendingOp | ((result: T) => PendingOp),
-    propagate = false,
-  ) {
-    let installed = typeof optimistic === "object" ? optimistic : undefined;
-    let mutationCompleted = false;
-    let converged = false;
-    if (installed) setPending((ops) => [...ops, installed as PendingOp]);
-    try {
-      const result = await fn();
-      mutationCompleted = true;
-      if (typeof optimistic === "function") {
-        installed = optimistic(result);
-        setPending((ops) => [...ops, installed as PendingOp]);
-      }
-      await convergeMutation(result);
-      converged = true;
-    } catch (error) {
-      toasts.push("error", `${failure}: ${errorText(error)}`);
-      if (propagate) throw error;
-    } finally {
-      if (installed && (!mutationCompleted || converged)) setPending((ops) => ops.filter((op) => op !== installed));
-    }
-  }
-  const rowActions: RailRowActions = {
-    onOpenSessionPane: (session, pane) => {
-      const workspace = workspaceStore.getState();
-      workspace.openPane("session", { ref: session.ref });
-      workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
-    },
-    onRenameSession: (session, name) =>
-      runAction(
-        () => threadsStore.getState().rename(session.ref, name),
-        "Couldn't rename session",
-        { kind: "sessionTitle", ref: session.ref, title: name },
-        true,
-      ),
-    onShutdownSession: async (session) => {
-      const invalidation =
-        navigationMode === "v1"
-          ? navigationStore
-              .getState()
-              .awaitNavigationInvalidation((payload) =>
-                payload.targets.some(
-                  (target) =>
-                    target.kind === "all_loaded_projects" ||
-                    (target.kind === "section" && (target.section === "live" || target.section === "needs_you")) ||
-                    (target.kind === "pin_section" && target.sectionId === session.pin_section_id) ||
-                    (target.kind === "project" && target.projectKey === session.project_key),
-                ),
-              )
-          : null;
-      void invalidation?.promise.catch(() => undefined);
+  const runAction = useCallback(
+    async function runAction<T>(
+      fn: () => Promise<T>,
+      failure: string,
+      optimistic?: PendingOp | ((result: T) => PendingOp),
+      propagate = false,
+    ) {
+      let installed = typeof optimistic === "object" ? optimistic : undefined;
+      let mutationCompleted = false;
+      let converged = false;
+      if (installed) setPending((ops) => [...ops, installed as PendingOp]);
       try {
+        const result = await fn();
+        mutationCompleted = true;
+        if (typeof optimistic === "function") {
+          installed = optimistic(result);
+          setPending((ops) => [...ops, installed as PendingOp]);
+        }
+        await convergeMutation(result);
+        converged = true;
+      } catch (error) {
+        toasts.push("error", `${failure}: ${errorText(error)}`);
+        if (propagate) throw error;
+      } finally {
+        if (installed && (!mutationCompleted || converged)) setPending((ops) => ops.filter((op) => op !== installed));
+      }
+    },
+    [toasts.push],
+  );
+  const rowActions = useMemo<RailRowActions>(
+    () => ({
+      onOpenSessionPane: (session, pane) => {
+        const workspace = workspaceStore.getState();
+        workspace.openPane("session", { ref: session.ref });
+        workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+      },
+      onRenameSession: (session, name) =>
+        runAction(
+          () => threadsStore.getState().rename(session.ref, name),
+          "Couldn't rename session",
+          { kind: "sessionTitle", ref: session.ref, title: name },
+          true,
+        ),
+      onForceStopSession: async (session) => {
         await runAction(
-          () => threadsStore.getState().shutdown(session.ref),
-          "Couldn't shut down session",
+          () => threadsStore.getState().forceStop(session.ref),
+          "Couldn't force stop session",
           undefined,
           true,
         );
-        if (invalidation) {
-          const payload = await invalidation.promise;
-          await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
+        await runAction(
+          () => threadsStore.getState().refreshThread(session.ref),
+          "Session stopped; couldn't refresh its view",
+        );
+      },
+      onShutdownSession: async (session) => {
+        const convergence = buildShutdownConvergence(session.ref, {
+          pinSectionId: session.pin_section_id,
+          projectKey: session.project_key,
+        });
+        const invalidation = convergence.arm();
+        try {
+          await runAction(
+            () => threadsStore.getState().shutdown(session.ref),
+            "Couldn't shut down session",
+            undefined,
+            true,
+          );
+          await convergence.converge(invalidation);
+        } catch (error) {
+          invalidation.cancel();
+          throw error;
         }
-      } catch (error) {
-        invalidation?.cancel();
-        throw error;
-      }
-    },
-    onPinSession: (session, target, section) =>
-      runAction(
-        () => assignSessionPin(client, session.ref, target),
-        "Couldn't assign pinned session",
-        (result) => {
-          const assignedSection = section ?? {
-            id: result.assignment.section.id,
-            name: result.assignment.section.name,
-            member_count: result.assignment.section.memberCount,
-          };
-          navigationStore.getState().trackPinSection(assignedSection.id);
-          return {
-            kind: "sessionPin",
-            ref: session.ref,
-            source: session,
-            section: { ...assignedSection },
-          };
-        },
-        true,
-      ),
-    onUnpinRequest: (session) =>
-      runAction(
-        () => unpinSession(client, session.ref),
-        "Couldn't unpin session",
-        { kind: "sessionUnpin", ref: session.ref },
-        true,
-      ),
-    onToggleArchiveSession: (session) => {
-      const archiving = session.tier !== "archived";
-      return runAction(
-        () => setArchived("session", session.session_id, archiving),
-        "Couldn't update archive state",
-        archiving ? { kind: "hideSession", ref: session.ref } : undefined,
-        true,
-      );
-    },
-    onDeleteSession: async (session) => {
-      const optimistic: PendingOp = { kind: "hideSession", ref: session.ref };
-      let mutationCompleted = false;
-      let converged = false;
-      setPending((ops) => [...ops, optimistic]);
-      try {
-        const result = await deleteSession(client, session.ref);
-        mutationCompleted = true;
-        await convergeMutation(result);
-        converged = true;
-        closePanesForDeletedSessions(result.deleted);
-        if (result.skipped.length)
-          toasts.push("warning", `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`);
-      } catch (error) {
-        toasts.push("error", `Couldn't delete "${session.title}": ${errorText(error)}`);
-        throw error;
-      } finally {
-        if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
-      }
-    },
-    onToggleFavoriteProject: (project) => {
-      const value = !project.favorite;
-      void runAction(() => setFavorite(client, "project", project.key, value), "Couldn't update favorite", {
-        kind: "projectFavorite",
-        key: project.key,
-        value,
-      });
-    },
-    onToggleArchiveProject: (project) => {
-      const value = !(project.is_archived ?? false);
-      void runAction(
-        () => setArchived("project", project.key, value, project.working_dir),
-        "Couldn't update archive state",
-        value ? { kind: "hideProject", key: project.key } : undefined,
-      );
-    },
-    onDeleteProjectRequest: (project) => setDeleteTarget(project),
-  };
+      },
+      onPinSession: (session, target, section) =>
+        runAction(
+          () => assignSessionPin(client, session.ref, target),
+          "Couldn't assign pinned session",
+          (result) => {
+            const assignedSection = section ?? {
+              id: result.assignment.section.id,
+              name: result.assignment.section.name,
+              member_count: result.assignment.section.memberCount,
+            };
+            navigationStore.getState().trackPinSection(assignedSection.id);
+            return {
+              kind: "sessionPin",
+              ref: session.ref,
+              source: session,
+              section: { ...assignedSection },
+            };
+          },
+          true,
+        ),
+      onUnpinRequest: (session) =>
+        runAction(
+          () => unpinSession(client, session.ref),
+          "Couldn't unpin session",
+          { kind: "sessionUnpin", ref: session.ref },
+          true,
+        ),
+      onToggleArchiveSession: (session) => {
+        const archiving = session.tier !== "archived";
+        return runAction(
+          () => setArchived("session", session.session_id, archiving),
+          "Couldn't update archive state",
+          archiving ? { kind: "hideSession", ref: session.ref } : undefined,
+          true,
+        );
+      },
+      onDeleteSession: async (session) => {
+        const optimistic: PendingOp = { kind: "hideSession", ref: session.ref };
+        let mutationCompleted = false;
+        let converged = false;
+        setPending((ops) => [...ops, optimistic]);
+        try {
+          const result = await deleteSession(client, session.ref);
+          mutationCompleted = true;
+          await convergeMutation(result);
+          converged = true;
+          closePanesForDeletedSessions(result.deleted);
+          if (result.skipped.length)
+            toasts.push(
+              "warning",
+              `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`,
+            );
+        } catch (error) {
+          toasts.push("error", `Couldn't delete "${session.title}": ${errorText(error)}`);
+          throw error;
+        } finally {
+          if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
+        }
+      },
+      onToggleFavoriteProject: (project) => {
+        const value = !project.favorite;
+        void runAction(() => setFavorite(client, "project", project.key, value), "Couldn't update favorite", {
+          kind: "projectFavorite",
+          key: project.key,
+          value,
+        });
+      },
+      onToggleArchiveProject: (project) => {
+        const value = !(project.is_archived ?? false);
+        void runAction(
+          () => setArchived("project", project.key, value, project.working_dir),
+          "Couldn't update archive state",
+          value ? { kind: "hideProject", key: project.key } : undefined,
+        );
+      },
+      onDeleteProjectRequest: (project) => setDeleteTarget(project),
+    }),
+    [client, runAction, toasts.push],
+  );
   function closeDeleteDialog() {
     setDeleteTarget(null);
   }
@@ -989,10 +1367,6 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id),
   );
   const unarchived = [...resources.projects, ...resources.testRuns];
-  const retryProject = (key: string) => {
-    rootLoadsInFlight.current.delete(key);
-    loadProjectRoot(key);
-  };
   const archivedNodes: RailNode[] = [
     ...archivedProjectNodes(
       resources.archivedProjects,
@@ -1004,9 +1378,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       isExpanded,
     ),
     ...archivedSessionGroups(unarchived, isExpanded),
-  ].map((node) =>
-    node.kind === "project" && node.resourceError ? { ...node, retry: () => retryProject(node.project.key) } : node,
-  );
+  ];
   if (resources.catalogOverflow?.archived_projects) {
     const ov = resources.catalogOverflow.archived_projects;
     archivedNodes.push(
@@ -1019,9 +1391,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     overflowId?: string,
     overflowCatalog?: "projects" | "archived_projects" | "test_runs",
   ): RailNode[] => {
-    const nodes: RailNode[] = projectNodes(projects, isExpanded).map((node) =>
-      node.resourceError ? { ...node, retry: () => retryProject(node.project.key) } : node,
-    );
+    const nodes: RailNode[] = projectNodes(projects, isExpanded);
     if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
       nodes.push(
         ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
@@ -1041,7 +1411,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
-    navigationMode === "unknown" || (navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading));
+    navigationMode === "unknown" || (navigationMode === "v2" && (!manifest || manifest.loading || resourceLoading));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
   const loadError =
@@ -1050,9 +1420,10 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     (navigationMode === "error" ? "Navigation resources are unavailable" : null);
   const displayed = nonEmpty(resources);
   const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
+  const parentOwnsScroll = scrollOwner === "parent";
   return (
     <div
-      className={CLASS.rail}
+      className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
       ref={railRef}
       style={width === undefined ? undefined : ({ [RAIL_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
     >
@@ -1061,22 +1432,31 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       )}
       <div className={CLASS.header}>
         <div data-testid="rail-brand" className={CLASS.brand}>
+          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "evener"}</span>
           {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
-          <span className={CLASS.brandSpacer} />
+          <IconButton
+            data-testid="rail-settings"
+            label="Settings"
+            icon={<GearIcon />}
+            variant="quiet"
+            size="md"
+            onClick={() => navigate("/settings")}
+          />
           <Tooltip label="Search sessions and commands">
             <IconButton
               data-testid="rail-search"
               data-search-trigger="true"
               label="Search"
-              icon={<span aria-hidden="true">⌕</span>}
+              icon={<SearchIcon />}
               variant="quiet"
               size="md"
             />
           </Tooltip>
           {onHide && (
             <IconButton
+              data-rail-toggle=""
               label="Hide sidebar"
-              icon={<span aria-hidden="true">☰</span>}
+              icon={<SidebarIcon />}
               variant="quiet"
               size="md"
               onClick={onHide}
@@ -1089,7 +1469,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
           </Button>
         </div>
       </div>
-      <div className={CLASS.body} ref={bodyRef}>
+      <div className={parentOwnsScroll ? `${CLASS.body} ${CLASS.parentScrollBody}` : CLASS.body} ref={bodyRef}>
         {loading && !displayed && <Skeleton lines={6} />}
         {!loading && !displayed && loadError && (
           <EmptyState
@@ -1103,7 +1483,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
           />
         )}
         {!loading && !displayed && !loadError && manifest && (
-          <EmptyState title="No sessions yet" hint="Start a session from the command line to see it here." />
+          <EmptyState title="No sessions yet" hint="Start one with the button above." />
         )}
         {displayed && (
           <>
@@ -1113,6 +1493,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
+              projectRetryCallback={projectRetryCallback}
             />
             {pinSections.map((section) => (
               <PinnedRailSection
@@ -1128,6 +1509,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
+                projectRetryCallback={projectRetryCallback}
               />
             ))}
             <RailSection
@@ -1141,6 +1523,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
+              projectRetryCallback={projectRetryCallback}
             />
             <RailSection
               title="Test runs"
@@ -1153,6 +1536,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
+              projectRetryCallback={projectRetryCallback}
             />
             {archivedNodes.length > 0 && (
               <ArchivedSection
@@ -1163,21 +1547,11 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
+                projectRetryCallback={projectRetryCallback}
               />
             )}
           </>
         )}
-      </div>
-      <div className={CLASS.footer}>
-        <span className={CLASS.footerIdentity}>{serverInfo?.name ?? "evener"}</span>
-        <IconButton
-          data-testid="rail-settings"
-          label="Settings"
-          icon={<span aria-hidden="true">⚙</span>}
-          variant="quiet"
-          size="md"
-          onClick={() => navigate("/settings")}
-        />
       </div>
       {sectionRenameTarget && (
         <Dialog

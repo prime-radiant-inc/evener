@@ -16,40 +16,7 @@
 import { friendlyErrorMessage } from "../../../protocol/errors";
 import { blocked, isBlocked } from "../../../shell/palette/blocked";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
-
-export interface BuiltinMatch {
-  command: ScopedCommand;
-  argsText: string;
-}
-
-// A leading "/<token>" optionally followed by whitespace and the rest of the
-// message - `<token>` may not itself contain whitespace (a command name
-// never does; slashCommandInvocation only ever produces "name" or
-// "plugin:name" shapes, neither one with a space in it). The `s` flag lets
-// `.` in the args half span newlines - /goal and /steer both accept a
-// multi-line objective/steer text.
-const INVOCATION_RE = /^\/(\S+)(?:[ \t]+([\s\S]*))?$/;
-
-// matchBuiltinInvocation: does `text` parse as a known BUILT-IN session
-// command? `builtins` is expected to be the FULL unfiltered resolved list
-// (shell/palette/commands.ts's sessionBuiltinCommands) - unlike the inline
-// menu's own merge (which drops an unavailable command so there is nothing
-// to pick), matching here still finds an unavailable command so
-// runBuiltinCommand below can answer with its real reason instead of the
-// draft silently being sent as a literal chat message. A command with no
-// `args` only matches when nothing follows the name - "/compact extra text"
-// is not a known invocation of the argless /compact, so it falls through to
-// being sent as an ordinary message instead of ignoring the trailing text.
-export function matchBuiltinInvocation(text: string, builtins: ScopedCommand[]): BuiltinMatch | null {
-  const m = INVOCATION_RE.exec(text);
-  if (!m) return null;
-  const token = m[1] ?? "";
-  const argsText = m[2] ?? "";
-  const command = builtins.find((c) => c.id === token);
-  if (!command) return null;
-  if (!command.args && argsText.trim() !== "") return null;
-  return { command, argsText };
-}
+import { type BuiltinMatch, findBuiltinArgument } from "./builtinInvocation";
 
 // resolveCommandResult runs the matched command exactly the way the palette
 // itself would: an argless command's plain run(), a free-arg command's
@@ -66,8 +33,7 @@ async function resolveCommandResult(
   if (!command.args) return command.run?.(ctx);
   if (command.args.kind === "free") return command.args.run(ctx, argsText);
   const items = await command.args.source(ctx);
-  const needle = argsText.trim().toLowerCase();
-  const item = items.find((it) => it.id.toLowerCase() === needle || it.label.toLowerCase() === needle);
+  const item = findBuiltinArgument(items, argsText);
   if (!item) {
     const label = argsText.trim();
     return blocked(label ? `/${command.id}: unknown value "${label}"` : `/${command.id} needs a value`);
@@ -88,7 +54,10 @@ export type BuiltinRunOutcome = { ok: true } | { ok: false; message: string };
 // what keeps this function from ever DOUBLING a toast a command already
 // pushed itself - it wraps ctx.toasts.push to notice, and only falls back to
 // a friendlyErrorMessage toast of its own when nothing did.
-export async function runBuiltinCommand(match: BuiltinMatch, baseCtx: PaletteRunContext): Promise<BuiltinRunOutcome> {
+export async function runBuiltinCommand(
+  match: BuiltinMatch<ScopedCommand>,
+  baseCtx: PaletteRunContext,
+): Promise<BuiltinRunOutcome> {
   let toasted = false;
   const ctx: PaletteRunContext = {
     ...baseCtx,

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +82,19 @@ type retryTracker struct {
 // for the root session, removes any embedded skills directory, waits for
 // in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
-	s.close(context.Background(), true)
+	s.close(context.Background(), closeOptions{cleanupEnv: true})
+}
+
+// CloseForShutdown closes the session with a terminal lifecycle boundary.
+// A cancelled in-flight turn may already have published an interrupted idle
+// boundary; that boundary must not suppress the session's closed notification.
+func (s *Session) CloseForShutdown() {
+	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true})
+}
+
+type closeOptions struct {
+	cleanupEnv    bool
+	forceTerminal bool
 }
 
 // joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
@@ -139,13 +153,203 @@ func (s *Session) endDispose() {
 	s.disposeWG.Done()
 }
 
-func (s *Session) close(ctx context.Context, cleanupEnv bool) {
+// envWorkID handles one admission on envWorkWG, so its label can be dropped
+// again when the work returns.
+type envWorkID uint64
+
+// registerEnvWorkLocked records an admission described by label and returns its
+// handle. The caller holds s.mu and has already established that the session is
+// not closing — that pairing is the whole point (see beginEnvWork).
+func (s *Session) registerEnvWorkLocked(label string) envWorkID {
+	s.envWorkSeq++
+	id := envWorkID(s.envWorkSeq)
+	if s.envWork == nil {
+		s.envWork = make(map[envWorkID]string)
+	}
+	s.envWork[id] = label
+	s.envWorkWG.Add(1)
+	return id
+}
+
+// beginEnvWork admits work that runs commands on the session's execution
+// environment and must therefore finish before Close reaps that environment's
+// process table: a whole manage_worktree call at its dispatch, the cut of a
+// delegate's isolation lane and the rollback that undoes it, and the rollback a
+// refused or failed operation owes after its swap has already released the
+// swap's own admission. It is the beginDispose idiom again — the closing check
+// AND the envWorkWG Add happen under one s.mu hold, so a successful Add
+// happens-before Close()'s join. A true return MUST be paired with a (deferred)
+// endEnvWork().
+//
+// label says what the work is, in the terms a human reading a shutdown warning
+// would want: it is what the close names if its bounded join gives up on this
+// admission.
+//
+// swapEnvAndRefresh calls registerEnvWorkLocked directly rather than this,
+// because it needs the environment it is adopting from out of the same lock
+// hold that reads `closing`; it is the same admission on the same WaitGroup.
+//
+// A false return means the close was already under way when this work began.
+// There is nothing left to fence it against — the environment it would run on
+// is already being torn down, and the close may already be past its join — and
+// the two kinds of caller answer that differently, on purpose:
+//
+//   - The manage_worktree DISPATCH refuses the call, and a delegate's
+//     isolation step refuses the spawn (errWorktreeOpWhileClosing). The work
+//     has not started, and running it unfenced would lock lanes and write
+//     sidecars against an environment being reaped and stores being closed. A
+//     closing session was never going to complete it anyway.
+//   - A ROLLBACK proceeds best-effort, exactly as it did before the fence
+//     existed. Its admission failing is the expected case — the close is what
+//     made the rollback necessary — and it is an undo the session already owes,
+//     so skipping it would leave the residue the rollback exists to prevent.
+//     Better unfenced cleanup than none.
+func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return 0, false
+	}
+	return s.registerEnvWorkLocked(label), true
+}
+
+// relabelEnvWork renames a live admission. An operation's admission is taken
+// before the work it will eventually have to undo, so the label that is honest
+// during the operation is not the one that is honest once its rollback starts;
+// the rollback renames itself as it begins. A handle no longer live (the work
+// returned) renames nothing.
+func (s *Session) relabelEnvWork(id envWorkID, label string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, live := s.envWork[id]; live {
+		s.envWork[id] = label
+	}
+}
+
+// endEnvWork releases an admission obtained from beginEnvWork().
+func (s *Session) endEnvWork(id envWorkID) {
+	s.mu.Lock()
+	delete(s.envWork, id)
+	s.mu.Unlock()
+	s.envWorkWG.Done()
+}
+
+// outstandingEnvWork lists the labels of every admission still in flight,
+// ordered so a warning reads the same way twice.
+func (s *Session) outstandingEnvWork() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	labels := make([]string, 0, len(s.envWork))
+	for _, label := range s.envWork {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// joinEnvWorkWithinCloseBudget waits for every admitted environment work item
+// before the close touches anything that work is still using — the delegate
+// tree, this session's lanes and locks, the stores recording them, and finally
+// the environment's process table — and says what it walked past when the
+// shared close budget expires first.
+//
+// The four kinds of admission reach this join by different routes:
+//
+//   - A whole OPERATION, admitted at the manage_worktree dispatch, runs its git
+//     on the request context of the tool call. A close cancels the turn context
+//     that call descends from, so it stops of its own accord — but only the
+//     operations that reach a cancellation point do, and an operation that has
+//     already committed to a git command finishes it.
+//   - A delegate's LANE CREATE, admitted in prepareIsolation, runs its git on
+//     the request context of the spawn, which descends from that same turn
+//     context: it stops exactly the way an operation does, and likewise
+//     finishes a git command it has already committed to.
+//   - A SWAP's refresh runs under the session's own context, which this close
+//     cancelled in its step 2, well before reaching here. It stops on its own.
+//   - A ROLLBACK (worktreeCleanupRun) is DETACHED on purpose: it runs on
+//     context.Background() with a LaneClosePassBudget of its own, because the
+//     close that refused the swap — or the spawn whose lane it is taking back —
+//     has already cancelled the request context the op's runner was bound to,
+//     and a rollback through that would fail silently. Cancelling the close
+//     cannot shorten it.
+//
+// So this bound is not a restatement of the rollback's bound: the close budget
+// is one LaneClosePassBudget minted when the close began and partly spent by
+// the time it gets here, while a rollback's is a full LaneClosePassBudget
+// starting later. The join can therefore always expire first. That is accepted
+// rather than fixed by waiting longer, for two reasons. The cascade budget
+// (spec §P0) exists so a whole close is bounded, and this join is a participant
+// in it, not an exception: giving rollback admissions their own full budget
+// would let one refused create roughly double a shutdown, which is the
+// unbounded-fence failure in slower motion. And when time is left the gap
+// rarely bites — a rollback of a just-created, still-empty lane is three git
+// commands and a sidecar unlink, and only approaches its ceiling when git is
+// already wedged, which is exactly the case the bound exists for.
+//
+// Sometimes there is no time left at all, and then a perfectly healthy rollback
+// is walked past: a close whose delegate-tree stop was hopeless calls
+// cancelBudget() outright, so the join below is zero-length by the time it
+// runs. That is the deliberate order of a shutdown that has already given up on
+// one subtree — but it is why the warning matters, and why it must name a real
+// admission rather than fire on every such close.
+//
+// If the two budgets ever do need reconciling, the move is to shorten the
+// ROLLBACK's (it cleans up an empty lane; it is not a disposal pass) rather
+// than lengthen the close — a budget change, and its own decision, not
+// something to smuggle in here.
+//
+// Walking past is the lesser failure either way. But the cleanup below is about
+// to reap the process table under whatever is still running, which must not
+// happen silently, so the warning names it.
+func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		s.envWorkWG.Wait()
+	}()
+	select {
+	case <-joined:
+		return
+	case <-ctx.Done():
+	}
+	// The budget is spent. Warn only about work that is actually still there:
+	// a close reaches this join with an already-expired budget whenever the
+	// delegate-tree stop cancelled the cascade outright, and one that also
+	// admitted nothing has nothing the cleanup below can run under. An empty
+	// list is likewise what a drain that won the race by a hair leaves — both
+	// are silence, not a warning naming nobody.
+	outstanding := s.outstandingEnvWork()
+	if len(outstanding) == 0 {
+		return
+	}
+	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+		"close budget expired with environment work still in flight (%s); the environment is cleaned under it",
+		strings.Join(outstanding, "; "))})
+}
+
+func (s *Session) close(ctx context.Context, options closeOptions) {
 	s.closeOnce.Do(func() {
+		emitTerminal := options.forceTerminal
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
 		// the initiating close mints the deadline; descendants reached below via
-		// close(budgetCtx, false) reuse it rather than minting their own.
+		// close(budgetCtx, closeOptions{}) reuse it rather than minting their own.
 		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
 		defer cancelBudget()
+		// Publish the shared deadline independently of eventsMu: an emitter may
+		// already hold eventsMu.RLock while waiting for the authoritative bridge.
+		// Its send must observe this context so the final close can acquire the
+		// write lock after the deadline instead of waiting behind that emitter.
+		s.closeCtxMu.Lock()
+		s.closeCtx = budgetCtx
+		if s.closeSignal == nil {
+			s.closeSignal = make(chan struct{})
+		}
+		closeSignal := s.closeSignal
+		s.closeCtxMu.Unlock()
+		go func() {
+			<-budgetCtx.Done()
+			close(closeSignal)
+		}()
 		// Dispose-turn vs own-close protocol (spec §P1, Implementation-order
 		// items 1-2): set-flag → cancel → join → drain. An in-turn dispose op
 		// admitted via beginDispose() holds disposeWG; close must not begin
@@ -162,7 +366,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
-		emitEnd := !s.sessionEndEmitted
+		emitEnd := emitTerminal || !s.sessionEndEmitted
 		s.sessionEndEmitted = true
 		if s.state == SessionProcessing {
 			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
@@ -202,6 +406,35 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			s.cfg.testOnly.closeAfterDisposeSweepJoin()
 		}
 
+		// Join the environment work admitted before `closing` was set: a whole
+		// manage_worktree call (admitted at its dispatch, which is the one entry
+		// every operation passes through), the refresh of any swap that call
+		// performs, the cut of a delegate's isolation lane and the rollback that
+		// undoes it, and the rollback a refused or failed operation still owes
+		// after that swap returned. All of them fork git on the session's shared
+		// process table, and the rollbacks are work a close CAUSED.
+		//
+		// It joins HERE, before the delegate tree closes and before any of this
+		// session's own worktree cleanup, because everything below acts on the
+		// same lanes, locks and durable records an in-flight operation is still
+		// moving: disposing delegate lanes, sweeping foreign residue, unlocking
+		// the session's own worktree, and closing the stores that record all of
+		// it. Joining just before the environment cleanup would fence the process
+		// table and nothing else, leaving the operation to race every step in
+		// between. Nothing admitted may depend on those steps — an operation that
+		// waited on the delegate-tree close would deadlock this join until the
+		// budget expired — which is the same constraint the disposeWG join above
+		// already imposes on the dispose op.
+		//
+		// A swap's refresh stops on the session context cancelled in step 2
+		// above; a rollback is deliberately detached from it and bounded by a
+		// budget of its own; an operation, and a delegate's lane create, stop
+		// wherever their own request context is checked. This join is the
+		// backstop over all of them (see joinEnvWorkWithinCloseBudget). It runs for a child close too
+		// (cleanupEnv false): no such work may outlive the session that admitted
+		// it.
+		s.joinEnvWorkWithinCloseBudget(budgetCtx)
+
 		// The root-owned stable controller is the shutdown authority for its
 		// delegate tree. Persist and join recursive stop before generic Session
 		// teardown can close a child out from under that durable operation. The
@@ -221,7 +454,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// registered here (and cancelled below) or observes closing and refuses —
 		// there is no window for a late goroutine to escape the drain. The map is
 		// cleared under the lock; children are closed OUTSIDE the lock
-		// (sub.sess.Close() acquires its own mu).
+		// (teardownChildSession's close acquires the child's own mu).
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		subs := s.subagents.drainForClose()
@@ -261,21 +494,10 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 
 		// 3. Close subagents before shared environment cleanup; child sessions
 		// can own durable jobs whose process handles live in the parent env. The
-		// parent owns cleanup of the shared env, so child closes skip env cleanup.
+		// parent owns cleanup of that env (step 4), so a child's teardown never
+		// runs it; what a child owns is its scratch, retained for the handoff.
 		for _, sub := range subs {
-			sub.sess.close(budgetCtx, false)
-			// A child that owns a FRESH env (a per-delegate sandbox and/or a lane
-			// re-root) may hold a sandbox scratch dir + file-tool fds that close(false)
-			// deliberately skips (child env cleanup is the parent's job because children
-			// historically SHARED the parent env). Release that env's live scratch lease
-			// and cached file-tool fds here, but retain the directory for the human
-			// handoff. Guarded on ownsEnv: a child sharing the parent env is never
-			// retained — the parent owns that env below.
-			if sub.ownsEnv {
-				if le, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-					le.RetainSandboxScratch()
-				}
-			}
+			teardownChildSession(budgetCtx, sub.sess, retainChildScratch)
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			if err := s.artifactStore.Close(); err != nil {
@@ -310,8 +532,24 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		}
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
-		if cleanupEnv {
+		if options.cleanupEnv {
+			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
+				observe(s.currentEnv())
+			}
 			s.currentEnv().Cleanup()
+			// A session closing while entered in a worktree still holds the
+			// environment it parked at enter. A child spawned before the enter
+			// shares that object and may have minted a scratch there — one the
+			// child's teardown skips (not its own) and the current clone's
+			// Cleanup never reaches. The parked environment shares the current
+			// clone's process table, which was just reaped, so only its scratch
+			// is left: retained, never a second Cleanup.
+			s.retainParkedWorktreeEnvironmentScratch()
+			// And every environment a later enter dropped, which the parked one
+			// does not cover: worktreeRestoreEnv holds only the launch
+			// environment, so a switch leaves the clone it came from reachable
+			// from nothing.
+			s.settleAbandonedEnvironmentScratch(retainChildScratch)
 		}
 
 		// SessionEnd hooks (best-effort, bounded timeout)
@@ -323,11 +561,20 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 
 		// 5-6. Emit SESSION_END with final state.
 		if emitEnd {
-			s.emit(events.EventSessionEnd, events.SessionEndData{
+			// A live authoritative bridge gets the terminal boundary with the
+			// same lossless backpressure as every other event. A wedged bridge
+			// cannot be allowed to hold CloseForShutdown here: the shared close
+			// deadline releases sendEventContext, after which the durable closed
+			// state and stream close below still complete.
+			data := events.SessionEndData{
 				Reason: "session_closed",
 				State:  string(SessionClosed),
 				Turns:  turns,
-			})
+			}
+			_, ev, delivered := s.sendEventContext(budgetCtx, events.EventSessionEnd, data, s.activeCausalProvenance())
+			if delivered && s.jobManager != nil {
+				s.jobManager.onSessionEvent(ev)
+			}
 		}
 
 		if s.mcpMgr != nil {
@@ -369,6 +616,86 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 	})
 }
 
+// recordAbandonedEnvironmentLocked remembers an environment the swap has just
+// installed over, when the session can no longer reach it: not the environment
+// just installed, not the one an enter parked (worktreeRestoreEnv, which close
+// retains separately), and not the live parent's own environment
+// (parentSharedEnv) — a session on its parent's own environment never records
+// it as one of its own abandoned clones, structurally rather than as a
+// consequence of enter always parking it first. The clone between two enters
+// is the case that matters otherwise — a switch does not re-park, so the
+// environment the session came from is dropped from every session reference
+// while a child spawned in it still holds the object and can mint a scratch
+// there afterwards.
+//
+// The caller holds s.mu and has already run the swap's record, so
+// worktreeRestoreEnv is the parked environment this swap decided on. An
+// environment is recorded once: a clone is only ever installed once, and the
+// scan keeps that true by construction rather than by trust, so the slice is
+// bounded by the number of worktree switches a session actually made.
+func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExecutionEnvironment) {
+	if prior == nil || prior == next || prior == s.worktreeRestoreEnv || sameEnvironment(prior, s.parentSharedEnv) {
+		return
+	}
+	if slices.Contains(s.abandonedEnvs, prior) {
+		return
+	}
+	s.abandonedEnvs = append(s.abandonedEnvs, prior)
+}
+
+// settleAbandonedEnvironmentScratch settles the scratch every environment this
+// session swapped away from still owns, under the same disposition as the
+// environment the session holds now: a handoff releases the leases and keeps
+// the directories, a discard drops both. Neither settlement runs Cleanup, so
+// no process table is touched.
+//
+// close calls it (always a handoff) after the current environment's Cleanup,
+// for the same reason the parked environment's retain runs there: an abandoned
+// environment shares the current clone's process table, so its processes are
+// already reaped and running Cleanup on it would reap that table a second
+// time. What is left on it is what a shared child minted after the session
+// moved on, which nothing else will ever release. teardownChildSession also
+// calls it: a session whose environment is its live parent's own never runs
+// cleanupEnv at all, so this is the only place that ever drains a worktree
+// clone such a child built for itself and then swapped away from. It passes
+// its own disposition for symmetry with the current environment — the scratch
+// of a child being dropped is dropped wherever it sits. No production caller
+// reaches the discard side with a swapped child today: only a manage_worktree
+// op records an abandoned environment, which takes a turn, and every teardown
+// that discards fires before the child's run loop starts.
+func (s *Session) settleAbandonedEnvironmentScratch(scratch childScratchDisposition) {
+	s.mu.Lock()
+	abandoned := s.abandonedEnvs
+	s.abandonedEnvs = nil
+	s.mu.Unlock()
+	for _, env := range abandoned {
+		releaseOwnedChildEnvironment(env, scratch)
+	}
+}
+
+// retainParkedWorktreeEnvironmentScratch releases the leases of every scratch
+// the environment parked by a worktree enter (worktreeRestoreEnv) still owns,
+// keeping the directories for the handoff. Only close calls it, after the
+// current environment's Cleanup: the parked environment shares that process
+// table, so its processes are already reaped and running Cleanup on it would
+// reap the table a second time.
+func (s *Session) retainParkedWorktreeEnvironmentScratch() {
+	s.mu.Lock()
+	parked := s.worktreeRestoreEnv
+	s.mu.Unlock()
+	if parked != nil {
+		parked.RetainSessionScratch()
+	}
+}
+
+// discardRestoredCandidate tears down a restore candidate nothing ever adopted.
+// The candidate's own environmentOwnedAtTeardown says whether its execution
+// environment is one built FOR it (a working-dir re-root and/or a per-delegate
+// box) rather than the parent's own: prepareSubagentEnvironment returns the
+// parent's environment untouched when the delegate needs neither, and a shared
+// environment belongs to the live parent still working in it. It is the same
+// distinction close() makes before retaining a child's scratch, read here so an
+// aborted candidate never deletes a scratch dir out from under its parent.
 func (s *Session) discardRestoredCandidate() {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
@@ -396,19 +723,11 @@ func (s *Session) discardRestoredCandidate() {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// restoreDelegateChildEnvironment always hands a restored delegate a
-		// FRESH environment (a re-rooted clone, and its own per-lane sandbox
-		// scratch when sandboxed) — never the parent's shared one. A discarded
-		// candidate was never adopted by anything, so unlike close()'s
-		// RetainSandboxScratch (which hands a normally torn-down delegate's
-		// scratch to a human), there is no one left to retain it for; dispose it
-		// outright, mirroring disposeUnadoptedSubagentSession's unadopted-env
-		// discipline on the create-path twin of this abort. A no-op on a shared
-		// or never-sandboxed env (DisposeSandboxScratch is a no-op without an
-		// owned tmp).
-		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			le.DisposeSandboxScratch()
-		}
+		// A discarded candidate was never adopted by anything, so unlike a normal
+		// teardown (which RETAINS both scratch dirs for the human handoff), there
+		// is no one left to retain them for: both go, the same decision the
+		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
+		releaseOwnedChildEnvironment(s.environmentOwnedAtTeardown(), disposeChildScratch)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
@@ -756,7 +1075,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					// the model includes the interrupt notice in history.
 					// This is the user-visible "interrupted here" marker
 					// in the transcript that consumers (TUI / hub) render.
-					interruptMsg := "<SYSTEM-REMINDER>The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.</SYSTEM-REMINDER>"
+					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
 					s.appendSteeringTurn(interruptMsg, events.SteeringKindInterrupted)
 				}
 				if emitEnd {
@@ -889,7 +1208,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
 			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
 		notificationsPending := false
-		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification {
+		// After a terminal communicate, notification work is left to the one-shot
+		// drain rather than run here: a completion the model was never shown is
+		// delivered there, so its reply REPLACES the run's answer instead of
+		// being joined onto it as a further output of this call (#865). Every
+		// one-shot turn path is followed by DrainJobTree (cmd/evener run,
+		// drainForFinalization), and the drain's own turn gate reads the same
+		// two signals.
+		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
 			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
@@ -1286,6 +1612,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	var lastText string // accumulated assistant text for round-limit return
 	ctxWarned := false
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
+	localAdmissionCompacted := false
+	providerContextRecovered := false
 	var tracker retryTracker
 
 	// Continuation (goal) turns clamp the per-input round cap to GoalTurnMaxRounds
@@ -1323,15 +1651,22 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, _, req, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
+		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
+			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
+				s.emit(events.EventWarning, warningDataFromError(
+					"Local context admission failed; compacting context and retrying: "+prepareErr.Error(), prepareErr))
+				localAdmissionCompacted = true
+				s.forceCompactForModelRecovery(ctx)
+				continue
+			}
 			return "", progressed, prepareErr
 		}
 		// --- Phase: LLMCall ---
 		tPhaseStart := s.sclock().Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
+		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
 		for _, callID := range modelResp.CommunicatePreviewCallIDs {
 			communicatePreviewCalls[callID] = struct{}{}
 		}
@@ -1346,8 +1681,33 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
-			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried)
+			if isLocalContextCompactionError(err) && !localAdmissionCompacted && s.contextMgr != nil {
+				s.emit(events.EventWarning, warningDataFromError(
+					"Local context admission failed; compacting context and retrying: "+err.Error(), err))
+				localAdmissionCompacted = true
+				s.forceCompactForModelRecovery(ctx)
+				continue
+			}
+			if isLocalContextBudgetError(err) {
+				return "", progressed, err
+			}
+			if isProviderContextLengthError(err) && !providerContextRecovered && s.contextMgr != nil {
+				failedProvider, failedModel := strings.TrimSpace(req.Provider), strings.TrimSpace(req.Model)
+				if failedProvider == "" {
+					failedProvider = profile.ID()
+				}
+				if failedModel == "" {
+					failedModel = profile.Model()
+				}
+				s.emit(events.EventWarning, warningDataFromError(
+					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying: "+err.Error(), err))
+				providerContextRecovered = true
+				s.forceCompactForModelRecovery(ctx)
+				continue
+			}
+			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried, providerContextRecovered)
 			if retry {
+				s.resetCommunicatePreviews(communicatePreviewCalls)
 				continue
 			}
 			return "", progressed, ferr
@@ -1570,7 +1930,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	// provenance with the input's provenance, or empty provenance for ordinary
 	// external user input.
 	s.replaceActiveProvenance(inputProvenance)
-	s.repairOrphanedToolResults("before accepting new input")
+	s.repairOrphanedToolResults(context.Background(), "before accepting new input")
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
@@ -1659,7 +2019,11 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 				return failure
 			}
 		}
-		if err := s.appendClientMutationTranscript(turn); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			turn,
+			func() error { return s.appendClientMutationTranscriptLocked(turn) },
+			func() { s.history = append(s.history, turn) },
+		); err != nil {
 			s.mu.Lock()
 			s.turns--
 			s.mu.Unlock()
@@ -1679,9 +2043,6 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}
-		s.mu.Lock()
-		s.history = append(s.history, turn)
-		s.mu.Unlock()
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
@@ -1735,7 +2096,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	// A goal continuation is a fresh top-level input: reset active provenance so
 	// the continuation turn's events do not inherit a prior watch origin.
 	s.replaceActiveProvenance(nil)
-	s.repairOrphanedToolResults("before accepting goal continuation")
+	s.repairOrphanedToolResults(context.Background(), "before accepting goal continuation")
 
 	// Surface only a compact marker to the UI, not the full rendered continuation
 	// prompt: the appwire projection turns EventGoalContinuation into a systemMessage,
@@ -1746,7 +2107,10 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 		marker = "Continuing toward: " + snap.Objective
 	}
 	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
-	s.appendTurn(schema.TurnSteering, llm.User(input))
+	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
+	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
+	turn.StableTurnID = stableTurnID
+	s.recordTurn(turn, turn)
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
@@ -1754,14 +2118,14 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 
 func (s *Session) acceptDelegateAttentionInput() {
 	s.replaceActiveProvenance(nil)
-	s.repairOrphanedToolResults("before accepting delegate attention")
+	s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention")
 }
 
 // acceptNotificationInput records a job-completion notification turn at the
 // start of an input turn. It mirrors acceptContinuationInput's framing — the
 // drained queue is delivered to the model as a schema.TurnSteering reminder (a
 // user-role message that expandHistory passes through without rendering a user
-// bubble), so prepareModelRequest rebuilds the request from s.history and the
+// bubble), so prepareModelRequestWithError rebuilds the request from s.history and the
 // reminder reaches the model THIS turn. Unlike acceptUserInput it skips the
 // namer, the UserPromptSubmit hooks, the MaxTurns check, and the s.turns++
 // accounting (a notification is not a user turn).
@@ -1802,7 +2166,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		return false
 	}
 
-	s.repairOrphanedToolResults("before accepting notification")
+	s.repairOrphanedToolResults(context.Background(), "before accepting notification")
 
 	// A notification turn adopts the union of the provenance carried by the
 	// notifications it delivers, so events the turn emits (and any watch it
@@ -1822,7 +2186,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	var reminder string
 	if len(jobNotifs) > 0 {
 		reminder = s.formatJobNotificationReminder(jobNotifs)
-		if err := errors.Join(s.appendSteeringTurnDurably(reminder, events.SteeringKindNotification), sessionLifecycleFault(ctx, "append_notification")); err != nil {
+		if err := errors.Join(s.appendSteeringTurnDurablyForOwner(reminder, events.SteeringKindNotification, turnID), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
 			s.finishNotificationNoop()
 			return false
@@ -1837,9 +2201,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	//
 	// The announce precedes every content event of the turn. A boundary that
 	// came after would leave that content attributed to the turn before it.
-	if s.servedByDaemon() {
-		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
-	}
+	s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
 	if reminder != "" {
 		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
@@ -1849,6 +2211,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	if len(deliveredFailures) == 0 {
 		s.resetJobNotificationRetry()
 	}
+	s.countJobNotificationsDelivered(len(jobNotifs) - len(deliveredFailures))
 	// Settle caller-targeted watch sends only after the durable reminder turn
 	// persisted (above): the durable pending survives an appendSteeringTurnDurably
 	// failure for re-token (at-least-once contract, spec §4.3).
@@ -1888,7 +2251,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 		s.finishNotificationNoop()
 		return false
 	}
-	s.repairOrphanedToolResults("before accepting steering carrier")
+	s.repairOrphanedToolResults(context.Background(), "before accepting steering carrier")
 	// The announce precedes every content event of the turn, the same as
 	// acceptNotificationInput's boundary: content emitted before it would be
 	// attributed to the turn before this one.
@@ -1939,6 +2302,9 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			continue
 		}
 		if n.isWatch() {
+			if n.WatchID != "" && !n.Terminal && !s.timerWatchIsLive(n.WatchID) {
+				continue // the timer was cleared after this tick was built
+			}
 			survivors = append(survivors, deliverableJobNotification{notification: n})
 			continue
 		}
@@ -1967,6 +2333,22 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 	durableSurvivors, injected := classifyDurableNotifications(durableRaw, recs, alreadyInjected)
 	survivors = append(survivors, durableSurvivors...)
 	return survivors, nil, injected
+}
+
+// timerWatchIsLive reports whether the timer with this id is still installed.
+// A timer's key is reconstructible from its id because its slot is the id, so
+// this is one map lookup under jm.mu, taken with pendingJobNotifsMu released.
+// With no manager to ask it fails OPEN: this answer only ever decides a drop,
+// and delivering a tick whose timer cannot be checked beats losing it.
+func (s *Session) timerWatchIsLive(watchID string) bool {
+	jm := s.jobManager
+	if jm == nil {
+		return true
+	}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, Slot: watchID}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.watches[key] != nil
 }
 
 // classifyDurableNotifications is the pure durable-notification classification

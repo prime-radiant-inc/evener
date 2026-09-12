@@ -123,7 +123,7 @@ func TestConstraintMessage_FieldSchemaNil(t *testing.T) {
 		"required":   []string{"missing"},
 	}
 	args := map[string]any{"missing": "value"}
-	got := constraintMessage("my_tool", "missing", params, "missing", "maxLength", args, "missing")
+	got := constraintMessage("my_tool", params, "missing", "missing", "maxLength", args, "missing")
 	if got != "" {
 		t.Fatalf("constraintMessage = %q, want empty", got)
 	}
@@ -140,7 +140,7 @@ func TestConstraintMessage_UnrecognizedKeyword(t *testing.T) {
 		"required": []string{"val"},
 	}
 	args := map[string]any{"val": float64(5)}
-	got := constraintMessage("my_tool", "val", params, "val", "minimum", args, "val")
+	got := constraintMessage("my_tool", params, "val", "val", "minimum", args, "val")
 	if got != "" {
 		t.Fatalf("constraintMessage = %q, want empty for unrecognized keyword", got)
 	}
@@ -603,6 +603,59 @@ func TestAsStringSlice(t *testing.T) {
 			for i := range got {
 				if got[i] != tc.want[i] {
 					t.Fatalf("asStringSlice(%v)[%d] = %q, want %q", tc.v, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestFormatEnumValues covers formatEnumValues, the shared renderer for
+// constraintMessage's and branchRequirement's enum clauses. Each case's
+// want is json.Marshal's own output for that value: a string quoted,
+// everything else its own JSON literal, never Go's %v syntax.
+func TestFormatEnumValues(t *testing.T) {
+	tests := []struct {
+		name string
+		v    any
+		want []string
+	}{
+		{"[]string", []string{"open", "closed"}, []string{`"open"`, `"closed"`}},
+		{"[]any strings", []any{"open", "closed"}, []string{`"open"`, `"closed"`}},
+		{"[]any integers (float64, MCP-decoded shape)", []any{float64(1), float64(2), float64(3)}, []string{"1", "2", "3"}},
+		{"[]any booleans", []any{true, false}, []string{"true", "false"}},
+		{"[]any null", []any{nil}, []string{"null"}},
+		{"[]any mixed types", []any{"open", float64(1), true, nil}, []string{`"open"`, "1", "true", "null"}},
+		// A composite enum member renders as its own JSON value, not Go's %v
+		// syntax (which would print "[1 2]"/"map[a:1]").
+		{"[]any nested array", []any{[]any{float64(1), float64(2)}}, []string{"[1,2]"}},
+		{"[]any nested object", []any{map[string]any{"a": float64(1)}}, []string{`{"a":1}`}},
+		// JSON number encoding only turns to scientific notation above
+		// ~1e21 or below ~1e-6 magnitude, so a whole-number enum value like
+		// 1e20 renders as a plain decimal. Past that range it renders as
+		// "1e+21" — still valid JSON, and matching json.Marshal is the
+		// contract, not decimal notation at every magnitude.
+		{"[]any large float stays decimal", []any{1e20}, []string{"100000000000000000000"}},
+		{"[]any float past json.Marshal's decimal range", []any{1e21}, []string{"1e+21"}},
+		// A genuinely typed slice or array (not []any) renders the same as
+		// its []any equivalent — reflection walks any slice/array kind
+		// uniformly, so these need no dedicated case in formatEnumValues.
+		{"[]int", []int{1, 2, 3}, []string{"1", "2", "3"}},
+		{"[]bool", []bool{true, false}, []string{"true", "false"}},
+		{"[]float64", []float64{1.5, 2.5}, []string{"1.5", "2.5"}},
+		{"[3]int array (not slice)", [3]int{1, 2, 3}, []string{"1", "2", "3"}},
+		{"nil", nil, nil},
+		{"string", "hello", nil},
+		{"int", 42, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatEnumValues(tc.v)
+			if len(got) != len(tc.want) {
+				t.Fatalf("formatEnumValues(%v) = %v, want %v", tc.v, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("formatEnumValues(%v)[%d] = %q, want %q", tc.v, i, got[i], tc.want[i])
 				}
 			}
 		})

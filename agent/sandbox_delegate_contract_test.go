@@ -127,7 +127,7 @@ func TestExecTool_UnsupportedHostRejectsExplicitSandboxControlsBeforeRepair(t *t
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
-			args := map[string]any{"task": "do work"}
+			args := map[string]any{"prompt": "do work"}
 			maps.Copy(args, tc.args)
 
 			result := execDelegateForContract(t, s, args)
@@ -141,7 +141,7 @@ func TestExecTool_UnsupportedHostPreservesBenignRepairWithSandboxControlsOmitted
 	home := t.TempDir()
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 	result := execDelegateForContract(t, s, map[string]any{
-		"task":                "do work",
+		"prompt":              "do work",
 		"unrelated_extra_arg": true,
 	})
 	if result.IsError {
@@ -204,7 +204,7 @@ func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
 					t.Fatalf("refresh delegate tool schema: %v", err)
 				}
 			}
-			args := map[string]any{"task": "do work"}
+			args := map[string]any{"prompt": "do work"}
 			maps.Copy(args, tc.args)
 
 			result := execDelegateForContract(t, s, args)
@@ -230,7 +230,7 @@ func TestStableDelegateCreateTool_UnsupportedSandboxReportsInvalidParameters(t *
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 
 	_, err := stableDelegateCreateTool(context.Background(), s, map[string]any{
-		"task":        "do work",
+		"prompt":      "do work",
 		"sandbox":     "read-only",
 		"sandbox_net": true,
 	}, 8192)
@@ -330,9 +330,9 @@ func TestDelegateSchemaOmitsUnsupportedSandboxControls(t *testing.T) {
 		t.Errorf("unsupported-host schema exposes %q", "sandbox")
 	}
 	compiled := compileDelegateParameters(t, params)
-	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work"}, true)
-	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "off"}, false)
-	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, false)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work"}, true)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox": "off"}, false)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox_net": false}, false)
 }
 
 func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
@@ -364,8 +364,8 @@ func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
 					t.Fatalf("sandbox property exposed for parent with no accepted explicit modes: %#v", props["sandbox"])
 				}
 				compiled := compileDelegateParameters(t, params)
-				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "restricted"}, false)
-				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, false)
+				requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox": "restricted"}, false)
+				requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox_net": false}, false)
 				return
 			}
 			if _, ok := props["sandbox_net"]; ok {
@@ -384,10 +384,10 @@ func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
 			// (which the combined enum never lists) is schema-invalid, and a legacy
 			// sandbox_net property is rejected by additionalProperties:false.
 			for _, value := range tc.wantSandboxEnum {
-				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": value}, true)
+				requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox": value}, true)
 			}
-			requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "off+nonet"}, false)
-			requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, false)
+			requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox": "off+nonet"}, false)
+			requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox_net": false}, false)
 		})
 	}
 }
@@ -431,19 +431,19 @@ func TestExecTool_WriteBlockedParentSchemaAndRuntimeContract(t *testing.T) {
 		t.Fatal("provider wire schema exposes a sandbox_net property; the combined enum replaced it")
 	}
 	compiled := compileDelegateParameters(t, params)
-	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "restricted"}, false)
-	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, false)
-	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "nonet"}, true)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox": "restricted"}, false)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox_net": false}, false)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"prompt": "do work", "sandbox": "nonet"}, true)
 
 	// "restricted" is not in the advertised enum, so schema prevalidation rejects
 	// it before the handler ever sees it: a PrevalOnly error with no delegate launch.
-	restricted := execDelegateForContract(t, s, map[string]any{"task": "do work", "sandbox": "restricted"})
+	restricted := execDelegateForContract(t, s, map[string]any{"prompt": "do work", "sandbox": "restricted"})
 	if !restricted.IsError || !restricted.PrevalOnly {
 		t.Fatalf("restricted exec result = %#v, want a prevalidation rejection (IsError=true, PrevalOnly=true)", restricted)
 	}
 	requireNoDelegatePreRepairState(t, s)
 
-	netOnly := execDelegateForContract(t, s, map[string]any{"task": "do work", "sandbox": "nonet"})
+	netOnly := execDelegateForContract(t, s, map[string]any{"prompt": "do work", "sandbox": "nonet"})
 	if netOnly.IsError {
 		t.Fatalf("write-blocked parent net-only tightening failed: %#v", netOnly)
 	}
@@ -520,7 +520,7 @@ func TestStableDelegateCreateTool_RejectsAffectedSandboxCombinations(t *testing.
 			lane, home := sbxLane(t)
 			s := sbxDelegateSession(t, sbxBwrapFacts(home))
 			setParentSandboxForContract(t, s, sbxBwrapFacts(home), lane, tc.parentMode, tc.parentNet)
-			args := map[string]any{"task": "do work"}
+			args := map[string]any{"prompt": "do work"}
 			maps.Copy(args, tc.args)
 			_, err := stableDelegateCreateTool(context.Background(), s, args, 8192)
 			requireDelegateSandboxRequestError(t, err, tc.invalidParameters)
@@ -533,7 +533,7 @@ func TestStableDelegateCreateTool_UnsupportedHostRejectsNetworkOnly(t *testing.T
 	_, home := sbxLane(t)
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 	_, err := stableDelegateCreateTool(context.Background(), s, map[string]any{
-		"task":    "do work",
+		"prompt":  "do work",
 		"sandbox": "nonet",
 	}, 8192)
 	requireDelegateSandboxRequestError(t, err, []string{"sandbox"})

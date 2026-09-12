@@ -118,3 +118,43 @@ func TestSessionHeaderShowsGoalChip(t *testing.T) {
 		t.Errorf("goal chip should be absent when no goal is set:\n%s", got)
 	}
 }
+
+// A session whose thread names no profile must not name an instance for it:
+// fetchHubStatus sends auth/status with an empty provider and the hub picks
+// its own default, which is the Codex instance (pinned hub-side by
+// cmd/evener-hub's TestAuth_EmptyProviderMeansCodex). Guessing "openai" here
+// made the status pane report a different instance than /auth answered for,
+// and naming an instance client-side is what once made /logout delete the
+// platform API key while reporting an OAuth sign-out.
+func TestFetchHubStatusLeavesTheAuthInstanceToTheHub(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "hub",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{},
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1"}}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, func(_ context.Context, _ appwire.TaskListParams) (appwire.TaskListResponse, error) {
+		return appwire.TaskListResponse{}, nil
+	})
+	var got appwire.AuthStatusParams
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+		got = params
+		return appwire.AuthStatusResponse{Provider: "openai-codex", Supported: true}, nil
+	})
+	client, cleanup := newTUIAppWireClient(t, app)
+	defer cleanup()
+
+	msg := fetchHubStatus(client, appwire.Ref{SourceID: "local", ThreadID: "th_1"})()
+	status, ok := msg.(hubStatusMsg)
+	if !ok || status.authErr != nil {
+		t.Fatalf("msg=%T authErr=%v", msg, status.authErr)
+	}
+	if got.Provider != "" {
+		t.Fatalf("auth/status Provider = %q, want empty so the hub picks its own default", got.Provider)
+	}
+	if status.auth.Provider != "openai-codex" {
+		t.Fatalf("status pane reports %q, want the instance the hub answered for", status.auth.Provider)
+	}
+}

@@ -380,13 +380,13 @@ func TestValidateWatchEventArgs(t *testing.T) {
 	})
 	t.Run("every with zero events", func(t *testing.T) {
 		err := validateWatchEventArgs(watchArgs{Every: 3})
-		if err == nil || !strings.Contains(err.Error(), "every requires exactly one") {
+		if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
 			t.Fatalf("expected error, got %v", err)
 		}
 	})
 	t.Run("every with multiple events", func(t *testing.T) {
 		err := validateWatchEventArgs(watchArgs{Every: 3, Events: []string{"job.notification", "communicate"}})
-		if err == nil || !strings.Contains(err.Error(), "every requires exactly one") {
+		if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
 			t.Fatalf("expected error, got %v", err)
 		}
 	})
@@ -398,7 +398,7 @@ func TestValidateWatchEventArgs(t *testing.T) {
 	})
 	t.Run("event_filter without events", func(t *testing.T) {
 		err := validateWatchEventArgs(watchArgs{EventFilter: &watchEventFilter{}})
-		if err == nil || !strings.Contains(err.Error(), "event_filter requires events") {
+		if err == nil || !strings.Contains(err.Error(), "event_filter requires events naming assistant.tool") {
 			t.Fatalf("expected error, got %v", err)
 		}
 	})

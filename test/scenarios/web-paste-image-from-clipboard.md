@@ -41,11 +41,11 @@ inline banner.
 
 ## Steps
 
-1. **[browser] Open the spawn form.** The `/auth?token=…&next=/new` redirect
+1. **[browser] Open the spawn form.** The `/auth/…?next=/new` redirect
    sets the cookie so subsequent navigations don't 401:
    ```
    action: navigate
-   payload: $HUB/auth?token=<TOKEN>&next=/new
+   payload: $HUB/auth/<TOKEN>?next=/new
    ```
    Confirm the card is mounted:
    ```

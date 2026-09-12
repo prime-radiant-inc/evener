@@ -25,7 +25,6 @@
 /evener-fuzzcov
 /evener-fuzzregistry
 /evener-internalcheck
-/evener-test-dev-tooling
 /evener-tomlcheck
 /evener-transcript-v2-upgrade
 /evenereval
@@ -50,3 +49,5 @@ docs/experiments/dashboard-session24.html
 # roborev snapshots and per-machine reviewer config
 /.roborev/
 /.roborev.toml
+
+# subagent-driven-development scratch (ledgers, briefs, review packages)

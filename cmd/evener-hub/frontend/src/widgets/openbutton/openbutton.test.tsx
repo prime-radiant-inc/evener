@@ -1,24 +1,33 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { OpenButton, OpenIcon } from ".";
 
 afterEach(cleanup);
 
-test("the word form renders the word followed by the glyph and names itself from label", () => {
+// The repo's CSS-source test idiom (difftable.test.tsx, select.test.tsx):
+// jsdom has no layout, so geometry contracts are pinned by reading the
+// stylesheet's own source.
+const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "openbutton.module.css"), "utf8");
+
+test("the button form is icon-only: named by label, tooltip defaults to the one word 'Open'", () => {
   const onClick = vi.fn();
   const { container } = render(<OpenButton label="Open transcript" onClick={onClick} />);
   const button = screen.getByRole("button", { name: "Open transcript" });
-  expect(button.textContent).toContain("open");
-  // The glyph is present but decorative - the label carries the name.
-  const svg = container.querySelector("svg");
-  expect(svg?.getAttribute("aria-hidden")).toBe("true");
+  expect(button.textContent).toBe("");
+  expect(button.getAttribute("title")).toBe("Open");
+  expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+  // The surfaces' geometry hook (dense rows cap the hit height at the row's).
+  expect(container.querySelector("[data-open-shell]")).toBeTruthy();
   fireEvent.click(button);
   expect(onClick).toHaveBeenCalledTimes(1);
 });
 
-test("the word form's accessible name falls back to the visible word", () => {
-  render(<OpenButton word="open transcript" onClick={() => {}} />);
-  expect(screen.getByRole("button", { name: "open transcript" })).toBeTruthy();
+test("the accessible name falls back to 'Open' when no label is given", () => {
+  render(<OpenButton onClick={() => {}} />);
+  expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
 });
 
 test("a click never reaches the enclosing row - the affordance rides disclosures", () => {
@@ -34,11 +43,16 @@ test("a click never reaches the enclosing row - the affordance rides disclosures
   expect(onParentClick).not.toHaveBeenCalled();
 });
 
-test("the iconOnly form shows no word, names itself from label, and defaults its title to it", () => {
-  render(<OpenButton iconOnly label="Open transcript" size="xs" onClick={() => {}} />);
-  const button = screen.getByRole("button", { name: "Open transcript" });
-  expect(button.textContent).toBe("");
-  expect(button.getAttribute("title")).toBe("Open transcript");
+test("the button form rides in a 1em layout shell: the hit size never reaches the line box", () => {
+  // M1: the wrapper is the full hit size; the negative margin-block hands
+  // exactly one text line back to layout, clamped at 0 so a large font never
+  // earns a positive margin.
+  expect(css).toMatch(/\.inline\s*\{[^}]*height:\s*28px/);
+  expect(css).toMatch(/\.inline\s*\{[^}]*margin-block:\s*min\(0px,\s*calc\(\(1em - 28px\) \/ 2\)\)/);
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  expect(media, "openbutton.module.css must have a max-width:899px block").not.toBeNull();
+  expect(media![1]).toMatch(/\.inline\s*\{[^}]*height:\s*var\(--tap-min\)/);
+  expect(media![1]).toMatch(/margin-block:\s*min\(0px,\s*calc\(\(1em - var\(--tap-min\)\) \/ 2\)\)/);
 });
 
 test("the anchor form renders a real link to an external target, glyph following the words", () => {
@@ -54,14 +68,15 @@ test("the anchor form renders a real link to an external target, glyph following
   expect(link.getAttribute("href")).toBe("vscode://file/src/agents/foo.md");
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toContain("noopener");
+  // The tooltip is the one word everywhere - the anchor form included.
+  expect(link.getAttribute("title")).toBe("Open");
   expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
-  // Riding a disclosure costs the enclosing row nothing, same as the buttons.
   fireEvent.click(link);
   expect(onParentClick).not.toHaveBeenCalled();
 });
 
 test("tabIndex forwards to the underlying control (dense tree rows take -1)", () => {
-  render(<OpenButton iconOnly label="Open transcript" tabIndex={-1} onClick={() => {}} />);
+  render(<OpenButton label="Open transcript" tabIndex={-1} onClick={() => {}} />);
   expect(screen.getByRole("button", { name: "Open transcript" }).tabIndex).toBe(-1);
 });
 

@@ -29,11 +29,12 @@ import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { navigate, paneToURL } from "../../../shell/routing";
-import { SessionMenu } from "../../../shell/sessionMenu/SessionMenu";
+import { SessionMenu, type SessionMenuProps } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { selectLocation } from "../../../stores/navigation/selectors";
+import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { isNavigationUnavailable } from "../../../stores/navigation/types";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
@@ -47,10 +48,10 @@ import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
+import { TasksPanel, type TasksPanelHandle, taskAggregateLabel } from "./TasksPanel";
 import "../../sessionPanels";
 
-export type SessionChromePlacement = "footer" | "composer";
+export type SessionChromePlacement = "footer" | "composer" | "menu";
 
 export interface SessionChromeProps {
   ref: string;
@@ -81,6 +82,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
+  const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
   // no project is expanded merely to decide menu eligibility.
   const navigation = useNavigationStore();
@@ -130,6 +132,20 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
 
+  // Force-stop eligibility mirrors the reach of the retired inline footer
+  // button (Session.tsx): any local session that isn't closed, including
+  // saved notLoaded panes (a pending or failed resume can still own a daemon)
+  // and panes with no navigation identity. The one exclusion is a session
+  // retained by its owning session - its notice directs the user to the owner
+  // instead (same predicate as Session.tsx's recoveryOwnerRef).
+  const recoveryOwnerRef =
+    !mutationStateAuthoritative &&
+    model.status.type !== "notLoaded" &&
+    model.status.type !== "restartRequired" &&
+    model.parentRef?.startsWith("local:")
+      ? model.parentRef
+      : undefined;
+
   const openDetails = () => {
     if (isMobile) detailsRef.current?.open();
     else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
@@ -145,11 +161,101 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   };
   const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
 
+  // The menu's action adapters, shared by the composer and menu-only
+  // placements so the failure convention (SessionMenu.tsx's header comment:
+  // the adapter toasts with sessionActionError and rethrows) cannot drift
+  // between them.
+  const forceStopAction =
+    sessionRef.startsWith("local:") && model.status.type !== "closed" && !recoveryOwnerRef
+      ? async () => {
+          try {
+            await threadsStore.getState().forceStop(sessionRef);
+          } catch (err) {
+            toasts.push("error", sessionActionError("Couldn't force stop session", err));
+            throw err;
+          }
+          try {
+            await threadsStore.getState().refreshThread(sessionRef);
+          } catch (err) {
+            toasts.push("error", sessionActionError("Session stopped; couldn't refresh its view", err));
+          }
+        }
+      : undefined;
+  const shutdownAction = async () => {
+    const convergence = buildShutdownConvergence(sessionRef, {
+      pinSectionId: menuSession?.pin_section_id,
+      projectKey: location?.project_key,
+    });
+    const invalidation = convergence.arm();
+    try {
+      await threadsStore.getState().shutdown(sessionRef);
+      await convergence.converge(invalidation);
+    } catch (err) {
+      invalidation.cancel();
+      toasts.push("error", sessionActionError("Couldn't shut down session", err));
+      throw err;
+    }
+  };
+  const pinAction = async (target: Parameters<SessionMenuProps["actions"]["onPin"]>[0]) => {
+    try {
+      const result = await assignSessionPin(client, sessionRef, target);
+      navigationStore.getState().trackPinSection(result.assignment.section.id);
+      if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
+    } catch (err) {
+      toasts.push("error", sessionActionError("Couldn't assign pinned session", err));
+      throw err;
+    }
+  };
+  const unpinAction = async () => {
+    try {
+      const result = await unpinSession(client, sessionRef);
+      if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
+    } catch (err) {
+      toasts.push("error", sessionActionError("Couldn't unpin session", err));
+      throw err;
+    }
+  };
+  const archiveAction = async () => {
+    if (!menuSession) return;
+    try {
+      const result = await setArchived("session", menuSession.session_id, menuSession.tier !== "archived");
+      if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
+    } catch (err) {
+      toasts.push("error", sessionActionError("Couldn't update archive state", err));
+      throw err;
+    }
+  };
+  const deleteAction = async () => {
+    try {
+      const result = await deleteSession(client, sessionRef);
+      if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
+      closePanesForDeletedSessions(result.deleted);
+      if (result.skipped.length > 0) {
+        const reason = result.skipped[0]?.reason ?? "still in use";
+        toasts.push("warning", `Couldn't delete "${model.name}": ${reason}`);
+      }
+    } catch (err) {
+      toasts.push("error", sessionActionError(`Couldn't delete "${model.name}"`, err));
+      throw err;
+    }
+  };
+
   return (
     <>
+      {/* The "menu" placement (Session.tsx's notLoaded footer mount) renders
+          ONLY the actions group below: the pane footer already carries the
+          liveness line and any recovery notice, and the composer hides its
+          own chrome for exactly this state, so there is no status body to
+          compress and no second menu to dedupe against. */}
       <div
         className={placement === "composer" ? CLASS.inline : CLASS.chrome}
-        data-testid={placement === "composer" ? "session-chrome-inline" : "session-chrome"}
+        data-testid={
+          placement === "composer"
+            ? "session-chrome-inline"
+            : placement === "menu"
+              ? "session-chrome-menu"
+              : "session-chrome"
+        }
       >
         {placement === "composer" ? (
           <div className={CLASS.body} data-testid="session-chrome-inline-status">
@@ -159,7 +265,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
               in the real app. */}
             <GoalControl sessionRef={sessionRef} model={model} />
           </div>
-        ) : (
+        ) : placement === "menu" ? null : (
           /* .body owns compression (sessionchrome.module.css says why): its
            inline-size container progressively simplifies status content, so
            .right - and with it the "..." menu - always shares this one line. */
@@ -190,7 +296,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
             canShutdown={model.capabilities.shutdown}
             session={menuSession}
             panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
-            taskLabel={model.tasks ? `Tasks ${model.tasks.done}/${model.tasks.total}` : undefined}
+            taskLabel={model.tasks ? `Tasks ${taskAggregateLabel(model.tasks)}` : undefined}
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             actions={{
@@ -199,10 +305,6 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                 else if (pane === "tasks") openTasks();
                 else openActivity();
               },
-              // Failure convention (SessionMenu.tsx's header comment): the
-              // ADAPTER toasts with sessionActionError and rethrows, so a
-              // rejected action leaves SessionMenu's dialog open with its
-              // confirm button re-enabled; only success closes it.
               onRename: async (name) => {
                 try {
                   await threadsStore.getState().rename(sessionRef, name);
@@ -211,78 +313,12 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                   throw err;
                 }
               },
-              onShutdown: async () => {
-                const invalidation =
-                  navigation.mode === "v1"
-                    ? navigationStore
-                        .getState()
-                        .awaitNavigationInvalidation((payload) =>
-                          payload.targets.some(
-                            (target) =>
-                              target.kind === "all_loaded_projects" ||
-                              (target.kind === "section" &&
-                                (target.section === "live" || target.section === "needs_you")) ||
-                              (target.kind === "pin_section" && target.sectionId === menuSession?.pin_section_id) ||
-                              (target.kind === "project" && target.projectKey === location?.project_key),
-                          ),
-                        )
-                    : null;
-                void invalidation?.promise.catch(() => undefined);
-                try {
-                  await threadsStore.getState().shutdown(sessionRef);
-                  if (invalidation) {
-                    const payload = await invalidation.promise;
-                    await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
-                  }
-                } catch (err) {
-                  invalidation?.cancel();
-                  toasts.push("error", sessionActionError("Couldn't shut down session", err));
-                  throw err;
-                }
-              },
-              onPin: async (target) => {
-                try {
-                  const result = await assignSessionPin(client, sessionRef, target);
-                  navigationStore.getState().trackPinSection(result.assignment.section.id);
-                  if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
-                } catch (err) {
-                  toasts.push("error", sessionActionError("Couldn't assign pinned session", err));
-                  throw err;
-                }
-              },
-              onUnpin: async () => {
-                try {
-                  const result = await unpinSession(client, sessionRef);
-                  if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
-                } catch (err) {
-                  toasts.push("error", sessionActionError("Couldn't unpin session", err));
-                  throw err;
-                }
-              },
-              onToggleArchive: async () => {
-                if (!menuSession) return;
-                try {
-                  const result = await setArchived("session", menuSession.session_id, menuSession.tier !== "archived");
-                  if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
-                } catch (err) {
-                  toasts.push("error", sessionActionError("Couldn't update archive state", err));
-                  throw err;
-                }
-              },
-              onDelete: async () => {
-                try {
-                  const result = await deleteSession(client, sessionRef);
-                  if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
-                  closePanesForDeletedSessions(result.deleted);
-                  if (result.skipped.length > 0) {
-                    const reason = result.skipped[0]?.reason ?? "still in use";
-                    toasts.push("warning", `Couldn't delete "${model.name}": ${reason}`);
-                  }
-                } catch (err) {
-                  toasts.push("error", sessionActionError(`Couldn't delete "${model.name}"`, err));
-                  throw err;
-                }
-              },
+              onForceStop: forceStopAction,
+              onShutdown: shutdownAction,
+              onPin: pinAction,
+              onUnpin: unpinAction,
+              onToggleArchive: archiveAction,
+              onDelete: deleteAction,
             }}
           />
         </div>

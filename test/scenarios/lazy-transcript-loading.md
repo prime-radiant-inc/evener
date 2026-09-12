@@ -55,7 +55,7 @@ checklist in `docs/developing-evener/agentic-testing.md`; never touch a real hub
    Send frames as `{"id":N,"method":…,"params":…}` with **no `jsonrpc`
    field** — see Sharp edges.
 
-2. **Browser cold load**: navigate to `/auth?token=$TOKEN&next=/s/local:<id>`.
+2. **Browser cold load**: navigate to `/auth/$TOKEN?next=/s/local:<id>`.
    Assert on the paging row rather than on a turn count (see Sharp edges —
    the transcript is virtualized, so a DOM count measures the viewport, not
    the model):

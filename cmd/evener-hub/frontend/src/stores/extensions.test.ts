@@ -3,12 +3,53 @@ import { FakeClient } from "../protocol/testing/fakeClient";
 import { threadStartedNotification } from "../protocol/testing/notifications";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry, PluginEntry } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
-import { extensionsStore, resetExtensionsStoreForTests } from "./extensions";
+import { extensionsStore, type MarketplaceCatalogEntry, resetExtensionsStoreForTests } from "./extensions";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   return fake;
+}
+
+type BrowseResult = { name: string; plugins: MarketplaceCatalogPlugin[] };
+
+// Scripts evener/marketplace/browse to hang, and returns the resolver for
+// whichever request is in flight. FakeClient.request() defers the handler call
+// by one microtask, so the resolver only exists once that has flushed - which
+// every awaited mutation in these tests does before the resolver is called.
+function deferBrowse(fake: FakeClient): (result: BrowseResult) => void {
+  let resolveRequest!: (result: BrowseResult) => void;
+  fake.on(
+    "evener/marketplace/browse",
+    () =>
+      new Promise<BrowseResult>((resolve) => {
+        resolveRequest = resolve;
+      }),
+  );
+  return (result) => resolveRequest(result);
+}
+
+// Scripts evener/marketplace/browse to hang the way deferBrowse does, but
+// keeps one resolver per call, so requests that overlap on the same name can
+// be released one at a time.
+function gateBrowseCalls(fake: FakeClient): ((result: BrowseResult) => void)[] {
+  const releases: ((result: BrowseResult) => void)[] = [];
+  fake.on(
+    "evener/marketplace/browse",
+    () =>
+      new Promise<BrowseResult>((resolve) => {
+        releases.push(resolve);
+      }),
+  );
+  return releases;
+}
+
+// Runs everything the microtask queue has waiting. The retire-window tests
+// below assert that a caller has *not* resumed yet, which only says something
+// once nothing is left to run: a promise resolved with another promise hands
+// its waiters on an unpredictable number of ticks later.
+function drainMicrotasks(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 const MARKETPLACE_A: MarketplaceEntry = {
@@ -150,6 +191,19 @@ describe("removeMarketplace", () => {
     expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
   });
 
+  test("a browse that predates the removal cannot refill the cache it dropped", async () => {
+    const fake = connectFakeClient();
+    const resolveBrowse = deferBrowse(fake);
+    const stale = extensionsStore.getState().browseMarketplace("acme-plugins");
+
+    fake.on("evener/marketplace/remove", () => ({ marketplaces: [] }));
+    await extensionsStore.getState().removeMarketplace("acme-plugins");
+
+    resolveBrowse({ name: "acme-plugins", plugins: [{ name: "stale" }] });
+    await stale;
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+  });
+
   test("a rejection propagates to the caller", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/remove", () => {
@@ -179,12 +233,272 @@ describe("refreshMarketplace", () => {
     expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
   });
 
+  test("a browse that predates the refresh cannot refill the cache it dropped", async () => {
+    const fake = connectFakeClient();
+    const resolveBrowse = deferBrowse(fake);
+    const stale = extensionsStore.getState().browseMarketplace("acme-plugins");
+
+    fake.on("evener/marketplace/refresh", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().refreshMarketplace("acme-plugins");
+
+    resolveBrowse({ name: "acme-plugins", plugins: [{ name: "stale" }] });
+    await stale;
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+  });
+
   test("a rejection propagates to the caller", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/refresh", () => {
       throw new Error("refresh failed");
     });
     await expect(extensionsStore.getState().refreshMarketplace("acme-plugins")).rejects.toThrow("refresh failed");
+  });
+});
+
+describe("editMarketplace", () => {
+  test("calls evener/marketplace/edit, applies the response, and drops the browse cache for both names", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", description: "", plugins: [] }));
+    await extensionsStore.getState().browseMarketplace("acme-plugins");
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(true);
+
+    fake.on("evener/marketplace/edit", (params) => {
+      expect(params).toEqual({
+        name: "acme-plugins",
+        newName: "acme2",
+        source: { kind: "url", url: "https://x/y.git" },
+      });
+      return { marketplaces: [{ ...MARKETPLACE_A, name: "acme2", source: { kind: "url", url: "https://x/y.git" } }] };
+    });
+    await extensionsStore.getState().editMarketplace({
+      name: "acme-plugins",
+      newName: "acme2",
+      source: { kind: "url", url: "https://x/y.git" },
+    });
+    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme2"]);
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+    expect(extensionsStore.getState().browseCatalogs.has("acme2")).toBe(false);
+  });
+
+  test("a browse that predates the edit cannot refill the cache the edit dropped", async () => {
+    const fake = connectFakeClient();
+    const resolveBrowse = deferBrowse(fake);
+    const stale = extensionsStore.getState().browseMarketplace("acme-plugins");
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({ status: "loading" });
+
+    fake.on("evener/marketplace/edit", () => ({ marketplaces: [MARKETPLACE_A] }));
+    // A same-name re-source: the name survives, so only the generation tells
+    // the in-flight browse its catalog is the pre-edit one.
+    await extensionsStore.getState().editMarketplace({
+      name: "acme-plugins",
+      source: { kind: "github", repo: "acme/plugins-v2" },
+    });
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+
+    resolveBrowse({ name: "acme-plugins", plugins: [{ name: "stale" }] });
+    await stale;
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+
+    fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "fresh" }] }));
+    await extensionsStore.getState().browseMarketplace("acme-plugins");
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({
+      status: "loaded",
+      description: undefined,
+      plugins: [{ name: "fresh" }],
+    });
+  });
+
+  test("a rename fences an in-flight browse under the new name too", async () => {
+    const fake = connectFakeClient();
+    const resolveBrowse = deferBrowse(fake);
+    const stale = extensionsStore.getState().browseMarketplace("acme2");
+
+    fake.on("evener/marketplace/edit", () => ({ marketplaces: [{ ...MARKETPLACE_A, name: "acme2" }] }));
+    await extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "acme2" });
+
+    resolveBrowse({ name: "acme2", plugins: [{ name: "stale" }] });
+    await stale;
+    expect(extensionsStore.getState().browseCatalogs.has("acme2")).toBe(false);
+  });
+
+  test("a rejection propagates", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/edit", () => {
+      throw new Error("edit failed");
+    });
+    await expect(extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "x" })).rejects.toThrow(
+      "edit failed",
+    );
+  });
+});
+
+// Every mutation and the notification refetch replace the whole list from
+// their own response, and the hub answers them independently: a slow refresh
+// started before a rename can land after it. The later response wins whichever
+// order they arrive in.
+describe("marketplace mutation ordering", () => {
+  test("a refresh that resolves after a newer rename cannot put the old name back", async () => {
+    const fake = connectFakeClient();
+    let resolveRefresh!: (v: { marketplaces: MarketplaceEntry[] }) => void;
+    fake.on(
+      "evener/marketplace/refresh",
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+    const refreshing = extensionsStore.getState().refreshMarketplace("acme-plugins");
+    // FakeClient.request() defers the handler call by one microtask, so
+    // resolveRefresh is not assigned until that has run.
+    await Promise.resolve();
+
+    fake.on("evener/marketplace/edit", () => ({ marketplaces: [{ ...MARKETPLACE_A, name: "acme2" }] }));
+    await extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "acme2" });
+    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme2"]);
+
+    resolveRefresh({ marketplaces: [MARKETPLACE_A] });
+    await refreshing;
+    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme2"]);
+  });
+
+  test("a list response that resolves after a newer mutation cannot roll it back", async () => {
+    const fake = connectFakeClient();
+    let resolveList!: (v: { marketplaces: MarketplaceEntry[] }) => void;
+    fake.on(
+      "evener/marketplace/list",
+      () =>
+        new Promise((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    const fetching = extensionsStore.getState().fetchMarketplaces();
+    await Promise.resolve();
+
+    fake.on("evener/marketplace/remove", () => ({ marketplaces: [] }));
+    await extensionsStore.getState().removeMarketplace("acme-plugins");
+    expect(extensionsStore.getState().marketplaces).toEqual([]);
+
+    resolveList({ marketplaces: [MARKETPLACE_A] });
+    await fetching;
+    expect(extensionsStore.getState().marketplaces).toEqual([]);
+    // The outrun response writes none of its three fields, the loading flag
+    // included: the mutation that outran it is followed by the hub's
+    // evener/marketplace/updated broadcast, whose refetch is what clears the
+    // flag this fetch set on its way out.
+    expect(extensionsStore.getState().marketplacesLoading).toBe(true);
+  });
+
+  test("an outrun response still retires its own browse cache entry", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/browse", () => ({ name: "local-plugins", plugins: [{ name: "linter" }] }));
+    await extensionsStore.getState().browseMarketplace("local-plugins");
+    let resolveRefresh!: (v: { marketplaces: MarketplaceEntry[] }) => void;
+    fake.on(
+      "evener/marketplace/refresh",
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+    const refreshing = extensionsStore.getState().refreshMarketplace("local-plugins");
+    await Promise.resolve();
+
+    fake.on("evener/marketplace/edit", () => ({ marketplaces: [{ ...MARKETPLACE_A, name: "acme2" }] }));
+    await extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "acme2" });
+
+    resolveRefresh({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] });
+    await refreshing;
+    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme2"]);
+    expect(extensionsStore.getState().browseCatalogs.has("local-plugins")).toBe(false);
+  });
+
+  test("an in-order sequence applies every response", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/add", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().addMarketplace({ source: { kind: "github", repo: "acme/plugins" } });
+    expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A]);
+
+    fake.on("evener/marketplace/refresh", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
+    await extensionsStore.getState().refreshMarketplace("acme-plugins");
+    expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A, MARKETPLACE_B]);
+
+    fake.on("evener/marketplace/edit", () => ({ marketplaces: [{ ...MARKETPLACE_A, name: "acme2" }, MARKETPLACE_B] }));
+    await extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "acme2" });
+    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme2", "local-plugins"]);
+
+    fake.on("evener/marketplace/remove", () => ({ marketplaces: [MARKETPLACE_B] }));
+    await extensionsStore.getState().removeMarketplace("acme2");
+    expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_B]);
+
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
+    await extensionsStore.getState().fetchMarketplaces();
+    expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A, MARKETPLACE_B]);
+  });
+
+  // The loading flag and the error describe the same response as the list, so
+  // the fence covers all three: a fetch the store has already moved past can
+  // no more post its error or clear a load than it can put its list back.
+  test("a list failure that lands after a newer mutation cannot post an error over it", async () => {
+    const fake = connectFakeClient();
+    let rejectList!: (err: Error) => void;
+    fake.on(
+      "evener/marketplace/list",
+      () =>
+        new Promise<{ marketplaces: MarketplaceEntry[] }>((_, reject) => {
+          rejectList = reject;
+        }),
+    );
+    const fetching = extensionsStore.getState().fetchMarketplaces();
+    await Promise.resolve();
+
+    fake.on("evener/marketplace/remove", () => ({ marketplaces: [] }));
+    await extensionsStore.getState().removeMarketplace("acme-plugins");
+
+    rejectList(new Error("list failed"));
+    await fetching;
+    expect(extensionsStore.getState().marketplacesError).toBeNull();
+    expect(extensionsStore.getState().marketplaces).toEqual([]);
+  });
+
+  test("a list response that lands after a newer fetch failed leaves the newer error in place", async () => {
+    const fake = connectFakeClient();
+    let resolveList!: (v: { marketplaces: MarketplaceEntry[] }) => void;
+    fake.on(
+      "evener/marketplace/list",
+      () =>
+        new Promise((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    const stale = extensionsStore.getState().fetchMarketplaces();
+    await Promise.resolve();
+
+    fake.on("evener/marketplace/list", () => {
+      throw new Error("list failed");
+    });
+    await extensionsStore.getState().fetchMarketplaces();
+    expect(extensionsStore.getState().marketplacesError).toBe("list failed");
+
+    resolveList({ marketplaces: [MARKETPLACE_A] });
+    await stale;
+    expect(extensionsStore.getState().marketplacesError).toBe("list failed");
+    expect(extensionsStore.getState().marketplaces).toBeNull();
+  });
+
+  test("an in-order fetch after a failure clears both the error and the loading flag", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => {
+      throw new Error("list failed");
+    });
+    await extensionsStore.getState().fetchMarketplaces();
+    expect(extensionsStore.getState().marketplacesError).toBe("list failed");
+    expect(extensionsStore.getState().marketplacesLoading).toBe(false);
+
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().fetchMarketplaces();
+    expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A]);
+    expect(extensionsStore.getState().marketplacesError).toBeNull();
+    expect(extensionsStore.getState().marketplacesLoading).toBe(false);
   });
 });
 
@@ -256,6 +570,133 @@ describe("browseMarketplace", () => {
     resolveRequest({ name: "acme-plugins", plugins: [] });
     await Promise.all([first, second]);
     expect(fake.calls.filter((c) => c.method === "evener/marketplace/browse")).toHaveLength(1);
+  });
+
+  // The synchronous "loading" marker keeps a second call from sending a
+  // second request, but a caller that needs the catalog - the browse filter
+  // waiting on a marketplace someone else's click started - also needs to
+  // know when it lands, so the second call awaits the first's request.
+  test("a call for a catalog already in flight resolves with that request, not before it", async () => {
+    const fake = connectFakeClient();
+    const resolveBrowse = deferBrowse(fake);
+    const first = extensionsStore.getState().browseMarketplace("acme-plugins");
+    const second = extensionsStore.getState().browseMarketplace("acme-plugins");
+    let secondSettled = false;
+    void second.then(() => {
+      secondSettled = true;
+    });
+    // FakeClient.request() defers the handler call by one microtask; flush it
+    // before using the resolver (see the fetchMarketplaces test above).
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({ status: "loading" });
+
+    resolveBrowse({ name: "acme-plugins", plugins: [{ name: "linter" }] });
+    await Promise.all([first, second]);
+    expect(secondSettled).toBe(true);
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/browse")).toHaveLength(1);
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({
+      status: "loaded",
+      description: undefined,
+      plugins: [{ name: "linter" }],
+    });
+
+    // A settled catalog has no request left to wait for: this one resolves on
+    // the very next microtask (adopting a leftover promise would cost two
+    // more) and still sends nothing.
+    let thirdSettled = false;
+    void extensionsStore
+      .getState()
+      .browseMarketplace("acme-plugins")
+      .then(() => {
+        thirdSettled = true;
+      });
+    await Promise.resolve();
+    expect(thirdSettled).toBe(true);
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/browse")).toHaveLength(1);
+  });
+
+  // A retire drops the cache entry without touching the request already on
+  // the wire, so a replacement request for the same name registers itself
+  // alongside the fenced-out one. When that one lands it must leave the
+  // replacement's registration alone: the entry the next caller reads is the
+  // replacement's, and it needs the promise that goes with it.
+  test("a browse retired mid-flight leaves the replacement request's registration in place", async () => {
+    const fake = connectFakeClient();
+    const releases = gateBrowseCalls(fake);
+    const first = extensionsStore.getState().browseMarketplace("acme-plugins");
+
+    fake.on("evener/marketplace/refresh", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().refreshMarketplace("acme-plugins");
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+
+    const second = extensionsStore.getState().browseMarketplace("acme-plugins");
+    await drainMicrotasks();
+    expect(releases).toHaveLength(2);
+
+    releases[0]!({ name: "acme-plugins", plugins: [{ name: "stale" }] });
+    await first;
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({ status: "loading" });
+
+    // Only a caller that arrives after the fenced request has landed can see
+    // the damage: one that arrives before it finds the replacement's promise
+    // still in the map.
+    let thirdSettled = false;
+    void extensionsStore
+      .getState()
+      .browseMarketplace("acme-plugins")
+      .then(() => {
+        thirdSettled = true;
+      });
+    await drainMicrotasks();
+    expect(thirdSettled).toBe(false);
+
+    releases[1]!({ name: "acme-plugins", plugins: [{ name: "fresh" }] });
+    await second;
+    await drainMicrotasks();
+    expect(thirdSettled).toBe(true);
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({
+      status: "loaded",
+      description: undefined,
+      plugins: [{ name: "fresh" }],
+    });
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/browse")).toHaveLength(2);
+  });
+
+  // The same window from the point of view of a caller that adopted the
+  // fenced request's promise - the browse filter is the only one. The catalog
+  // it is waiting for is the replacement's, so resolving it when the fenced
+  // request lands would wake it on a "loading" entry.
+  test("a caller waiting on a browse retired mid-flight waits for its replacement", async () => {
+    const fake = connectFakeClient();
+    const releases = gateBrowseCalls(fake);
+    const first = extensionsStore.getState().browseMarketplace("acme-plugins");
+    // The entry this caller woke on, so a failure says which one that was.
+    let waiterWoke: MarketplaceCatalogEntry | "still waiting" | "no entry" = "still waiting";
+    void extensionsStore
+      .getState()
+      .browseMarketplace("acme-plugins")
+      .then(() => {
+        waiterWoke = extensionsStore.getState().browseCatalogs.get("acme-plugins") ?? "no entry";
+      });
+
+    fake.on("evener/marketplace/refresh", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().refreshMarketplace("acme-plugins");
+
+    const second = extensionsStore.getState().browseMarketplace("acme-plugins");
+    await drainMicrotasks();
+    expect(releases).toHaveLength(2);
+    expect(waiterWoke).toBe("still waiting");
+
+    releases[0]!({ name: "acme-plugins", plugins: [{ name: "stale" }] });
+    await first;
+    await drainMicrotasks();
+    expect(waiterWoke).toBe("still waiting");
+
+    releases[1]!({ name: "acme-plugins", plugins: [{ name: "fresh" }] });
+    await second;
+    await drainMicrotasks();
+    expect(waiterWoke).toEqual({ status: "loaded", description: undefined, plugins: [{ name: "fresh" }] });
   });
 });
 
@@ -495,6 +936,59 @@ describe("notification-triggered refetch", () => {
     expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A]);
     await vi.advanceTimersByTimeAsync(1);
     expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A, MARKETPLACE_B]);
+  });
+
+  // The notification names nothing, so any marketplace's catalog may have
+  // changed - an add, a removal, a refresh, a rename or a re-source from
+  // another client all arrive as this one bare method.
+  test("a marketplace update retires every catalog and fences in-flight browses", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
+    fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "before" }] }));
+    await extensionsStore.getState().browseMarketplace("acme-plugins");
+    fake.on("evener/marketplace/browse", () => ({ name: "local-plugins", plugins: [{ name: "before" }] }));
+    await extensionsStore.getState().browseMarketplace("local-plugins");
+
+    const resolveBrowse = deferBrowse(fake);
+    const stale = extensionsStore.getState().browseMarketplace("third-plugins");
+    expect(extensionsStore.getState().browseCatalogs.get("third-plugins")).toEqual({ status: "loading" });
+    // FakeClient.request() defers the handler call by one microtask; flush it
+    // so deferBrowse's resolver exists (see browseMarketplace's own tests).
+    await Promise.resolve();
+
+    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
+    expect([...extensionsStore.getState().browseCatalogs.keys()]).toEqual([]);
+
+    resolveBrowse({ name: "third-plugins", plugins: [{ name: "stale" }] });
+    await stale;
+    expect(extensionsStore.getState().browseCatalogs.has("third-plugins")).toBe(false);
+  });
+
+  // The refetch a notification schedules is one more list response, and a
+  // mutation this client makes while it is in flight is newer than it.
+  test("a refetch that resolves after a newer mutation does not roll the list back", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().fetchMarketplaces();
+
+    let resolveList!: (v: { marketplaces: MarketplaceEntry[] }) => void;
+    fake.on(
+      "evener/marketplace/list",
+      () =>
+        new Promise((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(250); // the refetch starts, and hangs
+
+    fake.on("evener/marketplace/remove", () => ({ marketplaces: [] }));
+    await extensionsStore.getState().removeMarketplace("acme-plugins");
+    expect(extensionsStore.getState().marketplaces).toEqual([]);
+
+    resolveList({ marketplaces: [MARKETPLACE_A] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(extensionsStore.getState().marketplaces).toEqual([]);
   });
 
   test("evener/plugin/updated schedules a debounced fetchPlugins, 250ms", async () => {

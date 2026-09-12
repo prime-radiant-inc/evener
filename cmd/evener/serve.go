@@ -33,8 +33,8 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -44,6 +44,19 @@ import (
 // runServeWithDeps for what expiry does and, more importantly, what it
 // deliberately does not do.
 const shutdownDrainWaitBudget = 30 * time.Second
+
+// rendezvousRemovalAttempts bounds how many times shutdown asks for its
+// rendezvous entry to be removed. Registration.Remove keeps a failed removal
+// retryable rather than terminal, precisely so a transient filesystem failure
+// gets another pass; spending exactly one attempt made that retryability dead
+// code. Past this budget the failure is not transient, and an exiting daemon
+// that discards it leaves a PID artifact discovery reads as a live daemon at a
+// PID the OS is free to reuse.
+const rendezvousRemovalAttempts = 3
+
+// rendezvousRemovalRetryPause spaces those attempts so a directory that is
+// momentarily busy has time to settle.
+const rendezvousRemovalRetryPause = 50 * time.Millisecond
 
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
@@ -80,6 +93,9 @@ type serveServer interface {
 	SetNameFunc(func(string))
 	SetReasoningEffortFunc(func(string))
 	SetListModelsFunc(func(context.Context) ([]appwire.ModelDescriptor, error))
+	// SetCostLookupFunc is the one place a dollar figure enters the daemon:
+	// the live session's registry resolution of an instance/model reference.
+	SetCostLookupFunc(func(string) *registry.Cost)
 	SetTasksFunc(func() any)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
 	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))
@@ -104,12 +120,12 @@ type serveDeps struct {
 	newFlagSet       func(string, flag.ErrorHandling) *flag.FlagSet
 	getwd            func() (string, error)
 	ensureConfigDirs func() error
-	seedMarketplaces func() error
-	resolvePlugins   func([]string, *[]string) (plugins.LaunchPluginResolution, error)
+	seedMarketplaces func(context.Context) error
+	resolvePlugins   func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error)
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
-	newClient        func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error)
-	attachAPILogger  func(*llm.Client, string, io.Writer) (func(string) error, func() error, error)
-	buildProfile     func(providercfg.Config, cmdutil.ModelRef, string) (*provider.Profile, error)
+	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
+	attachAPILogger  func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error)
+	buildProfile     func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
@@ -132,6 +148,12 @@ type serveDeps struct {
 	// real timer happened to fire proves the budget exists, not that it is
 	// honoured, and the whole point of the budget is which of the two arms runs.
 	drainWaitExpiry func() <-chan time.Time
+	// rendezvousRetryPause starts the pause between shutdown's rendezvous
+	// removal attempts and returns the channel that fires when it is over.
+	// Injectable for the same reason drainWaitExpiry is: a test that clears a
+	// blocked removal on a real timer races the retry instead of driving it,
+	// and which attempt does the removing is the whole claim.
+	rendezvousRetryPause func() <-chan time.Time
 	// verboseOut is where --verbose writes its NDJSON. Nil means os.Stderr.
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
@@ -152,12 +174,21 @@ type serveDeps struct {
 	prepareAppIdentity func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error)
 	// prepareAppIdentityFromEntries is the resume-path form of
 	// prepareAppIdentity: same projection from the entries restore already
-	// decoded instead of a second file read. Injectable for the same reason —
-	// the resume branch below bypasses prepareAppIdentity, so without this
-	// seam no test can observe which form ran.
-	prepareAppIdentityFromEntries func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error)
+	// decoded, with the transcript path available to reuse the persisted item
+	// index incarnation. Injectable for the same reason — the resume branch
+	// below bypasses prepareAppIdentity, so without this seam no test can
+	// observe which form ran.
+	prepareAppIdentityFromEntries func(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error)
 	updateSessionID               func(*rvreg.Registration, string) error
 	observeCallbacks              func(serveCallbackObserver)
+	// reclaimScratch removes the session scratch that daemons now gone
+	// retained, for a serve working in the directory it is handed — the one
+	// resolved from --dir, so the reclaim reads the workspace the daemon
+	// allocates against. Only the production entry point sets it, because
+	// reclaiming belongs to a real daemon start: tests drive runServe and
+	// runServeWithDeps, and the nil they leave here is what keeps a test run
+	// off the developer's own scratch bases.
+	reclaimScratch func(workingDir string)
 }
 
 type serveCallbackObserver struct {
@@ -196,26 +227,27 @@ func defaultServeDeps() serveDeps {
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		register:                      func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		rendezvousRetryPause:          func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
 		serveHTTP:                     func(s *http.Server, l net.Listener) error { return s.Serve(l) },
 		provisionSandbox:              provisionSandbox,
 		newClearSession:               agent.NewSession,
 		prepareAppIdentity:            server.PrepareAppIdentityForRef,
-		prepareAppIdentityFromEntries: server.PrepareAppIdentityFromEntries,
+		prepareAppIdentityFromEntries: server.PrepareAppIdentityFromEntriesForPath,
 		updateSessionID:               func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
 
-func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
-	client, cfg, hasConfig, closeClient, err := newUnloggedServeLLMClient(stateDir, warnings)
+func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, func() error, error) {
+	client, closeClient, err := newUnloggedServeLLMClient(stateDir, warnings)
 	if err != nil {
-		return nil, providercfg.Config{}, false, nil, err
+		return nil, nil, err
 	}
 	closeAPILog, err := serveAttachAPILogger(client, stateDir, warnings)
 	if err != nil {
 		_ = closeClient()
-		return nil, providercfg.Config{}, false, nil, err
+		return nil, nil, err
 	}
-	return client, cfg, hasConfig, func() error {
+	return client, func() error {
 		apiLogErr := closeAPILog()
 		clientErr := closeClient()
 		if apiLogErr != nil {
@@ -225,16 +257,43 @@ func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, provid
 	}, nil
 }
 
-func newUnloggedServeLLMClient(stateDir string, _ io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
-	client, cfg, hasConfig, err := serveLoadClient(llm.WithStateDir(stateDir))
+func newUnloggedServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, func() error, error) {
+	client, err := serveLoadClient(stateDir)
 	if err != nil {
-		return nil, providercfg.Config{}, false, nil, fmt.Errorf("LLM client: %w", err)
+		return nil, nil, fmt.Errorf("LLM client: %w", err)
 	}
-	return client, cfg, hasConfig, func() error { return nil }, nil
+	printRegistryNotices(warnings, client.Registry())
+	return client, func() error { return nil }, nil
+}
+
+// printRegistryNotices writes the registry's load warnings and its stray
+// OAuth records to w at startup (spec §9.5): a misconfigured instance or an
+// unreadable auth record is announced once, not swallowed.
+func printRegistryNotices(w io.Writer, r *registry.Registry) {
+	if w == nil || r == nil {
+		return
+	}
+	for _, notice := range append(r.Warnings(), r.StrayOAuthRecords()...) {
+		_, _ = fmt.Fprintln(w, "warning:", notice)
+	}
 }
 
 func runServe(args []string) error {
 	return runServeWithDeps(args, defaultServeDeps())
+}
+
+// startupInterrupted reports an interrupt that arrived during a startup step
+// which could not read the context itself. Seeding marketplaces waits on the
+// plugin store lock, probing the login shell PATH and provisioning the sandbox
+// run subprocesses, and net.ListenConfig.Listen on a literal address binds
+// happily with a cancelled context — so the interrupt is only noticed where
+// the context is read, and a startup that was interrupted has to say so and
+// fail rather than bind, shut itself down and exit 0 in silence.
+func startupInterrupted(ctx context.Context, step string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("interrupted while %s: %w", step, err)
+	}
+	return nil
 }
 
 func runServeWithDeps(args []string, deps serveDeps) error {
@@ -277,13 +336,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var pluginDirs cmdutil.StringSliceFlag
 	fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 	pluginRoot := fs.String("plugin-root", "", "internal plugin registry root override")
+	agentsDoc := fs.String("agents-doc", "", "personal AGENTS.md loaded ahead of project docs (default: <user config root>/AGENTS.md)")
 	var enabledPlugins pluginSelectionFlag
 	fs.Var(&enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
+	providerIdleTimeout := fs.String("provider-idle-timeout", "", "Provider response-byte idle duration (default: 10m; no total request limit)")
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
 	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default), read-only, workspace-write, or restricted")
 	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (default on; only applies with a non-off --sandbox mode)")
+	apiLog := fs.String("api-log", "off", "durable API request logging on|off (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
 	traceFile := fs.String("trace", "", "write execution trace to file")
 
@@ -301,15 +363,31 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
 		return err
 	}
+	// Signal handling, installed before the first thing that can wait on
+	// something: resolving plugins takes the plugin store lock, which an
+	// install or an auto-upgrade can be holding across git fetches, and an
+	// interrupt has to end that wait rather than being ignored until the
+	// daemon reaches its listener.
+	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Before anything that can create the user config root: the legacy-data
+	// guard inside EnsureUserConfigDirs reads an existing root as already
+	// migrated, and resolving a requested bundled plugin materializes it under
+	// exactly that root. Running the guard second would strand a user's legacy
+	// configuration and credentials silently.
+	if err := deps.ensureConfigDirs(); err != nil {
+		return err
+	}
 	resolvePlugins := deps.resolvePlugins
 	if resolvePlugins == nil {
-		resolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-			return pluginManager.ResolveForLaunch(explicit, enabled)
+		resolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+			return pluginManager.ResolveForLaunch(ctx, explicit, enabled)
 		}
 	}
-	resolvedPlugins, resolveErr := resolvePlugins([]string(pluginDirs), enabledPlugins.Value())
-	if resolveErr != nil && enabledPlugins.Value() != nil {
-		return fmt.Errorf("resolve plugins: %w", resolveErr)
+	resolvedPlugins, resolveErr := resolvePlugins(ctx, []string(pluginDirs), enabledPlugins.Value())
+	if fatal := fatalLaunchPluginError(resolveErr, enabledPlugins.Value()); fatal != nil {
+		return fatal
 	}
 	if resolveErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: listing installed plugins: %v\n", resolveErr)
@@ -317,6 +395,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	renderLaunchPluginDiagnostics(os.Stderr, resolvedPlugins.Diagnostics)
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
+	}
+	if _, err := agent.ParseProviderIdleTimeout(*providerIdleTimeout); err != nil {
+		return err
+	}
+	apiLogEnabled, apiLogErr := parseAPILog(*apiLog)
+	if apiLogErr != nil {
+		return apiLogErr
 	}
 	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
 
@@ -344,18 +429,21 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("cannot determine working directory: %w", err)
 		}
 	}
-	if err := deps.ensureConfigDirs(); err != nil {
-		return err
+	if deps.reclaimScratch != nil {
+		deps.reclaimScratch(wd)
 	}
 	seedMarketplaces := deps.seedMarketplaces
 	if seedMarketplaces == nil {
-		seedMarketplaces = func() error {
-			_, err := pluginManager.SeedDefaultMarketplaces()
+		seedMarketplaces = func(ctx context.Context) error {
+			_, err := pluginManager.SeedDefaultMarketplaces(ctx)
 			return err
 		}
 	}
-	if err := seedMarketplaces(); err != nil {
+	if err := seedMarketplaces(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+	}
+	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+		return err
 	}
 
 	// Resolve state directory.
@@ -372,6 +460,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
 	}
+	// Rendezvous ownership must identify the same state files regardless of the
+	// hub's working directory, including when serve accepts a relative path.
+	absoluteStateDir, stateDirErr := filepath.Abs(sd)
+	if stateDirErr != nil {
+		return fmt.Errorf("resolve absolute state directory: %w", stateDirErr)
+	}
+	sd = absoluteStateDir
 	resuming := *resume != "" || *resumeLast
 	var resumedMeta schema.SessionMeta
 	if resuming {
@@ -404,12 +499,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	// Create LLM client and session.
-	client, provCfg, hasProvConfig, closeClient, err := deps.newClient(sd, os.Stderr)
+	client, closeClient, err := deps.newClient(sd, os.Stderr)
 	if err != nil {
 		return err
 	}
 	defer closeClient() //nolint:errcheck
-	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr)
+	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr, apiLogEnabled)
 	if err != nil {
 		return err
 	}
@@ -419,7 +514,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return err
 		}
 	}
-	profile, err := deps.buildProfile(provCfg, modelRef, *outputSchema)
+	profile, err := deps.buildProfile(client, modelRef, *outputSchema)
 	if err != nil {
 		return err
 	}
@@ -439,7 +534,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
+	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+		return err
+	}
 	sessionCfg := agent.SessionConfig{
+		// The session tree lives exactly as long as this daemon does. Shutdown
+		// waits for the input loop before it closes the session, so work that
+		// runs synchronously on that loop -- a Notification hook, which runs
+		// for its own timeout -- is reached by nothing else: without this the
+		// only cancellation it ever sees arrives after the wait it is holding
+		// up. A turn is already cancelled directly (turnCtx derives from ctx).
+		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
 		ShareTasksWithChildren:      *shareTaskStore,
 		ResultToolName:              *resultToolName,
@@ -449,6 +554,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		SystemPromptFile:            *systemPrompt,
 		SystemPromptAppend:          []string(systemPromptAppend),
 		NoProjectPrompts:            *noProjectPrompts,
+		AgentsDocPath:               *agentsDoc,
 		AgentName:                   *agentName,
 		SkillsDirs:                  []string(skillsDirs),
 		MCPConfigFiles:              []string(mcpConfigs),
@@ -462,7 +568,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		SystemPromptAsUser:          *systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
-		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+		ProviderIdleTimeout:         *providerIdleTimeout,
+		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
@@ -487,11 +594,22 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err := deps.provisionSandbox(env, &sessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
+		// Provisioning allocates the session scratch and the flock lease that
+		// keeps the crashed-scratch sweeper off it, and an unsandboxed session
+		// mints one of its own on its first command; nothing releases either
+		// until a session owns this environment and its Close does. Every way
+		// out between here and that hand-off has to dispose of them, or an
+		// interrupted startup leaks a directory and a lease per attempt.
+		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+			env.DisposeUnadoptedScratch()
+			return err
+		}
 	}
 
 	var sess *agent.Session
 	if resuming {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
@@ -499,8 +617,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
+			ProviderIdleTimeout:         *providerIdleTimeout,
+			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {
+			// A resume provisions this environment's sandbox from the
+			// session's persisted mode inside the restore, and the restore can
+			// fail after that with no session built to own what it took.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
@@ -510,6 +634,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
+			// The session that would have owned whatever this environment
+			// provisioned was never built.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
@@ -519,10 +646,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session — nothing to announce.
 	printServeSandboxLine(os.Stderr, sandboxEnforcementLine(env))
 
-	// Signal handling.
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
+	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+		sess.Close()
+		return err
+	}
 	listener, err := deps.listen(ctx, "tcp", *addr)
 	if err != nil {
 		sess.Close()
@@ -548,7 +675,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// OpenWriterForSession pass) and validated its header against the
 		// session id; projecting from those entries keeps the daemon's
 		// startup from re-reading and re-decoding the whole append-only file.
-		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
+		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, sess.TranscriptPath(), header, entries)
 	} else {
 		prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
 	}
@@ -561,6 +688,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	rvRegistration := &rvreg.Registration{}
 
 	var currentMu sync.RWMutex
+	// identityTransitionMu serializes shutdown's ownership claim with a clear's
+	// final identity swap. It remains held through the old session's drain and
+	// identity projection; currentMu is held only for the brief ownership check.
+	var identityTransitionMu sync.Mutex
 	currentSess := sess
 	// currentEnv tracks the CURRENT session's execution environment (each session
 	// owns its own). thread/clear reads it to inherit the live sandbox and swaps it
@@ -589,11 +720,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// critical section cannot observe the pass as still pending, so it knows it
 	// owns its replacement's teardown.
 	closeLiveSession := func() {
+		identityTransitionMu.Lock()
+		defer identityTransitionMu.Unlock()
 		currentMu.Lock()
 		liveSessionClosed = true
 		live := currentSess
 		currentMu.Unlock()
-		live.Close()
+		live.CloseForShutdown()
 	}
 	// shutdownClosedTheLiveSession reports whether that pass has already run.
 	// Read it only AFTER the session in question is the current one, which is
@@ -624,11 +757,31 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// A session gets a new one on thread/clear, and each ends when its own session's
 	// event channel closes.
 	var drainsMu sync.Mutex
+	var bridgeStartMu sync.Mutex
 	var bridgeDrains []<-chan struct{}
+	bridgeDrainBySession := make(map[string]<-chan struct{})
 	// teardownStarted says the snapshot below has already been taken, so no
 	// later drain can ever appear in it. bridgeSession refuses to start one
 	// past this point; see the refusal there for why that is the right answer.
 	var teardownStarted bool
+	var shutdownExpiryOnce sync.Once
+	var shutdownExpiry <-chan struct{}
+	shutdownExpiryStop := make(chan struct{})
+	sharedShutdownExpiry := func() <-chan struct{} {
+		shutdownExpiryOnce.Do(func() {
+			source := deps.drainWaitExpiry()
+			done := make(chan struct{})
+			shutdownExpiry = done
+			go func() {
+				defer close(done)
+				select {
+				case <-source:
+				case <-shutdownExpiryStop:
+				}
+			}()
+		})
+		return shutdownExpiry
+	}
 	// The tee must OUTLIVE every drain. Session.Close() closes the event channel
 	// but does not wait for the buffered tail, so a drain is still calling the
 	// observer after the session is closed -- and observe on a closed tee panics
@@ -666,15 +819,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session nothing would ever close, which no budget can end -- the expiry
 	// fired every time, on work that was neither wedged nor real.
 	defer func() {
+		defer close(shutdownExpiryStop)
+		bridgeStartMu.Lock()
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
-		// Closing the list and reading it are ONE critical section, so no
-		// bridgeSession can slip a drain in behind the snapshot.
+		// The bridge-start lock prevents bridgeSession from slipping a drain
+		// behind this snapshot while drainsMu protects the list itself.
 		teardownStarted = true
 		drainsMu.Unlock()
+		bridgeStartMu.Unlock()
 		// One budget for the whole teardown, not one per drain: what must be
 		// bounded is how long SIGTERM goes unanswered.
-		expiry := deps.drainWaitExpiry()
+		expiry := sharedShutdownExpiry()
 		for _, drained := range pending {
 			select {
 			case <-drained:
@@ -765,32 +921,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// Spawning this would reopen the window in which the session is live
 		// and its feed is still best-effort.
 		//
-		// The call and the registration are ONE critical section. An entry in
-		// bridgeDrains means "a drain exists that will close this channel", and
-		// each ordering without the lock breaks that in an opposite direction:
-		//
-		//   - Appending BEFORE the call leaves a channel nothing will ever close
-		//     if deps.bridge does not reach the drain. That is not theoretical
-		//     noise -- bridgeSession also runs from SetClearFunc on a net/http
-		//     handler goroutine, and net/http RECOVERS handler panics, so the
-		//     daemon would survive the panic and then wait out its whole
-		//     shutdown budget on a phantom, abandoning the tee. A loud crash
-		//     becomes a silent truncation.
-		//   - Appending AFTER it but outside the lock leaves a window in which
-		//     the teardown's snapshot misses a drain that is already live and
-		//     closes the tee under it, which is the crash this whole wait exists
-		//     to prevent.
-		//
-		// Holding drainsMu across both makes neither state observable: the
-		// snapshot runs either before deps.bridge is called or after the append,
-		// never between. deps.bridge does not block by contract, and nothing
-		// reachable from it takes drainsMu, so the section stays short. The
-		// unlock is deferred rather than written out because it must also run
-		// when deps.bridge panics -- an explicit unlock would leave the mutex
-		// held and deadlock the shutdown that the phantom was going to stall.
+		// The bridge start and drain registration are one critical section with
+		// teardown, but the bridge call itself must stay outside drainsMu because
+		// a closed session invokes onDrained synchronously.
 		drained := make(chan struct{})
-		drainsMu.Lock()
-		defer drainsMu.Unlock()
+		bridgeStartMu.Lock()
+		defer bridgeStartMu.Unlock()
 		// Past the teardown's snapshot, a drain started here would be one the
 		// wait cannot see, and the tee would be closed under it -- the same
 		// crash the wait exists to prevent, reached from the other side. The
@@ -816,11 +952,62 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// exits, it survives AFTER exit. Do not read this refusal as the thing
 		// that prevents that: declining to bridge a session and closing one are
 		// different acts, and only the second reaches the env.
-		if teardownStarted {
+		drainsMu.Lock()
+		teardown := teardownStarted
+		drainsMu.Unlock()
+		if teardown {
 			return
 		}
-		deps.bridge(srv, s, eventObserver, func() { close(drained) })
+		deps.bridge(srv, s, eventObserver, func() {
+			close(drained)
+			drainsMu.Lock()
+			if bridgeDrainBySession[s.ID()] == drained {
+				delete(bridgeDrainBySession, s.ID())
+			}
+			drainsMu.Unlock()
+		})
+		drainsMu.Lock()
 		bridgeDrains = append(bridgeDrains, drained)
+		bridgeDrainBySession[s.ID()] = drained
+		completed := false
+		select {
+		case <-drained:
+			completed = true
+		default:
+		}
+		if completed && bridgeDrainBySession[s.ID()] == drained {
+			delete(bridgeDrainBySession, s.ID())
+		}
+		drainsMu.Unlock()
+	}
+	waitForSessionBridgeDrain := func(sessionID string) bool {
+		drainsMu.Lock()
+		drained := bridgeDrainBySession[sessionID]
+		drainsMu.Unlock()
+		if drained == nil {
+			return true
+		}
+		select {
+		case <-drained:
+			drainsMu.Lock()
+			if bridgeDrainBySession[sessionID] == drained {
+				delete(bridgeDrainBySession, sessionID)
+			}
+			drainsMu.Unlock()
+			return true
+		default:
+		}
+		select {
+		case <-drained:
+			drainsMu.Lock()
+			if bridgeDrainBySession[sessionID] == drained {
+				delete(bridgeDrainBySession, sessionID)
+			}
+			drainsMu.Unlock()
+			return true
+		case <-sharedShutdownExpiry():
+			return false
+		}
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
@@ -908,6 +1095,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session's method value here would pin the hook to the pre-thread/clear session.
 	srv.SetVisionModelFunc(func(v string) error { return getSession().SetVisionModel(v) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
+	// Resolved per call like the model hook above: the replacement session a
+	// thread/clear installs resolves on its own registry.
+	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return getSession().CostFor(ref) })
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
 		sess := getSession()
@@ -952,7 +1142,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		newSess, err := deps.newClearSession(client, profile, clearEnv, clearCfg)
 		if err != nil {
+			// Cleanup stops whatever the failed construction left running and
+			// RETAINS the session scratch — the handoff convention for a session
+			// someone may still want to inspect. No session was built to hand
+			// anything to here, so the scratch this env provisioned (and the one
+			// an unsandboxed env minted on its first command) is disposed
+			// outright; otherwise every failed clear leaves a directory and a
+			// live flock lease behind for the daemon's whole uptime.
 			clearEnv.Cleanup()
+			clearEnv.DisposeUnadoptedScratch()
 			return fmt.Errorf("new session: %w", err)
 		}
 		// Everything that can fail happens before anything shared moves, so the
@@ -970,7 +1168,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// client that discovers the new session id can always reach a daemon
 		// already serving it; a failure here still names the old session, which
 		// is still the live one.
+		identityTransitionMu.Lock()
+		shutdownClaimed := shutdownClosedTheLiveSession()
+		if shutdownClaimed {
+			closeSupersededSession(oldSess, true) // disposes oldEnv
+			if !waitForSessionBridgeDrain(oldSess.ID()) {
+				identityTransitionMu.Unlock()
+				newSess.Close() // disposes clearEnv; old identity remains current
+				return errors.New("old session bridge did not drain before clear deadline")
+			}
+		}
 		if err := deps.updateSessionID(rvRegistration, newSess.ID()); err != nil {
+			identityTransitionMu.Unlock()
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
@@ -985,7 +1194,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// after it -- the new session's own events are still queued in its
 		// channel, and its bridge has not started.
 		srv.RefreshThreadEnvelope()
-		oldSess.Close() // disposes oldEnv
+		if !shutdownClaimed {
+			closeSupersededSession(oldSess, false) // disposes oldEnv after the swap
+		}
+		identityTransitionMu.Unlock()
 		// Every session this daemon makes current gets closed by someone, and
 		// shutdown covers only the one that was live when its pass ran. A
 		// replacement installed after that pass has no other closer, so thread/clear
@@ -1164,7 +1376,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		serveLogf(os.Stderr, getSession().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
-			_ = rvRegistration.Remove()
+			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
+				serveLogf(os.Stderr, getSession().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
+			})
 		}()
 	}
 
@@ -1185,6 +1399,44 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+// removeRendezvousAtShutdown spends rendezvousRemovalAttempts on remove,
+// pausing between attempts, and hands a removal that never succeeded to
+// report. Registration.Remove stays retryable after a failure by design; this
+// is what spends that.
+func removeRendezvousAtShutdown(remove func() error, pause func() <-chan time.Time, report func(error)) {
+	var err error
+	for attempt := range rendezvousRemovalAttempts {
+		if err = remove(); err == nil {
+			return
+		}
+		if attempt < rendezvousRemovalAttempts-1 {
+			<-pause()
+		}
+	}
+	report(err)
+}
+
+// closeSupersededSession closes a session a concurrent clear has replaced, in
+// the form its owner is entitled to. shutdownClaimed means shutdown's single
+// pass already reached this session -- and already closed it with
+// CloseForShutdown, because closeLiveSession holds identityTransitionMu across
+// that close and the claim is read under the same lock -- so the call below is
+// a no-op over a terminal boundary shutdown has already published. Without the
+// claim this is the session's only close, and the ordinary form is the right
+// one: the clear announces the replaced identity with a resync.
+//
+// Double close buys nothing either way. Both forms run through the session's
+// close-once, so the terminal boundary belongs to whichever close runs FIRST,
+// and a second call cannot publish one the first declined. The agent package's
+// TestSession_DoubleCloseCannotRecoverATerminalBoundary pins that.
+func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
+	if shutdownClaimed {
+		sess.CloseForShutdown()
+		return
+	}
+	sess.Close()
 }
 
 // processNextServeInput gives durable turn/start work priority over the
@@ -1271,15 +1523,14 @@ func printServeEnvVars(w io.Writer) {
 	_ = tw.Flush()
 }
 
-// buildInitialProfile constructs the session's initial *Profile from
-// the provider config. Instance names (e.g. "work" defined in providers.toml)
-// are resolved via cmdutil.ResolveProfileWithLiveWindow, which sources the
-// context window from the provider's live /models endpoint for openai-compat
-// providers (falling back to the embedded catalog when unavailable).
-// outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in this app layer so
-// callers see the same communicate-tool schema regardless of model.
-func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
-	raw, err := cmdutil.ResolveProfileWithLiveWindow(cfg, modelRef.Qualified())
+// buildInitialProfile constructs the session's initial *Profile by resolving
+// the reference on the client's registry, so an instance name defined in
+// providers.toml ("work") and a curated id resolve the same way and carry the
+// same facts. outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in
+// this app layer so callers see the same communicate-tool schema regardless of
+// model.
+func buildInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
+	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
 	if err != nil {
 		return nil, err
 	}
@@ -1306,7 +1557,7 @@ func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Clie
 	}
 	raw = strings.TrimSpace(raw)
 	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
-		if !clientHasProvider(client, cheapProvider) {
+		if !client.HasProvider(cheapProvider) {
 			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
 				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
 		}
@@ -1332,7 +1583,7 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 		if prov == "" || model == "" {
 			return "", fmt.Errorf("--vision-model %q is malformed: want \"model\" or \"provider/model\"", raw)
 		}
-		if prov != profile.ID() && !clientHasProvider(client, prov) {
+		if prov != profile.ID() && !client.HasProvider(prov) {
 			return "", fmt.Errorf("--vision-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
 				prov, profile.ID(), strings.Join(client.ProviderNames(), ", "))
 		}
@@ -1340,22 +1591,10 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 	return raw, nil
 }
 
-func clientHasProvider(client *llm.Client, name string) bool {
-	if client == nil {
-		return false
-	}
-	for _, p := range client.ProviderNames() {
-		if strings.EqualFold(p, name) {
-			return true
-		}
-	}
-	return false
-}
-
 // evenerUsageFromLLM maps a session's cumulative llm.Usage to the wire
 // appwire.EvenerUsage shown in thread/read. Returns nil when every
 // total (including CacheReadTokens) is zero — a fresh session, an old daemon
-// that never seeded usage, or a Codex thread — so the status row hides the
+// that never seeded usage, or a session without recorded usage — so the status row hides the
 // usage cluster rather than rendering ↑0 ↓0 (WS2 A7).
 func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
 	return appwire.EvenerUsageFromLLM(u)
@@ -1409,6 +1648,9 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			ExitCode:         job.ExitCode,
 			OutputBytes:      job.OutputBytes,
 			TranscriptRef:    job.TranscriptRef,
+			Command:          job.Command,
+			Intent:           job.Intent,
+			Task:             job.Task,
 		})
 	}
 	for _, delegate := range ds.Delegates {
@@ -1526,7 +1768,12 @@ func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 		return nil
 	}
 	summary := taskpkg.Summarize(tasks)
-	aggregate := &appwire.TaskAggregate{Total: summary.Total, Done: summary.Done}
+	aggregate := &appwire.TaskAggregate{
+		Total:     summary.Total,
+		Done:      summary.Done,
+		Cancelled: summary.Cancelled,
+		Remaining: summary.Remaining,
+	}
 	if summary.Current != nil {
 		aggregate.Current = &appwire.TaskSummary{ID: summary.Current.ID, Description: summary.Current.Description}
 	}

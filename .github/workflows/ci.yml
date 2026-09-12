@@ -28,6 +28,23 @@ jobs:
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
 
+  api-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/evener-hub/frontend/src/protocol/package-lock.json
+
+      - name: Install protocol development dependencies
+        run: npm ci --prefix cmd/evener-hub/frontend/src/protocol
+
+      - name: Qualify installed AppWire package
+        run: make test-api-package
+
   static-build:
     runs-on: ubuntu-latest
     steps:
@@ -41,17 +58,26 @@ jobs:
       - name: Vet (all go.work modules)
         run: make vet
 
-      - name: Fuzz gap check (every decode/parse package has a target — static, fast)
-        run: make fuzz-gap-check
+      # Nothing ships for Windows (.goreleaser.yml builds linux and darwin
+      # only). This cross-vet is a build-tag discipline check: a source or test
+      # file that reaches for Mkfifo, Stat_t, or an fd-based sandbox seam has to
+      # say so in a constraint instead of compiling by accident (issue #897).
+      - name: Vet (GOOS=windows — Unix-only sources must carry a build tag)
+        run: GOOS=windows make vet
 
   lint-golangci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work
+            go.work.sum
+            **/go.sum
 
       - name: Install golangci-lint
         run: |
@@ -61,20 +87,9 @@ jobs:
       - name: Lint (golangci-lint across all go.work modules)
         run: make lint-golangci
 
-  lint-tagged:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.work
-
-      - name: Install golangci-lint
-        run: |
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          make tools-golangci
-
+      # The tagged compile floors use the same golangci-lint binary, so they
+      # share this lane's install instead of paying a second checkout,
+      # toolchain setup, and `go install` on a parallel runner.
       - name: Lint tagged compile floors (evenerfuzz and eval)
         run: make lint-evenerfuzz lint-eval
 
@@ -83,9 +98,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work
+            go.work.sum
+            **/go.sum
 
       - name: Install gitleaks
         run: |
@@ -95,11 +115,36 @@ jobs:
       - name: Lint repository structure, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint-generated lint-naming lint-gofmt lint-internal lint-fuzz-registry secret-scan
+        run: make lint-generated lint-naming lint-gofmt lint-internal secret-scan
+
+  # Both fuzz consistency checks are fast, static AST analyses over the same
+  # target manifest and registry inputs; running them in one lane pays a
+  # single checkout and toolchain setup instead of two. Each make target runs
+  # its own script directly and fails the lane on its own verdict, so both
+  # gates keep their teeth.
+  fuzz-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work
+            go.work.sum
+            **/go.sum
+
+      - name: Fuzz gap check (every decode/parse package has a target — static, fast)
+        run: make fuzz-gap-check
+
+      - name: Fuzz registry check (manifest matches AST-discovered targets)
+        run: make fuzz-registry-check
 
   static:
     if: always()
-    needs: [static-build, lint-golangci, lint-tagged, lint-repository]
+    needs: [static-build, lint-golangci, lint-repository, fuzz-checks, api-package]
     runs-on: ubuntu-latest
     steps:
       - name: Require every static lane
@@ -112,6 +157,17 @@ jobs:
   race-root:
     runs-on: ubuntu-latest
     steps:
+      - name: Record pull request candidate identity
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_MERGE_SHA: ${{ github.sha }}
+        run: |
+          echo "PR_HEAD_SHA=$PR_HEAD_SHA"
+          echo "PR_BASE_SHA=$PR_BASE_SHA"
+          echo "PR_MERGE_SHA=$PR_MERGE_SHA"
+
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
@@ -119,15 +175,33 @@ jobs:
       - name: Test (race detector — root module)
         run: make test-race RACE_SCOPE=root
 
-  race-modules:
+  race-module-shards:
+    name: race-modules / ${{ matrix.scope }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        scope: [agent, nonagent]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
 
-      - name: Test (race detector — non-root go.work modules)
-        run: make test-race RACE_SCOPE=nonroot
+      - name: Test (race detector — ${{ matrix.scope }})
+        run: make test-race RACE_SCOPE=${{ matrix.scope }}
+
+  race-modules:
+    if: always()
+    needs: [race-module-shards]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every non-root race lane
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   tests:
     runs-on: ubuntu-latest
@@ -138,25 +212,6 @@ jobs:
 
       - name: Deterministic tests (full root suite; frontend covered by web job)
         run: ROOT_FULL=1 WEB=0 make test
-
-  dev-tooling:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: ./.github/actions/setup-toolchain
-
-      - name: Read golangci-lint version
-        id: golangci-version
-        run: |
-          echo "version=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: Install golangci-lint for dev-tooling self-tests
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.golangci-version.outputs.version }}"
-
-      - name: Dev-tooling self-test wave (scripts/*-selftest.sh — tooling, not the product)
-        run: make test-dev-tooling
 
   fuzz:
     runs-on: ubuntu-latest
@@ -177,7 +232,7 @@ jobs:
   snapshot-artifacts:
     name: Build snapshot artifacts
     if: github.event_name == 'pull_request'
-    needs: [static, race-root, race-modules, tests, dev-tooling, fuzz, web]
+    needs: [static, race-root, race-modules, tests, fuzz, web, api-package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

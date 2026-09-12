@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func FuzzResponsesContinuationEligibility(f *testing.F) {
@@ -134,7 +135,7 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 		} else if utf8.ValidString(text) && !utf8.ValidString(trimmed) {
 			t.Fatal("session-namer trimming corrupted valid UTF-8")
 		}
-		if !strings.Contains(sessionNamerUserPrompt(string(mode), text), trimForSessionNamer(text)) {
+		if !strings.Contains(sessionNamerUserPrompt(string(mode), text, ""), trimForSessionNamer(text)) {
 			t.Fatal("namer prompt omitted the bounded source text")
 		}
 		if schema := sessionNameSchema(); schema["type"] != "object" {
@@ -143,21 +144,21 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 		if *new(text) != text || sessionNameSourceLabel(string(mode)) != normalizeSessionNameSource(string(mode)) {
 			t.Fatal("session-name source helpers disagree")
 		}
-		if _, err := nameSession(context.Background(), nil, nil, string(mode), text, nil); err == nil {
+		if _, err := nameSession(context.Background(), nil, nil, string(mode), text, "", nil); err == nil {
 			t.Fatal("session namer accepted a nil client")
 		}
 
-		models := []llm.ModelInfo{{ID: alternate, DisplayName: "alternate"}, {ID: model, DisplayName: "exact"}}
-		info, ok := liveModelInfoFor(models, model)
+		rows := []registry.Resolved{{ModelID: alternate, WireID: "alternate"}, {ModelID: model, WireID: "exact"}}
+		row, ok := liveModelFor(rows, model)
 		if strings.TrimSpace(model) == "" {
 			if ok {
-				t.Fatalf("empty model unexpectedly matched %+v", info)
+				t.Fatalf("empty model unexpectedly matched %+v", row)
 			}
-		} else if !ok || info.ID != model {
-			t.Fatalf("exact model match lost: got=(%+v,%v), model=%q", info, ok, model)
+		} else if !ok || row.ModelID != model {
+			t.Fatalf("exact model match lost: got=(%+v,%v), model=%q", row, ok, model)
 		}
-		if info, ok := liveModelInfoFor([]llm.ModelInfo{{ID: " normalized "}}, "normalized"); !ok || info.ID != " normalized " {
-			t.Fatalf("trimmed exact model match lost: (%+v,%v)", info, ok)
+		if row, ok := liveModelFor([]registry.Resolved{{ModelID: " normalized "}}, "normalized"); !ok || row.ModelID != " normalized " {
+			t.Fatalf("trimmed exact model match lost: (%+v,%v)", row, ok)
 		}
 		if resolveLiveModelProfile(context.Background(), nil, nil) != nil {
 			t.Fatal("nil live-model profile must remain nil")
@@ -222,9 +223,12 @@ func FuzzSessionGoalCompactState(f *testing.F) {
 		if got := s.PinnedNote(); got != instructions {
 			t.Fatalf("pinned note=%q, want %q", got, instructions)
 		}
-		s.clearPinnedNote()
+		_, gen := s.pinnedNoteSnapshot()
+		s.mu.Lock()
+		s.claimPinnedNoteLocked(gen)
+		s.mu.Unlock()
 		if got := s.PinnedNote(); got != "" {
-			t.Fatalf("clearPinnedNote left %q", got)
+			t.Fatalf("claimPinnedNoteLocked left %q", got)
 		}
 
 		if err := s.requestForceCompact(instructions); err != nil {

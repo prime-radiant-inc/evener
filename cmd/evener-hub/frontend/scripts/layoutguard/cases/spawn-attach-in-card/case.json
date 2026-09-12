@@ -20,6 +20,7 @@
   "mutation": {
     "declaration": "spawn.module.css: the @media (max-width: 899px) .actionBand block (position: fixed; bottom: 0; min-height: 76px) restored, with the control row spelled class=\"controls actionBand\" and the attach button as its direct child - i.e. exactly what Spawn.tsx's controlsClassName={CLASS.actionBand} produced before this case existed",
     "verified": "2026-08-19",
-    "expect": "fail"
+    "expect": "fail",
+    "note": "2026-09-06: extended with effort containment, long-model ellipsis, and the 44px effort tap floor. Mutation-tested the same day by neutralizing spawn.module.css's .modelTrigger :global(span)/:global(button) piercing rules: the case fails with the model trigger and value escaping the card and no active ellipsis."
   }
 }

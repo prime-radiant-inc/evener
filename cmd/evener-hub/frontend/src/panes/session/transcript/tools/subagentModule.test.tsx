@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
+import { seedCurrentDelegate } from "./currentDelegate.testFixture";
 import { classifyJobStatus, resolveRowKey, rowFromDelegateItem } from "./subagentModule";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import "./subagentModule";
@@ -80,10 +81,37 @@ test("classifyJobStatus: literal unknown maps to unknown", () => {
   expect(classifyJobStatus("unknown")).toBe("unknown");
 });
 
-test("classifyJobStatus: running, and anything undetermined (including undefined), maps to running", () => {
+test("classifyJobStatus: only known running input means running", () => {
   expect(classifyJobStatus("running")).toBe("running");
-  expect(classifyJobStatus(undefined)).toBe("running");
-  expect(classifyJobStatus("some-future-status")).toBe("running");
+  expect(classifyJobStatus(undefined)).toBe("unknown");
+  expect(classifyJobStatus("unrecognized-status")).toBe("unknown");
+});
+
+test.each([undefined, "inProgress"])(
+  "a genuinely in-flight launch still renders running without lifecycle output (%s)",
+  (status) => {
+    const turn: TurnModel = { id: "launch", status: "inProgress", items: [] };
+    const launch = delegateItem({ turnId: turn.id, status, output: "" });
+    render(<ToolCallItem item={launch} turn={turn} live={true} />);
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+    expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
+  },
+);
+
+test("unknown lifecycle is unavailable, never a human question, even collapsed", async () => {
+  const turn: TurnModel = { id: "unknown", status: "completed", items: [] };
+  const unknown = delegateItem({
+    turnId: turn.id,
+    output: JSON.stringify({ delegate_id: "dlg_unknown", status: "unknown" }),
+  });
+  const user = userEvent.setup();
+  render(<ToolCallItem item={unknown} turn={turn} live={false} />);
+  expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+  await user.click(screen.getByTestId("tool-row").querySelector("button[aria-expanded]")!);
+  expect(screen.queryByTestId("subagent-row")).toBeNull();
+  expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
 });
 
 test("resolveRowKey: prefers delegateId, then jobId, then the fallback", () => {
@@ -100,7 +128,7 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
   const stable = rowFromDelegateItem(
     delegateItem({
       callId: "call_stable",
-      argumentsJSON: JSON.stringify({ task: "inspect" }),
+      argumentsJSON: JSON.stringify({ prompt: "inspect" }),
       output: JSON.stringify({
         delegate_id: "dlg_stable",
         status: "running",
@@ -118,7 +146,7 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
     rowFromDelegateItem(
       delegateItem({
         callId: "call_legacy",
-        argumentsJSON: JSON.stringify({ task: "legacy" }),
+        argumentsJSON: JSON.stringify({ prompt: "legacy" }),
         output: JSON.stringify({ job_id: "job_legacy", status: "running" }),
       }),
     ),
@@ -129,7 +157,7 @@ test("rowFromDelegateItem uses stable delegate_id and rejects activation-only jo
 
 test("delegate: summary is the human description", () => {
   const d = toolRendererFor("delegate");
-  const args = JSON.stringify({ task: "Run the full test suite and report back" });
+  const args = JSON.stringify({ prompt: "Run the full test suite and report back" });
   expect(d.summary(delegateItem({ description: "Testing delegation", argumentsJSON: args }))).toBe(
     "Testing delegation",
   );
@@ -138,7 +166,7 @@ test("delegate: summary is the human description", () => {
 test("delegate: delegated task text is not used for the row summary", () => {
   const d = toolRendererFor("delegate");
   const longTask = "x".repeat(100);
-  const args = JSON.stringify({ task: longTask });
+  const args = JSON.stringify({ prompt: longTask });
   expect(d.summary(delegateItem({ description: "Testing delegation", argumentsJSON: args }))).toBe(
     "Testing delegation",
   );
@@ -151,7 +179,7 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
     turnId: turn.id,
     callId: "call_d1",
     description: "first delegate",
-    argumentsJSON: JSON.stringify({ task: "first child" }),
+    argumentsJSON: JSON.stringify({ prompt: "first child" }),
     output: JSON.stringify({ delegate_id: "dlg_1", status: "running", transcript_ref: "ref_child_1" }),
   });
   const second = delegateItem({
@@ -159,7 +187,7 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
     turnId: turn.id,
     callId: "call_d2",
     description: "second delegate",
-    argumentsJSON: JSON.stringify({ task: "second child" }),
+    argumentsJSON: JSON.stringify({ prompt: "second child" }),
     output: JSON.stringify({ delegate_id: "dlg_2", status: "running", transcript_ref: "ref_child_2" }),
   });
   render(
@@ -179,28 +207,23 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
 
 // --- row content ----------------------------------------------------------
 
-// Wire-true duration net: ItemModel.startedAt/completedAt are ISO strings the
-// reducer produces via epochMsToISO from the wire's epoch-MILLISECONDS
-// ThreadItem timestamps (reducer.ts:124-125; appwire/types.go stamps them via
-// time.Time.UnixMilli). durationLabel diffs those two ISO instants, so a real
-// 12-second span at a realistic ms epoch must read "12s" — reading the wire as
-// seconds would place both instants ~12ms apart (1970-relative) and floor to
-// "12ms". This locks the honest ms duration end to end at the consumer.
-test("a settled delegate row renders an honest ms-scale duration", () => {
+// Approved editorial specification §Delegates: invocation timestamps are not
+// child runtime. Stable projection timing is tested independently below.
+test("a settled delegate never presents the launch-call duration as child runtime", () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const startedMs = 1_700_000_000_000; // 2023-11-14T22:13:20Z — a realistic epoch-ms
   const settled = delegateItem({
     id: "d_done",
     callId: "call_done",
-    argumentsJSON: JSON.stringify({ task: "did the thing" }),
+    argumentsJSON: JSON.stringify({ prompt: "did the thing" }),
     output: JSON.stringify({ delegate_id: "job_d", status: "completed", transcript_ref: "ref_d" }),
     startedAt: new Date(startedMs).toISOString(),
     completedAt: new Date(startedMs + 12_000).toISOString(),
   });
   render(<Body item={settled} live={false} />);
   const row = screen.getByTestId("subagent-row");
-  expect(within(row).getByText("12s")).toBeTruthy();
+  expect(within(row).queryByText("12s")).toBeNull();
 });
 
 test("a failed card carries the danger rail itself - there is no module chrome to average it away", () => {
@@ -209,10 +232,11 @@ test("a failed card carries the danger rail itself - there is no module chrome t
   const failed = delegateItem({
     id: "d_fail",
     callId: "call_fail",
-    argumentsJSON: JSON.stringify({ task: "will fail" }),
+    argumentsJSON: JSON.stringify({ prompt: "will fail" }),
     output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason: "build error" }),
   });
-  render(<Body item={failed} live={false} />);
+  seedCurrentDelegate("ref_current", "job_f", "failed", "build error");
+  render(<Body item={failed} live={false} sessionRef="ref_current" />);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("failed");
   // The folded quote IS the failure reason, verbatim, ✕-marked - the exception
@@ -231,10 +255,11 @@ test("3zf8: a cancelled child gets its own distinct stopped kind", () => {
   const stopped = delegateItem({
     id: "d_stopped",
     callId: "call_stopped",
-    argumentsJSON: JSON.stringify({ task: "misbehaving, killed" }),
+    argumentsJSON: JSON.stringify({ prompt: "misbehaving, killed" }),
     output: JSON.stringify({ delegate_id: "job_stopped", status: "cancelled", transcript_ref: "ref_stopped" }),
   });
-  render(<Body item={stopped} live={false} />);
+  seedCurrentDelegate("ref_current", "job_stopped", "cancelled");
+  render(<Body item={stopped} live={false} sessionRef="ref_current" />);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("stopped");
   // The card is headless - no tag, no task text inside; identity lives on the
@@ -248,7 +273,7 @@ function delegateWithTranscriptRef(ref: string): ItemModel {
   return delegateItem({
     id: "d_ref",
     callId: "call_ref",
-    argumentsJSON: JSON.stringify({ task: "has a transcript" }),
+    argumentsJSON: JSON.stringify({ prompt: "has a transcript" }),
     output: JSON.stringify({ delegate_id: "job_ref", status: "running", transcript_ref: ref }),
   });
 }
@@ -265,7 +290,7 @@ test("open transcript opens the read-only transcript pane (mobile / no dockview 
     />,
   );
   const button = screen.getByRole("button", { name: "Open transcript" });
-  expect(button.textContent).toContain("open");
+  expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   expect(button.querySelector("svg")).toBeTruthy();
   expect(button.getAttribute("aria-label")).toBe("Open transcript");
   await user.click(button);
@@ -338,7 +363,7 @@ test("no open-transcript button when the row has no transcriptRef yet", () => {
   const noRef = delegateItem({
     id: "d_noref",
     callId: "call_noref",
-    argumentsJSON: JSON.stringify({ task: "no ref yet" }),
+    argumentsJSON: JSON.stringify({ prompt: "no ref yet" }),
     output: "",
   });
   const turn: TurnModel = { id: "turn_noref", status: "completed", items: [] };
@@ -353,7 +378,7 @@ test("a still-running row (with a transcriptRef) offers Open transcript, not gat
   const running = delegateItem({
     id: "d_run_link",
     callId: "call_run_link",
-    argumentsJSON: JSON.stringify({ task: "still running" }),
+    argumentsJSON: JSON.stringify({ prompt: "still running" }),
     output: JSON.stringify({ delegate_id: "job_rl", status: "running", transcript_ref: "ref_run_link" }),
   });
   const turn: TurnModel = { id: "turn_run_link", status: "inProgress", items: [] };
@@ -435,6 +460,31 @@ function childThreadRead(params: unknown, childStatus: string) {
   };
 }
 
+test.each(["running", "completed"])(
+  "a historical %s receipt preserves child reports without inventing current body lifecycle",
+  async (status) => {
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", (params) => childThreadRead(params, "active"));
+    connectionStore.getState().connect(fake);
+    const Body = toolRendererFor("delegate").body!;
+    const receipt = delegateItem({
+      output: JSON.stringify({ delegate_id: "dlg_old", status, transcript_ref: "local:old_child" }),
+    });
+    render(<Body item={receipt} live={false} />);
+    const row = screen.getByTestId("subagent-row");
+    expect((await within(row).findByTestId("subagent-quote")).textContent).toBe("all done");
+    expect(row.dataset.kind).toBe("unknown");
+    const user = userEvent.setup();
+    await user.click(within(row).getByRole("button", { name: "Show recent activity" }));
+    expect(within(row).getByTestId("subagent-receipt").textContent).toContain(`Launch receipt: ${status}`);
+    expect(
+      within(row)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["step one", "step two", "all done"]);
+  },
+);
+
 test("a folded card quotes the child's newest own words from the full event stream - verbatim, no quote-mark dressing", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => childThreadRead(params, "active"));
@@ -444,7 +494,7 @@ test("a folded card quotes the child's newest own words from the full event stre
   const running = delegateItem({
     id: "d_quote",
     callId: "call_quote",
-    argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
+    argumentsJSON: JSON.stringify({ prompt: "audit the reducer" }),
     output: JSON.stringify({ delegate_id: "job_q", status: "running", transcript_ref: "ref_quote_child" }),
   });
   render(<Body item={running} live={false} />);
@@ -476,11 +526,25 @@ test("expanding a card lists recent quotes - intents plain, messages italic - ea
   const running = delegateItem({
     id: "d_quotes",
     callId: "call_quotes",
-    argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
+    argumentsJSON: JSON.stringify({ prompt: "audit the reducer" }),
     output: JSON.stringify({ delegate_id: "job_qs", status: "running", transcript_ref: "ref_quotes_child" }),
   });
+  // A fixed reference instant 70s after the stamped step (same calendar day),
+  // so the relative time is deterministic and the absolute stays time-only.
+  const stepStart = new Date(2026, 7, 20, 9, 41, 2);
+  const fixedNow = new Date(2026, 7, 20, 9, 42, 12).getTime();
+  const absStart = new Intl.DateTimeFormat("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(stepStart);
   const user = userEvent.setup();
-  render(<Body item={running} live={false} />);
+  render(
+    <SessionNowContext.Provider value={fixedNow}>
+      <Body item={running} live={false} />
+    </SessionNowContext.Provider>,
+  );
 
   const row = screen.getByTestId("subagent-row");
   await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
@@ -489,18 +553,23 @@ test("expanding a card lists recent quotes - intents plain, messages italic - ea
   // Two real steps plus the final message; the whitespace-only description
   // contributed no quote (the same statedIntentOf rule the old feed used).
   expect(items).toHaveLength(3);
-  expect(items.map((li) => li.value)).toEqual([1, 2, 3]);
+  // The activity feed is a sequence, not an enumeration: no <li> carries an
+  // ordinal value attribute, so the "72. 73. …" numbering is gone.
+  expect(items.every((li) => li.getAttribute("value") === null)).toBe(true);
 
-  // Runtime + timestamp ride each stamped quote: "6s · HH:MM:SS" local. The
-  // expected stamp is computed through the same Date parsing the formatter
-  // uses, so the suite stays timezone-independent.
-  const parsed = new Date(2026, 7, 20, 9, 41, 2);
-  const stamp = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}:${String(parsed.getSeconds()).padStart(2, "0")}`;
+  // Each stamped quote shows its per-step runtime and a relative start time
+  // (the absolute instant is the <time title> hover), never a wall-clock
+  // string in the visible text. absStart mirrors the widget's own formatter,
+  // so the assertion is timezone-independent.
+  const time0 = items[0]!.querySelector("time");
+  expect(time0).not.toBeNull();
+  expect(time0!.getAttribute("title")).toBe(absStart);
   expect(items[0]!.textContent).toContain("step one");
   expect(items[0]!.textContent).toContain("6s");
-  expect(items[0]!.textContent).toContain(stamp);
-  // Unstamped quotes render no runtime segment rather than a guess.
+  expect(items[0]!.textContent).toContain("1m ago");
+  // Unstamped quotes render no runtime or timestamp segment rather than a guess.
   expect(items[1]!.textContent).toBe("step two");
+  expect(items[1]!.querySelector("time")).toBeNull();
 
   // Expanded activity retains source-specific treatment.
   expect(items[2]!.querySelector("em")?.textContent).toBe("all done");
@@ -512,7 +581,7 @@ test("an expanded card with no child activity yet says so instead of rendering a
   const running = delegateItem({
     id: "d_empty_quotes",
     callId: "call_empty_quotes",
-    argumentsJSON: JSON.stringify({ task: "just spawned" }),
+    argumentsJSON: JSON.stringify({ prompt: "just spawned" }),
     output: JSON.stringify({ delegate_id: "job_eq", status: "running" }),
   });
   const user = userEvent.setup();
@@ -521,7 +590,7 @@ test("an expanded card with no child activity yet says so instead of rendering a
   const row = screen.getByTestId("subagent-row");
   await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
   const quotes = await within(row).findByTestId("subagent-quotes");
-  expect(within(quotes).getByText(/no activity yet/i)).toBeTruthy();
+  expect(within(quotes).getByText(/activity unavailable/i)).toBeTruthy();
   expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 
@@ -572,7 +641,7 @@ test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5",
   const running = delegateItem({
     id: "d_cap",
     callId: "call_cap",
-    argumentsJSON: JSON.stringify({ task: "long running audit" }),
+    argumentsJSON: JSON.stringify({ prompt: "long running audit" }),
     output: JSON.stringify({ delegate_id: "job_cap", status: "running", transcript_ref: "ref_cap_child" }),
   });
   const user = userEvent.setup();
@@ -635,7 +704,7 @@ test("the Activity feed elides round_timings items and ordinals count only real 
   const running = delegateItem({
     id: "d_rt",
     callId: "call_rt",
-    argumentsJSON: JSON.stringify({ task: "timing audit" }),
+    argumentsJSON: JSON.stringify({ prompt: "timing audit" }),
     output: JSON.stringify({ delegate_id: "job_rt", status: "running", transcript_ref: "ref_rt_child" }),
   });
   const user = userEvent.setup();
@@ -650,7 +719,8 @@ test("the Activity feed elides round_timings items and ordinals count only real 
   // round_timings items never entered the count, so ordinals run 2..6, not
   // 4..8.
   expect(items.map((li) => li.textContent)).toEqual(["step 2", "step 3", "step 4", "step 5", "step 6"]);
-  expect(items.map((li) => li.value)).toEqual([2, 3, 4, 5, 6]);
+  // No ordinals: the feed is unnumbered, so no <li> carries a value attribute.
+  expect(items.every((li) => li.getAttribute("value") === null)).toBe(true);
 });
 
 test("dr7e: no Job detail section renders when neither resumable nor exhaustion fields are set", async () => {
@@ -659,7 +729,7 @@ test("dr7e: no Job detail section renders when neither resumable nor exhaustion 
   const settled = delegateItem({
     id: "d_noexhaust",
     callId: "call_noexhaust",
-    argumentsJSON: JSON.stringify({ task: "quick task" }),
+    argumentsJSON: JSON.stringify({ prompt: "quick task" }),
     output: JSON.stringify({ delegate_id: "job_noex", status: "completed" }),
   });
   const user = userEvent.setup();
@@ -694,7 +764,7 @@ test("the stats line counts the child's turns and tool calls from the full-turns
   const running = delegateItem({
     id: "d_counts",
     callId: "call_counts",
-    argumentsJSON: JSON.stringify({ task: "count my work" }),
+    argumentsJSON: JSON.stringify({ prompt: "count my work" }),
     output: JSON.stringify({ delegate_id: "job_counts", status: "running", transcript_ref: "ref_counts_child" }),
   });
   render(<Body item={running} live={false} />);
@@ -741,7 +811,7 @@ test("the stats line singularizes a single turn and a single call", async () => 
   const running = delegateItem({
     id: "d_single_counts",
     callId: "call_single_counts",
-    argumentsJSON: JSON.stringify({ task: "count one thing" }),
+    argumentsJSON: JSON.stringify({ prompt: "count one thing" }),
     output: JSON.stringify({
       delegate_id: "job_single_counts",
       status: "running",
@@ -759,13 +829,13 @@ test("the stats line singularizes a single turn and a single call", async () => 
   expect(stats.textContent).not.toContain("1 turns");
 });
 
-test("a running card's stats line closes with a live elapsed clock from its start time", () => {
+test("a running receipt without stable run timing does not invent a child clock", () => {
   const Body = toolRendererFor("delegate").body!;
   const now = 1_700_000_221_000;
   const running = delegateItem({
     id: "d_clock",
     callId: "call_clock",
-    argumentsJSON: JSON.stringify({ task: "timing me" }),
+    argumentsJSON: JSON.stringify({ prompt: "timing me" }),
     output: JSON.stringify({ delegate_id: "job_clock", status: "running" }),
     startedAt: new Date(now - 221_000).toISOString(),
   });
@@ -775,7 +845,47 @@ test("a running card's stats line closes with a live elapsed clock from its star
     </SessionNowContext.Provider>,
   );
   const stats = within(screen.getByTestId("subagent-row")).getByTestId("subagent-stats");
-  expect(stats.textContent).toContain("3m41s");
+  expect(stats.textContent).not.toContain("3m41s");
+});
+
+test("resumed work keeps its identity and historical report but uses the current run clock", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "idle"));
+  connectionStore.getState().connect(fake);
+  const now = 1_700_000_221_000;
+  const stable = {
+    delegateId: "dlg_resumed",
+    status: "running",
+    outcome: "exhausted",
+    terminal: false,
+    runStartedAt: new Date(now - 12_000).toISOString(),
+  } as EvenerDelegateInfo;
+  threadsStore.setState({ threads: new Map([["parent_resumed", { delegates: [stable] } as ThreadModel]]) });
+  const turn: TurnModel = { id: "resumed", status: "completed", items: [] };
+  render(
+    <SessionNowContext.Provider value={now}>
+      <ToolCallItem
+        item={delegateItem({
+          turnId: turn.id,
+          startedAt: new Date(now - 221_000).toISOString(),
+          output: JSON.stringify({
+            delegate_id: stable.delegateId,
+            status: "exhausted",
+            transcript_ref: "child_resumed",
+          }),
+        })}
+        turn={turn}
+        live={false}
+        sessionRef="parent_resumed"
+      />
+    </SessionNowContext.Provider>,
+  );
+  const row = screen.getByTestId("subagent-row");
+  expect(row.dataset.kind).toBe("running");
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Running");
+  expect(within(row).getByText("12s")).toBeTruthy();
+  expect(within(row).queryByText("3m41s")).toBeNull();
+  expect((await within(row).findByTestId("subagent-quote")).textContent).toBe("all done");
 });
 
 test("stable delegate attention and lifecycle own the card while child content status changes", async () => {
@@ -801,7 +911,7 @@ test("stable delegate attention and lifecycle own the card while child content s
     id: "d_await",
     turnId: turn.id,
     callId: "call_await",
-    argumentsJSON: JSON.stringify({ task: "needs an answer" }),
+    argumentsJSON: JSON.stringify({ prompt: "needs an answer" }),
     output: JSON.stringify({
       delegate_id: stable.delegateId,
       status: "running",
@@ -810,6 +920,15 @@ test("stable delegate attention and lifecycle own the card while child content s
   });
   render(<ToolCallItem item={running} turn={turn} live={false} sessionRef="ref_attention_parent" />);
 
+  const user = userEvent.setup();
+  const lifecycle = screen.getByTestId("delegate-lifecycle");
+  expect(lifecycle.textContent).toContain("Needs attention");
+  const bodyId = screen.getByTestId("tool-call-body").id;
+  const toggle = screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!;
+  await user.click(toggle);
+  expect(screen.queryByTestId("subagent-row")).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toContain("Needs attention");
+  await user.click(toggle);
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.attention).toBe("true"));
   expect(row.dataset.kind).toBe("running");
@@ -874,7 +993,7 @@ test("the card is headless: no tag, no open button inside it", () => {
   const running = delegateItem({
     id: "d_headless",
     callId: "call_headless",
-    argumentsJSON: JSON.stringify({ task: "identity is above me" }),
+    argumentsJSON: JSON.stringify({ prompt: "identity is above me" }),
     output: JSON.stringify({ delegate_id: "job_headless", status: "running", transcript_ref: "ref_headless" }),
   });
   render(<Body item={running} live={false} />);
@@ -886,12 +1005,13 @@ test("the card is headless: no tag, no open button inside it", () => {
 test("a headless card exposes hidden identity and status, a visible status shape, and a controlled disclosure", async () => {
   const Body = toolRendererFor("delegate").body!;
   const user = userEvent.setup();
+  seedCurrentDelegate("ref_accessible", "dlg_accessible", "completed");
   render(
     <Body
       item={delegateItem({
         id: "d_accessible",
         callId: "call_accessible",
-        argumentsJSON: JSON.stringify({ task: "accessible child" }),
+        argumentsJSON: JSON.stringify({ prompt: "accessible child" }),
         output: JSON.stringify({ delegate_id: "dlg_accessible", status: "completed" }),
       })}
       live={false}
@@ -924,7 +1044,7 @@ test("multiple cards schedule no intervals of their own", () => {
         item={delegateItem({
           id: "d_clock_a",
           callId: "call_clock_a",
-          argumentsJSON: JSON.stringify({ task: "clock a" }),
+          argumentsJSON: JSON.stringify({ prompt: "clock a" }),
           output: JSON.stringify({ delegate_id: "dlg_clock_a", status: "running" }),
         })}
         live={false}
@@ -933,7 +1053,7 @@ test("multiple cards schedule no intervals of their own", () => {
         item={delegateItem({
           id: "d_clock_b",
           callId: "call_clock_b",
-          argumentsJSON: JSON.stringify({ task: "clock b" }),
+          argumentsJSON: JSON.stringify({ prompt: "clock b" }),
           output: JSON.stringify({ delegate_id: "dlg_clock_b", status: "running" }),
         })}
         live={false}
@@ -957,7 +1077,7 @@ test("the stats line joins its present segments - never a dangling separator", a
   const running = delegateItem({
     id: "d_seps",
     callId: "call_seps",
-    argumentsJSON: JSON.stringify({ task: "counts only, no tokens, no clock" }),
+    argumentsJSON: JSON.stringify({ prompt: "counts only, no tokens, no clock" }),
     output: JSON.stringify({ delegate_id: "job_seps", status: "running", transcript_ref: "ref_seps_child" }),
   });
   render(<Body item={running} live={false} />);
@@ -1042,7 +1162,7 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
         id: "d_hist",
         turnId: turn.id,
         callId: "call_hist",
-        argumentsJSON: JSON.stringify({ task: "historical child" }),
+        argumentsJSON: JSON.stringify({ prompt: "historical child" }),
         output: JSON.stringify({ delegate_id: "dlg_hist", status: "running", transcript_ref: "ref_hist_child" }),
       })}
       turn={turn}
@@ -1088,7 +1208,7 @@ test("the folded quote of a markdown final report lands on its first substantive
   const done = delegateItem({
     id: "d_md_quote",
     callId: "call_md_quote",
-    argumentsJSON: JSON.stringify({ task: "fix the findings" }),
+    argumentsJSON: JSON.stringify({ prompt: "fix the findings" }),
     output: JSON.stringify({ delegate_id: "job_md", status: "completed", transcript_ref: "ref_md_child" }),
   });
   render(<Body item={done} live={false} />);

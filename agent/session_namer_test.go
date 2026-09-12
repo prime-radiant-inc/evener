@@ -24,9 +24,6 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 				if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_schema" {
 					t.Fatalf("ResponseFormat = %#v, want json_schema", req.ResponseFormat)
 				}
-				if req.MaxTokens == nil || *req.MaxTokens > 100 {
-					t.Fatalf("MaxTokens = %#v, want small cap", req.MaxTokens)
-				}
 				if len(req.Tools) != 0 {
 					t.Fatalf("Tools len = %d, want 0", len(req.Tools))
 				}
@@ -44,7 +41,7 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the flaky test in agent/session_test.go", noNamerSleep)
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the flaky test in agent/session_test.go", "", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -56,6 +53,47 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 	}
 	if got.Usage.TotalTokens != 15 {
 		t.Fatalf("Usage.TotalTokens = %d, want 15", got.Usage.TotalTokens)
+	}
+}
+
+// TestNameSession_RequestsReasoningOffAndLeavesOutputUncapped pins the naming
+// call's reasoning and output-token policy. A reasoning model that spends a
+// small output budget on chain-of-thought emits no JSON content at all, so the
+// namer asks the model not to reason. It also leaves MaxTokens unset: a model
+// whose row cannot spell an explicit off still needs room to finish thinking
+// and emit the schema-validated title. The system prompt and the schema's
+// maxLength bound the title; a token cap only risks starving the model.
+//
+// The model ref is deliberately unknown to the catalog: a known non-reasoning
+// row has its reasoning control stripped by request shaping before the adapter
+// sees it, which is correct but hides what the namer asked for. An unknown row
+// carries no reasoning verdict, so the explicit off survives to the adapter.
+func TestNameSession_RequestsReasoningOffAndLeavesOutputUncapped(t *testing.T) {
+	t.Parallel()
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano-namer")
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if req.ReasoningEffort == nil || *req.ReasoningEffort != llm.ReasoningEffortNone {
+					t.Fatalf("ReasoningEffort = %#v, want %q", req.ReasoningEffort, llm.ReasoningEffortNone)
+				}
+				if req.MaxTokens != nil {
+					t.Fatalf("MaxTokens = %#v, want nil so a reasoning model cannot starve the title", req.MaxTokens)
+				}
+				return llm.Response{Message: llm.Assistant(`{"name":"Fix Flaky Test"}`)}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the flaky test", "", noNamerSleep)
+	if err != nil {
+		t.Fatalf("nameSession: %v", err)
+	}
+	if got.Name != "Fix Flaky Test" {
+		t.Fatalf("Name = %q, want Fix Flaky Test", got.Name)
 	}
 }
 
@@ -91,7 +129,7 @@ func TestNameSession_RoutesToCheapProvider(t *testing.T) {
 	client.Register(mainAdapter)
 	client.Register(cheapAdapter)
 
-	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "name this session", noNamerSleep)
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "name this session", "", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -116,7 +154,7 @@ func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "review the system prompt", noNamerSleep)
+	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "review the system prompt", "", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -125,10 +163,15 @@ func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 	}
 }
 
-func TestSessionNamerEnabledRequiresConfiguredCheapModel(t *testing.T) {
+func TestSessionNamerEnabledUsesActiveModelFallback(t *testing.T) {
 	t.Parallel()
-	if sessionNamerEnabled(NewOpenAIProfile("gpt-5.2")) {
-		t.Fatal("session namer should not auto-enable from active model")
+	if !sessionNamerEnabled(NewOpenAIProfile("gpt-5.2")) {
+		t.Fatal("session namer should enable from active model")
+	}
+	// A registry profile always resolves a model (default_model fills a blank
+	// ref), so "no model" means no profile at all.
+	if sessionNamerEnabled(nil) {
+		t.Fatal("session namer should remain disabled without a profile")
 	}
 	if !sessionNamerEnabled(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")) {
 		t.Fatal("session namer should enable when cheap model is configured")
@@ -148,7 +191,7 @@ func TestNameSession_SanitizesGeneratedName(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "[CONTEXT SUMMARY] parser failures", noNamerSleep)
+	got, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "[CONTEXT SUMMARY] parser failures", "", noNamerSleep)
 	if err != nil {
 		t.Fatalf("nameSession: %v", err)
 	}
@@ -164,7 +207,7 @@ func TestNameSession_RejectsEmptySourceText(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "   ", noNamerSleep)
+	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "   ", "", noNamerSleep)
 	if err == nil || !strings.Contains(err.Error(), "source text is empty") {
 		t.Fatalf("err = %v, want source text error", err)
 	}

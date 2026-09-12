@@ -10,6 +10,16 @@
    * (2026-07-30-mobile-session-layout-design.md, decision 5). */
   overflow-x: clip;
   position: relative;
+  /* The query container every row-level "does the pane have room for X?"
+   * decision resolves against (the transcript's right-margin timestamp
+   * stamp is the first consumer). inline-size containment is safe here for
+   * the same reason composer.module.css and spawn.module.css record: this
+   * box's width comes from its flex parent, never its content (overflow-x:
+   * clip guarantees it). Every positioned descendant anchors locally -
+   * .sizer/.item to the sizer, row content to its own row - and the
+   * fixed-position widgets (popover, menu, tooltip) portal to body, so the
+   * containing-block containment establishes captures nothing. */
+  container-type: inline-size;
 }
 
 .sizer {

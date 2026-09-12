@@ -19,7 +19,7 @@ import (
 // Lock ordering: the manager mutex is the OUTER lock and each sub.mu is the
 // INNER lock. Callers that need both must take the manager mutex first. The
 // manager mutex is never held while calling into a child's *Session (e.g.
-// sub.sess.Close()), which would deadlock against the child's own locking.
+// teardownChildSession), which would deadlock against the child's own locking.
 type subagentManager struct {
 	mu                       sync.Mutex
 	subs                     map[string]*subagent

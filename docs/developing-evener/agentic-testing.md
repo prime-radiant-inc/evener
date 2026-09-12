@@ -545,7 +545,7 @@ fact.
 ### Authenticated navigation
 
 ```text
-navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
+navigate $HUB/auth/<TOKEN>?next=/s/local:<SID>
 await_element [data-testid="composer-input-card"]
 ```
 
@@ -639,16 +639,18 @@ facts (`status-row-effort`, `status-row-context`, `status-row-cost`,
 **Spawn** (`panes/spawn/Spawn.tsx`): `[data-testid="spawn-prompt-card"]`
 and its control row `[data-testid="spawn-controls"]`,
 `[data-testid="spawn-submit"]`, `[data-testid="spawn-attach"]`,
-`[data-testid="spawn-branch"]`. Two model controls, and only one of them
-is ever on screen: `[data-testid="spawn-desktop-model"]` wraps the
-desktop Model field's `ModelCatalog` trigger, while
+`[data-testid="spawn-branch"]`. One model control and one effort control,
+both in the card's own control row at every width:
 `[data-testid="spawn-model-trigger"]` (readout
-`[data-testid="spawn-model-value"]`) is the prompt card's own
-`ModelSwitchTrigger`, which the phone uses and a desktop width hides
-behind `[data-testid="spawn-model-slot"]`. Both carry the `— change
-model` screen-reader suffix, so address them by testid or filter on
-`offsetParent`. The picker itself is the shared ARIA combobox in
-`widgets/modelCatalog/` — `role="option"` rows, not the legacy
+`[data-testid="spawn-model-value"]`) is the session composer's own
+`ModelSwitchTrigger` inside `[data-testid="spawn-model-slot"]`, and
+`[data-testid="spawn-effort"]` is the wrapper holding the quiet effort
+overlay-select (real `<select>` labelled "Prompt reasoning effort" over an
+aria-hidden readout — "Prompt" distinguishes it from the Advanced Options
+schema field's own "Reasoning effort"). Both
+carry the `— change model` screen-reader suffix on the model side, so
+address the trigger by testid. The picker itself is the shared ARIA
+combobox in `widgets/modelCatalog/` — `role="option"` rows, not the legacy
 `.chip-picker-*` classes.
 
 **Toasts** are the error channel for actions that fail without a
@@ -1047,7 +1049,7 @@ file a kata. Don't try to drive past the gate from the scenario.
   the Setup checklist, never Jesse's real one.
 - **Follow-up turn** (after the initial spawn prompt): send AppWire `turn/start` with `ref:"local:<SID>"`, a unique `clientMutationId`, and `input:[{"type":"text","text":"..."}]` (the spawn only starts turn 1; subsequent user turns use `turn/start`).
 - **Session URL**: `/s/local:<SID>`. A bare `/s/<SID>` renders "Page not found" client-side, by design.
-- **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
+- **Recursion depth** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` sets the root's own delegation allowance to N; each delegate is granted one level below its creator by default. Omitted/default is 2 (the root's delegates may delegate once more; their delegates are leaves). Set 1 to make every delegate a leaf.
 - **Per-session transcript**: `$HOME/.local/state/evener/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
 - **Per-daemon log** (everything a spawned session's `evener serve` writes,

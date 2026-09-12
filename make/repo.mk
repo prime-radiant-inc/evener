@@ -20,13 +20,15 @@ tools-gitleaks:
 	gitleaks=$$(awk '$$1=="gitleaks" {print $$2}' .tool-versions); \
 	go install github.com/zricethezav/gitleaks/v8@v$$gitleaks
 
-# refresh-model-catalog replaces the vendored LiteLLM model-catalog snapshot
-# with the current upstream and runs the catalog sanity tests. The vendored
-# file must never be hand-edited (evener-curated data lives in
-# evener_model_catalog_overrides.json); use `--check` via the script directly
-# for a dry-run delta report.
-## Replace the vendored LiteLLM model-catalog snapshot with the current
-## upstream and run the catalog sanity tests.
+# refresh-model-catalog replaces the embedded models.dev snapshot in
+# llm/registry/data/ (models.dev.json.gz plus the meta recording when and
+# with which ETag it was fetched) with the current upstream, then runs the
+# converter tests and the overlay report. The snapshot is never hand-edited:
+# evener's corrections live beside it in providers_overlay.toml, which the
+# registry layers on at load. Run the script directly with `--check` for a
+# dry-run delta report.
+## Replace the embedded models.dev snapshot in llm/registry/data/ with the
+## current upstream and run the converter tests and overlay report.
 refresh-model-catalog:
 	@scripts/ops/refresh-model-catalog.sh
 

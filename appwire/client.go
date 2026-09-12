@@ -17,7 +17,7 @@ var ErrNotificationOverflow = errors.New("appwire notification buffer overflow")
 // deliberate loud failure (the connection is torn down rather than silently
 // dropping or buffering without bound), so the capacity must hold any single
 // legitimate burst even while the consumer waits for a scheduling slice: a
-// codex initial-turn replay is ~160 messages, and request paths that never
+// large initial-turn replay can be ~160 messages, and request paths that never
 // consume notifications (short-lived withClient calls) ride entirely on this
 // buffer.
 const NotificationBufferCap = 4096
@@ -33,6 +33,8 @@ type Client struct {
 	pendingCoord  PendingCoordinator
 	featuresMu    sync.RWMutex
 	features      FeatureSet
+	// logf sinks connection-lifecycle events; nil discards them. See SetLogf.
+	logf func(format string, args ...any)
 	// closed latches the read loop's exit. failPending only fails the entries
 	// registered at that instant; a request that registers afterwards would
 	// otherwise wait forever for a response no goroutine can deliver (a first
@@ -82,7 +84,7 @@ func (c *Client) Start(ctx context.Context) {
 
 func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeout time.Duration) {
 	if pinger, ok := c.transport.(Pinger); ok {
-		go runClientKeepalive(ctx, pinger, c.transport.Close, pingInterval, pongTimeout)
+		go runClientKeepalive(ctx, pinger, c.transport.Close, pingInterval, pongTimeout, c.logf)
 	}
 	go func() {
 		for {
@@ -137,6 +139,20 @@ func (c *Client) SetOrderedFrameHandler(handler func(Message, error)) {
 	c.orderedFrames = handler
 }
 
+// SetLogf installs a sink for connection-lifecycle events a peer cannot
+// observe from its own side of the socket (today: keepalive teardown, see
+// runClientKeepalive). Until it is called the sink is nil and those events
+// are discarded: this client runs inside interactive TUI sessions where the
+// standard log package's default stderr destination would scroll into
+// bubbletea's live grid in -debug mode (no alternate screen) and corrupt the
+// render permanently (issue #783), so silence is the only default safe
+// everywhere. Callers that want these events (hub, TUI) provide their own
+// sink. Set it before Start, which reads the sink once to hand to the
+// keepalive goroutine.
+func (c *Client) SetLogf(logf func(format string, args ...any)) {
+	c.logf = logf
+}
+
 type requestIDObserverKey struct{}
 
 // WithRequestIDObserver returns a context that reports the id appwire mints for
@@ -159,8 +175,15 @@ func requestIDObserverFrom(ctx context.Context) func(ID) {
 // runClientKeepalive pings the peer every interval and closes the transport if
 // a ping goes unanswered within timeout. Closing unblocks the read loop's Recv,
 // which fails pending requests and closes the notifications channel — so a
-// silently-dead daemon surfaces as a normal subscription end.
-func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error, interval, timeout time.Duration) {
+// silently-dead daemon surfaces as a normal subscription end. The teardown
+// logs one line first: the closed connection then fails every later write
+// with an ordinary transport error, so without the log a pong-timeout
+// teardown under load — e.g. the hub subprocess starved past
+// interval+timeout by concurrent CI gates (#154) — is indistinguishable
+// from a dead hub. The line goes through logf (installed via SetLogf, nil
+// discards it) rather than the standard log package, so it can never land on
+// a live TUI session's terminal (issue #783).
+func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error, interval, timeout time.Duration, logf func(format string, args ...any)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -172,6 +195,9 @@ func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error
 			err := pinger.Ping(pingCtx)
 			cancel()
 			if err != nil {
+				if logf != nil {
+					logf("appwire: keepalive ping failed (ping interval %s, pong timeout %s): %v; closing connection", interval, timeout, err)
+				}
 				_ = closeFn()
 				return
 			}
@@ -613,6 +639,18 @@ func (c *Client) Upgrade(ctx context.Context, params UpgradeParams) (UpgradeResp
 	return out, err
 }
 
+func (c *Client) UpdateCheck(ctx context.Context, params UpdateCheckParams) (UpdateCheckResponse, error) {
+	var out UpdateCheckResponse
+	err := c.request(ctx, MethodEvenerUpdateCheck, params, &out)
+	return out, err
+}
+
+func (c *Client) UpdateApply(ctx context.Context, params UpdateApplyParams) (UpdateApplyResponse, error) {
+	var out UpdateApplyResponse
+	err := c.request(ctx, MethodEvenerUpdateApply, params, &out)
+	return out, err
+}
+
 func (c *Client) AuthStatus(ctx context.Context, params AuthStatusParams) (AuthStatusResponse, error) {
 	var out AuthStatusResponse
 	err := c.request(ctx, MethodEvenerAuthStatus, params, &out)
@@ -661,6 +699,12 @@ func (c *Client) MarketplaceAdd(ctx context.Context, params MarketplaceAddParams
 	return out, err
 }
 
+func (c *Client) MarketplaceEdit(ctx context.Context, params MarketplaceEditParams) (MarketplaceListResponse, error) {
+	var out MarketplaceListResponse
+	err := c.request(ctx, MethodEvenerMarketplaceEdit, params, &out)
+	return out, err
+}
+
 func (c *Client) MarketplaceRemove(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
 	var out MarketplaceListResponse
 	err := c.request(ctx, MethodEvenerMarketplaceRemove, params, &out)
@@ -688,6 +732,12 @@ func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
 func (c *Client) PluginPreview(ctx context.Context, params PluginPreviewParams) (PluginPreviewResponse, error) {
 	var out PluginPreviewResponse
 	err := c.request(ctx, MethodEvenerPluginPreview, params, &out)
+	return out, err
+}
+
+func (c *Client) SpawnSlashCatalog(ctx context.Context, params SpawnSlashCatalogParams) (SpawnSlashCatalogResponse, error) {
+	var out SpawnSlashCatalogResponse
+	err := c.request(ctx, MethodEvenerSpawnSlashCatalog, params, &out)
 	return out, err
 }
 

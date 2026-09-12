@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"errors"
 	"testing"
 	"time"
 )
@@ -33,53 +32,6 @@ func TestParseRetryAfterEdgeCases(t *testing.T) {
 	t.Run("garbage is nil", func(t *testing.T) {
 		if d := ParseRetryAfter("not-a-date", now); d != nil {
 			t.Errorf("ParseRetryAfter(garbage) = %v, want nil", d)
-		}
-	})
-}
-
-func behaviorTagOf(t *testing.T, err error) string {
-	t.Helper()
-	if bt, ok := err.(interface{ BehaviorTag() string }); ok {
-		return bt.BehaviorTag()
-	}
-	return ""
-}
-
-func TestStampErrorBehaviorTag(t *testing.T) {
-	t.Run("nil error is returned unchanged", func(t *testing.T) {
-		if got := StampErrorBehaviorTag(nil, "openai"); got != nil {
-			t.Errorf("StampErrorBehaviorTag(nil) = %v, want nil", got)
-		}
-	})
-
-	t.Run("blank tag is a no-op", func(t *testing.T) {
-		err := ErrorFromHTTPStatus("openai", 500, "boom", nil, nil)
-		out := StampErrorBehaviorTag(err, "   ")
-		if behaviorTagOf(t, out) != "" {
-			t.Errorf("blank tag stamped: %q", behaviorTagOf(t, out))
-		}
-	})
-
-	t.Run("non-setter error is returned unchanged", func(t *testing.T) {
-		plain := errors.New("plain")
-		if got := StampErrorBehaviorTag(plain, "openai"); !errors.Is(got, plain) {
-			t.Errorf("StampErrorBehaviorTag(plain) = %v, want same error", got)
-		}
-	})
-
-	t.Run("empty provider is a no-op", func(t *testing.T) {
-		err := ErrorFromHTTPStatus("", 500, "boom", nil, nil)
-		out := StampErrorBehaviorTag(err, "openai")
-		if behaviorTagOf(t, out) != "" {
-			t.Errorf("stamped despite empty provider: %q", behaviorTagOf(t, out))
-		}
-	})
-
-	t.Run("stamps when provider is set", func(t *testing.T) {
-		err := ErrorFromHTTPStatus("openai", 500, "boom", nil, nil)
-		out := StampErrorBehaviorTag(err, "openai-responses")
-		if got := behaviorTagOf(t, out); got != "openai-responses" {
-			t.Errorf("BehaviorTag = %q, want %q", got, "openai-responses")
 		}
 	})
 }

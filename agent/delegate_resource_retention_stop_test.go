@@ -542,7 +542,7 @@ func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *
 	c := root.delegateController
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	root.close(ctx, true)
+	root.close(ctx, closeOptions{cleanupEnv: true})
 	c.mu.Lock()
 	stop := c.stop
 	aggregate := c.durable[fixture.delegateID]
@@ -621,6 +621,41 @@ func TestDelegateResourceStop_ForegroundShellTimeoutReportsCommittedShellOnce(t 
 	}
 	if _, err := c.ReportShellFinished(token, got.JobID); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("second ReportShellFinished = %v, want exact-once stale receipt", err)
+	}
+}
+
+// A finalizing shell leaves jm.running before it resolves its stable-delegate
+// receipt, so a wait that reads only the running map reports a shell finished
+// while the controller still holds its process receipt. The wait must outlive
+// the running-map entry and settle on the receipt.
+func TestDelegateResourceStop_FinishedShellWaitOutlivesRunningMapRemoval(t *testing.T) {
+	c, jm, _, _ := newStableShellReceiptHarness(t)
+	const jobID = "job_finalizing"
+	receipt, err := jm.beginStableDelegateShellReceipt(jobID)
+	if err != nil {
+		t.Fatalf("begin stable shell receipt: %v", err)
+	}
+	if err := receipt.commit(func() {}); err != nil {
+		t.Fatalf("commit stable shell receipt: %v", err)
+	}
+
+	// jm.running deliberately holds no entry for jobID: this is the exact
+	// finalization window, after the removal and before the receipt is dropped.
+	// The receipt is released on the wait's own look at it, so only a wait that
+	// looks past the running map at all can settle here.
+	setShellReceiptPollHook(t, func(polled string) {
+		if polled == jobID {
+			receipt.finish()
+		}
+	})
+
+	waitForShellDone(t, jm, jobID)
+
+	c.mu.Lock()
+	workCount := len(c.work)
+	c.mu.Unlock()
+	if workCount != 0 {
+		t.Fatalf("wait settled with %d controller receipts still held", workCount)
 	}
 }
 

@@ -17,11 +17,17 @@ import (
 )
 
 // fullLadderProfile returns an OpenAI profile whose effort ladder includes all
-// six levels, so nothing in these tests is clamped away.
+// six levels, so the profile clamps nothing away in these tests.
 func fullLadderProfile(model string) *provider.Profile {
-	return provider.NewOpenAIProfile(model).
-		WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max"}})
+	return withEffortLevels(provider.NewOpenAIProfile(model), "minimal", "low", "medium", "high", "xhigh", "max")
 }
+
+// sessionMaxOnTheWire is what a session configured for "max" effort sends to
+// an openai instance. The client shapes every request against its registry
+// row before the adapter sees it (spec §7.5) and openai's effort ladder tops
+// out at xhigh, so these tests read the clamped value where they mean "the
+// session's own effort, unmodified by a task override".
+const sessionMaxOnTheWire = "xhigh"
 
 func taskEffortToolCall(id, args string) llm.Response {
 	return llm.Response{Message: llm.Message{
@@ -138,19 +144,19 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// req0 (expect max): create both tasks.
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"},{"type":"implement","description":"hard step","prompt":"do hard thing","reasoning_effort":"high"}]}`)
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"},{"type":"implement","description":"hard step","prompt":"do hard thing","reasoning_effort":"high"}]}`)
 			},
 			// req1 (expect max, nothing in progress yet): start task 1.
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// req2 (expect low, task 1 in progress): finish task 1 -> auto-advance starts task 2.
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c3", `{"action":"update","updates":[{"id":1,"status":"done"}]}`)
+				return taskEffortToolCall("c3", `{"update":[{"id":1,"status":"done"}]}`)
 			},
 			// req3 (expect high, task 2 in progress): finish task 2.
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c4", `{"action":"update","updates":[{"id":2,"status":"done"}]}`)
+				return taskEffortToolCall("c4", `{"update":[{"id":2,"status":"done"}]}`)
 			},
 			// req4 (expect max again: no task in progress).
 			func(req llm.Request) llm.Response { return finalResponse("done") },
@@ -158,7 +164,7 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "max",
 	})
 	if err != nil {
@@ -176,7 +182,7 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 	if len(reqs) != 5 {
 		t.Fatalf("expected 5 requests, got %d (efforts=%v)", len(reqs), requestEfforts(t, reqs))
 	}
-	want := []string{"max", "max", "low", "high", "max"}
+	want := []string{sessionMaxOnTheWire, sessionMaxOnTheWire, "low", "high", sessionMaxOnTheWire}
 	got := requestEfforts(t, reqs)
 	for i := range want {
 		if got[i] != want[i] {
@@ -196,21 +202,21 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 		wantEffort     string
 		wantTaskEffort string
 	}{
-		{name: "invalid inherits session", legacyEffort: "ultra", wantEffort: "max", wantTaskEffort: ""},
+		{name: "invalid inherits session", legacyEffort: "ultra", wantEffort: sessionMaxOnTheWire, wantTaskEffort: ""},
 		{name: "valid override wins", legacyEffort: " HIGH ", wantEffort: "high", wantTaskEffort: "high"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			stateDir := t.TempDir()
-			profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
-				// Include the stale level to prove restore sanitization does not
-				// trust provider metadata to validate the task override.
-				ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
-			})
+			// The stale level proves restore sanitization does not trust the
+			// row's ladder to validate the task override.
+			profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
+				"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 			seedClient := llm.NewClient()
 			seedClient.Register(&fakeAdapter{name: "openai"})
-			seed, err := NewSession(seedClient, profile, execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
+			seedProfile := withTestSessionNamer(seedClient, profile)
+			seed, err := NewSession(seedClient, seedProfile, execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
 				StateDir:        stateDir,
 				ReasoningEffort: "max",
 			})
@@ -258,7 +264,8 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 			}}
 			client := llm.NewClient()
 			client.Register(adapter)
-			restored, err := RestoreSessionFromMeta(client, profile, execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+			restoredProfile := withTestSessionNamer(client, profile)
+			restored, err := RestoreSessionFromMeta(client, restoredProfile, execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
 			if err != nil {
 				t.Fatalf("RestoreSessionFromMeta: %v", err)
 			}
@@ -302,11 +309,11 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				requireTaskEffortSchemaLevel(t, req, "updates", "ultra")
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"first guard","prompt":"keep the first request valid","reasoning_effort":"high"},{"type":"implement","description":"second guard","prompt":"keep the second request valid","reasoning_effort":"low"}]}`)
+				requireTaskEffortSchemaLevel(t, req, "update", "ultra")
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"first guard","prompt":"keep the first request valid","reasoning_effort":"high"},{"type":"implement","description":"second guard","prompt":"keep the second request valid","reasoning_effort":"low"}]}`)
 			},
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"done","reasoning_effort":"max"},{"id":2,"status":"in_progress","reasoning_effort":"ultra"}]}`)
+				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"done","reasoning_effort":"max"},{"id":2,"status":"in_progress","reasoning_effort":"ultra"}]}`)
 			},
 			func(req llm.Request) llm.Response {
 				requireTaskHandlerError(t, req, "c2")
@@ -319,9 +326,8 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 	// Model metadata is an external boundary and may advertise a stale level.
 	// The task handler must still enforce Evener's canonical vocabulary rather
 	// than trusting the schema enum as its only validation.
-	profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
-		ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
-	})
+	profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
+		"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "max",
 	})
@@ -343,7 +349,7 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 	if tasks[0].Status != taskpkg.TaskOpen || tasks[0].ReasoningEffort != "high" || tasks[1].Status != taskpkg.TaskOpen || tasks[1].ReasoningEffort != "low" {
 		t.Fatalf("tasks after rejected update = %#v, want both original open tasks unchanged", tasks)
 	}
-	if got, want := requestEfforts(t, f.Requests()), []string{"max", "max", "max"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+	if got, want := requestEfforts(t, f.Requests()), []string{sessionMaxOnTheWire, sessionMaxOnTheWire, sessionMaxOnTheWire}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("request efforts = %v, want %v (invalid task effort must not cross the provider boundary)", got, want)
 	}
 }
@@ -356,8 +362,8 @@ func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				requireTaskEffortSchemaLevel(t, req, "tasks", "ultra")
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"valid step","prompt":"must roll back with the batch","reasoning_effort":"high"},{"type":"implement","description":"poisoned step","prompt":"must not persist","reasoning_effort":"ultra"}]}`)
+				requireTaskEffortSchemaLevel(t, req, "add", "ultra")
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"valid step","prompt":"must roll back with the batch","reasoning_effort":"high"},{"type":"implement","description":"poisoned step","prompt":"must not persist","reasoning_effort":"ultra"}]}`)
 			},
 			func(req llm.Request) llm.Response {
 				requireTaskHandlerError(t, req, "c1")
@@ -366,9 +372,8 @@ func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
 		},
 	}
 	c.Register(f)
-	profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
-		ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
-	})
+	profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
+		"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{ReasoningEffort: "max"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -398,10 +403,10 @@ func TestSession_TaskEffortInherit_KeepsSessionEffort(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"a step","prompt":"do the thing","reasoning_effort":"inherit"}]}`)
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"a step","prompt":"do the thing","reasoning_effort":"inherit"}]}`)
 			},
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// req2: task 1 in progress with effort "inherit" -> session effort.
 			func(req llm.Request) llm.Response { return finalResponse("done") },
@@ -409,7 +414,7 @@ func TestSession_TaskEffortInherit_KeepsSessionEffort(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "high",
 	})
 	if err != nil {
@@ -454,10 +459,10 @@ func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"}]}`)
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"}]}`)
 			},
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// req2: task low in progress, no escalation yet -> low.
 			func(req llm.Request) llm.Response { return finalResponse("still working") },
@@ -467,7 +472,7 @@ func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "medium",
 	})
 	if err != nil {
@@ -536,7 +541,7 @@ func TestSession_TaskEffortSurvivesCompaction(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "max",
 		testOnly:        testConfig{contextStrategyOverride: compactionEventStrategy{emitCompaction: true}},
 	})
@@ -586,7 +591,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
 		ReasoningEffort: "max",
 		StateDir:        stateDir,
 	})
@@ -622,7 +627,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	if got := meta.Config.ReasoningEffort; got != "max" {
 		t.Fatalf("persisted configured effort = %q, want %q", got, "max")
 	}
-	restored, err := RestoreSessionFromMeta(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	restored, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -654,7 +659,7 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 		},
 	}
 	c.Register(f)
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
 		ReasoningEffort: "medium",
 		StateDir:        stateDir,
 	})
@@ -686,7 +691,7 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
-	restored, err := RestoreSessionFromMeta(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	restored, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -741,7 +746,7 @@ EFF_AGENT_ROLE`)
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
 		ReasoningEffort: "max",
 		NonInteractive:  true,
 		PluginDirs:      []string{pluginDir},

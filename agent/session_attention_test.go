@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
@@ -471,26 +472,28 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 	var releaseFinalizerOnce sync.Once
 	t.Cleanup(func() { releaseFinalizerOnce.Do(func() { close(releaseFinalizer) }) })
 	recoveryErr := make(chan error, 1)
-	child.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
-		controller := root.delegateController
-		lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
-		controller.mu.Lock()
-		var claim *delegateSettlementClaim
-		for _, candidate := range controller.settlementClaims {
-			if candidate != nil && candidate.lease == lease {
-				claim = candidate
-				break
+	updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(*subagent) {
+			controller := root.delegateController
+			lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
+			controller.mu.Lock()
+			var claim *delegateSettlementClaim
+			for _, candidate := range controller.settlementClaims {
+				if candidate != nil && candidate.lease == lease {
+					claim = candidate
+					break
+				}
 			}
+			controller.mu.Unlock()
+			if claim == nil {
+				recoveryErr <- errors.New("terminal runner published without its exact settlement claim")
+			} else {
+				recoveryErr <- controller.RequireFinalizationRecovery(claim)
+			}
+			close(finalStatePublished)
+			<-releaseFinalizer
 		}
-		controller.mu.Unlock()
-		if claim == nil {
-			recoveryErr <- errors.New("terminal runner published without its exact settlement claim")
-		} else {
-			recoveryErr <- controller.RequireFinalizationRecovery(claim)
-		}
-		close(finalStatePublished)
-		<-releaseFinalizer
-	}
+	})
 	releaseProviderOnce.Do(func() { close(releaseProvider) })
 	<-finalStatePublished
 	if err := <-recoveryErr; err != nil {
@@ -548,7 +551,9 @@ progressDrained:
 	releaseFinalizerOnce.Do(func() { close(releaseFinalizer) })
 	<-oldDone
 	<-stop.progress
-	child.sess.cfg.testOnly.subagentAfterFinalStatePublish = nil
+	updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = nil
+	})
 	for i := range 2 {
 		evidence, err := collectDelegateReconcileEvidence(fixture.stateDir, controller.ReconcileRequirements())
 		if err != nil {
@@ -1623,7 +1628,7 @@ func TestDelegateAttention_RestoreReconcilesColdCommitBeforeProviderMetadata(t *
 	}
 
 	var probeErr error
-	adapter := &delegateAttentionListModelsAdapter{
+	adapter := &delegateAttentionLiveModelsAdapter{
 		onList: func() {
 			events, err := delegatestore.ReadEvents(storePath)
 			if err != nil {
@@ -2655,7 +2660,7 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 				if midTurnAppendErr == nil {
 					midTurnArmErr = root.armDelegateAttention(secondID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				calls++
@@ -2818,7 +2823,7 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 				if appendErr == nil {
 					armErr = root.armDelegateAttention(attentionID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				calls++
@@ -2884,7 +2889,7 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 				if appendErr == nil {
 					armErr = root.armDelegateAttention(attentionID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				roundTwoSaw = requestContainsText(req, content)
@@ -3147,7 +3152,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
 				return toolCallResponse(communicateCall("empty-fail-turn", "steering handled"))
@@ -3258,7 +3263,7 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
 				return toolCallResponse(communicateCall("resolution-failure-turn", "answer stands"))
@@ -3535,7 +3540,7 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 		t.Fatalf("save root metadata: %v", err)
 	}
 	client := llm.NewClient()
-	adapter := &delegateAttentionListModelsAdapter{}
+	adapter := &delegateAttentionLiveModelsAdapter{}
 	client.Register(adapter)
 	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
 	if err != nil {
@@ -3864,7 +3869,7 @@ type attentionSyncBarrierFS struct {
 	releaseOnce sync.Once
 }
 
-type delegateAttentionListModelsAdapter struct {
+type delegateAttentionLiveModelsAdapter struct {
 	delegateAttentionPanicProvider
 	onList    func()
 	listCalls int
@@ -3873,7 +3878,7 @@ type delegateAttentionListModelsAdapter struct {
 type delegateAttentionPanicProvider struct{}
 
 var _ llm.ProviderAdapter = (*delegateAttentionPanicProvider)(nil)
-var _ llm.ModelLister = (*delegateAttentionPanicProvider)(nil)
+var _ llm.LiveModelLister = (*delegateAttentionPanicProvider)(nil)
 
 func (*delegateAttentionPanicProvider) Name() string { return "openai" }
 
@@ -3885,11 +3890,11 @@ func (*delegateAttentionPanicProvider) Stream(context.Context, llm.Request) (llm
 	panic("cold delivery replay called provider Stream")
 }
 
-func (*delegateAttentionPanicProvider) ListModels(context.Context) ([]llm.ModelInfo, error) {
-	panic("cold delivery replay called provider ListModels")
+func (*delegateAttentionPanicProvider) LiveModels(context.Context) ([]registry.Model, error) {
+	panic("cold delivery replay listed provider models")
 }
 
-func (a *delegateAttentionListModelsAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
+func (a *delegateAttentionLiveModelsAdapter) LiveModels(context.Context) ([]registry.Model, error) {
 	a.listCalls++
 	if a.onList != nil {
 		a.onList()

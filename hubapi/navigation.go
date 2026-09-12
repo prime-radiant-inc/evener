@@ -143,6 +143,26 @@ type NavigationSessionLocation struct {
 	Session      *NavigationSessionSummary `json:"session,omitempty"`
 }
 
+// NavigationJobSummary is the compact non-delegate job row shown beneath its
+// owning session. Delegate jobs remain represented as session children.
+type NavigationJobSummary struct {
+	JobID   string `json:"job_id"`
+	JobType string `json:"job_type"`
+	Status  string `json:"status"`
+	Command string `json:"command,omitempty"`
+	Task    string `json:"task,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	// Intent is the tool call's `intent` argument: why the command is being
+	// run, in the model's own words. Surfaces in the rail row's tooltip.
+	Intent string `json:"intent,omitempty"`
+	// FullCommand carries the command when it exceeds the label bound
+	// (maxNavigationLabelRunes), so a tooltip can show more of what was
+	// actually executed. Still bounded by maxNavigationFullCommandRunes:
+	// a pathological command cannot dominate the response's byte budget.
+	// Absent when the command fits the label bound (no truncation).
+	FullCommand string `json:"full_command,omitempty"`
+}
+
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
 	Ref                string                                    `json:"ref"`
@@ -162,6 +182,8 @@ type NavigationSessionSummary struct {
 	UpdatedAt          *time.Time                                `json:"updated_at,omitempty"`
 	MoreSubagents      int                                       `json:"more_subagents,omitempty"`
 	OmittedDescendants int                                       `json:"omitted_descendants,omitempty"`
+	RunningJobs        NavigationArray[NavigationJobSummary]     `json:"running_jobs,omitempty"`
+	CompletedJobs      NavigationArray[NavigationJobSummary]     `json:"completed_jobs,omitempty"`
 	Children           NavigationArray[NavigationSessionSummary] `json:"children"`
 }
 

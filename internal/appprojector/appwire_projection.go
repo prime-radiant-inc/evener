@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type AppNotification struct {
@@ -77,12 +78,16 @@ type AppEventProjector struct {
 	midSessionAnnouncementTurnID string
 	assistantItem                string
 	assistantText                string
+	messageStartByID             map[string]time.Time
 	provisionalCommunicateItems  map[string]string
 	communicateCommittedCalls    map[string]struct{}
 	communicatePhases            map[string]communicatePhase
 	reasoningItem                string
-	toolItemsByKey               map[string]string
-	toolArgsByKey                map[string]string
+	// reasoningTurnID remains stable when a durable turn reservation replaces
+	// the live active turn before the reasoning item is completed.
+	reasoningTurnID string
+	toolItemsByKey  map[string]string
+	toolArgsByKey   map[string]string
 	// toolStartByKey records each open tool call's server-side start time (the
 	// EventToolCallStart event's own timestamp) so EventToolCallEnd can stamp
 	// the completed item with the call's real StartedAt/DurationMS (issue
@@ -97,8 +102,9 @@ type AppEventProjector struct {
 	skillCandidate       skillActivationCandidate
 	delegates            map[string]appwire.EvenerDelegateInfo
 
-	lastAssistantTurnID string
-	lastAssistantText   string
+	lastAssistantTurnID  string
+	lastAssistantText    string
+	pendingNotifications []AppNotification
 
 	// pendingTurnID/pendingCompletedAtMillis/pendingDurationMS record the most
 	// recent EventTurnEnded's timing until the turn it names is actually
@@ -112,14 +118,20 @@ type AppEventProjector struct {
 	pendingCompletedAtMillis int64
 	pendingDurationMS        int64
 
-	// activeTurnUsage/activeTurnModel accumulate the current turn's own
-	// (not cumulative-session) usage across every EventAssistantTextEnd
-	// since startTurn(), stamped onto the completing Turn at each of the
-	// five completion sites. Unlike pendingTurnID/pendingDurationMS, no
+	// activeTurnUsage/activeTurnModel/activeTurnProvider accumulate the
+	// current turn's own (not cumulative-session) usage and the
+	// instance/model it ran on across every EventAssistantTextEnd since
+	// startTurn(), stamped onto the completing Turn at each of the five
+	// completion sites. Unlike pendingTurnID/pendingDurationMS, no
 	// stash-vs-completion-ordering race exists here: EventAssistantTextEnd
 	// always fires chronologically before the turn's own completion event.
-	activeTurnUsage llm.Usage
-	activeTurnModel string
+	activeTurnUsage    llm.Usage
+	activeTurnModel    string
+	activeTurnProvider string
+	// costLookup prices the completing turn. Nil until SetCostLookup
+	// installs one, which is the honest answer for a projection with no
+	// registry behind it: the turn reports usage and no cost.
+	costLookup func(provider, model string) *registry.Cost
 }
 
 type communicatePhase uint8
@@ -146,6 +158,14 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		communicateCommittedCalls:   map[string]struct{}{},
 		communicatePhases:           map[string]communicatePhase{},
 	}
+}
+
+// SetCostLookup installs the $/Mtok cost source the completing turn is priced
+// at: the daemon passes the live session's registry lookup, keyed on the
+// instance and model each round reported (spec §7.5). A projector without one
+// reports usage and no cost.
+func (p *AppEventProjector) SetCostLookup(lookup func(provider, model string) *registry.Cost) {
+	p.costLookup = lookup
 }
 
 // SeedPersistedTurns raises the projector's turn counter so no live turn it
@@ -200,7 +220,41 @@ func (p *AppEventProjector) clearSkillCandidate() {
 	p.skillCandidate = skillActivationCandidate{}
 }
 
-func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification {
+func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotification) {
+	pending := p.pendingNotifications
+	p.pendingNotifications = nil
+	defer func() { out = append(pending, out...) }()
+	// Message lifecycles share one timing rule: keep the first visible event's
+	// timestamp through completion. One-shot messages use their own event time.
+	defer func() {
+		for i := range out {
+			if reset, ok := out[i].Params.(appwire.AgentMessageResetParams); ok {
+				delete(p.messageStartByID, reset.ItemID)
+			}
+			params, ok := out[i].Params.(appwire.ItemLifecycleParams)
+			if !ok || (params.Item.Type != "userMessage" && params.Item.Type != "agentMessage") {
+				continue
+			}
+			startedAt, exists := p.messageStartByID[params.Item.ID]
+			if !exists {
+				startedAt = event.Timestamp
+			}
+			if !startedAt.IsZero() {
+				ms := startedAt.UnixMilli()
+				params.Item.StartedAt = &ms
+			}
+			if out[i].Method == appwire.NotifyItemStarted {
+				if p.messageStartByID == nil {
+					p.messageStartByID = map[string]time.Time{}
+				}
+				p.messageStartByID[params.Item.ID] = startedAt
+			} else {
+				delete(p.messageStartByID, params.Item.ID)
+			}
+			out[i].Params = params
+		}
+	}()
+
 	if p.threadID == "" {
 		p.threadID = event.SessionID
 	}
@@ -356,6 +410,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
 		out := p.ensureTurn(event.Timestamp)
+		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
 		// The agent message is materialized lazily -- with the first delta, or
 		// at ASSISTANT_TEXT_END when the round's whole text arrives there. Every
 		// round that answers with tool calls alone emits this same lifecycle
@@ -363,7 +418,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// an empty agent message must not reach the envelope for it.
 		p.assistantItem = ""
 		p.assistantText = ""
-		p.reasoningItem = ""
 		return out
 	case events.EventAssistantTextDelta:
 		created, out := p.ensureAssistantItem(event.Timestamp)
@@ -422,6 +476,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.Model != "" {
 			p.activeTurnModel = data.Model
 		}
+		if data.Provider != "" {
+			p.activeTurnProvider = data.Provider
+		}
 		text := data.Text
 		if text == "" {
 			text = p.assistantText
@@ -431,7 +488,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// above, is the whole effect it has on the envelope.
 		if p.assistantItem == "" && strings.TrimSpace(text) == "" {
 			p.assistantText = ""
-			return out
+			return append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
 		}
 		// The turn is already open above, so this can only materialize the
 		// item; it has no turn/started of its own left to announce.
@@ -447,6 +504,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.recordAssistantMessage(turnID, text)
 		p.assistantItem = ""
 		p.assistantText = ""
+		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
 		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
@@ -481,6 +539,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				ItemID:   p.reasoningItem,
 			}))
 			p.reasoningItem = ""
+			p.reasoningTurnID = ""
 		}
 		return out
 	case events.EventModelRetry:
@@ -840,6 +899,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		out := p.ensureTurn(event.Timestamp)
 		turnID := p.activeTurnID
 		previewResets := p.resetProvisionalCommunicates()
+		reasoningCompletion := p.completeReasoningItem(appwire.TurnStatusFailed)
 		p.activeTurnID = ""
 		// A failed turn ends as thoroughly as a completed one. Clearing a
 		// smaller set here let reasoningItem, toolArgsByKey and toolStartByKey
@@ -863,7 +923,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// all five completion sites.
 		p.applyPendingTiming(turnID, &turn)
 		p.stampTurnUsage(&turn)
-		return append(append(out, previewResets...),
+		return append(append(append(out, previewResets...), reasoningCompletion...),
 			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -887,16 +947,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if strings.TrimSpace(text) == "" {
 			text = apptranscript.ImagePlaceholder(len(images))
 		}
-		// Still map[string]any, not appwire.EvenerSteeringInjectedParams (kcb5):
-		// images is nil whenever a steer carries no images (the common case) -
-		// this map always emits "images" anyway (as null), but Images is tagged
-		// `omitempty` on the struct, so a typed literal would drop the key
-		// entirely instead. Not provably byte-identical; left as a map.
 		params := map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
 			"text":     text,
-			"images":   images,
+		}
+		if len(images) > 0 {
+			params["images"] = images
 		}
 		// User-sent steering carries its provenance so the web UI renders it
 		// as a user message rather than a system steering divider (issue #24).
@@ -911,6 +968,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		if data.ClientMutationID != "" {
 			params["clientMutationId"] = data.ClientMutationID
+		}
+		if !event.Timestamp.IsZero() {
+			params["startedAt"] = event.Timestamp.UnixMilli()
 		}
 		return []AppNotification{p.notification(appwire.NotifyEvenerSteeringInjected, params)}
 	case events.EventCompactionTurn:
@@ -1007,11 +1067,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
 		notification := p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			Total:    data.Total,
-			Done:     data.Done,
-			Current:  taskSummary(data.Current),
+			ThreadID:  p.threadID,
+			Ref:       p.ref,
+			Total:     data.Total,
+			Done:      data.Done,
+			Cancelled: data.Cancelled,
+			Remaining: data.Remaining,
+			Current:   taskSummary(data.Current),
 		})
 		notification.TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
 		notification.TaskPublicationEpoch = data.TaskPublicationEpoch
@@ -1250,7 +1312,13 @@ func taskAggregate(data *events.TaskStateData) *appwire.TaskAggregate {
 	if data == nil {
 		return nil
 	}
-	return &appwire.TaskAggregate{Total: data.Total, Done: data.Done, Current: taskSummary(data.Current)}
+	return &appwire.TaskAggregate{
+		Total:     data.Total,
+		Done:      data.Done,
+		Cancelled: data.Cancelled,
+		Remaining: data.Remaining,
+		Current:   taskSummary(data.Current),
+	}
 }
 
 func goalState(data *events.GoalStateData) *appwire.GoalState {
@@ -1446,7 +1514,10 @@ func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
 		return
 	}
 	turn.Usage = usage
-	turn.Cost = appwire.EstimateCost(p.activeTurnModel, usage)
+	if p.costLookup == nil {
+		return
+	}
+	turn.Cost = appwire.EstimateCost(p.costLookup(p.activeTurnProvider, p.activeTurnModel), usage)
 }
 
 func (p *AppEventProjector) systemAnnouncement(eventKind appwire.ThreadItemEventKind, description, text string) []AppNotification {
@@ -1723,12 +1794,31 @@ func repairChangePhrase(raw string) string {
 		return fmt.Sprintf("removed the unrecognized %q field", field)
 	case "unicode_repair":
 		return "fixed an invalid character in the arguments"
-	default:
-		if field == "" {
-			return "adjusted the arguments"
+	case "fill_required":
+		if fieldKey, ok := strings.CutPrefix(field, "output."); ok && fieldDetail(parts) == "filled default" && fieldKey != "" {
+			return fmt.Sprintf("filled the required %q key", fieldKey)
 		}
-		return fmt.Sprintf("adjusted the %q field", field)
+		if key, ok := strings.CutPrefix(fieldDetail(parts), "filled "); ok && key != "" {
+			return fmt.Sprintf("filled the required %q key", key)
+		}
+		return fmt.Sprintf("filled a required key in the %q field", field)
+	case "synthesize":
+		if field == "output" && fieldDetail(parts) == "synthesized default envelope" {
+			return "created the required output object"
+		}
+	case "copy":
+		if field == "message" && fieldDetail(parts) == "copied output.message" {
+			return "copied nested output.message to the required message"
+		}
+	case "promote_json_object":
+		if field == "output" && fieldDetail(parts) == "promoted JSON object string" {
+			return "converted the output JSON string to an object"
+		}
 	}
+	if field == "" {
+		return "adjusted the arguments"
+	}
+	return fmt.Sprintf("adjusted the %q field", field)
 }
 
 // fieldDetail returns the third ("detail") segment of a split "kind:field:detail"
@@ -1839,26 +1929,23 @@ func (p *AppEventProjector) holdUnfetchableToolResultImages(item *appwire.Thread
 // failed turn clears.
 //
 // The turn/completed payload is deliberately still map[string]any, not
-// appwire.TurnCompletedParams (kcb5): the declared type is {turnId,turn} but
-// every producer here sends {threadId,ref,turn} with no turnId at all - the
-// type doesn't describe what's actually on the wire. Converting to the CURRENT
-// declaration would silently drop threadId/ref from every turn/completed frame
-// (a real, if likely-harmless, wire change - no consumer reads them, per
-// reducer.test.ts/hub_notifications.go); fixing the declaration to match
-// reality is a coupled Go+TS+test change of its own, left to a separate
-// decision.
+// appwire.TurnCompletedParams (kcb5): the two carry the same fields
+// ({threadId,ref,turn}), so the only thing a switch to the typed struct changes
+// is the Params type every projector test asserts on -- a test-fixture change
+// of its own, left to a separate decision.
 func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
 	if p.activeTurnID == "" {
 		return nil
 	}
 	turnID := p.activeTurnID
 	out := p.resetProvisionalCommunicates()
+	reasoningCompletion := p.completeReasoningItem(status)
 	p.activeTurnID = ""
 	p.resetTurnScopedState()
 	turn := appwire.Turn{ID: turnID, Status: status}
 	p.applyPendingTiming(turnID, &turn)
 	p.stampTurnUsage(&turn)
-	return append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
+	return append(append(out, reasoningCompletion...), p.notification(appwire.NotifyTurnCompleted, map[string]any{
 		"threadId": p.threadID,
 		"ref":      p.ref,
 		"turn":     turn,
@@ -1892,6 +1979,20 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 	}))
 }
 
+// completeReasoningItem closes the reasoning item opened by a summary delta
+// when the provider advances to its answer round. The transcript already holds
+// the accumulated deltas; this lifecycle frame supplies the terminal status.
+func (p *AppEventProjector) completeReasoningItem(status string) []AppNotification {
+	if p.reasoningItem == "" {
+		return nil
+	}
+	turnID := p.reasoningTurnID
+	item := appwire.ThreadItem{Type: "reasoning", ID: p.reasoningItem, TurnID: turnID, Status: status}
+	p.reasoningItem = ""
+	p.reasoningTurnID = ""
+	return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{ThreadID: p.threadID, Ref: p.ref, TurnID: turnID, Item: item})}
+}
+
 // resetTurnScopedState clears everything that belongs to one turn and must not
 // be visible to the next. Every field here names an item, a tool call in
 // flight, or text accumulated for an item -- so a value that survives a turn
@@ -1905,7 +2006,9 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 func (p *AppEventProjector) resetTurnScopedState() {
 	p.assistantItem = ""
 	p.assistantText = ""
+	p.messageStartByID = nil
 	p.reasoningItem = ""
+	p.reasoningTurnID = ""
 	p.toolItemsByKey = map[string]string{}
 	p.toolArgsByKey = map[string]string{}
 	p.toolStartByKey = map[string]time.Time{}
@@ -1955,6 +2058,7 @@ func (p *AppEventProjector) startTurn() string {
 	clear(p.heldToolResultImages)
 	p.activeTurnUsage = llm.Usage{}
 	p.activeTurnModel = ""
+	p.activeTurnProvider = ""
 	// startTurn always yields a usable turn id (a promoted reservation or a
 	// freshly minted turn_N); the item-emitting paths rely on activeTurnID being
 	// non-empty after this returns.
@@ -2022,8 +2126,17 @@ func (p *AppEventProjector) ReserveTurnID() string {
 func (p *AppEventProjector) ReserveStableTurnID(turnID string) {
 	invariant.Hold(strings.TrimSpace(turnID) != "", "appprojector: stable turn id is empty")
 	// Durable mutation state is authoritative over a stale live projection.
-	// Keeping the old active ID would make an intervening event publish it
-	// again before this reservation is consumed by EventUserInput.
+	// Close the old projection before replacing its active identity, retaining
+	// its item completion, timing, usage, and cost receipts for the next event.
+	oldTurnID := p.activeTurnID
+	if oldTurnID == "" && p.reasoningItem != "" {
+		oldTurnID = p.reasoningTurnID
+	}
+	if oldTurnID != "" {
+		p.activeTurnID = oldTurnID
+		p.reservedTurnID = ""
+		p.pendingNotifications = append(p.pendingNotifications, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
+	}
 	p.activeTurnID = ""
 	p.reservedTurnID = turnID
 }
@@ -2086,9 +2199,14 @@ func (p *AppEventProjector) ensureAssistantItem(startedAt time.Time) (bool, []Ap
 // single item/started before the first delta) alongside whatever ensureTurn had
 // to announce first.
 func (p *AppEventProjector) ensureReasoningItem(startedAt time.Time) (bool, []AppNotification) {
-	out := p.ensureTurn(startedAt)
+	var out []AppNotification
+	if p.reasoningItem != "" && p.reasoningTurnID != p.activeTurnID {
+		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
+	}
+	out = append(out, p.ensureTurn(startedAt)...)
 	if p.reasoningItem == "" {
 		p.reasoningItem = p.nextItemID("reasoning")
+		p.reasoningTurnID = p.activeTurnID
 		return true, out
 	}
 	return false, out

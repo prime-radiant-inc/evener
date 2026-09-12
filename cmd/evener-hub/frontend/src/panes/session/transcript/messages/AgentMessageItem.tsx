@@ -18,23 +18,24 @@
 // messages.md, decisions 1-2): at exchange boundaries ONLY (opensExchange -
 // the same trigger the old caption eyebrow fired on, never mid-exchange) the
 // message takes the speaker header - avatar tile + "Agent" + meta (model
-// label and clock time, each only when defined). The opener is a flex row
-// [avatar][column(header, prose)]; mid-exchange fragments render bare (no
-// avatar, no header) and align under the run via TurnBlock's content-column
+// label and relative time, each only when defined). The opener is a flex
+// row [avatar][column(header, prose)]; mid-exchange fragments show their
+// timestamp without a speaker avatar or header and align under the run via
+// TurnBlock's content-column
 // indent, so no indent is added here. The header renders in BOTH the live
 // and settled branches, exactly where the eyebrow appeared, so a stream
 // that starts and settles within a frame keeps the same DOM shape.
 
 import { memo, type ReactNode } from "react";
 import { pendingTextJoined } from "../../../../protocol/reducer";
-import { Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 // Direct widget path, NOT the controller-owned widgets barrel: this pane
 // must not take a dependency on the barrel's ownership boundary.
 import { SpeakerAvatar } from "../../../../widgets/speakeravatar";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
+import { AgentMarkdown } from "./AgentMarkdown";
 import styles from "./agentmessageitem.module.css";
-import { formatClockTime } from "./format";
+import { MessageTimestamp } from "./MessageTimestamp";
 
 const CLASS = {
   message: requireClass(styles.message, "agentmessageitem.module.css", "message"),
@@ -45,17 +46,9 @@ const CLASS = {
   header: requireClass(styles.header, "agentmessageitem.module.css", "header"),
   name: requireClass(styles.name, "agentmessageitem.module.css", "name"),
   meta: requireClass(styles.meta, "agentmessageitem.module.css", "meta"),
+  stamp: requireClass(styles.stamp, "agentmessageitem.module.css", "stamp"),
   stream: requireClass(styles.stream, "agentmessageitem.module.css", "stream"),
 };
-
-// The header meta is "{model label} · {clock time}", each part only when
-// defined: a missing label or an absent/unparseable startedAt drops just
-// that part, never leaving a dangling "·", and with neither defined there
-// is no meta element at all.
-function metaText(agentLabel: string | undefined, startedAt: string | undefined): string | undefined {
-  const parts = [agentLabel, formatClockTime(startedAt)].filter((p): p is string => p !== undefined && p !== "");
-  return parts.length > 0 ? parts.join(" · ") : undefined;
-}
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
 // component never reads `turn` at all (only `item`/`live`, destructured
@@ -67,11 +60,21 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   opensExchange,
   agentLabel,
 }: ItemRenderProps) {
-  const meta = opensExchange ? metaText(agentLabel, item.startedAt) : undefined;
+  const time = Date.parse(item.startedAt ?? "");
+  const hasTime = Number.isFinite(time);
+  const timestamp = hasTime ? <MessageTimestamp value={time} /> : null;
+  const meta =
+    agentLabel || hasTime ? (
+      <span className={CLASS.meta}>
+        {agentLabel}
+        {agentLabel && hasTime ? " · " : null}
+        {timestamp}
+      </span>
+    ) : null;
   const speaker = opensExchange ? (
     <div className={CLASS.header} data-testid="agent-speaker-header">
       <span className={CLASS.name}>Agent</span>
-      {meta !== undefined && <span className={CLASS.meta}>{meta}</span>}
+      {meta}
     </div>
   ) : null;
 
@@ -103,7 +106,19 @@ export const AgentMessageItem = memo(function AgentMessageItem({
         {children}
       </div>
     );
-    if (!opensExchange) return root(bubble, CLASS.message);
+    if (!opensExchange)
+      return root(
+        // The stamp follows the bubble in DOM order: below the gutter
+        // breakpoint it is an in-flow line snug under the content (right-
+        // justified); above it the stylesheet takes it out of flow into the
+        // right margin, where DOM order is moot (agentmessageitem.module.css's
+        // .stamp). Either way it never adds height ABOVE the prose.
+        <>
+          {bubble}
+          {timestamp && <span className={CLASS.stamp}>{timestamp}</span>}
+        </>,
+        CLASS.message,
+      );
     return root(
       <>
         <SpeakerAvatar speaker="agent" />
@@ -127,7 +142,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
     // stream's tail truncates, so formatting renders while streaming.
     return wrap(
       <div className={CLASS.stream} data-testid="agent-message-stream">
-        <Markdown source={pendingTextJoined(chunks)} live />
+        <AgentMarkdown source={pendingTextJoined(chunks)} live />
       </div>,
       "true",
     );
@@ -138,7 +153,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   // one - mirrors legacy's own "empty finalize" rule (parity-m4-
   // transcript.md #6, renderer.js:2810-2816).
   if (!item.text) return null;
-  return wrap(<Markdown source={item.text} />, "false");
+  return wrap(<AgentMarkdown source={item.text} />, "false");
 }, ignoringTurn);
 
 registerItemRenderer("agentMessage", AgentMessageItem);

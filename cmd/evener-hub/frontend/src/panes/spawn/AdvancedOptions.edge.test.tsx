@@ -44,6 +44,7 @@ function renderPanel(options: LaunchOption[], over: Partial<Parameters<typeof Ad
   const complete = over.complete ?? vi.fn().mockResolvedValue([]);
   render(
     <AdvancedOptions
+      createDirectory={async () => {}}
       options={options}
       onOverridesChange={onOverridesChange as (o: unknown) => void}
       validatePath={validatePath as (p: string, k: string) => Promise<{ valid: boolean; error?: string }>}

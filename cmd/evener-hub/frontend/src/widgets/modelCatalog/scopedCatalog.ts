@@ -23,6 +23,7 @@ export function mergeCatalogEntry(
 
   const optionalFields = [
     "contextWindow",
+    "maxInputTokens",
     "supportsTools",
     "supportsVision",
     "maxOutputTokens",

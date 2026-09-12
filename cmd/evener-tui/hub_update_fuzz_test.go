@@ -98,22 +98,6 @@ func FuzzHubUpdateProgram(f *testing.F) {
 			{hubGoalMsg{err: fail}}, {hubGoalMsg{cleared: true}}, {hubGoalMsg{started: true}}, {hubGoalMsg{}},
 			{hubForkMsg{err: fail}}, {hubForkMsg{resp: hubRefResponse{Ref: "bad"}}}, {hubForkMsg{resp: hubRefResponse{Ref: "evener:ok"}}},
 			{hubSpawnMsg{err: fail}}, {hubSpawnMsg{resp: hubSpawnResponse{Ref: "bad"}}}, {hubSpawnMsg{resp: hubSpawnResponse{Ref: "evener:ok"}}},
-			{hubModelsMsg{err: fail}},
-			{func() tea.Msg {
-				m.mode = hubModeSpawn
-				m.spawnHarness = "other"
-				return hubModelsMsg{harness: "h", err: fail}
-			}()},
-			{func() tea.Msg { m.mode = hubModeSpawn; return hubModelsMsg{harness: "h", models: nil} }()},
-			{func() tea.Msg {
-				m.mode = hubModeSpawn
-				m.spawnHarness = "h"
-				return hubModelsMsg{harness: "h", models: []tuipick.ModelPickerItem{{ID: "m"}}}
-			}()},
-			{func() tea.Msg {
-				m.mode = hubModeSpawn
-				return hubModelsMsg{models: []tuipick.ModelPickerItem{{ID: "m"}}}
-			}()},
 			{hubSessionModelsMsg{err: fail}}, {hubSessionModelsMsg{}}, {hubSessionModelsMsg{models: []tuipick.ModelPickerItem{{ID: "m"}}}},
 			{hubTranscriptTargetsMsg{err: fail}}, {hubTranscriptTargetsMsg{}},
 			{hubTranscriptTargetsMsg{targets: []appwire.ThreadTranscriptTarget{{Ref: "evener:current", Title: "current"}}}},
@@ -128,31 +112,16 @@ func FuzzHubUpdateProgram(f *testing.F) {
 				m.mode = hubModeSpawn
 				return hubSpawnOptionsMsg{harnesses: []string{"h"}, modelErr: fail}
 			}()},
-			{hubModelsMsg{harness: "codex", err: fail}},
-			{hubModelsMsg{harness: "h"}},
 		}
 		m = base
 		selected := absInt(program) % len(programs)
 		switch selected {
 		case 48, 50:
 			m.mode = hubModeDashboard
-		case 65:
+		case 73, 75:
 			m.mode = hubModeSpawn
-			m.spawnHarness = "other"
-		case 66, 68, 78, 80:
-			m.mode = hubModeSpawn
-		case 67:
-			m.mode = hubModeSpawn
-			m.spawnHarness = "h"
-		case 75:
+		case 70:
 			m.transcriptView = &hubTranscriptViewState{Ref: "evener:view"}
-		case 81:
-			m.mode = hubModeSpawn
-			m.spawnHarness = "codex"
-			m.spawnHarnessKinds = map[string]string{"codex": "codex"}
-		case 82:
-			m.mode = hubModeSpawn
-			m.spawnHarness = "h"
 		}
 		for _, msg := range programs[selected] {
 			model, _ := m.updateImpl(msg)

@@ -14,10 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 func FuzzFinalMainBootstrap(f *testing.F) {
@@ -45,9 +42,6 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 		if mode == 1 {
 			cfg.StateGlob = "["
 		}
-		if mode == 2 {
-			cfg.CodexLaunches = []codexlaunch.CodexLaunchConfig{{ID: "local", Binary: "codex"}}
-		}
 		if mode == 6 {
 			oldExecutable := hubExecutable
 			hubExecutable = func() (string, error) { return filepath.Join(root, "evener"), nil }
@@ -63,18 +57,13 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 		}
 		stop := errors.New("serve stop")
 		deps := mainDeps{
+			loadRegistry:    hermeticRegistryLoader,
 			loadConfig:      func(string) (Config, error) { return cfg, nil },
 			ensureDirs:      func() error { return nil },
 			acquireLock:     func(string) (func(), error) { return func() {}, nil },
 			newToken:        func() (string, error) { return "hub-token", nil },
 			loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 			loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-			loadProviderConfig: func(string) (providercfg.Config, bool, error) {
-				return providercfg.Config{}, true, nil
-			},
-			materializeConfig: func(string, ...llm.EnvOption) (providercfg.Config, error) {
-				return providercfg.Config{}, nil
-			},
 			notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 				return ctx, cancel
 			},
@@ -82,7 +71,7 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 				var lc net.ListenConfig
 				return lc.Listen(ctx, network, addr)
 			},
-			serve: func(_ context.Context, _ hubHTTPServer, _ hubShutdowner) error {
+			serve: func(_ context.Context, _ hubHTTPServer) error {
 				if mode >= 3 {
 					time.Sleep(3 * time.Millisecond)
 					cancel()

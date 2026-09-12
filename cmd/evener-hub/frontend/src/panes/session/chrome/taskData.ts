@@ -8,8 +8,8 @@
 // updated_at/completed_at), always non-nil-but-possibly-empty for any
 // source that wires SetTasksFunc (every real evener daemon session does,
 // cmd/evener/serve.go:596) and unreachable (a rejected request, not a null
-// response) for a source that never supports tasks at all (codex_source.go:
-// 405-407). `data` is `null`/`undefined` only when no tasksFn is registered
+// response) for a source that does not advertise task support. `data` is
+// `null`/`undefined` only when no tasksFn is registered
 // server-side (server/appwire_runtime.go:713-721) - an old daemon - which
 // this parser reports as `null` ("no data"), distinct from a real empty
 // list (`[]`, "zero tasks").

@@ -171,11 +171,11 @@ func TestLiveToolResultImageMatchesItsReloadedProjection(t *testing.T) {
 		t.Fatalf("live OutputImages=%+v, want one descriptor", live)
 	}
 
-	turns, err := apptranscript.TurnsFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+	turns, err := apptranscript.ItemTurnsFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return apptranscript.ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
 	})
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	var reloaded []appwire.OutputImage
 	for _, turn := range turns {

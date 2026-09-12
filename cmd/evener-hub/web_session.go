@@ -47,6 +47,7 @@ func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 		ContextRemaining:    thread.Evener.ContextRemaining,
 		WorkMillis:          thread.Evener.WorkMillis,
 		Usage:               thread.Evener.Usage,
+		Cost:                thread.Evener.Cost,
 		ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,
 	}
 }

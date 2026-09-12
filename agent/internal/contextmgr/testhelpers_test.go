@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // communicateCall builds a communicate tool call carrying the given message and
@@ -41,20 +41,17 @@ var NewOpenAIProfile = provider.NewOpenAIProfile
 // WithCheapModel re-exports the provider override for the same reason.
 var WithCheapModel = provider.WithCheapModel
 
-// testProfile builds a profile for the given provider type and model, with the
-// context window overridden when contextWindow > 0. The common fixture for
-// context-manager and strategy tests in this package.
-func testProfile(providerType, model string, contextWindow int) *provider.Profile {
-	var p *provider.Profile
-	if providerType == "openai" {
-		p = provider.NewOpenAIProfile(model)
-	} else {
-		cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: providerType, Type: providercfg.Type(providerType)}}}
-		var err error
-		p, err = provider.ResolveProfileFromConfig(cfg, providerType+"/"+model)
-		if err != nil {
-			panic("testProfile: " + err.Error())
-		}
+// testProfile builds a profile for the given curated instance and model on the
+// embedded registry, with the context window overridden when contextWindow > 0.
+// The common fixture for context-manager and strategy tests in this package.
+func testProfile(instance, model string, contextWindow int) *provider.Profile {
+	p, err := provider.Resolve(provider.EmbeddedRegistry(), instance+"/"+model)
+	if err != nil {
+		// A reference the registry will not parse — the summarization-route
+		// fuzz feeds the empty model id — still has to yield a profile: what
+		// is under test is what the manager does with the id, not how it
+		// resolved.
+		p = provider.FromResolved(registry.Resolved{Instance: instance, ModelID: model, WireID: model}, nil)
 	}
 	if contextWindow > 0 {
 		p = provider.WithContextWindow(p, contextWindow)

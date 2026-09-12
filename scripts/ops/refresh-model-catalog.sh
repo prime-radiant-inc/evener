@@ -1,29 +1,28 @@
 #!/usr/bin/env bash
 #
-# refresh-model-catalog.sh — refresh the vendored LiteLLM model catalog.
+# refresh-model-catalog.sh — refresh the embedded models.dev snapshot.
 #
-# llm/data/litellm_model_catalog.json is a verbatim snapshot of LiteLLM's
-# published model_prices_and_context_window.json. It must NEVER be hand-edited:
-# evener-specific metadata (effort levels, context windows for models upstream
-# lacks, capability flags) lives in llm/data/evener_model_catalog_overrides.json,
-# which is overlaid at load time and always wins. This script is the only
-# sanctioned way to change the vendored file.
+# llm/registry/data/models.dev.json.gz is the raw https://models.dev/api.json,
+# gzipped, and models.dev.meta.json records when and with which ETag it was
+# fetched. Neither is ever hand-edited; evener-specific corrections live in
+# llm/registry/data/providers_overlay.toml, which the registry overlays at
+# load time (design: docs/superpowers/specs/2026-08-28-provider-registry-design.md §6).
 #
 # Usage:
 #   scripts/ops/refresh-model-catalog.sh --check   # dry run: report the delta, write nothing
 #   scripts/ops/refresh-model-catalog.sh           # refresh the snapshot in place
 #
-# After a real refresh: review `git diff --stat llm/data/`, run the full gate,
-# and eyeball the removed-models list below — entries that vanish upstream can
-# silently drop effort levels or context windows evener relied on (the overrides
-# layer is the fix for anything that must survive upstream churn).
+# After a real refresh: review `git diff --stat llm/registry/data/`, run
+# `go test ./llm/registry/...`, and read the report at the end (overlay rows
+# upstream now covers, dangling overlay aliases, output caps at or above the
+# context window, and overlay pins whose upstream value changed).
 set -euo pipefail
 
-UPSTREAM_URL="https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+UPSTREAM_URL="https://models.dev/api.json"
 ROOT="$(git rev-parse --show-toplevel)"
-TARGET="${ROOT}/llm/data/litellm_model_catalog.json"
-# An upstream truncation/outage should fail loudly, not quietly shrink the
-# catalog: refuse when the new snapshot has lost more than 10% of entries.
+DATA="${ROOT}/llm/registry/data"
+TARGET="${DATA}/models.dev.json.gz"
+META="${DATA}/models.dev.meta.json"
 MIN_KEEP_RATIO="0.90"
 
 mode="refresh"
@@ -34,106 +33,69 @@ case "${1:-}" in
   *)         echo "error: unknown argument '$1' (try --help)" >&2; exit 2 ;;
 esac
 
-if [[ ! -f "${TARGET}" ]]; then
-  echo "error: ${TARGET} not found — run from a evener checkout" >&2
-  exit 1
-fi
-
-tmp="$(mktemp "${TMPDIR:-/tmp}/evener-model-catalog.XXXXXX")"
-trap 'rm -f "${tmp}"' EXIT
+mkdir -p "${DATA}"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/evener-models-dev.XXXXXX")"
+fresh="${tmpdir}/api.json"
+headers="${tmpdir}/headers.txt"
+old="${tmpdir}/old.json"
+trap 'rm -f "${fresh}" "${headers}" "${old}"; rmdir "${tmpdir}" 2>/dev/null || true' EXIT
 
 echo "fetching ${UPSTREAM_URL}"
-if ! curl -fsSL --max-time 120 "${UPSTREAM_URL}" -o "${tmp}"; then
+if ! curl -fsSL --max-time 120 -D "${headers}" "${UPSTREAM_URL}" -o "${fresh}"; then
   echo "error: download failed (network? upstream moved?)" >&2
   exit 1
 fi
+etag="$(grep -i '^etag:' "${headers}" | tail -1 | sed 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//; s/[[:space:]]*$//' || true)"
 
-OVERRIDES="${ROOT}/llm/data/evener_model_catalog_overrides.json"
+if [[ -f "${TARGET}" ]]; then
+  gunzip -c "${TARGET}" > "${old}"
+else
+  echo '{}' > "${old}"
+fi
 
-python3 - "${TARGET}" "${tmp}" "${MIN_KEEP_RATIO}" "${OVERRIDES}" <<'PYEOF'
+python3 - "${old}" "${fresh}" "${MIN_KEEP_RATIO}" <<'PYEOF'
 import json, sys
-
-target, fresh_path, min_keep, overrides_path = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
-
-try:
-    fresh = json.load(open(fresh_path))
-except json.JSONDecodeError as e:
-    sys.exit(f"error: upstream payload is not valid JSON: {e}")
-if not isinstance(fresh, dict) or len(fresh) < 100:
-    sys.exit(f"error: upstream payload looks wrong (type={type(fresh).__name__}, entries={len(fresh) if isinstance(fresh, dict) else '-'})")
-
-current = json.load(open(target))
-cur_keys, new_keys = set(current), set(fresh)
-added = sorted(new_keys - cur_keys)
-removed = sorted(cur_keys - new_keys)
-changed = sorted(k for k in cur_keys & new_keys if current[k] != fresh[k])
-
-if len(new_keys) < len(cur_keys) * min_keep:
-    sys.exit(
-        f"error: refusing to shrink the catalog from {len(cur_keys)} to {len(new_keys)} entries "
-        f"(more than {int((1-min_keep)*100)}% loss) — check upstream before overriding by hand"
-    )
-
-print(f"current: {len(cur_keys)} entries; upstream: {len(new_keys)} entries")
-print(f"delta: +{len(added)} added, -{len(removed)} removed, ~{len(changed)} changed")
-def preview(label, keys):
-    if keys:
-        head = ", ".join(keys[:8])
-        more = f" (+{len(keys)-8} more)" if len(keys) > 8 else ""
-        print(f"  {label}: {head}{more}")
-preview("added", added)
-preview("removed", removed)
-
-# Drift audit: our curated overrides against the incoming snapshot. This is
-# the generator-grade cross-check without a generator — curation that upstream
-# has caught up with (or now contradicts) should be reconciled by hand.
-overrides = {k: v for k, v in json.load(open(overrides_path)).items() if not k.startswith("_")}
-materialized = sorted(k for k, v in overrides.items()
-                      if k not in cur_keys and k in new_keys and "context_window" in v)
-if materialized:
-    print("DRIFT: upstream now defines models we materialized in overrides —")
-    print("       our entry SHADOWS upstream; reconcile or slim the override:")
-    for k in materialized:
-        print(f"  {k}")
-window_conflicts = []
-for k, v in overrides.items():
-    want = v.get("context_window")
-    if want and k in fresh:
-        got = fresh[k].get("max_input_tokens") or fresh[k].get("max_tokens")
-        if got and got != want:
-            window_conflicts.append(f"{k}: override {want} vs upstream {got}")
-if window_conflicts:
-    print("DRIFT: context_window disagreements (override wins at load; verify it should):")
-    for line in window_conflicts:
-        print(f"  {line}")
-# An overlay-only override (no context_window) patches an EXISTING upstream
-# entry; if upstream drops that entry the override dangles and the model
-# silently VANISHES from the catalog (bit us 2026-07-02: upstream removed
-# minimax/minimax-m2.7 and the model — plus its tests — disappeared).
-dangling = sorted(k for k, v in overrides.items()
-                  if "context_window" not in v and k not in new_keys)
-if dangling:
-    print("DRIFT: upstream DROPPED entries these overlay-only overrides patch —")
-    print("       the model VANISHES from the catalog; materialize the override")
-    print("       (add context_window etc.) or delete it:")
-    for k in dangling:
-        print(f"  {k}")
-if not materialized and not window_conflicts and not dangling:
-    print("overrides drift audit: clean")
+old_path, new_path, min_keep = sys.argv[1], sys.argv[2], float(sys.argv[3])
+old = json.load(open(old_path)); new = json.load(open(new_path))
+if not isinstance(new, dict) or not new:
+    sys.exit("error: upstream did not return a provider map")
+def rows(d):
+    return {(p, m) for p, pv in d.items() for m in (pv.get("models") or {})}
+op, np_ = set(old), set(new)
+orows, nrows = rows(old), rows(new)
+if old and len(new) < len(old) * min_keep:
+    sys.exit(f"error: refusing refresh: providers shrank {len(old)} -> {len(new)} (below {min_keep:.0%} floor)")
+if orows and len(nrows) < len(orows) * min_keep:
+    sys.exit(f"error: refusing refresh: models shrank {len(orows)} -> {len(nrows)} (below {min_keep:.0%} floor)")
+print(f"providers: {len(old)} -> {len(new)}  (+{len(np_-op)} / -{len(op-np_)})")
+print(f"models:    {len(orows)} -> {len(nrows)}  (+{len(nrows-orows)} / -{len(orows-nrows)})")
+for p in sorted(np_ - op): print("  + provider", p)
+for p in sorted(op - np_): print("  - provider", p)
+added = sorted(nrows - orows)
+for p, m in added[:200]: print("  + model", f"{p}/{m}")
+if len(added) > 200: print(f"  ... {len(added) - 200} more added models (diff the gunzipped files for the full list)")
+for p, m in sorted(orows - nrows): print("  - model", f"{p}/{m}")
 PYEOF
 
 if [[ "${mode}" == "check" ]]; then
-  echo "--check: no files written"
+  echo "check mode: nothing written"
   exit 0
 fi
 
-mv "${tmp}" "${TARGET}"
-trap - EXIT
-echo "wrote ${TARGET}"
+gzip -9 -n -c "${fresh}" > "${TARGET}.tmp"
+mv "${TARGET}.tmp" "${TARGET}"
+printf '{\n  "fetched_at": "%s",\n  "etag": %s,\n  "source": "%s"\n}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "${etag}")" \
+  "${UPSTREAM_URL}" > "${META}"
+echo "wrote ${TARGET} and ${META}"
 
-echo "running catalog sanity tests..."
-if ! (cd "${ROOT}" && go test ./llm/ -run 'Catalog|LookupModelInfo' -count=1 >/dev/null); then
-  echo "error: catalog tests FAILED against the new snapshot — inspect 'git diff llm/data/' and either fix overrides or revert" >&2
-  exit 1
+echo "running converter tests"
+(cd "${ROOT}" && go test ./llm/registry/ -run 'TestEmbeddedSnapshot|TestFromModelsDev|TestCuratedOverlay' -count=1)
+
+# The overlay report (rows upstream now covers, dangling aliases, junk caps,
+# changed pins) is produced by the registry's snapshotreport tool once it
+# exists (plan Task 11); older checkouts skip it.
+if [[ -d "${ROOT}/llm/registry/internal/snapshotreport" ]]; then
+  (cd "${ROOT}" && go run ./llm/registry/internal/snapshotreport)
 fi
-echo "catalog tests pass. Next: git diff --stat llm/data/ && full gate before committing."

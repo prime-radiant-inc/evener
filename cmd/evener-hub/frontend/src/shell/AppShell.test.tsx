@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
+import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
 import { AppwireClient, type ConnectionState } from "../protocol/client";
 import { WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
@@ -14,15 +15,25 @@ import type {
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSessionLocation,
+  NavigationSessionSummary,
   ThreadStartResponse,
 } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
-import { type NavigationStoreState, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
+import { credentialsStore } from "../stores/credentials";
+import {
+  initNavigation,
+  type NavigationStoreState,
+  navigationStore,
+  resetNavigationStoreForTests,
+} from "../stores/navigation/store";
+import { wireV2 } from "../stores/navigation/testing";
 import { keyID } from "../stores/navigation/types";
+import { resetPrefsStoreForTests } from "../stores/prefs";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
 import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
+import { navigate } from "./routing";
 import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
@@ -80,81 +91,86 @@ const EMPTY_NAV_RESPONSE = {
 };
 
 function navigationRead(params: NavigationReadParams): NavigationReadResponse {
-  const envelope = (data: unknown): NavigationReadResponse => ({
-    status: "ok",
-    generationId: "generation_test",
-    revision: 1,
-    etag: '"test"',
-    data,
-  });
   switch (params.resource) {
     case "manifest":
-      return envelope(EMPTY_NAV_RESPONSE);
+      return wireV2(params, EMPTY_NAV_RESPONSE, '"test"');
     case "section":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        sessions: params.section === "live" ? [TREE_SESSION] : [],
-        remaining: 0,
-        truncated: false,
-      });
+      return wireV2(
+        params,
+        {
+          sessions: params.section === "live" ? [TREE_SESSION] : [],
+          remaining: 0,
+          truncated: false,
+        },
+        '"test"',
+      );
     case "pin_catalog":
-      return envelope({ generation_id: "generation_test", revision: 1, pin_sections: [], remaining: 0 });
+      return wireV2(params, { pin_sections: [], remaining: 0 }, '"test"');
     case "pin_section":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        sessions: [],
-        remaining: 0,
-        truncated: false,
-      });
+      return wireV2(
+        params,
+        {
+          sessions: [],
+          remaining: 0,
+          truncated: false,
+        },
+        '"test"',
+      );
     case "catalog":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        projects:
-          params.catalog === "projects"
-            ? [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }]
-            : [],
-        remaining: 0,
-      });
+      return wireV2(
+        params,
+        {
+          projects:
+            params.catalog === "projects"
+              ? [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }]
+              : [],
+          remaining: 0,
+        },
+        '"test"',
+      );
     case "project":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        key: "proj1",
-        current: { sessions: [TREE_SESSION], remaining: 0 },
-        recent: { sessions: [], remaining: 0 },
-        archived: { sessions: [], remaining: 0 },
-        truncated: false,
-      });
+      return wireV2(
+        params,
+        {
+          key: "proj1",
+          current: { sessions: [TREE_SESSION], remaining: 0 },
+          recent: { sessions: [], remaining: 0 },
+          archived: { sessions: [], remaining: 0 },
+          truncated: false,
+        },
+        '"test"',
+      );
     case "project_page":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        key: params.projectKey,
-        tier: params.tier,
-        offset: params.offset,
-        sessions: [],
-        remaining: 0,
-        truncated: false,
-      });
+      return wireV2(
+        params,
+        {
+          key: params.projectKey,
+          tier: params.tier,
+          offset: params.offset,
+          sessions: [],
+          remaining: 0,
+          truncated: false,
+        },
+        '"test"',
+      );
     case "location":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        ref: params.ref,
-        top_level_ref: params.ref,
-        top_level: true,
-        session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref },
-      });
+      return wireV2(
+        params,
+        {
+          ref: params.ref,
+          top_level_ref: params.ref,
+          top_level: true,
+          session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref },
+        },
+        '"test"',
+      );
   }
   throw new Error(`unsupported navigation resource: ${params.resource}`);
 }
 
-// A FakeClient whose connect() advertises a v1 navigation capability with a
+// A FakeClient whose connect() advertises a v2 navigation capability with a
 // generation matching EMPTY_NAV_RESPONSE. Tests that render <AppShell/> and
-// depend on the navigation store being in mode "v1" (rather than "error")
+// depend on the navigation store being in mode "v2" (rather than "error")
 // must use this instead of a bare `new FakeClient("ready")`, whose default
 // InitializeResponse has no navigation capability.
 function navClient(initialState: ConnectionState = "ready"): FakeClient {
@@ -162,10 +178,10 @@ function navClient(initialState: ConnectionState = "ready"): FakeClient {
   client.on("evener/navigation/read", navigationRead);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v3",
+    protocolVersion: "evener-appwire-v5",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0 },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
   }));
   return client;
 }
@@ -224,7 +240,7 @@ function installLocation(location: NavigationSessionLocation): void {
     generationID: location.generation_id,
   });
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     clientGenerationID: location.generation_id,
     resources,
   });
@@ -272,7 +288,7 @@ function installNeedsYouRows(): void {
     error: null,
     generationID: "generation_test",
   });
-  navigationStore.setState({ mode: "v1", resources });
+  navigationStore.setState({ mode: "v2", resources });
 }
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
@@ -420,12 +436,17 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   // afterEach restores Vitest globals; recreate deterministic storage before
   // clearing it so DockHost cannot restore the prior test's layout.
   // @ts-expect-error MemoryStorage implements the subset used by DockHost.
   globalThis.localStorage = new MemoryStorage();
   localStorage.clear();
+  // The settings pane's last-visited-section memory (prefs.ts's
+  // lastSettingsSection) is a module-singleton field backed by this same
+  // storage: rehydrate against the cleared storage, or one test's settings
+  // visit picks the next test's bare-/settings landing section.
+  resetPrefsStoreForTests();
 });
 
 afterEach(() => {
@@ -529,11 +550,22 @@ test("mounts and renders the welcome pane", async () => {
   expect(await screen.findByText("No session open")).toBeTruthy();
 });
 
-test("wires the injected client into connectionStore (connects on mount)", () => {
+test("wires the injected client into connectionStore (connects on mount)", async () => {
   const fake = new FakeClient("ready");
-  render(<AppShell client={fake} />);
-  expect(connectionStore.getState().client).toBe(fake);
-  expect(connectionStore.getState().state).toBe("ready");
+  const connect = vi.spyOn(fake, "connect");
+  try {
+    render(<AppShell client={fake} />);
+    expect(connectionStore.getState().client).toBe(fake);
+    expect(connectionStore.getState().state).toBe("ready");
+    expect(connect).toHaveBeenCalled();
+    const connectionResult = connect.mock.results[0];
+    if (connectionResult?.type !== "return") throw new Error("AppShell did not start the handshake");
+    await act(async () => {
+      await connectionResult.value;
+    });
+  } finally {
+    connect.mockRestore();
+  }
 });
 
 test("shows no banner while the injected client is ready", async () => {
@@ -541,6 +573,26 @@ test("shows no banner while the injected client is ready", async () => {
   await screen.findByText("No session open");
   expect(screen.queryByText(/reconnecting/i)).toBeNull();
   expect(screen.queryByText(/connection closed/i)).toBeNull();
+});
+
+test("a banner retry swaps the client useClient consumers call", async () => {
+  const user = userEvent.setup();
+  const stale = new FakeClient("closed");
+  const fresh = new FakeClient("ready");
+  fresh.on("evener/search", () => ({ live: [], past: [] }));
+  render(<AppShell client={stale} bannerDelayMs={0} bannerCreateClient={() => fresh} />);
+  await screen.findByText("No session open");
+
+  // The banner is visible for the closed client; retry wires and adopts fresh.
+  await user.click(await screen.findByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
+
+  // A useClient consumer (the palette search) must reach the fresh client,
+  // not the closed original.
+  await user.keyboard("{Meta>}k{/Meta}");
+  await user.type(await screen.findByRole("combobox"), "hello");
+  await waitFor(() => expect(fresh.calls.some((call) => call.method === "evener/search")).toBe(true));
+  expect(stale.calls.some((call) => call.method === "evener/search")).toBe(false);
 });
 
 test("banner reflects reconnecting state when injected", async () => {
@@ -741,7 +793,7 @@ test("v1 Mod+J cold-demand requests page zero once and opens its first ref", asy
   });
   act(() =>
     navigationStore.setState({
-      mode: "v1",
+      mode: "v2",
       manifest: {
         data: {
           generation_id: "generation_test",
@@ -759,6 +811,98 @@ test("v1 Mod+J cold-demand requests page zero once and opens its first ref", asy
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: row.ref }));
+});
+
+test("v2 Mod+J loads the next needs-you page after the focused last row", async () => {
+  const current = {
+    ...TREE_SESSION,
+    ref: "local:page-one-last",
+    session_id: "page-one-last",
+    title: "Page one last",
+    state: "awaiting",
+  };
+  const next = {
+    ...TREE_SESSION,
+    ref: "local:page-two-first",
+    session_id: "page-two-first",
+    title: "Page two first",
+    state: "awaiting",
+  };
+  const firstPageRows = [
+    ...Array.from({ length: 49 }, (_, index) => ({
+      ...TREE_SESSION,
+      ref: `local:page-one-${index}`,
+      session_id: `page-one-${index}`,
+      title: `Page one ${index}`,
+      state: "awaiting",
+    })),
+    current,
+  ];
+  window.history.pushState({}, "", `/s/${current.ref}`);
+  installLocationForRoute(current.ref);
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: current.ref }));
+
+  const firstPageKey = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(firstPageKey), {
+    key: firstPageKey,
+    data: { generation_id: "generation_test", revision: 1, sessions: firstPageRows, remaining: 1, truncated: false },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "page-one",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  });
+  const loadSection = vi.fn(async (_section: "needs_you", offset = 0) => {
+    const pageKey = { kind: "section", section: "needs_you", offset, limit: 50 } as const;
+    const locationKey = { kind: "location", ref: next.ref } as const;
+    const loadedResources = new Map(navigationStore.getState().resources);
+    loadedResources.set(keyID(pageKey), {
+      key: pageKey,
+      data: { generation_id: "generation_test", revision: 1, sessions: [next], remaining: 0, truncated: false },
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: "page-two",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    loadedResources.set(keyID(locationKey), {
+      key: locationKey,
+      data: {
+        generation_id: "generation_test",
+        revision: 1,
+        ref: next.ref,
+        top_level_ref: next.ref,
+        top_level: true,
+        session: { ...next, children: [] },
+      },
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: "page-two-location",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    navigationStore.setState({ resources: loadedResources });
+    return navigationStore.getState().resources.get(keyID(pageKey)) as never;
+  });
+  act(() => navigationStore.setState({ mode: "v2", resources, loadSection }));
+
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+
+  await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
+  expect(loadSection).toHaveBeenCalledWith("needs_you", 50);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: next.ref }));
 });
 
 function seedColdModJPage(ref = "local:late") {
@@ -781,19 +925,21 @@ function seedColdModJPage(ref = "local:late") {
 }
 
 function setColdModJState(loadSection: NavigationStoreState["loadSection"]) {
-  navigationStore.setState({
-    mode: "v1",
-    manifest: {
-      data: {
-        generation_id: "generation_test",
-        revision: 1,
-        sources: [],
-        attentionSummary: { needsYou: 1, error: 0, working: 0 },
-        catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-        sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
-      },
-    } as never,
-    loadSection,
+  act(() => {
+    navigationStore.setState({
+      mode: "v2",
+      manifest: {
+        data: {
+          generation_id: "generation_test",
+          revision: 1,
+          sources: [],
+          attentionSummary: { needsYou: 1, error: 0, working: 0 },
+          catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        },
+      } as never,
+      loadSection,
+    });
   });
 }
 
@@ -806,10 +952,13 @@ test("late Mod-J page success does not navigate after focus moves to Settings", 
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
   act(() => workspaceStore.getState().replacePrimary("settings", {}));
-  seedColdModJPage();
-  resolveLoad(undefined as never);
-  await Promise.resolve();
-  await Promise.resolve();
+  await act(async () => {
+    seedColdModJPage();
+    resolveLoad(undefined as never);
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await loadResult.value;
+  });
   expect(window.location.pathname).toBe("/");
   expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
 });
@@ -825,10 +974,13 @@ test("late Mod-J page success does not navigate after a modal opens", async () =
   const modal = document.createElement("div");
   modal.setAttribute("aria-modal", "true");
   document.body.appendChild(modal);
-  seedColdModJPage("local:modal-late");
-  resolveLoad(undefined as never);
-  await Promise.resolve();
-  await Promise.resolve();
+  await act(async () => {
+    seedColdModJPage("local:modal-late");
+    resolveLoad(undefined as never);
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await loadResult.value;
+  });
   expect(window.location.pathname).toBe("/");
   modal.remove();
 });
@@ -843,8 +995,12 @@ test("v1 Mod-J does not re-request an in-flight needs-you page", async () => {
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
-  resolveLoad(undefined as never);
-  await Promise.resolve();
+  await act(async () => {
+    resolveLoad(undefined as never);
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await loadResult.value;
+  });
   expect(loadSection).toHaveBeenCalledTimes(1);
 });
 
@@ -857,8 +1013,11 @@ test("v1 Mod-J does not re-request a failed needs-you page", async () => {
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   fireEvent.keyDown(window, { key: "j", metaKey: true });
-  await Promise.resolve();
-  await Promise.resolve();
+  await act(async () => {
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await expect(loadResult.value).rejects.toThrow("network failed");
+  });
   expect(loadSection).toHaveBeenCalledTimes(1);
 });
 
@@ -888,8 +1047,11 @@ test("v1 Mod-J does not re-request an empty needs-you page", async () => {
   await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
   fireEvent.keyDown(window, { key: "j", metaKey: true });
   fireEvent.keyDown(window, { key: "j", metaKey: true });
-  await Promise.resolve();
-  await Promise.resolve();
+  await act(async () => {
+    const loadResult = loadSection.mock.results[0];
+    if (loadResult?.type !== "return") throw new Error("needs-you page load did not start");
+    await loadResult.value;
+  });
   expect(loadSection).toHaveBeenCalledTimes(1);
 });
 
@@ -919,7 +1081,7 @@ test("clicking the rail's own Search button opens the command palette", async ()
   // icon-only Search button is the app's one clickable way into the palette,
   // so the wiring between it and the global listener is worth an end-to-end
   // assertion of its own.
-  await user.click(screen.getByTestId("rail-search"));
+  await user.click(await screen.findByTestId("rail-search"));
 
   expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
 });
@@ -979,6 +1141,126 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   expect(screen.getAllByText("local:ref_abc123")).toHaveLength(2);
 });
 
+test("a deep-link lookup starts exactly once when navigation mode becomes v2", async () => {
+  const ref = "local:mode-transition";
+  const client = navClient();
+  initNavigation(client, { version: 1, generationId: "generation_test", sequence: 0 });
+  navigationStore.setState({ mode: "unknown" });
+  const lookupLocation = vi.spyOn(navigationStore.getState(), "lookupLocation");
+  const locationCalls = () =>
+    client.calls.filter(
+      ({ method, params }) =>
+        method === "evener/navigation/read" && (params as NavigationReadParams).resource === "location",
+    );
+  window.history.pushState({}, "", `/s/${encodeURIComponent(ref)}`);
+
+  render(<AppShell client={client} />);
+  expect(lookupLocation).not.toHaveBeenCalled();
+  expect(locationCalls()).toHaveLength(0);
+
+  act(() => navigationStore.setState({ mode: "v2" }));
+
+  await waitFor(() => expect(locationCalls()).toHaveLength(1));
+  expect(lookupLocation).toHaveBeenCalledTimes(1);
+  expect(lookupLocation).toHaveBeenCalledWith(ref);
+  expect(locationCalls()).toEqual([
+    {
+      method: "evener/navigation/read",
+      params: { resource: "location", ref, representationVersion: 2 },
+    },
+  ]);
+});
+
+test("a direct route with a settled gone v2 location replaces unrelated state with welcome without another lookup", async () => {
+  workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
+  const ref = "local:deleted-direct";
+  const key = { kind: "location", ref } as const;
+  const lookupLocation = vi.fn().mockResolvedValue(undefined);
+  navigationStore.setState({
+    mode: "v2",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data: null,
+          normalized: {
+            key,
+            graph: { metadata: {}, entities: new Map(), containers: new Map() },
+            version: { generationId: "generation_test", revision: 2, etag: '"gone"' },
+            presence: "gone",
+          },
+          loadedRevision: 2,
+          targetRevision: null,
+          forceToken: 0,
+          etag: '"gone"',
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+    lookupLocation,
+  });
+  window.history.pushState({}, "", `/s/${encodeURIComponent(ref)}`);
+
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("welcome"));
+  await act(async () => undefined);
+
+  expect(paneFor(ref)).toBeUndefined();
+  expect(paneFor("local:unrelated")).toBeUndefined();
+  expect(lookupLocation).not.toHaveBeenCalled();
+});
+
+test("a direct route with a stale old-generation gone tombstone waits for the fresh lookup instead of welcome", async () => {
+  workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
+  const ref = "local:reconnected-direct";
+  const key = { kind: "location", ref } as const;
+  const lookupLocation = vi.fn().mockResolvedValue(undefined);
+  navigationStore.setState({
+    mode: "v2",
+    clientGenerationID: "generation_next",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data: null,
+          normalized: {
+            key,
+            graph: { metadata: {}, entities: new Map(), containers: new Map() },
+            version: { generationId: "generation_old", revision: 2, etag: '"gone"' },
+            presence: "gone",
+          },
+          loadedRevision: null,
+          targetRevision: null,
+          forceToken: 0,
+          etag: null,
+          loading: false,
+          // Retained across the generation reset while the new-generation
+          // request is in flight: not authoritative yet.
+          stale: true,
+          error: null,
+          generationID: "generation_next",
+        },
+      ],
+    ]),
+    lookupLocation,
+  });
+  window.history.pushState({}, "", `/s/${encodeURIComponent(ref)}`);
+
+  render(<AppShell client={new FakeClient("ready")} />);
+  // The stale tombstone must neither redirect to welcome nor satisfy the
+  // route: the shell holds the pending ref and issues the fresh lookup.
+  await waitFor(() => expect(lookupLocation).toHaveBeenCalled());
+  expect(workspaceStore.getState().mainPane()?.type).not.toBe("welcome");
+  expect(paneFor(ref)).toBeUndefined();
+  await act(async () => undefined);
+});
+
 test("a nested location opens its explicit owner without loading a project", async () => {
   const child = "local:collapsed-child";
   const client = navClient();
@@ -1021,7 +1303,7 @@ test("a nested location opens its explicit owner without loading a project", asy
 test("retained unavailable location data does not retry or lose its owner", async () => {
   const child = "local:retained-child";
   const client = navClient();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
   installLocation({
     generation_id: "generation_test",
@@ -1391,6 +1673,31 @@ test("reselecting the same session through a second route notification preserves
   expect(workspaceStore.getState().panes.find((pane) => pane.id === secondaryId)?.slot).toBe("secondary");
 });
 
+test("Welcome at / preserves existing session panes when no provider is configured", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
+  render(<AppShell client={client} />);
+  await screen.findByText(/loading transcript/i);
+  const mainId = workspaceStore.getState().mainPane()?.id;
+  let secondaryId = "";
+  act(() => {
+    secondaryId = workspaceStore.getState().openPane("session", { ref: "local:session-b" }, { slot: "secondary" });
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await screen.findByText("No session open");
+  await act(async () => credentialsStore.getState().fetch());
+  expect(window.location.pathname).toBe("/");
+  expect(
+    workspaceStore
+      .getState()
+      .panes.filter((pane) => pane.type === "session")
+      .map((pane) => pane.id),
+  ).toEqual([mainId, secondaryId]);
+});
+
 test("navigating from Settings to /new replaces Settings and clears secondary panes", async () => {
   workspaceStore.getState().openPane("settings", { section: "general" });
   workspaceStore.getState().openPane("doc", {
@@ -1473,7 +1780,7 @@ test("a saved session layout is replaced by /new with Spawn as the only main pan
 
 test("repairs a nested session restored as main when the root route's tree arrives", async () => {
   await saveLegacyNestedMainLayout();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
 
   window.history.pushState({}, "", "/");
   render(<AppShell client={navClient()} />);
@@ -1581,13 +1888,13 @@ test("a focused session panel does not invalidate a settled nested route", async
 test("a deferred deep link beats a restored active session panel", async () => {
   await saveRealSessionPanelLayout();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
 
   window.history.pushState({}, "", "/s/local:child");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(paneFor("local:child")).toBeUndefined();
-  installLocationForRoute("local:child");
+  act(() => installLocationForRoute("local:child"));
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
 });
@@ -1778,7 +2085,7 @@ test("a saved welcome layout is replaced by a fresh routed primary, which lands 
 });
 
 test("deep-linking to a nested /s/{ref} opens the top-level owner in main and nested in secondary after tree arrival", async () => {
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   const client = navClient();
   client.on("evener/navigation/read", (params) => {
     if (params.resource === "location" && params.ref === "local:sub1") {
@@ -1795,7 +2102,7 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
       resources: new Map(
         [...navigationStore.getState().resources].filter(([, resource]) => resource.key.kind !== "location"),
       ),
-      mode: "v1",
+      mode: "v2",
     }),
   );
   await waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("main"));
@@ -1832,7 +2139,7 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
 });
 
 test("nested deep-link remains closed for a missing location until a later location arrives", async () => {
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   const client = navClient();
   client.on("evener/navigation/read", (params) => {
     if (params.resource === "location" && params.ref === "local:sub1") {
@@ -1849,7 +2156,7 @@ test("nested deep-link remains closed for a missing location until a later locat
       resources: new Map(
         [...navigationStore.getState().resources].filter(([, resource]) => resource.key.kind !== "location"),
       ),
-      mode: "v1",
+      mode: "v2",
     }),
   );
   await waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("main"));
@@ -1906,7 +2213,7 @@ test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", as
   expect(document.querySelector("[data-single-pane]")).toBeNull();
   // Desktop rail renders (default auto mode, jsdom's wide no-matchMedia
   // viewport) - the contrast that proves the /thread case actually suppressed it.
-  expect(screen.getByTestId("rail-search")).toBeTruthy();
+  expect(await screen.findByTestId("rail-search")).toBeTruthy();
 });
 
 // --- settings routing (this task) -------------------------------------
@@ -1999,7 +2306,11 @@ test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane alre
   // The working directory is a PathField: its closed trigger holds the path as
   // text (plus a chevron and a screen-reader hint), so the value is matched
   // inside that text rather than read off an input's .value.
-  await waitFor(() => expect(screen.getByLabelText("Working directory").textContent).toContain("/home/me/app"));
+  await waitFor(() =>
+    expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }).textContent).toContain(
+      "/home/me/app",
+    ),
+  );
 
   // A second /new?dir= navigation (e.g. RailRow's own spawnInProject, for a
   // DIFFERENT project) while the spawn pane is already open and focused -
@@ -2015,7 +2326,11 @@ test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane alre
   // shows the SECOND navigation's dir, not the first one silently retained.
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["New session"]);
-  await waitFor(() => expect(screen.getByLabelText("Working directory").textContent).toContain("/home/other"));
+  await waitFor(() =>
+    expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }).textContent).toContain(
+      "/home/other",
+    ),
+  );
 });
 
 // --- mobile full-bleed shell (2026-07-30-mobile-session-layout-design.md, decision 1) ---
@@ -2037,6 +2352,19 @@ test("mobile: the shell content frame drops its padding so the workspace is full
   expect(contentRule![1]).not.toContain("gap:");
 });
 
+test("mobile: the shell spends --keyboard-inset as bottom padding so the composer clears the on-screen keyboard", () => {
+  // See useKeyboardInset.ts's header for the mechanism. Comments are stripped
+  // before matching (testing.md: a comment quoting the declaration must not
+  // satisfy the assertion).
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "AppShell.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  expect(mobile).not.toBeNull();
+  const shellRule = mobile![1]!.match(/\.shell \{([\s\S]*?)\n[ ]{2}\}/);
+  expect(shellRule).not.toBeNull();
+  expect(shellRule![0]).toContain("padding-bottom: var(--keyboard-inset, 0px)");
+});
+
 test("mobile: the shared shell follows the visible viewport while retaining a vh fallback", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "AppShell.module.css"), "utf8");
@@ -2055,7 +2383,34 @@ test("mobile: the shared shell follows the visible viewport while retaining a vh
   expect(supportsShellRule![0]).not.toContain("height: 100vh");
 });
 
-// --- kata bbsv: a mobile deep link outlives the wait for the tree --------
+// --- useKeyboardInset wiring (pins the AppShell -> hook call) --------------
+// The hook's own tests pin that it sets --keyboard-inset given a visualViewport,
+// and the CSS test above pins that the mobile .shell rule consumes it, but
+// nothing connects the two through the real component: jsdom has no
+// visualViewport, so every AppShell render in this file never exercises it.
+// This test stubs one and renders the real AppShell to close that gap.
+
+test("AppShell mounts useKeyboardInset, so a visualViewport resize sets --keyboard-inset on the root", async () => {
+  // A real EventTarget so the hook's add/removeEventListener round-trips; the
+  // hook reads height/offsetTop/scale off the same object.
+  class FakeVisualViewport extends EventTarget {
+    height = 768;
+    offsetTop = 0;
+    scale = 1;
+  }
+  const fake = new FakeVisualViewport();
+  vi.stubGlobal("visualViewport", fake);
+  Object.defineProperty(window, "innerHeight", { value: 768, configurable: true, writable: true });
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  // Mount sets the initial value (0px: the fake viewport covers the layout).
+  expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("0px");
+  // Keyboard opens: visualViewport shrinks; the hook writes the occluded strip.
+  fake.height = 400;
+  fake.dispatchEvent(new Event("resize"));
+  expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("368px");
+  unmount();
+  vi.unstubAllGlobals();
+});
 
 // jsdom implements no matchMedia at all (useIsMobile.test.ts's own header
 // comment documents the probe), so a mobile-layout test installs one: the
@@ -2073,6 +2428,649 @@ function installMobileViewport(): void {
     })),
   );
 }
+
+// These cases differ only at the browser viewport boundary: Back must use
+// retained immediate-parent context even when Open ran before StackHost mounted.
+// A fresh host falling through to Welcome instead of that parent is the bug.
+test.each([
+  { origin: "desktop", initialWidth: 1280, nested: false, parentRef: "local:owner" },
+  { origin: "phone", initialWidth: 390, nested: false, parentRef: "local:owner" },
+  { origin: "desktop", initialWidth: 1440, nested: true, parentRef: "local:child" },
+  { origin: "phone", initialWidth: 390, nested: true, parentRef: "local:child" },
+])(
+  "responsive Back: $origin origin, nested=$nested returns to $parentRef",
+  async ({ initialWidth, nested, parentRef }) => {
+    // jsdom has no matchMedia. Keep a live EventTarget at that external browser
+    // boundary so the real useIsMobile subscription swaps DockHost for StackHost.
+    let width = initialWidth;
+    const queries = new Map<string, EventTarget & { readonly matches: boolean; media: string }>();
+    vi.stubGlobal("innerWidth", width);
+    vi.stubGlobal("matchMedia", (media: string) => {
+      let query = queries.get(media);
+      if (!query) {
+        query = new (class extends EventTarget {
+          media = media;
+          get matches() {
+            return media === "(max-width: 899px)" && width < 900;
+          }
+        })();
+        queries.set(media, query);
+      }
+      return query;
+    });
+    const client = navClient();
+    client.on("thread/read", ({ ref }) => {
+      if (ref !== "local:owner" && ref !== "local:child" && ref !== "local:grandchild") {
+        throw new Error(`Unexpected transcript ref: ${ref}`);
+      }
+      return { thread: { ...threadStartResponse(ref).thread, name: ref } };
+    });
+    window.history.pushState({}, "", "/s/local%3Aowner");
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={client} />
+        <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" label="Open grandchild" />
+      </>,
+    );
+    await screen.findByRole("textbox", { name: "Message" });
+    const owner = paneFor("local:owner");
+    expect(owner).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id));
+    expect(getDockviewApi() !== null).toBe(initialWidth >= 900);
+
+    await user.click(screen.getByRole("button", { name: "Open child" }));
+    const child = paneFor("local:child");
+    expect(child).toMatchObject({ type: "transcript", params: { ref: "local:child", parentRef: "local:owner" } });
+    expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+    if (nested) await user.click(screen.getByRole("button", { name: "Open grandchild" }));
+    const target = paneFor(nested ? "local:grandchild" : "local:child");
+    const parent = paneFor(parentRef);
+    expect(parent).toBeDefined();
+    expect(target).toMatchObject({ type: "transcript", params: { parentRef } });
+    expect(workspaceStore.getState().focusedPaneId).toBe(target?.id);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+
+    act(() => {
+      width = 390;
+      vi.stubGlobal("innerWidth", width);
+      for (const query of queries.values()) {
+        query.dispatchEvent(Object.assign(new Event("change"), { matches: query.matches, media: query.media }));
+      }
+    });
+    const back = await screen.findByRole("button", { name: "Back" });
+    await waitFor(() =>
+      expect(screen.getByTestId("topbar-title").textContent).toBe(nested ? "local:grandchild" : "local:child"),
+    );
+    expect(getDockviewApi()).toBeNull();
+    expect(workspaceStore.getState().focusedPaneId).toBe(target?.id);
+    expect(paneFor(parentRef)).toEqual(parent);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(window.location.pathname).toBe("/s/local%3Aowner");
+
+    await user.click(back);
+    expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id);
+    expect(screen.getByTestId("topbar-title").textContent).toBe(parentRef);
+    expect(paneFor(parentRef)).toEqual(parent);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(window.location.pathname).toBe("/s/local%3Aowner");
+    expect(screen.queryByText("No session open")).toBeNull();
+  },
+);
+
+test.each(["local:owner", "local:child"])(
+  "responsive retained-parent walk: mixed chain from routed session %s keeps exact parents and owner",
+  async (routeRef) => {
+    vi.stubGlobal("innerWidth", 1280);
+    const setMobile = installSwitchableViewport();
+    window.history.pushState({}, "", `/s/${encodeURIComponent(routeRef)}`);
+    installLocationForRoute(routeRef);
+    const client = navClient();
+    client.on("thread/read", ({ ref }) => {
+      if (
+        typeof ref !== "string" ||
+        !["local:owner", "local:child", "local:grandchild", "local:great-grandchild"].includes(ref)
+      ) {
+        throw new Error(`Unexpected transcript ref: ${ref}`);
+      }
+      return { thread: { ...threadStartResponse(ref).thread, name: ref } };
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={client} />
+        <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" label="Open grandchild" />
+        <OpenTranscriptButton
+          transcriptRef="local:great-grandchild"
+          parentRef="local:grandchild"
+          label="Open great-grandchild"
+        />
+      </>,
+    );
+    await screen.findByRole("heading", { name: routeRef });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+    const owner = paneFor("local:owner");
+    expect(owner).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+    expect(getDockviewApi()).not.toBeNull();
+    if (routeRef === "local:owner") await user.click(screen.getByRole("button", { name: "Open child" }));
+    const child = paneFor("local:child");
+    expect(child).toMatchObject({
+      type: routeRef === "local:child" ? "session" : "transcript",
+      slot: "secondary",
+      params: { ref: "local:child" },
+    });
+    await user.click(screen.getByRole("button", { name: "Open grandchild" }));
+    const grandchild = paneFor("local:grandchild");
+    expect(grandchild).toMatchObject({
+      type: "transcript",
+      slot: "secondary",
+      params: { ref: "local:grandchild", parentRef: "local:child" },
+    });
+    await user.click(screen.getByRole("button", { name: "Open great-grandchild" }));
+    const descendant = paneFor("local:great-grandchild");
+    expect(descendant).toMatchObject({
+      type: "transcript",
+      slot: "secondary",
+      params: { ref: "local:great-grandchild", parentRef: "local:grandchild" },
+    });
+    expect(workspaceStore.getState().focusedPaneId).toBe(descendant?.id);
+    const retained = workspaceStore.getState().panes;
+    act(() => {
+      vi.stubGlobal("innerWidth", 390);
+      setMobile(true);
+    });
+    await waitFor(() => expect(screen.getByTestId("topbar-title").textContent).toBe("local:great-grandchild"));
+    expect(getDockviewApi()).toBeNull();
+    expect(workspaceStore.getState().focusedPaneId).toBe(descendant?.id);
+    // Literal return order is independent of the production parent resolver.
+    const returnTargets = [
+      { target: grandchild, title: "local:grandchild" },
+      { target: child, title: "local:child" },
+    ];
+    if (routeRef === "local:owner") returnTargets.push({ target: owner, title: "local:owner" });
+    for (const { target, title } of returnTargets) {
+      expect(target).toBeDefined();
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(target?.id);
+      expect(screen.getByTestId("topbar-title").textContent).toBe(title);
+      expect(workspaceStore.getState().panes).toEqual(retained);
+      expect(workspaceStore.getState().mainPane()).toEqual(owner);
+      expect(window.location.pathname).toBe(`/s/${encodeURIComponent(routeRef)}`);
+    }
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
+// A ref is not a return-context identity: a retained read-only child and a
+// routed interactive child can coexist. Ref-only Back loses the SESSION origin
+// after a host swap; preferring SESSION globally breaks the inverse control.
+// These use the real Open control, AppShell routing, workspace, and both hosts.
+// Only RPC data and the absent jsdom viewport API are scripted; no native CSS
+// geometry, hit testing, or browser history traversal is claimed here.
+test.each([
+  { origin: "session", openHost: "desktop" },
+  { origin: "session", openHost: "phone" },
+  { origin: "transcript", openHost: "desktop" },
+] as const)("mixed-origin responsive Back: $origin origin opened on $openHost", async ({ origin, openHost }) => {
+  vi.stubGlobal("innerWidth", 1440);
+  const setMobile = installSwitchableViewport();
+  const resize = (mobile: boolean) => {
+    act(() => {
+      vi.stubGlobal("innerWidth", mobile ? 390 : 1440);
+      setMobile(mobile);
+    });
+  };
+  const client = navClient();
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource !== "location") return navigationRead(params);
+    const response = wireV2(
+      params,
+      {
+        ref: params.ref,
+        top_level_ref: "local:owner",
+        top_level: params.ref === "local:owner",
+        session: {
+          ...TREE_SESSION,
+          ref: params.ref,
+          session_id: params.ref,
+          title: params.ref,
+          kind: params.ref === "local:owner" ? "session" : "subagent",
+          children: [],
+        },
+      },
+      '"mixed-origin"',
+    );
+    // wireV2's location convenience branch defaults top_level to true even
+    // when its input says otherwise. Correct the external snapshot metadata,
+    // not the navigation store, so the real decoder places a nested session.
+    if (response.status === "ok" && response.representation === "snapshot") {
+      const snapshot = response.data as { metadata: { top_level: boolean } };
+      snapshot.metadata.top_level = params.ref === "local:owner";
+    }
+    return response;
+  });
+  client.on("thread/read", ({ ref }) => {
+    if (
+      typeof ref !== "string" ||
+      !["local:owner", "local:child", "local:grandchild", "local:great-grandchild"].includes(ref)
+    ) {
+      throw new Error(`Unexpected transcript ref: ${ref}`);
+    }
+    return { thread: { ...threadStartResponse(ref).thread, name: ref } };
+  });
+  window.history.pushState({}, "", "/s/local%3Aowner");
+  const user = userEvent.setup();
+  render(
+    <>
+      <AppShell client={client} />
+      <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+      <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" label="Open grandchild" />
+      <OpenTranscriptButton
+        transcriptRef="local:great-grandchild"
+        parentRef="local:grandchild"
+        label="Open great-grandchild"
+      />
+    </>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  const owner = paneFor("local:owner")!;
+  expect(owner).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+  expect(getDockviewApi()).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: "Open child" }));
+  const childTranscript = paneFor("local:child")!;
+  expect(childTranscript).toMatchObject({ type: "transcript", slot: "secondary" });
+  await user.click(screen.getByRole("button", { name: "Open grandchild" }));
+  const grandchild = paneFor("local:grandchild")!;
+  expect(workspaceStore.getState().focusedPaneId).toBe(grandchild.id);
+
+  // Preserve the native finding's prerequisite: desktop chain, phone Back walk,
+  // desktop again, then explicit child SESSION route with the older T retained.
+  resize(true);
+  await screen.findByRole("button", { name: "Back" });
+  expect(getDockviewApi()).toBeNull();
+  for (const target of [childTranscript, owner]) {
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(workspaceStore.getState().focusedPaneId).toBe(target.id);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+  }
+  resize(false);
+  await waitFor(() => expect(getDockviewApi()).not.toBeNull());
+  act(() => {
+    window.history.pushState({}, "", "/s/local%3Achild");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() =>
+    expect(
+      workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId),
+    ).toMatchObject({ type: "session", slot: "secondary", params: { ref: "local:child" } }),
+  );
+  const childSession = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId)!;
+  expect(childSession.id).not.toBe(childTranscript.id);
+  expect(workspaceStore.getState().panes).toEqual([owner, childTranscript, grandchild, childSession]);
+  await waitFor(() => expect(screen.getAllByRole("textbox", { name: "Message" })).toHaveLength(2));
+
+  if (origin === "transcript") {
+    // A real retained Dockview tab chooses the inverse origin. No focus/store
+    // injection: the later SESSION stays retained and must not win this Back.
+    const childTab = screen
+      .getAllByRole("tab")
+      .find((tab) => tab.textContent?.includes("local:child") && !tab.querySelector("[data-session-tab]"));
+    expect(childTab).toBeDefined();
+    await user.click(childTab!);
+    expect(workspaceStore.getState().focusedPaneId).toBe(childTranscript.id);
+  }
+  const originPane = origin === "session" ? childSession : childTranscript;
+  if (openHost === "phone") {
+    resize(true);
+    await screen.findByRole("button", { name: "Back" });
+    expect(getDockviewApi()).toBeNull();
+    expect(screen.getAllByRole("textbox", { name: "Message" })).toHaveLength(1);
+  }
+  expect(workspaceStore.getState().focusedPaneId).toBe(originPane.id);
+  await user.click(screen.getByRole("button", { name: "Open grandchild" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(grandchild.id);
+  expect(paneFor("local:grandchild")).toEqual(grandchild);
+  await user.click(screen.getByRole("button", { name: "Open great-grandchild" }));
+  const descendant = paneFor("local:great-grandchild")!;
+  expect(descendant).toMatchObject({
+    type: "transcript",
+    slot: "secondary",
+    params: { ref: "local:great-grandchild", parentRef: "local:grandchild" },
+  });
+  const retained = [owner, childTranscript, grandchild, childSession, descendant];
+  expect(workspaceStore.getState().panes).toEqual(retained);
+  resize(true);
+  await screen.findByRole("button", { name: "Back" });
+  expect(getDockviewApi()).toBeNull();
+  expect(workspaceStore.getState().focusedPaneId).toBe(descendant.id);
+  expect(window.location.pathname).toBe("/s/local%3Achild");
+
+  const observeReturn = () => {
+    const state = workspaceStore.getState();
+    const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+    return {
+      id: focused?.id,
+      type: focused?.type,
+      ref: (focused?.params as { ref?: string })?.ref,
+      messages: screen.queryAllByRole("textbox", { name: "Message" }).length,
+      mainOwnerId: state.mainPane()?.id,
+    };
+  };
+  const returns = [];
+  const expectedReturns = [
+    { id: grandchild.id, type: "transcript", ref: "local:grandchild", messages: 0, mainOwnerId: owner.id },
+    {
+      id: originPane.id,
+      type: origin,
+      ref: "local:child",
+      messages: origin === "session" ? 1 : 0,
+      mainOwnerId: owner.id,
+    },
+  ];
+  if (origin === "transcript") {
+    expectedReturns.push({ id: owner.id, type: "session", ref: "local:owner", messages: 1, mainOwnerId: owner.id });
+  }
+  for (const _target of expectedReturns) {
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    returns.push(observeReturn());
+    expect(workspaceStore.getState().panes).toEqual(retained);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(screen.queryByText("No session open")).toBeNull();
+  }
+  // Collect the entire walk before asserting its origin, so the red evidence
+  // records the bypass too, rather than stopping at the missing composer.
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  const terminal = {
+    type: observeReturn().type,
+    welcome: screen.queryByText("No session open") !== null,
+    messages: observeReturn().messages,
+    mainOwnerId: workspaceStore.getState().mainPane()?.id,
+  };
+  console.info("mixed-origin Back evidence", JSON.stringify({ origin, openHost, retained, returns, terminal }));
+  expect(returns).toEqual(expectedReturns);
+  expect(terminal).toEqual({ type: "welcome", welcome: true, messages: 0, mainOwnerId: owner.id });
+});
+
+test("Open transcript retains focused child after settled parent route reconciliation", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  window.history.pushState({}, "", "/s/local:owner");
+  installLocationForRoute("local:owner");
+  const user = userEvent.setup();
+
+  render(
+    <>
+      <AppShell client={navClient()} />
+      <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" />
+    </>,
+  );
+  await screen.findByText(/loading transcript/i);
+  const parent = paneFor("local:owner");
+  expect(parent).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id));
+
+  // userEvent's pointer interaction is wrapped in React act, so the assertion
+  // below observes the AppShell workspace-panes effect, not the handler's
+  // immediate pre-effect focus.
+  const openButton = screen.getByRole("button", { name: "Open transcript" });
+  await user.click(openButton);
+
+  const child = workspaceStore
+    .getState()
+    .panes.find(
+      (pane) =>
+        pane.type === "transcript" &&
+        (pane.params as { ref?: string; parentRef?: string }).ref === "local:child" &&
+        (pane.params as { ref?: string; parentRef?: string }).parentRef === "local:owner",
+    );
+  expect(child).toMatchObject({ type: "transcript", slot: "secondary" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+
+  await user.click(openButton);
+  const repeatedChildren = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:child");
+  expect(repeatedChildren).toHaveLength(1);
+  expect(repeatedChildren[0]?.id).toBe(child?.id);
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+});
+
+test("Open transcript retains focused child on desktop until explicit navigation takes precedence", async () => {
+  window.history.pushState({}, "", "/s/local:owner");
+  installLocationForRoute("local:owner");
+  const user = userEvent.setup();
+
+  render(
+    <>
+      <AppShell client={navClient()} />
+      <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" />
+    </>,
+  );
+  await screen.findByText(/loading transcript/i);
+  const parent = paneFor("local:owner");
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id));
+
+  await user.click(screen.getByRole("button", { name: "Open transcript" }));
+  const child = workspaceStore
+    .getState()
+    .panes.find(
+      (pane) =>
+        pane.type === "transcript" &&
+        (pane.params as { ref?: string; parentRef?: string }).ref === "local:child" &&
+        (pane.params as { ref?: string; parentRef?: string }).parentRef === "local:owner",
+    );
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+
+  act(() => {
+    window.history.pushState({}, "", "/s/local:next");
+    installLocationForRoute("local:next");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:next" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+  expect(paneFor("local:child")).toBeUndefined();
+});
+
+test.each(["local:owner", "local:child"])(
+  "Open transcript retains focused grandchild on route %s with owner and immediate parent context",
+  async (routeRef) => {
+    vi.stubGlobal("innerWidth", 390);
+    installMobileViewport();
+    window.history.pushState({}, "", `/s/${routeRef}`);
+    installLocationForRoute(routeRef);
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={navClient()} />
+        {routeRef === "local:owner" && (
+          <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+        )}
+        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" />
+      </>,
+    );
+    await screen.findAllByText(/loading transcript/i);
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+    const owner = workspaceStore.getState().mainPane();
+    expect(owner).toMatchObject({ type: "session", params: { ref: "local:owner" } });
+    if (routeRef === "local:owner") {
+      await user.click(screen.getByRole("button", { name: "Open child" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+    }
+    const parent = paneFor("local:child");
+    await user.click(screen.getByRole("button", { name: "Open transcript" }));
+    const grandchild = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:grandchild");
+    expect(grandchild).toBeDefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+    expect(grandchild).toMatchObject({
+      slot: "secondary",
+      params: { ref: "local:grandchild", parentRef: "local:child" },
+    });
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(paneFor("local:child")).toEqual(parent);
+    if (routeRef === "local:owner") expect(parent?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
+
+    await user.click(screen.getByRole("button", { name: "Open transcript" }));
+    expect(
+      workspaceStore
+        .getState()
+        .panes.filter(
+          (pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:grandchild",
+        ),
+    ).toEqual([grandchild]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id));
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    await user.click(screen.getByRole("button", { name: "Open transcript" }));
+    expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+
+    // An explicit new nested route wins even when it shares the same owner.
+    act(() => {
+      window.history.pushState({}, "", "/s/local:next-child");
+      installLocationForRoute("local:next-child");
+      const resource = navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:next-child" }));
+      installLocation({
+        ...(resource?.data as NavigationSessionLocation),
+        top_level: false,
+        top_level_ref: "local:owner",
+      });
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:next-child")?.id));
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(workspaceStore.getState().focusedPaneId).not.toBe(grandchild?.id);
+  },
+);
+
+test.each([
+  ["local:owner", "local:other-owner"],
+  ["local:child", "local:other-owner"],
+  ["local:child", "local:owner"],
+])("settled route %s rejects an unrelated focused transcript context under %s", async (routeRef, parentRef) => {
+  window.history.pushState({}, "", `/s/${routeRef}`);
+  installLocationForRoute(routeRef);
+  render(<AppShell client={navClient()} />);
+  await screen.findAllByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+  let unrelated!: string;
+  act(() => {
+    unrelated = workspaceStore
+      .getState()
+      .openPane("transcript", { ref: "local:unrelated", parentRef }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(unrelated);
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(unrelated);
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+});
+
+test.each(["local:owner", "local:child"])(
+  "Open next descendant retains mixed-chain context on route %s",
+  async (routeRef) => {
+    vi.stubGlobal("innerWidth", 390);
+    installMobileViewport();
+    window.history.pushState({}, "", `/s/${routeRef}`);
+    installLocationForRoute(routeRef);
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={navClient()} />
+        {routeRef === "local:owner" && (
+          <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+        )}
+        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" />
+        <OpenTranscriptButton
+          transcriptRef="local:great-grandchild"
+          parentRef="local:grandchild"
+          label="Open next descendant"
+        />
+      </>,
+    );
+    await screen.findAllByText(/loading transcript/i);
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+    if (routeRef === "local:owner") {
+      await user.click(screen.getByRole("button", { name: "Open child" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+    }
+    await user.click(screen.getByRole("button", { name: "Open transcript" }));
+    const grandchild = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:grandchild");
+    expect(grandchild).toBeDefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+    const originalOwner = workspaceStore.getState().mainPane();
+    expect(originalOwner).toMatchObject({ type: "session", params: { ref: "local:owner" } });
+    expect(
+      navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:grandchild" }))?.data,
+    ).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Open next descendant" }));
+    const next = workspaceStore
+      .getState()
+      .panes.find(
+        (pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:great-grandchild",
+      );
+    expect(next).toBeDefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(next?.id);
+    expect(workspaceStore.getState().mainPane()).toEqual(originalOwner);
+    expect(next?.params).toEqual({ ref: "local:great-grandchild", parentRef: "local:grandchild" });
+    expect(paneFor("local:grandchild")).toEqual(grandchild);
+    await user.click(screen.getByRole("button", { name: "Open next descendant" }));
+    expect(
+      workspaceStore
+        .getState()
+        .panes.filter(
+          (pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:great-grandchild",
+        ),
+    ).toEqual([next]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(next?.id);
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id));
+    expect(workspaceStore.getState().mainPane()).toEqual(originalOwner);
+  },
+);
+
+test.each(["missing", "cycle"])(
+  "Open next descendant preserves the workspace when %s context cannot resolve an owner",
+  async (context) => {
+    window.history.pushState({}, "", "/s/local:child");
+    installLocationForRoute("local:child");
+    render(
+      <>
+        <AppShell client={navClient()} />
+        <OpenTranscriptButton transcriptRef="local:next" parentRef="local:detached" />
+      </>,
+    );
+    await screen.findAllByText(/loading transcript/i);
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
+    const originalMain = workspaceStore.getState().mainPane();
+    act(() => {
+      workspaceStore
+        .getState()
+        .openPane("transcript", { ref: "local:detached", parentRef: "local:bridge" }, { slot: "secondary" });
+      if (context === "cycle")
+        workspaceStore
+          .getState()
+          .openPane("transcript", { ref: "local:bridge", parentRef: "local:detached" }, { slot: "secondary" });
+      fireEvent.click(screen.getByRole("button", { name: "Open transcript" }));
+    });
+    // The detached/cyclic context has no loaded location, so the owner cannot
+    // be proven. The workspace is preserved: the retained main session stays,
+    // and the transcript opens beside it rather than promoting an unproven
+    // parent that would discard the restored panes.
+    await waitFor(() => expect(paneFor("local:next")).toBeDefined());
+    expect(workspaceStore.getState().mainPane()).toEqual(originalMain);
+    expect(paneFor("local:next")?.params).toEqual({ ref: "local:next", parentRef: "local:detached" });
+  },
+);
 
 function installSwitchableViewport(): (mobile: boolean) => void {
   let mobile = false;
@@ -2107,7 +3105,7 @@ function installSwitchableViewport(): (mobile: boolean) => void {
 // beat: the deep link was gone before the location arrived, and no later
 // evener/changed push could name it again.
 test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of being overwritten by welcome", async () => {
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   installMobileViewport();
 
   window.history.pushState({}, "", "/s/local:s1");
@@ -2118,7 +3116,7 @@ test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of b
   await screen.findByText("No session open");
   expect(window.location.pathname).toBe("/s/local%3As1");
 
-  installLocationForRoute("local:s1");
+  act(() => installLocationForRoute("local:s1"));
 
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   // And the address bar now names it in paneToURL's own canonical form.
@@ -2140,7 +3138,7 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
   await screen.findByText("Loading session panel…");
   await waitFor(() => expect(getDockviewApi()?.panels.some((panel) => panel.id === panelId)).toBe(true));
 
-  setMobile(true);
+  act(() => setMobile(true));
   expect(await screen.findByText("Loading session panel…")).toBeTruthy();
   expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
   // The scaffold header is display:none below 900px - StackHost's top-bar
@@ -2148,13 +3146,17 @@ test("crossing desktop → mobile → desktop preserves a focused panel and its 
   // panel panes.
   expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
 
-  setMobile(false);
-  await waitFor(() => expect(getDockviewApi()).toBeNull());
+  act(() => {
+    setMobile(false);
+    // Still the mobile host, after the event but before React commits it.
+    // DockRegion's shared lazy payload mounts DockHost immediately at commit.
+    expect(getDockviewApi()).toBeNull();
+  });
   await waitFor(() => expect(getDockviewApi()?.panels.some((panel) => panel.id === panelId)).toBe(true));
   expect(workspaceStore.getState().focusedPaneId).toBe(panelId);
   expect(getDockviewApi()).not.toBeNull();
 
-  setMobile(true);
+  act(() => setMobile(true));
   await screen.findByText("Loading session panel…");
   await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).not.toBe(panelId));
@@ -2211,8 +3213,13 @@ test("desktop boot uses the typed AppWire navigation read seam", async () => {
   await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
   await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
 
-  expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
-  expect(client.calls).toContainEqual({ method: "evener/navigation/read", params: { resource: "manifest" } });
+  expect(
+    client.calls.every(({ method }) => method === "evener/navigation/read" || method === "evener/instance/list"),
+  ).toBe(true);
+  expect(client.calls).toContainEqual({
+    method: "evener/navigation/read",
+    params: { resource: "manifest", representationVersion: 2 },
+  });
 });
 
 // FIX 1 (real-browser bug): Settings' Escape/close used to call
@@ -2256,4 +3263,1085 @@ test("Escape in Settings exits to welcome and the URL stays there, not reinstate
     expect(workspaceStore.getState().mainPane()?.type).not.toBe("settings");
   });
   expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
+});
+
+// --- Alt+ArrowLeft/Right session-pane cycling (webui-keybindings-p3 Task 1)
+//
+// AppShell registers session.next/session.previous against the keybindings
+// registry (desktop only - the rail.toggle inertness pattern); the actions
+// drive workspaceStore.focusPane through shell/sessionCycle.ts. These tests
+// pin the WIRING (real dispatcher, real defaults, real shell); the cycling
+// order/wrap/no-op semantics themselves are sessionCycle.test.ts's.
+
+test("Alt+ArrowRight/Left cycle the open session panes through the shell, wrapping", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  let a = "";
+  let b = "";
+  act(() => {
+    a = workspaceStore.getState().openPane("session", { ref: "local:cycle-a" });
+    b = workspaceStore.getState().openPane("session", { ref: "local:cycle-b" });
+    workspaceStore.getState().focusPane(a);
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+
+  await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(b);
+
+  // Wrap: the last session pane's next is the first.
+  await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+
+  await user.keyboard("{Alt>}{ArrowLeft}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(b);
+});
+
+test("Alt+Arrow cycling is a no-op with a single session pane open", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  let only = "";
+  act(() => {
+    only = workspaceStore.getState().openPane("session", { ref: "local:cycle-only" });
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(1));
+
+  await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(only);
+  await user.keyboard("{Alt>}{ArrowLeft}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(only);
+});
+
+test("Alt+Arrow cycling is suppressed from an editable target", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  let a = "";
+  act(() => {
+    a = workspaceStore.getState().openPane("session", { ref: "local:cycle-a" });
+    workspaceStore.getState().openPane("session", { ref: "local:cycle-b" });
+    workspaceStore.getState().focusPane(a);
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+
+  const input = document.createElement("input");
+  document.body.appendChild(input);
+  input.focus();
+  try {
+    await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+    expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  } finally {
+    input.remove();
+  }
+});
+
+test("mobile: Alt+Arrow cycling registers nothing and is inert", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  let a = "";
+  act(() => {
+    a = workspaceStore.getState().openPane("session", { ref: "local:cycle-a" });
+    workspaceStore.getState().openPane("session", { ref: "local:cycle-b" });
+    workspaceStore.getState().focusPane(a);
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+
+  await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  vi.unstubAllGlobals();
+});
+
+// --- Alt+Shift+ArrowRight/Left live-session navigation
+//
+// AppShell registers session.liveNext/session.livePrevious against the
+// keybindings registry; the actions navigate across the rail's live section
+// in server order through shell/rail/liveSessionCycle.ts. These tests pin
+// the WIRING (real dispatcher, real defaults, real shell); the cycling
+// order/wrap/no-op semantics themselves are liveSessionCycle.test.ts's.
+
+const LIVE_CYCLE_A: NavigationSessionSummary = {
+  ref: "local:live-a",
+  host_id: "local",
+  session_id: "live-a",
+  title: "Live A",
+  project: "prime-radiant",
+  state: "idle",
+  kind: "session",
+  live: true,
+  children: [],
+};
+const LIVE_CYCLE_B: NavigationSessionSummary = {
+  ref: "local:live-b",
+  host_id: "local",
+  session_id: "live-b",
+  title: "Live B",
+  project: "prime-radiant",
+  state: "idle",
+  kind: "session",
+  live: true,
+  children: [],
+};
+
+// navClient, but with a two-row live section: everything else delegates to
+// the shared navigationRead.
+function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      return wireV2(params, { sessions, remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+  return client;
+}
+
+test("Alt+Shift+ArrowRight/Left navigate across the rail's live sessions, wrapping", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-b");
+
+  // Wrap: the last live session's next is the first.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-b");
+});
+
+test("Alt+Shift+Arrow live-session navigation is suppressed from an editable target", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  const input = document.createElement("input");
+  document.body.appendChild(input);
+  input.focus();
+  try {
+    await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+    expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  } finally {
+    input.remove();
+  }
+});
+
+test("mobile: Alt+Shift+Arrow live-session navigation registers nothing and is inert", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  vi.unstubAllGlobals();
+});
+
+// The rail's live section paginates (limit 50 per page). At the last LOADED
+// live session, next must demand-load the following page and continue into
+// it — wrapping over the loaded subset would skip every live session behind
+// the remaining count (roborev PR #1044 finding 1).
+test("Alt+Shift+ArrowRight at the last loaded live session demand-loads the next page instead of wrapping", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      if ((params.offset ?? 0) === 0) {
+        return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+      }
+      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/s/local%3Alive-b");
+  });
+});
+
+// Round-2 demand-load lifecycle: the pending-page cache must not brick after
+// a failed load, and an in-flight demand must go inert when a newer press or
+// an open palette supersedes it (roborev PR #1044 round-2 mediums 1-2).
+
+// A two-page live section whose page-two request is scriptable per test.
+function navClientWithDeferredLivePageTwo(script: {
+  onPageTwo: (params: NavigationReadParams) => NavigationReadResponse | Promise<NavigationReadResponse>;
+}): FakeClient {
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+        }
+        return script.onPageTwo(params);
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+  return client;
+}
+
+test("live-next demand-load retries after the page request fails", async () => {
+  let pageTwoAttempts = 0;
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) => {
+      pageTwoAttempts++;
+      if (pageTwoAttempts === 1) throw new Error("transient read failure");
+      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    },
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // The first demand fails; the view stays and no navigation happens.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoAttempts).toBe(1));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  // A cached "already demanded" entry must not brick the retry.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoAttempts).toBe(2));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+test("an in-flight live demand-load goes inert when a newer live-nav press supersedes it", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          // Two loaded rows and one more page behind them, so the second press
+          // below (previous from the last loaded row) is a DIRECT mid-list
+          // step, not a demand - a previous from the FIRST loaded row would
+          // itself demand the same in-flight page (round-5 tail rule).
+          return wireV2(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 1, truncated: false }, '"test"');
+        }
+        return new Promise<NavigationReadResponse>((resolve) => {
+          deferred.params = params;
+          deferred.resolve = resolve;
+        });
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live B");
+
+  await user.click(screen.getByText("Live B"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-b" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}"); // demand in flight
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  // An ordinary press (direct mid-list step to A) is newer intent: it must
+  // supersede the demand.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+});
+
+// With NO live rows loaded (the initial section read failed or is still in
+// flight), selectSectionRemaining is 0, so the boundary rule alone would
+// leave the chord inert until an external refresh. The manifest's live count
+// is the authority there: a press re-requests page zero and continues into
+// it (roborev PR #1044 round 3; the needs-you handler's manifest-count
+// bootstrap).
+test("live-next with an unloaded live section re-requests page zero when the manifest reports live sessions", async () => {
+  let liveReads = 0;
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      liveReads++;
+      if (liveReads === 1) throw new Error("transient initial failure");
+      return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  // The initial hydration read failed: no live rows, nothing focused.
+  await screen.findByText("No session open");
+  expect(screen.queryByText("Live A")).toBeNull();
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(liveReads).toBeGreaterThanOrEqual(2));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+});
+
+// Round 4: the previous direction must reach the live TAIL, not the first
+// newly loaded row (roborev PR #1044 round-4 medium 1).
+test("live-previous with an unloaded live section demand-loads to the tail", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "manifest") {
+        return wireV2(
+          params,
+          { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 2 } } },
+          '"test"',
+        );
+      }
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          return new Promise<NavigationReadResponse>((resolve) => {
+            deferred.params = params;
+            deferred.resolve = resolve;
+          });
+        }
+        return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("No session open");
+  // Page zero's read (the manifest hydration's) is in flight, deferred.
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  // Page zero resolves with one row and one more page behind it: the
+  // previous direction must keep loading to the tail, not land on A.
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-zero request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 4: a second same-direction press while the demanded page is still in
+// flight must not invalidate the demand it is waiting on (roborev PR #1044
+// round-4 medium 2).
+test("rapid live-next presses at the boundary still navigate when the demand lands", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+        }
+        return new Promise<NavigationReadResponse>((resolve) => {
+          deferred.params = params;
+          deferred.resolve = resolve;
+        });
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // Two presses before the demanded page lands: one demand, kept live.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 5: with the live section PARTIALLY loaded, a previous press that
+// would wrap (from the first loaded row, or from a non-live session) must
+// demand-load to the true tail rather than landing on the last loaded row
+// (roborev PR #1044 round-5 medium 1).
+test("live-previous wrapping with more pages on the server demand-loads to the tail", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "manifest") {
+      return wireV2(
+        params,
+        { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 3 } } },
+        '"test"',
+      );
+    }
+    if (params.resource === "section" && params.section === "live") {
+      if ((params.offset ?? 0) === 0) {
+        return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 2, truncated: false }, '"test"');
+      }
+      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  // Focus the FIRST loaded live session; previous from here wraps.
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+test("an in-flight live demand-load goes inert while the palette is open", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}"); // demand in flight
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  act(() => {
+    paletteStore.setState({ open: true, query: "" });
+  });
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+});
+
+// Round 6: the demand dedupe keyed the page alone, so an opposite-direction
+// press while that page was in flight returned early WITHOUT bumping the
+// intent counter - the stale continuation still owned the navigation. With no
+// live rows loaded, Previous then Next while page zero loads must leave the
+// Next intent in charge: the first returned row, not the previous direction's
+// tail (roborev PR #1044 round-6 medium).
+test("an opposite-direction press while a demanded page is in flight supersedes the prior intent", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "manifest") {
+        return wireV2(
+          params,
+          { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 3 } } },
+          '"test"',
+        );
+      }
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          return new Promise<NavigationReadResponse>((resolve) => {
+            deferred.params = params;
+            deferred.resolve = resolve;
+          });
+        }
+        return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  // Page zero (the manifest hydration's) is in flight, deferred.
+  await screen.findByText("No session open");
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  // Previous first: with nothing loaded it demands page zero toward the tail.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  // Then the user flips to Next: the newest intent must own the navigation.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-zero request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"'));
+  });
+  // Next from nothing opens the FIRST live row; the previous direction's
+  // continuation must not run past it toward the tail.
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+});
+
+// Round 7: the demand-load continuation never re-checked the navigation
+// client generation. A reconnect bumps clientGenerationID while the demanded
+// page is in flight; the handler's press-time reset only covers NEW presses,
+// so the old promise resolving with retained (provisional) rows navigated
+// into the previous generation (roborev PR #1044 round-7 medium 2).
+test("an in-flight live demand-load goes inert when the client generation changes", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}"); // demand in flight
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  // A reconnect boots a new generation while the demand is still in flight.
+  act(() => {
+    navigationStore.setState({ clientGenerationID: "generation_reconnected" });
+  });
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  // The stale-generation continuation must not navigate.
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+});
+
+// Round 8, medium 3: live navigation must FOCUS the target session even
+// when the URL already matches - a secondary panel or another pane can hold
+// focus while the route names the session (roborev PR #1044 round-8 medium 3).
+test("live-next focuses the session pane even when the URL already matches", async () => {
+  // Two live rows on one page: A, B.
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      return wireV2(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // Focus a secondary session panel over the same session: the URL stays
+  // /s/local:live-a while the focused pane is the panel.
+  act(() => {
+    const panelId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:live-a" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/));
+
+  // Navigate to B so the URL differs from the wrap target, then wrap
+  // previous. But focus first: the route's own reconciliation would fight
+  // the panel focus, so drive the navigation by CLICKING the row (focus
+  // follows), then re-focus the panel.
+  await user.click(screen.getByText("Live B"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+  act(() => {
+    const panelId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:live-b" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+  // The URL now matches B while the PANEL holds focus.
+  expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/);
+
+  // The URL-equal press: previous from the panel. focusedSessionRef() is
+  // null (the panel is not a session pane), so previous wraps to the list
+  // HEAD... which is A, not the panel's B. Hmm - the URL changes to A. The
+  // decisive URL-equal case is NEXT from B's panel: null current targets
+  // the FIRST live row (A), and the URL is ALREADY /s/local%3Alive-b only
+  // if... no. The decisive case as documented: pressing next with the URL
+  // already on the TARGET. Target A, URL /s/local%3Alive-b -> differs.
+  // Target B, URL on B: previous with current=null targets the LAST row
+  // (B): URL EQUAL. That press must still refocus the session pane.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  // The press must refocus the session pane (the navigation the user asked
+  // for), even though the URL did not move - it already named B.
+  const focused = workspaceStore.getState().panes.find((p) => p.id === workspaceStore.getState().focusedPaneId);
+  expect(focused?.type).toBe("session");
+});
+
+// Round 8, low 1: a COMPLETED demand's dedupe key must leave the in-flight
+// set. After an invalidation (not a generation change) re-stales the live
+// pages, the same page+direction demand must be issuable again instead of
+// being silently swallowed by the stale key (roborev PR #1044 round-8 low 1).
+test("a live demand can be re-issued after an invalidation restales the pages", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // First demand: page two loads and navigates to B.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+
+  // Go back to A, then invalidate the live section (same generation): the
+  // loaded pages go stale, so the boundary press must re-demand page two.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+  const beforeDemandPress = pageTwoLoads; // count BEFORE the invalidation's own refresh
+  await act(async () => {
+    client.emitNotification({
+      method: "evener/navigation/invalidated",
+      params: {
+        generationId: "generation_test",
+        sequence: 1,
+        targets: [{ kind: "section", section: "live" }],
+      },
+    });
+  });
+  // The invalidation re-requests the stale live pages (the revalidator's
+  // own refresh) - wait for that to settle before the boundary press.
+  await waitFor(() => expect(pageTwoLoads).toBeGreaterThan(0));
+  await waitFor(() => expect(pageTwoLoads).toBeGreaterThanOrEqual(beforeDemandPress));
+
+  // Press next at the same boundary: a fresh demand for the same
+  // page+direction must be issued.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(beforeDemandPress + 1));
+  const resolve2 = deferred.resolve;
+  const params2 = deferred.params;
+  if (!params2 || !resolve2) throw new Error("second page-two request was not issued");
+  await act(async () => {
+    resolve2(wireV2(params2, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 9, medium 3: the inert early return must clear the in-flight key so
+// the set keeps tracking in-flight demands only. A same-key re-demand is not
+// reachable end-to-end (a page that resolves with data always advances the
+// next-demand offset past itself, and an error/abort resolves through the
+// already-deleting error path), so this pins the reachable lifecycle instead:
+// a palette-inert completion leaves nothing sticky - after the palette
+// closes, the same chord still navigates, here via the page the inert
+// completion loaded (roborev PR #1044 round-9 medium 3).
+test("a demand that completes inert does not leave the live chord stuck", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // First demand: the palette is open when it completes, so it goes inert
+  // (no navigation) even though the page resolved with B.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+  act(() => {
+    paletteStore.setState({ open: true, query: "" });
+  });
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  act(() => {
+    paletteStore.setState({ open: false, query: "" });
+  });
+
+  // After the palette closes, the same chord must still work - the demand's
+  // page is loaded, so this is the direct step to B.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 13, low 5: the demand's completion never re-checks editable focus.
+// The chord is suppressed while an editable target has focus at PRESS time,
+// but a demand pressed from a non-editable target still navigates when it
+// completes even if the user focused the composer mid-flight - the keydown
+// was swallowed then, so the navigation surprises a typing user. The
+// completion must go inert (delete the in-flight key, no navigation) when
+// focus is editable (roborev PR #1044 round-13 low 5).
+test("a demand that completes while the composer has focus goes inert", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // The press comes from a non-editable target: the demand issues.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+
+  // The user focuses an editable surface (the composer) while the demand is
+  // in flight. The pane's real composer mounts lazily in this fixture, so
+  // the test focuses a plain input: the completion guard checks
+  // isEditableTarget(document.activeElement), which any editable element
+  // satisfies identically.
+  const editable = document.createElement("input");
+  document.body.appendChild(editable);
+  await act(async () => {
+    editable.focus();
+  });
+
+  // The completion must not navigate: focus is editable.
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+});
+
+// Round 9, medium 4: leaving the session and returning before a demand
+// resolves restores an identical focused pane and session ref, so the
+// press-time guards alone read as "never left" and the stale completion
+// navigates under the returned user. The route epoch must invalidate the
+// demand instead (roborev PR #1044 round-9 medium 4).
+test("an in-flight live demand-load goes inert after leaving the session and returning", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+  const paneAtPress = workspaceStore.getState().focusedPaneId;
+  // The route-placement effect re-focuses the session pane on the return
+  // leg only when the location resource is present, so the test installs
+  // it exactly as the app's own location lookup would have.
+  act(() => installLocationForRoute("local:live-a"));
+
+  // Demand in flight from A (the last loaded live row). The leave/return
+  // must be a round trip the OLD guards cannot see: going to "/" opens the
+  // welcome pane in SECONDARY (openPane never displaces a non-welcome
+  // main), and returning re-matches the still-open session pane, so the
+  // pane id, focused ref, and pathname are all identical to press time -
+  // only the route epoch knows the user left at all.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+
+  await act(async () => {
+    navigate("/");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/"));
+  await act(async () => {
+    navigate("/s/local%3Alive-a");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneAtPress);
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // The stale completion must NOT navigate: the demand left with the route
+  // it was pressed on, and the epoch has since moved.
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  // And the chord is not permanently bricked by the inert completion: page
+  // two is loaded now, so the same press takes the direct step to B.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 11, medium 1: the leave-and-return round trip also stranding a
+// SECOND press pressed while the demand is still in flight. The dedupe must
+// not treat the in-flight demand as live: its recorded owner's guards are
+// stale, so the newer press ADOPTS the pending load by rebinding fresh
+// guards, and the load's completion navigates under the returned user.
+// Under the old set-based dedupe the second press silently deduped against
+// the dead demand, whose completion then went inert - the keypress produced
+// no navigation at all (roborev PR #1044 round-11 medium 1).
+test("a second press adopts an in-flight demand whose guards went stale", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+  const paneAtPress = workspaceStore.getState().focusedPaneId;
+  // The route-placement effect re-focuses the session pane on the return
+  // leg only when the location resource is present, so the test installs it
+  // exactly as the app's own location lookup would have.
+  act(() => installLocationForRoute("local:live-a"));
+
+  // Press one: demand in flight from A (the last loaded live row).
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+
+  // Leave and return: the pane id, focused ref, and pathname all read
+  // identical to press time - only the route epoch knows the user left, so
+  // the recorded owner's guards are stale.
+  await act(async () => {
+    navigate("/");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/"));
+  await act(async () => {
+    navigate("/s/local%3Alive-a");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneAtPress);
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // Press two at the same boundary: it adopts the in-flight load. The
+  // revalidator dedupes the concurrent read of the same page, so the
+  // adoption issues no second request.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(pageTwoLoads).toBe(1);
+
+  // The load lands: the displaced owner no-ops on its map-identity check
+  // and the adopter's completion navigates to the newly loaded row.
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });

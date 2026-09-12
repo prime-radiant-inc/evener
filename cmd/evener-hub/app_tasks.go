@@ -28,7 +28,7 @@ import (
 // error behind a stale or empty past read. isDeadSessionError adds the
 // message-prefix check that only entryForRef's dead-session error satisfies.
 func hubTasksList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
-	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+	source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, "")
 	var resp appwire.TaskListResponse
 	if err == nil {
 		resp, err = source.ListTasks(ctx, params)

@@ -12,7 +12,6 @@
 // lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type { ModelDescriptor, ModelListDiagnostic } from "../../protocol/types.gen";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -22,6 +21,9 @@ import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
 import styles from "./modelCatalog.module.css";
 import { buildPickerRows, pickableRows } from "./pickerRows";
+import type { ModelCatalogEntry, ModelCatalog as ModelCatalogShape } from "./types";
+
+export type { ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "modelCatalog.module.css", "trigger"),
@@ -53,23 +55,20 @@ const CLASS = {
 
 const SKELETON_LINES = 4;
 
+// Keep the historical type/value declaration merge: consumers import the
+// catalog shape and the picker component from this module under the same name.
+export interface ModelCatalog extends ModelCatalogShape {}
+
 // The widget requires a display label, while the generated AppWire descriptor
 // makes it optional because daemon/source callers may know only an identity.
 // Keeping the generated type as the source of truth prevents this view model
 // from drifting when the model/list contract changes.
-export type ModelCatalogEntry = Omit<ModelDescriptor, "displayName"> & { displayName: string };
-export type ModelCatalogDiagnostic = ModelListDiagnostic;
-
-export interface ModelCatalog {
-  models: ModelCatalogEntry[];
-  recent: ModelCatalogEntry[];
-  diagnostics?: ModelCatalogDiagnostic[];
-}
-
 export interface ModelCatalogProps {
   value: string;
   onChange: (qualified: string) => void;
   loadCatalog: () => Promise<ModelCatalog>;
+  /** Changes when the caller knows the available catalog may have changed. */
+  revision?: unknown;
   /** Reports the full picked entry (with reasoningEffortLevels /
    * supportsReasoning) the moment a model is selected, so a caller that
    * derives per-model metadata (e.g. the spawn form's Effort ladder) doesn't
@@ -382,6 +381,7 @@ export function ModelCatalog({
   value,
   onChange,
   loadCatalog,
+  revision,
   onPickEntry,
   emptyLabel = "(default)",
 }: ModelCatalogProps): JSX.Element {
@@ -391,26 +391,33 @@ export function ModelCatalog({
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  async function openPicker() {
-    setOpen(true);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision deliberately invalidates the supplied catalog
+  useEffect(() => {
+    if (!open) return;
+    let canceled = false;
     setError(null);
+    setCatalog(null);
     setLoading(true);
-    try {
-      setCatalog(await loadCatalog());
-    } catch (err) {
-      // friendlyLaunchErrorMessage, not errorText: loadCatalog is wired to a
-      // real RPC at both call sites (spawn's harness-scoped fetch, settings'
-      // unscoped one) and a mid-teardown call can reject with
-      // AppwireClient's own "cannot call ... while state is closed" text -
-      // internal wiring detail that must never reach this panel. It also
-      // replaces the daemon-missing family's raw launch-check text with
-      // actionable copy when the hub is up but no agent daemon could be
-      // reached for the scoped harness/cwd (T3).
-      setError(`Couldn't load models: ${friendlyLaunchErrorMessage(err)}`);
-    } finally {
-      setLoading(false);
-    }
-  }
+    void Promise.resolve()
+      .then(loadCatalog)
+      .then(
+        (result) => {
+          if (!canceled) {
+            setCatalog(result);
+            setLoading(false);
+          }
+        },
+        (err) => {
+          if (!canceled) {
+            setError(`Couldn't load models: ${friendlyLaunchErrorMessage(err)}`);
+            setLoading(false);
+          }
+        },
+      );
+    return () => {
+      canceled = true;
+    };
+  }, [open, loadCatalog, revision]);
 
   // Popover's FocusScope is opted out of focus management entirely
   // (autoFocus={false}) so the panel's own input can hold focus and its
@@ -448,7 +455,7 @@ export function ModelCatalog({
           ref={triggerRef}
           type="button"
           className={CLASS.trigger}
-          onClick={() => (open ? closePicker() : void openPicker())}
+          onClick={() => (open ? closePicker() : setOpen(true))}
         >
           {/* Plain text, not a Chip: the trigger already draws the control's
               own border, and a bordered chip inside it read as a double

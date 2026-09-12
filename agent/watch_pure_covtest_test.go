@@ -153,7 +153,7 @@ func TestCovValidateWatchEventArgs(t *testing.T) {
 
 	// Every with multiple events → error.
 	err = validateWatchEventArgs(watchArgs{Events: []string{"assistant.tool", "communicate"}, Every: 2})
-	if err == nil || !strings.Contains(err.Error(), "every requires exactly one") {
+	if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
 		t.Fatalf("every multi: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestCovValidateWatchEventArgs(t *testing.T) {
 
 	// Event filter without events → error.
 	err = validateWatchEventArgs(watchArgs{EventFilter: &watchEventFilter{}})
-	if err == nil || !strings.Contains(err.Error(), "event_filter requires events") {
+	if err == nil || !strings.Contains(err.Error(), "event_filter requires events naming assistant.tool") {
 		t.Fatalf("event_filter no events: %v", err)
 	}
 
@@ -550,38 +550,6 @@ func TestCovLimitWatchText(t *testing.T) {
 	got = limitWatchText("αβγδεζηθικλμνξοπρστυφχψω", 15)
 	if got != "αβγ\n[truncated]" || len([]rune(got)) != 15 {
 		t.Fatalf("multibyte truncation = %q (%d runes)", got, len([]rune(got)))
-	}
-}
-
-// TestCovInheritWatchLineage covers inheritWatchLineage (job_watch.go lines 2334-2340).
-func TestCovInheritWatchLineage(t *testing.T) {
-	// No existing lineage.
-	cfg := &watchConfig{watchID: "w3"}
-	got := inheritWatchLineage(cfg)
-	if len(got) != 1 || got[0] != "w3" {
-		t.Fatalf("no lineage = %v", got)
-	}
-
-	// With existing lineage.
-	cfg = &watchConfig{watchID: "w3", lineageWatchIDs: []string{"w1", "w2"}}
-	got = inheritWatchLineage(cfg)
-	if len(got) != 3 || got[0] != "w1" || got[1] != "w2" || got[2] != "w3" {
-		t.Fatalf("with lineage = %v", got)
-	}
-
-	// Over cap → trimmed.
-	long := make([]string, watchLineageCap+5)
-	for i := range long {
-		long[i] = "w" + string(rune('a'+i))
-	}
-	cfg = &watchConfig{watchID: "w_new", lineageWatchIDs: long}
-	got = inheritWatchLineage(cfg)
-	if len(got) != watchLineageCap {
-		t.Fatalf("over cap = %d, want exactly %d", len(got), watchLineageCap)
-	}
-	want := append(append([]string{}, long[len(long)-watchLineageCap+1:]...), "w_new")
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("retained lineage = %v, want most-recent lineage %v", got, want)
 	}
 }
 

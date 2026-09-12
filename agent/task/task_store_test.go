@@ -382,7 +382,7 @@ func TestUpdate_DoubleInProgress_DoesNotBlameATaskTheBatchResolves(t *testing.T)
 	}
 }
 
-func TestSummarizeCountsDoneAndSelectsFirstInProgress(t *testing.T) {
+func TestSummarizeCountsOutcomesAndSelectsFirstInProgress(t *testing.T) {
 	tasks := []Task{
 		{ID: 1, Status: TaskDone, Description: "done"},
 		{ID: 2, Status: TaskInProgress, Description: "first current"},
@@ -392,11 +392,33 @@ func TestSummarizeCountsDoneAndSelectsFirstInProgress(t *testing.T) {
 	}
 
 	summary := Summarize(tasks)
-	if summary.Total != 5 || summary.Done != 1 {
-		t.Fatalf("Summarize = %+v, want Total=5 Done=1", summary)
+	if summary.Total != 5 || summary.Done != 1 || summary.Cancelled != 1 || summary.Remaining != 3 {
+		t.Fatalf("Summarize = %+v, want Total=5 Done=1 Cancelled=1 Remaining=3", summary)
 	}
 	if summary.Current == nil || summary.Current.ID != 2 || summary.Current.Description != "first current" {
 		t.Fatalf("Summarize Current = %+v, want task 2 first current", summary.Current)
+	}
+}
+
+func TestListSummaryProgressText(t *testing.T) {
+	tests := []struct {
+		name  string
+		tasks []Task
+		want  string
+	}{
+		{name: "empty", want: "0 done, 0 cancelled, 0 remaining (0 total)"},
+		{name: "open", tasks: []Task{{Status: TaskOpen}}, want: "0 done, 0 cancelled, 1 remaining (1 total)"},
+		{name: "in progress", tasks: []Task{{Status: TaskInProgress}}, want: "0 done, 0 cancelled, 1 remaining (1 total)"},
+		{name: "done", tasks: []Task{{Status: TaskDone}}, want: "1 done, 0 cancelled, 0 remaining (1 total)"},
+		{name: "cancelled", tasks: []Task{{Status: TaskCancelled}}, want: "0 done, 1 cancelled, 0 remaining (1 total)"},
+		{name: "mixed", tasks: []Task{{Status: TaskDone}, {Status: TaskCancelled}, {Status: TaskOpen}, {Status: TaskInProgress}}, want: "1 done, 1 cancelled, 2 remaining (4 total)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Summarize(tc.tasks).ProgressText(); got != tc.want {
+				t.Fatalf("ProgressText() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -426,18 +448,18 @@ func TestSummarizeReturnsOwnedCurrentTask(t *testing.T) {
 	}
 }
 
-func TestTaskStore_ProgressCountsOnlyDone(t *testing.T) {
+func TestTaskStore_ProgressPreservesLegacyCountsAndSummaryAddsOutcomes(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}, {Description: "c"}})
 	_ = s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}})
 	_ = s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskCancelled}})
 	total, done := s.Progress()
 	if total != 3 || done != 1 {
-		t.Errorf("Progress = (%d,%d), want (3,1) — cancelled is not done", total, done)
+		t.Errorf("Progress = (%d,%d), want (3,1)", total, done)
 	}
-	summary := Summarize(s.View())
-	if total != summary.Total || done != summary.Done {
-		t.Errorf("Progress = (%d,%d), Summarize = (%d,%d)", total, done, summary.Total, summary.Done)
+	summary := s.Summary()
+	if total != summary.Total || done != summary.Done || summary.Cancelled != 1 || summary.Remaining != 1 {
+		t.Errorf("Progress = (%d,%d), Summary = (%d,%d,%d,%d)", total, done, summary.Total, summary.Done, summary.Cancelled, summary.Remaining)
 	}
 }
 
@@ -535,5 +557,115 @@ func TestView_ReturnsCopy(t *testing.T) {
 	v[0].Description = "mutated"
 	if s.View()[0].Description != "a" {
 		t.Error("View did not return a copy; mutation leaked into the store")
+	}
+}
+
+// TestTaskUpdate_EmptyStatusMeansNoChange pins the combined-tool contract:
+// an update entry with an empty status leaves the task's status unchanged
+// while still applying notes, deps, and effort — the tool schema has always
+// documented status as optional, so the store must honor that.
+func TestTaskUpdate_EmptyStatusMeansNoChange(t *testing.T) {
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "d", Prompt: "p"}})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Notes: "note one"}}); err != nil {
+		t.Fatalf("notes-only update: %v", err)
+	}
+	got := s.View()
+	if got[0].Status != TaskOpen {
+		t.Fatalf("status changed by notes-only update: %v", got[0].Status)
+	}
+	if len(got[0].Notes) != 1 || got[0].Notes[0] != "note one" {
+		t.Fatalf("notes not applied: %v", got[0].Notes)
+	}
+
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Notes: "note two"}}); err != nil {
+		t.Fatalf("notes-only during progress: %v", err)
+	}
+	got = s.View()
+	if got[0].Status != TaskInProgress {
+		t.Fatalf("notes-only update clobbered in_progress: %v", got[0].Status)
+	}
+	if len(got[0].Notes) != 2 {
+		t.Fatalf("second note not appended: %v", got[0].Notes)
+	}
+}
+
+// TestTaskUpdate_EmptyStatusStillValidates pins that empty status does not
+// weaken the other validations: unknown IDs, unknown deps, and invalid
+// non-empty statuses still fail.
+func TestTaskUpdate_EmptyStatusStillValidates(t *testing.T) {
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "d", Prompt: "p"}})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := s.Update([]TaskUpdate{{ID: 999, Notes: "x"}}); err == nil {
+		t.Fatal("unknown ID with empty status must still be rejected")
+	}
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, DependsOn: &[]int{999}}}); err == nil {
+		t.Fatal("unknown dep must still be rejected")
+	}
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: "bogus"}}); err == nil {
+		t.Fatal("bogus status must still be rejected")
+	}
+}
+
+func TestExpandParentTasks_ReplacesPlaceholder(t *testing.T) {
+	got := ExpandParentTasks(
+		[]TaskTemplate{{Title: "lead", Prompt: "p"}, {Insert: "parent_tasks", Title: "placeholder"}, {Title: "tail"}},
+		[]TaskTemplate{{Title: "from-parent-1", Prompt: "a"}, {Title: "from-parent-2", Prompt: "b"}},
+	)
+	want := []string{"lead", "from-parent-1", "from-parent-2", "tail"}
+	if len(got) != len(want) {
+		t.Fatalf("templates = %d, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].Title != w {
+			t.Errorf("template[%d] = %q, want %q", i, got[i].Title, w)
+		}
+	}
+}
+
+func TestExpandParentTasks_AppendsWithoutPlaceholder(t *testing.T) {
+	got := ExpandParentTasks(
+		[]TaskTemplate{{Title: "role-default", Prompt: "p"}},
+		[]TaskTemplate{{Title: "from-parent", Prompt: "a"}},
+	)
+	if len(got) != 2 || got[0].Title != "role-default" || got[1].Title != "from-parent" {
+		t.Fatalf("templates = %+v, want role default followed by the parent task", got)
+	}
+	if only := ExpandParentTasks(nil, []TaskTemplate{{Title: "from-parent", Prompt: "a"}}); len(only) != 1 || only[0].Title != "from-parent" {
+		t.Fatalf("templates with no role defaults = %+v, want just the parent task", only)
+	}
+}
+
+func TestExpandParentTasks_KeepsPlaceholderTaskWithoutParentTasks(t *testing.T) {
+	got := ExpandParentTasks([]TaskTemplate{{Insert: "parent_tasks", Title: "Scan workspace", Prompt: "p"}}, nil)
+	if len(got) != 1 || got[0].Title != "Scan workspace" {
+		t.Fatalf("templates = %+v, want the placeholder kept as a task", got)
+	}
+}
+
+func TestPopulateFromTemplates_ParentTasksAppendWithoutPlaceholder(t *testing.T) {
+	s := newTestStore(t)
+	err := s.PopulateFromTemplates(
+		[]TaskTemplate{{Title: "role-default", Prompt: "p"}},
+		[]TaskTemplate{{Title: "from-parent", Prompt: "a", Type: "verify"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.View()
+	if len(got) != 2 {
+		t.Fatalf("tasks = %d, want 2 (role default + parent)", len(got))
+	}
+	if got[1].Description != "from-parent" || got[1].Type != TaskTypeVerify {
+		t.Errorf("parent task not appended: %+v", got[1])
 	}
 }

@@ -11,8 +11,10 @@ let originalToBlob: typeof HTMLCanvasElement.prototype.toBlob;
 let originalImage: typeof Image;
 let originalCreateObjectURL: typeof URL.createObjectURL;
 let originalRevokeObjectURL: typeof URL.revokeObjectURL;
+let decodes: Promise<void>[];
 
 beforeEach(() => {
+  decodes = [];
   originalGetContext = HTMLCanvasElement.prototype.getContext;
   originalToBlob = HTMLCanvasElement.prototype.toBlob;
   originalImage = globalThis.Image;
@@ -33,7 +35,7 @@ beforeEach(() => {
     private _src = "";
     set src(value: string) {
       this._src = value;
-      Promise.resolve().then(() => this.onload?.());
+      decodes.push(Promise.resolve().then(() => this.onload?.()));
     }
     get src(): string {
       return this._src;
@@ -209,6 +211,9 @@ test("reset clears settled items and restarts markers at one", async () => {
 
   expect(result.current.items).toHaveLength(1);
   expect(result.current.items[0]).toMatchObject({ marker: 1, name: "new.png" });
+  await act(async () => {
+    await Promise.all(decodes);
+  });
 });
 
 test("reset invalidates a pending encode success", async () => {
@@ -248,7 +253,7 @@ test("reset invalidates a pending encode failure without stripping replacement t
   expect(onRejected).not.toHaveBeenCalled();
 });
 
-test("ingesting an image synchronously splices its marker into the editor text and flags the item pending", () => {
+test("ingesting an image synchronously splices its marker into the editor text and flags the item pending", async () => {
   const editor = makeFakeEditor("hello", 5);
   const { result } = renderHook(() => useAttachments(editor));
 
@@ -261,6 +266,9 @@ test("ingesting an image synchronously splices its marker into the editor text a
   expect(result.current.items).toHaveLength(1);
   expect(result.current.items[0]).toMatchObject({ marker: 1, pending: true, name: "a.png" });
   expect(result.current.hasPending).toBe(true);
+  await act(async () => {
+    await Promise.all(decodes);
+  });
 });
 
 test("after the async re-encode resolves, the item flips to settled with data/width/height", async () => {
@@ -319,7 +327,7 @@ test("an oversized image is rejected before decode, naming the 8 MB limit", () =
   expect(onRejected.mock.calls[0]?.[0]).toContain("maximum 8 MB");
 });
 
-test("a mixed accept+reject batch combines all rejections into one onRejected call while still accepting the good file", () => {
+test("a mixed accept+reject batch combines all rejections into one onRejected call while still accepting the good file", async () => {
   const editor = makeFakeEditor("", 0);
   const { result } = renderHook(() => useAttachments(editor));
   const onRejected = vi.fn();
@@ -336,9 +344,12 @@ test("a mixed accept+reject batch combines all rejections into one onRejected ca
   const message = onRejected.mock.calls[0]?.[0] as string;
   expect(message).toContain("a.txt");
   expect(message).toContain("b.pdf");
+  await act(async () => {
+    await Promise.all(decodes);
+  });
 });
 
-test("the 9th image in one session is rejected on the count cap, naming the 8-image limit", () => {
+test("the 9th image in one session is rejected on the count cap, naming the 8-image limit", async () => {
   const editor = makeFakeEditor("", 0);
   const { result } = renderHook(() => useAttachments(editor));
 
@@ -356,6 +367,9 @@ test("the 9th image in one session is rejected on the count cap, naming the 8-im
   });
   expect(result.current.items).toHaveLength(8);
   expect(onRejected.mock.calls[0]?.[0]).toContain("maximum 8 images");
+  await act(async () => {
+    await Promise.all(decodes);
+  });
 });
 
 test("a decode failure strips the marker from the editor text, drops the item, and reports via onRejected", async () => {
@@ -436,6 +450,9 @@ test("marker numbering never reuses a number removed via removeItem", async () =
     result.current.ingestFiles([makeFile("b.png")], () => {});
   });
   expect(result.current.items[0]?.marker).toBe(2);
+  await act(async () => {
+    await Promise.all(decodes);
+  });
 });
 
 test("clearSubmitted removes exactly the submitted markers, leaving items added mid-flight intact", async () => {
@@ -517,6 +534,9 @@ test("clearSubmitted resets the marker counter to restart at 1 once the result i
     result.current.ingestFiles([makeFile("fresh.png")], () => {});
   });
   expect(result.current.items[0]?.marker).toBe(1);
+  await act(async () => {
+    await Promise.all(decodes);
+  });
 });
 
 test("clearSubmitted does NOT reset the counter when surviving (mid-flight) items remain", async () => {
@@ -544,6 +564,9 @@ test("clearSubmitted does NOT reset the counter when surviving (mid-flight) item
   });
   // b.png kept marker 2; c.png must be 3, never reusing 1.
   expect(result.current.items.map((i) => i.marker)).toEqual([2, 3]);
+  await act(async () => {
+    await Promise.all(decodes);
+  });
 });
 
 test("toInputAttachments maps settled items to the {marker, mediaType, data, name} shape only", async () => {
@@ -575,4 +598,30 @@ test("hasPending stays true until every in-flight item has settled", async () =>
   expect(result.current.hasPending).toBe(true);
   await flush();
   expect(result.current.hasPending).toBe(false);
+});
+
+// RoboRev PR1131 finding 1: removeItem records EVERY removed marker in
+// removedWhilePendingRef, including already-settled ones, and clearSubmitted
+// resets nextMarkerRef to zero (restarting numbering at 1) without clearing
+// that set. The next attachment then reuses marker 1 and its successful encode
+// is discarded as if the user had removed it, leaving the item pending forever.
+test("an attachment that reuses a retired marker after clearSubmitted still settles", async () => {
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => result.current.ingestFiles([makeFile("old.png")], () => {}));
+  await flush();
+  expect(result.current.items[0]).toMatchObject({ marker: 1, pending: false });
+
+  act(() => result.current.removeItem(1));
+  expect(result.current.items).toHaveLength(0);
+
+  // Numbering restarts at 1 once the result is empty (clearSubmitted), so the
+  // fresh attachment takes marker 1 again - the retired marker must not poison it.
+  act(() => result.current.clearSubmitted(new Set()));
+  act(() => result.current.ingestFiles([makeFile("fresh.png")], () => {}));
+  expect(result.current.items[0]?.marker).toBe(1);
+
+  await flush();
+  expect(result.current.items[0]).toMatchObject({ marker: 1, name: "fresh.png", pending: false });
 });

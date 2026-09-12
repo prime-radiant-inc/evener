@@ -32,21 +32,21 @@ build: build-runtime
 build-runtime: build-web
 	LDFLAGS="$(LDFLAGS)" scripts/ops/build-runtime-pair.sh
 
-# Cross-compile for Linux (eval deployments). Invalidates the agent package
-# cache to ensure embedded files (templates, sections, agent .md) are fresh.
-## Cross-compile evener-linux-amd64 for Linux eval deployments. Starts by
-## running `go clean -cache`, which wipes the whole Go build cache.
+# Cross-compile for Linux (eval deployments). Rebuilds the linux target
+# closure from source (`go build -a`) so embedded files (templates,
+# sections, agent .md, frontend dist) are re-read from disk and stay fresh.
+## Cross-compile evener-linux-amd64 for Linux eval deployments, forcing a
+## rebuild of the linux target closure (`go build -a`) so embedded files
+## stay fresh without wiping the shared Go build cache.
 build-linux:
-	go clean -cache 2>/dev/null && \
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o evener-linux-amd64 ./cmd/evener/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags "$(LDFLAGS)" -o evener-linux-amd64 ./cmd/evener/
 
 ## Alias for build-runtime.
 build-hub: build-runtime
 
 # web-preflight owns the frontend node_modules install for every web target,
 # so build-web and test-web share one definition of "the install is ready".
-# The install rules and the two guards they exist for live in the script;
-# scripts/web/web-preflight-selftest.sh exercises them against throwaway trees.
+# The install rules and the two guards they exist for live in the script.
 ## Ensure the frontend dependency install is present, healthy, and
 ## lockfile-compatible before any web target runs.
 ## proves: The worktree has a lockfile-compatible install and a real local
@@ -89,7 +89,7 @@ build-llmcall:
 
 ## Build the evener-dev dev/test infrastructure binary (agent-shards,
 ## module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck,
-## test-dev-tooling, tomlcheck, transcript-v2-upgrade). Not installed for
+## tomlcheck, transcript-v2-upgrade). Not installed for
 ## end users; used by make targets and go run ./cmd/evener-dev/bin.
 build-dev:
 	go build -o evener-dev ./cmd/evener-dev/bin/

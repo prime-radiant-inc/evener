@@ -53,7 +53,7 @@ const CONTENT_VECTORS: Readonly<Record<ContentLevel, ContentVector>> = {
   chat: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
   intent: { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false },
   tools: { toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false },
-  activity: { toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false },
+  activity: { toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: true },
   full: { toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true },
 };
 

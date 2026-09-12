@@ -33,7 +33,7 @@ func subagentPreviewFromThread(thread appwire.Thread, ref string, limit int) app
 		}
 	}
 	start := max(len(all)-limit, 0)
-	items := append([]appwire.ThreadItem(nil), all[start:]...)
+	items := append([]appwire.ThreadItem{}, all[start:]...)
 	return appwire.EvenerSubagentPreviewResponse{
 		Ref:       ref,
 		Items:     items,

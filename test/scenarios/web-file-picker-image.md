@@ -67,7 +67,7 @@ combobox, as a real gesture.
    later navigations don't 401:
    ```
    action: navigate
-   payload: $HUB/auth?token=<TOKEN>&next=/new
+   payload: $HUB/auth/<TOKEN>?next=/new
    ```
    Confirm it mounted:
    ```

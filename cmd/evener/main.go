@@ -21,7 +21,6 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/launchcheck"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
-	openaiprovider "primeradiant.com/evener/llm/providers/openai"
 )
 
 // Alias for brevity within flag definitions.
@@ -60,11 +59,13 @@ type runCLIFlags struct {
 	noDefaultMarketplaces       *bool
 	systemPromptAsUser          *bool
 	openAIResponsesContinuation *string
+	providerIdleTimeout         *string
 	cpuProfile                  *string
 	traceFile                   *string
 	systemPromptAppend          stringSliceFlag
 	sandbox                     *string
 	sandboxNet                  *string
+	apiLog                      *string
 	runTimeout                  *time.Duration
 }
 
@@ -102,14 +103,13 @@ func defaultMainDepsWithStdin(stdin *os.File) mainDeps {
 		},
 		exit: os.Exit, dispatch: dispatchCLICommand,
 		startCPU: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
-		notify: signal.NotifyContext, run: run,
+		notify: signal.NotifyContext, run: runWithScratchReclaim,
 	}
 }
 
 func mainWithDeps(deps mainDeps) {
-	// Report the evener build version in the OpenAI provider's User-Agent and in
-	// agent session metadata.
-	openaiprovider.ClientVersion = buildinfo.Version()
+	// Report the evener build version in agent session metadata. The provider
+	// User-Agent is stamped by cmdutil.NewRegistryClient when the client loads.
 	agent.BuildVersion = buildinfo.Version()
 
 	// Quick flags that don't need full flag.Parse().
@@ -232,8 +232,10 @@ func mainWithDeps(deps mainDeps) {
 		noDefaultMarketplaces:       *flags.noDefaultMarketplaces,
 		systemPromptAsUser:          *flags.systemPromptAsUser,
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
+		providerIdleTimeout:         *flags.providerIdleTimeout,
 		sandboxMode:                 *flags.sandbox,
 		sandboxNet:                  *flags.sandboxNet,
+		apiLog:                      *flags.apiLog,
 		runTimeout:                  *flags.runTimeout,
 		stdout:                      deps.stdout,
 		stderr:                      deps.stderr,
@@ -266,7 +268,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.resumeLast = fs.Bool("resume-last", false, "resume the most recent session")
 	flags.listSessions = fs.Bool("list-sessions", false, "list saved sessions and exit")
 	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
-	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
+	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 2)")
 	flags.maxConcurrentDelegates = fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
 	flags.maxRetainedTerminal = fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")
 	flags.shareTaskStore = fs.Bool("share-task-store", false, "share task list between parent and child sessions")
@@ -286,12 +288,14 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	flags.noDefaultMarketplaces = fs.Bool("no-default-marketplaces", false, "do not seed the default plugin marketplaces on first run")
 	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
+	flags.providerIdleTimeout = fs.String("provider-idle-timeout", "", "Provider response-byte idle duration (default: 10m; no total request limit)")
 	flags.openAIResponsesContinuation = fs.String("openai-responses-continuation", "", "OpenAI Responses continuation `mode`: off|auto (default: off)")
 	flags.cpuProfile = fs.String("cpu-profile", "", "write CPU profile to this `file` path")
 	flags.traceFile = fs.String("trace", "", "write execution trace to this `file` path")
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
 	flags.sandbox = fs.String("sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted")
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	flags.apiLog = fs.String("api-log", "off", "durable API request logging `on|off` (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	flags.runTimeout = fs.Duration("timeout", 0, "overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback)")
 
 	fs.Usage = func() {
@@ -326,6 +330,8 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")
 	_, _ = fmt.Fprintf(tw, "  doctor\tRead-only forensic inspector for sessions/jobs/watches\n")
 	_, _ = fmt.Fprintf(tw, "  migrate\tMigrate user data to the final evener layout\n")
+	_, _ = fmt.Fprintf(tw, "  models\tInspect the provider registry (list, inspect, refresh)\n")
+	_, _ = fmt.Fprintf(tw, "  providers\tInspect and author provider instances (list, probe, add)\n")
 	_ = tw.Flush()
 }
 
@@ -363,6 +369,9 @@ func printRunEnvVars(w io.Writer) {
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
+	// Every implicit provider the registry knows reads its own key and base
+	// URL; naming them all here would be a second, drifting roster.
+	_, _ = fmt.Fprintf(tw, "  %s\t%s\n", "<ID>_API_KEY / <ID>_BASE_URL", "any implicit provider's key or base URL (evener providers list)")
 	_ = tw.Flush()
 }
 
@@ -374,9 +383,27 @@ type subcommandExitError int
 
 func (c subcommandExitError) Error() string { return fmt.Sprintf("exit code %d", int(c)) }
 
+// runWithScratchReclaim and runServeWithScratchReclaim are the production entry
+// points to `evener` and `evener serve`. Reclaiming the session scratch that
+// sessions retained and never came back for belongs to a real process start, so
+// it hangs off these adapters rather than run and runServe themselves, where a
+// test driving either would sweep the developer's own scratch bases. serve takes
+// it as a dependency rather than up front because the workspace to leave alone
+// is the one serve resolves from its own --dir.
+func runWithScratchReclaim(ctx context.Context, cfg runConfig) error {
+	startScratchReclaim(cfg.workDir)
+	return run(ctx, cfg)
+}
+
+func runServeWithScratchReclaim(args []string) error {
+	deps := defaultServeDeps()
+	deps.reclaimScratch = startScratchReclaim
+	return runServeWithDeps(args, deps)
+}
+
 func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, string, error) {
 	return dispatchCLICommandWith(args, stdin, stdout, stderr, cliCommandRunners{
-		serve: runServe,
+		serve: runServeWithScratchReclaim,
 		launchCheck: func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 			return launchcheck.RunLaunchCheck(args, stdout, stderr)
 		},
@@ -409,6 +436,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 			}
 			return nil
 		},
+		models:    runModels,
+		providers: runProviders,
 	})
 }
 
@@ -422,6 +451,8 @@ type cliCommandRunners struct {
 	tui         func([]string, io.Reader, io.Writer, io.Writer) error
 	doctor      func([]string, io.Reader, io.Writer, io.Writer) error
 	migrate     func([]string, io.Reader, io.Writer, io.Writer) error
+	models      func([]string, io.Reader, io.Writer, io.Writer) error
+	providers   func([]string, io.Reader, io.Writer, io.Writer) error
 }
 
 func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Writer, runners cliCommandRunners) (bool, string, error) {
@@ -448,6 +479,10 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener doctor", runners.doctor(args[1:], stdin, stdout, stderr)
 	case "migrate":
 		return true, "evener migrate", runners.migrate(args[1:], stdin, stdout, stderr)
+	case "models":
+		return true, "evener models", runners.models(args[1:], stdin, stdout, stderr)
+	case "providers":
+		return true, "evener providers", runners.providers(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}

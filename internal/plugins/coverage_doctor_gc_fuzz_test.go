@@ -3,16 +3,13 @@
 package plugins
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
-
-	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 type coverageDirEntry struct {
@@ -38,18 +35,17 @@ func FuzzDoctorGCCoverage(f *testing.F) {
 	f.Fuzz(func(t *testing.T, _ uint8) {
 		t.Run("doctor", coverageDoctor)
 		t.Run("gc", coverageGC)
-		t.Run("enabled", coverageEnabled)
 	})
 }
 
 func coverageDoctor(t *testing.T) {
 	origReadDir, origStat := doctorReadDir, doctorStat
 	origCreateTemp, origRemove := doctorCreateTemp, doctorRemove
-	origGitAvailable := doctorGitAvailable
+	origGitAvailable, origAcquireLock := doctorGitAvailable, doctorAcquireLock
 	t.Cleanup(func() {
 		doctorReadDir, doctorStat = origReadDir, origStat
 		doctorCreateTemp, doctorRemove = origCreateTemp, origRemove
-		doctorGitAvailable = origGitAvailable
+		doctorGitAvailable, doctorAcquireLock = origGitAvailable, origAcquireLock
 	})
 
 	root := t.TempDir()
@@ -63,6 +59,26 @@ func coverageDoctor(t *testing.T) {
 	}
 
 	boom := errors.New("boom")
+	// The walk reaches the store lock only once there is a cache directory to
+	// walk, and everything past the lock is stubbed from here on.
+	if err := os.MkdirAll(m.cacheDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doctorAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, boom }
+	if got := m.doctorOrphanCacheDirs(); len(got) != 1 || got[0].Level != LevelWarn {
+		t.Fatalf("held lock findings = %#v", got)
+	}
+	doctorAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
+	if err := os.WriteFile(m.registryPath(), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.doctorOrphanCacheDirs(); len(got) != 1 || got[0].Level != LevelFail {
+		t.Fatalf("corrupt registry findings = %#v", got)
+	}
+	if err := SaveRegistry(m.registryPath(), reg); err != nil {
+		t.Fatal(err)
+	}
+
 	doctorReadDir = func(path string) ([]os.DirEntry, error) {
 		switch filepath.Base(path) {
 		case "cache":
@@ -73,7 +89,7 @@ func coverageDoctor(t *testing.T) {
 			return nil, boom
 		}
 	}
-	if got := m.doctorOrphanCacheDirs(nil); len(got) != 0 {
+	if got := m.doctorOrphanCacheDirs(); len(got) != 0 {
 		t.Fatalf("market read error findings = %#v", got)
 	}
 
@@ -89,7 +105,7 @@ func coverageDoctor(t *testing.T) {
 			return nil, boom
 		}
 	}
-	if got := m.doctorOrphanCacheDirs(nil); len(got) != 0 {
+	if got := m.doctorOrphanCacheDirs(); len(got) != 0 {
 		t.Fatalf("plugin read error findings = %#v", got)
 	}
 
@@ -105,9 +121,13 @@ func coverageDoctor(t *testing.T) {
 			return nil, boom
 		}
 	}
-	known := map[string]bool{filepath.Join(root, "cache", "market", "plugin", "sha"): true}
-	if got := m.doctorOrphanCacheDirs(known); len(got) != 0 {
-		t.Fatalf("known findings = %#v", got)
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+		"plugin@market": {{InstallPath: filepath.Join(root, "cache", "market", "plugin", "sha"), Source: Source{Kind: SourceGitHub, Repo: "acme/plugin"}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.doctorOrphanCacheDirs(); len(got) != 0 {
+		t.Fatalf("referenced findings = %#v", got)
 	}
 
 	doctorGitAvailable = func() bool { return false }
@@ -146,15 +166,15 @@ func coverageGC(t *testing.T) {
 	boom := errors.New("boom")
 	m := NewManager(t.TempDir())
 
-	gcAcquireLock = func(string, time.Duration) (func(), error) { return nil, boom }
-	if _, err := m.Gc(); !errors.Is(err, boom) {
+	gcAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, boom }
+	if _, err := m.Gc(context.Background()); !errors.Is(err, boom) {
 		t.Fatalf("lock: %v", err)
 	}
-	gcAcquireLock = func(string, time.Duration) (func(), error) { return func() {}, nil }
+	gcAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
 	if err := os.WriteFile(m.registryPath(), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Gc(); err == nil {
+	if _, err := m.Gc(context.Background()); err == nil {
 		t.Fatal("corrupt registry succeeded")
 	}
 	if err := os.Remove(m.registryPath()); err != nil {
@@ -171,7 +191,7 @@ func coverageGC(t *testing.T) {
 			return nil, boom
 		}
 	}
-	if got, err := m.Gc(); err != nil || len(got) != 0 {
+	if got, err := m.Gc(context.Background()); err != nil || len(got) != 0 {
 		t.Fatalf("market: %#v, %v", got, err)
 	}
 	gcReadDir = func(path string) ([]os.DirEntry, error) {
@@ -186,7 +206,7 @@ func coverageGC(t *testing.T) {
 			return nil, boom
 		}
 	}
-	if got, err := m.Gc(); err != nil || len(got) != 0 {
+	if got, err := m.Gc(context.Background()); err != nil || len(got) != 0 {
 		t.Fatalf("plugin: %#v, %v", got, err)
 	}
 	gcReadDir = func(path string) ([]os.DirEntry, error) {
@@ -202,26 +222,7 @@ func coverageGC(t *testing.T) {
 		}
 	}
 	gcRemoveAll = func(string) error { return boom }
-	if _, err := m.Gc(); err == nil {
+	if _, err := m.Gc(context.Background()); err == nil {
 		t.Fatal("remove succeeded")
-	}
-}
-
-func coverageEnabled(t *testing.T) {
-	origLoad := enabledLoad
-	t.Cleanup(func() { enabledLoad = origLoad })
-	root := t.TempDir()
-	var stderr bytes.Buffer
-	m := &Manager{Root: root, Stderr: &stderr}
-	pluginDir := t.TempDir()
-	writePlugin(t, pluginDir, "p", nil)
-	reg := Registry{Plugins: map[string][]InstallEntry{"p@m": {{Enabled: true, InstallPath: pluginDir, Source: Source{Kind: SourceDirectory, Path: pluginDir}}}}}
-	if err := SaveRegistry(m.registryPath(), reg); err != nil {
-		t.Fatal(err)
-	}
-	enabledLoad = func(string) (agentplugin.Instance, error) { return agentplugin.Instance{}, errors.New("boom") }
-	m.EnabledPluginDirs(nil)
-	if !strings.Contains(stderr.String(), "skipping broken plugin") {
-		t.Fatalf("warning = %q", stderr.String())
 	}
 }

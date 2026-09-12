@@ -574,7 +574,7 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
 		t.Error("default subagent prompt should contain shared delegated-task guidance")
 	}
-	if !strings.Contains(subagentSystemPrompt, "focused subagent") {
+	if !strings.Contains(subagentSystemPrompt, "one delegated unit of work") {
 		t.Error("default subagent prompt should contain subagent persona instructions")
 	}
 }

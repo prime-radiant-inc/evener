@@ -2,11 +2,22 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestPrintHubEnvVars(t *testing.T) {
@@ -25,6 +36,10 @@ func TestPrintHubEnvVars(t *testing.T) {
 		"GEMINI_API_KEY":          "Google Gemini API key; checked before GOOGLE_API_KEY.",
 		"GOOGLE_API_KEY":          "Google Gemini API key fallback.",
 		"OPENROUTER_API_KEY":      "OpenRouter API key.",
+	}
+
+	if !strings.Contains(out, "<ID>_API_KEY / <ID>_BASE_URL") {
+		t.Fatalf("hub env help does not point at per-instance provider vars: %s", out)
 	}
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
@@ -75,6 +90,130 @@ func TestRunMainHelpReturnsNil(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Usage: evener-hub") {
 		t.Fatalf("help output missing usage:\n%s", stderr.String())
+	}
+}
+
+func TestParseHubOptionsAcceptsAppWireTracePath(t *testing.T) {
+	var stderr bytes.Buffer
+	opts, err := parseHubOptions([]string{"-appwire-trace", "/tmp/hub-appwire.jsonl"}, &stderr)
+	if err != nil {
+		t.Fatalf("parseHubOptions: %v, stderr=%s", err, stderr.String())
+	}
+	if opts.appwireTrace != "/tmp/hub-appwire.jsonl" {
+		t.Fatalf("appwire trace path = %q, want /tmp/hub-appwire.jsonl", opts.appwireTrace)
+	}
+}
+
+func newTraceMainTestDeps(t *testing.T) (string, Config, mainDeps) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("EVENER_PROVIDERS_CONFIG", filepath.Join(root, "config", "evener", "providers.toml"))
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(root, "config", "evener", "credentials.toml"))
+
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.RunDir = filepath.Join(root, "run")
+	cfg.StateGlob = filepath.Join(root, "projects", "*")
+	cfg.PastIndexDB = filepath.Join(root, "hub", "index.db")
+	cfg.HubStateRoot = filepath.Join(root, "hub")
+	cfg.PluginAutoUpgrade = false
+	if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
+		t.Fatalf("create hub state root: %v", err)
+	}
+
+	ctx := t.Context()
+	deps := mainDeps{
+		loadRegistry:    hermeticRegistryLoader,
+		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		ensureDirs:      func() error { return nil },
+		acquireLock:     func(string) (func(), error) { return func() {}, nil },
+		newToken:        func() (string, error) { return "hub-token", nil },
+		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
+		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
+		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		},
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		serve: func(context.Context, hubHTTPServer) error { return nil },
+	}
+	return root, cfg, deps
+}
+
+func TestRunMainCreatesAppWireTraceAndWarnsAboutRawPayloads(t *testing.T) {
+	root, cfg, deps := newTraceMainTestDeps(t)
+
+	tracePath := filepath.Join(root, "hub-appwire.jsonl")
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-appwire-trace", tracePath, "-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	info, err := os.Stat(tracePath)
+	if err != nil {
+		t.Fatalf("stat AppWire trace: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("trace permissions = %04o, want 0600", got)
+	}
+	if output := stderr.String(); !strings.Contains(output, tracePath) || !strings.Contains(output, "raw") || !strings.Contains(output, "sensitive") {
+		t.Errorf("trace startup diagnostic must name the path and warn that raw payloads are sensitive:\n%s", output)
+	}
+}
+
+func TestRunMainAppWireTraceCapturesRPCConnection(t *testing.T) {
+	root, cfg, deps := newTraceMainTestDeps(t)
+	ctx := t.Context()
+	var web *WebServer
+	var transport *appwire.WSTransport
+	var rpcServer *httptest.Server
+	serveErr := errors.New("serve failed")
+	deps.afterWeb = func(created *WebServer) { web = created }
+	deps.serve = func(context.Context, hubHTTPServer) error {
+		if web == nil {
+			t.Fatal("serve reached before WebServer construction")
+		}
+		rpcServer = httptest.NewServer(http.HandlerFunc(web.appRPC.ServeWebSocket))
+		var err error
+		transport, err = appwire.DialWebSocket(ctx, "ws"+rpcServer.URL[len("http"):], rpcServer.Client())
+		if err != nil {
+			rpcServer.Close()
+			t.Fatalf("dial traced RPC: %v", err)
+		}
+		client := appwire.NewClient(transport)
+		client.Start(ctx)
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			transport.Close() //nolint:errcheck // failure cleanup
+			rpcServer.Close()
+			t.Fatalf("initialize traced RPC: %v", err)
+		}
+		return serveErr
+	}
+
+	tracePath := filepath.Join(root, "hub-appwire.jsonl")
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-appwire-trace", tracePath, "-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); !errors.Is(err, serveErr) {
+		t.Fatalf("runMain error = %v, want %v; stderr=%s", err, serveErr, stderr.String())
+	}
+	transport.Close() //nolint:errcheck // the server-side drain may already have closed it
+	rpcServer.Close()
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read AppWire trace: %v", err)
+	}
+	output := string(data)
+	for _, want := range []string{`"event":"open"`, `"event":"close"`, `"direction":"browser_to_hub"`, `"direction":"hub_to_browser"`, `initialize`} {
+		if !strings.Contains(output, want) {
+			t.Errorf("AppWire trace missing %q:\n%s", want, output)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if got := lines[len(lines)-1]; !strings.Contains(got, `"event":"close"`) {
+		t.Fatalf("final trace record = %s, want close after serve failure", got)
 	}
 }
 
@@ -188,4 +327,249 @@ func TestResolveEvenerBinaryPath(t *testing.T) {
 			t.Fatalf("nil lookPath resolution = %q, want %q", got, evenerPath)
 		}
 	})
+}
+
+// TestRunMainLeavesAnAbsentProvidersConfigAlone pins the write side of the
+// registry cut-over: the hub must not conjure a providers.toml, because the
+// only schema it knew how to write is the pre-registry one its own children
+// now refuse. An absent path is a valid configuration — the registry reads it
+// as "user layer: none" — so the hub starts, writes nothing, and a child
+// pointed at the same path builds a working client.
+func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+
+	providersPath := filepath.Join(root, "config", "evener", "providers.toml")
+	t.Setenv("EVENER_PROVIDERS_CONFIG", providersPath)
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(root, "config", "evener", "credentials.toml"))
+
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.RunDir = filepath.Join(root, "run")
+	cfg.StateGlob = filepath.Join(root, "projects", "*")
+	cfg.PastIndexDB = filepath.Join(root, "hub", "index.db")
+	cfg.HubStateRoot = filepath.Join(root, "hub")
+	cfg.PluginAutoUpgrade = false
+	if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := t.Context()
+
+	served := false
+	deps := mainDeps{
+		loadRegistry:    hermeticRegistryLoader,
+		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		ensureDirs:      func() error { return nil },
+		acquireLock:     func(string) (func(), error) { return func() {}, nil },
+		newToken:        func() (string, error) { return "hub-token", nil },
+		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
+		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
+		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		},
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		serve: func(context.Context, hubHTTPServer) error {
+			served = true
+			return nil
+		},
+	}
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if !served {
+		t.Fatalf("the hub did not reach its serve boundary: %s", stderr.String())
+	}
+	if _, err := os.Stat(providersPath); !os.IsNotExist(err) {
+		t.Fatalf("the hub wrote %s (stat err=%v); an absent providers.toml must stay absent", providersPath, err)
+	}
+
+	// A child pointed at this same path builds a client: an absent user layer
+	// is a valid configuration, not a missing one.
+	client, err := cmdutil.LoadClientAt(providersPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadClientAt(%q): %v — a child spawned with EVENER_PROVIDERS_CONFIG=%s must build a client", providersPath, err, providersPath)
+	}
+	if _, err := client.Resolve("openai/gpt-5.2"); err != nil {
+		t.Fatalf("the child's client resolves nothing: %v", err)
+	}
+}
+
+// hermeticRegistryLoader is the registry loader every runMain test injects:
+// cmdutil's own, with the network and the catalog cache taken away so the
+// hub under test observes only the environment the test set up.
+func hermeticRegistryLoader(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+	return cmdutil.LoadRegistry(append(extra, registry.WithOffline(true), registry.WithoutCache())...)
+}
+
+// TestRunMainDegradesOnAnOldSchemaProvidersConfig is spec §14.1's flag-day
+// row for the hub: an old-schema providers.toml fails to load, and the hub
+// starts anyway on implicit instances alone, surfaces the pointer as a
+// diagnostic, refuses instance writes, and hands every child it spawns
+// EVENER_PROVIDERS_CONFIG= (present, empty) plus EVENER_CREDENTIALS_CONFIG so
+// the child computes the same instance set from the environment and the store.
+func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("GROQ_API_KEY", "gk")
+
+	providersPath := filepath.Join(root, "providers.toml")
+	credentialsPath := filepath.Join(root, "credentials.toml")
+	const oldSchema = "default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"
+	if err := os.WriteFile(providersPath, []byte(oldSchema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", providersPath)
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", credentialsPath)
+
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.RunDir = filepath.Join(root, "run")
+	cfg.StateGlob = filepath.Join(root, "projects", "*")
+	cfg.PastIndexDB = filepath.Join(root, "hub", "index.db")
+	cfg.HubStateRoot = filepath.Join(root, "hub")
+	cfg.PluginAutoUpgrade = false
+	if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := t.Context()
+	served := false
+	var web *WebServer
+	deps := mainDeps{
+		loadRegistry:    hermeticRegistryLoader,
+		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		ensureDirs:      func() error { return nil },
+		acquireLock:     func(string) (func(), error) { return func() {}, nil },
+		newToken:        func() (string, error) { return "hub-token", nil },
+		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
+		loadCredentials: credentials.LoadStore,
+		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		},
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		serve: func(context.Context, hubHTTPServer) error {
+			served = true
+			return nil
+		},
+		afterWeb: func(w *WebServer) { web = w },
+	}
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if !served {
+		t.Fatalf("the hub did not reach its serve boundary: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "providers config:") || !strings.Contains(stderr.String(), "implicit instances only") {
+		t.Fatalf("startup did not announce the degraded load: %s", stderr.String())
+	}
+	if data, err := os.ReadFile(providersPath); err != nil || string(data) != oldSchema {
+		t.Fatalf("the hub rewrote the file it could not read (err=%v):\n%s", err, data)
+	}
+
+	// The instances pane reports the refusal and still lists the implicit set.
+	if web == nil {
+		t.Fatal("afterWeb never ran")
+	}
+	list, ok := hubInstanceListOverRPC(t, web)
+	if !ok {
+		t.Fatal("evener/instance/list is not registered")
+	}
+	if !list.WritesRefused {
+		t.Fatalf("instance/list writesRefused = false; want the write refusal: %+v", list)
+	}
+	if !strings.Contains(strings.Join(list.Diagnostics, "\n"), "§14.1") {
+		t.Fatalf("instance/list diagnostics carry the flag-day pointer: %v", list.Diagnostics)
+	}
+	found := false
+	for _, inst := range list.Instances {
+		if inst.Name == "groq" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the hub still launches against the implicit set: %+v", list.Instances)
+	}
+
+	// And the child it spawns is pointed at no user layer, with the hub's own
+	// credentials.toml. Asked through the spawner's own env-building path, not
+	// a copy of it.
+	spawner, ok := web.cfg.Spawner.(*HubSpawner)
+	if !ok {
+		t.Fatalf("spawner = %T, want *HubSpawner", web.cfg.Spawner)
+	}
+	var env []string
+	oldFn := listEvenerLaunchModelContractFn
+	listEvenerLaunchModelContractFn = func(_ context.Context, _ string, childEnv []string) (appwire.ModelListResponse, error) {
+		env = childEnv
+		return appwire.ModelListResponse{}, nil
+	}
+	t.Cleanup(func() { listEvenerLaunchModelContractFn = oldFn })
+	if _, err := spawner.ListLaunchModelContract(ctx); err != nil {
+		t.Fatalf("ListLaunchModelContract: %v", err)
+	}
+	if !slices.Contains(env, "EVENER_PROVIDERS_CONFIG=") {
+		t.Fatalf("child env must carry a present, empty EVENER_PROVIDERS_CONFIG: %v", env)
+	}
+	if !slices.Contains(env, "EVENER_CREDENTIALS_CONFIG="+credentialsPath) {
+		t.Fatalf("child env must name the hub's credentials.toml: %v", env)
+	}
+}
+
+// hubInstanceListOverRPC dispatches evener/instance/list on a hub's app server.
+func hubInstanceListOverRPC(t *testing.T, web *WebServer) (appwire.InstanceListResponse, bool) {
+	t.Helper()
+	raw, err := web.appRPC.Router().Dispatch(t.Context(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodEvenerInstanceList,
+		Params: mustMarshal(t, appwire.EmptyParams{}),
+	})
+	if err != nil {
+		t.Fatalf("evener/instance/list: %v", err)
+	}
+	resp, ok := raw.(appwire.InstanceListResponse)
+	return resp, ok
+}
+
+func TestRunMainPreparesRuntimeDirectoryBeforeRequests(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		t.Run(strconv.FormatBool(blocked), func(t *testing.T) {
+			_, cfg, deps := newTraceMainTestDeps(t)
+			if blocked {
+				if err := os.WriteFile(cfg.RunDir, []byte("occupied"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ready := false
+			deps.afterWeb = func(web *WebServer) {
+				ready = true
+				if err := web.cfg.Roster.RefreshAndWait(t.Context()); err != nil {
+					t.Errorf("initial ownership discovery: %v", err)
+				}
+			}
+			var stderr bytes.Buffer
+			err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps)
+			if blocked {
+				if err == nil || ready {
+					t.Fatalf("unusable runtime directory reached requests: err=%v ready=%v", err, ready)
+				}
+			} else if err != nil || !ready {
+				t.Fatalf("fresh runtime directory: err=%v ready=%v", err, ready)
+			}
+		})
+	}
 }

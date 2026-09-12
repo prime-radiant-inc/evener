@@ -182,6 +182,13 @@ func searchRetainedOutput(source searchSource, opts retainedSearchOptions) (reta
 		history []string
 		pending []retainedSearchLine
 		eof     bool
+		// matchesWireSize is Σ(len(json(match_i))+1) over envelope.Matches.
+		// It keeps the serialized-size check O(1) per candidate: the appended
+		// match structs are never mutated after append, so each match's
+		// encoded length (already computed as candidateBytes) stays valid.
+		// Invariant: 2+matchesWireSize+len(candidateBytes) ==
+		// retainedMatchesSerializedSize(envelope.Matches, len(candidateBytes)).
+		matchesWireSize int
 	)
 	for {
 		line, ok, err := nextRetainedSearchLine(&scanner, &pending, &eof)
@@ -232,7 +239,7 @@ func searchRetainedOutput(source searchSource, opts retainedSearchOptions) (reta
 		// under the effective cap cannot be recovered by returning continuation at
 		// the same line. Report its interval as oversized and evaluate later lines
 		// so every call either finishes or advances.
-		if retainedMatchesSerializedSize(nil, len(candidateBytes)) > maxSerialized {
+		if 2+len(candidateBytes) > maxSerialized {
 			if len(envelope.SkippedOversized) >= retainedSearchMaxSkippedLines {
 				envelope.Continuation = &retainedContinuation{OffsetBytes: line.start}
 				return envelope, nil
@@ -241,15 +248,20 @@ func searchRetainedOutput(source searchSource, opts retainedSearchOptions) (reta
 			history = history[:0]
 			continue
 		}
-		if retainedMatchesSerializedSize(envelope.Matches, len(candidateBytes)) > maxSerialized {
+		if 2+matchesWireSize+len(candidateBytes) > maxSerialized {
 			envelope.Continuation = &retainedContinuation{OffsetBytes: line.start}
 			return envelope, nil
 		}
 		envelope.Matches = append(envelope.Matches, match)
+		matchesWireSize += len(candidateBytes) + 1
 		history = appendRetainedHistory(history, string(line.content), opts.ContextLines)
 	}
 }
 
+// retainedMatchesSerializedSize is the O(matches) reference for the size of
+// matches plus one candidate encoded as a JSON array. searchRetainedOutput
+// uses a running accumulator instead; TestRetainedMatchesAccumulatorParity
+// asserts they agree at every step.
 func retainedMatchesSerializedSize(matches []retainedSearchMatch, candidateBytes int) int {
 	size := 2 + candidateBytes // surrounding JSON array brackets
 	for i := range matches {

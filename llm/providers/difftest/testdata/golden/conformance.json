@@ -79,7 +79,7 @@
   },
   {
     "name": "openai_text",
-    "provider": "openai",
+    "provider": "responses",
     "source": "llm/providers/openai/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
     "text": "Hello",
     "finish": "stop",
@@ -89,7 +89,7 @@
   },
   {
     "name": "openai_reasoning_summary",
-    "provider": "openai",
+    "provider": "responses",
     "source": "llm/providers/openai/adapter_test.go TestAdapter_Stream_EmitsReasoningSummaryDeltas",
     "text": "Answer",
     "finish": "stop",
@@ -99,7 +99,7 @@
   },
   {
     "name": "openai_toolcall",
-    "provider": "openai",
+    "provider": "responses",
     "source": "llm/providers/openai/adapter_test.go TestAdapter_Stream_TranslatesToolCalls",
     "finish": "tool_calls",
     "input_tokens": 1,
@@ -114,7 +114,7 @@
   },
   {
     "name": "openaicompat_text",
-    "provider": "openaicompat",
+    "provider": "chatcompletions",
     "source": "llm/providers/openaicompat/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
     "text": "Hello",
     "finish": "stop",
@@ -125,7 +125,7 @@
   },
   {
     "name": "openaicompat_toolcall",
-    "provider": "openaicompat",
+    "provider": "chatcompletions",
     "source": "llm/providers/openaicompat/adapter_test.go TestAdapter_Stream_ToolCalls",
     "finish": "tool_calls",
     "finish_raw": "tool_calls",

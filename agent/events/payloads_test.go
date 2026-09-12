@@ -13,6 +13,8 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 	}
 	withCurrentData.Total = 3
 	withCurrentData.Done = 1
+	withCurrentData.Cancelled = 1
+	withCurrentData.Remaining = 1
 	withCurrentData.Current = &TaskSummaryData{ID: 2, Description: "live current task"}
 	withCurrent, err := json.Marshal(withCurrentData)
 	if err != nil {
@@ -21,6 +23,11 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 	if !strings.Contains(string(withCurrent), `"current":{"id":2,"description":"live current task"}`) {
 		t.Fatalf("TaskUpdatedData JSON = %s", withCurrent)
 	}
+	for _, want := range []string{`"cancelled":1`, `"remaining":1`} {
+		if !strings.Contains(string(withCurrent), want) {
+			t.Fatalf("TaskUpdatedData JSON = %s, missing %s", withCurrent, want)
+		}
+	}
 	if strings.Contains(string(withCurrent), "revision") || strings.Contains(string(withCurrent), "epoch") {
 		t.Fatalf("TaskUpdatedData JSON leaked internal publication identity: %s", withCurrent)
 	}
@@ -28,12 +35,19 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 	withoutCurrentData := TaskUpdatedData{}
 	withoutCurrentData.Total = 3
 	withoutCurrentData.Done = 1
+	withoutCurrentData.Cancelled = 1
+	withoutCurrentData.Remaining = 1
 	withoutCurrent, err := json.Marshal(withoutCurrentData)
 	if err != nil {
 		t.Fatalf("marshal TaskUpdatedData without current: %v", err)
 	}
 	if strings.Contains(string(withoutCurrent), `"current"`) {
 		t.Fatalf("TaskUpdatedData without current = %s", withoutCurrent)
+	}
+	for _, want := range []string{`"cancelled":1`, `"remaining":1`} {
+		if !strings.Contains(string(withoutCurrent), want) {
+			t.Fatalf("TaskUpdatedData without current = %s, missing %s", withoutCurrent, want)
+		}
 	}
 }
 
@@ -114,7 +128,7 @@ func TestSessionStartCurrentWorkSeedCarriesAuthoritativeEmptyTasks(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(encoded), `{"profile":"","model":"","current_work":{"tasks":{"total":0,"done":0},"goal":null}}`; got != want {
+	if got, want := string(encoded), `{"profile":"","model":"","current_work":{"tasks":{"total":0,"done":0,"cancelled":0,"remaining":0},"goal":null}}`; got != want {
 		t.Fatalf("SessionStartData JSON = %s, want %s", got, want)
 	}
 	var roundTrip SessionStartData

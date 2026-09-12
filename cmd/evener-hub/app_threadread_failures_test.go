@@ -71,6 +71,9 @@ func seedPastSessionWithShellExits(t testing.TB, divergenceTurn int, rounds []sh
 			Kind:       llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{ToolCallID: id, Name: "shell", Content: "output", ToolState: state},
 		}}}
+		if err := w.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("run it")}); err != nil {
+			t.Fatal(err)
+		}
 		if err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: announce}); err != nil {
 			t.Fatal(err)
 		}
@@ -129,9 +132,9 @@ func TestPastThreadRead_ReportsZeroForASessionWhereNothingFailed(t *testing.T) {
 // Those failures were the parent's; attributing them to the child is the same
 // bug DivergenceTurn already prevents for tokens.
 func TestPastThreadRead_ForkFailureCountExcludesTheInheritedParentPrefix(t *testing.T) {
-	// Entries 1-2 and 3-4 are the parent's rounds; the child's own history
-	// starts at entry 5.
-	cfg, entry := seedPastSessionWithShellExits(t, 5, []shellRound{{1}, {1}, {2}})
+	// Rounds 1-2 (entries 1-6: user+announce+results each) are the parent's;
+	// the child's own history starts at entry 7.
+	cfg, entry := seedPastSessionWithShellExits(t, 7, []shellRound{{1}, {1}, {2}})
 
 	thread := readSeededThread(t, cfg, entry)
 
@@ -184,7 +187,7 @@ func TestPastThreadRead_FailureCountIsIndependentOfTheTurnWindow(t *testing.T) {
 	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{1}, {0}, {1}, {0}, {1}})
 
 	resp, ok := requirePastThreadReadResponse(t, cfg, appwire.ThreadReadParams{
-		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, TurnLimit: 1,
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 1,
 	})
 	if !ok {
 		t.Fatalf("past thread %s not found", entry.Meta.ID)
@@ -208,7 +211,7 @@ func TestPastThreadRead_FailureCountIsIndependentOfTheTurnWindow(t *testing.T) {
 func TestPastEntryThread_DoesNotDeriveTheFailureCountOnTheListSweepPath(t *testing.T) {
 	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{1}, {1}})
 
-	thread, err := pastEntryThread(cfg, entry, false)
+	thread, err := pastEntryThread(context.Background(), cfg, entry, false)
 	if err != nil {
 		t.Fatalf("pastEntryThread: %v", err)
 	}
@@ -228,7 +231,7 @@ func TestPastThreadListDoesNotDiscoverSkills(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 
-	if _, err := pastEntryThread(cfg, entry, false); err != nil {
+	if _, err := pastEntryThread(context.Background(), cfg, entry, false); err != nil {
 		t.Fatal(err)
 	}
 	sources := appsource.NewRegistry()
@@ -255,7 +258,7 @@ func TestPastThreadTurnsListDoesNotDiscoverSkills(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 
-	_, ok, err := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: "local:" + entry.Meta.ID, Limit: 1})
+	_, ok, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: "local:" + entry.Meta.ID, ItemLimit: 1})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadTurnsList = %v, %v", err, ok)
 	}
@@ -274,7 +277,7 @@ func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 	liveDiagnostics := &appwire.EvenerDiagnostics{Tools: []appwire.EvenerToolInfo{{Name: "live-tool"}}}
-	got, err := mergePastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
+	got, err := mergePastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
 		ID: entry.Meta.ID, SessionID: entry.Meta.ID, Evener: appwire.EvenerThread{Diagnostics: liveDiagnostics},
 	})
 	if err != nil {
@@ -290,7 +293,7 @@ func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
 
 func TestMergePastThreadForReadUsesPastDiagnosticsWhenLiveAbsent(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
-	got, err := mergePastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
+	got, err := mergePastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
 		ID: entry.Meta.ID, SessionID: entry.Meta.ID,
 	})
 	if err != nil {

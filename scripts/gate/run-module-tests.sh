@@ -86,7 +86,8 @@ done
 
 # Package/test parallelism controls for heavyweight modules. Explicit empty
 # values mean "don't pass the flag" so go test uses its defaults; the -race gate
-# sets AGENT_PARALLEL empty to avoid oversubscribing few-core CI.
+# explicitly keeps AGENT_PARALLEL at 6 to prevent host-wide concurrency from
+# oversubscribing the agent test binary on high-core machines.
 #
 # AGENT_PARALLEL is deliberately modest. The agent suite's real work is ~13s of
 # user CPU, so wall time is flat from -parallel 6 up to 32 while kernel time

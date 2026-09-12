@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { RawItemView } from "./RawItemView";
-import { ignoringTurn, itemRendererFor, registerItemRenderer } from "./types";
+import { type ItemRenderProps, ignoringTurn, itemRendererFor, registerItemRenderer } from "./types";
 
 // Dummy stand-ins - these tests are about registry MECHANICS (does a
 // registration resolve, does it override, does it stay scoped to its own
@@ -76,4 +76,12 @@ test("ignoringTurn re-renders when opensExchange or agentLabel changes", () => {
   expect(ignoringTurn(base, { ...base, opensExchange: true })).toBe(false);
   expect(ignoringTurn(base, { ...base, agentLabel: "k3" })).toBe(false);
   expect(ignoringTurn({ ...base, opensExchange: true }, { ...base, opensExchange: true })).toBe(true);
+});
+
+test("ItemRenderProps no longer has a hideIntent field", () => {
+  const props: ItemRenderProps = { item: itemModel(), turn: turnModel(), live: false };
+  // @ts-expect-error — hideIntent is removed from ItemRenderProps
+  props.hideIntent;
+  // Runtime sanity: the field is simply absent on a freshly-constructed props.
+  expect((props as unknown as Record<string, unknown>).hideIntent).toBeUndefined();
 });

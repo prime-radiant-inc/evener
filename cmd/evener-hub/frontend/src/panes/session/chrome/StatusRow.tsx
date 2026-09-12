@@ -16,7 +16,7 @@
 
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
-import { effortLabel, effortOptionLevels } from "../../../shell/reasoningEffort";
+import { effortLabel, effortOptionLevels, sessionEffortLevels } from "../../../shell/reasoningEffort";
 import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -34,7 +34,7 @@ const CLASS = {
   row: requireClass(styles.row, "statusrow.module.css", "row"),
   identity: requireClass(styles.identity, "statusrow.module.css", "identity"),
   item: requireClass(styles.item, "statusrow.module.css", "item"),
-  mono: requireClass(styles.mono, "statusrow.module.css", "mono"),
+  figure: requireClass(styles.figure, "statusrow.module.css", "figure"),
   context: requireClass(styles.context, "statusrow.module.css", "context"),
   contextMeter: requireClass(styles.contextMeter, "statusrow.module.css", "contextMeter"),
   contextPercent: requireClass(styles.contextPercent, "statusrow.module.css", "contextPercent"),
@@ -50,13 +50,6 @@ const CLASS = {
   srOnly: requireClass(styles.srOnly, "statusrow.module.css", "srOnly"),
 };
 
-// Fallback effort ladder for a reasoning model whose own ladder the hub does
-// not enumerate. Ported verbatim from the legacy live picker (cmd/evener-hub/
-// assets/model-switch.js:30, itself from spawn.js:1605) so this surface and
-// the spawn form agree; the daemon clamps a request to what the model actually
-// accepts, so an over-broad list is safe.
-const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
-
 // ReasoningEffortControl renders the reasoning-effort switcher as a quiet
 // trigger matching the model switcher beside it: the current value IS the
 // visible control, no bordered <select> box competing with it in a row that has
@@ -67,7 +60,7 @@ const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
 // listbox to save a border.
 //
 // The effective ladder is the model's own named levels, or - when it reasons
-// but names none - the DEFAULT_EFFORT_LEVELS fallback: the wire really can emit
+// but names none - the sessionEffortLevels fallback: the wire really can emit
 // supportsReasoning:true with an empty ladder (the daemon's Profile sets
 // p.reasoning and p.effortLevels from independent conditions,
 // agent/provider/profile.go:454 vs :442; the reducer coerces the absent ladder
@@ -90,12 +83,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
     }
   }
 
-  const levels =
-    model.reasoningEffortLevels.length > 0
-      ? model.reasoningEffortLevels
-      : model.supportsReasoning
-        ? DEFAULT_EFFORT_LEVELS
-        : [];
+  const levels = sessionEffortLevels(model.reasoningEffortLevels, model.supportsReasoning);
   if (levels.length === 0) return null;
 
   const current = model.reasoningEffort ?? "";
@@ -176,7 +164,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
                 tone={contextTone(model.contextPressure)}
               />
             </span>
-            <span className={`${CLASS.contextPercent} ${CLASS.mono}`} data-testid="status-row-context-percent">
+            <span className={`${CLASS.contextPercent} ${CLASS.figure}`} data-testid="status-row-context-percent">
               {`${contextPercent}%`}
             </span>
           </span>
@@ -187,7 +175,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           feeding it an absence fabricates a measurement. Same gate
           DetailsPanel's own work-time row uses. */}
       {running && workMs > 0 && (
-        <span className={`${CLASS.item} ${CLASS.mono} ${CLASS.workTime}`} data-testid="status-row-work-time">
+        <span className={`${CLASS.item} ${CLASS.figure} ${CLASS.workTime}`} data-testid="status-row-work-time">
           {formatWorkDuration(workMs)}
         </span>
       )}
@@ -197,7 +185,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           session. */}
       {queueDepth > 0 && (
         <span
-          className={`${CLASS.item} ${CLASS.mono} ${CLASS.queue}`}
+          className={`${CLASS.item} ${CLASS.figure} ${CLASS.queue}`}
           data-testid="status-row-queue"
           role="status"
           aria-label={`${queueDepth} queued`}

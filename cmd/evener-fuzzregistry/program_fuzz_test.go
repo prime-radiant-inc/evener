@@ -15,6 +15,7 @@ func FuzzRegistryProgram(f *testing.F) {
 		scenarioDiscoverWorkspaceRejectsSymlinkedModuleOutsideRepository,
 		scenarioDiscoverWorkspaceRejectsDuplicateResolvedModuleDirectories,
 		scenarioCheckTargetsReportsMissingNativeFuzzer, scenarioCheckTargetsReportsStalePackageRow,
+		scenarioCheckSupportTargetsValidatesPackagesAndFunctionNames,
 		scenarioCheckTargetsReportsDuplicateIdentity, scenarioCheckTargetsDistinguishesColonContainingTupleFields,
 		scenarioDiscoverWorkspaceIgnoresFuzzLikeProductionDeclaration,
 		scenarioDiscoverWorkspaceHonorsGoBuildTestFileSelection,

@@ -24,7 +24,7 @@ func FuzzSummarizeTool(f *testing.F) {
 		{"task_list", `{"action":"append","tasks":[{"description":"d","prompt":"p\nq"}]}`},
 		{"task_list", `{"action":"update","updates":[{"id":1,"status":"done"}]}`},
 		{"web_search", `{"query":"go fuzzing"}`},
-		{"delegate", `{"task":"do a thing\nover two lines"}`},
+		{"delegate", `{"prompt":"do a thing\nover two lines"}`},
 		{"communicate", `{"message":"hi"}`},
 		{"communicate", `{"output":{"message":"nested"}}`},
 		{"some_mcp__op", `{"a":"b","n":3,"flag":true}`},

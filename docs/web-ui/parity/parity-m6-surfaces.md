@@ -132,7 +132,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 ### 1.10 Stale-model detection & cleanup
 
 - [ ] A stored model value with no `/` separator (legacy bare model name) is dropped SYNCHRONOUSLY, before the model list even resolves, so the user can never submit it (`spawn.js:266-270`)
-- [ ] `modelValidityAgainstList` classifies a value as `malformed` (no `/`) / `stale` (provider IS enumerated, model gone) / `unknown` (provider not enumerated at all — e.g. OAuth-only anthropic, openrouter-anthropic) / `valid` (`spawn.js:154-175`)
+- [ ] `modelValidityAgainstList` classifies a value as `malformed` (no `/`) / `stale` (provider IS enumerated, model gone) / `unknown` (provider not enumerated at all — e.g. OAuth-only `openai-codex`; `openrouter-anthropic` was the example here before the registry cut-over, it's not an instance any more) / `valid` (`spawn.js:154-175`)
 - [ ] Only `malformed` and `stale` verdicts clear the chip; `unknown` is deliberately left untouched because the hub has no way to prove it's actually wrong (`spawn.js:249-253, 292-294`)
 - [ ] Before validating the CURRENT chip's value, `validatePrefilledModel` sweeps EVERY `evener-hub.spawn-defaults.*` per-project blob in localStorage (not just the active project) plus the standalone global-model key, stripping stale/malformed `.model` fields and deleting an emptied blob outright (`spawn.js:177-246, 254-256, 275-278`)
 - [ ] After the sweep, the code re-reads the chip's LIVE value and bails out if it no longer matches what was being validated, so an async response can't clobber a newer in-flight user choice (`spawn.js:285-290`)

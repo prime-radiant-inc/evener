@@ -2,19 +2,18 @@
 
 **What this covers**: Track B's graceful-degradation rule (spec:
 "Graceful degradation: uncatalogued live model still renders, no
-badges"). A live model the embedded catalog doesn't know must render
-with its name and provider-qualified id, carry **no** badge/cost/context
-metadata at all, stay selectable, and launch.
+badges"). A live model the registry carries no capabilities for must
+render with its name and provider-qualified id, carry **no**
+badge/cost/context metadata at all, stay selectable, and launch.
 
-Ollama supplies a real, no-stub example of the rule.
-`catalogModelInfo` (`cmd/evener-hub/app_models.go#catalogModelInfo`) delegates
-to `ResolveLiveModelInfo`'s ollama branch (`llm/model_catalog.go#ResolveLiveModelInfo`),
-which suppresses the generic bare-id
-`LookupModelInfo` fallback and requires an exact `"ollama/<id>"` catalog
-key — "local ollama models are unrelated to same-named upstream catalog
-entries". The embedded catalog carries 29 `ollama/*` keys
-(`llm/data/litellm_model_catalog.json`), so any locally-pulled model
-outside that set is uncatalogued **by design**, not by accident.
+Ollama supplies a real, no-stub example of the rule. Every capability on
+a model descriptor comes from the registry's resolved record
+(`cmdutil.ModelDescriptorFromResolved`, `cmdutil/cmdutil.go#ModelDescriptorFromResolved`),
+and a locally-pulled ollama model has no curated row of its own, so it
+arrives with the provider-level defaults and nothing else — uncatalogued
+**by design**, not by accident. The hub adds nothing on top:
+`enrichModelListResponse` (`cmd/evener-hub/app_models.go#enrichModelListResponse`)
+only fills a blank display name and sorts.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map. The old `.chip-picker-model-meta` /
@@ -103,8 +102,8 @@ So the assertion is **absence of the element**, not an empty one.
   (`prettifyModelDisplayName`, `cmd/evener-hub/app_models.go#prettifyModelDisplayName`) —
   degradation drops facts, it does not drop the row. This exact key set
   is pinned by
-  `TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges`
-  (`cmd/evener-hub/app_models_test.go#TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges`).
+  `TestEnrichModelListResponse_ModelWithoutCapsStillRenders`
+  (`cmd/evener-hub/app_models_test.go#TestEnrichModelListResponse_ModelWithoutCapsStillRenders`).
 - **Step 2**: the openai neighbour carries those keys, proving the
   absence in step 1 is about the model and not about the endpoint.
 - **Steps 4/5**: `found` is true; `text` is exactly `Gemma4:e4b`;
@@ -118,9 +117,10 @@ So the assertion is **absence of the element**, not an empty one.
   or the row is greyed/disabled.
 - **Step 6**: the TUI row reads `Gemma4:e4b  ollama/gemma4:e4b` with no
   ` · ctx · price · caps` tail — `modelInfoMetaTail` returns `""` for a
-  nil catalog entry (`cmd/evener-tui/hub_commands.go:396-399`), pinned by
-  `TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta`
-  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta`). Contrast the
+  descriptor carrying none of those fields
+  (`cmd/evener-tui/hub_commands.go#modelInfoMetaTail`), pinned by
+  `TestModelPickerItems_DescriptorWithoutMetadataStillRendersEmptyMeta`
+  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_DescriptorWithoutMetadataStillRendersEmptyMeta`). Contrast the
   adjacent `Gpt 5.4` row's
   `1M ctx · $2.50/$15.00 · tools,vision,reasoning`.
 - **Step 3**: `thread/start` returns a

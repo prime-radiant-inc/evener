@@ -1,61 +1,161 @@
-# Evener Web Hub — Design System & Style Guide (v2)
+# Evener Web Hub — Design System & Style Guide (v3)
 
-Status: **current**. This is the wave-2 rewrite's design system: tokens, fonts, and a widget
-library under `cmd/evener-hub/frontend/src/widgets/`, built as React function components + CSS
-Modules, with a living gallery (`/dev/widgets`, dev builds only) showing every widget in every
-documented state, in both themes.
+Status: **current editorial design system**. The canonical
+system for the React + CSS Modules frontend under `cmd/evener-hub/frontend/src/`.
+The real `/dev/widgets`, `/dev/type`, and `/dev/surfaces` galleries show it in both themes.
 
-**This supersedes the pre-wave-2 version of this document** (the `renderer.js`/`style.css`-era
-transcript UI — audience/principles/component-grammar/sidebar/mobile-forms sections describing
-the old server-rendered hub). That content isn't reproduced here; it's in git history
-(`git log -- docs/web-ui/design-system.md`) if it's ever needed for migration reference. The
-wave-2 widget library is a from-scratch visual system, not a reskin of the old one, so carrying
-old rules forward inline would misrepresent what's actually enforced today.
+The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
+supersedes the Beautiful UI aesthetic mandate for palette, typography, enclosure and elevation.
+It does **not** replace the interaction law, widget APIs, semantic color meanings,
+accessibility floors or honest-liveness rules. Source now implements tokens, shared
+widgets, typography, inline tool/delegate hierarchy, shell, forms, composer and ledgers.
+Some surfaces inherit shared styling rather than a separate redesign; see
+[source coverage](#editorial-source-coverage). Release verification is recorded separately
+under [acceptance and limits](#acceptance-and-limits); this guide is not a release certificate.
 
-Source of design law: `docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-system.md`,
-§Direction. §1 below reproduces it verbatim; everything after is derived from it or documents
-what the implementation actually shipped.
-
-**Visual language provenance.** As of the 2026-08-13 re-theme, the palette, type, shape,
-elevation, and motion described below (§2 onward) are adapted from
-[Beautiful UI](https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine — full
-license text at `cmd/evener-hub/frontend/LICENSES/beautiful-ui.txt`. Beautiful UI ships as React +
-Tailwind components; nothing is copy-pasted from it — every value and structure is translated
-into evener's own CSS-module + token system, which is why the token-contract machinery in §4
-continues to hold unchanged. See
-`docs/superpowers/specs/2026-08-13-webui-beautiful-ui-retheme-design.md` and this document's
-sibling `decisions.md` (2026-08-13 entry) for what was kept, what changed, and why.
+**Provenance and attribution.** The 2026-08-13 system adapted
+[Beautiful UI](https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine.
+Its licensed attribution remains at `cmd/evener-hub/frontend/LICENSES/beautiful-ui.txt`.
+The interaction patterns and widget inventory below retain that history. Earlier visual
+systems (the server-rendered hub, wave-2, Fjord/Ledger, Beautiful UI) are recorded in git
+and [decisions.md](decisions.md), not repeated here as competing current mandates.
+Source Serif 4 is self-hosted from `@fontsource-variable/source-serif-4` 5.3.0,
+SIL Open Font License 1.1; the package notice and license are reproduced below.
 
 ---
 
+## Design model: an editorial instrument
+
+**Conversation supports understanding; evidence supports verification; controls support
+intervention.** This is our design argument, inspired by Tufte, not a quotation or a claim
+of measured usability improvement. Typography and spacing serve that division of work.
+The reader should be able to follow a claim, inspect what happened, and act without
+losing the conversation that made the evidence relevant.
+
+- **Put evidence beside claims.** A tool row leads with authored intent, then the exact
+  action and target, then native code, diff, output or structured evidence. Intent explains
+  why; it does not replace the action or prove the result. This adds hierarchy rather than
+  another generated summary for the reader to trust.
+- **Disclose detail, not consequences.** Collapse bulky evidence to keep a conversation
+  readable, but leave failure and actionable status legible. Disclosure inspects in place;
+  Open navigates independently. Neither action should accidentally trigger the other.
+  Progressive disclosure costs an extra action to inspect detail; it must not conceal
+  the reason to inspect it.
+- **Keep different facts distinct.** Delegate lifecycle, attention, immutable launch receipt
+  and child-authored report answer different questions. A successful launch is not finished
+  work; an earlier report is not current activity. Prefer an honest unknown to an inferred
+  success. This is less reassuring than a single green badge, but more useful for supervision.
+- **Preserve the path into evidence.** Nested transcript inspection retains the owner and
+  immediate parent. Back returns to that parent, not an arbitrary focused pane or the root;
+  when the exact originating surface survives, retain its identity even if a session and a
+  read-only transcript share a ref. Context bookkeeping is the cost of letting a reader
+  investigate without rebuilding their place. See
+  [Open routing](../../cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx)
+  and [retained origins](../../cmd/evener-hub/frontend/src/shell/workspace.ts).
+- **Quiet the frame, not the controls.** Fine rules and aligned columns replace decorative
+  enclosure. Fields still look editable, overlays retain boundaries, focus remains visible,
+  and semantic color distinguishes attention, activity, failure and selection with text or
+  shape as well as hue. Minimalism is not permission to hide an affordance.
+- **Optimize readable density, not maximum density.** Prose gets a reading face and measure;
+  operations use compact sans; machine evidence uses mono. Larger prose occupies more space
+  but separates reading from scanning. Shared size and width preferences remain available.
+  Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
+  wide evidence scrolls within its surface instead of widening the page or shrinking targets.
+
+The provenance corrections and nested navigation/focus repairs change behavior. Folding,
+disclosure persistence, keyboard rules, preferences and semantic hue roles are retained
+contracts, not inventions of this redesign. Other surfaces gain a coherent shared system
+without necessarily gaining a new workflow; the coverage section identifies that boundary.
+
+**Review questions.** Can a reader distinguish intent from execution and a receipt from a
+report? Is failure visible before expansion? Can they open evidence without toggling its
+disclosure, then return to the immediate context? Are editable fields and keyboard focus
+unmistakable in both themes? At phone widths and larger text settings, do prose, controls
+and wide evidence remain usable without hiding content? Review the real components and
+workflows, not only token swatches.
+
+## Inline tools and delegates
+
+**Tools stay in the conversation.** Use the shared
+[ToolRow](../../cmd/evener-hub/frontend/src/panes/session/transcript/ToolRow.tsx)
+grammar: authored intent first, then action/target and compact result metadata.
+Descriptors supply content and native evidence, not independent row layouts.
+Keep disclosure separate from file/transcript opening; retain existing folding and
+disclosure persistence. Evidence stays in its native code, diff, output or structured
+renderer rather than becoming a second prose summary.
+
+**Delegates are durable collaborators, not launch-tool status.** The inline
+[delegate renderer](../../cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx)
+and [row model](../../cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts)
+take lifecycle from the owning thread's stable delegate projection. Keep the immutable
+launch receipt separate: a completed launch call does not prove the delegate completed.
+Without authoritative owner state, only an explicitly in-flight launch proves activity;
+otherwise show unknown rather than infer success or liveness from the receipt or child
+transcript. Attention is a separate signal from lifecycle.
+
+Use the current run's start for elapsed time, not the old launch receipt. Child-authored
+words remain distinct from machine metadata and may remain visible on resumption; they
+do not establish current lifecycle. Expanded activity shows the five most recent authored/activity
+items, with full history behind Open transcript. Omit unavailable counts and timing;
+distinguish unavailable activity from an empty loaded transcript. These are provenance
+rules, not permission to fabricate a summary or rewrite stored evidence.
+
+## Editorial source coverage
+
+The [approved surface scope](../superpowers/specs/2026-09-09-tufte-webui-design.md#other-surfaces)
+and [real-component SurfaceGallery](../../cmd/evener-hub/frontend/src/dev/SurfaceGallery.tsx)
+provide the coverage references. Direct source work covers transcript tool/delegate rows,
+shell/rail/mobile structure, welcome/spawn/settings/provider forms, composer/queue/AskDock/
+attachments, and activity/task/detail ledgers. This extends beyond a token-only restyle.
+
+Documents, read-only transcripts, menus, dialogs and notices inherit shared Markdown,
+CodeBlock, PaneScaffold, palette, radius and overlay styling; this is not a separate
+interaction rewrite for each surface. Gallery examples and deterministic tests support
+source coverage, not a claim that every workflow, theme, viewport or assistive technology
+has passed browser acceptance.
+
+## Acceptance and limits
+
+Release snapshot, 2026-09-10: the implementation is integrated and
+[PR #1124](https://github.com/prime-radiant-inc/evener/pull/1124) is an open draft, not
+merged-main acceptance. Source review, automation and hands-on review are separate evidence:
+
+- **Source and automation:** source changes were reviewed and integrated. The latest
+  unchanged browser suite and build passed; the final integrated twelve-gate run and its
+  full-output and power-state audits passed. An earlier writer scroll-guard failure was not
+  reproduced and remains unresolved; later passes do not explain it.
+- **Hands-on panel:** phone and workspace reviewers endorsed their reviewed surfaces.
+  The same tools reviewer still owes the mixed-origin native retest; its rejection remains
+  open. Source regression tests for nested Open/Back repairs do not substitute for that retest.
+- **Preview:** the detached preview still serves an older build; the authorized refresh
+  has not happened. It is not evidence for the final integrated implementation.
+
+No perceptual color/leading A/B study, real-device, Safari, assistive-technology or live-provider
+validation is claimed. Automated contrast and geometry checks constrain the design; they do
+not establish reading comfort or usability. The accessibility gaps in §8 remain documented.
+
 ## 1. Direction (the design law)
 
-> Reproduced verbatim from the wave-2 plan — largely superseded by now. The palette
-> was first replaced by the 2026-07-31 Fjord/Ledger re-theme, then palette, type,
-> shape, elevation, and motion were all replaced by the 2026-08-13 full adoption of
-> the Beautiful UI design language (see `decisions.md`'s entries for both dates). §2
-> below documents shipped reality; this section is kept as the original historical
-> record of the plan as written. For anything not covered by those two re-themes, if
-> this section and the plan ever disagree, the plan is source of truth and this
-> section is stale — file it as a doc bug.
+**Reading before chrome.** Warm neutral paper/ink, not sepia decoration. Dark remains the
+default; `system`, `light`, and `dark` preferences keep their existing behavior. A page is
+flat, a field is visibly editable, and a floating layer retains a boundary and depth.
+Use whitespace, aligned columns and fine rules instead of nested boxes and tinted bands.
 
-**Palette:** superseded twice since this plan was written — first by the 2026-07-31
-Fjord/Ledger re-theme, then in full by the 2026-08-13 adoption of the Beautiful UI
-design language. The wave-2 hex table originally reproduced here is dropped rather
-than perpetuated as a third stale table; see §2 below for the palette as shipped,
-and `decisions.md` for both re-themes' provenance and rationale.
+**Three faces with distinct jobs.** Source Serif 4 for reading prose and editorial page
+headings; Inter for controls, labels, tables and compact operations; JetBrains Mono for code,
+commands, paths and machine identifiers. Comparable operational figures use tabular Inter,
+not monospace. Keep authored text and machine evidence visibly distinct.
 
-**Type:** IBM Plex Sans (UI + prose; display = weight 600, tracking −1%) and IBM Plex Mono
-(code, tool output, paths, timings). Scale (px): 12 caption / 13 ui / 14 body / 16 pane-title /
-20 page-title, line-heights 1.5 body, 1.3 titles. Mono never used for chrome labels (retired
-pattern stays retired).
+**Geometry is not decoration.** Preserve the shared reading/wide measure, alignment,
+font-size preferences, timestamp rail, safe-area/keyboard rules and 899px mobile boundary.
+Do not shrink targets or hide overflow as a substitute for containing wide evidence.
 
-**Space/shape:** 4px grid (`--space-1..9` = 4..64); radius 4 (controls) / 8 (panes, dialogs) / 999px pill (switch track);
-depth = `--edge` borders + surface steps; shadows only on floating layers (menu, popover, toast: `--shadow-overlay`; dialog/sheet: `--shadow-modal`; the tooltip stays border-only — too small to shadow).
+**Color is meaning.** Attention = a human/action is needed; alive = active work;
+danger = failure/destruction; accent = links, focus and selection. No decorative status
+hues, invented activity, speculative progress bars or color-only distinctions.
 
-**Motion:** default none. Allowed: attention onset (one 200ms ease-out color/edge transition),
-streaming caret blink, dialog/menu 120ms fade-scale. Forbidden: idle pulses, skeleton shimmer
-loops on live data, anything that animates during silence (honest-liveness rule).
+**Motion is evidence.** Default none. Preserve measured cadence and reduced-motion
+behavior; nothing animates during silence. See §5 for the exact budgets and exceptions.
 
 **Signature — the cadence instrument (`<Cadence>` widget):** one component rendered everywhere
 a session appears (tree row, pane header, mobile card): a state dot plus a 64×10px activity
@@ -80,57 +180,104 @@ theme; the light-theme block (`[data-theme="light"]`) redeclares every color tok
 same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
 but not the other's.
 
-**Color** — a six-step neutral surface ramp replaces the old three-step one: `--surface-0`
-(app background — page), `--surface-canvas` (pane wells, rail), `--surface-1` (panes/cards),
-`--surface-inset` (card header bands, code gutters), and the two interaction washes `--hover-1`
-(resting hover) / `--hover-2` (pressed/selected). `--field` is the sunken form-control
-background. `--surface-2` (raised: menus, dialogs) keeps its name and dark value, but now
-carries its depth via `--shadow-overlay` (see Elevation below) rather than a lighter fill —
-during the re-theme, call sites that used `--surface-2` purely as a hover wash migrated to
-`--hover-1`, so `--surface-2` now appears only on genuinely raised layers and as the neutral
-fill of small static elements (chip/badge neutral tone). Two border weights
-replace the old single `--edge`: `--edge` (hairline) and `--edge-strong` (control borders,
-overlay rings). `--ink-hi/mid/low` are unchanged in role. The four semantic families
-(`--attention`, `--alive`, `--danger`, `--accent`) keep their `-bg` (15% mix into the surface)
-and `-edge` (40% mix into the hairline border) companions, and each now also gets a `-ink`
-companion (`--attention-ink`, `--alive-ink`, `--danger-ink`, `--accent-ink`) for text usage.
-Reason: Beautiful UI's bare light-theme hues measure 2.8–3.9:1 against white — fine for glyphs,
-borders, and washes, but failing the 4.5:1 AA floor for text. Light `-ink` values are darkened
-forms of all four hues; in dark only accent and danger needed brightening (attention/alive
-already clear). Each is contract-tested ≥4.5:1 against its theme's lightest text grounds AND
-the hue's own `-bg` tint — the fill chips/badges/toasts actually set `-ink` text on — the same
-way as the diff-contrast pair (§4, item 3 below). The rule: a call site that sets a hue
-as `color` uses `-ink`; glyphs, borders, and washes keep the bare hue. The tooltip carries its
-own inverted mini-palette instead of sitting on `--surface-2` — `--tooltip-bg/-fg/-muted/-border`,
-near-black in both themes. Light theme deliberately inverts the old surface order: `--surface-1`
-(white) sits *lighter* than `--surface-0` (page), so cards pop instead of blending — see
-`decisions.md`'s 2026-08-13 entry. The two dedicated diff-notation backgrounds
-(`--diff-add-bg`/`--diff-del-bg`) are re-derived against the new surfaces each re-theme (quiet
-1.05–1.2× vs `--surface-0`, AA for content); the sixteen ANSI colors are re-tuned to the new
-neutral palette each time too. All color tokens are declared identically-named in both theme
-blocks (§4, item 4).
+**Color** — the warm neutral roles below are implemented in both theme blocks. All existing
+token names are retained. The table is a reference; `tokens.css` is authoritative.
 
-**Type** — `--font-sans` / `--font-mono` (Inter Variable + JetBrains Mono Variable, self-hosted
-from the `@fontsource-variable/inter` / `@fontsource-variable/jetbrains-mono` npm packages,
-latin subset, `@font-face`-wired in `global.css` — no binaries committed);
-`--font-weight-regular/medium/semibold` (400/500/600); `--tracking-display` (−0.02em, display
-weight only — widened from −0.01em under IBM Plex); `--font-size-caption/ui/body/pane-title/
-page-title` (12/13/14/16/20px); `--line-height-body/title` (1.5/1.3). NEW: `--tracking-micro`
-(0.08em) backs the **micro-label pattern** — card/pane section headers set at 11.5–12px
-uppercase, `--font-weight-medium`, `--tracking-micro`, `--ink-low`/`--ink-mid`, usually on a
-`--surface-inset` band. It's applied through widget chrome (PaneScaffold titles are its one
-adopter today; Dialog keeps its full-size title on an inset band, and Card has no header slot),
-never per-page. This is a distinct pattern from the
-caption-size "section eyebrow" documented in §6 (0.04em tracking, for group labels like the
-rail's "Projects") — eyebrows label a *group*, micro-labels title a *container*.
+| Role | Dark | Light |
+|---|---|---|
+| Page `--surface-0` | `#191918` | `#FAF9F6` |
+| Wells/rail `--surface-canvas` | `#1D1D1B` | `#F1F0EB` |
+| Evidence/structural fill `--surface-1` | `#232320` | `#FCFBF8` |
+| Floating layer `--surface-2` | `#232320` | `#FCFBF8` |
+| Evidence inset `--surface-inset` | `#20201E` | `#F4F3EE` |
+| Hover / selected `--hover-1/2` | `#2B2B28` / `#33332F` | `#F0EFE9` / `#E5E4DD` |
+| Editable field `--field` | `#292926` | `#F4F3EF` |
+| Fine / strong edge | `#34342F` / `#51514A` | `#DDDCD4` / `#B7B6AC` |
+| High / medium / low ink | `#F2F1EB` / `#B0AFA6` / `#99998F` | `#252521` / `#5F5F57` / `#6D6D64` |
+
+Card, InspectorCard and PaneScaffold share the page ground rather than manufacturing raised
+surfaces. Evidence and overlays still have their own grounds. Fine borders are structure,
+not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 6.12/5.48, light 4.96/5.05.
+Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
+
+The four semantic hues keep their names, roles, 15% OKLab `-bg` washes and 40% `-edge`
+companions. Text uses `-ink`, never the bare hue. Light alive/danger/accent text colors are
+`#12763B` / `#C51D23` / `#0064C2`, darkened to preserve AA on their own warm tinted grounds.
+The tests compute every semantic pairing, including each hue's own wash, at ≥4.5:1.
+Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
+
+Diff notation remains independent of semantic status. Dark add/delete stays `#19251A` /
+`#170B17`; light is `#E9F4EE` / `#F5EAF0`. Background contrast against the page stays within
+1.05–1.2, content ≥4.5, marker ≥3, with additions lighter in grayscale and explicit +/− signs.
+The PWA manifest and HTML theme-color are synchronized to the dark page `#191918`.
+
+**Type** — three shared families, no CDN font requests:
+
+- `--font-sans`: `"Inter Variable"` plus system sans fallbacks. Controls, labels, operational tables.
+- `--font-prose`: `"Source Serif 4 Variable", Georgia, "Times New Roman", serif`. Reading and page headings.
+- `--font-mono`: `"JetBrains Mono Variable"` plus system monospace fallbacks. Machine evidence.
+
+Inter and JetBrains Mono remain wired to their package Latin variable WOFF2 files. Source Serif 4
+uses the package's actual exported normal CSS and `wght-italic.css` for real italics; all assets
+are served locally by Vite/the built frontend, with package Unicode-range subsetting.
+
+The existing `--font-size-caption/ui/body/pane-title/page-title/display` ramp remains
+12/13/15/18/22/28px. **`--font-size-prose: calc(18px * var(--font-scale))` is new**, declared on
+`body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
+16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
+reading step is 18px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
+1.6/1.4/1.25; display tracking remains −0.02em.
+
+Markdown defaults to the prose face/size while retaining `--prose-font-size` and `--markdown-ink`
+caller hooks. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
+explicitly keeps the mono face. Markdown tables use Inter at body size, tabular figures,
+wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
+buttons, fields, dialog labels and other compact operational headings do not inherit it globally.
+`faces.test.ts` pins the new contract and the unchanged operational sans rules; `/dev/type`
+shows all three faces (including real serif italic), the ramp and both measures.
+
+**The eyebrow recipe.** `--tracking-eyebrow` (0.06em) replaced `--tracking-micro` and the four
+other tracking values that were in use, and it is now THE uppercase tracking in the app. The
+recipe it backs is one rule with no variants: `--font-size-caption`, `--font-weight-medium` (or
+semibold where a header band wants more), `--ink-mid` or darker, `text-transform: uppercase`,
+`letter-spacing: var(--tracking-eyebrow)`, at most two words. It is reserved for short labels inside a
+page (RecommendationCard's kicker and existing rail/settings section labels); InspectorCard
+and Table/DiffTable headers now remain sentence-case. An eyebrow is NEVER a pane title: a PaneScaffold title
+is the page's own heading, set sentence-case at `--font-size-pane-title`, semibold, `--ink-hi`
+(§6). Literal `font-size` values outside `tokens.css`, `letter-spacing` outside the
+`--tracking-*` tokens, and any uppercase rule that is not a complete eyebrow are all enforced by
+`src/styles/token-contract.test.ts`.
+
+**Faces and figures.** Mono is for machine text and nothing else: code, paths, shell command
+summaries, diffs, and the identifiers in the Details panel. The chrome a reader looks at
+constantly stays on the sans face with `font-variant-numeric: tabular-nums`, which buys column
+alignment without switching faces: the model chip (`chrome/modelswitch.module.css:.value`), the
+status row's percent/clock/queue figures, the rail's relative ages, and the turn footer.
+`src/styles/faces.test.ts` pins those four rules off disk.
 
 **Space & shape** — `--space-1` through `--space-9` (4/8/12/16/24/32/40/48/64px — IBM Carbon
 Design System's own spacing progression, adopted because it's the only well-known scale that
 exactly fits the plan's stated endpoints (4, 64) and step count (9) while staying on the 4px
-grid; unchanged by the re-theme). Radii softened: `--radius-chip` (6px, NEW — chips, badges,
-small tags), `--radius-control` (4px → 8px — buttons, inputs), `--radius-pane` (8px → 10px —
-panes, cards, dialogs), `--radius-pill` (999px, unchanged — switch track). Everything already on
-the two pre-existing tokens inherited the softer values for free.
+grid; unchanged by the re-theme). Radii are restrained: `--radius-chip` 3px,
+`--radius-control` 4px, `--radius-pane` 4px and `--radius-pill` 999px for switch tracks.
+Structural Card/InspectorCard/PaneScaffold and tables are square; floating layers and fields
+retain their token radii. Existing widget dimensions and touch targets are unchanged.
+
+**Vertical rhythm** is four named steps over that same grid, so the transcript has a vocabulary
+for how far apart two things sit: `--rhythm-line` (4px, inside one item, an intent line above
+its call), `--rhythm-item` (8px, between items in a run of tool calls), `--rhythm-group` (16px,
+between a run and the next speaker header, and above a turn footer) and `--rhythm-exchange`
+(24px, above a user message). `src/styles/rhythm.test.ts` pins each step to the site that names
+it.
+
+**`--session-measure` is the app's one reading measure**: 44rem (704px; actual character count depends on the face and preference), declared on `<body>` and raised to 64rem under
+`<body data-transcript-measure="wide">`. Settings → Theme → Transcript width is what writes that
+attribute, through `stores/prefs.ts`. The transcript column, the composer, the cold start, the
+spawn form and the settings content all read the same token, so they widen together and can
+never drift apart the way a hand-copied literal did. The layoutguard case `transcript-measure`
+fails when a plain agent paragraph runs past 100 characters per line at 1440 or 1920, or when
+the column is not centred in its pane. Pane bodies pad `--space-5` on desktop and `--space-4`
+below 900px (`panescaffold.module.css`).
 
 **Motion** — `--motion-duration-attention` (200ms), `--motion-duration-overlay` (120ms),
 `--motion-duration-hover` (150ms, NEW — color/background/border/shadow transitions on
@@ -157,18 +304,18 @@ dockview's stylesheet sits outside the ladder: its drag overlay is 999 (`--z-dia
 clears it deliberately) and its drop-target container is 9999, which sits above everything for
 the duration of a dock drag.
 
-**Elevation** — Beautiful UI's ring-embedding shadows replace the old two-shadow system. Every
-shadow embeds its own 1px ring, so a shadowed element never also declares a separate border for
-the same edge: `--shadow-card` (panes/cards — Card uses this instead of a border now),
-`--shadow-overlay` (menus/popovers/toasts/dialogs/sheets), and `--shadow-inset-field` (sinks
-form controls into `--field`). Beautiful UI's btn/raised/hairline rungs were deliberately not
-adopted — evener's Button has no bordered-neutral variant and nothing needed a mid float, so those
-tokens would have shipped with zero consumers. The soft-layer alphas are per-theme
-(dark heavier, light whisper-light), declared as literal color values in `tokens.css` per the
-token contract — `--shadow-color` still feeds the sheet's edge-directed variants, which keep
-their own directional geometry rather than the omnidirectional card/overlay shape. The tooltip
-is deliberately shadowless beyond its hairline ring — its inverted mini-palette already carries
-the depth at that size. `--shadow-modal` retired with the old system.
+**Elevation** — `--shadow-card: none` in both themes. Keep the token for existing consumers,
+not as a reason to reintroduce raised structure. Card uses padding and page ground;
+InspectorCard uses a sentence-case label and fine property rules; PaneScaffold uses a page
+heading and separating rule without a rounded outside border or tinted header. Table/DiffTable
+use horizontal rules rather than framed grids. Do not remove a field's affordance along with
+card decoration: Input, Select, Textarea and shared picker triggers keep a strong 1px border,
+`--field` fill and `--shadow-inset-field`, with unchanged focus and phone sizing.
+
+`--shadow-overlay` still embeds a 1px strong-edge ring and soft per-theme shadow for menus,
+popovers, toasts, dialogs and sheets. Do not double that same edge with another border.
+`--shadow-color` supports sheets' directional variants. Tooltips retain their inverted palette
+and boundary. Flattening structure never means erasing a modal or interactive layer.
 
 ---
 
@@ -195,15 +342,15 @@ during implementation (noted inline); this table is the one to trust.
 | **StatusDot** | `{state: CadenceState}` | Just the dot (imports `CadenceState` from Cadence, doesn't redeclare it) — for tighter contexts than Cadence's full trace; carries its own accessible name since nothing else labels it standalone. |
 | **Meter** | `{label: string; value: number; max: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | `role="meter"`; `label` is required (not optional as an early sketch had it) since role=meter needs an accessible name and a Meter can't ship without one. Fill width via a `--fill` style custom property, not an inline style rule. |
 | **Skeleton** | `{lines?: number}` (default 3) | Static bars, no shimmer (honest-liveness rule) — announces "Loading" once for AT; bars themselves are decorative. |
-| **EmptyState** | `{title: string; hint?: string; action?: ReactNode}` | `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). |
+| **EmptyState** | `{title: string; hint?: string; action?: ReactNode; size?: "default"\|"display"}` | `size="display"` sets the title at `--font-size-display` for the one pane whose empty state IS the page (Welcome); everything else keeps `--font-size-pane-title`. `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). |
 | **Table** | `{columns: TableColumn<Row>[]; rows: Row[]; rowKey(row); sortKey?; sortDir?: "ascending"\|"descending"; onSortChange?; filters?: {key,label,active}[]; onFilterToggle?; empty?}` | Controlled sort + filter; semantic `<table>`, `aria-sort` on sortable headers, filter chips compose Chip, horizontal overflow scrolls inside the widget. Ported from Beautiful UI's Records/Filter Table. |
 | **DiffTable** | `{columns: {key,label}[]; rows: {key; cells: Record<string,{value; proposed?}>}[]}` | Tabular proposed edits: struck-through old value beside the new one on the neutral `--diff-add-bg` wash — same hue-gate exemption as DiffBlock. Ported from Beautiful UI's Diff Table. |
 | **Loader** | `{label?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. Ported from Beautiful UI's Loading State. |
 | **InsightCard** | `{insights: {title; body; series?: number[]}[]; page; onPageChange}` | Paged insights with an inline SVG sparkline (aria-hidden + visually-hidden min/max alternative); pagination composes IconButton. Ported from Beautiful UI's Insight Cards. |
 | **RecommendationCard** | `{title; body; confidence?; onAccept?; onReject?; alternatives?}` | Agent-suggested action: micro-label eyebrow, confidence meter (`--accent` on `--field`; not the hue-gated Meter), Accept/Dismiss compose Button. Ported from Beautiful UI's Recommendation Card. |
 | **ContextCard** | `{source; snippet; meta?; href?}` | Retrieved-knowledge chunk: inset card, ToolIcon source glyph, 3-line snippet clamp; renders as a link when `href` given. Ported from Beautiful UI's Context Cards. |
-| **InspectorCard** | `{title; properties: {key; label; value; options?; onChange?}[]}` | Property inspector: micro-label header band, hairline rows, editable rows compose Select, read-only values in mono. Ported from Beautiful UI's Fine-tune inspector. |
-| **Card** | `{children: ReactNode}` | Passive raised container; its ring is `--shadow-card`'s embedded 1px, not a border. |
+| **InspectorCard** | `{title; properties: {key; label; value; options?; onChange?}[]}` | Property inspector: sentence-case section label, hairline rows, editable rows compose Select, read-only values in mono. Ported from Beautiful UI's Fine-tune inspector. |
+| **Card** | `{children: ReactNode}` | Passive flat section; padding and page ground, no shadow or outside border. |
 | **Input** | `{value: string; onChange; placeholder?; disabled?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. |
 | **Textarea** | `{value: string; onChange; placeholder?; disabled?; autoGrow?: boolean; rows?; id?; name?}` | `autoGrow` counts literal `"\n"` occurrences, not wrapped lines. |
 | **Select** | `{value: string; onChange; options: {value; label}[]; disabled?; id?; name?}` | Native `<select>`, restyled — no custom listbox (Combobox covers richer cases). |
@@ -214,7 +361,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Combobox** | `{options: T[]; onQuery; onPick; renderOption?; "aria-label"?; "aria-labelledby"?}` (generic over `T extends {id; label}`) | ARIA 1.2 combobox-with-listbox-popup; real focus never leaves the input. `aria-label`/`aria-labelledby` forward to BOTH the input and the popup listbox (fix-wave: the listbox had no name of its own — see §4) — they're two roles describing one picker, sharing one label source. Debounces `onQuery` 150ms. Never traps focus. |
 | **Menu** | `{trigger: ReactNode; items: {id; label; onSelect; disabled?}[]}` | Trigger + popup; roving tabindex among items (skipping disabled), no typeahead. Popup `role="menu"` gets `aria-labelledby` pointing at the trigger `<button>`'s own id (fix-wave — see §4). Traps focus (`FocusScope trap`). |
 | **Dialog** | `{open; onClose; title; children; footer?}` | Modal: centered, 120ms fade-scale, Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. |
-| **Sheet** | `{side?: "right"\|"bottom"; open; onClose; title; children; footer?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. |
+| **Sheet** | `{side?: "right"\|"bottom"; open; onClose; title; children; footer?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. |
 | **FocusScope** | `{trap?: boolean; children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. Does not (yet) set `inert` on anything outside the scope — see §4. |
 | **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, hidden on touch via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
 | **Toast** + `useToasts()` | `useToasts(): {push: (kind, text) => void}`; `<Toast/>` takes no props | Module-singleton queue (`useSyncExternalStore`), mounted once near the app root. 5s auto-dismiss, true pause/resume on hover (tracks remaining time, doesn't restart the full window — fix-wave, see §4). |
@@ -224,6 +371,72 @@ during implementation (noted inline); this table is the one to trust.
 | **DiffBlock** | `{unified: string}` | Per-line domain notation on already-diffed text (dedicated add/remove tints plus `+`/`−` markers); does not compute a diff itself. |
 | **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled — `renderRow(node, {depth, expanded, hasChildren, toggle, activate})` owns each row's visible content; Tree owns structure/ARIA/keyboard path only. |
 | **VirtualList** | `{count; estimateSize; renderRow; ref?: Ref<VirtualListHandle>}` | Wraps `@tanstack/react-virtual`; `ref` exposes `{scrollToIndex}` via the React 19 ref-as-prop pattern (not a `forwardRef` wrapper). Sizes come from `estimateSize` alone, no `measureElement`. |
+
+**ToolRunGroup is deliberately not a widget.** It lives at
+`src/panes/session/transcript/ToolRunGroup.tsx` with its own stylesheet, not under
+`src/widgets/`, because it is transcript grammar rather than a reusable primitive: no barrel
+entry, no gallery section. It is what finally renders principle 2 of the mockup brief
+(`decisions.md`, topic 06 Alt A). The rule, owned by `transcript/toolRuns.ts`: in a SETTLED
+turn, three or more consecutive completed, non-failed tool calls whose renderer has opted in
+collapse into one `<details>` row labelled `N steps · <last consequential summary>`. Folding is
+opt-in: `fold: "quiet"` (the reads, searches, web fetches, transcript reads) folds and only
+counts; `fold: "consequential"` (the edit tools, shell, worktree) folds and is the step the label
+names, being a mutation; `fold: "never"` (delegate, ask_user, task_list, use_skill, the `job_*`
+tools) and any descriptor with no policy, which is every unregistered or MCP tool, stay on their
+own row, because a tool the UI does not know may have had a side effect the reader must see.
+Scroll and focus anchors follow the same fold (`foldTurnEntries`): a folded run is one anchor. A live turn never
+folds at all, and a failure, a call still in flight, an auto-expanding card or any non-tool entry
+breaks the run rather than being spanned by it. Disclosure state goes through the shared
+disclosure store, so a reader's choice survives re-projection and the transcript's
+expand-all/collapse-all baselines reach it; the body mounts only while open.
+
+---
+
+## Directory selection: one shared interaction
+
+Every web directory field **must use `DirectoryPicker`** from
+`src/widgets/directorypicker`, normally through `PathField kind="dir"`.
+This includes session start, schema-driven launch options, global/project settings,
+plugin and skill directories, In-repo config, and local marketplace sources. Use the same
+responsive dialog on desktop and mobile; do not add a directory popover, datalist,
+or a feature-local browser. The working example is `/dev/widgets` → DirectoryPicker.
+
+Directory mode requires injected `directory.validatePath` and
+`directory.createDirectory` actions plus `complete`; the widget remains wire-free.
+The TypeScript `PathFieldProps` contract requires these actions for directory mode.
+Use the settings store's `directoryActions` or the caller's existing client closures.
+Recent directories are optional and appear only where that history is meaningful.
+Pass the field label through `ariaLabel` on labeled `PathField` controls so the
+accessible name includes both the field name and selected path; a native label
+alone overrides the button contents.
+
+The behavioral contract is:
+
+- Browsing, breadcrumbs, Up, recent locations, and typed paths change a local draft.
+  **Go** (or Enter in Path) validates and navigates; **Use this folder** commits once.
+  Cancel, Escape, and outside dismissal preserve the committed value.
+- **New folder** explicitly creates a child of the viewed directory, displays errors
+  inline, and navigates into the result. Creation does not select the directory,
+  submit a settings row, save configuration, or start a session.
+- Only validated directories can be confirmed. A failed or pending child listing
+  does not invalidate a directory. Stale responses cannot overwrite newer navigation.
+- External committed-value changes reset the draft. Custom callers key the picker
+  by that value; `PathField` does this itself.
+- Keep long paths readable by wrapping. Preserve the shared modal focus scope,
+  restore focus to the trigger on close, and select Path text on its first focus.
+  Opening does not force the mobile keyboard up. Mobile confirmation stays above
+  the keyboard inset; desktop uses the roomy dialog.
+- Paths belong to the supported Linux/macOS hub filesystem, regardless of browser OS.
+
+`PathField kind="file"` and `kind="outputFile"` retain file completion and literal
+file-path entry. Their internal completion panel is not a directory-selection API.
+Collection **Add** and form **Save** remain separate actions after directory
+confirmation; changing the picker must not bypass their domain validation.
+
+Tests must exercise draft-versus-commit behavior, cancellation, creation/errors,
+external value changes, and real browser geometry. Do not encode the retired
+browse-immediately-commits behavior in new tests. This contract supersedes older
+path-picker behavior in dated plans and legacy parity checklists.
 
 ---
 
@@ -278,6 +491,21 @@ six independent checks:
    `2px var(--accent-edge)` ring for active typing — softer than a full `--focus-ring` but still
    present — and `widgets/dropzone/dropzone.module.css` keeps its dashed accent drag-target
    outline, which is drop-here signage, not a focus ring.
+7. **Every `var(--name)` without a fallback resolves to a declaration** somewhere under
+   `src/` (tokens.css or a module's own local property). Exempt: dockview's `--dv-*` and the
+   runtime-set names JS or an inline style declares (`--keyboard-inset`, `--rail-width`,
+   `--tap-min`, `--fill`, `--markdown-ink`, `--prose-font-size`, `--prose-ink`,
+   `--density-scale`, `--font-scale`). Four undefined tokens had shipped before this check
+   (`--radius-sm` twice, `--edge-hi`, `--font-size-title`), each silently falling back to the
+   property's initial value.
+8. **No literal `font-size` in px outside `tokens.css`.** Only `var(--font-size-*)`, `inherit`,
+   and relative units (`em`, `%`) are legal; inline code is sized relative to its line, which
+   is why `em` stays.
+9. **`letter-spacing` only through the two tracking tokens** (`--tracking-display`,
+   `--tracking-eyebrow`), `inherit`, or `normal`.
+10. **Uppercase means the eyebrow recipe.** Any rule block with `text-transform: uppercase`
+    must also declare `font-size: var(--font-size-caption)` and
+    `letter-spacing: var(--tracking-eyebrow)`, and must not set `color: var(--ink-low)`.
 
 Every mechanism above is poison-tested against hand-written snippets proving both what it
 catches and what it must not flag (see the test file itself) — not just asserted to work.
@@ -316,6 +544,13 @@ is streaming or hung is worse than no indicator). Every widget with motion of it
 `prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
 SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
 
+One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
+shown for a live reasoning item while the Reasoning content flag is off, uses the catalog
+`Loader`'s pulsing pixel grid (Jesse's call). It renders no reasoning text, disappears once the
+thought is no longer the turn's current activity, and is the only animation the transcript itself
+adds. Unlike Cadence it is not activity-gated, so it keeps pulsing if the stream stalls; Cadence's
+decaying trace remains the honest liveness signal. Every other idle pulse or shimmer stays banned.
+
 ---
 
 ## 6. Copy rules
@@ -328,14 +563,22 @@ once: three caption labels shipped on `--font-mono` in the foundation task and w
 fixed in wave-close review — see git history for `gallery-section.module.css` and
 `theme-flip.module.css`. If it happened once, watch for it.)
 
-**Clarification (polish pass, 2026-07-24): small-caps *section eyebrows* are a sanctioned
-pattern, distinct from ALL-CAPS copy.** A short structural group label set in
-`--font-size-caption` + `--font-weight-medium` + `--ink-low` + `text-transform: uppercase` +
-`letter-spacing: 0.04em` (the rail's "Projects", settings' nav group headers, the palette's
-result-group headers, card kickers like "Mandate") is typographic hierarchy, not shouting —
-authored copy stays sentence-case in the source and the transform is presentation-only. The
-pattern is legitimate ONLY for grouping eyebrows at caption size; never for buttons, titles,
-sentences, or anything longer than ~2 words.
+**The eyebrow recipe (2026-09-06, replacing the 2026-07-24 "section eyebrow" clarification
+and the separate micro-label pattern it was distinguished from).** Small-caps *eyebrows* are a
+sanctioned pattern, distinct from ALL-CAPS copy: the copy stays sentence-case in the source and
+the transform is presentation-only. There is now exactly one recipe, one tracking token and one
+size for it: `--font-size-caption`, `--font-weight-medium` (or semibold where a header band
+wants more), `--ink-mid` or darker, `text-transform: uppercase`,
+`letter-spacing: var(--tracking-eyebrow)` (0.06em, which replaced a spread of
+0.02/0.04/0.05/0.08em), and **at most two words**. An eyebrow titles a container INSIDE a page:
+RecommendationCard's kicker and existing rail/settings section labels. InspectorCard and
+Table/DiffTable column labels are sentence-case, not eyebrows. Three-word labels were the tell that the rule was being
+broken, so "Agents & models" became **"Agent setup"**.
+
+Never an eyebrow: buttons, sentences, and above all **titles**. A pane title is the page's own
+heading, sentence-case in `--font-prose` at `--font-size-pane-title`, semibold, `--ink-hi` (§2); a session title is
+the user's own prompt and is never transformed at all. Before this, both rendered as a 12px
+uppercase micro-label, which turned a whole prompt into a shouted sentence.
 
 ---
 
@@ -385,11 +628,12 @@ gap, a renderer's idea of what the daemon says drifting from what it actually
 says, is the failure mode this rule exists to prevent.
 
 **Why `--ink-mid` and not `--ink-low`.** Every other quiet system row uses
-`--ink-low`. Measured against `--surface-1` it is 2.97:1 in dark and 3.64:1 in
-light — under the 4.5:1 AA floor, as `usermessageitem.module.css` and
-`toolcallitem.module.css` both already record. A reader scanning steering is
-auditing which kind fired, so the kind is the payload rather than furniture, and
-it sits one ink step up at 6.86:1 / 6.56:1. That step also separates a steer
+`--ink-low`. Measured against `--surface-1` that token is 4.72:1 in dark and
+4.76:1 in light since the 2026-09-06 raise (§2), so it clears the 4.5:1 AA
+floor it used to sit under, but its role is still placeholder and
+hairline-adjacent chrome rather than text a reader is meant to read. A reader
+scanning steering is auditing which kind fired, so the kind is the payload rather than furniture, and
+it sits one ink step up at 6.51:1 / 5.84:1. That step also separates a steer
 from the lifecycle line beneath it by weight as well as by glyph.
 
 **The glyph is a hollow diamond, drawn as SVG rather than set as a character.**
@@ -482,9 +726,10 @@ the same row explains that there's nowhere to hand off to yet, rather than silen
 never stack them.** The first collection page this shipped on is Settings → Marketplaces &
 Plugins (`panes/settings/sections/marketplacesPlugins/`), which previously stacked three
 sections (registered marketplaces, the browse tree, the installed list) down one long scroll.
-It is now the reference implementation for the two idioms below; any future page with the same
-shape (several sibling lists, plus per-item detail and actions) should reuse them rather than
-inventing a third layout.
+It is the reference implementation for the two idioms below, with Settings → Providers &
+credentials (`panes/settings/sections/credentials/InstanceSheet.tsx`) the reference for the
+sheet-as-editor form; any future page with the same shape (several sibling lists, plus per-item
+detail and actions) should reuse them rather than inventing a third layout.
 
 **One list at a time, chosen by a page-level SegmentedControl.** Each sibling collection becomes
 a segment; the segment labels carry the counts (`Installed (7)`, `Marketplaces (3)`), and the
@@ -495,32 +740,41 @@ the outgoing segment close (see the sheet rule below), while per-segment UI stat
 expensive to rebuild (the browse tree's expansion and its lazy catalog cache) is lifted to the
 page so it survives the round trip.
 
-**Rows are single tappable targets; actions live in a detail sheet.** A collection row carries
-identity and status only — `StatusDot`, name, state chips, one mono meta line
+**Rows are single tappable targets; the detail sheet is the item's editor.** A collection row
+carries identity and status only — `StatusDot`, name, state chips, one mono meta line
 (`@ marketplace · v1.2.0`) — and a trailing chevron; it is one full-width `<button>`, so the
 whole row is the target on desktop and touch alike. A row NEVER grows a trailing cluster of
-small action buttons (the pre-redesign installed row had four): every action on the item moves
-into the item's **detail sheet**, a `Sheet` with `side="right"` on desktop and `side="bottom"`
-at the mobile breakpoint (chosen via `useIsMobile`, the same source the shell uses). The sheet
-is the item's inspector: state chips, its catalog description (pulled lazily through the browse
-cache — re-open is free), a meta table, and its actions. Binary state (Enabled, Auto-upgrade)
-is a `Switch` row inside the sheet, disabled while its RPC is in flight; the primary mutation
-is a footer `Button`; the destructive action keeps its `ConfirmDialog` even though that nests a
-second modal over the sheet — `OverlayPanel` instances stack in DOM order, each traps and
-restores focus down the stack, and its `preventDefault` on Escape is what keeps the settings
-pane's own document-level Escape handler from closing the pane out from under an open overlay.
+small action buttons (the pre-redesign installed row had four): everything about the item lives
+in its **detail sheet**, a `Sheet` with `side="right"` on desktop and `side="bottom"` at the
+mobile breakpoint (chosen via `useIsMobile`, the same source the shell uses), `size="wide"`
+when it carries a form. The sheet is the item's editor, not an inspector (2026-09-07): every
+authored, editable fact renders as a prefilled form field in place — `FormRow` over `Input` /
+`Select`, one column — with a dirty-gated **Save** as the footer's primary `Button`, and
+renaming is editing the name field. Read-only facts keep the meta-table idiom below.
+Display-only content a row does not carry (a plugin's catalog description) is pulled lazily
+through the browse cache — one store-level entry per marketplace, so re-open is free.
+A separate `Dialog` is reserved for write-only secret entry (an API key, a credential JSON) and
+multi-step flows (OAuth); it never exists to edit a field the sheet could show. Binary state
+(Enabled, Auto-upgrade) is a `Switch` row that applies immediately, disabled while its RPC is
+in flight; the destructive action keeps its `ConfirmDialog` even though that nests a second
+modal over the sheet — `OverlayPanel` instances stack in DOM order, each traps and restores
+focus down the stack, and its `preventDefault` on Escape is what keeps the settings pane's own
+document-level Escape handler from closing the pane out from under an open overlay. Closing a
+sheet with unsaved edits discards them silently; the sheet reseeds only when a different item
+opens or its own save lands, so another client's refresh never clobbers a draft.
 
-**The meta table idiom.** Inside an inspector, facts render as label/value rows: a fixed-width
-(96px) caption-color label column, values in the UI font, and `var(--font-mono)` for anything
-machine-shaped — versions, sources, paths — truncating with ellipsis rather than wrapping.
-This is the same vocabulary as the list row's meta line, one zoom level up.
+**The meta table idiom.** Inside a detail sheet, read-only facts render as label/value rows: a
+fixed-width (96px) caption-color label column, values in the UI font, and `var(--font-mono)` for
+anything machine-shaped — versions, sources, paths — truncating with ellipsis rather than
+wrapping. This is the same vocabulary as the list row's meta line, one zoom level up.
 
-**An inspector is only as alive as its subject.** The detail sheet reads its entity from the
+**A detail sheet is only as alive as its subject.** The detail sheet reads its entity from the
 store rather than a prop snapshot, so cross-client changes land while it is open; when the
 entity disappears from the store (its own Remove completing, or another client's), the sheet
-closes itself instead of offering actions on a ghost, and a failed Remove keeps the sheet and
-dialog open for retry. Segments own their overlays: switching away closes the sheet, coming
-back does not reopen it.
+closes itself instead of offering actions on a ghost — except when the disappearance is the
+sheet's own rename landing, where the section re-selects the item under its new name and the
+sheet stays open — and a failed Remove keeps the sheet and dialog open for retry. Segments own
+their overlays: switching away closes the sheet, coming back does not reopen it.
 
 ## 11. Mobile forms and honest cold starts
 
@@ -532,8 +786,13 @@ as one control; read-only facts do not show a misleading caret. Use existing
 surface, edge, ink, spacing, and tap-size tokens. Do not introduce mobile-only
 colors, type tokens, chip backgrounds, or monospace labels.
 
-Editable text remains at least 16px on mobile so focusing a field does not
-trigger browser zoom. An auto-growing textarea has a real content-driven
+Editable text is 16px on phones, and it gets there through the ramp rather
+than per-field: `tokens.css`'s below-900px block sets `--font-size-body` to
+16px and every field takes the body size, so iOS Safari has nothing to
+auto-zoom into. That is what let the viewport meta stop locking zoom (WCAG
+1.4.4 resize text): `index.html` no longer carries
+`maximum-scale=1, user-scalable=no`, and `src/styles/viewport-pin.test.ts`
+fails if either comes back. An auto-growing textarea has a real content-driven
 minimum and maximum, keeps the resize behavior accessible, and reserves space
 for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
@@ -557,4 +816,117 @@ only until the first authoritative transcript item. It must disappear on an
 authoritative frame, terminal/error/cancel state, session change, or pending
 failure; it must never appear for an untouched empty session. Reuse the static
 `Skeleton` widget, keep its accessible loading status and decorative bars, and
-do not add shimmer, pulse, or other motion that implies live data.
+do not add shimmer, pulse, or other motion that implies live data (the one
+motion exception, the Reasoning placeholder's `Loader` grid, is recorded in the
+motion budget above).
+
+Below 700px both speaker rows become a grid rather than a flex row: the avatar
+and the speaker header share the first row and the prose spans the full pane
+underneath them, instead of being indented into the avatar's column for its
+whole height. Measured before this, agent prose got 260px of a 375px screen,
+28 characters a line.
+
+The sessions drawer renders the Rail flush inside the Sheet body (Sheet's
+`bodyClassName`, §3): no inner surface box, no inner radius, because the sheet
+already frames it.
+
+
+## Source Serif 4 license notice
+
+From `@fontsource-variable/source-serif-4` 5.3.0, distributed unmodified.
+
+```text
+Google Inc.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
+
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
+```

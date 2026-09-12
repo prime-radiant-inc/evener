@@ -144,15 +144,15 @@ func (m hubModel) hubConnectionLabel() string {
 	return "hub connected"
 }
 
+// sessionAuthReadinessLabel is the status line's terse auth field: the
+// instance the last /auth named and the hub's own credential-source word
+// (spec §10's vocabulary), which is already compact enough for one line.
 func (m hubModel) sessionAuthReadinessLabel() string {
 	if m.authStatusSeen {
 		provider := envvars.FirstNonEmpty(m.authStatus.Provider, "provider")
 		source := strings.TrimSpace(m.authStatus.ActiveSource)
-		switch source {
-		case "":
+		if source == "" {
 			source = "unknown"
-		case "signed-out":
-			source = "signed out"
 		}
 		return "auth: " + provider + " " + source
 	}

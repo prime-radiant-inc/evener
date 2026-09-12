@@ -275,11 +275,6 @@ const (
 	// shaped work, where inheriting a top-tier effort adds latency without
 	// improving the description contract.
 	visionReasoningEffort = "low"
-	// visionSideChannelTimeout is an explicit caller-owned ceiling. The adapter
-	// timeout remains a defense in depth for provider transports, while this
-	// context also cancels deterministic/non-HTTP adapters and all cleanup
-	// attached to the side-channel call.
-	visionSideChannelTimeout = 2 * time.Minute
 )
 
 var errVisionSideChannelTimeout = errors.New("vision side-channel deadline")
@@ -288,7 +283,7 @@ func (s *Session) visionSideChannelDuration() time.Duration {
 	if timeout := s.cfg.testOnly.visionSideChannelTimeout; timeout > 0 {
 		return timeout
 	}
-	return visionSideChannelTimeout
+	return 0
 }
 
 type visionSideChannelOutcome uint8
@@ -410,20 +405,22 @@ func resolveVisionRoute(profile *provider.Profile, setting string) (providerName
 	return profile.ID(), setting, false
 }
 
-// visionRouteSupportsReasoning gates reasoning_effort for the vision request:
-// the session route uses the profile's own answer (which may carry live
-// provider metadata); any other route answers from the embedded catalog, and
-// an uncatalogued model gets no effort knob rather than one it may reject.
-func visionRouteSupportsReasoning(profile *provider.Profile, providerName, modelID string) bool {
+// visionRouteReasoning gates reasoning_effort for the vision request and names
+// the levels the fixed vision cap clamps against: the session route uses the
+// profile's own answers (which already carry the registry's facts); any other
+// route asks the registry whether the row takes an effort control at all
+// (spec §7.4: a reasoning row without an explicit control list is
+// effort-capable, a toggle-only row is not). A route that does not resolve
+// gets no effort knob rather than one it may reject.
+func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, modelID string) (bool, []string) {
 	if providerName == profile.ID() && modelID == profile.Model() {
-		return profile.SupportsReasoning()
+		return profile.SupportsReasoning(), profile.ReasoningEffortLevels()
 	}
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.LookupModelInfo(modelID); mi != nil {
-			return mi.SupportsReasoning
-		}
+	res, err := s.client.Resolve(providerName + "/" + modelID)
+	if err != nil {
+		return false, nil
 	}
-	return false
+	return res.Caps.EffortCapable(), res.Caps.EffortValues
 }
 
 func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
@@ -449,10 +446,10 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
-	// Use the caller's stated intent as the vision prompt. The calling LLM
+	// Use the caller's vision_prompt as the vision prompt. The calling LLM
 	// knows what it needs — we just ask the vision model to answer that question
 	// under one unconditional observation contract.
-	prompt := visionPrompt(r.ImageIntent)
+	prompt := visionPrompt(r.ImagePrompt)
 
 	mt := r.ImageMediaType
 	if mt == "" {
@@ -477,7 +474,14 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	}
 
 	visionTimeout := s.visionSideChannelDuration()
-	visionCtx, cancel := context.WithTimeoutCause(ctx, visionTimeout, errVisionSideChannelTimeout)
+	var visionCtx context.Context
+	var cancel context.CancelFunc
+	if visionTimeout > 0 {
+		visionCtx, cancel = context.WithTimeoutCause(ctx, visionTimeout, errVisionSideChannelTimeout)
+	} else {
+		visionCtx, cancel = context.WithCancel(ctx)
+	}
+	idleTimeout, _ := ParseProviderIdleTimeout(s.cfg.ProviderIdleTimeout)
 	defer cancel()
 	req := llm.Request{
 		Model:    profile.Model(),
@@ -495,7 +499,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
 			Request:    visionTimeout,
-			StreamRead: 30 * time.Second,
+			StreamRead: idleTimeout,
 		},
 	}
 	// This request is built manually (not via buildModelRequest), so clamp the
@@ -503,19 +507,11 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	// cheapest level is above the cap gets that level rather than a value it
 	// would reject. Gate on SupportsReasoning so non-reasoning models never get
 	// reasoning_effort on the wire.
-	if visionRouteSupportsReasoning(profile, routeProvider, routeModel) {
-		levels := profile.ReasoningEffortLevels()
-		if routeProvider != profile.ID() || routeModel != profile.Model() {
-			if cat := llm.EmbeddedModelCatalog(); cat != nil {
-				if mi := cat.LookupModelInfo(routeModel); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-					levels = mi.ReasoningEffortLevels
-				}
-			}
-		}
+	if supportsReasoning, levels := s.visionRouteReasoning(profile, routeProvider, routeModel); supportsReasoning {
 		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
 		req.ReasoningEffort = &effort
 	}
-	s.applyModelRequestMetadata(profile, &req)
+	s.applyModelRequestMetadata(&req)
 
 	start := s.sclock().Now()
 	resp, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)
@@ -670,8 +666,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
-	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible, finishReason)
+	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	call = prep.Call
+	prevalidated := true
 	if len(prep.Changes) > 0 {
 		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
 			ToolName: call.Name,
@@ -685,7 +682,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		hi := s.hookInput(plugin.HookPreToolUse)
 		hi.ToolName = toolname.EvenerToClaude(call.Name)
 		hi.ToolUseID = call.ID
-		if len(call.Arguments) > 0 {
+		if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
 		}
 
@@ -696,7 +693,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		for _, m := range preResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
-		if preResult.Denied {
+		if !prep.RawArgumentsRejected && preResult.Denied {
 			denyMsg := "Tool call denied by hook"
 			if preResult.DenyMessage != "" {
 				denyMsg = preResult.DenyMessage
@@ -709,7 +706,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 				IsError:    true,
 			}
 		}
-		if len(preResult.UpdatedInput) > 0 {
+		if !prep.RawArgumentsRejected && len(preResult.UpdatedInput) > 0 {
 			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
 				msg := "invalid hook updatedInput: " + err.Error()
 				return tool.ExecResult{
@@ -720,6 +717,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 					IsError:    true,
 				}
 			}
+			// Preparation validated the original arguments. A hook may replace
+			// any semantic task field, so dispatch this changed call through the
+			// normal PreValidate path while unchanged prepared calls still avoid
+			// running that hook twice.
+			prevalidated = false
 		}
 	}
 	s.execToolCheckpoint("after_pre_hook")
@@ -735,7 +737,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 	// Promote intent to the top-level event field for observability.
 	var args map[string]any
-	if len(call.Arguments) > 0 {
+	if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
 		_ = json.Unmarshal(call.Arguments, &args)
 	}
 	if d := toolStartDescription(args); d != "" {
@@ -793,7 +795,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			Err:        prep.Err,
 		}
 	} else {
-		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+		if prevalidated {
+			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
+		} else {
+			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+		}
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	// M7: on a sandbox denial in an interactive root session, raise a human approval
@@ -1125,13 +1131,14 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			})
 		}
 	}
-	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
+	if err := s.appendTurnAfterTranscriptWrite(
+		persistedTurn,
+		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
+		func() { s.history = append(s.history, liveTurn) },
+	); err != nil {
 		abortDelegateToolCallDeliveryCommits(commits)
 		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, liveTurn)
-	s.mu.Unlock()
 	var completionErrs []error
 	requeue := false
 	for _, binding := range commits {

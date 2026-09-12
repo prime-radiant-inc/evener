@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 )
 
 const (
@@ -146,6 +148,9 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 	if err != nil {
 		return "", err
 	}
+	if a.Operation == "create" && watchArgsIsTimer(a) && s.cfg.TurnEndsProcess {
+		return "", errors.New("invalid_request: timers need a session that outlives the turn")
+	}
 	var res watchResult
 	switch a.Operation {
 	case "create":
@@ -206,6 +211,29 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 			res, err = ownerRes, ownerErr
 			break
 		}
+		// #655: the watch may still live in this manager keyed to another
+		// session's receiver (hasWatchID reports the visibility verdict, not
+		// presence), or in a descendant's manager the receiver-path above did
+		// not cover. Either way the clear is authorized by topology — the
+		// receiver must be this session's own delegate or a descendant of it —
+		// never by source labels: a source delegate must not be able to clear
+		// its ancestor's watch on it, and a sibling must not clear another
+		// sibling's.
+		if receiverSession, receiverDelegate, ok := s.receiverWatchAnywhereByID(a.WatchID); ok {
+			if s.delegateController == nil || !s.delegateController.watchClearAuthority(s.ID(), s.owningDelegateID, receiverDelegate) {
+				receiver := receiverDelegate
+				if receiver == "" {
+					receiver = "session " + receiverSession
+				}
+				return "", fmt.Errorf("invalid_request: watch %s delivers to %s, which this session may not clear", a.WatchID, receiver)
+			}
+			holder := s.jobManagerHoldingWatch(a.WatchID)
+			if holder == nil {
+				holder = jm
+			}
+			res, err = holder.clearReceiverWatchByID(a.WatchID, receiverSession, receiverDelegate)
+			break
+		}
 		res, err = jm.clearWatchByID(a.WatchID)
 	case "list":
 		return marshalWatchListResult(s.watchListToolResultWithDescendantReceivers(jm.watchListToolResult()), maxChars)
@@ -241,7 +269,6 @@ func (s *Session) configureStableWatchOnSource(sourcePublic string, binding dele
 	}
 	return binding.runtime.jobManager.configureWatch(a)
 }
-
 func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bool, error) {
 	if s == nil || !strings.HasPrefix(a.Target, "job_") {
 		return watchResult{}, false, nil
@@ -314,11 +341,101 @@ func (s *Session) clearStableReceiverWatchByID(watchID string) (watchResult, boo
 	return watchResult{}, false, nil
 }
 
+// receiverWatchAnywhereByID finds a watch's receiver identity across this
+// session's own manager and the watch-source sessions, ignoring visibility.
+// Returns ok=false when no manager holds the watch.
+func (s *Session) receiverWatchAnywhereByID(watchID string) (receiverSessionID, receiverDelegateID string, found bool) {
+	if s == nil || watchID == "" {
+		return "", "", false
+	}
+	if s.jobManager != nil {
+		if receiverSession, receiverDelegate, ok := s.jobManager.watchReceiverIdentity(watchID); ok {
+			return receiverSession, receiverDelegate, true
+		}
+	}
+	for _, holder := range s.stableWatchSourceSessions() {
+		if holder == nil || holder.jobManager == nil || holder.jobManager == s.jobManager {
+			continue
+		}
+		if receiverSession, receiverDelegate, ok := holder.jobManager.watchReceiverIdentity(watchID); ok {
+			return receiverSession, receiverDelegate, true
+		}
+	}
+	return "", "", false
+}
+
+// jobManagerHoldingWatch returns the manager (of this session or the watch
+// source sessions) that currently holds the watch, or nil when none does.
+func (s *Session) jobManagerHoldingWatch(watchID string) *jobManager {
+	if s == nil || watchID == "" {
+		return nil
+	}
+	holders := make([]*jobManager, 0, 2)
+	if s.jobManager != nil {
+		holders = append(holders, s.jobManager)
+	}
+	for _, holder := range s.stableWatchSourceSessions() {
+		if holder != nil && holder.jobManager != nil && holder.jobManager != s.jobManager {
+			holders = append(holders, holder.jobManager)
+		}
+	}
+	for _, holder := range holders {
+		if _, _, found := holder.watchReceiverIdentity(watchID); found {
+			return holder
+		}
+	}
+	return nil
+}
+
 func (s *Session) stableWatchSourceSessions() []*Session {
 	if s == nil || s.delegateController == nil {
 		return s.liveDescendantSessions()
 	}
 	return s.delegateController.watchSourceSessions()
+}
+
+// liveWatchesDeliveringToDelegate returns the armed watches that deliver to a
+// delegate and the members of the subtree rooted at it, keyed by receiver
+// identity — the #655 inventory. The stopper (parent) session is always a
+// member of stableWatchSourceSessions(), and the parent-source watch an
+// observer child installs lives in that same manager
+// (configureStableWatchOnSource), so one scan covers it without
+// double-reporting. Receiver keys come from the durable descriptors, readable
+// before, during, and after a stop. Managers are deduped per delegate: two
+// live sessions can share one job manager, and a naive per-session append
+// would double every row.
+//
+// Boundary: the scan covers managers whose runtimes are currently live
+// (stableWatchSourceSessions), plus the stopper's own. A subtree member whose
+// owning session is not live (a cold, idle descendant that no live runtime
+// registers) is not scanned — a watch held only in that member's cold manager
+// is not reported. The receiver key itself is durable, so watches held in any
+// live manager (including the stopper's) that deliver to a cold member ARE
+// reported.
+func (s *Session) liveWatchesDeliveringToDelegate(delegateID string) []watchListEntry {
+	if s == nil || delegateID == "" || s.delegateController == nil {
+		return nil
+	}
+	receiverKeys := s.delegateController.subtreeReceiverKeysForDelegate(delegateID)
+	if len(receiverKeys) == 0 {
+		return nil
+	}
+	var entries []watchListEntry
+	seenManagers := make(map[*jobManager]struct{})
+	for _, holder := range s.stableWatchSourceSessions() {
+		if holder == nil || holder.jobManager == nil {
+			continue
+		}
+		if _, scanned := seenManagers[holder.jobManager]; scanned {
+			continue
+		}
+		seenManagers[holder.jobManager] = struct{}{}
+		for childDelegateID, childSessionID := range receiverKeys {
+			entries = append(entries, holder.jobManager.liveWatchSummariesForReceiver(childSessionID, childDelegateID)...)
+		}
+	}
+	sort.SliceStable(entries, watchListEntryLess(entries))
+	return entries
 }
 
 func (s *Session) liveDescendantSessions() []*Session {
@@ -343,14 +460,24 @@ func watchInspectFound(inspect jobWatchInspectToolResult) bool {
 // tri-state sandbox_net (nil = inherit, never a silent false) — is unit-testable
 // without minting a delegate.
 func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
+	if strings.TrimSpace(stringArg(args, "prompt")) == "" {
+		return delegateArgs{}, errors.New("invalid_request: prompt is required")
+	}
 	a := delegateArgs{
-		Task:            stringArg(args, "task"),
+		Task:            stringArg(args, "prompt"),
 		AgentType:       stringArg(args, "agent_type"),
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
 		Isolation:       stringArg(args, "isolation"),
 		Sandbox:         stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
+	}
+	if raw, exists := args["fork_context"]; exists {
+		var ok bool
+		a.ForkContext, ok = raw.(bool)
+		if !ok {
+			return delegateArgs{}, errors.New("invalid_request: fork_context must be a JSON boolean")
+		}
 	}
 	// The sandbox field now encodes both mode and an optional network override
 	// in a single enum value. Values like "read-only+nonet" split into mode=
@@ -381,19 +508,71 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 			return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 		}
 	}
-	// delegation_allowance: 0/absent = leaf delegate (cannot delegate); positive
-	// = grant; negative = invalid_request. Zero reads as unset (strict-zero rule).
-	// createDelegate enforces the grant rule (strictly less than own allowance).
-	if n, ok := shellIntArg(args, "delegation_allowance"); ok && n != 0 {
+	// delegation_allowance: absent = the default grant (one level below the
+	// creator, resolved by createDelegate); 0 = leaf delegate; positive =
+	// grant; negative = invalid_request. createDelegate enforces the grant
+	// rule (strictly less than own allowance).
+	if n, ok := shellIntArg(args, "delegation_allowance"); ok {
 		if n < 0 {
 			return delegateArgs{}, errors.New("invalid_request: delegation_allowance must be non-negative")
 		}
-		a.DelegationAllowance = n
+		a.DelegationAllowance = &n
 	}
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema
 	}
+	taskList, err := delegateTaskListArg(args)
+	if err != nil {
+		return delegateArgs{}, err
+	}
+	a.TaskList = taskList
 	return a, nil
+}
+
+// delegateTaskListArg decodes the delegate tool's task_list items into task
+// templates. Every item needs a title and a prompt that defines its own step,
+// so an empty prompt is an error rather than a blank task.
+func delegateTaskListArg(args map[string]any) ([]taskpkg.TaskTemplate, error) {
+	raw, ok := args["task_list"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, errors.New("invalid_request: task_list must be an array")
+	}
+	out := make([]taskpkg.TaskTemplate, 0, len(items))
+	for i, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid_request: task_list[%d] must be an object", i)
+		}
+		title := strings.TrimSpace(stringArg(fields, "title"))
+		if title == "" {
+			return nil, fmt.Errorf("invalid_request: task_list[%d].title is required", i)
+		}
+		prompt := strings.TrimSpace(stringArg(fields, "prompt"))
+		if prompt == "" {
+			return nil, fmt.Errorf("invalid_request: task_list[%d].prompt is required", i)
+		}
+		effort := strings.TrimSpace(stringArg(fields, "reasoning_effort"))
+		if effort != "" && effort != "low" && effort != "medium" && effort != "high" {
+			return nil, fmt.Errorf("invalid_request: task_list[%d].reasoning_effort must be one of low, medium, high", i)
+		}
+		kind := strings.TrimSpace(stringArg(fields, "type"))
+		switch taskpkg.TaskType(kind) {
+		case "", taskpkg.TaskTypeResearch, taskpkg.TaskTypeImplement, taskpkg.TaskTypeVerify, taskpkg.TaskTypeFix:
+		default:
+			return nil, fmt.Errorf("invalid_request: task_list[%d].type must be one of research, implement, verify, fix", i)
+		}
+		out = append(out, taskpkg.TaskTemplate{
+			Title:           title,
+			Prompt:          prompt,
+			ReasoningEffort: effort,
+			Type:            kind,
+		})
+	}
+	return out, nil
 }
 
 func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
@@ -459,15 +638,6 @@ func stableDelegateStatusTool(s *Session, delegateID string, maxChars int) (any,
 // child-owned pending is a drive signal, not the parent's news to hear:
 // settling it there would silence the child's own undelivered notification.
 func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.JobRecord) {
-	markTerminalJobNotificationConsumed(s, jm, rec, true)
-}
-
-// markTerminalJobNotificationConsumed persists the consumed disposition and,
-// when removeQueued is true, applies the ordinary status-read behavior of
-// removing matching queue entries. Terminal-drain cuts pass false: they have
-// already removed only the exact pre-cut queue identities, and removing by job
-// ID here could erase a fresh post-cut generation of the same job.
-func markTerminalJobNotificationConsumed(s *Session, jm *jobManager, rec *jobstore.JobRecord, removeQueued bool) {
 	if jm == nil || rec == nil || rec.TerminalGen == "" {
 		return
 	}
@@ -492,7 +662,7 @@ func markTerminalJobNotificationConsumed(s *Session, jm *jobManager, rec *jobsto
 		return
 	}
 	rec.NotifyState = jobstore.NotifyConsumed
-	if removeQueued && jm.consume != nil {
+	if jm.consume != nil {
 		jm.consume(rec.JobID)
 	}
 	// Settle the parent's forwarded COPY too, for the same reason a delivery
@@ -915,6 +1085,12 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 	if err != nil {
 		return "", err
 	}
+	// #655: report the watches that survive this stop and keep delivering to
+	// the stopped delegate subtree. One read, taken at result time — after the
+	// wait/timeout decision — so the reported set is the current one on every
+	// path (settled, timed out, or request-and-return). The inventory covers
+	// the subtree, not just the target, because a subtree stop leaves
+	// descendant watches live too.
 	executeDelegateCancelPlan(cancelPlan)
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		return "", err
@@ -923,7 +1099,9 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 	if maxWaitMS > 0 {
 		completed = waitForDelegateStopDone(ctx, s, result.done, clampJobBlockTimeout(maxWaitMS))
 	}
+	live := s.liveWatchesDeliveringToDelegate(delegateID)
 	stop := stableDelegateStopResult(result, completed, actor.describe())
+	stop.LiveWatches = live
 	if completed {
 		populateDelegateStopEvidence(&stop, s, delegateID)
 	}
@@ -1036,6 +1214,10 @@ type stableDelegateStatusResult struct {
 	NeedsAttention     bool                   `json:"needs_attention"`
 	NotResumableReason string                 `json:"not_resumable_reason,omitempty"`
 	TranscriptRef      string                 `json:"transcript_ref"`
+	Cwd                string                 `json:"cwd,omitempty"`
+	Isolation          string                 `json:"isolation,omitempty"`
+	SandboxMode        string                 `json:"sandbox_mode,omitempty"`
+	SandboxNetwork     *bool                  `json:"sandbox_network,omitempty"`
 	RunStartedAt       string                 `json:"run_started_at,omitempty"`
 	LatestActivityAt   string                 `json:"latest_activity_at,omitempty"`
 	RunningForMS       *int64                 `json:"running_for_ms,omitempty"`
@@ -1061,6 +1243,19 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		NotResumableReason: snapshot.notResumableReason,
 		TranscriptRef:      snapshot.transcriptRef,
 		LastOutcome:        snapshot.lastOutcome,
+		Cwd:                descriptor.WorkingDir,
+		Isolation:          descriptor.Isolation,
+	}
+	if descriptor.Sandbox != nil {
+		out.SandboxMode = descriptor.Sandbox.Mode
+		// A nil Network pointer means the sandbox did not explicitly disable
+		// networking, so the effective default is enabled. Normalize to true
+		// so the UI shows the effective setting rather than omitting it.
+		net := true
+		if descriptor.Sandbox.Network != nil {
+			net = *descriptor.Sandbox.Network
+		}
+		out.SandboxNetwork = &net
 	}
 	if !snapshot.runStartedAt.IsZero() {
 		out.RunStartedAt = snapshot.runStartedAt.UTC().Format(time.RFC3339Nano)
@@ -1127,7 +1322,11 @@ type watchListEntry struct {
 
 // recentWatchEntry is one watch that has left the active set, surfaced by job_list's
 // bounded recent_watches ring so a fired-then-removed watch stays legible. end_reason
-// is one of auto_removed_terminal, cleared, replaced, budget_exhausted.
+// is one of auto_removed_terminal, cleared, replaced, budget_exhausted, fired (a
+// one-shot timer retired by its only fire), job_manager_closed — the whole set
+// recordWatchEndedLocked writes. runtime_lost, the reason a restart stamps on the
+// durable watch_cleared events of the watches it could not restore, never appears
+// here: those watches end in the store before this in-memory ring exists.
 type recentWatchEntry struct {
 	ID         string `json:"id"`
 	Source     string `json:"source"`
@@ -1220,6 +1419,12 @@ type jobStopResult struct {
 	NotResumableReason string                      `json:"not_resumable_reason,omitempty"`
 	ScratchPath        string                      `json:"scratch_path,omitempty"`
 	Worktree           *delegateWorktreeToolResult `json:"worktree,omitempty"`
+	// LiveWatches is the #655 provenance: watches that survive this stop and
+	// keep delivering to the stopped delegate (receiver-keyed). Reported on
+	// every delegate stop — admission-time as well as settle-time — because
+	// the parent otherwise has no way to learn they exist. Empty for a shell
+	// job_stop or a delegate with no surviving watches.
+	LiveWatches []watchListEntry `json:"live_watches,omitempty"`
 }
 
 // formatJobStop renders a job_stop result as a single plain-text line matching the
@@ -1267,6 +1472,20 @@ func formatJobStop(out jobStopResult) string {
 	if out.Worktree != nil {
 		fmt.Fprintf(&b, "\nworktree: path=%s, branch=%s, head=%s, %d commits ahead, dirty=%t",
 			out.Worktree.Path, out.Worktree.Branch, out.Worktree.HeadSHA, out.Worktree.Ahead, out.Worktree.Dirty)
+	}
+	if n := len(out.LiveWatches); n > 0 {
+		fmt.Fprintf(&b, "\nlive watches: %d still armed and delivering to this delegate", n)
+		for i, row := range out.LiveWatches {
+			if i >= 5 {
+				fmt.Fprintf(&b, "\n  +%d more (see live_watches in state)", n-i)
+				break
+			}
+			detail := row.Condition
+			if detail == "" {
+				detail = "no condition"
+			}
+			fmt.Fprintf(&b, "\n  %s · source=%s · %s · clear it (job_watch operation=\"clear\" watch_id=%s)", row.ID, row.Source, detail, row.ID)
+		}
 	}
 	return b.String()
 }
@@ -1332,6 +1551,9 @@ type jobWatchToolResult struct {
 	Events             []string                 `json:"events,omitempty"`
 	EventFilter        *jobWatchToolEventFilter `json:"event_filter,omitempty"`
 	ProgressIntervalMS int                      `json:"progress_interval_ms,omitempty"`
+	AfterSeconds       int                      `json:"after_seconds,omitempty"`
+	RepeatSeconds      int                      `json:"repeat_seconds,omitempty"`
+	Note               string                   `json:"note,omitempty"`
 	Send               *jobWatchToolSendArgs    `json:"send,omitempty"`
 	// replaced_existing and fired serialize explicitly even when false: the
 	// contract's install example shows replaced_existing:false, and §7.1
@@ -1354,10 +1576,15 @@ type jobWatchListToolResult struct {
 }
 
 type jobWatchInspectToolResult struct {
-	WatchID    string `json:"watch_id"`
-	Source     string `json:"source,omitempty"`
-	Watching   bool   `json:"watching"`
-	Condition  string `json:"condition,omitempty"`
+	WatchID   string `json:"watch_id"`
+	Source    string `json:"source,omitempty"`
+	Watching  bool   `json:"watching"`
+	Condition string `json:"condition,omitempty"`
+	// Note rides beside the Condition string: note text is free prose that
+	// may itself contain delimiter-looking text ("; events: [...]"), which
+	// the flattened Condition grammar cannot carry unambiguously (RoboRev PR
+	// #954). Readers prefer this field and fall back to the note: clause.
+	Note       string `json:"note,omitempty"`
 	Deliveries int    `json:"deliveries,omitempty"`
 	CreatedAt  string `json:"created_at,omitempty"`
 	EndReason  string `json:"end_reason,omitempty"`
@@ -1503,10 +1730,16 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		OutputMatch:        res.OutputMatch,
 		Events:             res.Events,
 		ProgressIntervalMS: res.ProgressIntervalMS,
+		Note:               res.Note,
 		ReplacedExisting:   res.ReplacedExisting,
 		Fired:              res.Fired,
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
+	}
+	if res.OneShot {
+		out.AfterSeconds = res.TimerSeconds
+	} else {
+		out.RepeatSeconds = res.TimerSeconds
 	}
 	if res.EventFilter != nil {
 		out.EventFilter = &jobWatchToolEventFilter{
@@ -1574,8 +1807,18 @@ func formatJobWatch(out jobWatchToolResult) string {
 		}
 		cond = append(cond, events)
 	}
-	if out.ProgressIntervalMS > 0 {
-		cond = append(cond, fmt.Sprintf("every %dms", out.ProgressIntervalMS))
+	switch {
+	case out.AfterSeconds > 0:
+		cond = append(cond, fmt.Sprintf("after %ds", out.AfterSeconds))
+	case out.RepeatSeconds > 0:
+		cond = append(cond, fmt.Sprintf("every %ds", out.RepeatSeconds))
+	case out.ProgressIntervalMS > 0:
+		cond = append(cond, fmt.Sprintf("progress_interval_ms %dms", out.ProgressIntervalMS))
+	}
+	// The note labels any watch, not just a timer: it is the prose payload the
+	// fire shows back, so it renders after whatever the watch triggers on.
+	if out.Note != "" {
+		cond = append(cond, "note: "+out.Note)
 	}
 	if len(cond) > 0 {
 		parts = append(parts, strings.Join(cond, " "))
@@ -1781,7 +2024,11 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 	}
 	statuses := make([]jobstore.Status, 0, len(values))
 	for _, value := range values {
-		status := jobstore.Status(fmt.Sprint(value))
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s values must be strings", key)
+		}
+		status := jobstore.Status(s)
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
@@ -1792,6 +2039,53 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		}
 	}
 	return statuses, nil
+}
+
+// watchIntArg reads an integer job_watch argument strictly: absent or null is
+// (0, false, nil); an int or an integral, finite float64 is its value; anything
+// else (a string, 1.5, NaN) is invalid_request naming the field. Providers hand
+// numbers over as float64, so silently truncating would hide a model error.
+// The only numeric bound here is what int can hold; a field with a documented
+// maximum (the timer seconds) enforces it in normalizeWatchArgs instead.
+func watchIntArg(args map[string]any, key string) (int, bool, error) {
+	// float64 cannot represent math.MaxInt exactly - it rounds up to 2^63 - so
+	// the upper bound is exclusive, which keeps every float64 that reaches the
+	// int conversion below in range. math.MinInt is exactly representable and
+	// stays inclusive.
+	const aboveMaxInt = float64(math.MaxInt) + 1
+	raw, present := args[key]
+	if !present || raw == nil {
+		return 0, false, nil
+	}
+	switch v := raw.(type) {
+	case int:
+		return v, true, nil
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v >= aboveMaxInt || v < math.MinInt {
+			return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
+		}
+		return int(v), true, nil
+	default:
+		return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
+	}
+}
+
+// watchStringArg reads an optional string job_watch argument. Absent and null
+// both mean "not named" and read as empty. A present value of another type is
+// rejected rather than coerced: for source, empty is not a neutral value — a
+// create that names no source and asks for a timer becomes a self timer — so
+// coercion would silently build a watch on something other than what was asked
+// for.
+func watchStringArg(args map[string]any, key string) (string, error) {
+	raw, present := args[key]
+	if !present || raw == nil {
+		return "", nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid_request: %s must be a string", key)
+	}
+	return text, nil
 }
 
 func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
@@ -1811,28 +2105,49 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if _, ok := args["receiver_delegate_id"]; ok {
 		return watchArgs{}, errors.New("invalid_request: job_watch derives its receiver from the watcher session")
 	}
+	source, err := watchStringArg(args, "source")
+	if err != nil {
+		return watchArgs{}, err
+	}
 	a := watchArgs{
 		Operation:   operation,
 		WatchID:     strings.TrimSpace(stringArg(args, "watch_id")),
-		Source:      strings.TrimSpace(stringArg(args, "source")),
+		Source:      strings.TrimSpace(source),
 		OutputMatch: stringArg(args, "output_match"),
 	}
-	if n, ok := shellIntArg(args, "progress_interval_ms"); ok {
-		a.ProgressIntervalMS = n
+	for _, field := range []struct {
+		key string
+		dst *int
+	}{
+		{"progress_interval_ms", &a.ProgressIntervalMS},
+		{"every", &a.Every},
+		{"after_seconds", &a.AfterSeconds},
+		{"repeat_seconds", &a.RepeatSeconds},
+	} {
+		n, ok, err := watchIntArg(args, field.key)
+		if err != nil {
+			return watchArgs{}, err
+		}
+		if ok {
+			*field.dst = n
+		}
 	}
+	a.Note = stringArg(args, "note")
 	events, err := stringArrayArg(args, "events")
 	if err != nil {
 		return watchArgs{}, err
 	}
 	a.Events = events
-	if n, ok := shellIntArg(args, "every"); ok {
-		a.Every = n
-	}
 	eventFilter, err := watchEventFilterArg(args)
 	if err != nil {
 		return watchArgs{}, err
 	}
 	a.EventFilter = eventFilter
+	normalizeWatchArgsForOperation(&a)
+	if a.Operation == "create" && a.Source == "" && watchArgsIsTimer(a) {
+		a.Source = "self"
+	}
+	missingWatchID := false
 	switch a.Operation {
 	case "create":
 		if a.Source == "" {
@@ -1844,10 +2159,16 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		}
 	case "inspect", "clear":
 		if a.WatchID == "" {
-			return watchArgs{}, errors.New("invalid_request: watch_id is required")
+			missingWatchID = true
 		}
 	default:
 		return watchArgs{}, fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
+	}
+	if err := rejectWatchTriggerFieldsOnNonCreate(args, a); err != nil {
+		return watchArgs{}, err
+	}
+	if missingWatchID {
+		return watchArgs{}, fmt.Errorf("invalid_request: watch_id is required for operation=%q; use %s", a.Operation, watchOperationRepairShape(a))
 	}
 	if a.Source == "*" {
 		return watchArgs{}, errors.New("invalid_request: wildcard watch target is not supported in v1")
@@ -1855,9 +2176,127 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	return a, nil
 }
 
+// normalizeWatchArgsForOperation erases only the exact neutral trigger values
+// providers commonly materialize on inspection operations. The raw values stay
+// in the tool call record for diagnostics; meaningful values are rejected below.
+func normalizeWatchArgsForOperation(a *watchArgs) {
+	if a.Operation == "create" {
+		return
+	}
+	if len(a.Events) == 0 {
+		a.Events = nil
+	}
+	if a.Every == 0 || a.Every == 1 {
+		a.Every = 0
+	}
+}
+
+// watchTriggerFieldNames lists the create-only arguments in the DefJobWatch
+// property order: the fields that select what a created watch fires on, plus
+// note, which is the watch's payload rather than a trigger. They are meaningful
+// only for operation="create"; list/inspect/clear take only watch_id, so one of
+// these beside them was previously parsed and then silently ignored.
+var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter", "after_seconds", "repeat_seconds", "note"}
+
+// rejectWatchTriggerFieldsOnNonCreate returns an invalid_request naming every
+// trigger field the call actually supplied alongside a non-create operation.
+// Omitting all of them stays valid: create on a granted cross-session source
+// (parent) watches all bounded public events, and list/inspect/clear need none.
+// Null, empty, and default values count as omitted. This is deliberately
+// operation-aware: create keeps its full trigger vocabulary, while list,
+// inspect, and clear tolerate provider-materialized optional fields without
+// accepting a real trigger outside create.
+func rejectWatchTriggerFieldsOnNonCreate(args map[string]any, a watchArgs) error {
+	if a.Operation == "create" {
+		return nil
+	}
+	var supplied []string
+	for _, name := range watchTriggerFieldNames {
+		value, ok := args[name]
+		if !ok || watchTriggerArgumentIsNeutral(name, value, a) {
+			continue
+		}
+		supplied = append(supplied, formatWatchTriggerArgument(name, value))
+	}
+	if len(supplied) == 0 {
+		return nil
+	}
+	missingWatchID := (a.Operation == "inspect" || a.Operation == "clear") && a.WatchID == ""
+	missing := ""
+	if missingWatchID {
+		missing = fmt.Sprintf("watch_id is required for operation=%q; ", a.Operation)
+	}
+	return fmt.Errorf(
+		"invalid_request: %strigger fields apply only to operation=\"create\"; received %s with operation=%q — set operation=\"create\" to arm a watch, or remove those fields and use %s",
+		missing, strings.Join(supplied, ", "), a.Operation, watchOperationRepairShape(a),
+	)
+}
+
+func watchTriggerArgumentIsNeutral(name string, value any, a watchArgs) bool {
+	if value == nil {
+		return true
+	}
+	switch name {
+	case "output_match":
+		_, ok := value.(string)
+		return ok && a.OutputMatch == ""
+	case "events":
+		return len(a.Events) == 0
+	case "event_filter":
+		return a.EventFilter == nil
+	case "progress_interval_ms":
+		return a.ProgressIntervalMS == 0 && watchIntegerValue(value) == 0
+	case "every":
+		return (a.Every == 0 || a.Every == 1) && (watchIntegerValue(value) == 0 || watchIntegerValue(value) == 1)
+	case "after_seconds":
+		return a.AfterSeconds == 0 && watchIntegerValue(value) == 0
+	case "repeat_seconds":
+		return a.RepeatSeconds == 0 && watchIntegerValue(value) == 0
+	case "note":
+		s, ok := value.(string)
+		return ok && s == ""
+	default:
+		return false
+	}
+}
+
+func watchIntegerValue(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	default:
+		return -1
+	}
+}
+
+func formatWatchTriggerArgument(name string, value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%s=%#v", name, value)
+	}
+	return fmt.Sprintf("%s=%s", name, encoded)
+}
+
+func watchOperationRepairShape(a watchArgs) string {
+	switch a.Operation {
+	case "list":
+		return `{"operation":"list"}`
+	case "inspect", "clear":
+		watchID := a.WatchID
+		if watchID == "" {
+			watchID = "watch_..."
+		}
+		return fmt.Sprintf(`{"operation":%q,"watch_id":%q}`, a.Operation, watchID)
+	default:
+		return fmt.Sprintf(`{"operation":%q}`, a.Operation)
+	}
+}
+
 func watchEventFilterArg(args map[string]any) (*watchEventFilter, error) {
 	raw, ok := args["event_filter"]
-	if !ok {
+	if !ok || raw == nil {
 		return nil, nil
 	}
 	values, ok := raw.(map[string]any)
@@ -1887,7 +2326,7 @@ func watchEventFilterArg(args map[string]any) (*watchEventFilter, error) {
 
 func stringArrayArg(args map[string]any, key string) ([]string, error) {
 	raw, ok := args[key]
-	if !ok {
+	if !ok || raw == nil {
 		return nil, nil
 	}
 	values, ok := raw.([]any)
@@ -1947,7 +2386,11 @@ func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error
 	}
 	types := make([]jobstore.JobType, 0, len(values))
 	for _, value := range values {
-		jobType := jobstore.JobType(fmt.Sprint(value))
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s values must be strings", key)
+		}
+		jobType := jobstore.JobType(s)
 		switch jobType {
 		case jobstore.JobShell, jobstore.JobType(delegateResourceType):
 			types = append(types, jobType)

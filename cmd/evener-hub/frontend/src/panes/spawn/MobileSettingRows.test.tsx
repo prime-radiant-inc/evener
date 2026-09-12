@@ -15,7 +15,7 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
     harness: "evener",
     harnessOptions: [
       { value: "evener", label: "evener" },
-      { value: "codex-cli", label: "codex-cli" },
+      { value: "external", label: "external" },
     ],
     onHarnessChange: vi.fn(),
     cwd: "/tmp/project",
@@ -23,15 +23,10 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
     complete: vi.fn(async () => []),
     listRecents: vi.fn(async () => []),
     fallbackDir: "/tmp",
+    validatePath: async (path) => ({ valid: true, path }),
+    createDirectory: async () => {},
     onCwdPanelClose: vi.fn(),
     branch: "main",
-    reasoningEffort: "",
-    reasoningOptions: [
-      { value: "", label: "(default)" },
-      { value: "low", label: "low" },
-    ],
-    reasoningDisabled: false,
-    onReasoningChange: vi.fn(),
     accessMode: "",
     accessOptions: [
       { value: "", label: "(default)" },
@@ -58,7 +53,6 @@ test("renders all Treatment A rows in order with full-row controls", () => {
     "Harness",
     "Working directory",
     "Branch",
-    "Reasoning effort",
     "Access mode",
     "Plugins",
   ]);
@@ -93,26 +87,27 @@ test("option sheets commit a selection and return focus to the row", async () =>
   const row = rowButton.parentElement!;
   await user.click(rowButton);
   const dialog = await screen.findByRole("dialog", { name: "Choose harness" });
-  await user.click(within(dialog).getByRole("button", { name: "codex-cli" }));
+  await user.click(within(dialog).getByRole("button", { name: "external" }));
 
-  expect(onHarnessChange).toHaveBeenCalledWith("codex-cli");
+  expect(onHarnessChange).toHaveBeenCalledWith("external");
   expect(screen.queryByRole("dialog", { name: "Choose harness" })).toBeNull();
   expect(document.activeElement).toBe(within(row).getByRole("button"));
 });
 
-test("the working-directory sheet uses the existing path panel and closes with Escape", async () => {
+test("browsing a directory and cancelling preserves the session directory", async () => {
   const user = userEvent.setup();
   const onCwdChange = vi.fn();
-  renderRows({ onCwdChange });
+  renderRows({ onCwdChange, complete: async () => ["/tmp/project/child"] });
 
   const rowButton = screen.getByRole("button", { name: "Working directory: /tmp/project" });
   const row = rowButton.parentElement!;
   await user.click(rowButton);
-  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
-  expect(within(dialog).getByRole("combobox", { name: "Path" })).toBeTruthy();
+  const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
+  await user.click(await within(dialog).findByText("child"));
+  expect(onCwdChange).not.toHaveBeenCalled();
   await user.keyboard("{Escape}");
 
-  expect(screen.queryByRole("dialog", { name: "Choose working directory" })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Choose directory" })).toBeNull();
   expect(document.activeElement).toBe(within(row).getByRole("button"));
 });
 
@@ -128,15 +123,17 @@ test("selecting a recent working directory stamps the committed value, not the p
   });
 
   await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
-  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
-  await user.click(await within(dialog).findByRole("option", { name: /new\/project/ }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
+  await user.click(await within(dialog).findByRole("button", { name: "Open recent /new/project" }));
 
+  expect(onCwdChange).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole("button", { name: "Use this folder" }));
   expect(onCwdChange).toHaveBeenLastCalledWith("/new/project");
   expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).toBe("/new/project");
   expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).not.toBe("/old/project");
 });
 
-test("pressing Enter on a typed working directory stamps the committed value, not the previous cwd", async () => {
+test("confirming a typed working directory stamps the committed value, not the previous cwd", async () => {
   const user = userEvent.setup();
   localStorage.setItem(GLOBAL_LAST_WORKING_DIR_KEY, "/old/project");
   const onCwdChange = vi.fn();
@@ -147,40 +144,29 @@ test("pressing Enter on a typed working directory stamps the committed value, no
   });
 
   await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
-  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
-  expect(within(dialog).getByRole("combobox", { name: "Path" })).toBeTruthy();
-  await user.keyboard("/new/typed/project{Enter}");
+  const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
+  const pathInput = within(dialog).getByRole("textbox", { name: "Path" });
+  await user.clear(pathInput);
+  await user.type(pathInput, "/new/typed/project{Enter}");
+  await user.click(within(dialog).getByRole("button", { name: "Use this folder" }));
 
   expect(onCwdChange).toHaveBeenLastCalledWith("/new/typed/project");
   expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).toBe("/new/typed/project");
   expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).not.toBe("/old/project");
 });
 
-test("a disabled reasoning row is read-only and exposes no picker affordance", () => {
-  renderRows({ reasoningDisabled: true });
+// Issue #198 (extended): effort is one act too, so it uses one control
+// everywhere - the prompt card's quiet effort control. This list renders no
+// effort row and opens no effort sheet.
+test("no reasoning row and no reasoning sheet - the prompt card owns that setting now", () => {
+  renderRows();
 
-  const row = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Reasoning effort"]') as HTMLElement;
-  expect(row).toBeTruthy();
-  expect(within(row).queryByRole("button")).toBeNull();
-  expect(row.querySelector('[aria-haspopup="dialog"]')).toBeNull();
-  expect(row.textContent).not.toContain("›");
-});
-
-// The Reasoning effort row's resting label is looked up by value in the same
-// options list the desktop Effort select renders (Spawn.tsx's effortOptions),
-// so once launch/resolve names the inherited effort there - "high (default)"
-// - the row says it too, with no mobile-side code of its own.
-test("the reasoning row inherits a resolved-default label from its options list", () => {
-  renderRows({
-    reasoningEffort: "",
-    reasoningOptions: [
-      { value: "", label: "high (default)" },
-      { value: "low", label: "low" },
-    ],
-  });
-
-  const row = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Reasoning effort"]');
-  expect(row?.textContent).toContain("high (default)");
+  const labels = within(screen.getByTestId("mobile-spawn-config"))
+    .getAllByTestId("mobile-spawn-row")
+    .map((row) => row.getAttribute("data-label"));
+  expect(labels).not.toContain("Reasoning effort");
+  expect(screen.queryByRole("button", { name: /^Reasoning effort:/ })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Choose reasoning effort" })).toBeNull();
 });
 
 test("plugin sheet stays open across toggles, Done applies, and Cancel restores focus", async () => {

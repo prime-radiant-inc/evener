@@ -16,7 +16,7 @@ import (
 
 // writeSinglePassFixture writes a transcript with header prelude content
 // (system prompt), user input, an assistant tool call, a tool result, and a
-// usage/timestamp-carrying assistant turn: every shape TurnsFromFile stamps.
+// usage/timestamp-carrying assistant turn: every shape ItemTurnsFromFile stamps.
 func writeSinglePassFixture(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
@@ -57,26 +57,26 @@ func singlePassProjector(turn schema.Turn, turnID string, entryIndex int) []appw
 	return []appwire.ThreadItem{{Type: "agentMessage", ID: turnID, TurnID: turnID, Text: string(turn.Kind)}}
 }
 
-// TestTurnsFromFileSinglePassMatchesEntriesForm is the differential proof for
-// the single-pass change: TurnsFromFile over the file must produce exactly
-// the turns TurnsFromEntries produces over the same transcript's decoded
+// TestItemTurnsFromFileSinglePassMatchesEntriesForm is the differential proof for
+// the single-pass change: ItemTurnsFromFile over the file must produce exactly
+// the turns ItemTurnsFromEntries produces over the same transcript's decoded
 // header+entries, including the prelude turn, the turn ids (1-based entry
 // indexing), and the usage/timestamp stamps.
-func TestTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
+func TestItemTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 	path := writeSinglePassFixture(t)
 
-	fileTurns, err := TurnsFromFile(path, 1<<20, singlePassProjector)
+	fileTurns, err := ItemTurnsFromFile(path, 1<<20, singlePassProjector)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	w, entries, err := transcript.OpenWriterForSession(path, "th_single")
 	if err != nil {
 		t.Fatalf("OpenWriterForSession: %v", err)
 	}
 	defer w.Close() //nolint:errcheck // read-only fixture use
-	entryTurns, err := TurnsFromEntries(w.Header(), entries, singlePassProjector)
+	entryTurns, err := ItemTurnsFromEntries(w.Header(), entries, singlePassProjector)
 	if err != nil {
-		t.Fatalf("TurnsFromEntries: %v", err)
+		t.Fatalf("ItemTurnsFromEntries: %v", err)
 	}
 
 	if len(fileTurns) == 0 {
@@ -97,13 +97,13 @@ func TestTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 	}
 }
 
-// TestTurnsFromFileSinglePassStillStampsUsageAndTimestamp pins the stamps the
+// TestItemTurnsFromFileSinglePassStillStampsUsageAndTimestamp pins the stamps the
 // per-entry projection applies, proving the shared projector kept them.
-func TestTurnsFromFileSinglePassStillStampsUsageAndTimestamp(t *testing.T) {
+func TestItemTurnsFromFileSinglePassStillStampsUsageAndTimestamp(t *testing.T) {
 	path := writeSinglePassFixture(t)
-	turns, err := TurnsFromFile(path, 1<<20, singlePassProjector)
+	turns, err := ItemTurnsFromFile(path, 1<<20, singlePassProjector)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	var stamped *appwire.Turn
 	for i := range turns {
@@ -114,18 +114,28 @@ func TestTurnsFromFileSinglePassStillStampsUsageAndTimestamp(t *testing.T) {
 	if stamped == nil {
 		t.Fatalf("no turn carried usage; ids=%v", singlePassTurnIDs(turns))
 	}
+	// The whole round groups into ONE logical turn (user + call + result +
+	// final assistant), so the group accumulates the usage the final
+	// assistant entry recorded and stamps the group's turn start.
+	if len(turns) != 2 {
+		t.Fatalf("grouped turns=%d want 2 (prelude + the one logical turn); ids=%v", len(turns), singlePassTurnIDs(turns))
+	}
 	if stamped.Usage.TotalTokens != 7 {
 		t.Fatalf("usage total tokens=%d, want 7", stamped.Usage.TotalTokens)
 	}
-	if stamped.StartedAt == nil || *stamped.StartedAt != time.Unix(1_700_000_000, 0).UTC().UnixMilli() {
-		t.Fatalf("usage turn StartedAt=%v, want the entry timestamp", stamped.StartedAt)
+	// The grouped turn's start is its EARLIEST entry timestamp: the user
+	// input opens the group (written at "now", after the fixed ts was
+	// minted earlier in the test), so the group stamps that write time.
+	// Pin that it is set and later than the usage entry's fixed ts.
+	if stamped.StartedAt == nil || *stamped.StartedAt <= time.Unix(1_700_000_000, 0).UTC().UnixMilli() {
+		t.Fatalf("usage turn StartedAt=%v, want the group opener's own timestamp", stamped.StartedAt)
 	}
 }
 
-// TestTurnsFromFileSinglePassSkipsOversizeLine keeps the reader's line-limit
+// TestItemTurnsFromFileSinglePassSkipsOversizeLine keeps the reader's line-limit
 // contract after the single-pass change (the limit previously gated the
 // separate ScanPrelude pass as well).
-func TestTurnsFromFileSinglePassSkipsOversizeLine(t *testing.T) {
+func TestItemTurnsFromFileSinglePassSkipsOversizeLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "oversize.transcript.jsonl")
 	header, err := json.Marshal(transcript.Header{Kind: "header", SessionID: "th_over"})
@@ -143,7 +153,7 @@ func TestTurnsFromFileSinglePassSkipsOversizeLine(t *testing.T) {
 	if err := os.WriteFile(path, []byte(string(header)+"\n"+string(big)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := TurnsFromFile(path, 32, singlePassProjector); err == nil {
+	if _, err := ItemTurnsFromFile(path, 32, singlePassProjector); err == nil {
 		t.Fatal("oversize line was accepted")
 	}
 }

@@ -894,6 +894,35 @@ func TestTerminalCatchupNoSendFiresNotification(t *testing.T) {
 	}
 }
 
+// TestTerminalCatchupCarriesTheNote pins that a note does not disqualify a
+// request from catch-up: a note is the watch's prose payload, not a trigger, so
+// a noted output_match create on a terminal job is served the same scan and the
+// note rides the notification that scan enqueues.
+func TestTerminalCatchupCarriesTheNote(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	jobID := terminalShellWithOutput(t, jm, "line one\nserver ready\n")
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	res, err := jm.configureWatch(watchArgs{Target: jobID, OutputMatch: "ready", Note: "deploy gate"})
+	if err != nil {
+		t.Fatalf("configureWatch noted terminal catch-up: %v", err)
+	}
+	if !res.Fired || !res.TerminalCatchup || res.Watching {
+		t.Fatalf("result = %+v, want fired+terminal_catchup without a live watch", res)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("catch-up notifications = %d, want exactly 1: %+v", len(notified), notified)
+	}
+	if notified[0].Note != "deploy gate" {
+		t.Fatalf("notification note = %q, want %q", notified[0].Note, "deploy gate")
+	}
+	if block := formatJobNotificationBlock(notified[0], notificationExcerpt{}, false); !strings.Contains(block, "Note: deploy gate") {
+		t.Fatalf("catch-up block lacks the note:\n%s", block)
+	}
+}
+
 // TestTerminalCatchupNoMatchReportsTerminalCatchup covers spec §7.1: a terminal
 // output_match-only watch whose retained output does NOT match reports
 // terminal_catchup with fired=false and enqueues nothing.
@@ -950,7 +979,11 @@ func TestTerminalCatchupFinalUnterminatedLineFires(t *testing.T) {
 // TestTerminalCatchupRejectsEventsCondition covers spec §7.1: catch-up applies
 // ONLY to pure output_match-only requests. A terminal target carrying events
 // (even alongside output_match) still fails target_terminal — nothing can ever
-// fire — and installs no watch and no catch-up.
+// fire — and installs no watch and no catch-up. A time field is the same story:
+// catch-up must not swallow a request the timer rules would reject, or the
+// model gets a terminal_catchup result instead of a correction. A note is NOT
+// a trigger, so it does not disqualify a request — see
+// TestTerminalCatchupCarriesTheNote.
 func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -965,6 +998,8 @@ func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 		{"events only", watchArgs{Target: jobID, Events: []string{"communicate"}}},
 		{"output_match plus events", watchArgs{Target: jobID, OutputMatch: "ready", Events: []string{"communicate"}}},
 		{"output_match plus progress", watchArgs{Target: jobID, OutputMatch: "ready", ProgressIntervalMS: 1000}},
+		{"output_match plus after_seconds", watchArgs{Target: jobID, OutputMatch: "ready", AfterSeconds: 600}},
+		{"output_match plus repeat_seconds", watchArgs{Target: jobID, OutputMatch: "ready", RepeatSeconds: 300}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := len(notified)

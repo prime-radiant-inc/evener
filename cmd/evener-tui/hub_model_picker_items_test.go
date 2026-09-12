@@ -26,9 +26,34 @@ func TestModelPickerItems_SetsGroupAndPrettifiedDisplay(t *testing.T) {
 	}
 }
 
-func TestModelPickerItems_MetaTailFromCatalog(t *testing.T) {
+func TestModelInfoMetaTail_FromDescriptor(t *testing.T) {
+	got := modelInfoMetaTail(appwire.ModelDescriptor{
+		Provider:             "anthropic",
+		Model:                "claude-opus-4-6",
+		ContextWindow:        new(200_000),
+		SupportsTools:        new(true),
+		SupportsVision:       new(true),
+		SupportsReasoning:    new(true),
+		InputCostPerMillion:  new(3.0),
+		OutputCostPerMillion: new(15.0),
+	})
+	if want := "200K ctx · $3.00/$15.00 · tools,vision,reasoning"; got != want {
+		t.Errorf("modelInfoMetaTail = %q, want %q", got, want)
+	}
+}
+
+func TestModelPickerItems_MetaTailFromDescriptor(t *testing.T) {
 	items := modelPickerItems([]appwire.ModelDescriptor{
-		{Provider: "anthropic", Model: "claude-opus-4-6"},
+		{
+			Provider:             "anthropic",
+			Model:                "claude-opus-4-6",
+			ContextWindow:        new(1_000_000),
+			SupportsTools:        new(true),
+			SupportsVision:       new(true),
+			SupportsReasoning:    new(true),
+			InputCostPerMillion:  new(5.0),
+			OutputCostPerMillion: new(25.0),
+		},
 	}, false)
 	if !strings.Contains(items[0].Meta, "1M ctx") {
 		t.Errorf("Meta = %q, want it to contain %q", items[0].Meta, "1M ctx")
@@ -41,18 +66,33 @@ func TestModelPickerItems_MetaTailFromCatalog(t *testing.T) {
 	}
 }
 
-func TestModelPickerItems_UncataloguedModelStillRendersEmptyMeta(t *testing.T) {
+func TestModelPickerItems_DescriptorWithoutMetadataStillRendersEmptyMeta(t *testing.T) {
 	items := modelPickerItems([]appwire.ModelDescriptor{
 		{Provider: "mycompany", Model: "totally-unknown-model-xyz"},
 	}, false)
 	if len(items) != 1 {
-		t.Fatalf("uncatalogued model was dropped: got %d items, want 1", len(items))
+		t.Fatalf("bare descriptor was dropped: got %d items, want 1", len(items))
 	}
 	if items[0].Meta != "" {
-		t.Errorf("Meta = %q, want empty for an uncatalogued model", items[0].Meta)
+		t.Errorf("Meta = %q, want empty for a descriptor carrying no metadata", items[0].Meta)
 	}
 	if items[0].Display != "Totally Unknown Model Xyz" {
-		t.Errorf("Display = %q, want the prettified id even when uncatalogued", items[0].Display)
+		t.Errorf("Display = %q, want the prettified id even without metadata", items[0].Display)
+	}
+}
+
+// TestModelInfoMetaTail_PricelessRowRendersNoCost pins the flag-day rule
+// (spec §14.1): a registry row with no cost yields no cost string anywhere,
+// including the picker, rather than a fabricated "$0.00/$0.00".
+func TestModelInfoMetaTail_PricelessRowRendersNoCost(t *testing.T) {
+	got := modelInfoMetaTail(appwire.ModelDescriptor{
+		Provider:      "mycompany",
+		Model:         "priceless",
+		ContextWindow: new(128_000),
+		SupportsTools: new(true),
+	})
+	if want := "128K ctx · tools"; got != want {
+		t.Errorf("modelInfoMetaTail = %q, want %q", got, want)
 	}
 }
 
@@ -138,13 +178,20 @@ func TestModelPickerItemsFromResponse_NoRecentOmitsGroup(t *testing.T) {
 	}
 }
 
-func TestVisionModelPickerItemsPrependPseudoEntriesAndFilterCatalog(t *testing.T) {
-	items := visionModelPickerItems([]tuipick.ModelPickerItem{
+func TestVisionModelPickerItemsPrependPseudoEntriesAndFilterDescriptors(t *testing.T) {
+	models := []appwire.ModelDescriptor{
+		{Provider: "openai", Model: "gpt-3.5-turbo", SupportsVision: new(false)},
+		{Provider: "openai", Model: "gpt-4o", SupportsVision: new(true)},
+		// No SupportsVision at all: unknown is not vision-capable.
+		{Provider: "openai", Model: "gpt-unknown"},
+	}
+	items := visionModelPickerItems(models, []tuipick.ModelPickerItem{
 		{ID: "openai/gpt-3.5-turbo", Display: "GPT 3.5 Turbo"},
 		{ID: "openai/gpt-4o", Display: "GPT 4o"},
+		{ID: "openai/gpt-unknown", Display: "GPT Unknown"},
 	})
 	if len(items) != 3 {
-		t.Fatalf("got %d items, want Current, Off, and the one vision-capable catalog model: %#v", len(items), items)
+		t.Fatalf("got %d items, want Current, Off, and the one vision-capable descriptor: %#v", len(items), items)
 	}
 	if items[0].ID != "" || items[0].Display != "Current model" {
 		t.Fatalf("first item = %#v, want Current model with empty ID", items[0])

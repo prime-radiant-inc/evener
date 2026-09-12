@@ -76,6 +76,14 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 	m.frames = msg.frames
 	m.connectionLost = false
 	m.reconnectAttempt = 0
+	// A live-nav read started on the dead connection can still be in flight
+	// and land after this resync: bump the sequence so it drops as stale
+	// instead of overwriting the fresh connection's resynchronized session
+	// (roborev PR #1044 round-8 medium 4). The pending target goes with it -
+	// the new connection has no cycling read in flight.
+	m.liveNavSeq++
+	m.liveNavPendingRef = ""
+	m.liveNavNeedsReconcile = false // the reconnect's own tagged resub re-establishes
 	if m.pending != nil {
 		m.client.SetPendingCoordinator(m.pending)
 	}
@@ -83,14 +91,22 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 
 	cmds := []tea.Cmd{waitHubNotification(m.frames), fetchHubTree(m.client)}
 	// A replacement connection carries no subscriptions: every one the dead
-	// connection held died with it. Re-read the viewed session to re-subscribe
-	// it, and re-issue the subagent rail's child subscriptions — the same-ref
-	// read does not re-issue those, and it is additive precisely so it cannot
-	// drop them if it lands second.
+	// connection held died with it. Re-read the viewed session through the
+	// tagged recovery path (round-13 medium 1): the read re-subscribes it
+	// additively (nothing to replace on a fresh connection), and its response
+	// re-arms the subagent rail's child subscriptions sequenced after the
+	// subscribe (round-12 medium 1) instead of racing it in a batch. The tag
+	// also drops the response if the user live-navigates while it is in
+	// flight - an untagged late response would revert the UI through the
+	// ordinary session-entry branch (roborev PR #1044 round-13 medium 1).
 	if m.mode == hubModeSession {
-		if ref, ok := m.currentRef(); ok {
-			m.watchedChildRefs = nil
-			cmds = append(cmds, resyncHubSession(m.frames, m.client, ref), m.subscribeNewChildren())
+		if _, ok := m.currentRef(); ok {
+			// The helper has a value receiver: fold its mutated copy (the
+			// cleared watched-children set) back through the pointer before
+			// batching the command.
+			retried, recovery := m.resubscribeDisplayedSessionAfterReconnect()
+			*m = retried
+			cmds = append(cmds, recovery)
 		}
 	}
 	return tea.Batch(cmds...)

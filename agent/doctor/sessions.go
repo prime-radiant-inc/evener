@@ -177,10 +177,8 @@ func sessionRow(b bucket, paths Paths, meta schema.SessionMeta, delegates delega
 
 // sessionModels reports the model(s) a session used: the model recorded at
 // creation (the transcript header, immutable) plus the session's current
-// model from meta. A header/meta mismatch is the durable trace of a
-// mid-session model switch — the switch marker text itself
-// (schema.TurnModelSwitch) is presentational prose, not a structured field, so
-// this compares the two canonical structured sources instead of parsing it.
+// model from meta. This summary compares the two endpoint identities; it does
+// not enumerate intermediate transitions from MODEL_SWITCH records.
 func sessionModels(headerModel, metaModel string) []string {
 	switch {
 	case headerModel == "" && metaModel == "":

@@ -46,6 +46,7 @@ function Harness({ q, initial = UNTOUCHED }: { q: AskQuestionRef; initial?: AskA
   const [answer, setAnswer] = useState<AskAnswerState>(initial);
   return (
     <AskQuestionCard
+      disabled={false}
       question={q}
       number={1}
       answer={answer}
@@ -113,7 +114,9 @@ test("the recommended option carries an accent suffix right after its bold label
   const css = cardCss();
   const rule = css.match(/\.optionRecommended\s*\{([^}]*)\}/);
   expect(rule, "askquestioncard.module.css must declare an .optionRecommended rule").not.toBeNull();
-  expect(rule![1]).toMatch(/color:\s*var\(--accent\)/);
+  // Canonical design-system §2: semantic text uses the AA ink companion,
+  // not the bare hue. Keep the exact suffix/label pairing above unchanged.
+  expect(rule?.[1]).toMatch(/color:\s*var\(--accent-ink\)/);
 });
 
 test("the recommended option renders first regardless of input order", () => {
@@ -160,6 +163,7 @@ test("clicking a regular option (single-select) resolves to that option alone", 
   const onResolutionChange = vi.fn();
   render(
     <AskQuestionCard
+      disabled={false}
       question={question()}
       number={1}
       answer={UNTOUCHED}
@@ -223,6 +227,7 @@ test("while Something else is active, the shared text field edits the free resol
   const onNoteChange = vi.fn();
   render(
     <AskQuestionCard
+      disabled={false}
       question={question()}
       number={1}
       answer={{ resolution: { kind: "free", text: "" }, note: "" }}
@@ -264,6 +269,7 @@ test("the note field is visible with no disclosure toggle and calls onNoteChange
   const onNoteChange = vi.fn();
   render(
     <AskQuestionCard
+      disabled={false}
       question={question()}
       number={1}
       answer={UNTOUCHED}
@@ -319,4 +325,17 @@ test("every option row gets comfortable padding, and reaches the tap floor on a 
   const rule = coarse![1]!.match(/\.option\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .option").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
+});
+
+// The dock is a virtualized transcript row (Session.tsx), so scrolling away
+// unmounts this card and scrolling back REMOUNTS it. With an already-active
+// free answer, a mount is not the "kind changed to free" transition the
+// focus effect exists for - refocusing the answer input would steal focus
+// from wherever the reader moved it (roborev PR #854).
+test("mounting with an already-active free answer does not steal focus to the answer input", () => {
+  render(<Harness q={question()} initial={{ resolution: { kind: "free", text: "draft" }, note: "" }} />);
+
+  const input = screen.getByPlaceholderText(/type your answer/i);
+  expect(input).toBeTruthy();
+  expect(document.activeElement).not.toBe(input);
 });

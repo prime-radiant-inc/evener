@@ -78,7 +78,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    the notification channels, and stub the OS surface. Three separate loads, in this order,
    because the prefs hydrate at module load and the stubs are per-document:
    ```
-   navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SIDB>
+   navigate $HUB/auth/<TOKEN>?next=/s/local:<SIDB>
    ```
    ```javascript
    // values are the strings "1"/"0", never JSON (stores/prefs.ts:224-229)

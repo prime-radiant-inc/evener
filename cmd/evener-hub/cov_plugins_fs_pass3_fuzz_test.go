@@ -13,13 +13,11 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 type fuzzModelSource struct {
@@ -57,7 +55,7 @@ func fuzzExerciseLaunch(t *testing.T, root string) {
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := newHubLaunchController(state)
+	c := newHubLaunchController(state, false)
 	c.now = func() time.Time { return time.Unix(123, 0).UTC() }
 	_, _ = c.Schema(ctx, appwire.EmptyParams{})
 	_, _ = c.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
@@ -87,7 +85,7 @@ func fuzzExerciseLaunch(t *testing.T, root string) {
 	_, _ = c.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
 	blocker := filepath.Join(root, "blocker")
 	fuzzWriteFile(t, blocker, "x")
-	blocked := newHubLaunchController(blocker)
+	blocked := newHubLaunchController(blocker, false)
 	_, _ = blocked.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: "global"})
 	_, _ = blocked.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: resolved.Repo.Hash})
 	_, _ = c.TrustRepo(ctx, appwire.LaunchConfigTrustRepoParams{CWD: filepath.Join(root, "missing"), Hash: "x"})
@@ -112,17 +110,8 @@ func fuzzExerciseModels(data []byte) {
 	_ = sanitizeModelDiagnostics(diags)
 	_ = providerHasLaunchDiagnostic(diags, "P")
 	_ = providerHasLaunchDiagnostic(nil, "P")
-	_ = behaviorTagFor(nil, "openrouter-anthropic")
-	pcfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "router", Type: providercfg.Type("openrouter-anthropic")}}}
-	_ = behaviorTagFor(pcfg, "router")
-	_ = behaviorTagFor(pcfg, "missing")
-	_ = launchProviderAllowsUnreportedModels("openrouter-anthropic", nil)
-	_ = launchProviderAllowsUnreportedModels("openai", nil)
-	_ = launchHarnessDescriptors(hubcore.WebConfig{})
-	_ = launchHarnessDescriptors(hubcore.WebConfig{
-		CodexSources:  []appsource.CodexSourceConfig{{}, {ID: "evener"}, {ID: "remote"}},
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{{}, {ID: "remote"}, {ID: "other"}},
-	})
+	_ = launchInstanceExists(hubcore.WebConfig{}, "openrouter")
+	_ = launchHarnessDescriptors()
 	past := hubcore.NewPastIndex("")
 	past.SeedForTest([]schema.SessionMeta{{ID: "a", ProfileID: "p", Model: name}, {ID: "b", ProfileID: "gone", Model: "gone"}})
 	_ = attachRecentModels(hubcore.WebConfig{Past: past}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "p", Model: name}}})
@@ -191,14 +180,14 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _ = c.ListPlugins()
 	_, _ = c.Install(ctx, ref)
 	_, _ = c.Install(ctx, appwire.PluginRefParams{Plugin: "missing", Marketplace: "acme"})
-	_, _ = c.Disable(ref)
-	_, _ = c.Enable(ref)
-	_, _ = c.SetAutoUpgrade(appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true})
+	_, _ = c.Disable(context.Background(), ref)
+	_, _ = c.Enable(context.Background(), ref)
+	_, _ = c.SetAutoUpgrade(context.Background(), appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true})
 	_, _ = c.Upgrade(ctx, ref)
-	_, _ = c.Remove(ref)
-	_, _ = c.Remove(ref)
-	_, _ = c.RemoveMarketplace(appwire.MarketplaceNameParams{Name: "acme"})
-	_, _ = c.RemoveMarketplace(appwire.MarketplaceNameParams{Name: "missing"})
+	_, _ = c.Remove(context.Background(), ref)
+	_, _ = c.Remove(context.Background(), ref)
+	_, _ = c.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "acme"})
+	_, _ = c.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "missing"})
 
 	corrupt := newHubPluginsController(filepath.Join(root, "corrupt"))
 	fuzzWriteFile(t, filepath.Join(root, "corrupt", "known_marketplaces.json"), "{")
@@ -207,9 +196,9 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _ = corrupt.ListPlugins()
 	badref := appwire.PluginRefParams{Plugin: "x", Marketplace: "y"}
 	_, _ = corrupt.Upgrade(ctx, badref)
-	_, _ = corrupt.Enable(badref)
-	_, _ = corrupt.Disable(badref)
-	_, _ = corrupt.SetAutoUpgrade(appwire.PluginSetAutoUpgradeParams{Plugin: "x", Marketplace: "y"})
+	_, _ = corrupt.Enable(context.Background(), badref)
+	_, _ = corrupt.Disable(context.Background(), badref)
+	_, _ = corrupt.SetAutoUpgrade(context.Background(), appwire.PluginSetAutoUpgradeParams{Plugin: "x", Marketplace: "y"})
 
 	mgr := plugins.NewManager(filepath.Join(root, "auto"))
 	_, _ = runPluginAutoUpgradeTick(ctx, mgr, &bytes.Buffer{})

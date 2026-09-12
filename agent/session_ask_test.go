@@ -110,7 +110,7 @@ func newAskTestSession(t *testing.T, cfg SessionConfig) *Session {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1378,7 +1378,7 @@ func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1427,7 +1427,7 @@ func TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1486,7 +1486,7 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 			func(req llm.Request) llm.Response { return finalResponse("thanks, using Postgres") },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1653,7 +1653,7 @@ func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1671,7 +1671,7 @@ func TestAskUser_RestoreRebuildsPendingHoldsEntryGate(t *testing.T) {
 	restoreAdapter := &fakeAdapter{name: "openai"}
 	restoreClient := llm.NewClient()
 	restoreClient.Register(restoreAdapter)
-	restored, err := RestoreSessionFromMeta(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMeta(restoreClient, withTestSessionNamer(restoreClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1719,7 +1719,7 @@ func TestAskUser_RestoreRebuildsPendingArmsSetGoalWithoutKick(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1781,7 +1781,7 @@ func TestAskUser_RestoreRebuildsPendingRefusesCompact(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1842,7 +1842,7 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask1, ask2) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1898,7 +1898,7 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1963,7 +1963,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1985,7 +1985,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 			func(req llm.Request) llm.Response { return finalResponse("thanks, using Postgres") },
 		},
 	})
-	restored, err := RestoreSessionFromMeta(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	restored, err := RestoreSessionFromMeta(restoreClient, withTestSessionNamer(restoreClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -2005,7 +2005,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 
 // --- Task 10: the ask-user prompt-section gate (spec §4.5, §7) ---
 //
-// These tests render the system prompt directly (session_behavior_tag_test.go's
+// These tests render the system prompt directly (session_surface_behavior_test.go's
 // sess.renderSystemPrompt(sess.env) pattern) rather than driving a full
 // ProcessInput round trip: the gate under test is template composition, not
 // turn machinery. The three cases mirror the invisibility semantics already

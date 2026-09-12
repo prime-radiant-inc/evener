@@ -2,7 +2,10 @@ package execenv
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -42,34 +45,90 @@ func SetGitExecTimeoutForTesting(d time.Duration) (restore func()) {
 // with a short timeout. The fallback resolves symlinks and sanity-checks that
 // the reported root is a prefix of cwd.
 func GitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
+	return GitRootOrEmptyContext(context.Background(), env, cwd)
+}
+
+// GitRootOrEmptyContext is GitRootOrEmpty under the caller's work context:
+// cancelling ctx stops the `git rev-parse` fallback instead of leaving it to
+// run out its own timeout. Callers whose work must stop when their session
+// closes use this; the rest keep the shorter spelling.
+func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd string) string {
 	// Memoize per environment: a session resolves the git root several times at
 	// init, all on the same env and cwd, so fork `git rev-parse` once.
 	if local, ok := env.(*LocalExecutionEnvironment); ok && local.gitRoots != nil {
-		return local.gitRoots.lookup(cwd, func() string { return gitRootUncached(env, cwd) })
+		return local.gitRoots.lookup(cwd, func() (string, bool) { return gitRootUncached(ctx, env, cwd) })
 	}
-	return gitRootUncached(env, cwd)
+	root, _ := gitRootUncached(ctx, env, cwd)
+	return root
 }
 
-func gitRootUncached(env ExecutionEnvironment, cwd string) string {
+// gitAnswered reports whether err from a git invocation is git's OWN answer — a
+// process that ran and chose its exit status — rather than a failure to obtain
+// an answer at all. It is what decides whether a resolution may be memoized
+// (gitRootCache.lookup): a verdict about a directory is stable and worth
+// remembering, while "we could not ask" is a property of one moment, and
+// caching that makes an environment believe a directory is not a repository
+// long after the request whose cancellation caused it is gone.
+//
+// nil is an answer. A cancelled or expired context is not, nor is the error the
+// runner substitutes when it gives up — so the context is consulted directly as
+// well as through the error. A process killed by a signal never chose its
+// status, so a wrapper or the runner ending git is not git answering. Anything
+// that is not an exit status at all (binary missing, EAGAIN, a transport
+// failure from a non-local environment) produced no verdict either.
+func gitAnswered(ctx context.Context, err error) bool {
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	if !ok {
+		return false
+	}
+	// Exited() is promoted from the embedded *os.ProcessState, which a
+	// hand-built ExitError could leave nil.
+	return exitErr.ProcessState != nil && exitErr.Exited()
+}
+
+// gitRootUncached resolves cwd's working-tree root. definitive says whether the
+// answer is one to remember (see gitRootCache.lookup): a structural resolution,
+// an absence the filesystem actually reported, and a verdict git itself returned
+// all are. A fork that never ran or never finished is not, and neither is a
+// filesystem that could not answer — see gitAnswered and hasGitEntryAncestor for
+// the two classifications this composes.
+func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
-		if root, ok := structuralWorktreeRoot(cwd); ok {
-			return root
+		if structural, ok := structuralWorktreeRoot(cwd); ok {
+			return structural, true
 		}
-		if !hasGitEntryAncestor(cwd) {
-			return ""
+		if present, known := hasGitEntryAncestor(cwd); !present {
+			// A stat that failed for any reason other than absence leaves the
+			// question open, so answer empty for this call and cache nothing.
+			return "", known
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
+	execCtx, cancel := context.WithTimeout(ctx, gitExecTimeout)
 	defer cancel()
 
-	res, err := RunGit(ctx, env, cwd, gitExecTimeoutMS(), "rev-parse", "--show-toplevel")
-	if err != nil || res.ExitCode != 0 {
-		return ""
+	res, err := RunGit(execCtx, env, cwd, gitExecTimeoutMS(), "rev-parse", "--show-toplevel")
+	if err != nil {
+		// A non-zero exit reaches us as an error value, so "error" alone cannot
+		// mean "no answer": git refusing a directory (exit 128) is a verdict, and
+		// a permanent one. Classify by what the error IS.
+		return "", gitAnswered(execCtx, err)
 	}
-	root := strings.TrimSpace(res.Stdout)
+	if res.ExitCode != 0 {
+		return "", true // git ran and said this is not a repository
+	}
+	root = strings.TrimSpace(res.Stdout)
 	if root == "" {
-		return ""
+		return "", true
 	}
 	// Best-effort sanity check: ensure the returned root is a prefix of cwd.
 	// Resolve symlinks to handle macOS /var -> /private/var and similar.
@@ -82,9 +141,9 @@ func gitRootUncached(env ExecutionEnvironment, cwd string) string {
 	root = filepath.Clean(root)
 	cwd = filepath.Clean(cwd)
 	if root != cwd && !strings.HasPrefix(cwd, root+string(filepath.Separator)) {
-		return ""
+		return "", true // git answered, and its answer failed the sanity check
 	}
-	return root
+	return root, true
 }
 
 // ResolveMainRepoRoot returns the main repository root for cwd, resolving
@@ -97,17 +156,30 @@ func gitRootUncached(env ExecutionEnvironment, cwd string) string {
 // a separate per-environment cache slot for that reason.
 func ResolveMainRepoRoot(env ExecutionEnvironment, cwd string) string {
 	if local, ok := env.(*LocalExecutionEnvironment); ok && local.mainRoots != nil {
-		return local.mainRoots.lookup(cwd, func() string { return mainRepoRootUncached(env, cwd) })
+		return local.mainRoots.lookup(cwd, func() (string, bool) { return mainRepoRootUncached(env, cwd) })
 	}
-	return mainRepoRootUncached(env, cwd)
+	root, _ := mainRepoRootUncached(env, cwd)
+	return root
 }
 
-func mainRepoRootUncached(env ExecutionEnvironment, cwd string) string {
+// mainRepoRootUncached resolves cwd's main repository root, reporting whether
+// the answer is definitive on the same terms gitRootUncached does: it shares
+// the cache, so a resolution error must not be memoized here either.
+func mainRepoRootUncached(env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	root, isGit, err := resolveMainRepoRoot(env, cwd)
-	if err != nil || !isGit {
-		return ""
+	if err != nil {
+		// The same classification gitRootUncached makes, on the same cache. The
+		// resolver wraps its causes with %w, so git's exit status is still
+		// reachable through them; its own structural errors (an unreadable
+		// pointer file, a root that does not contain cwd) are not exit statuses
+		// and stay uncached, which costs a re-resolution rather than a wrong
+		// permanent answer.
+		return "", gitAnswered(context.Background(), err)
 	}
-	return root
+	if !isGit {
+		return "", true
+	}
+	return root, true
 }
 
 func structuralWorktreeRoot(cwd string) (string, bool) {
@@ -135,15 +207,24 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 	}
 }
 
-func hasGitEntryAncestor(cwd string) bool {
+// hasGitEntryAncestor reports whether cwd or an ancestor holds a ".git" entry.
+// known says whether the walk actually established that: only ErrNotExist means
+// "there is nothing here". A stat that failed for any other reason — the
+// directory unreadable, the filesystem erroring — leaves the question open, and
+// the caller must not memoize an absence it never observed.
+func hasGitEntryAncestor(cwd string) (present, known bool) {
 	dir := filepath.Clean(cwd)
 	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return true
+		_, err := os.Stat(filepath.Join(dir, ".git"))
+		if err == nil {
+			return true, true
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, false
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return false
+			return false, true
 		}
 		dir = parent
 	}

@@ -87,7 +87,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
    module load (`stores/prefs.ts:344-378`), so a write after the page is up changes
    nothing:
    ```
-   navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
+   navigate $HUB/auth/<TOKEN>?next=/s/local:<SID>
    ```
    ```javascript
    // strings "1"/"0", never JSON (stores/prefs.ts:224-229)

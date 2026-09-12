@@ -1,4 +1,4 @@
-.PHONY: e2e-cover coverage-floor coverage-gaps coverage-gaps-selftest
+.PHONY: e2e-cover coverage-floor coverage-gaps
 
 # e2e-cover measures END-TO-END coverage of the real evener binary via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
@@ -19,8 +19,8 @@ e2e-cover:
 # local. The counting arithmetic is pinned by internal/devtool/covstmt's tests
 # plus the `evener dev covstmt` contract test in cmd/evener-dev; the script's
 # own orchestration (driving go test per module, per track) has no honest
-# selftest, because the fake-toolchain approach testing.md bans was the only
-# way to exercise it.
+# automated test, because the only way to exercise it was the fake-toolchain
+# approach testing.md bans.
 ## The repo's one coverage ratchet: per module, the union of the test track
 ## and the deterministic fuzz-replay track, plus the frontend's vitest line
 ## coverage.
@@ -46,16 +46,3 @@ coverage-floor:
 ## Takes a profile: `make coverage-gaps PROFILE=path/to.cov GAP_ARGS="--by file"`.
 coverage-gaps:
 	@scripts/coverage/coverage-gaps.sh $(PROFILE) $(GAP_ARGS)
-
-## Exercise coverage-gaps.sh against a synthetic coverage profile with
-## hand-computed answers.
-## proves: The ranking arithmetic — dedup, ranking, and totals — including
-##   that the same block position hit twice is counted once.
-## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; no go test or compilation, arithmetic
-##   only.
-## fails-when: The ranked output diverges from the fixture's hand-computed
-##   answer. Leftover files fail only under the test-dev-tooling wave, which
-##   owns that check.
-coverage-gaps-selftest:
-	@scripts/coverage/coverage-gaps-selftest.sh

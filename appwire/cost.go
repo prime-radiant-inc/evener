@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // EvenerUsageFromLLM converts a raw llm.Usage into the wire EvenerUsage shape,
@@ -28,17 +29,16 @@ func EvenerUsageFromLLM(u llm.Usage) *EvenerUsage {
 	}
 }
 
-// EstimateCost returns a "~$X.XX" estimate of model's total cost for usage,
-// via llm's embedded-catalog pricing (llm.DefaultPrice — GetPrice's first
-// real caller). Returns "" when usage is nil or the model has no catalog
-// pricing, so callers render nothing rather than a misleading "~$0.00" for
-// an uncataloged model. The "~" marks every non-empty result as an
+// EstimateCost returns a "~$X.XX" estimate for usage at the registry row's
+// cost (spec §7.5: cost comes from Resolved). Returns "" when usage is nil or
+// the row carries no cost, so callers render nothing rather than a misleading
+// "~$0.00" for a priceless row. The "~" marks every non-empty result as an
 // estimate, not a billing-exact figure.
-func EstimateCost(model string, usage *EvenerUsage) string {
+func EstimateCost(cost *registry.Cost, usage *EvenerUsage) string {
 	if usage == nil {
 		return ""
 	}
-	price, ok := llm.DefaultPrice(model)
+	price, ok := llm.PriceFromCost(cost)
 	if !ok {
 		return ""
 	}

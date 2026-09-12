@@ -35,14 +35,14 @@ session save file and a launch config. Only the CLI diverges, because
 hyphens are the universal Unix flag style.
 
 An earlier draft proposed camelCase JSON everywhere on the strength of
-codex interop. That underweighted the providers, which collectively
-outnumber codex. This rev backs off.
+AppWire interoperability. That underweighted the providers, which
+collectively outnumber AppWire fields. This revision backs off.
 
 ## Surface map
 
 | Surface | Where | Casing |
 |---|---|---|
-| Codex AppWire protocol | `internal/appwire/`, `internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (codex requirement) |
+| AppWire protocol | `internal/appwire/`, `internal/appsource/`, `internal/appserver/`, `server/appwire_*.go` | camelCase (wire compatibility) |
 | Provider request/response shapes | `llm/providers/*/` | per provider (snake_case for OpenAI/Anthropic/Ollama/OpenRouter; camelCase for Google) |
 | Hub REST/SSE JSON | `cmd/evener-hub/`, `internal/hubapi/`, `server/` | snake_case |
 | Rendezvous files (`~/.local/state/evener/run/*.json`) | `rendezvous/` | snake_case |
@@ -83,20 +83,19 @@ it reads naturally in both surfaces.
 
 Two carve-outs, each forced by an upstream we don't own:
 
-- **Codex/appwire wire protocol code is camelCase.** Any code that
-  participates in the codex/appwire wire protocol uses camelCase,
+- **AppWire protocol code is camelCase.** Any implementation that
+  participates in the AppWire protocol uses camelCase,
   matching the protocol definition under `internal/appwire/`. That
   covers:
   - `internal/appwire/` — the protocol definition itself
     (`clientInfo`, `protocolVersion`, `turnId`, `itemId`).
-  - `internal/appsource/` — clients of the appwire/codex protocol;
-    `CodexSource` serializes the codex wire format.
-  - `internal/appserver/` — the appwire server implementation, which
+  - `internal/appsource/` — clients of the AppWire protocol.
+  - `internal/appserver/` — the AppWire server implementation, which
     speaks the same wire format back to clients.
-  - `server/appwire_*.go` — the hub's appwire runtime glue, which
-    threads appwire payloads through the hub.
+  - `server/appwire_*.go` — the hub's AppWire runtime glue, which
+    threads AppWire payloads through the hub.
   Casing here is non-negotiable: changing it breaks wire compatibility
-  with codex clients.
+  with AppWire clients.
 - **`llm/providers/*/` follows each provider's wire format.** OpenAI,
   Anthropic, Ollama, and OpenRouter use snake_case (`finish_reason`,
   `display_name`, `has_more`). Google Gemini uses camelCase
@@ -170,7 +169,7 @@ When you add a new TOML config file, JSON payload, or CLI flag:
   (`session_id`, `working_dir`, `plugin_dirs`).
 - `internal/launchconfig/types.go` — snake_case TOML examples
   (`reasoning_effort`, `max_rounds`, `app_replay_size`).
-- `internal/appwire/types.go` — camelCase JSON examples for the codex
+- `internal/appwire/types.go` — camelCase JSON examples for the AppWire
   carve-out (`clientInfo`, `protocolVersion`, `pluginDirs`).
 - `cmd/evener/main.go` — kebab-case CLI flag examples
   (`--reasoning-effort`, `--max-rounds`).

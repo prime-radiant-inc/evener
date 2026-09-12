@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { AppwireClient } from "./protocol/client";
@@ -8,6 +8,7 @@ import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
+import { wireV2 } from "./stores/navigation/testing";
 import { resetThreadsStoreForTests } from "./stores/threads";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
@@ -108,13 +109,13 @@ const EMPTY_NAV_RESPONSE = {
 };
 
 function navigationReadResponse(generationId: string): NavigationReadResponse {
-  return {
-    status: "ok",
+  return wireV2(
+    { resource: "manifest", representationVersion: 2 },
+    { ...EMPTY_NAV_RESPONSE, generation_id: generationId },
+    '"test"',
+    1,
     generationId,
-    revision: 1,
-    etag: '"test"',
-    data: { ...EMPTY_NAV_RESPONSE, generation_id: generationId },
-  };
+  );
 }
 
 function stubDeferredNavigationRead(client: FakeClient): { requested: Promise<void>; release: () => void } {
@@ -290,29 +291,31 @@ test("initiates and settles the welcome navigation load without an error", async
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v3",
+    protocolVersion: "evener-appwire-v5",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "test-generation", sequence: 0 },
+    navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [2] },
   }));
   const navRead = stubDeferredNavigationRead(client);
   render(<AppShell client={client} />);
-  await navRead.requested;
-  navRead.release();
-  await navigationStore.getState().loadManifest();
+  await act(async () => {
+    await navRead.requested;
+    navRead.release();
+    await navigationStore.getState().loadManifest();
+  });
   const manifest = navigationStore.getState().manifest;
   expect(manifest).not.toBeNull();
   expect(manifest?.error).toBeNull();
 });
 
-test("AppShell's injected v1 handshake selects navigation through AppWire", async () => {
+test("AppShell's injected v2 handshake selects navigation through AppWire", async () => {
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v3",
+    protocolVersion: "evener-appwire-v5",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "app-generation", sequence: 0 },
+    navigation: { version: 1, generationId: "app-generation", sequence: 0, readVersions: [2] },
   }));
   const calls: NavigationReadParams[] = [];
   client.on("evener/navigation/read", (params) => {
@@ -321,13 +324,28 @@ test("AppShell's injected v1 handshake selects navigation through AppWire", asyn
     return { ...navigationReadResponse("app-generation"), etag: '"app-manifest"' };
   });
 
-  render(<AppShell client={client} />);
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  const connect = vi.spyOn(client, "connect");
+  const loadManifest = vi.spyOn(navigationStore.getState(), "loadManifest");
+  try {
+    render(<AppShell client={client} />);
+    expect(connect).toHaveBeenCalled();
+    const connectionResult = connect.mock.results[0];
+    if (connectionResult?.type !== "return") throw new Error("AppShell did not start the handshake");
+    await act(async () => {
+      await connectionResult.value;
+      expect(loadManifest).toHaveBeenCalled();
+      const manifestResult = loadManifest.mock.results[0];
+      if (manifestResult?.type !== "return") throw new Error("AppShell did not start the manifest load");
+      await manifestResult.value;
+    });
+    await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]));
 
-  expect(navigationStore.getState().mode).toBe("v1");
-  expect(calls).toEqual([{ resource: "manifest" }]);
+    expect(navigationStore.getState().mode).toBe("v2");
+    expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]);
+  } finally {
+    connect.mockRestore();
+    loadManifest.mockRestore();
+  }
 });
 
 test("does not escape a navigation request before the test fake is installed", () => {

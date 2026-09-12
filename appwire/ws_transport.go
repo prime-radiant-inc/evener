@@ -15,9 +15,18 @@ var (
 	readWebSocket      = (*websocket.Conn).Read
 )
 
+// FrameObserver receives the exact JSON bytes sent and received by one
+// WebSocket transport. Implementations must consume or copy data before the
+// method returns.
+type FrameObserver interface {
+	RecordSend([]byte)
+	RecordRecv([]byte)
+}
+
 type WSTransport struct {
-	conn *websocket.Conn
-	rec  *FrameRecorder // nil unless EVENER_RECORD_APPWIRE selected recording
+	conn     *websocket.Conn
+	rec      *FrameRecorder // nil unless EVENER_RECORD_APPWIRE selected recording
+	observer FrameObserver
 }
 
 const appWireWebSocketReadLimit = 128 << 20
@@ -39,8 +48,14 @@ func DialWebSocketWithHeaders(ctx context.Context, url string, client *http.Clie
 }
 
 func NewWSTransport(conn *websocket.Conn) *WSTransport {
+	return NewObservedWSTransport(conn, nil)
+}
+
+// NewObservedWSTransport constructs a transport that reports its raw data
+// frames to observer. A nil observer preserves the ordinary transport path.
+func NewObservedWSTransport(conn *websocket.Conn, observer FrameObserver) *WSTransport {
 	conn.SetReadLimit(appWireWebSocketReadLimit)
-	return &WSTransport{conn: conn, rec: appwireFrameRecorder}
+	return &WSTransport{conn: conn, rec: appwireFrameRecorder, observer: observer}
 }
 
 func (t *WSTransport) Send(ctx context.Context, msg Message) error {
@@ -49,7 +64,13 @@ func (t *WSTransport) Send(ctx context.Context, msg Message) error {
 		return err
 	}
 	t.rec.RecordSend(data)
-	return t.conn.Write(ctx, websocket.MessageText, data)
+	if err := t.conn.Write(ctx, websocket.MessageText, data); err != nil {
+		return err
+	}
+	if t.observer != nil {
+		t.observer.RecordSend(data)
+	}
+	return nil
 }
 
 func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
@@ -58,6 +79,9 @@ func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
 		return Message{}, err
 	}
 	t.rec.RecordRecv(data)
+	if t.observer != nil {
+		t.observer.RecordRecv(data)
+	}
 	var msg Message
 	if err := unmarshalWSMessage(data, &msg); err != nil {
 		return Message{}, err

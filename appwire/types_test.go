@@ -218,16 +218,17 @@ func TestEvenerDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 	zero := uint32(0)
 	params := NavigationReadParams{
-		Resource:   "project_page",
-		Section:    "live",
-		SectionID:  "pin-a",
-		Catalog:    "projects",
-		ProjectKey: "project-a",
-		Tier:       "recent",
-		Ref:        "local:session-a",
-		Offset:     &zero,
-		Limit:      &zero,
-		ETag:       "etag-a",
+		Resource:              "project_page",
+		Section:               "live",
+		SectionID:             "pin-a",
+		Catalog:               "projects",
+		ProjectKey:            "project-a",
+		Tier:                  "recent",
+		Ref:                   "local:session-a",
+		Offset:                &zero,
+		Limit:                 &zero,
+		RepresentationVersion: 2,
+		Base:                  &NavigationReadBase{GenerationID: "generation-a", Revision: 7, ETag: "etag-a"},
 	}
 	raw, err := json.Marshal(params)
 	if err != nil {
@@ -238,16 +239,17 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 		t.Fatalf("unmarshal params fields: %v", err)
 	}
 	for name, want := range map[string]string{
-		"resource":   `"project_page"`,
-		"section":    `"live"`,
-		"sectionId":  `"pin-a"`,
-		"catalog":    `"projects"`,
-		"projectKey": `"project-a"`,
-		"tier":       `"recent"`,
-		"ref":        `"local:session-a"`,
-		"offset":     "0",
-		"limit":      "0",
-		"etag":       `"etag-a"`,
+		"resource":              `"project_page"`,
+		"section":               `"live"`,
+		"sectionId":             `"pin-a"`,
+		"catalog":               `"projects"`,
+		"projectKey":            `"project-a"`,
+		"tier":                  `"recent"`,
+		"ref":                   `"local:session-a"`,
+		"offset":                "0",
+		"limit":                 "0",
+		"representationVersion": "2",
+		"base":                  `{"generationId":"generation-a","revision":7,"etag":"etag-a"}`,
 	} {
 		if got := string(fields[name]); got != want {
 			t.Fatalf("field %q = %s, want %s in %s", name, got, want, raw)
@@ -274,7 +276,7 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal unpaged params: %v", err)
 	}
-	if got, want := string(withoutPage), `{"resource":"manifest"}`; got != want {
+	if got, want := string(withoutPage), `{"representationVersion":0,"resource":"manifest"}`; got != want {
 		t.Fatalf("omitted paging = %s, want %s", got, want)
 	}
 
@@ -311,6 +313,141 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 	}
 	if got, want := string(notModified), `{"status":"not_modified","generationId":"generation-a","revision":7,"etag":"etag-a"}`; got != want {
 		t.Fatalf("not-modified response = %s, want %s", got, want)
+	}
+}
+
+func TestNavigationReadParamsRequiresRepresentationVersion2(t *testing.T) {
+	for _, raw := range []string{
+		`{"resource":"manifest"}`,
+		`{"resource":"manifest","representationVersion":1}`,
+		`{"resource":"manifest","representationVersion":2,"etag":"legacy"}`,
+		`{"resource":"manifest","etag":"legacy"}`,
+	} {
+		var params NavigationReadParams
+		if err := json.Unmarshal([]byte(raw), &params); err == nil {
+			t.Fatalf("Unmarshal(%s) = nil, want invalid-params error", raw)
+		}
+	}
+	var params NavigationReadParams
+	if err := json.Unmarshal([]byte(`{"resource":"manifest","representationVersion":2}`), &params); err != nil {
+		t.Fatalf("Unmarshal(v2) = %v, want nil", err)
+	}
+	// The discriminator is required on the wire: marshaling must always emit
+	// it so callers cannot serialize a request the server rejects.
+	raw, err := json.Marshal(NavigationReadParams{Resource: "manifest"})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal params fields: %v", err)
+	}
+	if _, ok := fields["representationVersion"]; !ok {
+		t.Fatalf("representationVersion omitted in %s, want required discriminator", raw)
+	}
+}
+
+func TestNavigationReadParamsRejectsIncompleteBase(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{
+			name: "complete base with explicit zero revision",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"}}`,
+		},
+		{
+			name: "generation omitted",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"revision":0,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "revision omitted reviewer body",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "etag omitted",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0}}`, wantErr: true,
+		},
+		{
+			name: "generation null",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":null,"revision":0,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "revision null reviewer body",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":null,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "etag null",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":null}}`, wantErr: true,
+		},
+		{
+			name: "generation wrong type",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":1,"revision":0,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "revision wrong type",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":"0","etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "etag wrong type",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":false}}`, wantErr: true,
+		},
+		{
+			name: "nested unknown field",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e","future":true}}`, wantErr: true,
+		},
+		{
+			name: "outer unknown field",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"},"future":true}`, wantErr: true,
+		},
+		{
+			name: "trailing value",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"}} {}`, wantErr: true,
+		},
+		{
+			name: "base null with whitespace",
+			raw:  "{\"resource\":\"manifest\",\"representationVersion\":2,\"base\": \n null }", wantErr: true,
+		},
+		{
+			name: "base wrong type",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":[]}`, wantErr: true,
+		},
+		{
+			name: "revision above safe integer",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":9007199254740992,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "representation version too large",
+			raw:  `{"resource":"manifest","representationVersion":256}`, wantErr: true,
+		},
+		{
+			name: "v1 rejects base",
+			raw:  `{"resource":"manifest","representationVersion":1,"base":{"generationId":"g","revision":0,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "v2 rejects legacy etag",
+			raw:  `{"resource":"manifest","representationVersion":2,"etag":"legacy"}`, wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var params NavigationReadParams
+			err := json.Unmarshal([]byte(test.raw), &params)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("invalid params accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("valid params rejected: %v", err)
+			}
+			if params.Base == nil || params.Base.GenerationID != "g" || params.Base.Revision != 0 || params.Base.ETag != "e" {
+				t.Fatalf("decoded base = %+v", params.Base)
+			}
+		})
 	}
 }
 
@@ -398,25 +535,45 @@ func TestEvenerJobInfo_ExhaustionFields(t *testing.T) {
 }
 
 // TestInstanceListResponseJSONRoundTrip verifies the wire shape of
-// InstanceListResponse and InstanceEntry: camelCase JSON tags and correct
-// field round-trip for a populated entry.
+// InstanceListResponse, InstanceEntry and ProviderDescriptor: camelCase JSON
+// tags, the registry vocabulary, and correct field round-trip.
 func TestInstanceListResponseJSONRoundTrip(t *testing.T) {
 	in := InstanceListResponse{
 		Instances: []InstanceEntry{
 			{
-				Name:           "my-openai",
-				Type:           "openai",
-				APIStyle:       "openai",
-				BaseURL:        "https://api.openai.com/v1",
-				IsDefault:      true,
-				AuthModes:      []string{"apiKey"},
-				ActiveSource:   "file",
-				HasStoredFile:  true,
-				HasStoredOAuth: false,
-				EnvVar:         "OPENAI_API_KEY",
-				StoredEmail:    "",
+				Name:               "work",
+				Base:               "openai",
+				ProviderID:         "openai",
+				Protocol:           "openai-responses",
+				Surface:            "generic",
+				Auth:               "bearer",
+				BaseURL:            "https://gw.example.test/v1",
+				Vars:               map[string]string{"AWS_REGION": "us-east-1"},
+				Implicit:           false,
+				Hidden:             false,
+				IsDefault:          true,
+				AuthModes:          []string{"apiKey"},
+				ActiveSource:       "env:WORK_KEY",
+				HasStoredFile:      true,
+				HasStoredOAuth:     false,
+				EnvVar:             "WORK_KEY",
+				CredentialRequired: true,
+				Warnings:           []string{"no credential"},
 			},
 		},
+		AvailableProviders: []ProviderDescriptor{{
+			ID:        "openai",
+			Name:      "OpenAI",
+			Protocol:  "openai-responses",
+			Auth:      "bearer",
+			VarsEnv:   []string{"OPENAI_BASE_URL"},
+			Vars:      map[string]string{"BASE_URL": "OPENAI_BASE_URL"},
+			APIKeyEnv: []string{"OPENAI_API_KEY"},
+			Implicit:  true,
+		}},
+		Diagnostics:   []string{"user layer: none (disabled)"},
+		UserLayer:     "user layer: none (disabled)",
+		WritesRefused: true,
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -425,46 +582,110 @@ func TestInstanceListResponseJSONRoundTrip(t *testing.T) {
 	got := string(raw)
 	for _, want := range []string{
 		`"instances"`,
-		`"name":"my-openai"`,
-		`"type":"openai"`,
-		`"apiStyle":"openai"`,
-		`"baseUrl":"https://api.openai.com/v1"`,
+		`"name":"work"`,
+		`"base":"openai"`,
+		`"providerId":"openai"`,
+		`"protocol":"openai-responses"`,
+		`"surface":"generic"`,
+		`"auth":"bearer"`,
+		`"baseUrl":"https://gw.example.test/v1"`,
+		`"vars":{"AWS_REGION":"us-east-1"}`,
+		`"implicit":false`,
 		`"isDefault":true`,
 		`"authModes":["apiKey"]`,
-		`"activeSource":"file"`,
+		`"activeSource":"env:WORK_KEY"`,
 		`"hasStoredFile":true`,
 		`"hasStoredOAuth":false`,
-		`"envVar":"OPENAI_API_KEY"`,
+		`"envVar":"WORK_KEY"`,
+		`"credentialRequired":true`,
+		`"warnings":["no credential"]`,
+		`"availableProviders"`,
+		`"varsEnv":["OPENAI_BASE_URL"]`,
+		`"vars":{"BASE_URL":"OPENAI_BASE_URL"}`,
+		`"apiKeyEnv":["OPENAI_API_KEY"]`,
+		`"diagnostics":["user layer: none (disabled)"]`,
+		`"userLayer":"user layer: none (disabled)"`,
+		`"writesRefused":true`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("marshal=%s missing %s", got, want)
 		}
 	}
+	// A credential value has no field to travel in: the entry carries the
+	// source's name, never the secret (spec §11.2).
+	if strings.Contains(got, "sk-") {
+		t.Fatalf("instance entry leaked a credential: %s", got)
+	}
 	var out InstanceListResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(out.Instances) != 1 {
-		t.Fatalf("roundtrip instances len=%d, want 1", len(out.Instances))
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("roundtrip=%+v, want %+v", out, in)
 	}
-	e := out.Instances[0]
-	if e.Name != "my-openai" || e.Type != "openai" || e.APIStyle != "openai" ||
-		e.BaseURL != "https://api.openai.com/v1" || !e.IsDefault ||
-		len(e.AuthModes) != 1 || e.AuthModes[0] != "apiKey" ||
-		e.ActiveSource != "file" || !e.HasStoredFile || e.HasStoredOAuth ||
-		e.EnvVar != "OPENAI_API_KEY" {
-		t.Fatalf("roundtrip entry=%+v", e)
+}
+
+// TestProviderDescriptorKeepsVarsEnvAListOnV3 holds the v3 wire shape: a peer
+// built before Vars existed reads varsEnv as a list of environment variable
+// names, and Vars travels alongside it rather than in its place.
+func TestProviderDescriptorKeepsVarsEnvAListOnV3(t *testing.T) {
+	raw, err := json.Marshal(ProviderDescriptor{ID: "p", VarsEnv: []string{"A_ENV"}, Vars: map[string]string{"A": "A_ENV"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var v3 struct {
+		VarsEnv []string `json:"varsEnv"`
+	}
+	if err := json.Unmarshal(raw, &v3); err != nil {
+		t.Fatalf("v3 peer decode: %v", err)
+	}
+	if !reflect.DeepEqual(v3.VarsEnv, []string{"A_ENV"}) {
+		t.Fatalf("v3 peer read varsEnv = %v, want [A_ENV]", v3.VarsEnv)
+	}
+	got := string(raw)
+	for _, want := range []string{`"varsEnv":["A_ENV"]`, `"vars":{"A":"A_ENV"}`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal=%s missing %s", got, want)
+		}
+	}
+}
+
+// TestInstanceEntryOmitsUnsetRegistryFields keeps the wire quiet for an
+// implicit instance that sets none of the optional registry fields.
+func TestInstanceEntryOmitsUnsetRegistryFields(t *testing.T) {
+	raw, err := json.Marshal(InstanceEntry{Name: "groq", ProviderID: "groq", Protocol: "openai-chat", Auth: "bearer", Implicit: true, ActiveSource: "env:GROQ_API_KEY"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, absent := range []string{`"base"`, `"surface"`, `"baseUrl"`, `"vars"`, `"hidden"`, `"authModes"`, `"hasStoredFile"`, `"envVar"`, `"shadowedEnvVar"`, `"storedEmail"`, `"warnings"`} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("marshal=%s should omit %s", got, absent)
+		}
+	}
+	// implicit, isDefault, activeSource, hasStoredOAuth and credentialRequired
+	// are never omitted: false is the meaningful value for each.
+	for _, want := range []string{`"implicit":true`, `"isDefault":false`, `"activeSource":"env:GROQ_API_KEY"`, `"hasStoredOAuth":false`, `"credentialRequired":false`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal=%s missing %s", got, want)
+		}
 	}
 }
 
 // TestInstanceCreateParamsJSONRoundTrip verifies the wire shape of
-// InstanceCreateParams: camelCase JSON tags and field preservation.
+// InstanceCreateParams: camelCase JSON tags and field preservation. APIKeyEnv
+// is a variable name and CredentialHeader references a $VAR — secrets never
+// cross this boundary (spec §11.2).
 func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 	in := InstanceCreateParams{
-		Type:     "openai",
-		Name:     "my-openai",
-		APIStyle: "openai",
-		BaseURL:  "https://api.openai.com/v1",
+		Name:             "work",
+		Base:             "openai",
+		BaseURL:          "https://gw.example.test/v1",
+		Protocol:         "openai-chat",
+		Surface:          "generic",
+		Vars:             map[string]string{"AWS_REGION": "us-east-1"},
+		APIKeyEnv:        "WORK_KEY",
+		CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -472,10 +693,14 @@ func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 	}
 	got := string(raw)
 	for _, want := range []string{
-		`"type":"openai"`,
-		`"name":"my-openai"`,
-		`"apiStyle":"openai"`,
-		`"baseUrl":"https://api.openai.com/v1"`,
+		`"name":"work"`,
+		`"base":"openai"`,
+		`"baseUrl":"https://gw.example.test/v1"`,
+		`"protocol":"openai-chat"`,
+		`"surface":"generic"`,
+		`"vars":{"AWS_REGION":"us-east-1"}`,
+		`"apiKeyEnv":"WORK_KEY"`,
+		`"credentialHeader":"Authorization=Bearer $PORTKEY_KEY"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("marshal=%s missing %s", got, want)
@@ -485,8 +710,139 @@ func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out != in {
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("roundtrip=%+v, want %+v", out, in)
+	}
+}
+
+// TestInstanceEditParamsJSONRoundTrip verifies the wire shape of
+// InstanceEditParams: every field but Name is optional, and an omitted field
+// leaves the authored entry alone (spec §11.3).
+func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
+	in := InstanceEditParams{
+		Name:             "work",
+		NewName:          "work-eu",
+		BaseURL:          "https://gw.example.test/v2",
+		Protocol:         "openai-responses",
+		Surface:          "openai",
+		Vars:             map[string]string{"GOOGLE_VERTEX_LOCATION": "global"},
+		APIKeyEnv:        "WORK_KEY",
+		CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		`"name":"work"`,
+		`"newName":"work-eu"`,
+		`"baseUrl":"https://gw.example.test/v2"`,
+		`"protocol":"openai-responses"`,
+		`"surface":"openai"`,
+		`"vars":{"GOOGLE_VERTEX_LOCATION":"global"}`,
+		`"apiKeyEnv":"WORK_KEY"`,
+		`"credentialHeader":"Authorization=Bearer $PORTKEY_KEY"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal=%s missing %s", got, want)
+		}
+	}
+	if strings.Contains(got, "clearBaseUrl") {
+		t.Fatalf("marshal=%s carries clearBaseUrl, want it omitted when false", got)
+	}
+	bare, err := json.Marshal(InstanceEditParams{Name: "work"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(bare) != `{"name":"work"}` {
+		t.Fatalf("a name-only edit marshals to %s, want {\"name\":\"work\"}", bare)
+	}
+
+	// Each clear rides its own key, so a clear request names no value at
+	// all. Their exact spelling is the whole wire contract: a mistyped tag
+	// still compiles and still round-trips through this Go type, and only a
+	// peer reading the JSON would ever notice.
+	clears := InstanceEditParams{
+		Name:                  "work",
+		ClearProtocol:         true,
+		ClearSurface:          true,
+		ClearAPIKeyEnv:        true,
+		ClearCredentialHeader: true,
+	}
+	cleared, err := json.Marshal(clears)
+	if err != nil {
+		t.Fatalf("marshal(clears): %v", err)
+	}
+	wantCleared := `{"name":"work","clearProtocol":true,"clearSurface":true,"clearApiKeyEnv":true,"clearCredentialHeader":true}`
+	if string(cleared) != wantCleared {
+		t.Fatalf("a clearing edit marshals to %s, want %s", cleared, wantCleared)
+	}
+	var outClears InstanceEditParams
+	if err := json.Unmarshal(cleared, &outClears); err != nil {
+		t.Fatalf("unmarshal(cleared): %v", err)
+	}
+	if !reflect.DeepEqual(outClears, clears) {
+		t.Fatalf("roundtrip=%+v, want %+v", outClears, clears)
+	}
+
+	var out InstanceEditParams
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("roundtrip=%+v, want %+v", out, in)
+	}
+}
+
+// TestInstanceEditParamsClearBaseURLIsAdditive is #711: ClearBaseURL clears
+// an authored base_url without changing what an empty BaseURL has always
+// meant on this wire ("leave unchanged", v3, unchanged by this field's
+// addition), so old and new v3 peers can never silently disagree about a
+// clear request either sends.
+func TestInstanceEditParamsClearBaseURLIsAdditive(t *testing.T) {
+	cleared, err := json.Marshal(InstanceEditParams{Name: "work", ClearBaseURL: true})
+	if err != nil {
+		t.Fatalf("marshal(cleared): %v", err)
+	}
+	if string(cleared) != `{"name":"work","clearBaseUrl":true}` {
+		t.Fatalf("a clear marshals to %s, want a bare clearBaseUrl flag and no baseUrl key", cleared)
+	}
+
+	// A pre-#711 decoder has no ClearBaseURL field. Decoding a new client's
+	// clear request into that old shape must still succeed (Go's
+	// encoding/json ignores unknown keys) and see an ordinary
+	// nothing-to-apply edit — an honest no-op, never a silent wrong clear.
+	type oldShape struct {
+		Name     string `json:"name"`
+		BaseURL  string `json:"baseUrl,omitempty"`
+		Protocol string `json:"protocol,omitempty"`
+	}
+	var old oldShape
+	if err := json.Unmarshal(cleared, &old); err != nil {
+		t.Fatalf("an old decoder rejected a new clear request: %v", err)
+	}
+	if old.BaseURL != "" {
+		t.Fatalf("an old decoder read baseUrl = %q from a clear request, want nothing set", old.BaseURL)
+	}
+
+	var out InstanceEditParams
+	if err := json.Unmarshal(cleared, &out); err != nil {
+		t.Fatalf("unmarshal(cleared): %v", err)
+	}
+	if !out.ClearBaseURL || out.BaseURL != "" {
+		t.Fatalf("roundtrip = %+v, want ClearBaseURL true and BaseURL empty", out)
+	}
+
+	// A new decoder reading a pre-#711 client's ordinary "leave unchanged"
+	// request (no clearBaseUrl key at all) must not spuriously clear
+	// anything.
+	var fromOldClient InstanceEditParams
+	if err := json.Unmarshal([]byte(`{"name":"work"}`), &fromOldClient); err != nil {
+		t.Fatalf("unmarshal(old client): %v", err)
+	}
+	if fromOldClient.ClearBaseURL {
+		t.Fatal("a request with no clearBaseUrl key decoded to ClearBaseURL = true")
 	}
 }
 
@@ -548,7 +904,8 @@ func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
 // TestEvenerThreadMetricsOmitEmpty (WS2 A7) verifies that a zero-value
 // EvenerThread omits usage, workMillis, and activeTurnStartedAt entirely — a
 // nil Usage pointer (rather than a rendered zero EvenerUsage) and the omitempty
-// scalars both drop out, so fresh/old-daemon/codex threads don't render ↑0 ↓0.
+// scalars both drop out, so fresh threads, old daemons, and source-backed threads
+// that omit the fields don't render ↑0 ↓0.
 func TestEvenerThreadMetricsOmitEmpty(t *testing.T) {
 	raw, err := json.Marshal(EvenerThread{})
 	if err != nil {
@@ -625,6 +982,7 @@ func TestModelListResponseRecentOmitEmpty(t *testing.T) {
 
 func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 	contextWindow := 200_000
+	maxInputTokens := 180_000
 	maxOutputTokens := 8_192
 	supportsTools := true
 	supportsVision := false
@@ -637,6 +995,7 @@ func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 		Model:                 "claude-sonnet-4-5",
 		DisplayName:           "Claude Sonnet 4.5",
 		ContextWindow:         &contextWindow,
+		MaxInputTokens:        &maxInputTokens,
 		SupportsTools:         &supportsTools,
 		SupportsVision:        &supportsVision,
 		MaxOutputTokens:       &maxOutputTokens,
@@ -653,6 +1012,7 @@ func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 	for _, field := range []string{
 		`"displayName":"Claude Sonnet 4.5"`,
 		`"contextWindow":200000`,
+		`"maxInputTokens":180000`,
 		`"supportsTools":true`,
 		`"supportsVision":false`,
 		`"supportsWebSearch":false`,

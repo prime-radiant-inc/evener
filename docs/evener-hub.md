@@ -4,8 +4,7 @@
 default interactive surface — where you start sessions, watch the agent work,
 and steer it across many concurrent sessions; the `evener tui` terminal
 dashboard talks to the same API. The hub launches and supervises
-`evener serve` daemons, indexes saved sessions for search, and connects to or
-launches Codex app-server sources.
+local `evener serve` daemons and indexes saved sessions for search.
 
 **First time here?** [Getting started](getting-started.md)
 walks from install to your first session. This document is the
@@ -15,8 +14,8 @@ operation, and smoke checks. For non-local hosts, see
 
 ## Trust boundary
 
-The hub requires a capability token on every route except `/auth`,
-`/api/health`, and the PWA icons. At startup it loads
+The hub requires a capability token on every route except the `/auth/<token>`
+bootstrap, `/api/health`, and the PWA icons. At startup it loads
 `<hub_state_root>/auth-token`; the default `hub_state_root` is
 `${XDG_STATE_HOME:-$HOME/.local/state}/evener`, and `hub.toml` may override it.
 It creates a fresh 256-bit token when the file is absent. A newly created token
@@ -25,7 +24,7 @@ surrounding whitespace is trimmed, without format or mode enforcement. The hub
 logs an authorization URL:
 
 ```
-[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth?token=...
+[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth/<token>
 ```
 
 A browser authorizes by visiting that URL once; the hub sets a long-lived
@@ -80,6 +79,13 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
 - `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` and
   `${XDG_CONFIG_HOME:-$HOME/.config}/evener/plugins` are user extension roots
   created by Evener startup.
+- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/AGENTS.md` is your personal
+  standing instructions file. Every session loads it ahead of the repo's own
+  instruction docs — AGENTS.md plus whichever sibling the model's surface reads
+  (CLAUDE.md, GEMINI.md) — and Settings → AGENTS.md in the web UI edits it in
+  place. Hub-spawned sessions receive the hub's own path (`--agents-doc`) the
+  way they receive the plugin root, so a per-launch `XDG_CONFIG_HOME` override
+  cannot make Settings and sessions disagree about the file.
 
 Those extension roots are not active just because they exist. Add standalone
 skill paths to `skills_dirs` and plugin roots to `plugin_dirs` in the layered
@@ -112,34 +118,27 @@ past_index_db = "$HOME/.local/state/evener/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
+api_log = false
 EOF
 
 chmod 600 "$hub_config"
 ```
 
-Codex app-server integration is a separate, optional block. Use
-`codex_launches` when the hub should own the Codex app-server lifecycle:
-
-```toml
-[[codex_launches]]
-id = "codex-local"
-binary = "codex"
-working_dir = "/path/to/projects"
-listen = "ws://127.0.0.1:0"
-timeout = "30s"
-
-[codex_launches.env]
-CODEX_HOME = "/path/to/.codex"
-```
-
-Use `codex_sources` instead when a Codex app-server is already running:
-
-```toml
-[[codex_sources]]
-id = "codex-local"
-endpoint = "ws://127.0.0.1:9900"
-bearer_token_file = "/run/secrets/codex-token"
-```
+`api_log` controls the hub's default for durable API-request logging on the
+`evener serve` daemons it spawns: `true` passes `--api-log on`, recording every
+provider request and response body to the session's
+`<state-dir>/sessions/<SID>.api.jsonl` for post-mortem inspection. It defaults to
+`false` because those records grow with every model call. The hub's value is
+always passed explicitly (`--api-log on` or `--api-log off`) rather than left to
+the spawned binary's own default, so the opt-out cannot be defeated by an older
+`evener` on `PATH` that still records by default. The hub also refuses to launch
+a binary whose `launch-check` does not advertise the `api-log` flag (see
+`launch_flags` in the launch contract), reporting an upgrade error up front
+instead of letting the launch die on the unknown flag. It is a floor, not a
+force: launch config layers that set `api_log` explicitly (either direction)
+win over the hub-wide value. The `evener/launch/resolve` preview reports the
+same floor (provenance `hub`), so what the Launch settings show matches what a
+spawned session actually runs with.
 
 ## Launch configuration
 
@@ -160,6 +159,11 @@ bearer_token_file = "/run/secrets/codex-token"
 - **Per-launch overrides**: `launchOverrides` on `ThreadStart` — applied to
   a single spawn only.
 
+API-request logging is a launch option (`api_log`, in the Debug logging group)
+with the same layering: set it per-launch, per-project, in-repo, or globally in
+`launch.toml`. An unset value inherits the hub default above; evener's built-in
+default is off.
+
 Layers merge in order: global → in-repo → project → per-launch.
 - **Scalars** (model, reasoning_effort, etc.): most-specific value wins.
 - **Lists** (skills_dirs, plugin_dirs, mcps, mcp_configs): concatenate in
@@ -169,7 +173,7 @@ Layers merge in order: global → in-repo → project → per-launch.
 - **Env map** (`[env]`): merge by key; most-specific wins per key. Credential-like
   keys are rejected in every launch-config layer; use the credentials file, a
   supported provider environment variable exported before starting the hub, or
-  OpenAI OAuth instead.
+  OpenAI OAuth (the `openai-codex` instance) instead.
 
 See the
 [launch config design spec](superpowers/specs/2026-05-16-hub-evener-launch-config-design.md)
@@ -228,13 +232,14 @@ not mutate an existing session.
 ## Provider credentials
 
 > Architecture reference:
-> [`llm-providers.md`](llm-providers.md) (provider routing,
-> profiles, adapters) and
+> [`llm-providers.md`](llm-providers.md) (the registry, layers, instances,
+> resolution) and
 > [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
 > (credentials, OAuth, and the hub launch/spawn model).
 
 The hub manages `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`
-(chmod 600). The file's format is a small TOML document:
+(chmod 600), keyed by **instance name**, not provider type. The file's
+format is a small TOML document:
 
 ```toml
 schema = 1
@@ -249,29 +254,40 @@ api_key = "sk-..."
 api_key = "..."
 ```
 
+A section name matches either an implicit instance's id (`anthropic`,
+`openai`, `openrouter`, …) or a custom instance you defined in
+`providers.toml`.
+
 The hub UI (`/credentials`) or TUI (`/credentials`) writes this file via
 the `evener/auth/apiKey/set` RPC. Process-env credentials (e.g.,
 `ANTHROPIC_API_KEY` exported in the shell) still work as a fallback when no
-file entry exists for the provider — matching the `hub.env` style for users
+file entry exists for the instance — matching the `hub.env` style for users
 who prefer external secret management.
 
 If `EVENER_PROVIDERS_CONFIG` points to a non-default `providers.toml`,
-`credentials.toml` is relocated beside that file. Otherwise it is beside the
-default providers config under the XDG config root. Keep both files private.
+`credentials.toml` is relocated beside that file, unless
+`EVENER_CREDENTIALS_CONFIG` names a different path. Otherwise it is beside
+the default providers config under the XDG config root. Keep both files
+private.
 
 ### OpenAI credential resolution
 
-OpenAI supports both an API key (stored in `credentials.toml` like any other
-provider, or via `OPENAI_API_KEY`) and OAuth (sign in via
-`evener/auth/login/start`; state stored in
-`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth/openai.json`). An explicit
-OAuth sign-in wins over the file key, which in turn shadows the environment
-variable.
+The platform API and the ChatGPT/Codex subscription are two separate
+**instances**, not one instance with two credential sources: `openai` (an
+API key, stored in `credentials.toml` like any other instance, or via
+`OPENAI_API_KEY`) and `openai-codex` (OAuth only — sign in via
+`evener/auth/login/start`; state stored per instance at
+`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth/openai-codex.json`).
+`openai-codex` precedes `openai` in the default-instance ranking, so a
+fresh sign-in becomes the default the same way a stored OAuth record used
+to win — but by ranking between two instances, not by a precedence check
+within one.
 
-The two routes hit **different backends**: OAuth routes to the
-ChatGPT/Codex backend (`OPENAI_CHATGPT_BASE_URL`), while an API key routes to
+The two instances hit **different backends**: `openai-codex` routes to the
+ChatGPT/Codex backend (`OPENAI_CODEX_BASE_URL`), while `openai` routes to
 the standard OpenAI API backend (`OPENAI_BASE_URL`). They are not
-interchangeable credentials for one endpoint. See
+interchangeable credentials for one endpoint, and signing in with
+`evener openai login` no longer touches the `openai` instance at all. See
 [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
 for the full resolution detail.
 
@@ -325,6 +341,111 @@ then verifies health; see
 The hub acquires a `flock` on `hub.lock` in its state root, so one hub process runs
 per `hub_state_root` — one per user under the default layout.
 
+### Updating the hub from Settings
+
+Settings → Hub → Updates shows the running build (version, commit, channel),
+a channel selector (release or snapshot), and whether that channel is ahead
+of the running build. "Update and restart" downloads and installs the
+channel's archive with the same code as `evener upgrade`, then, once the
+apply response has been written to the websocket, the hub `exec`s the
+installed binary in place: same PID, same arguments, same
+environment. That is why it works the same under launchd, systemd, or a
+plain shell, and why nothing needs `KeepAlive`. The `hub.lock` flock and the
+listener are released by the exec and re-acquired by the new process; the
+page polls `/api/health` until the new version answers, then reloads.
+
+The install targets the prefix the running hub was launched from (derived
+from its own binary path, e.g. `/usr/local` for a system install), not
+always `~/.local`. The whole operation runs under a 4-minute overall
+deadline (both downloads, verification, install) so a stalled server fails
+the apply instead of blocking later updates. Before
+extraction, the archive's SHA-256 is checked against the release's
+`checksums.txt` entry (same fail-closed guarantee as `install.sh`); a
+mismatch or missing entry refuses the install. Note the limit: the
+checksums travel over the same GitHub TLS transport as the archive,
+unsigned, so this stops corruption and asset-swaps but not a compromise
+that rewrites both files the way a signature would.
+
+The channel selector has no stored setting. It defaults to the channel the
+running binary was built for, and after an update the installed binary's
+channel becomes the new default.
+
+Dev builds (a worktree `make build-hub`, channel `dev`) are excluded:
+Settings shows a rebuild note instead of the controls, and
+`evener/update/apply` is refused. Use `make build-hub` or
+`scripts/ops/deploy-hub.sh` for those.
+
+Running session daemons keep the binary they were spawned from (see the
+"Existing daemons keep the `evener` binary" note below); restart a session
+to move it to the new build.
+
+### Trace browser AppWire traffic
+
+Use `--appwire-trace` to diagnose excessive browser WebSocket traffic. The flag
+records every AppWire data frame on each browser `/rpc` connection:
+
+```bash
+trace_dir="$(mktemp -d)"
+trace_file="$trace_dir/hub-appwire.jsonl"
+evener hub --config "$hub_config" --appwire-trace "$trace_file"
+```
+
+The hub creates `trace_file` with mode `0600` and refuses to overwrite an
+existing path. Omit the flag during normal operation; tracing is off by default.
+
+Each JSONL record contains a UTC `timestamp`, a process-local `connection`
+(`conn-N`), and an `event` (`open`, `frame`, or `close`). Frame records also
+contain a hub-relative `direction` (`browser_to_hub` or `hub_to_browser`), the
+exact `bytes` count, and the complete raw JSON `frame`. The trace covers AppWire
+data frames, not WebSocket ping, pong, or close control frames. It excludes the
+hub's separate connections to Evener daemons.
+
+The raw frames can contain prompts, transcripts, paths, tool arguments, and
+credentials entered through Settings. Keep the file private, inspect it before
+sharing it, and never commit it. Stop the traced hub after reproducing the issue,
+then analyze or share that single file.
+
+For a compact first pass, list each frame's connection, direction, size, request
+ID, and method:
+
+```bash
+jq -r '
+  select(.event == "frame") as $record
+  | ($record.frame | fromjson) as $frame
+  | [$record.connection, $record.direction, $record.bytes,
+     ($frame.id // "-"), ($frame.method // "response")]
+  | @tsv
+' "$trace_file"
+```
+
+To find the connections and message types producing the most traffic, aggregate
+frame counts and bytes before inspecting individual payloads:
+
+```bash
+jq -s -r '
+  [ .[]
+    | select(.event == "frame")
+    | . + {message: (.frame | fromjson)}
+  ]
+  | group_by([.connection, .direction, (.message.method // "response")])
+  | map({
+      connection: .[0].connection,
+      direction: .[0].direction,
+      method: (.[0].message.method // "response"),
+      frames: length,
+      bytes: (map(.bytes) | add)
+    })
+  | sort_by(-.bytes)
+  | .[]
+  | [.connection, .direction, .method, .frames, .bytes]
+  | @tsv
+' "$trace_file"
+```
+
+The columns are connection, direction, method (or `response`), frame count, and
+total bytes, ordered by total bytes. Use the process-local connection ID to
+correlate an `open` record, its frames, and the final `close` record.
+
 ## Browser and TUI
 
 Browser: visit the authorization URL logged at startup. It sets the auth
@@ -370,15 +491,11 @@ Manual verification:
 4. Refresh and confirm the transcript replays from saved state.
 5. Open `evener tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub` and
    confirm the same session appears with source label `evener`.
-6. If Codex is configured, switch the harness to `codex-local`, spawn a Codex
-   session, and confirm Evener-only actions are hidden or report structured
-   action-unavailable diagnostics.
 
 ## Operations notes
 
 - Evener daemons spawned by the hub keep running if the hub exits. Stop sessions
   from the hub or kill the daemon processes when you want them stopped.
-- Codex app-server processes launched by the hub stop when the hub shuts down.
 - Existing daemons keep the `evener` binary they were spawned from. Rebuild and
   restart sessions to pick up a new binary.
 - Do not blanket-prune `run_dir`, and never delete a live rendezvous file or

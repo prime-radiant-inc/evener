@@ -955,6 +955,27 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 		return err
 	}
 	ids := fold.pendingIDs()
+	// A pending attention's model-visible turn can be missing from the
+	// resumed history: attention turns carry no fold-publication rewrite
+	// (they are deliberately excluded from the pair log — their durability
+	// is attention-owned), so ResumeHistory's last-marker anchor drops any
+	// recorded before a compaction marker, and the attention would re-arm
+	// with no content explaining what must be addressed. The attention
+	// machinery owns its restart story, so restore the durable content here,
+	// before arming the wake: retain is ID-keyed
+	// and idempotent — a still-resident turn is replaced in place (no
+	// duplicate on a boundary-free restart), a missing one is re-appended,
+	// and resolved attentions are never pending, so nothing resurrects.
+	for _, id := range ids {
+		durable, ok := fold.turns[id]
+		if !ok {
+			continue
+		}
+		if err := s.retainDelegateAttentionTurn(durable); err != nil {
+			s.attentionMu.Unlock()
+			return err
+		}
+	}
 	s.rootAttentionWakeIDs = make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		s.rootAttentionWakeIDs[id] = struct{}{}
@@ -994,7 +1015,11 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
 		if resident.Kind != schema.TurnSteering || !reflect.DeepEqual(resident.Message, turn.Message) {
 			return fmt.Errorf("resident attention %q conflicts with durable content", turn.AttentionID)
 		}
+		// In-place replacement, not an append: a fold snapshotted before this
+		// must not be able to publish over it and silently resurrect the
+		// stale resident turn.
 		s.history[index] = turn
+		s.bumpHistoryRevisionLocked()
 		return nil
 	}
 	s.history = append(s.history, turn)
@@ -1006,7 +1031,19 @@ func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
 	defer s.mu.Unlock()
 	for index := range s.history {
 		if reflect.DeepEqual(s.history[index], turn) {
+			// A deletion, not an append: a fold snapshotted before this must
+			// not be able to publish over it and silently resurrect the
+			// removed turn.
 			s.history = append(s.history[:index], s.history[index+1:]...)
+			// Deleting a turn strictly before the N4 boundary shifts every
+			// in-flight turn left by one, so the boundary moves with them —
+			// atomically with the mutation.
+			// Deleting AT the boundary leaves it correct: the next in-flight
+			// turn slides into the boundary index.
+			if index < s.turnHistoryBaseline {
+				s.turnHistoryBaseline--
+			}
+			s.bumpHistoryRevisionLocked()
 			return
 		}
 	}

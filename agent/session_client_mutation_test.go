@@ -733,10 +733,13 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 	turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(claimed.Text, claimed.Images))
 	turn.ClientMutationID = claimed.ClientMutationID
 	turn.StableTurnID = claimed.StableTurnID
-	if err := sess.appendClientMutationTranscript(turn); err != nil {
+	if err := sess.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return sess.appendClientMutationTranscriptLocked(turn) },
+		func() { sess.history = append(sess.history, turn) },
+	); err != nil {
 		t.Fatalf("append claimed start: %v", err)
 	}
-	sess.history = append(sess.history, turn)
 	if err := sess.markClaimedUserTranscriptIncorporated(claimed.ClientMutationID); err != nil {
 		t.Fatalf("mark claimed start incorporated: %v", err)
 	}
@@ -999,7 +1002,7 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 	})
 	sess, err := NewSession(
 		client,
-		NewOpenAIProfile("gpt-5.2"),
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
 		execenv.NewLocalExecutionEnvironment(dir),
 		SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}},
 	)

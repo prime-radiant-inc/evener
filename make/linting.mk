@@ -23,24 +23,35 @@ secret-scan:
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain; deterministic, no provider calls.
 ## fails-when: Any TOML file has a non-snake_case key.
-lint-naming:
-	$(call run_quiet_lint,go run ./cmd/evener-dev/bin tomlcheck)
+# lint-naming, lint-internal, and lint-golangci run the prebuilt evener-dev
+# binary instead of `go run ./cmd/evener-dev/bin` so the serial LINT_TARGETS
+# chain pays one compile (via the build-dev prerequisite, which make runs
+# once per `make lint` since build-dev is .PHONY) instead of three. The
+# binary is built from the same source, so verdicts are identical.
+lint-naming: build-dev
+	$(call run_quiet_lint,./evener-dev tomlcheck)
 
 ## The compile floor for the //go:build evenerfuzz sources: host go vet and a
 ## host tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on
-## non-Linux hosts. See "Why two tagged lint passes exist" in
-## docs/developing-evener/linting.md for the full rationale.
+## non-Linux hosts and a GOOS=windows go vet that holds the build-tag
+## discipline the untagged sources get from static-build's cross-vet. See "Why
+## two tagged lint passes exist" in docs/developing-evener/linting.md for the
+## full rationale.
 ## proves: Every evenerfuzz-tagged source across FUZZ_GO_MODULES still
-##   compiles for the host and Linux and passes its struct-tag casing floor,
-##   catching a production signature change that strands a tagged call site.
+##   compiles for the host, Linux, and Windows and passes its struct-tag
+##   casing floor, catching a production signature change that strands a
+##   tagged call site, and a Unix-only tagged source that never declared its
+##   constraint.
 ## trigger: Required CI (via make lint); local pre-merge. ~4s warm across the
-##   workspace on Linux; the extra cross-GOOS pass runs only off Linux.
+##   workspace on Linux; the GOOS=linux pass runs only off Linux, the
+##   GOOS=windows vet everywhere.
 ## requires: golangci-lint. Reads .golangci.yml's casing rules, carve-outs,
 ##   and exclusions via --enable-only tagliatelle.
-## fails-when: host or GOOS=linux go vet -tags evenerfuzz fails for any module,
-##   or either host or GOOS=linux tagliatelle reports a casing violation.
+## fails-when: host, GOOS=linux, or GOOS=windows go vet -tags evenerfuzz fails
+##   for any module, or either host or GOOS=linux tagliatelle reports a casing
+##   violation.
 lint-evenerfuzz:
-	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags evenerfuzz ./...); done; fi; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; fi)
+	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags evenerfuzz ./...); done; fi; if [ "$$host_goos" != windows ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=windows go vet -tags evenerfuzz ./...); done; fi; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; fi)
 
 # lint-eval is the same compile floor for the //go:build eval sources: the
 # live-provider eval suites (context-compaction quality, forced notes). This tag
@@ -67,18 +78,22 @@ lint-evenerfuzz:
 lint-eval:
 	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags eval ./...); done; fi; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...); done; fi)
 
-# lint-internal fails if any exported symbol in the agent/llm/providercfg
-# libraries names a evener-internal type — keeping them externally importable.
-## Fail if any exported symbol in the agent/llm/providercfg libraries names a
-## evener-internal type.
-## proves: The agent/llm/providercfg libraries stay externally importable —
-##   no exported symbol leaks an internal type name.
+# lint-internal fails if any exported symbol in the agent (and its
+# diagnostic/execenv/mcpconfig/plugin/provider/schema/skill/task/transcript
+# subpackages), llm, or llm/registry libraries names a evener-internal type —
+# keeping them externally importable.
+## Fail if any exported symbol in the `agent` (plus its
+## `diagnostic`/`execenv`/`mcpconfig`/`plugin`/`provider`/`schema`/`skill`/`task`/`transcript`
+## subpackages), `llm`, or `llm/registry` libraries names a evener-internal
+## type.
+## proves: Those libraries stay externally importable — no exported symbol
+##   leaks an internal type name.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain.
 ## fails-when: cmd/evener-internalcheck finds an exported symbol naming an
 ##   internal type.
-lint-internal:
-	$(call run_quiet_lint,go run ./cmd/evener-dev/bin internalcheck)
+lint-internal: build-dev
+	$(call run_quiet_lint,./evener-dev internalcheck)
 
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
@@ -106,8 +121,8 @@ lint-internal:
 ## requires: golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so
 ##   the fuzz module's ordinary Go is covered too.
 ## fails-when: Either golangci-lint run fails for any module.
-lint-golangci:
-	$(call run_quiet_lint,MODULES="$(FUZZ_GO_MODULES)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" go run ./cmd/evener-dev/bin dev module-lint && GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+lint-golangci: build-dev
+	$(call run_quiet_lint,MODULES="$(FUZZ_GO_MODULES)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" ./evener-dev dev module-lint && GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
 
 ## Remove the current worktree's golangci-lint cache without touching sibling
 ## worktrees or the user's global golangci-lint cache.
@@ -130,8 +145,12 @@ lint-cache-clean:
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain.
 ## fails-when: Any tracked .go file is not gofmt-clean.
+# Runs the active toolchain's own gofmt rather than whatever gofmt is on PATH:
+# go.mod's `go` directive (with GOTOOLCHAIN=auto) makes `go` switch to a newer
+# toolchain, but a distro gofmt binary never switches, so PATH's gofmt can lag
+# the compiler and disagree with it about formatting.
 lint-gofmt:
-	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
+	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 "$$(go env GOROOT)/bin/gofmt" -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
 # lint-generated fails if any committed generated output is stale: the appwire
 # catalog or a make/*.mk annotation changed without the outputs being

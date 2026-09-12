@@ -13,8 +13,9 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func covAIJWT(payload string) string {
@@ -37,7 +38,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		}
 		c := newHubAuthControllerWithStore(root, store)
 		c.stateDir, c.providersConfigPath = stateDir, providers
-		c.authEnv = map[string]string{}
+		c.reg = newTestRegistry(t, stateDir, providers, store, nil)
 		now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 		c.now = func() time.Time { return now }
 
@@ -122,41 +123,33 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		}
 		c.cfg = authopenai.DefaultConfig()
 
-		// Resolution, legacy status, key status, list, and API-key validation.
-		if _, err := c.resolveInstanceBehaviorTag("x"); err == nil {
-			t.Fatal("resolveInstanceBehaviorTag(x) before providers.toml exists: want error, got nil")
-		}
+		// Resolution, status, key status, list, and API-key validation.
 		if err := os.WriteFile(providers, []byte("bad = ["), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.resolveInstanceBehaviorTag("x"); err == nil {
-			t.Fatal("resolveInstanceBehaviorTag(x) against malformed providers.toml: want error, got nil")
+		if err := c.reg.Reload(); err == nil {
+			t.Fatal("Reload against malformed providers.toml: want error, got nil")
 		}
-		if err := os.WriteFile(providers, []byte("schema=1\ndefault=\"work\"\n[instances.work]\ntype=\"openai\"\n[instances.ant]\ntype=\"anthropic\"\n"), 0o600); err != nil {
+		if err := os.WriteFile(providers, []byte("default=\"work\"\n[providers.work]\nbase=\"openai-codex\"\n[providers.ant]\nbase=\"anthropic\"\napi_key=\"sk-ant\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if tag, err := c.resolveInstanceBehaviorTag("work"); err != nil || tag != "openai" {
-			t.Fatalf("resolveInstanceBehaviorTag(work) = %q, %v, want \"openai\", nil", tag, err)
+		if err := c.reg.Reload(); err != nil {
+			t.Fatal(err)
 		}
-		if _, err := c.resolveInstanceBehaviorTag("missing"); err == nil {
-			t.Fatal("resolveInstanceBehaviorTag(missing): want error, got nil")
+		if got := c.instanceIsCodex("work"); !got {
+			t.Fatal("instanceIsCodex(work) = false, want true (based on openai-codex)")
 		}
-		if got := c.instanceIsOpenAI("work"); !got {
-			t.Fatal("instanceIsOpenAI(work) = false, want true (declared type \"openai\")")
+		if got := c.instanceIsCodex("openai-codex"); !got {
+			t.Fatal("instanceIsCodex(openai-codex) = false, want true (the curated Codex provider)")
 		}
-		if got := c.instanceIsOpenAI("openai"); !got {
-			t.Fatal("instanceIsOpenAI(openai) = false, want true (no such instance; falls back to name==\"openai\")")
+		if got := c.instanceIsCodex("ant"); got {
+			t.Fatal("instanceIsCodex(ant) = true, want false (based on anthropic)")
 		}
-		if got := c.instanceIsOpenAI("ant"); got {
-			t.Fatal("instanceIsOpenAI(ant) = true, want false (declared type \"anthropic\")")
-		}
-		wantRequiresOpenAIErr := `OAuth is not supported for instance "ant"`
-		if err := c.requiresOpenAI("ant"); err == nil || err.Error() != wantRequiresOpenAIErr {
-			t.Fatalf("requiresOpenAI(ant) = %v, want error %q", err, wantRequiresOpenAIErr)
+		wantRequiresCodexErr := `OAuth is not supported for instance "ant"`
+		if err := c.requiresCodex("ant"); err == nil || err.Error() != wantRequiresCodexErr {
+			t.Fatalf("requiresCodex(ant) = %v, want error %q", err, wantRequiresCodexErr)
 		}
 		_, _ = c.Status(appwire.AuthStatusParams{Provider: "work"})
-		_, _ = c.Status(appwire.AuthStatusParams{Provider: "unknown"})
-		c.providersConfigPath = ""
 		_, _ = c.Status(appwire.AuthStatusParams{Provider: "unknown"})
 		_, _ = c.Status(appwire.AuthStatusParams{Provider: "anthropic"})
 		_, _ = c.Status(appwire.AuthStatusParams{})
@@ -278,8 +271,6 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 
 		// Credential/OAuth precedence and logout variants.
 		_, _ = c.openAIInstanceStatus("openai")
-		c.authEnv["OPENAI_API_KEY"] = "env"
-		_, _ = c.openAIInstanceStatus("openai")
 		_ = c.creds.Set("named", "file")
 		_, _ = c.openAIInstanceStatus("named")
 		_ = authopenai.SaveAuth(c.stateDir, "named", authopenai.AuthRecord{Version: 1, Provider: "named", Source: authopenai.AuthSourceOAuth, AccessToken: "a", Expiry: now.Add(time.Hour), Email: "stored"})
@@ -328,23 +319,32 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		_, _ = c.Logout(appwire.AuthLogoutParams{})
 		c.clearCredential = c.creds.Clear
 		c.loadAuth = authopenai.LoadAuth
-		_ = c.instanceStatus("fallback", "unknown-type", "unknown-type")
+		_ = c.instanceStatus(registry.Instance{Name: "fallback", Auth: "unknown-scheme"})
 
 		// Instance CRUD success and validation/error paths.
 		ip := filepath.Join(root, "instances.toml")
 		writeMinimalProvidersToml(t, ip)
-		ic := newTestInstancesController(t, ip, filepath.Join(root, "icreds"), filepath.Join(root, "istate"))
+		icreds, err := credentials.LoadStore(filepath.Join(root, "icreds", "credentials.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		istate := filepath.Join(root, "istate")
+		iauth := newHubAuthControllerWithStore(root, icreds)
+		iauth.stateDir = istate
+		iauth.providersConfigPath = ip
+		iauth.reg = newTestRegistry(t, istate, ip, icreds, nil)
+		ic := &hubInstancesController{reg: iauth.reg, providersConfigPath: ip, auth: iauth}
 		_ = ic.List()
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "bad/name", Type: "anthropic"})
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "new", Type: "bad"})
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "new", Type: "anthropic", APIStyle: "responses"})
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "base", Type: "anthropic"})
-		if err := ic.Create(appwire.InstanceCreateParams{Name: "new", Type: "anthropic"}); err != nil {
+		_ = ic.Create(appwire.InstanceCreateParams{Name: "bad/name", Base: "anthropic"})
+		_ = ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "bad"})
+		_ = ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "anthropic", CredentialHeader: "Authorization=Bearer literal"})
+		_ = ic.Create(appwire.InstanceCreateParams{Name: "base", Base: "anthropic"})
+		if err := ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "anthropic", APIKeyEnv: "NEW_KEY", CredentialHeader: "Authorization=Bearer $NEW_KEY"}); err != nil {
 			t.Fatal(err)
 		}
 		_ = ic.List()
 		_ = ic.Edit(appwire.InstanceEditParams{Name: "missing"})
-		_ = ic.Edit(appwire.InstanceEditParams{Name: "new", APIStyle: "responses"})
+		_ = ic.Edit(appwire.InstanceEditParams{Name: "new", Protocol: "openai-responses", Surface: "generic", Vars: map[string]string{"X": "y"}})
 		if err := ic.Edit(appwire.InstanceEditParams{Name: "new", BaseURL: "http://local"}); err != nil {
 			t.Fatal(err)
 		}
@@ -353,51 +353,69 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 			t.Fatal(err)
 		}
 		_ = ic.Remove(appwire.InstanceRemoveParams{Name: "../bad"})
+		_ = ic.Remove(appwire.InstanceRemoveParams{Name: "missing"})
 		if err := ic.Remove(appwire.InstanceRemoveParams{Name: "new"}); err != nil {
 			t.Fatal(err)
 		}
 		if err := ic.Remove(appwire.InstanceRemoveParams{Name: "base"}); err != nil {
 			t.Fatal(err)
 		}
-		ic.providersConfigPath = filepath.Join(root, "absent", "providers.toml")
-		_, _ = ic.reloadFromDisk()
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "fresh", Type: "anthropic"})
-		ic.providersConfigPath = root // reading a directory forces the reload error path.
-		_, _ = ic.reloadFromDisk()
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "x", Type: "anthropic"})
-		_ = ic.Edit(appwire.InstanceEditParams{Name: "x"})
-		_ = ic.Remove(appwire.InstanceRemoveParams{Name: "x"})
-		_ = ic.SetDefault(appwire.InstanceSetDefaultParams{Name: "x"})
 
-		// Inject filesystem failures after successful reloads to cover each
-		// mutation's error contract independently of host permissions.
-		baseCfg := providercfg.Config{Default: "base", Instances: []providercfg.InstanceConfig{{Name: "base", Type: "anthropic"}, {Name: "second", Type: "google"}}}
-		failWrite := &hubInstancesController{auth: ic.auth,
-			loadFile:  func(string) (providercfg.Config, bool, error) { return baseCfg, true, nil },
-			writeFile: func(string, providercfg.Config) error { return errors.New("write") },
+		// Real filesystem failures, each after a successful registry load, so
+		// every mutation's error contract is covered on the path production
+		// takes: a sealed directory leaves providers.toml readable and its
+		// atomic temp file uncreatable, and a directory where the file should
+		// be fails the read itself.
+		sealedDir := filepath.Join(root, "sealed")
+		if err := os.MkdirAll(sealedDir, 0o700); err != nil {
+			t.Fatal(err)
 		}
+		sealedPath := filepath.Join(sealedDir, "providers.toml")
+		if err := os.WriteFile(sealedPath, []byte("default = \"base\"\n[providers.base]\nbase = \"anthropic\"\napi_key = \"$BASE_KEY\"\n[providers.second]\nbase = \"google\"\napi_key = \"$SECOND_KEY\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sealedReg := newTestRegistry(t, istate, sealedPath, icreds, map[string]string{"BASE_KEY": "sk-base", "SECOND_KEY": "sk-second"})
+		if err := os.Chmod(sealedDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(sealedDir, 0o755) })
+		failWrite := &hubInstancesController{reg: sealedReg, providersConfigPath: sealedPath, auth: iauth}
 		_ = failWrite.List()
-		_ = failWrite.Create(appwire.InstanceCreateParams{Name: "third", Type: "anthropic"})
+		_ = failWrite.Create(appwire.InstanceCreateParams{Name: "third", Base: "anthropic"})
 		_ = failWrite.Edit(appwire.InstanceEditParams{Name: "base"})
 		_ = failWrite.Remove(appwire.InstanceRemoveParams{Name: "second"})
 		_ = failWrite.SetDefault(appwire.InstanceSetDefaultParams{Name: "second"})
-		failRemove := &hubInstancesController{auth: ic.auth,
-			loadFile: func(string) (providercfg.Config, bool, error) {
-				return providercfg.Config{Default: "base", Instances: []providercfg.InstanceConfig{{Name: "base", Type: "anthropic"}}}, true, nil
-			},
-			removeFile: func(string) error { return errors.New("remove") },
-		}
-		_ = failRemove.Remove(appwire.InstanceRemoveParams{Name: "base"})
-		blockedState := filepath.Join(root, "blocked-state")
-		if err := os.WriteFile(blockedState, []byte("file"), 0o600); err != nil {
+
+		unreadablePath := filepath.Join(root, "unreadable", "providers.toml")
+		if err := os.MkdirAll(unreadablePath, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		deleteAuth := newHubAuthControllerWithStore(root, ic.auth.creds)
-		deleteAuth.stateDir = blockedState
-		deleteFail := &hubInstancesController{auth: deleteAuth,
-			loadFile:  func(string) (providercfg.Config, bool, error) { return baseCfg, true, nil },
-			writeFile: func(string, providercfg.Config) error { return nil },
+		failRead := &hubInstancesController{reg: sealedReg, providersConfigPath: unreadablePath, auth: iauth}
+		_ = failRead.Create(appwire.InstanceCreateParams{Name: "third", Base: "anthropic"})
+		_ = failRead.Edit(appwire.InstanceEditParams{Name: "base"})
+		_ = failRead.SetDefault(appwire.InstanceSetDefaultParams{Name: "base"})
+
+		// A providers.toml the registry could not read refuses every write.
+		brokenPath := filepath.Join(root, "broken.toml")
+		if err := os.WriteFile(brokenPath, []byte("[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
+			t.Fatal(err)
 		}
-		_ = deleteFail.Remove(appwire.InstanceRemoveParams{Name: "second"})
+		brokenReg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+			r, err := registry.Load(append([]registry.Option{
+				registry.WithOffline(true), registry.WithoutCache(),
+				registry.WithConfigPath(brokenPath), registry.WithStateRoot(istate),
+				registry.WithEnv(func(string) (string, bool) { return "", false }),
+			}, extra...)...)
+			return r, nil, err
+		})
+		if err := brokenReg.Reload(); err == nil {
+			t.Fatal("an old-schema providers.toml must not load")
+		}
+		broken := &hubInstancesController{reg: brokenReg, providersConfigPath: brokenPath, auth: iauth}
+		_ = broken.List()
+		_ = broken.Create(appwire.InstanceCreateParams{Name: "x", Base: "anthropic"})
+		_ = broken.Edit(appwire.InstanceEditParams{Name: "x"})
+		_ = broken.Remove(appwire.InstanceRemoveParams{Name: "x"})
+		_ = broken.SetDefault(appwire.InstanceSetDefaultParams{Name: "x"})
 	})
 }

@@ -52,8 +52,9 @@ func TestAppThreadOmitsAnUnmeasuredFailureCount(t *testing.T) {
 }
 
 func TestAppThreadOmitsTheFailureCountOnADaemonThatNeverWiredIt(t *testing.T) {
-	// An old daemon (or a Codex-sourced thread) never installs the callback.
-	// Absence is the honest report; the client renders nothing.
+	// An old daemon (or a source-backed thread that omits the field) never
+	// installs the callback. Absence is the honest report; the client renders
+	// nothing.
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
 

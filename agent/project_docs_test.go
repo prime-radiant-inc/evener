@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 func TestLoadProjectDocs_WalksFromGitRootToWorkingDir_InDepthOrder(t *testing.T) {
@@ -93,4 +95,322 @@ func initGitRepo(t *testing.T, dir string) {
 	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\n"), 0o644)
 	run("add", "README.md")
 	run("commit", "-m", "init")
+}
+
+func TestLoadUserDoc_ReadsTheConfigRootFile(t *testing.T) {
+	t.Parallel()
+	configRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("PERSONAL\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	doc, ok := LoadUserDoc(filepath.Join(configRoot, "AGENTS.md"))
+	if !ok {
+		t.Fatal("expected the personal doc to load")
+	}
+	if doc.Path != filepath.Join(configRoot, "AGENTS.md") {
+		t.Fatalf("path: %q", doc.Path)
+	}
+	if doc.Content != "PERSONAL\n" {
+		t.Fatalf("content: %q", doc.Content)
+	}
+}
+
+func TestLoadUserDoc_MissingOrBlankFileIsAbsent(t *testing.T) {
+	t.Parallel()
+	if _, ok := LoadUserDoc(filepath.Join(t.TempDir(), "AGENTS.md")); ok {
+		t.Fatal("a missing file must not load")
+	}
+	blank := t.TempDir()
+	if err := os.WriteFile(filepath.Join(blank, "AGENTS.md"), []byte("  \n\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, ok := LoadUserDoc(filepath.Join(blank, "AGENTS.md")); ok {
+		t.Fatal("a blank file must not load")
+	}
+	if _, ok := LoadUserDoc(""); ok {
+		t.Fatal("an empty path must not load")
+	}
+}
+
+func TestLoadUserDoc_CollapsesTheHomeDirectoryToTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configRoot := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(configRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	doc, ok := LoadUserDoc(filepath.Join(configRoot, "AGENTS.md"))
+	if !ok {
+		t.Fatal("expected the personal doc to load")
+	}
+	if doc.Path != "~/.config/evener/AGENTS.md" {
+		t.Fatalf("path: %q, want the tilde-collapsed display path", doc.Path)
+	}
+}
+
+// The path the loader is handed is the file it reads, whatever the process
+// environment would resolve on its own: a hub whose launch config overrides
+// XDG_CONFIG_HOME per launch hands its own concrete path to the session, and
+// Settings and that session have to agree on the file.
+func TestLoadUserDoc_ReadsTheGivenPathNotTheEnvironment(t *testing.T) {
+	decoyConfigHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", decoyConfigHome)
+	decoyRoot := userdirs.DefaultConfigRoot()
+	if err := os.MkdirAll(decoyRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(decoyRoot, UserDocFile), []byte("DECOY\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	wanted := filepath.Join(t.TempDir(), UserDocFile)
+	if err := os.WriteFile(wanted, []byte("EXPLICIT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	doc, ok := LoadUserDoc(wanted)
+	if !ok {
+		t.Fatal("expected the explicitly named file to load")
+	}
+	if doc.Content != "EXPLICIT\n" {
+		t.Fatalf("content = %q, want the file at the given path", doc.Content)
+	}
+}
+
+func TestLoadInstructionDocs_PersonalDocComesFirst(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("ROOT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("PERSONAL\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
+	if truncated {
+		t.Fatal("did not expect truncation")
+	}
+	if len(docs) != 2 {
+		t.Fatalf("docs: got %d want 2 (%v)", len(docs), docs)
+	}
+	if docs[0].Path != filepath.Join(configRoot, "AGENTS.md") || docs[0].Content != "PERSONAL\n" {
+		t.Fatalf("doc0 = %+v, want the personal doc first", docs[0])
+	}
+	if docs[1].Path != "AGENTS.md" || docs[1].Content != "ROOT\n" {
+		t.Fatalf("doc1 = %+v, want the repo doc second", docs[1])
+	}
+}
+
+func TestLoadInstructionDocs_MissingPersonalDocChangesNothing(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("ROOT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, _ := LoadInstructionDocs(env, filepath.Join(t.TempDir(), "AGENTS.md"), "AGENTS.md")
+	if len(docs) != 1 || docs[0].Path != "AGENTS.md" {
+		t.Fatalf("docs = %+v, want only the repo doc", docs)
+	}
+}
+
+func TestLoadInstructionDocs_PersonalDocHasItsOwnBudget(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	repo := strings.Repeat("r", projectDocByteBudget/2+1024)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(repo), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configRoot := t.TempDir()
+	personal := strings.Repeat("p", projectDocByteBudget/2)
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte(personal), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
+	if truncated {
+		t.Fatal("neither doc exceeds its own budget; expected no truncation")
+	}
+	if len(docs) != 2 {
+		t.Fatalf("docs: got %d want 2", len(docs))
+	}
+	if docs[0].Content != personal {
+		t.Fatal("the personal doc must land intact")
+	}
+	if docs[1].Content != repo {
+		t.Fatal("the repo doc must land intact; the personal doc does not spend the repo's budget")
+	}
+}
+
+func TestLoadInstructionDocs_OversizedPersonalDocIsTruncatedAlone(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("ROOT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configRoot := t.TempDir()
+	huge := strings.Repeat("p", projectDocByteBudget+4096)
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte(huge), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
+	if !truncated {
+		t.Fatal("expected the personal doc to be truncated")
+	}
+	if len(docs) != 2 {
+		t.Fatalf("docs: got %d want 2; the repo doc survives an oversized personal doc", len(docs))
+	}
+	if !strings.Contains(docs[0].Content, userDocTruncMark) {
+		t.Fatal("expected the personal truncation marker on the personal doc")
+	}
+	if len(docs[0].Content) > projectDocByteBudget+len(userDocTruncMark)+2 {
+		t.Fatalf("the personal doc exceeds its own budget: %d bytes", len(docs[0].Content))
+	}
+	if docs[1].Content != "ROOT\n" {
+		t.Fatalf("doc1 = %q, want the repo doc whole", docs[1].Content)
+	}
+}
+
+func TestLoadInstructionDocs_OversizedRepoDocLeavesThePersonalDocIntact(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	huge := strings.Repeat("r", projectDocByteBudget+4096)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(huge), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("PERSONAL\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
+	if !truncated {
+		t.Fatal("expected the repo doc to be truncated")
+	}
+	if len(docs) != 2 {
+		t.Fatalf("docs: got %d want 2", len(docs))
+	}
+	if docs[0].Content != "PERSONAL\n" {
+		t.Fatalf("doc0 = %q, want the personal doc whole", docs[0].Content)
+	}
+	if !strings.Contains(docs[1].Content, projectDocTruncMark) {
+		t.Fatal("expected the project truncation marker on the repo doc")
+	}
+}
+
+func TestPersonalDocPath_ConfiguredWins(t *testing.T) {
+	t.Parallel()
+	if got := personalDocPath("/hub/AGENTS.md"); got != "/hub/AGENTS.md" {
+		t.Fatalf("personalDocPath = %q, want the configured path untouched", got)
+	}
+}
+
+// A daemon whose config root cannot be resolved must read no personal doc at
+// all: joining an empty root would leave the relative "AGENTS.md", and the
+// daemon would take whatever file sits in its working directory as the user's
+// own instructions.
+func TestPersonalDocPath_EmptyRootIsEmpty(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if got := personalDocPath(""); got != "" {
+		t.Fatalf("personalDocPath = %q, want no path when the config root is unresolvable", got)
+	}
+}
+
+func TestPersonalDocPath_DefaultsUnderTheConfigRoot(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	want := filepath.Join(configHome, "evener", UserDocFile)
+	if got := personalDocPath(""); got != want {
+		t.Fatalf("personalDocPath = %q, want %q", got, want)
+	}
+}
+
+// A relative config root — XDG_CONFIG_HOME set to a relative value — derives a
+// relative personal-doc path, which a daemon would resolve against its own
+// working directory: the repository's conf/evener/AGENTS.md would become the
+// user's standing instructions.
+func TestPersonalDocPath_RefusesARelativeRoot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "conf")
+	if got := personalDocPath(""); got != "" {
+		t.Fatalf("personalDocPath = %q, want no path when the config root is relative", got)
+	}
+}
+
+// The same rule holds for a path an operator named outright: `--agents-doc
+// ./AGENTS.md` resolves against the daemon's working directory exactly as a
+// derived relative path does, so it is refused for the same reason.
+func TestPersonalDocPath_RefusesARelativeConfiguredPath(t *testing.T) {
+	t.Parallel()
+	if got := personalDocPath("./AGENTS.md"); got != "" {
+		t.Fatalf("personalDocPath = %q, want no path when the configured path is relative", got)
+	}
+}
+
+// A hub hands over its own concrete config root, and stray whitespace around
+// it must not switch the personal doc off: RestoreSessionFromMetaWithConfig
+// trims the override it stores and LoadUserDoc trims the path it reads, so
+// the resolver trims too.
+func TestPersonalDocPath_TrimsSurroundingWhitespace(t *testing.T) {
+	t.Parallel()
+	if got := personalDocPath("  /hub/AGENTS.md  "); got != "/hub/AGENTS.md" {
+		t.Fatalf("personalDocPath = %q, want the trimmed absolute path", got)
+	}
+}
+
+// The default newSession fixture must read no ambient personal doc: with no
+// explicit cfg it points AgentsDocPath at an isolated path that does not
+// exist, so a <config root>/AGENTS.md in the test environment can never leak
+// into the session's cached instruction docs.
+func TestNewSession_DefaultIsolatesThePersonalDoc(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "evener"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "evener", UserDocFile), []byte("AMBIENT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sess := newSession(t)
+	if got := personalDocPath(sess.cfg.AgentsDocPath); got == "" {
+		t.Fatal("default AgentsDocPath resolves to no path, want an isolated path")
+	}
+	if _, ok := LoadUserDoc(personalDocPath(sess.cfg.AgentsDocPath)); ok {
+		t.Fatalf("default AgentsDocPath %q loads a personal doc, want an absent one", sess.cfg.AgentsDocPath)
+	}
+	for _, doc := range sess.projectDocs {
+		if doc.Content == "AMBIENT\n" {
+			t.Fatalf("cached project docs contain the ambient personal doc: %+v", sess.projectDocs)
+		}
+	}
+}
+
+// The budget is counted in bytes, so it can land inside a multi-byte rune: a
+// doc of two-byte runes cut at an odd byte would put half a rune into the
+// system prompt. The cut keeps whole runes and never invalid UTF-8.
+func TestTruncateDocKeepsRuneBoundaries(t *testing.T) {
+	t.Parallel()
+	content := strings.Repeat("é", 8)
+	for _, remain := range []int{7, 6} {
+		got := truncateDoc(content, remain, userDocTruncMark)
+		if !utf8.ValidString(got) {
+			t.Fatalf("truncateDoc(remain=%d) = %q, want valid UTF-8", remain, got)
+		}
+		want := content[:6] + "\n" + userDocTruncMark + "\n"
+		if got != want {
+			t.Fatalf("truncateDoc(remain=%d) = %q, want %q (three whole runes plus the marker)", remain, got, want)
+		}
+	}
 }

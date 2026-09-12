@@ -126,6 +126,22 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 	}
 }
 
+func TestAggregateActivity_EmptyTurnContainerDoesNotCountContainerMetadata(t *testing.T) {
+	t.Parallel()
+	entries := []appwire.JobActivityEntry{
+		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+			Type: "agent", Status: "running", Terminal: false, Turns: []appwire.JobActivityJob{},
+		}},
+		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+			Type: "agent", Status: "completed", Outcome: "failure", Terminal: true, Turns: []appwire.JobActivityJob{},
+		}},
+	}
+	got, aggregate := aggregateActivity(entries, appwire.JobActivityBranchState{})
+	if got != (appwire.JobActivityCounts{Complete: true}) || aggregate != "idle" {
+		t.Fatalf("counts=%+v aggregate=%q, want empty idle summary", got, aggregate)
+	}
+}
+
 func TestMergeActivityRecords_LiveOverlayHasNoDuplicate(t *testing.T) {
 	t.Parallel()
 	durable := []*jobstore.JobRecord{
@@ -153,10 +169,10 @@ func TestProjectStableLiveActivityTree_RejectsSnapshotAfterBoundedRevisionChurn(
 	t.Parallel()
 	clock := newJobActivityClock("root")
 	loads := 0
-	load := func() (*activitySessionSnapshot, int, error) {
+	load := func() (*activitySessionSnapshot, int, int, error) {
 		loads++
 		clock.revision.Add(1)
-		return &activitySessionSnapshot{SessionID: "root", Ref: "local:root", RootID: "root"}, 0, nil
+		return &activitySessionSnapshot{SessionID: "root", Ref: "local:root", RootID: "root"}, 0, 0, nil
 	}
 	if _, err := projectStableLiveActivityTree(clock, "root", load); err == nil {
 		t.Fatal("revision churn produced an inconsistent snapshot")
@@ -174,7 +190,7 @@ func TestProjectActivitySession_TruncatesStableRowsWithScopedContinuation(t *tes
 		delegates[id] = stableActivitySnapshot(id, "root", "child_"+id, "task")
 	}
 	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", RootID: "root", StableDelegates: delegates}
-	tree, err := projectBoundedActivityTree(snap, "root", 0, 1, time.Unix(1, 0).UTC())
+	tree, err := projectBoundedActivityTree(snap, "root", 0, 0, 1, time.Unix(1, 0).UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +239,7 @@ func TestProjectStableActivityDelegateCopiesChildUsage(t *testing.T) {
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect")},
 		Children:        map[string]*activitySessionSnapshot{"child": child},
 	}
-	delegate := projectStableActivityDelegate(snap, snap.StableDelegates["dlg_1"], newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, snap.StableDelegates["dlg_1"], newActivityBudget(), 0, nil, 0)
 	if delegate.Usage == nil || *delegate.Usage != *want || delegate.Usage == want {
 		t.Fatalf("delegate usage=%+v want copy of %+v", delegate.Usage, want)
 	}

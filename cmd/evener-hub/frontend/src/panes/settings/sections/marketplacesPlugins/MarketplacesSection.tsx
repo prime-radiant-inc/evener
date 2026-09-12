@@ -1,64 +1,49 @@
 // MarketplacesSection: the registered-marketplaces list + add-marketplace
-// form (parity-m7-settings.md §12b/§12c). `expandedMarketplaces` is lifted
-// to the parent (marketplacesPlugins/index.tsx) rather than owned here,
-// because Refresh's own "if the node is currently expanded, immediately
-// reload it" behavior (§12b) needs to read BrowseSection's expansion state,
-// and these are sibling components - see index.tsx's own comment.
+// form (parity-m7-settings.md §12b/§12c). Each row is one tappable button
+// that selects its marketplace; every per-marketplace action - editing the
+// name and source, Refresh, Remove - lives in MarketplaceSheet, which is
+// why `expandedMarketplaces` now flows to the sheet (Refresh's own "if the
+// node is currently expanded, immediately reload it" behavior, §12b) rather
+// than here.
 import { type FormEvent, useId, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { MarketplaceSourceInput } from "../../../../protocol/types.gen";
-import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
-import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
+import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
+import { Button, Chevron, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
 import styles from "./marketplacesPlugins.module.css";
 import { sourceLabel } from "./sourceLabel";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
   list: requireClass(styles.list, "marketplacesPlugins.module.css", "list"),
-  row: requireClass(styles.row, "marketplacesPlugins.module.css", "row"),
+  rowButton: requireClass(styles.rowButton, "marketplacesPlugins.module.css", "rowButton"),
   rowMain: requireClass(styles.rowMain, "marketplacesPlugins.module.css", "rowMain"),
   rowText: requireClass(styles.rowText, "marketplacesPlugins.module.css", "rowText"),
   rowKind: requireClass(styles.rowKind, "marketplacesPlugins.module.css", "rowKind"),
   rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
-  rowActions: requireClass(styles.rowActions, "marketplacesPlugins.module.css", "rowActions"),
+  rowChevron: requireClass(styles.rowChevron, "marketplacesPlugins.module.css", "rowChevron"),
   empty: requireClass(styles.empty, "marketplacesPlugins.module.css", "empty"),
   addForm: requireClass(styles.addForm, "marketplacesPlugins.module.css", "addForm"),
   formActions: requireClass(styles.formActions, "marketplacesPlugins.module.css", "formActions"),
 };
 
-type SourceKind = "url" | "github" | "directory";
-
-const SOURCE_OPTIONS = [
-  { value: "url", label: "Git URL" },
-  { value: "github", label: "owner/repo" },
-  { value: "directory", label: "Local path" },
-];
-
 export interface MarketplacesSectionProps {
-  /** Read-only here - only used to decide whether a Refresh should also
-   * immediately re-browse (owned by BrowseSection's sibling, lifted to
-   * marketplacesPlugins/index.tsx). */
-  expandedMarketplaces: Set<string>;
+  onSelect: (name: string) => void;
 }
 
-export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectionProps) {
+export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
   const marketplaces = useExtensionsStore((s) => s.marketplaces) ?? [];
   const toasts = useToasts();
 
   const [addOpen, setAddOpen] = useState(false);
-  const [kind, setKind] = useState<SourceKind>("url");
+  const [kind, setKind] = useState<MarketplaceSourceKind>("url");
   const [urlValue, setUrlValue] = useState("");
   const [repoValue, setRepoValue] = useState("");
   const [pathValue, setPathValue] = useState("");
   const [nameValue, setNameValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [pendingRemove, setPendingRemove] = useState<string | null>(null);
-  const [removeBusy, setRemoveBusy] = useState(false);
-  // Keyed by marketplace name so a Refresh in flight on one row never
-  // disables another row's own button (§12f: "withBusy... disables the
-  // triggering button", singular - not every row's Refresh at once).
-  const [refreshBusy, setRefreshBusy] = useState<Set<string>>(new Set());
 
   const urlId = useId();
   const repoId = useId();
@@ -101,42 +86,6 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
     resetAddForm();
   }
 
-  async function handleRefresh(name: string) {
-    setRefreshBusy((prev) => new Set(prev).add(name));
-    try {
-      await extensionsStore.getState().refreshMarketplace(name);
-      // refreshMarketplace already invalidated the browse cache entry for
-      // `name` (stores/extensions.ts); if BrowseSection currently has it
-      // expanded, immediately re-browse rather than leaving it showing a
-      // stale catalog until the user collapses/re-expands it themselves.
-      if (expandedMarketplaces.has(name)) void extensionsStore.getState().browseMarketplace(name);
-      toasts.push("success", `Refreshed ${name}`);
-    } catch (err) {
-      toasts.push("error", `Refresh failed: ${errorText(err)}`);
-    } finally {
-      setRefreshBusy((prev) => {
-        const next = new Set(prev);
-        next.delete(name);
-        return next;
-      });
-    }
-  }
-
-  async function handleConfirmRemove() {
-    const name = pendingRemove;
-    if (name === null) return;
-    setRemoveBusy(true);
-    try {
-      await extensionsStore.getState().removeMarketplace(name);
-      toasts.push("success", `Removed marketplace ${name}`);
-      setPendingRemove(null);
-    } catch (err) {
-      toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
-    } finally {
-      setRemoveBusy(false);
-    }
-  }
-
   return (
     <section className={CLASS.section}>
       <ul aria-label="Marketplaces" className={CLASS.list}>
@@ -144,26 +93,18 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
           <li className={CLASS.empty}>No marketplaces registered. Add one below.</li>
         ) : (
           marketplaces.map((m) => (
-            <li key={m.name} className={CLASS.row}>
-              <div className={CLASS.rowMain}>
-                <div className={CLASS.rowText}>
-                  {m.name} <span className={CLASS.rowKind}>{m.source.kind}</span>
+            <li key={m.name}>
+              <button type="button" className={CLASS.rowButton} onClick={() => onSelect(m.name)}>
+                <div className={CLASS.rowMain}>
+                  <div className={CLASS.rowText}>
+                    {m.name} <span className={CLASS.rowKind}>{m.source.kind}</span>
+                  </div>
+                  <div className={CLASS.rowMeta}>{sourceLabel(m.source)}</div>
                 </div>
-                <div className={CLASS.rowMeta}>{sourceLabel(m.source)}</div>
-              </div>
-              <div className={CLASS.rowActions}>
-                <Button
-                  variant="quiet"
-                  size="sm"
-                  onClick={() => void handleRefresh(m.name)}
-                  disabled={refreshBusy.has(m.name)}
-                >
-                  Refresh
-                </Button>
-                <Button variant="danger" size="sm" onClick={() => setPendingRemove(m.name)}>
-                  Remove
-                </Button>
-              </div>
+                <span className={CLASS.rowChevron} aria-hidden="true">
+                  <Chevron direction="right" />
+                </span>
+              </button>
             </li>
           ))
         )}
@@ -173,8 +114,8 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
           <RadioGroup
             label="Source"
             value={kind}
-            onChange={(value) => setKind(value as SourceKind)}
-            options={SOURCE_OPTIONS}
+            onChange={(value) => setKind(value as MarketplaceSourceKind)}
+            options={MARKETPLACE_SOURCE_OPTIONS}
           />
           {kind === "url" && (
             <FormRow label="Git URL" htmlFor={urlId}>
@@ -199,6 +140,8 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
           {kind === "directory" && (
             <FormRow label="Local path" htmlFor={pathId}>
               <PathField
+                ariaLabel="Local path"
+                directory={directoryActions}
                 id={pathId}
                 value={pathValue}
                 onChange={setPathValue}
@@ -230,18 +173,6 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
           + Add marketplace
         </Button>
       )}
-      <ConfirmDialog
-        open={pendingRemove !== null}
-        title="Remove marketplace"
-        confirmLabel="Remove"
-        busy={removeBusy}
-        onConfirm={() => void handleConfirmRemove()}
-        onCancel={() => setPendingRemove(null)}
-      >
-        {pendingRemove !== null
-          ? `Remove marketplace "${pendingRemove}"? Installed plugins from it are unaffected.`
-          : ""}
-      </ConfirmDialog>
     </section>
   );
 }

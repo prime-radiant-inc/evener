@@ -1,7 +1,12 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -44,6 +49,9 @@ type JobStatusInfo struct {
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
 	OutputBytes      int64  `json:"output_bytes"`
 	ExitCode         *int   `json:"exit_code,omitempty"`
+	Command          string `json:"command,omitempty"`
+	Intent           string `json:"intent,omitempty"`
+	Task             string `json:"task,omitempty"`
 }
 
 // DelegateStatusInfo is the stable delegate read model exposed by
@@ -231,16 +239,131 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	return ds
 }
 
+// SessionOwnsDelegate verifies a direct parent-child edge in the root-owned
+// delegate journal without projecting transcript attention.
+func SessionOwnsDelegate(ctx context.Context, stateDir, parentSessionID, childSessionID string) (bool, error) {
+	if err := schema.ValidateSessionID(parentSessionID); err != nil {
+		return false, err
+	}
+	if err := schema.ValidateSessionID(childSessionID); err != nil {
+		return false, err
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, parentSessionID)
+	if err != nil {
+		return false, err
+	}
+	rootID := activityRootIDFromMeta(parentSessionID, meta)
+	if err := schema.ValidateSessionID(rootID); err != nil {
+		return false, err
+	}
+	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
+	if err != nil {
+		return false, err
+	}
+	parentDelegateID := ""
+	parentFound := parentSessionID == rootID
+	if !parentFound {
+		for delegateID, aggregate := range result.Value.state {
+			if aggregate != nil && aggregate.Descriptor.OwnerSessionID == rootID && aggregate.Descriptor.ChildSessionID == parentSessionID {
+				parentDelegateID, parentFound = delegateID, true
+				break
+			}
+		}
+	}
+	for _, aggregate := range result.Value.state {
+		if parentFound && aggregate != nil && aggregate.Descriptor.OwnerSessionID == rootID &&
+			aggregate.Descriptor.ChildSessionID == childSessionID && aggregate.Descriptor.ParentDelegateID == parentDelegateID {
+			return true, nil
+		}
+	}
+	if result.Value.tornTail {
+		return false, fmt.Errorf("delegate ownership journal has an incomplete trailing batch: %s", path)
+	}
+	return false, nil
+}
+
+// SessionOwnedDelegateIDs reads the session's subtree in the root-owned
+// delegate journal without loading transcripts. Fork provenance is not ownership.
+func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([]string, error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+	rootID := sessionID
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err == nil {
+		rootID = activityRootIDFromMeta(sessionID, meta)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := schema.ValidateSessionID(rootID); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Committed descriptors remain ownership evidence after interrupted writes.
+	// A killed daemon may leave an incomplete trailing batch; it is not replayed.
+	children := make(map[string][]string)
+	var pending []string
+	for delegateID, aggregate := range result.Value.state {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != rootID {
+			continue
+		}
+		children[aggregate.Descriptor.ParentDelegateID] = append(children[aggregate.Descriptor.ParentDelegateID], delegateID)
+		if sessionID == rootID || aggregate.Descriptor.ChildSessionID == sessionID {
+			pending = append(pending, delegateID)
+		}
+	}
+	ids := make(map[string]bool)
+	visited := make(map[string]bool)
+	for len(pending) != 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		delegateID := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if visited[delegateID] {
+			continue
+		}
+		visited[delegateID] = true
+		id := result.Value.state[delegateID].Descriptor.ChildSessionID
+		if err := schema.ValidateSessionID(id); err != nil {
+			return nil, err
+		}
+		if id != sessionID {
+			ids[id] = true
+		}
+		pending = append(pending, children[delegateID]...)
+	}
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // LoadSessionDelegateStatus projects a cold session's stable delegate rows
 // from the root journal without constructing a Session or opening an
-// append-capable store.
-func LoadSessionDelegateStatus(stateDir, sessionID string) ([]DelegateStatusInfo, []string, error) {
+// append-capable store. ctx is checked between decoded delegate-journal
+// records the same way the job-activity tree loader's scans are; pass
+// context.Background() when no request-scoped context is available.
+func LoadSessionDelegateStatus(ctx context.Context, stateDir, sessionID string) ([]DelegateStatusInfo, []string, error) {
 	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
 	rootID := activityRootIDFromMeta(sessionID, meta)
-	rows, diagnostics, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, sessionID)
+	rows, diagnostics, err := loadHistoricalStableActivityWithAttention(ctx, stateDir, rootID, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -403,6 +526,9 @@ func projectJobStatusInfos(records []*jobstore.JobRecord) []JobStatusInfo {
 			TranscriptRef:    jobTranscriptRef(rec),
 			OutputBytes:      rec.OutputBytes,
 			ExitCode:         rec.ExitCode,
+			Command:          rec.Command,
+			Intent:           rec.Intent,
+			Task:             rec.Task,
 		})
 	}
 	return jobs

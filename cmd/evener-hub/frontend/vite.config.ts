@@ -7,7 +7,7 @@ import { searchForWorkspaceRoot } from "vite";
 import { defineConfig, type Plugin } from "vitest/config";
 
 // The dev server proxies every hub-owned route to a locally running evener-hub.
-// Cookies are port-agnostic on localhost, so the /auth?token= capability flow
+// Cookies are port-agnostic on localhost, so the /auth/<token> capability flow
 // works through the proxy unchanged.
 const hub = process.env.EVENER_HUB_ADDR ?? "http://127.0.0.1:9180";
 
@@ -87,7 +87,7 @@ export default defineConfig({
     // Vitest use on many-core hosts; the canonical npm test command tightens
     // it to four workers so the root gate retains capacity for its Go streams.
     maxWorkers: Math.max(1, Math.min(os.availableParallelism(), 12)),
-    setupFiles: [],
+    setupFiles: ["./src/testSetup.ts"],
     // A handful of shell suites must import the real pane modules from inside
     // beforeAll rather than statically: those modules transitively pull in
     // stores/prefs, whose createStore initializer reads localStorage at module
@@ -116,6 +116,7 @@ export default defineConfig({
         // the fake client, fake socket and stream harnesses the suites drive.
         "src/protocol/fixtures/**",
         "src/protocol/testing/**",
+        "src/testSetup.ts",
         // A benchmark is not run by `vitest run`, so counting it only ever
         // reports 0% for code no test was ever meant to execute.
         "src/**/*.bench.ts",

@@ -10,9 +10,9 @@
 }
 
 /* One 12px gutter column, one ink for the whole row (design-system.md §7).
- * --ink-mid, not --ink-low: --ink-low measures 2.97:1 dark / 3.64:1 light
- * against --surface-1, under the 4.5:1 AA floor, and the kind is the payload a
- * reader auditing steering came for. */
+ * --ink-mid, not --ink-low: the kind is the payload a reader auditing
+ * steering came for, and --ink-low is placeholder ink (4.72:1 dark / 4.76:1
+ * light on --surface-1 since the 2026-09-06 raise; --ink-mid 6.51 / 5.84). */
 .summary {
   display: flex;
   flex-wrap: wrap;
@@ -69,17 +69,23 @@
 .chevron {
   display: inline-flex;
   flex: none;
-  font-size: 9px;
+  align-self: center;
 }
 
-.chevron[data-open="true"] {
-  transform: rotate(90deg);
-}
-
+/* The shared widgets/chevron svg turns, never the span: a square icon box
+ * cannot overhang its layout box at any rotation (toolcallitem.module.css's
+ * own chevron note records the horizontal-scrollbar escape a rotated text
+ * glyph caused). */
 @media (prefers-reduced-motion: no-preference) {
-  .chevron {
+  .chevron > svg {
     transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
   }
+}
+
+/* After the transition rule: this selector outranks it, and Biome's
+ * noDescendingSpecificity wants the lower-specificity rule first. */
+.chevron[data-open="true"] > svg {
+  transform: rotate(90deg);
 }
 
 .body {

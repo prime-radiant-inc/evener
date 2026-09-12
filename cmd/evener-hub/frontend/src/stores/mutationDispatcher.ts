@@ -7,6 +7,7 @@ import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 export interface MutationDispatcherOptions {
   getClient: (targetRef: string) => AppwireClientLike | null | undefined;
   onStorageChange?: (targetRefs: string[]) => void;
+  onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   onClearResponse?: (targetRef: string, response: ThreadClearResponse) => void;
 }
 
@@ -14,6 +15,7 @@ export class MutationDispatcher {
   readonly #storage: MutationOutboxIndexedDB;
   readonly #getClient: MutationDispatcherOptions["getClient"];
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions["onStorageChange"]>;
+  readonly #onBlockedMutation: NonNullable<MutationDispatcherOptions["onBlockedMutation"]>;
   readonly #onClearResponse: NonNullable<MutationDispatcherOptions["onClearResponse"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
@@ -22,6 +24,7 @@ export class MutationDispatcher {
     this.#storage = storage;
     this.#getClient = options.getClient;
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
+    this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
     this.#onClearResponse = options.onClearResponse ?? (() => undefined);
   }
 
@@ -29,11 +32,9 @@ export class MutationDispatcher {
     await Promise.all([...new Set(targetRefs)].map((targetRef) => this.#dispatchTarget(targetRef)));
   }
 
-  // restoreProvenAbsent reopens dispatch for blockedUnknown records the
-  // authoritative read proved the daemon never accepted (see the storage
-  // method's comment for why absence is proof). Runs beside
-  // reconcileIdentities on the hydration publish path: reconcile settles what
-  // the authority knows, this restores what it provably does not.
+  // Reopen unresolved records beside receipt reconciliation. A live snapshot
+  // may omit accepted work, so dispatch preserves each original mutation ID
+  // and payload for journal replay and instance-fence validation.
   async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
     const restored = await this.#storage.restoreProvenAbsent(targetRef, authoritativeIds);
     if (restored.length > 0) this.#onStorageChange([targetRef]);
@@ -89,6 +90,11 @@ export class MutationDispatcher {
       if (current?.state !== "submitting") continue;
       if (this.#getClient(targetRef) !== client) return false;
 
+      if (!(await this.#storage.markAttempted(current.clientMutationId))) continue;
+      // Keep the committed attempt evidence if this client was retired: another
+      // tab may have dispatched the same record, so absence of this send is not
+      // proof of non-delivery. Live recovery retries the original payload.
+      if (this.#getClient(targetRef) !== client) return false;
       const outcome = await this.#attempt(client, current);
       if (outcome === "stop") return false;
     }
@@ -156,8 +162,12 @@ export class MutationDispatcher {
         data?.mutationOutcome === "unknown" &&
         (data.cause === "persistenceUnavailable" || data.retryDisposition === "blocked")
       ) {
-        await this.#storage.markUnknown(record.clientMutationId, "blockedUnknown");
-        this.#onStorageChange([record.targetRef]);
+        try {
+          await this.#storage.markUnknown(record.clientMutationId, "blockedUnknown");
+          this.#onStorageChange([record.targetRef]);
+        } finally {
+          this.#onBlockedMutation(record.targetRef, client);
+        }
       }
       // Request timeouts, transport failures, and automatically retryable
       // unknown outcomes retain submitting. A later ready/discovery event

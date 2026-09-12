@@ -11,7 +11,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/internal/appserver"
@@ -40,7 +39,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 	f.Fuzz(func(t *testing.T, _ byte) {
 		ctx := context.Background()
 
-		ctl := newHubLaunchController(t.TempDir())
+		ctl := newHubLaunchController(t.TempDir(), false)
 		badCWD := filepath.Join(t.TempDir(), "missing")
 		_, _ = ctl.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: badCWD})
 		_, _ = ctl.GetLayer(ctx, appwire.LaunchConfigGetLayerParams{CWD: badCWD})
@@ -61,7 +60,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		if err := os.WriteFile(badRoot, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		broken := newHubLaunchController(badRoot)
+		broken := newHubLaunchController(badRoot, false)
 		_, _ = broken.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
 		_, _ = broken.GetLayer(ctx, appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: "global"})
 		_, _ = broken.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: "global"})
@@ -82,7 +81,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		if err := os.WriteFile(filepath.Join(trustCWD, ".evener", "launch.toml"), []byte("model = \"p/m\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		trustCtl := newHubLaunchController(trustRoot)
+		trustCtl := newHubLaunchController(trustRoot, false)
 		resolved, err := trustCtl.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: trustCWD})
 		if err != nil || resolved.Repo == nil {
 			t.Fatalf("resolve repo: %+v %v", resolved, err)
@@ -132,10 +131,8 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 
 		_ = sanitizeModelDescriptors([]appwire.ModelDescriptor{{Provider: " ", Model: "x"}, {Provider: "p", Model: " "}, {Provider: " p ", Model: " m "}})
 		_ = sanitizeModelDiagnostics([]appwire.ModelListDiagnostic{{Message: " "}, {Provider: " p ", Source: " s ", Title: " t ", Message: " m ", Hint: " h "}})
-		_ = launchHarnessDescriptors(hubcore.WebConfig{CodexSources: []appsource.CodexSourceConfig{{}, {ID: "evener"}, {ID: "extra"}}, CodexLaunches: []codexlaunch.CodexLaunchConfig{{}, {ID: "extra"}, {ID: "launched"}}})
-		_, _ = sourceForModelHarness(ctx, hubcore.WebConfig{}, appsource.NewRegistry(), "missing")
-		launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "managed", Binary: filepath.Join(t.TempDir(), "missing")}})
-		_, _ = sourceForModelHarness(ctx, hubcore.WebConfig{CodexLauncher: launcher}, appsource.NewRegistry(), "managed")
+		_ = launchHarnessDescriptors()
+		_, _ = sourceForModelHarness(appsource.NewRegistry(), "missing")
 		errorSources := appsource.NewRegistry()
 		errorSources.Add(&scriptedAppSource{id: "remote"})
 		_, _ = hubModelListInner(ctx, hubcore.WebConfig{}, errorSources, appwire.ModelListParams{Harness: "remote"})
@@ -155,8 +152,8 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		_, _ = pctl.ListPlugins()
 		ref := appwire.PluginRefParams{Plugin: "missing", Marketplace: "missing"}
 		_, _ = pctl.Upgrade(ctx, ref)
-		_, _ = pctl.Enable(ref)
-		_, _ = pctl.Disable(ref)
+		_, _ = pctl.Enable(context.Background(), ref)
+		_, _ = pctl.Disable(context.Background(), ref)
 
 		mgr := plugins.NewManager(pluginRoot)
 		_, errs := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)

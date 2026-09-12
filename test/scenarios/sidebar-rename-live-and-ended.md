@@ -120,7 +120,7 @@ optimistic overlay.
   `rename` flag is set on the node (`RailRow.tsx:362-364`), and the hub sets
   that from `rowRenameable` (`web_api_tree.go:972,1308-1312`), which is just
   "does this id parse as a local ref" (`isLocalRouteID`, `web.go#isLocalRouteID`). So
-  Codex-bridged rows and synthetic `cluster:` fold rows never offer it — this
+  non-local source-backed rows and synthetic `cluster:` fold rows never offer it — this
   card is about local top-level evener sessions.
 - **The ref is typed data, not a URL segment.** `threadsStore.rename` sends the
   exact ref in `ThreadNameSetParams` (`stores/threads.ts#threadsStore`), and the hub

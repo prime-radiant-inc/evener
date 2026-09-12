@@ -384,6 +384,88 @@ func (c *delegateTreeController) ownedStableWorktreeSnapshots(owner *Session) []
 	return rows
 }
 
+// delegateIsAncestorLocked reports whether ancestorID is receiverID or any of
+// its transitive parents in the delegate tree. Callers must hold c.mu. The
+// walk is cycle-guarded: a corrupt journal with a parent loop cannot hang the
+// controller mutex (the same property subtreeMembersLocked's fixed-point
+// closure provides downward).
+func (c *delegateTreeController) delegateIsAncestorLocked(ancestorID, receiverID string) bool {
+	if ancestorID == "" || receiverID == "" {
+		return false
+	}
+	visited := make(map[string]struct{})
+	current := c.durable[receiverID]
+	for current != nil {
+		if receiverID == ancestorID {
+			return true
+		}
+		if current.Descriptor.ParentDelegateID == "" {
+			return false
+		}
+		if _, seen := visited[receiverID]; seen {
+			return false
+		}
+		visited[receiverID] = struct{}{}
+		receiverID = current.Descriptor.ParentDelegateID
+		current = c.durable[receiverID]
+	}
+	return false
+}
+
+// subtreeReceiverKeysForDelegate returns the (childSessionID, delegateID)
+// receiver keys for delegateID and every member of the subtree rooted at it —
+// the identities a stop of delegateID leaves with surviving watches. Takes
+// c.mu itself.
+func (c *delegateTreeController) subtreeReceiverKeysForDelegate(delegateID string) map[string]string {
+	if c == nil || delegateID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	members := c.subtreeMembersLocked(delegateID)
+	keys := make(map[string]string, len(members))
+	for id, aggregate := range c.durable {
+		if aggregate == nil {
+			continue
+		}
+		if _, member := members[id]; !member {
+			continue
+		}
+		if child := aggregate.Descriptor.ChildSessionID; child != "" {
+			keys[id] = child
+		}
+	}
+	return keys
+}
+
+// watchClearAuthority reports whether the calling session may clear a
+// receiver-keyed watch whose receiver is receiverDelegateID: the receiver must
+// be the session's own delegate or a descendant of it. Clear authority follows
+// receiver direction — a source delegate may NOT clear its ancestor's watch on
+// it, and a sibling may not clear another sibling's. actorSessionID verifies
+// root identity directly: an empty owningDelegateID alone is NOT evidence of
+// being the root (a non-delegate subagent that inherits the controller also
+// has one), so only the session that IS the root runtime gets the root grant.
+func (c *delegateTreeController) watchClearAuthority(actorSessionID, actorDelegateID, receiverDelegateID string) bool {
+	if c == nil || receiverDelegateID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if actorDelegateID == "" {
+		if actorSessionID != c.rootSessionID {
+			// A non-delegate subagent that inherited the controller: no
+			// receiver-keyed watch authority at all — it is nobody's
+			// ancestor in the delegate tree.
+			return false
+		}
+		// The root session is the ancestor of every delegate it can stop
+		// (authorizeMutationLocked admits only direct children, plus root).
+		return true
+	}
+	return c.delegateIsAncestorLocked(actorDelegateID, receiverDelegateID)
+}
+
 func (c *delegateTreeController) stableWorktreeSnapshotForOwner(owner *Session, delegateID string) (stableDelegateWorktreeSnapshot, error) {
 	if c == nil || owner == nil {
 		return stableDelegateWorktreeSnapshot{}, errDelegateNotControllable

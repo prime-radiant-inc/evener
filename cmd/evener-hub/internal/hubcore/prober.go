@@ -2,7 +2,10 @@ package hubcore
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +19,15 @@ import (
 type StatusProber struct {
 	Timeout time.Duration
 	client  *http.Client
+}
+
+// hubConnectionLogf is the appwire.Client connection-lifecycle sink (see
+// appwire.Client.SetLogf) for probe connections: the hub is a plain daemon,
+// never a TUI rendering over an interactive terminal, so its own stderr —
+// labelled like every other hub diagnostic (past.go, roster.go) — is a safe
+// destination, unlike the TUI's stderr (issue #783).
+func hubConnectionLogf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
 }
 
 // Probe implements Prober.
@@ -38,15 +50,33 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 	defer transport.Close() //nolint:errcheck // probe cleanup; error is not actionable
 	appClient := appwire.NewClient(transport)
+	appClient.SetLogf(hubConnectionLogf)
 	appClient.Start(ctx)
 	if _, err := appClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); err != nil {
+		var wire appwire.WireError
+		var mismatch appwire.ProtocolVersionMismatchError
+		if errors.As(err, &mismatch) ||
+			(entry.Protocol != "" && entry.Protocol != appwire.ProtocolVersion &&
+				errors.As(err, &wire) && wire.Code == appwire.CodeInvalidRequest) {
+			id := entry.SessionID
+			if id == "" {
+				id = entry.ThreadID
+			}
+			if id != "" {
+				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, OK: true}
+			}
+		}
 		return ProbeResult{}
 	}
-	rootResponse, err := appClient.ThreadRead(ctx, appwire.ThreadReadParams{})
+	// Read descendants before the root diagnostics. A retained delegate can be
+	// resumed between these calls; taking the child projection first means a
+	// later running lifecycle cannot be mistaken for stale active work and then
+	// overwritten as idle by an older root snapshot.
+	listResponse, err := appClient.ThreadList(ctx, appwire.ThreadListParams{IncludeSubagents: true})
 	if err != nil {
 		return ProbeResult{}
 	}
-	listResponse, err := appClient.ThreadList(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+	rootResponse, err := appClient.ThreadRead(ctx, appwire.ThreadReadParams{})
 	if err != nil {
 		return ProbeResult{}
 	}
@@ -56,13 +86,20 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		return ProbeResult{}
 	}
 
+	// ThreadList carries the root and descendants from one projection cut. Keep
+	// the ThreadRead result only for identity validation, and use the matching
+	// listed root so its diagnostics and child projections cannot come from
+	// different snapshots.
+	var listedRoot *appwire.Thread
 	seen := make(map[string]bool)
-	rootListed := false
 	var runningSubagentIDs []string
 	var runningSubagentStates map[string]string
-	for _, thread := range listResponse.Data {
-		if thread.ID == root.ID && statusThreadID(thread) == rootID {
-			rootListed = true
+	for i := range listResponse.Data {
+		thread := listResponse.Data[i]
+		if isRootThread(thread, root) {
+			if listedRoot == nil {
+				listedRoot = &listResponse.Data[i]
+			}
 			continue
 		}
 		if thread.Status.Type == appwire.ThreadStatusClosed {
@@ -81,19 +118,33 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 			runningSubagentStates[id] = state
 		}
 	}
-	if !rootListed {
+	if listedRoot == nil {
 		return ProbeResult{}
+	}
+	root = *listedRoot
+
+	idleStableDelegateChildren := idleStableDelegateChildIDs(root.Evener.Diagnostics)
+	for _, id := range runningSubagentIDs {
+		if _, quiesced := idleStableDelegateChildren[id]; quiesced {
+			if runningSubagentStates == nil {
+				runningSubagentStates = make(map[string]string)
+			}
+			runningSubagentStates[id] = appwire.ThreadStatusIdle
+		}
 	}
 	sort.Strings(runningSubagentIDs)
 
+	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	return ProbeResult{
 		SessionID:             rootID,
 		Status:                root.Status.Type,
+		ActiveFlags:           append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:            root.Evener.AskPending,
 		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
 		RunningSubagentIDs:    runningSubagentIDs,
 		RunningSubagentStates: runningSubagentStates,
-		RunningJobs:           runningNonAgentJobs(root.Evener.Diagnostics),
+		RunningJobs:           runningJobs,
+		CompletedJobs:         completedJobs,
 		OK:                    true,
 	}
 }
@@ -105,18 +156,55 @@ func statusThreadID(thread appwire.Thread) string {
 	return strings.TrimSpace(thread.ID)
 }
 
-func runningNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJobInfo {
+func isRootThread(thread, root appwire.Thread) bool {
+	return thread.ID == root.ID && statusThreadID(thread) == statusThreadID(root)
+}
+
+// idleStableDelegateChildIDs identifies retained stable delegates with no
+// current run. Their child thread can retain an older active projection while
+// the runtime is kept for a later resume, so the durable delegate lifecycle is
+// authoritative for the parent-side navigation state.
+func idleStableDelegateChildIDs(diagnostics *appwire.EvenerDiagnostics) map[string]struct{} {
 	if diagnostics == nil {
 		return nil
 	}
-	var jobs []appwire.EvenerJobInfo
-	for _, job := range diagnostics.Jobs {
-		if strings.TrimSpace(job.JobType) == "delegate" || terminalJobStatus(job.Status) {
+	var ids map[string]struct{}
+	for _, delegate := range diagnostics.Delegates {
+		childID := strings.TrimSpace(delegate.ChildSessionID)
+		if childID == "" || strings.TrimSpace(delegate.Lifecycle) != "idle" {
 			continue
 		}
-		jobs = append(jobs, job)
+		if ids == nil {
+			ids = make(map[string]struct{})
+		}
+		ids[childID] = struct{}{}
 	}
-	return jobs
+	return ids
+}
+
+func splitNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) ([]appwire.EvenerJobInfo, []appwire.EvenerJobInfo) {
+	if diagnostics == nil {
+		return nil, nil
+	}
+	return SplitNonAgentJobs(diagnostics.Jobs)
+}
+
+// SplitNonAgentJobs separates non-delegate jobs into active and terminal
+// groups for navigation consumers. The input is already the daemon's bounded
+// diagnostic inventory, so the function preserves its order within each group.
+func SplitNonAgentJobs(jobs []appwire.EvenerJobInfo) ([]appwire.EvenerJobInfo, []appwire.EvenerJobInfo) {
+	var running, completed []appwire.EvenerJobInfo
+	for _, job := range jobs {
+		if strings.TrimSpace(job.JobType) == "delegate" {
+			continue
+		}
+		if terminalJobStatus(job.Status) {
+			completed = append(completed, job)
+		} else {
+			running = append(running, job)
+		}
+	}
+	return running, completed
 }
 
 func terminalJobStatus(status string) bool {

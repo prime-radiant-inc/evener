@@ -116,17 +116,32 @@ func fuzzScenarioRegistryRejectsMissingSource(t *testing.T) {
 
 func fuzzScenarioRegistryAllReturnsSourcesInIDOrder(t *testing.T) {
 	reg := NewRegistry()
-	// Insert in non-lexicographic order; "evener" sorts between "codex" and "local",
+	// Insert in non-lexicographic order; "evener" sorts between "daemon" and "local",
 	// so all three positions must be correct — a random permutation matches in only 1/6 runs.
 	reg.Add(fakeSource{id: "evener"})
-	reg.Add(fakeSource{id: "codex"})
+	reg.Add(fakeSource{id: "daemon"})
 	reg.Add(fakeSource{id: "local"})
 
 	sources := reg.All()
 	if len(sources) != 3 {
 		t.Fatalf("sources=%d", len(sources))
 	}
-	if sources[0].ID() != "codex" || sources[1].ID() != "evener" || sources[2].ID() != "local" {
+	if sources[0].ID() != "daemon" || sources[1].ID() != "evener" || sources[2].ID() != "local" {
 		t.Fatalf("source order=%s,%s,%s", sources[0].ID(), sources[1].ID(), sources[2].ID())
 	}
+}
+
+func fuzzScenarioRegistryRemove(t *testing.T) {
+	r := NewRegistry()
+	src := fakeSource{id: "local"}
+	r.Add(src)
+	if _, ok := r.Source("local"); !ok {
+		t.Fatal("source not added")
+	}
+	r.Remove("local")
+	if _, ok := r.Source("local"); ok {
+		t.Fatal("source not removed")
+	}
+	// Removing a missing id is a no-op.
+	r.Remove("nonexistent")
 }

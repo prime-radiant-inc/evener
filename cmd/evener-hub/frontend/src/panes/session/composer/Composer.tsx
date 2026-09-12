@@ -32,7 +32,7 @@ import {
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
-import type { PaletteRunContext } from "../../../shell/palette/commands";
+import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { workspaceStore } from "../../../shell/workspace";
@@ -56,21 +56,24 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome } from "../chrome/SessionChrome";
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
-import { AskDock, useAskDockPending } from "./askDock";
+import { useAskDockPending } from "./askDockPending";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
-import { type BuiltinMatch, matchBuiltinInvocation, runBuiltinCommand } from "./builtinCommand";
+import { runBuiltinCommand } from "./builtinCommand";
+import { type BuiltinMatch, matchBuiltinInvocation } from "./builtinInvocation";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
-import { clearDraft, readDraft, writeDraft } from "./draft";
+import { clearDraft, clearPersistedDraft, markDraftEdited, readDraft, readDraftRevision, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
+  subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
+  useComposerSubmitting,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
@@ -93,6 +96,7 @@ export interface ComposerProps {
 
 const CLASS = {
   composer: requireClass(styles.composer, "composer.module.css", "composer"),
+  storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
@@ -154,12 +158,15 @@ const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoad
 
 export function Composer({ ref }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
+  const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
+  const submitting = useComposerSubmitting(ref);
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
   const isMobile = useIsMobile();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by textEditor.write() below; consumed (and cleared) by the
   // cursor-restore layout effect once `text`'s new value has committed.
@@ -170,11 +177,17 @@ export function Composer({ ref }: ComposerProps) {
   // still clear the composer (only if unchanged since THAT read, mirroring
   // clearIfUnchanged's own submittedText snapshot for the classic drain
   // path below).
-  const lastDrainSnapshotRef = useRef<{ text: string; markers: Set<number> } | null>(null);
-  // Invalidates the post-request cleanup captured by a submit that predates a
-  // canonical goal replacement. In particular, old marker ids may be reused
-  // after attachments.reset(), so stale cleanup must not strip new content.
-  const submissionVersionRef = useRef(0);
+  const lastDrainSnapshotRef = useRef<{
+    text: string;
+    attachments: PendingAttachment[];
+    revision: number;
+    draftRevision: number;
+  } | null>(null);
+  // Tracks edits within this mount, including recovery drafts whose persistence
+  // writes can finish without an edit. Commit notifications only update the
+  // display; they must still let this mount remove its submitted attachments.
+  const draftEditRevisionRef = useRef(0);
+  const ownedDraftRevisionRef = useRef(readDraftRevision(ref));
 
   // Restore-on-mount is unconditional, not leak-guarded: under dockview a
   // session pane's `ref` never changes across a mounted Composer's
@@ -197,6 +210,8 @@ export function Composer({ ref }: ComposerProps) {
   const recoveryReplacementEpochRef = useRef(0);
   const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const actionPending = busyAction !== null || submitting || mutationWriteStalled;
+  const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Whether a FINISHED session's collapsed follow-up field currently has focus,
   // which is what expands it from its one-line resting state. Only read on that
@@ -300,6 +315,71 @@ export function Composer({ ref }: ComposerProps) {
     setText(nextText);
   }, []);
 
+  const editText = useCallback(
+    (nextText: string): void => {
+      draftEditRevisionRef.current += 1;
+      if (activeRecoveryIdRef.current !== null) {
+        markDraftEdited(ref);
+        ownedDraftRevisionRef.current = readDraftRevision(ref);
+      }
+      updateText(nextText);
+    },
+    [ref, updateText],
+  );
+
+  const persistDraft = useCallback(
+    (nextText: string): void => {
+      writeDraft(ref, nextText);
+      ownedDraftRevisionRef.current = readDraftRevision(ref);
+    },
+    [ref],
+  );
+
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    // Re-read at subscription time so a commit between render and mount
+    // cannot leave an already-cleared sticky draft in a fresh composer.
+    updateText(readDraft(ref));
+    ownedDraftRevisionRef.current = readDraftRevision(ref);
+    const unsubscribe = subscribeComposerSubmissionCommitted((targetRef, submittedText, recovery) => {
+      if (targetRef !== ref) return;
+      if (recovery && activeRecoveryIdRef.current === recovery.clientMutationId) {
+        if (recovery.draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
+        const ownsDraft = ownedDraftRevisionRef.current === readDraftRevision(ref);
+        recoveryOwnsLocalDraftRef.current = false;
+        recoveryWriteVersionRef.current += 1;
+        recoveryReplacementEpochRef.current += 1;
+        setActiveRecoveryId(null);
+        if (recovery.draftUnchanged && textRef.current === submittedText) updateText("");
+        // Restoring the same recovery in another mount recreates its items.
+        // Match the submitted payload under that recovery owner; newly staged
+        // items have distinct markers, and replacing the draft exits ownership.
+        const markers = new Set(
+          attachmentItemsRef.current
+            .filter((item) =>
+              recovery.attachments.some(
+                (submitted) =>
+                  submitted.marker === item.marker &&
+                  submitted.data === item.data &&
+                  submitted.name === item.name &&
+                  submitted.mediaType === item.mediaType,
+              ),
+            )
+            .map((item) => item.marker),
+        );
+        clearSubmittedAttachmentsRef.current(markers);
+        if (ownsDraft) persistDraft(textRef.current);
+      } else if (!recovery && activeRecoveryIdRef.current === null && textRef.current === submittedText) {
+        ownedDraftRevisionRef.current = readDraftRevision(ref);
+        updateText("");
+      }
+    });
+    return () => {
+      mountedRef.current = false;
+      unsubscribe();
+    };
+  }, [ref, setActiveRecoveryId, updateText, persistDraft]);
+
   // Bridges useAttachments' pure string-splice logic to this component's
   // own controlled `text` state, instead of a direct DOM `.value` mutation
   // - see useAttachments.ts's TextEditor doc comment for the React
@@ -331,15 +411,21 @@ export function Composer({ ref }: ComposerProps) {
       text: textRef.current,
       cursor: cursorToRestoreRef.current ?? textareaRef.current?.selectionStart ?? textRef.current.length,
     }),
-    write: (nextText, cursor) => {
-      updateText(nextText);
-      if (activeRecoveryIdRef.current === null) writeDraft(ref, nextText);
+    write: (nextText, cursor, source) => {
+      // Submission cleanup retires this mount's markers without claiming a
+      // shared draft that another composer has edited in the meantime.
+      const mayPersist = source !== "submission" || ownedDraftRevisionRef.current === readDraftRevision(ref);
+      if (source === "submission") updateText(nextText);
+      else editText(nextText);
+      if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
       cursorToRestoreRef.current = cursor;
     },
   };
   const attachments = useAttachments(textEditor);
   const attachmentItemsRef = useRef(attachments.items);
   attachmentItemsRef.current = attachments.items;
+  const clearSubmittedAttachmentsRef = useRef(attachments.clearSubmitted);
+  clearSubmittedAttachmentsRef.current = attachments.clearSubmitted;
   const recoveryEntries = useRecoveryEntries(ref);
 
   const replaceComposerWithGoalDraft = (objective: string): void => {
@@ -354,7 +440,6 @@ export function Composer({ ref }: ComposerProps) {
     setSlashToken(null);
     setSlashHighlighted(0);
     lastDrainSnapshotRef.current = null;
-    submissionVersionRef.current += 1;
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
@@ -401,6 +486,7 @@ export function Composer({ ref }: ComposerProps) {
     ): Promise<void> => {
       const version = ++recoveryWriteVersionRef.current;
       const replacementEpoch = recoveryReplacementEpochRef.current;
+      const draftRevision = readDraftRevision(ref);
       const operation = recoveryWrites.current
         .catch(() => undefined)
         .then(async () => {
@@ -418,12 +504,13 @@ export function Composer({ ref }: ComposerProps) {
             );
             if (
               activeRecoveryIdRef.current === clientMutationId &&
+              readDraftRevision(ref) === draftRevision &&
               textRef.current.trim() === "" &&
               attachmentItemsRef.current.length === 0
             ) {
               recoveryOwnsLocalDraftRef.current = false;
               setActiveRecoveryId(null);
-              clearDraft(ref);
+              clearPersistedDraft(ref);
             }
             return;
           }
@@ -432,10 +519,11 @@ export function Composer({ ref }: ComposerProps) {
             updated &&
             recoveryOwnsLocalDraftRef.current &&
             recoveryWriteVersionRef.current === version &&
+            readDraftRevision(ref) === draftRevision &&
             activeRecoveryIdRef.current === clientMutationId
           ) {
             recoveryOwnsLocalDraftRef.current = false;
-            clearDraft(ref);
+            clearPersistedDraft(ref);
           }
         });
       recoveryWrites.current = operation;
@@ -476,9 +564,12 @@ export function Composer({ ref }: ComposerProps) {
     const recovered = recoveryComposerDraft(record);
     recoveryOwnsLocalDraftRef.current = false;
     setActiveRecoveryId(record.clientMutationId);
+    // Restoration replaces this mount's local owner without editing the
+    // shared recovery draft that an earlier mount may still be submitting.
+    draftEditRevisionRef.current += 1;
     updateText(recovered.text);
     attachments.replaceWithSettled(recovered.attachments);
-    clearDraft(ref);
+    clearPersistedDraft(ref);
     cursorToRestoreRef.current = recovered.text.length;
   }, [
     activeRecoveryId,
@@ -721,8 +812,8 @@ export function Composer({ ref }: ComposerProps) {
   const followUpEngaged = followUpFocused || hasContent;
 
   function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
-    updateText(event.target.value);
-    if (activeRecoveryIdRef.current === null) writeDraft(ref, event.target.value);
+    editText(event.target.value);
+    if (activeRecoveryIdRef.current === null) persistDraft(event.target.value);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (slashToken's own doc comment above) reopens on the
     // very next text change rather than staying closed indefinitely.
@@ -752,44 +843,37 @@ export function Composer({ ref }: ComposerProps) {
     textareaRef.current?.focus();
   }
 
-  // clearIfUnchanged mirrors clearComposerDraftIfUnchanged (parity-m5-
-  // composer.md §A): reads textRef.current, not `submittedText` (a `const`
-  // closed over by this async handler at call time, which never changes
-  // after that point regardless of later renders) - textRef.current is
-  // kept synchronously current by updateText() regardless of which
-  // render's closure this particular submitAction call started from.
-  function clearIfUnchanged(submittedText: string): void {
+  // Equal text can belong to a newer edit, including a reused image marker.
+  // A commit notification may already have cleared the display without editing
+  // the draft; its original attachment cleanup still belongs to this revision.
+  function clearIfUnchanged(submittedText: string, submittedRevision: number, submittedDraftRevision: number): boolean {
+    if (!mountedRef.current || draftEditRevisionRef.current !== submittedRevision) return false;
     if (textRef.current === submittedText) {
       updateText("");
-      clearDraft(ref);
+      if (readDraftRevision(ref) === submittedDraftRevision) {
+        clearDraft(ref);
+        ownedDraftRevisionRef.current = readDraftRevision(ref);
+      }
     }
+    return true;
   }
 
-  // handleDrainSuccess is QueueStrip's own onDrainSuccess seam (its "Steer
-  // now" button, a SEPARATE trigger from this component's own classic
-  // steer/drain path below): mirrors the legacy "the textarea clears" rule
-  // after the drain is durably recorded, gated the SAME way
-  // clearIfUnchanged gates this
-  // component's own drain path - only if the text is unchanged since the
-  // drain was TRIGGERED (lastDrainSnapshotRef, populated by getComposerText
-  // below at the moment QueueStrip actually read it), not unconditionally.
-  // QueueStripProps.onDrainSuccess itself takes no arguments, so this ref is
-  // the seam's own way of recovering a submitted-snapshot to compare
-  // against - see w5-integration-wiring-report.md Concern #2, previously an
-  // unconditional clear that could silently discard an edit made while the
-  // strip's own drain request was still in flight.
+  // QueueStrip captures this mount's payload and edit revision through
+  // getComposerText before it starts the drain's durable write.
   function handleDrainSuccess(): void {
     const snapshot = lastDrainSnapshotRef.current;
-    if (snapshot === null) return; // defensive only: onDrainSuccess never fires without a prior getComposerText() call
-    if (textRef.current === snapshot.text) {
-      updateText("");
-      clearDraft(ref);
-    }
-    // Unconditional, like submitAction's own clearSubmitted call below: safe
-    // regardless of the text-unchanged check above, since it only ever
-    // removes the SPECIFIC markers this drain's own snapshot captured - an
-    // attachment staged after that snapshot survives untouched either way.
-    attachments.clearSubmitted(snapshot.markers);
+    if (!snapshot || !mountedRef.current) return;
+    clearIfUnchanged(snapshot.text, snapshot.revision, snapshot.draftRevision);
+    clearSubmittedAttachments(snapshot.attachments);
+  }
+
+  function clearSubmittedAttachments(submitted: PendingAttachment[]): void {
+    // Text edits do not replace an attachment. Object identity distinguishes
+    // the submitted item from a replacement that reuses its marker number.
+    const markers = new Set(
+      attachmentItemsRef.current.filter((item) => submitted.includes(item)).map((item) => item.marker),
+    );
+    attachments.clearSubmitted(markers);
   }
 
   // restoreTextToComposer implements the shared "put text back into the
@@ -829,7 +913,7 @@ export function Composer({ ref }: ComposerProps) {
       recoveryOwnsLocalDraftRef.current = true;
       setActiveRecoveryId(record.clientMutationId);
     }
-    updateText(merged.text);
+    editText(merged.text);
     attachments.replaceWithSettled(merged.attachments);
     cursorToRestoreRef.current = merged.text.length;
     textareaRef.current?.focus();
@@ -862,14 +946,18 @@ export function Composer({ ref }: ComposerProps) {
   // image missing (toInputAttachments() itself only ever filters incomplete
   // items without signaling it - see that function's own doc comment) - see
   // w5-integration-wiring-report.md Concern #3. Also stashes a snapshot into
-  // lastDrainSnapshotRef (text + the currently-staged marker set) so
+  // lastDrainSnapshotRef (text, edit revision, and the currently-staged attachments) so
   // handleDrainSuccess can later tell whether the composer changed between
   // THIS read and the drain actually resolving - QueueStrip only ever calls
   // this once per handleDrain invocation, immediately before starting the
   // request, so the snapshot always reflects exactly what that drain sent.
   function getComposerText() {
-    const markers = new Set(attachments.items.map((item) => item.marker));
-    lastDrainSnapshotRef.current = { text: textRef.current, markers };
+    lastDrainSnapshotRef.current = {
+      text: textRef.current,
+      attachments: attachments.items,
+      revision: draftEditRevisionRef.current,
+      draftRevision: readDraftRevision(ref),
+    };
     return {
       text: textRef.current,
       attachments: attachments.toInputAttachments(),
@@ -896,8 +984,9 @@ export function Composer({ ref }: ComposerProps) {
   // SAME failure; this is the fix, not a pre-existing split.
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
     const submittedText = textRef.current;
-    const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
-    const submissionVersion = submissionVersionRef.current;
+    const submittedAttachments = attachments.items;
+    const submittedRevision = draftEditRevisionRef.current;
+    const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
     let wonRecoveryResend = true;
@@ -909,6 +998,7 @@ export function Composer({ ref }: ComposerProps) {
           method: kind,
           text: submittedText,
           attachments: payload,
+          recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
             toasts.push("error", sessionActionError(`${label} failed`, err));
@@ -926,21 +1016,15 @@ export function Composer({ ref }: ComposerProps) {
           return threadsStore.getState().drainAsSteer(ref, submittedText, payload);
         },
       );
-      if (submittedRecoveryId !== null && activeRecoveryIdRef.current === submittedRecoveryId) {
-        recoveryOwnsLocalDraftRef.current = false;
-        setActiveRecoveryId(null);
-        if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
-        if (textRef.current !== submittedText) writeDraft(ref, textRef.current);
-      }
-      if (submissionVersionRef.current === submissionVersion) {
-        clearIfUnchanged(submittedText);
-        attachments.clearSubmitted(submittedMarkers);
-      }
+      if (!mountedRef.current) return;
+      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
+      clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision);
+      clearSubmittedAttachments(submittedAttachments);
     } catch {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
     } finally {
-      setBusyAction(null);
+      if (mountedRef.current) setBusyAction(null);
     }
   }
 
@@ -956,8 +1040,10 @@ export function Composer({ ref }: ComposerProps) {
   // submittedText is snapshotted the same way submitAction's own
   // clearIfUnchanged is, so a clear on success never clobbers an edit made
   // while the RPC was still in flight.
-  async function handleBuiltinSubmit(match: BuiltinMatch): Promise<void> {
+  async function handleBuiltinSubmit(match: BuiltinMatch<ScopedCommand>): Promise<void> {
     const submittedText = textRef.current;
+    const submittedRevision = draftEditRevisionRef.current;
+    const submittedDraftRevision = readDraftRevision(ref);
     setBusyAction("submit");
     const ctx: PaletteRunContext = {
       sessionRef: ref,
@@ -970,14 +1056,14 @@ export function Composer({ ref }: ComposerProps) {
     };
     const outcome = await runBuiltinCommand(match, ctx);
     setBusyAction(null);
-    if (outcome.ok) clearIfUnchanged(submittedText);
+    if (outcome.ok) clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision);
     // On failure: the draft is left exactly as typed (clearIfUnchanged is
     // simply never called) - runBuiltinCommand has already toasted why.
   }
 
   function handleFormSubmit(event: FormEvent): void {
     event.preventDefault();
-    if (busyAction !== null) return;
+    if (actionPending) return;
     if (!hasContent) return; // empty composer: no-op, no request, no message
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
@@ -1008,11 +1094,22 @@ export function Composer({ ref }: ComposerProps) {
       toasts.push("error", "Send is not available for this session");
       return;
     }
+    // Hand off before Send becomes disabled. Never refocus on completion:
+    // the user may have moved to another control or session while submitting.
+    const initiator = submitButtonRef.current;
+    if (
+      initiator &&
+      !initiator.disabled &&
+      (event.nativeEvent as SubmitEvent).submitter === initiator &&
+      initiator.ownerDocument.activeElement === initiator
+    ) {
+      textareaRef.current?.focus();
+    }
     void submitAction(route);
   }
 
   function handleSteerClick(): void {
-    if (busyAction !== null) return;
+    if (actionPending) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
       return;
@@ -1034,7 +1131,7 @@ export function Composer({ ref }: ComposerProps) {
   }
 
   async function handleInterruptClick(): Promise<void> {
-    if (busyAction !== null) return;
+    if (actionPending) return;
     setBusyAction("interrupt");
     try {
       await threadsStore.getState().interrupt(ref);
@@ -1150,10 +1247,19 @@ export function Composer({ ref }: ComposerProps) {
 
   return (
     <div className={CLASS.composer}>
-      {/* T4: ask dock - renders above the queue strip.
-          useAskDockPending(ref) (askPending, above) hides/inerts the input
-          row below while a question is pending. */}
-      <AskDock ref={ref} />
+      {mutationWriteStalled && (
+        <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
+          Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for
+          confirmation.
+        </div>
+      )}
+      {/* The ask dock no longer renders here: pending questions are the
+          transcript's trailing row (Session.tsx passes AskDock as
+          TranscriptBody's trailingRow), so the answering surface scrolls
+          with the content instead of covering the footer. This component's
+          own half of the contract is unchanged: useAskDockPending(ref)
+          (askPending, above) hides/inerts the input row below while a
+          question is pending. */}
       {/* Screen-reader-only: announces the OTHER half of parity-m5-
           composer.md line 118's status-region transition - AskDock's own
           anchor announces "Answer the agent's questions." on entry but
@@ -1178,8 +1284,10 @@ export function Composer({ ref }: ComposerProps) {
         activeRecoveryId={activeRecoveryId ?? undefined}
         onEditRecovery={activateRecovery}
         onDrainSuccess={handleDrainSuccess}
-        busy={busyAction !== null}
-        onDrainBusyChange={(draining) => setBusyAction(draining ? "drain" : null)}
+        busy={actionPending}
+        onDrainBusyChange={(draining) => {
+          if (mountedRef.current) setBusyAction(draining ? "drain" : null);
+        }}
       />
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
@@ -1217,7 +1325,11 @@ export function Composer({ ref }: ComposerProps) {
         </ConfirmDialog>
       )}
       {(!ended || showFollowUpCard) && (
-        <div className={CLASS.formAnchor}>
+        // data-composer is the hold-hints overlay's anchor (shell/holdhints):
+        // the composer.focus chip positions itself above this wrapper. The
+        // value carries this pane's session ref so the overlay can anchor to
+        // the FOCUSED pane's composer when several are mounted.
+        <div className={CLASS.formAnchor} data-composer={ref}>
           {/* Anchored above the control row inside the card below, opening
               upward the same way GoalControl's own popover does - see
               slashcompletionmenu.module.css's header comment. Mounted only
@@ -1309,7 +1421,7 @@ export function Composer({ ref }: ComposerProps) {
                             // busy + the interrupt capability are already what
                             // makes this render at all, so only an in-flight
                             // request of our own is left to gate on.
-                            disabled={busyAction !== null}
+                            disabled={actionPending}
                           >
                             Stop
                           </Button>
@@ -1320,6 +1432,7 @@ export function Composer({ ref }: ComposerProps) {
                         action is Steer, and Send's job is the patient one. */}
                       <Tooltip label={submitTooltip}>
                         <Button
+                          ref={submitButtonRef}
                           type="submit"
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"
@@ -1335,7 +1448,7 @@ export function Composer({ ref }: ComposerProps) {
                           // the authority there, the same way it is for whether
                           // this card renders at all - otherwise a session the hub
                           // will happily resume shows a permanently dead Send.
-                          disabled={busyAction !== null || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
+                          disabled={actionPending || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
                         >
                           <span className={CLASS.submitLabel}>Send</span>
                         </Button>
@@ -1356,7 +1469,7 @@ export function Composer({ ref }: ComposerProps) {
                             onClick={handleSteerClick}
                             // Same as Stop above: busy + the steer capability
                             // already gate this control's existence.
-                            disabled={busyAction !== null}
+                            disabled={actionPending}
                           >
                             Steer
                           </Button>

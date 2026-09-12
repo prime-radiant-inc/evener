@@ -40,7 +40,7 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestBridge_UsesSessionStartStateWhenProvided", TestBridge_UsesSessionStartStateWhenProvided)
 	t.Run("TestServerAppWireThreadClearInvokesConfiguredClear", TestServerAppWireThreadClearInvokesConfiguredClear)
 	t.Run("TestDaemonRouterMatchesCatalog", TestDaemonRouterMatchesCatalog)
-	t.Run("TestDaemonThreadReadWindowsAndTurnsListPagesToHead", TestDaemonThreadReadWindowsAndTurnsListPagesToHead)
+	t.Run("TestFlagDayDefaultThreadReadIsBoundedItems", TestFlagDayDefaultThreadReadIsBoundedItems)
 	t.Run("TestDaemonTranscriptPreparationPropagatesUnsupportedFormat", TestDaemonTranscriptPreparationPropagatesUnsupportedFormat)
 	t.Run("TestHandleAppThreadReasoningEffortSet_CallsFuncWithTrimmedValue", TestHandleAppThreadReasoningEffortSet_CallsFuncWithTrimmedValue)
 	t.Run("TestHandleAppThreadReasoningEffortSet_NoneStaysNone", TestHandleAppThreadReasoningEffortSet_NoneStaysNone)

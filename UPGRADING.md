@@ -5,11 +5,10 @@ Breaking changes and migration notes for evener.
 ## Unreleased — Tool `purpose` param renamed to `intent`
 
 The shared tool parameter that carries the agent's stated reason for a call
-was renamed from `purpose` to `intent`. Readers read only `intent` — there is
-deliberately no backward-compat fallback. Transcripts recorded before
-2026-08-29 render tool calls without an intent line in the hub, the TUI, and
-`evener doctor`; the data is not lost — it remains in the transcript under
-`purpose`.
+was renamed from `purpose` to `intent`. New tool calls carry `intent` only.
+Readers fall back to `purpose` when `intent` is absent, so transcripts
+recorded before 2026-08-29 still render their tool-intent line in the hub,
+the TUI, and `evener doctor`.
 
 ## Unreleased — Binary consolidation
 
@@ -20,7 +19,7 @@ All standalone `evener-<x>` binaries are consolidated into two binaries:
 | Binary | Subcommands |
 |--------|-------------|
 | `evener` | `serve`, `hub`, `tui`, `doctor`, `migrate`, `openai`, `upgrade`, `plugin`, `launch-check` |
-| `evener-dev` | `dev`, `fuzz-harvest`, `fuzzcov`, `fuzzregistry`, `internalcheck`, `test-dev-tooling`, `tomlcheck`, `transcript-v2-upgrade` |
+| `evener-dev` | `dev`, `fuzz-harvest`, `fuzzcov`, `fuzzregistry`, `internalcheck`, `tomlcheck`, `transcript-v2-upgrade` |
 
 The five old binaries (`evener-hub`, `evener-tui`, `evener-doctor`, `evener-migrate`,
 and the dev/test tooling CLIs) are gone. Their functionality lives on as

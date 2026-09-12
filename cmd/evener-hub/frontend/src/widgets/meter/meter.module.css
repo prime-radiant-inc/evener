@@ -2,7 +2,11 @@
   width: 100%;
   height: 6px;
   border-radius: var(--radius-control);
-  background: var(--surface-2);
+  /* Sunken --field, not --surface-2: surface-2 is pixel-identical to
+   * surface-1 in both themes, so the track vanished into any card/pane
+   * ground. Matches the switch unchecked track + recommendation card
+   * confidence bar precedent. */
+  background: var(--field);
   overflow: hidden;
 }
 

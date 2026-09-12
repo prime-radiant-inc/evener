@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 )
@@ -81,6 +82,106 @@ func TestNavigationManifestHasNoRowsAndLocationHasSummary(t *testing.T) {
 	}
 	if _, ok := any(manifest).(hubapi.NavigationSessionSummary); ok {
 		t.Fatal("manifest must not contain navigation rows")
+	}
+}
+
+func TestNavigationProjectionCarriesActiveAndCompletedJobs(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID:    "session-parent",
+			Title: "parent",
+			Kind:  "session",
+			State: "idle",
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...", Intent: "Running the package tests to find the failure",
+			}},
+			CompletedJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-completed", JobType: "shell", Status: "completed", Command: "go fmt ./...",
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	row := resource.Current.Sessions[0]
+	if len(row.RunningJobs) != 1 || row.RunningJobs[0].JobID != "job-running" || row.RunningJobs[0].Command != "go test ./..." {
+		t.Fatalf("running jobs = %+v", row.RunningJobs)
+	}
+	if got := row.RunningJobs[0].Intent; got != "Running the package tests to find the failure" {
+		t.Fatalf("running job intent = %q", got)
+	}
+	if len(row.CompletedJobs) != 1 || row.CompletedJobs[0].JobID != "job-completed" || row.CompletedJobs[0].Status != "completed" {
+		t.Fatalf("completed jobs = %+v", row.CompletedJobs)
+	}
+}
+
+func TestNavigationJobSummaryKeepsFullCommandForTooltip(t *testing.T) {
+	long := strings.Repeat("a", 600)
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID:    "session-parent",
+			Title: "parent",
+			Kind:  "session",
+			State: "idle",
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-running", JobType: "shell", Status: "running", Command: long, Intent: "intent text",
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	job := resource.Current.Sessions[0].RunningJobs[0]
+	if job.Command == long {
+		t.Fatal("command must be truncated for the row label")
+	}
+	if got, want := len([]rune(job.Command)), maxNavigationLabelRunes; got != want {
+		t.Fatalf("truncated command runes=%d, want %d", got, want)
+	}
+	if job.FullCommand != long {
+		t.Fatalf("full_command = %q, want the untruncated command", job.FullCommand)
+	}
+}
+
+func TestNavigationJobSummaryOmitsFullCommandWhenLabelFits(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID:    "session-parent",
+			Title: "parent",
+			Kind:  "session",
+			State: "idle",
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...",
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	job := resource.Current.Sessions[0].RunningJobs[0]
+	if job.FullCommand != "" {
+		t.Fatalf("full_command = %q, want empty when the command fits the label bound", job.FullCommand)
 	}
 }
 
@@ -289,6 +390,119 @@ func TestNavigationProjectionEnforcesExactEncodedCeilings(t *testing.T) {
 	}
 	if len(first.(hubapi.NavigationSectionResource).Sessions) != len(second.(hubapi.NavigationSectionResource).Sessions) {
 		t.Fatal("resource output changed without input change")
+	}
+}
+
+func TestNavigationByteTruncatedCatalogContinuationIsContiguous(t *testing.T) {
+	projects := make([]hubcore.TreeProject, 100)
+	for index := range projects {
+		projects[index] = hubcore.TreeProject{
+			Key:        fmt.Sprintf("project-%03d-%s", index, strings.Repeat("k", maxNavigationIdentityBytes-16)),
+			Name:       strings.Repeat("n", maxNavigationLabelRunes),
+			WorkingDir: strings.Repeat("/", maxNavigationWorkingDirBytes),
+		}
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation",
+		Tree:         hubcore.Tree{Projects: projects},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const offset, limit = uint32(0), uint32(100)
+	first, err := projection.CatalogPage(navigationResourceProjects, offset, int(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRows := first.Projects
+	if got := len(firstRows); got == 0 || got >= int(limit) {
+		t.Fatalf("fixture did not force byte truncation: got %d of %d", got, limit)
+	}
+	nextOffset := offset + uint32(len(firstRows))
+	second, err := projection.CatalogPage(navigationResourceProjects, nextOffset, int(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Projects) == 0 {
+		t.Fatal("second byte-truncated catalog page did not advance")
+	}
+
+	// The authoritative project order is the independent unbounded reference.
+	// Its same-length prefix must match page 1 + page 2 with no duplicate or gap.
+	got := append(append(hubapi.NavigationArray[hubapi.NavigationProjectSummary](nil), firstRows...), second.Projects...)
+	for index, row := range got {
+		want := projects[int(offset)+index].Key
+		if row.Key != want {
+			t.Fatalf("row %d key=%q, want contiguous reference key %q", index, row.Key, want)
+		}
+	}
+}
+
+func TestNavigationByteTruncatedProjectPageContinuationIsContiguous(t *testing.T) {
+	rows := make([]hubcore.TreeNode, 50)
+	for root := range rows {
+		// Forty roots of fifty total nodes exactly reach the node ceiling, so
+		// any missing top-level root below is caused by the byte envelope.
+		children := make([]hubcore.TreeNode, 49)
+		for child := range children {
+			children[child] = hubcore.TreeNode{
+				ID:      fmt.Sprintf("session-%03d-%03d", root, child),
+				Title:   strings.Repeat("t", maxNavigationTitleRunes),
+				Project: strings.Repeat("p", maxNavigationLabelRunes),
+				Branch:  strings.Repeat("b", maxNavigationLabelRunes),
+				Kind:    "subagent",
+				State:   "idle",
+			}
+		}
+		rows[root] = hubcore.TreeNode{
+			ID:       fmt.Sprintf("session-root-%03d", root),
+			Title:    strings.Repeat("t", maxNavigationTitleRunes),
+			Project:  strings.Repeat("p", maxNavigationLabelRunes),
+			Branch:   strings.Repeat("b", maxNavigationLabelRunes),
+			Kind:     "session",
+			State:    "idle",
+			Children: children,
+		}
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation",
+		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{
+			Key:     "project",
+			Name:    "project",
+			Current: rows,
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const offset, limit = uint32(0), uint32(40)
+	first, err := projection.ProjectPage("project", "current", offset, int(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRows := first.Sessions
+	if got := len(firstRows); got == 0 || got >= int(limit) {
+		t.Fatalf("fixture did not force byte truncation: got %d of %d", got, limit)
+	}
+	nextOffset := offset + uint32(len(firstRows))
+	second, err := projection.ProjectPage("project", "current", nextOffset, int(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Sessions) == 0 {
+		t.Fatal("second byte-truncated project page did not advance")
+	}
+
+	// The authoritative tier order is the independent unbounded reference. Its
+	// same-length prefix must match page 1 + page 2 with no duplicate or gap.
+	got := append(append(hubapi.NavigationArray[hubapi.NavigationSessionSummary](nil), firstRows...), second.Sessions...)
+	for index, row := range got {
+		want := "local:" + rows[int(offset)+index].ID
+		if row.Ref != want {
+			t.Fatalf("row %d ref=%q, want contiguous reference ref %q", index, row.Ref, want)
+		}
 	}
 }
 

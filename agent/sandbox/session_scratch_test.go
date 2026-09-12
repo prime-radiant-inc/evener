@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,4 +250,41 @@ func fileMode(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return info.Mode().Perm()
+}
+
+func TestSweepCrashedSessionScratchReportsUnusableBase(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-base")
+	if err := sweepCrashedSessionScratch(missing); err == nil {
+		t.Error("sweep of an unreadable base reported success")
+	}
+
+	oldTemp, oldCache := sessionScratchTempDir, sessionScratchUserCacheDir
+	sessionScratchTempDir = func() string { return missing }
+	sessionScratchUserCacheDir = func() (string, error) { return "", errors.New("no cache dir") }
+	t.Cleanup(func() {
+		sessionScratchTempDir = oldTemp
+		sessionScratchUserCacheDir = oldCache
+	})
+	if err := SweepCrashedSessionScratch(t.TempDir()); err == nil {
+		t.Error("sweep with no usable scratch base reported success")
+	}
+}
+
+func TestSessionScratchAllocationLeavesCacheBaseAloneWhenTempBaseWorks(t *testing.T) {
+	consulted := false
+	oldCache := sessionScratchUserCacheDir
+	sessionScratchUserCacheDir = func() (string, error) {
+		consulted = true
+		return "", errors.New("cache base is unavailable")
+	}
+	t.Cleanup(func() { sessionScratchUserCacheDir = oldCache })
+
+	scratch, err := NewSessionScratch(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionScratch: %v", err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	if consulted {
+		t.Error("allocation reached for the user cache base while the temp base was usable")
+	}
 }

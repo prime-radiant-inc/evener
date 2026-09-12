@@ -25,7 +25,7 @@ func FuzzPackageUnion(f *testing.F) {
 		t.Run("TestExtractReleaseArchiveMissingBinary", TestExtractReleaseArchiveMissingBinary)
 		t.Run("TestExtractReleaseArchiveRejectsNonRegularFile", TestExtractReleaseArchiveRejectsNonRegularFile)
 		t.Run("TestExtractReleaseArchiveBadGzip", TestExtractReleaseArchiveBadGzip)
-		t.Run("TestCopyExecutableMissingSource", TestCopyExecutableMissingSource)
+		t.Run("TestStageExecutableMissingSource", TestStageExecutableMissingSource)
 		t.Run("TestInstallExtractedBinariesMissingSource", TestInstallExtractedBinariesMissingSource)
 		t.Run("TestUpgradeDownloadFailurePropagates", TestUpgradeDownloadFailurePropagates)
 		t.Run("TestUpgradeStageFailures", TestUpgradeStageFailures)
@@ -33,6 +33,6 @@ func FuzzPackageUnion(f *testing.F) {
 		t.Run("TestInstallDirectoryAndSymlinkErrors", TestInstallDirectoryAndSymlinkErrors)
 		t.Run("TestDownloadTransportAndIOErrors", TestDownloadTransportAndIOErrors)
 		t.Run("TestExtractCopyAndCloseErrors", TestExtractCopyAndCloseErrors)
-		t.Run("TestCopyExecutableIOErrors", TestCopyExecutableIOErrors)
+		t.Run("TestStageExecutableIOErrors", TestStageExecutableIOErrors)
 	})
 }

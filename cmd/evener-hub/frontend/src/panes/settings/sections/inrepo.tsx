@@ -2,19 +2,13 @@
 // .evener/launch.toml and let the user trust it before the hub will apply it
 // (parity-m7-settings.md §11). Appwire: evener/launch/{resolve,trustRepo}.
 //
-// The cwd field re-resolves on blur/Enter, not per keystroke - the Input
-// widget's typed props have no onBlur/onKeyDown (only onChange, matching
-// every other controlled widget in this set), so this wraps it in a plain
-// div: React's onBlur/onKeyDown both bubble from a focused descendant (blur
-// via the native focusout event since React 17), so catching them one level
-// up needs no widget API change. Unlike every other free-text path input in
-// this settings cluster, this field intentionally gets no directory-picker
-// assist (parity floor's own note - matches the legacy exactly).
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+// Directory selection resolves only after explicit confirmation.
+import { useEffect, useRef, useState } from "react";
 import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "../../../protocol/types.gen";
+import { directoryActions, extensionsStore } from "../../../stores/extensions";
 import { launchConfigStore } from "../../../stores/launchConfig";
-import { Button, FormRow, Input, Loader } from "../../../widgets";
+import { Button, FormRow, Loader, PathField } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./inrepo.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
@@ -69,40 +63,18 @@ export function InRepoSection(_props: InRepoSectionProps) {
     }
   }
 
-  // cwdRef always holds the LATEST typed value, read at fire-time by the
-  // deferred initial load below - not the mount-time value a plain closure
-  // over `cwd` would capture. Needed specifically because useConnectedEffect
-  // can defer its one attempt past the initial render (waiting for the
-  // connection to become ready): a user who edits the field during that
-  // wait must have the eventual resolve reflect what they're now looking
-  // at, not a stale snapshot from mount - a real bug this ref fixes (a
-  // dep-restart on every `cwd` change was rejected: since the field re-
-  // resolves on blur/Enter only, not per keystroke, restarting the wait on
-  // every keystroke would - once the connection is already ready, the
-  // common case - fire a fresh resolve() per keystroke too, exactly the
-  // per-keystroke behavior this section deliberately avoids).
+  // A delayed connection reads the latest committed directory.
   const cwdRef = useRef(cwd);
   useEffect(() => {
     cwdRef.current = cwd;
   }, [cwd]);
 
-  // Runs once, on mount, with whatever value is current AT FIRE TIME (see
-  // cwdRef above) - later re-resolves are driven by blur/Enter (handleCommit
-  // below), never by this effect re-running, so deps stays empty.
-  // useConnectedEffect (not a bare useEffect): a direct deep link to
-  // /settings/inrepo can mount this section before AppShell's own connect()
-  // handshake finishes; without this, the initial resolve() would fail with
-  // "no client connected" and (unlike a later blur/Enter commit, which
-  // would by then succeed) there is no automatic retry - see that hook's
-  // own doc comment.
+  // Defer initial resolution until the client is ready.
   useConnectedEffect(() => refresh(cwdRef.current), []);
 
-  function handleCommit(): void {
-    void refresh(cwd);
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    if (event.key === "Enter") (document.activeElement as HTMLElement | null)?.blur();
+  function handleCommit(path: string): void {
+    setCwd(path);
+    void refresh(path);
   }
 
   async function handleTrust(hash: string): Promise<void> {
@@ -124,12 +96,17 @@ export function InRepoSection(_props: InRepoSectionProps) {
       <p className={CLASS.help}>
         Per-project launch config shipped inside the working directory. Hub only applies it after you confirm trust.
       </p>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: catches blur/Enter bubbling up from the Input below (see this file's own top comment) - not itself an interactive element */}
-      <div onBlur={handleCommit} onKeyDown={handleKeyDown}>
-        <FormRow label="Working dir" htmlFor="inrepo-cwd">
-          <Input id="inrepo-cwd" value={cwd} onChange={(e) => setCwd(e.target.value)} placeholder="/path/to/project" />
-        </FormRow>
-      </div>
+      <FormRow label="Working dir" htmlFor="inrepo-cwd">
+        <PathField
+          ariaLabel="Working dir"
+          id="inrepo-cwd"
+          value={cwd}
+          onChange={handleCommit}
+          directory={directoryActions}
+          complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+          placeholder="Choose a directory"
+        />
+      </FormRow>
       <div className={CLASS.status} aria-live="polite">
         {status.phase === "empty" && <p className={CLASS.note}>Enter a working directory.</p>}
         {status.phase === "loading" && <Loader label="Loading" />}

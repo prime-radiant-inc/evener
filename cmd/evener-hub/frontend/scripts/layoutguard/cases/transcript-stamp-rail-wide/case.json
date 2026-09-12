@@ -1,0 +1,28 @@
+{
+  "name": "transcript-stamp-rail-wide",
+  "description": "transcript: under the wide transcript measure (64rem column) the mid-exchange timestamp's 55-75rem override band keeps it in flow with wrapping restored (roborev PR 1041 round 3: nowrap is not inert on a static box), engaging the right-margin rail only from a 75rem container",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/turnblock.module.css",
+    "panes/session/transcript/messages/agentmessageitem.module.css",
+    "widgets/timestamp/timestamp.module.css",
+    "widgets/markdown/markdown.module.css"
+  ],
+  "viewport": {
+    "width": 1920,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "widthMatrix": [
+    { "width": 1300, "window": 1920 },
+    { "width": 1112, "window": 1920 }
+  ],
+  "mutation": {
+    "declaration": "agentmessageitem.module.css: the 55-75rem wide-measure override rule's `position: static` removed, leaving the rail engaged in the band",
+    "verified": "2026-09-09",
+    "expect": "fail",
+    "note": "Verified 2026-09-09: with position: static removed the 1112px container keeps the rail (absolute) and the case fails with 'stamp left the flow inside the wide-measure revert band'."
+  }
+}

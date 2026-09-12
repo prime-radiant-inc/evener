@@ -49,6 +49,42 @@ var DrainStallTimeout = 2 * time.Minute
 // under jm.mu more often than necessary.
 const drainRecheckInterval = 250 * time.Millisecond
 
+// drainIdleBackoffFullRatePasses bounds how many consecutive quiet drain passes
+// run the full kick before the loop throttles it. A quiet pass is one that
+// consumed its top-of-loop wake edge clear, ran no notification turn, and saw
+// no newly-appeared outstanding work; every one of those resets the streak
+// (see the loop). The ticker itself is NEVER reset or removed: it stays the
+// 250ms lost-wake backstop, every tick is still consumed, and only the
+// kickDriveTree fan-out (per-session rematerialize loads, watch-send delivery,
+// delegate flushes, subtree recursion) is skipped on throttled passes. All
+// clock-driven verdicts — abandonment windows, the stall watchdog, the
+// undisposed-background escalation — still run every pass, so their timing is
+// unchanged.
+//
+// The prefix is deliberately generous: deterministic drivers single-step the
+// loop with a handful of recheck ticks (the stall/grace drivers send at most
+// about half a dozen), and every one of those ticks must still kick, so the
+// full-rate window covers them with wide margin. Only a drain that sits quiet
+// for seconds — a long build, a wedged delegate — reaches the throttled tiers:
+// every 4th pass (~1s cadence), then every 20th (~5s). Any real work (a wake
+// edge, a turn, newly-appeared outstanding work) drops back to full rate, so a
+// completion never waits out a backoff to be noticed: wakes still wake
+// immediately through waitDrainWake.
+const drainIdleBackoffFullRatePasses = 16
+
+// drainIdleBackoffSlowEvery is the kick cadence once a drain has been quiet
+// past the full-rate prefix: every 4th 250ms pass, about 1s between kicks.
+const drainIdleBackoffSlowEvery = 4
+
+// drainIdleBackoffDeepAfter is the quiet-pass count past which the loop drops
+// to its slowest kick cadence.
+const drainIdleBackoffDeepAfter = 48
+
+// drainIdleBackoffDeepEvery is the slowest kick cadence: every 20th 250ms
+// pass, about 5s between kicks. The ticker still fires at 250ms — this only
+// spaces out the expensive fan-out while nothing is changing.
+const drainIdleBackoffDeepEvery = 20
+
 // isOwnedDrainJob reports whether rec is a managed job owned by sessionID. The
 // durable record does not reliably preserve a shell's original execution mode,
 // so ownership and job type are the complete drain contract.
@@ -126,7 +162,10 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 		if isOwnedDrainJob(run.rec, jm.sessionID) {
 			counted[id] = true
 			ids = append(ids, id)
-			if run.rec.Background && run.stopStatus == "" {
+			// A job whose terminal record exists is finalizing (armFinalizedJob
+			// is between its EventJobFinished and its running-map delete): one
+			// wake from delivery, never an undisposed job to announce.
+			if run.rec.Background && run.stopStatus == "" && run.terminal == nil {
 				background = append(background, id)
 			}
 		}
@@ -162,6 +201,32 @@ func (jm *jobManager) hasRunningDrainJob() bool {
 		}
 	}
 	return false
+}
+
+// ManagedJobsFinalizedForTest reports whether none of this session's own
+// managed jobs is still inside finalization: the running map is clear of them,
+// which — because armFinalizedJob (jobs.go) appends the durable
+// EventJobNotificationPending BEFORE it deletes the running entry — means every
+// completion this drain owes the model is already recorded as a pending owner
+// notification.
+//
+// Test-only seam. cmd/evener's drain tests hold the drain until the shell they
+// launched has left the running map, so their scripted provider steps start
+// from the state a real run reaches after the completion wake: the owner
+// notification durable and on its way to the queue. A drain that starts
+// earlier does not announce a finished shell — a job still in the running map
+// with its terminal record written is excluded from the background set
+// (outstandingDrainJobIDsByBackground), and after the delete the NotifyPending
+// record is deliverable work both the sole-reason test and
+// subtreeHasLiveTerminalDrainWork count. What the barrier buys the scripts is
+// a fixed step order, the completion as the next turn, instead of a race
+// between the drain's first pass and an executor exit the manager cannot see
+// until Wait returns.
+func (s *Session) ManagedJobsFinalizedForTest() bool {
+	if s == nil || s.jobManager == nil {
+		return false
+	}
+	return !s.jobManager.hasRunningDrainJob()
 }
 
 // treeHasOutstandingWork reports whether this session or any live descendant in
@@ -887,14 +952,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	s.SetNotifyFunc(notify)
 	defer s.SetNotifyFunc(nil)
 
-	// A terminal communicate means the turn that just ended is the run's last:
-	// leftovers already pending at this point have no future model turn to be
-	// delivered to, so they are discarded up front (issue #329). Anything live
-	// work produces from here on is fresh and still drains as always.
-	if cut, accepted := s.acceptedTerminalNotificationCut(); accepted {
-		if err := s.discardTerminalDrainLeftovers(cut); err != nil {
-			return "", err
-		}
+	// The pre-drain turn ended with the run's final answer: watch notifications
+	// queued before it are stale and are cut here, while a completion queued
+	// before it is news the model never heard and drains as always (#865).
+	if s.hasAcceptedTerminalCommunicate() {
+		s.discardTerminalWatchLeftovers()
 	}
 
 	lastResult := ""
@@ -922,6 +984,29 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	bgArmed := ""
 	watchSuppressed := ""
 	watchHistorySeen := s.jobManager.watchHistoryIDs()
+	// quietPasses counts consecutive passes that changed nothing: the wake edge
+	// was clear at the top, no notification turn ran, and the outstanding scan
+	// found nothing the pass had not already seen. Once the streak passes the
+	// full-rate prefix above, the loop skips the kickDriveTree fan-out on idle
+	// ticks (the ticker and every verdict below still run every pass). Any sign
+	// of work resets the streak: a wake edge (top of loop or mid-pass), a queued
+	// turn (notification or announcement), or newly-appeared outstanding work.
+	// Abandonment and grace-window verdicts need no reset: they are computed
+	// from fresh reads every pass regardless of the kick, so throttling never
+	// delays them.
+	quietPasses := 0
+	// prevOutstanding remembers the previous pass's outstanding verdict so the
+	// loop can tell "still waiting on the same stalled set" (streak grows) from
+	// "new work appeared" (streak resets). It tracks only the boolean — a flap
+	// between two non-empty sets still shows outstanding on both passes, and
+	// re-kicking a flap is exactly the backstop behavior to keep.
+	prevOutstanding := false
+	// wakePending carries a wake edge that waitDrainWake consumed at the bottom
+	// of the previous pass into this pass's skip decision. Without it the edge
+	// would vanish inside waitDrainWake and the next pass could read woke==false
+	// and skip the kick the wake arrived to trigger. It is consumed once, at the
+	// top of the loop, so a single wake buys exactly one full-rate pass.
+	wakePending := false
 	for {
 		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
 		// consults eight independent signals in sequence, so it is not a snapshot, and
@@ -938,7 +1023,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// it below turns "I looked and saw nothing" into "I looked and saw nothing,
 		// and nothing moved while I looked" — the only claim that justifies letting
 		// Close() cancel the subtree.
-		takeDrainWake(wake)
+		woke := takeDrainWake(wake) || wakePending
+		wakePending = false
+		if woke {
+			quietPasses = 0
+		}
 		// Take this pass's abandonment verdict BEFORE the kick below, so a
 		// child this pass gives up on is not also driven by this same pass.
 		// One snapshot per session per pass serves every reader after it.
@@ -950,15 +1039,42 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// Caller sends render as a token on the owning session's own rail, so this
 		// converts them into queued notifications the loop then drains — a one-shot
 		// run must not Close() before that delivery.
-		if err := kick(ctx); err != nil {
-			return lastResult, err
+		// Idle backoff: after a long quiet streak, skip the expensive fan-out on
+		// most passes. The ticker still fires every 250ms, every tick is still
+		// consumed by waitDrainWake below, and the abandonment/staleness verdicts
+		// after this gate run every pass — only the kick is throttled. A skipped
+		// kick is always followed by verdicts assembled from fresh reads that
+		// same pass, but the quiescence scan below deliberately excludes
+		// forwarded terminal/watch records for unreachable children — those
+		// surface only via renderUnreachableChildPendings inside the kick — so
+		// a pass that would return quiescent re-kicks once before trusting the
+		// verdict. The abandonment returns below (terminal residue,
+		// double-declined background jobs, stall give-up) carry the same guard:
+		// each re-kicks once when its pass skipped, then re-evaluates, so no
+		// return trusts a verdict assembled without this pass's kick. Skipping
+		// otherwise only delays drive-down of already-known stranded work.
+		skipKick := false
+		if !woke && quietPasses >= drainIdleBackoffFullRatePasses {
+			every := drainIdleBackoffSlowEvery
+			if quietPasses >= drainIdleBackoffDeepAfter {
+				every = drainIdleBackoffDeepEvery
+			}
+			skipKick = quietPasses%every != 0
+		}
+		if !skipKick {
+			if err := kick(ctx); err != nil {
+				return lastResult, err
+			}
 		}
 		if s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention() {
 			// A completion is queued on this (root) rail: run a notification turn so
 			// the coordinator's model receives it and can dispatch more work or wrap
 			// up. The turn's boundary also drives any idle descendant that has
 			// undelivered attention. The turn's internal loop drains any further
-			// already-pending notifications.
+			// already-pending notifications. After a terminal communicate the
+			// queue holds only completions and frames armed during the drain;
+			// frames queued before the pre-drain final answer were cut at entry
+			// (discardTerminalWatchLeftovers).
 			res, err := process(ctx, "", nil, EntryNotification)
 			if err != nil {
 				return lastResult, err
@@ -971,6 +1087,9 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// clock so the watchdog measures only continuous stall, never a stall
 			// episode punctuated by deliveries.
 			stallStart = time.Time{}
+			// A turn ran: real work, back to full kick rate.
+			quietPasses = 0
+			prevOutstanding = true
 			continue
 		}
 		outstanding, err := s.treeHasOutstandingWork()
@@ -978,6 +1097,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			return lastResult, err
 		}
 		if !outstanding {
+			// This pass saw nothing outstanding: forget the previous verdict
+			// so a set that appears later reads as newly-appeared and resets
+			// the streak below instead of extending it.
+			prevOutstanding = false
 			// Nothing pending and nothing outstanding anywhere in the subtree — but the
 			// scan above is not a snapshot. A wake raised since this pass took its edge
 			// means the tree moved while the scan ran, so re-run the pass instead of
@@ -985,10 +1108,34 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// is only raised by a real state change, and a quiescent subtree raises
 			// none, so the confirming pass finds the edge clear and returns.
 			if takeDrainWake(wake) {
+				quietPasses = 0
+				continue
+			}
+			// The outstanding scan deliberately excludes forwarded records for
+			// unreachable children (see outstandingDrainJobIDsByBackground):
+			// those surface only via renderUnreachableChildPendings inside the
+			// kick. A pass that skipped its kick must therefore run one final
+			// unthrottled kick and re-scan instead of returning on a verdict
+			// the skip may have produced. A confirming full-kick pass that
+			// still sees nothing quiet returns here with skipKick false, so
+			// this fires at most once per quiescence — verdict timing for
+			// abandonment, grace, and stall paths is unchanged.
+			if skipKick {
+				if err := kick(ctx); err != nil {
+					return lastResult, err
+				}
+				quietPasses = 0
 				continue
 			}
 			return lastResult, nil
 		}
+		// Outstanding work remains but this pass queued no turn. A newly-appeared
+		// set resets the streak; the same set waiting quietly extends it.
+		if !prevOutstanding {
+			quietPasses = 0
+		}
+		prevOutstanding = true
+		quietPasses++
 		// Terminal disposition (issue #329): the model has explicitly ended the
 		// process-ending turn, and nothing in the subtree can still PRODUCE a
 		// deliverable — the outstanding work is residue (pending watch sends,
@@ -1008,6 +1155,22 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			}
 			if !live {
 				if takeDrainWake(wake) {
+					// A wake landed mid-pass: the tree moved, so the next pass
+					// re-scans at full kick rate.
+					quietPasses = 0
+					continue
+				}
+				// A skipped kick leaves the abandonment verdict below assembled
+				// on pre-flush state (pending delegate deliveries, durable pendings,
+				// watch sends): run one unthrottled kick and re-evaluate on the next
+				// pass instead of abandoning work the kick would have made
+				// deliverable. Fires at most once per abandonment — the confirming
+				// pass kicks at full rate, then returns or runs a turn.
+				if skipKick {
+					if err := kick(ctx); err != nil {
+						return lastResult, err
+					}
+					quietPasses = 0
 					continue
 				}
 				s.emit(events.EventWarning, events.WarningData{Message: "terminal communicate already ended this run; abandoning undeliverable drain residue so shutdown can proceed"})
@@ -1025,12 +1188,21 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// set still undisposed. Announce; announce again naming the
 		// consequence; then stop waiting so Close()'s kill path can run.
 		//
-		// The announcement turns are housekeeping, so their replies never fold
+		// The announcement turns are housekeeping, so their replies do not fold
 		// into lastResult (a run's printed answer must not become "I stopped
 		// job_2"), and their errors never fail the drain — a provider error on
 		// a housekeeping turn must not convert a successful run into a failed
 		// one. A failed turn still advances the escalation: the alternative is
 		// retrying a broken provider forever with the process held open.
+		//
+		// One exception, decided per turn: a job that finishes between this
+		// pass's queue gate above and the turn's own queue drain
+		// (acceptNotificationInput) has its completion queued in time to ride
+		// the announcement request. The model then answers the completion, and
+		// that reply is the run's answer exactly as a notification turn's is —
+		// discarding it printed the pre-drain answer and lost the real one.
+		// The delivered-notification count tells the two apart: the reply is
+		// kept only when the count grew during the turn.
 		//
 		// Under serve the session outlives the turn, background jobs genuinely
 		// report later, and none of this fires (TurnEndsProcess is the gate).
@@ -1078,6 +1250,14 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			} else {
 				switch bgAnnounced[setKey] {
 				case 0, 1:
+					// The verdict above was assembled across sequential reads. A
+					// wake raised since this pass took its edge means a completion
+					// finalized meanwhile and is deliverable now: re-run the pass
+					// so it is delivered instead of announced.
+					if takeDrainWake(wake) {
+						quietPasses = 0
+						continue
+					}
 					canDetach := s.detachedShellAvailable()
 					var text string
 					if bgAnnounced[setKey] == 0 {
@@ -1093,11 +1273,19 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					// before any model call — which is exactly how an earlier
 					// attempt at this shipped inert.
 					s.SteerKind(text, events.SteeringKindNotification)
-					if _, perr := process(ctx, "", nil, EntryNotification); perr != nil {
+					deliveredBefore := s.jobNotificationsDelivered()
+					res, perr := process(ctx, "", nil, EntryNotification)
+					if perr != nil {
 						s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
 							"undisposed-background-job announcement turn failed: %v", perr)})
+					} else if res != "" && s.jobNotificationsDelivered() != deliveredBefore {
+						// A completion rode this request: the model answered it,
+						// so this reply is the run's answer (see above).
+						lastResult = res
 					}
 					stallStart = time.Time{}
+					// A housekeeping turn ran: real work, back to full kick rate.
+					quietPasses = 0
 					continue
 				default:
 					// Told twice, declined twice. Same wake-edge protocol as every
@@ -1105,6 +1293,20 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					// raised mid-scan means the tree moved, so re-run the pass
 					// rather than killing work that armed while this pass looked.
 					if takeDrainWake(wake) {
+						quietPasses = 0
+						continue
+					}
+					// A skipped kick leaves the abandonment verdict below assembled
+					// on pre-flush state (pending delegate deliveries, durable pendings,
+					// watch sends): run one unthrottled kick and re-evaluate on the next
+					// pass instead of abandoning work the kick would have made
+					// deliverable. Fires at most once per abandonment — the confirming
+					// pass kicks at full rate, then returns or runs a turn.
+					if skipKick {
+						if err := kick(ctx); err != nil {
+							return lastResult, err
+						}
+						quietPasses = 0
 						continue
 					}
 					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
@@ -1141,6 +1343,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				// SIGKILL work that armed while the scan ran. A genuinely wedged
 				// tree raises no wake, so the confirming pass gives up cleanly.
 				if takeDrainWake(wake) {
+					quietPasses = 0
 					continue
 				}
 				// The drain is wedged on undelivered work the machinery is not
@@ -1148,6 +1351,19 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				// abandoned as undisposable) and return the last result with nil error
 				// so cmd/evener/run.go prints the coordinator's last answer and
 				// proceeds to Close(), rather than aborting the run.
+				// A skipped kick leaves the abandonment verdict below assembled
+				// on pre-flush state (pending delegate deliveries, durable pendings,
+				// watch sends): run one unthrottled kick and re-evaluate on the next
+				// pass instead of abandoning work the kick would have made
+				// deliverable. Fires at most once per abandonment — the confirming
+				// pass kicks at full rate, then returns or runs a turn.
+				if skipKick {
+					if err := kick(ctx); err != nil {
+						return lastResult, err
+					}
+					quietPasses = 0
+					continue
+				}
 				s.emit(events.EventWarning, events.WarningData{Message: drainStallGiveUpMessage(
 					s.subtreeOutstandingDrainJobIDs(), s.subtreeUndisposableStoppedDelegates())})
 				return lastResult, nil
@@ -1156,9 +1372,14 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// Work is still in flight in the subtree but this rail has not been
 		// signalled yet. Block until a completion wakes us, the periodic re-check
 		// fires, or the caller's context is cancelled; the next iteration re-kicks.
-		if err := waitDrainWake(ctx, wake, recheck); err != nil {
+		// A wake that releases the wait below is consumed by it, so take the
+		// edge back before parking: the next pass must treat the wake as its
+		// own and kick at full rate instead of skipping on a stale streak.
+		wokeByWait, err := waitDrainWake(ctx, wake, recheck)
+		if err != nil {
 			return lastResult, err
 		}
+		wakePending = wokeByWait
 	}
 }
 
@@ -1271,14 +1492,18 @@ func takeDrainWake(wake <-chan struct{}) bool {
 	}
 }
 
-func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan time.Time) error {
+// waitDrainWake blocks until a completion wakes us, the periodic re-check
+// fires, or the caller's context is cancelled. It reports whether the wake
+// rail released the wait, so the caller can carry that consumed edge forward
+// (via wakePending) instead of letting it vanish inside the select.
+func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan time.Time) (bool, error) {
 	select {
 	case <-wake:
-		return nil
+		return true, nil
 	case <-recheck:
-		return nil
+		return false, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 }
 

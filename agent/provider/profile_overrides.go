@@ -63,24 +63,10 @@ func WithAllowedDecisions(p *Profile, decisions []string) *Profile {
 	return &clone
 }
 
-// WithProviderID returns a cloned profile with its id overridden to name,
-// preserving the behavior tag and all other profile state unchanged.
-// Passing an empty name returns p unchanged.
-func WithProviderID(p *Profile, name string) *Profile {
-	name = strings.TrimSpace(name)
-	if p == nil || name == "" {
-		return p
-	}
-
-	clone := *p
-	clone.id = name
-	return &clone
-}
-
 // WithCheapModel returns a cloned profile whose auxiliary side calls use the
-// supplied cheap model. The ref is "provider/model" to route side calls to a
-// different provider instance than the main model, or a bare "model" to keep the
-// main provider. The split is on the first slash (so the model half may itself
+// supplied cheap model. The ref is "instance/model" to route side calls to a
+// different instance than the main model, or a bare "model" to keep the main
+// instance. The split is on the first slash (so the model half may itself
 // contain slashes, e.g. "openrouter/anthropic/claude"). Passing an empty ref
 // returns p unchanged.
 func WithCheapModel(p *Profile, ref string) *Profile {

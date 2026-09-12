@@ -508,23 +508,23 @@ func (c *delegateTreeController) CloseResumability(actor delegateActor, delegate
 // never creates a second stop: each root subtree is drained through the same
 // durable stop operation, in stable order, before the next one can begin.
 func (c *delegateTreeController) Close(ctx context.Context) error {
-	if err := c.closeRuntimeTree(ctx, func(child *Session) { child.Close() }); err != nil {
+	if err := c.closeRuntimeTree(ctx); err != nil {
 		return err
 	}
 	return c.store.Close()
 }
 
 // closeRuntimeTree fences admission, durably stops every stable root, joins the
-// exact stop reconciliation, and tears resident sessions down leaf-first. The
-// caller supplies the Session-close policy so root Session shutdown can keep a
-// shared environment alive until its own final cleanup. The delegate store
-// remains open for subsequent worktree disposal evidence.
-func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChild func(*Session)) error {
+// exact stop reconciliation, and tears resident sessions down leaf-first. Every
+// resident runtime is a child session — on its owner's environment or on a
+// clone sharing the owner's process table — so each takes the child teardown
+// (teardownChildSession, scratch retained), never Session.Close: a shared
+// environment stays alive for the owner's own final cleanup, and a clone's
+// scratch is released here whether or not any owner's subagent map named it.
+// The delegate store remains open for subsequent worktree disposal evidence.
+func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if closeChild == nil {
-		closeChild = func(child *Session) { child.Close() }
 	}
 	c.mu.Lock()
 	if !c.closing {
@@ -540,9 +540,11 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 	}
 	children := make([]*Session, 0, len(allMembers))
 	for _, id := range c.memberIDsLeafFirstLocked(allMembers) {
-		if live := c.live[id]; live != nil && live.runtime != nil {
-			children = append(children, live.runtime)
+		live := c.live[id]
+		if live == nil || live.runtime == nil {
+			continue
 		}
+		children = append(children, live.runtime)
 	}
 	if pending != nil {
 		pendingCancelPlan = c.cancelPlanForStopLocked(pending)
@@ -604,7 +606,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 			continue
 		}
 		closed[child] = struct{}{}
-		closeChild(child)
+		teardownChildSession(ctx, child, retainChildScratch)
 	}
 	if _, err := c.joinStopReconcileDriver(ctx); err != nil {
 		return err

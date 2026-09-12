@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -19,7 +20,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/server"
 )
 
@@ -31,7 +31,10 @@ type closedStreamAdapter struct {
 
 func (a *closedStreamAdapter) Name() string { return "openai" }
 
-func (a *closedStreamAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+func (a *closedStreamAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	if response, ok := scriptedSessionNamerResponse(a.Name(), req); ok {
+		return response, nil
+	}
 	a.mu.Lock()
 	a.completeCalls++
 	a.mu.Unlock()
@@ -62,12 +65,52 @@ type idlePublicationServer struct {
 	idlePublished  chan struct{}
 	publishedState string
 	publishOnce    sync.Once
+
+	// One turn writes the status thread/read returns from two goroutines. The
+	// serve loop writes it synchronously at the tail of every input pass; the
+	// event bridge writes it again as it projects that turn's carriers --
+	// active when the user-input carrier lands
+	// (server/appwire_runtime.go:439), idle again when the session-end carrier
+	// does (server/bridge.go:223-228). The bridge drains a buffered feed on its
+	// own goroutine, so the loop's idle write is not the end of the publication
+	// a reader observes.
+	turnProjected     chan struct{}
+	turnProjectedOnce sync.Once
+
+	// Parking the turn's carrier until the loop has published idle makes the
+	// lagging-bridge ordering happen every run instead of only under load.
+	releaseCarrier     chan struct{}
+	releaseCarrierOnce sync.Once
 }
 
 func newIdlePublicationServer(cfg server.ServerConfig) *idlePublicationServer {
 	return &idlePublicationServer{
-		Server:        server.NewServer(cfg),
-		idlePublished: make(chan struct{}),
+		Server:         server.NewServer(cfg),
+		idlePublished:  make(chan struct{}),
+		turnProjected:  make(chan struct{}),
+		releaseCarrier: make(chan struct{}),
+	}
+}
+
+// holdTurnCarrier parks the bridge on the turn's opening carrier until the serve
+// loop has published its post-turn state, which is the ordering CI reached on
+// its own: the carrier's projection republishes active after the loop wrote
+// idle.
+func (s *idlePublicationServer) holdTurnCarrier(ev events.SessionEvent) {
+	if ev.Kind != events.EventUserInput {
+		return
+	}
+	select {
+	case <-s.idlePublished:
+	case <-s.releaseCarrier:
+	}
+}
+
+// noteTurnProjected opens the gate on the session-end carrier: it is the last
+// write the bridge makes to the status this turn publishes.
+func (s *idlePublicationServer) noteTurnProjected(ev events.SessionEvent) {
+	if ev.Kind == events.EventSessionEnd {
+		s.turnProjectedOnce.Do(func() { close(s.turnProjected) })
 	}
 }
 
@@ -115,6 +158,7 @@ type sessionControlIdentityServer struct {
 
 	mu                   sync.Mutex
 	processing           bool
+	claimedTurnID        string
 	processingStarted    chan struct{}
 	releaseProcessing    chan struct{}
 	processingFinished   chan struct{}
@@ -125,6 +169,23 @@ type sessionControlIdentityServer struct {
 	userInputOnce        sync.Once
 	interruptOnce        sync.Once
 	releaseOnce          sync.Once
+
+	terminalProjectionEntered chan struct{}
+	releaseTerminalProjection chan struct{}
+	terminalProjected         chan struct{}
+	holdTerminalProjection    bool
+	terminalEnteredOnce       sync.Once
+	terminalProjectedOnce     sync.Once
+	terminalReleaseOnce       sync.Once
+
+	// An input pass that claims nothing still publishes the session's wire
+	// state at its tail. Holding one lets a test place a turn/start inside that
+	// pass, which is the ordering the daemon reaches on its own under load.
+	holdUnclaimedPass        bool
+	unclaimedPassEntered     chan struct{}
+	releaseUnclaimedPass     chan struct{}
+	unclaimedPassOnce        sync.Once
+	unclaimedPassReleaseOnce sync.Once
 }
 
 func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIdentityServer {
@@ -135,17 +196,45 @@ func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIde
 		processingFinished: make(chan struct{}),
 		userInputProjected: make(chan struct{}),
 		interruptEntered:   make(chan struct{}),
+
+		terminalProjectionEntered: make(chan struct{}),
+		releaseTerminalProjection: make(chan struct{}),
+		terminalProjected:         make(chan struct{}),
+
+		unclaimedPassEntered: make(chan struct{}),
+		releaseUnclaimedPass: make(chan struct{}),
 	}
 }
 
+// SetProcessingTurn records the claim of a durable turn. It is the daemon's one
+// call that publishes a client-mutation turn's stable identity, so it is the
+// signal the processing gate below waits on.
+func (s *sessionControlIdentityServer) SetProcessingTurn(turnID string) {
+	s.Server.SetProcessingTurn(turnID)
+	s.mu.Lock()
+	s.claimedTurnID = turnID
+	s.mu.Unlock()
+}
+
+// SetState holds the daemon inside the claimed turn. Active state alone is not
+// that moment: the serve loop publishes the live session's wire state at the
+// tail of every input pass, and that state reads active for a durable start the
+// loop has accepted but not yet claimed, whose stable identity nothing has
+// published. Only a claim opens this gate.
 func (s *sessionControlIdentityServer) SetState(state string) {
 	s.Server.SetState(state)
 	if state != string(agent.SessionProcessing) {
 		return
 	}
 	s.mu.Lock()
-	s.processing = true
+	claimed := s.claimedTurnID != ""
+	if claimed {
+		s.processing = true
+	}
 	s.mu.Unlock()
+	if !claimed {
+		return
+	}
 	s.processingStartOnce.Do(func() { close(s.processingStarted) })
 	<-s.releaseProcessing
 }
@@ -158,9 +247,14 @@ func (s *sessionControlIdentityServer) SetProcessing(processing bool) {
 	s.mu.Lock()
 	finishing := s.processing
 	s.processing = false
+	holdUnclaimedPass := s.holdUnclaimedPass
 	s.mu.Unlock()
 	if finishing {
 		s.processingFinishOnce.Do(func() { close(s.processingFinished) })
+	}
+	if holdUnclaimedPass {
+		s.unclaimedPassOnce.Do(func() { close(s.unclaimedPassEntered) })
+		<-s.releaseUnclaimedPass
 	}
 }
 
@@ -184,21 +278,15 @@ type sessionControlLifecycle struct {
 	ref    string
 }
 
-func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
+func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter, configure ...func(*sessionControlIdentityServer)) *sessionControlLifecycle {
 	t.Helper()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
-		client.Register(&closedStreamAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		client.Register(adapter)
+		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}
@@ -207,11 +295,25 @@ func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
 	var observedServer *sessionControlIdentityServer
 	deps.newServer = func(cfg server.ServerConfig) serveServer {
 		observedServer = newSessionControlIdentityServer(cfg)
+		for _, apply := range configure {
+			apply(observedServer)
+		}
 		return observedServer
 	}
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 		session.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			terminal := ev.Kind == events.EventSessionEnd || ev.Kind == events.EventError
+			observedServer.mu.Lock()
+			holdTerminal := observedServer.holdTerminalProjection
+			observedServer.mu.Unlock()
+			if terminal && holdTerminal {
+				observedServer.terminalEnteredOnce.Do(func() { close(observedServer.terminalProjectionEntered) })
+				<-observedServer.releaseTerminalProjection
+			}
 			server.BridgeEvent(observedServer.Server, ev, observer)
+			if ev.Kind == events.EventSessionEnd {
+				observedServer.terminalProjectedOnce.Do(func() { close(observedServer.terminalProjected) })
+			}
 			if ev.Kind == events.EventUserInput {
 				observedServer.userInputOnce.Do(func() { close(observedServer.userInputProjected) })
 			}
@@ -258,6 +360,8 @@ func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
 	}
 	t.Cleanup(func() {
 		observedServer.release()
+		observedServer.terminalReleaseOnce.Do(func() { close(observedServer.releaseTerminalProjection) })
+		observedServer.unclaimedPassReleaseOnce.Do(func() { close(observedServer.releaseUnclaimedPass) })
 		client.Close()
 		if err := shutdownServeTestDaemon(ctx, entry.Address, entry.SessionID); err != nil {
 			return
@@ -284,7 +388,7 @@ func awaitSessionControlLifecycle(t *testing.T, lifecycle *sessionControlLifecyc
 	}
 }
 
-func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
+func startClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
 	t.Helper()
 	response, err := lifecycle.client.TurnStart(lifecycle.ctx, appwire.TurnStartParams{
 		ClientMutationID:   mutationID,
@@ -295,6 +399,12 @@ func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycl
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
+	return response
+}
+
+func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
+	t.Helper()
+	response := startClientMutationTurn(t, lifecycle, mutationID, text)
 	awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
 	return response
 }
@@ -313,7 +423,7 @@ func readSessionControlThread(t *testing.T, lifecycle *sessionControlLifecycle, 
 
 func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) {
 	t.Run("steer and incorporate", func(t *testing.T) {
-		lifecycle := startSessionControlLifecycle(t)
+		lifecycle := startSessionControlLifecycle(t, &closedStreamAdapter{})
 		lifecycle.server.RecordAppEvent(events.SessionEvent{
 			Kind:      events.EventUserInput,
 			SessionID: strings.TrimPrefix(lifecycle.ref, "local:"),
@@ -364,12 +474,38 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		t.Fatalf("projected turns do not contain incorporated pending input: %#v", projected.Turns)
 	})
 
+	// Stop runs with an unclaimed input pass held across turn/start. The serve
+	// loop publishes the live session's wire state at the tail of every input
+	// pass, including one that claimed nothing, and that state reads active
+	// from the moment turn/start durably accepts a start -- before the loop
+	// claims it and publishes its stable identity. This subtest reached that
+	// ordering on its own under CI load; holding the pass makes it every run,
+	// so the claimed identity below is pinned against the wake that produced
+	// the intermittent failure.
 	t.Run("stop", func(t *testing.T) {
-		lifecycle := startSessionControlLifecycle(t)
-		start := startHeldClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
+		adapter := newStopParkAdapter()
+		lifecycle := startSessionControlLifecycle(t, adapter, func(srv *sessionControlIdentityServer) {
+			srv.mu.Lock()
+			srv.holdUnclaimedPass = true
+			srv.mu.Unlock()
+		})
+		lifecycle.server.mu.Lock()
+		lifecycle.server.holdTerminalProjection = true
+		lifecycle.server.mu.Unlock()
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.unclaimedPassEntered, "unclaimed input pass entry")
+		start := startClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
+		lifecycle.server.unclaimedPassReleaseOnce.Do(func() { close(lifecycle.server.releaseUnclaimedPass) })
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
 		activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
 		if activeTurnID == "" {
 			t.Fatal("thread/read published no active turn while processing")
+		}
+		lifecycle.server.release()
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.userInputProjected, "user input projection")
+		select {
+		case <-adapter.modelCalls:
+		case <-lifecycle.ctx.Done():
+			t.Fatalf("provider start: %v", lifecycle.ctx.Err())
 		}
 		stopDone := make(chan error, 1)
 		go func() {
@@ -380,7 +516,6 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 			})
 		}()
 		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.interruptEntered, "interrupt handler entry")
-		lifecycle.server.release()
 		select {
 		case err := <-stopDone:
 			if err != nil {
@@ -396,6 +531,13 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		if status := readSessionControlThread(t, lifecycle, false).Status.Type; status != appwire.ThreadStatusIdle {
 			t.Fatalf("thread status after Stop = %q, want idle", status)
 		}
+		// Runner completion does not drain the asynchronous event bridge.
+		// Hold terminal projection until Stop returns, then await the actual
+		// session-end commit before asserting the projected turn is closed.
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.terminalProjectionEntered, "terminal projection entry")
+		lifecycle.server.terminalReleaseOnce.Do(func() { close(lifecycle.server.releaseTerminalProjection) })
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.terminalProjected, "session end projection")
+
 		if activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID; activeTurnID != "" {
 			t.Fatalf("active turn after Stop = %q, want empty", activeTurnID)
 		}
@@ -410,17 +552,11 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	adapter := &closedStreamAdapter{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		cfg.LLMRetryPolicy = &llm.RetryPolicy{MaxRetries: 0}
@@ -434,10 +570,11 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	// The dep must return once attached and drain on its own goroutine; see
 	// serveDeps.bridge.
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
-		go func() {
-			defer onDrained()
-			server.BridgeWithObserver(observedServer.Server, session.Events(), observer)
-		}()
+		session.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			observedServer.holdTurnCarrier(ev)
+			server.BridgeEvent(observedServer.Server, ev, observer)
+			observedServer.noteTurnProjected(ev)
+		}, onDrained)
 	}
 	deps.subscriberCount = func(_ serveServer, id string) int {
 		return observedServer.AppServer().SubscriberCount(id)
@@ -456,6 +593,9 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	}()
 
 	entry := waitForServeTestRendezvous(t, runDir)
+	t.Cleanup(func() {
+		observedServer.releaseCarrierOnce.Do(func() { close(observedServer.releaseCarrier) })
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
@@ -489,6 +629,17 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	if got := observedServer.postTurnState(); got != string(agent.SessionIdle) {
 		t.Fatalf("published post-turn state = %q, want %q", got, agent.SessionIdle)
 	}
+	// Everything below reads the server's published status, which the loop's
+	// write above does not settle: the bridge projects the same turn's carriers
+	// on its own goroutine, republishing active for the user-input carrier and
+	// idle again only for the session-end one. Wait for that last write rather
+	// than for the loop's.
+	select {
+	case <-observedServer.turnProjected:
+	case <-ctx.Done():
+		t.Fatalf("post-turn terminal projection: %v", ctx.Err())
+	}
+
 	if got := observedServer.GetStatus().State; got != string(agent.SessionIdle) {
 		t.Fatalf("stored server state = %q, want %q", got, agent.SessionIdle)
 	}
@@ -662,15 +813,11 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	state := &clearTestState{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(&closedStreamAdapter{})
-		cfg := providercfg.Config{
-			Default:   "openai",
-			Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}},
-		}
-		return client, cfg, true, func() error { return nil }, nil
+		return client, func() error { return nil }, nil
 	}
 	newSession := func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
 		sess, err := agent.NewSession(client, profile, env, cfg)
@@ -909,6 +1056,54 @@ func TestRunServeClearRendezvousFailureKeepsOldIdentity(t *testing.T) {
 	assertClearKeptOldIdentity(t, obs)
 	if len(obs.steps) < 2 || obs.steps[0] != "prepare" || obs.steps[1] != "rendezvous" {
 		t.Fatalf("clear steps = %v, want prepare then rendezvous before any install", obs.steps)
+	}
+}
+
+// TestRunServeClearSessionFailureDisposesUnadoptedScratch drives the clear that
+// provisions a fresh environment and then fails to build the session that would
+// have owned it. Cleanup() RETAINS a session scratch -- the handoff convention
+// for a session someone might still want to inspect -- so a clear that never
+// produced a session has to dispose it instead, or every failed clear leaves a
+// directory and a live flock lease behind for the daemon's whole uptime.
+func TestRunServeClearSessionFailureDisposesUnadoptedScratch(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var clearScratch string
+	deps.newClearSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ agent.SessionConfig) (*agent.Session, error) {
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Errorf("clear environment = %T, want a local environment", env)
+			return nil, errClearProbe
+		}
+		// The real NewSession runs commands through the environment (the git
+		// snapshot among them) before it can fail, and an unsandboxed env mints
+		// its session scratch, with the lease under it, on that first command.
+		if _, err := local.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Errorf("mint the cleared session scratch: %v", err)
+		}
+		clearScratch = local.SessionScratchDir()
+		return nil, errClearProbe
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+
+	// This failure lands before any replacement session exists, so the shared
+	// assertion (which inspects one) does not apply; the old session stays live.
+	if !errors.Is(obs.clearErr, errClearProbe) {
+		t.Fatalf("clear error = %v, want %v", obs.clearErr, errClearProbe)
+	}
+	if obs.currentSessionID != obs.oldSessionID {
+		t.Errorf("current session = %q, want the old session %q", obs.currentSessionID, obs.oldSessionID)
+	}
+	if obs.oldSessionState == agent.SessionClosed {
+		t.Error("old session was closed by an aborted clear")
+	}
+	if clearScratch == "" {
+		t.Fatal("the cleared session environment minted no scratch, so there is nothing to dispose")
+	}
+	// The lease file lives inside the scratch dir, so the directory's removal is
+	// the lease's removal too.
+	if _, err := os.Stat(clearScratch); !os.IsNotExist(err) {
+		t.Errorf("failed clear retained the unadopted scratch %s: stat err = %v", clearScratch, err)
 	}
 }
 

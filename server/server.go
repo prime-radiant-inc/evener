@@ -9,9 +9,11 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/httpguard"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // ImageAttachment is re-exported from package agent so HTTP clients and the
@@ -88,6 +90,9 @@ type JobStatusInfo struct {
 	ExitCode         *int   `json:"exit_code,omitempty"`
 	OutputBytes      int64  `json:"output_bytes"`
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	Command          string `json:"command,omitempty"`
+	Intent           string `json:"intent,omitempty"`
+	Task             string `json:"task,omitempty"`
 }
 
 type DelegateStatusInfo struct {
@@ -237,13 +242,14 @@ type StatusInfo struct {
 	// and seeded on resume from the file, so a running session's figure is
 	// complete rather than a floor (kata 12rq). A pointer because 0 and unknown
 	// are different claims: 0 means the session was measured and nothing failed,
-	// nil means nobody counted (no transcript, an old daemon, a Codex thread).
+	// nil means nobody counted (no transcript, an old daemon, or a source-backed
+	// thread that omits the field).
 	// Consumers render nil as nothing, never as a fabricated zero.
 	FailedToolCalls *int `json:"failed_tool_calls,omitempty"`
 	// PendingAsk mirrors the session's HasPendingAsk() — true while an
 	// ask_user question is unanswered (Track A §2 ask-tiering). Additive,
-	// daemon-truth: Codex-sourced threads and old daemons never set it, so
-	// absence decodes as false everywhere downstream.
+	// daemon-truth: old daemons and source-backed threads that omit the field
+	// never set it, so absence decodes as false everywhere downstream.
 	PendingAsk bool `json:"pending_ask,omitempty"`
 	// PendingEscalation mirrors the session's HasPendingEscalations() — true while a
 	// sandbox-exemption escalation (M7) is blocked awaiting a human. The hub's
@@ -321,6 +327,14 @@ type Server struct {
 	// and nothing else.
 	appTurns        *appTurnSnapshot
 	appActiveTurnID string
+	// appPendingStableTurnID publishes runnable identity while the ordered
+	// event consumer drains the previous turn. It is not an admission lock.
+	appPendingStableTurnID string
+	// appDeferredTerminalNotifications retains only the status/closed frames
+	// from a terminal event that raced a durable carrier. The projector has
+	// already applied the event; these frames are published if the carrier is
+	// abandoned, and discarded when its stable carrier arrives.
+	appDeferredTerminalNotifications []pendingAppNotification
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
@@ -328,9 +342,12 @@ type Server struct {
 	appEnvelope threadEnvelope
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
-	appEnvelopeSource         ThreadEnvelopeSource
-	appReservedTurnID         string
-	beforeAppProjectionCommit func()
+	appEnvelopeSource ThreadEnvelopeSource
+	appReservedTurnID string
+	// appProcessingReservedTurnID tracks a generic projector reservation that
+	// was superseded by a durable turn identity before its carrier arrived.
+	appProcessingReservedTurnID string
+	beforeAppProjectionCommit   func()
 	// appLastStampedFailedToolCalls is the failure count most recently
 	// stamped onto an item/completed notification (kata 895d) — nil means
 	// nothing has been stamped yet for the current identity. It exists so
@@ -378,6 +395,13 @@ type Server struct {
 	jobsFn                          func(appwire.JobsListParams) (any, error)
 	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
 	shutdownFunc                    func()
+
+	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
+	// projector calls the lookup from inside Project, which RecordAppEvent
+	// runs while s.mu is held, so a lookup reaching for s.mu would deadlock.
+	costLookupMu sync.RWMutex
+	costLookup   func(ref string) *registry.Cost
+
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
@@ -417,11 +441,33 @@ func NewServer(cfg ServerConfig) *Server {
 		replaySize = 1000
 	}
 
+	var runtime *Server
 	s := &Server{
 		mux: http.NewServeMux(),
 		appServer: appserver.NewServer(appserver.ServerConfig{
 			ServerName: "evener-serve",
+			Version:    buildinfo.Version(),
 			SourceID:   "local",
+			SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+				if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
+					return "", false
+				}
+				var params appwire.ThreadReadParams
+				if msg.Request.Method == appwire.MethodThreadUnsubscribe {
+					var unsubscribe appwire.ThreadUnsubscribeParams
+					if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
+						return "", false
+					}
+					params.ThreadID, params.Ref = unsubscribe.ThreadID, unsubscribe.Ref
+				} else if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
+					return "", false
+				}
+				threadID, target := runtime.appReadTarget(params)
+				if threadID == "" {
+					return "", false
+				}
+				return target, true
+			},
 			Features: appwire.FeatureSet{
 				ThreadList:        true,
 				ThreadTurnsList:   true,
@@ -450,6 +496,7 @@ func NewServer(cfg ServerConfig) *Server {
 		hubToken:            strings.TrimSpace(cfg.HubToken),
 		sameOrigin:          httpguard.NewSameOriginPolicy(cfg.AllowedHost),
 	}
+	runtime = s
 	s.clearRecords, s.clearJournalErr = loadThreadClearJournal(s.clearJournalPath)
 	if s.clearRecords == nil {
 		s.clearRecords = make(map[string]threadClearRecord)
@@ -691,6 +738,30 @@ func (s *Server) SetShutdownFunc(fn func()) {
 	s.mu.Unlock()
 }
 
+// SetCostLookupFunc installs the $/Mtok cost source every priced figure this
+// daemon reports is derived from: the live session's registry resolution of an
+// "instance/model" reference (spec §7.5). Without one the daemon reports usage
+// and no cost, never a bundled pricing table's guess.
+func (s *Server) SetCostLookupFunc(fn func(ref string) *registry.Cost) {
+	s.costLookupMu.Lock()
+	s.costLookup = fn
+	s.costLookupMu.Unlock()
+}
+
+// costFor is the cost of ref under the installed lookup; nil when none is
+// installed or the row carries no cost. The pointer aliases the registry's
+// own Cost (registry.Resolved's alias-don't-mutate rule,
+// llm/registry/types.go), so every caller treats it as read-only.
+func (s *Server) costFor(ref string) *registry.Cost {
+	s.costLookupMu.RLock()
+	fn := s.costLookup
+	s.costLookupMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(ref)
+}
+
 // SetListModelsFunc sets the function used by the typed model/list method.
 func (s *Server) SetListModelsFunc(fn func(context.Context) ([]appwire.ModelDescriptor, error)) {
 	s.mu.Lock()
@@ -731,26 +802,52 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 // ActiveTurnID change atomically. Durable client-mutation turns instead use
 // SetProcessingTurn because their stable identity is already authoritative.
 func (s *Server) SetProcessing(processing bool) {
+	if !processing {
+		s.finishProcessing()
+		return
+	}
 	s.mu.Lock()
 	s.setProcessingLocked(processing)
 	s.mu.Unlock()
 }
 
 // SetProcessingTurn atomically publishes a durable turn's stable identity as
-// the active AppWire turn and reserves it for the next real turn projection.
+// the active AppWire turn until its ordered stable carrier is projected.
 func (s *Server) SetProcessingTurn(turnID string) {
-	s.mu.Lock()
-	s.processing = true
-	s.ensureAppProjectorLocked("")
-	s.appProjector.ReserveStableTurnID(turnID)
-	s.appActiveTurnID = turnID
-	s.appReservedTurnID = ""
-	s.mu.Unlock()
+	// Serialize admission with deferred terminal publication so their
+	// notification order and authoritative processing identity agree.
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		s.mu.Lock()
+		s.processing = true
+		s.ensureAppProjectorLocked("")
+		s.appProcessingReservedTurnID = s.appProjector.ReservedTurnID()
+		// The projector reservation is consumed by the ordered event stream. The
+		// callback can run ahead of that consumer, so mutating the projector here
+		// would let queued events from the previous turn use the new identity.
+		s.appActiveTurnID = turnID
+		s.appPendingStableTurnID = turnID
+		s.appReservedTurnID = ""
+		s.mu.Unlock()
+		return nil
+	})
 }
 
 func (s *Server) setProcessingLocked(processing bool) {
 	s.processing = processing
 	if !processing {
+		// The input runner has returned, including failed durable claims that
+		// emit no carrier. Buffered events retain their own ordered identity;
+		// keeping this reservation would advertise work that is no longer running.
+		if s.appPendingStableTurnID != "" {
+			if s.appActiveTurnID == s.appPendingStableTurnID {
+				s.appActiveTurnID = ""
+			}
+			s.appPendingStableTurnID = ""
+		}
+		if s.appProjector != nil && s.appProcessingReservedTurnID != "" {
+			s.appProjector.ReleaseReservedTurnID(s.appProcessingReservedTurnID)
+			s.appProcessingReservedTurnID = ""
+		}
 		if s.appProjector != nil && s.appReservedTurnID == "" {
 			reservedTurnID := s.appProjector.ReservedTurnID()
 			if reservedTurnID != "" && s.appActiveTurnID == reservedTurnID {

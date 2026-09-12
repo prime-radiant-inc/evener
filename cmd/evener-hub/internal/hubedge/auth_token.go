@@ -22,12 +22,18 @@ import (
 // Capability-URL authentication for the hub web edge.
 //
 // The hub generates (or loads) a long-lived random token at startup and
-// prints an auth URL with the token in a query parameter. A user visits
-// the URL once per browser; the /auth handler validates the token and
-// sets a httpOnly + SameSite=Lax cookie, named per-hub (cookieName) so
+// prints an auth URL with the token as a path segment. A user visits
+// the URL once per browser; the /auth/<token> handler validates the token
+// and sets a httpOnly + SameSite=Lax cookie, named per-hub (cookieName) so
 // hubs sharing a host don't clobber each other's cookie. Every subsequent
 // request must carry the cookie (or an "Authorization: Bearer" header for
 // scripted clients).
+//
+// The token rides in the path, not a query parameter, because the iOS
+// system QR-code scanner truncates a scanned URL's query string before
+// handing off to Safari, silently dropping a query-string token; a path
+// segment survives that truncation. The query form is gone outright (no
+// backward compatibility): HandleAuth reads the path only.
 //
 // The token lives in $hub_state_root/auth-token (mode 0600). Delete the
 // file (or use --rotate-auth-token) to invalidate existing sessions.
@@ -40,7 +46,7 @@ const (
 	// one, a restart with a rotated token) would otherwise collide on one
 	// shared cookie slot — the later hub's /auth overwrites the earlier
 	// hub's cookie, 401ing the earlier hub on its next reload until the user
-	// re-visits its /auth?token= URL. A per-token name gives each hub its
+	// re-visits its /auth/<token> URL. A per-token name gives each hub its
 	// own slot in the browser's by-name jar.
 	authCookiePrefix = "evener_hub_auth"
 
@@ -130,13 +136,18 @@ func tokensEqual(presented, expected string) bool {
 }
 
 // isAuthExempt reports whether a path is reachable without
-// authentication. /auth itself is the bootstrap; /api/health is for
-// liveness checks; the PWA icons are a non-sensitive logo that the OS may
-// fetch without credentials when installing to the home screen (the manifest
+// authentication. /auth/<token> is the bootstrap — the token in the path
+// IS the credential, checked by HandleAuth itself, so the guard must let
+// the request through unchecked to reach it; /api/health is for liveness
+// checks; the PWA icons are a non-sensitive logo that the OS may fetch
+// without credentials when installing to the home screen (the manifest
 // stays gated — it carries the capability token).
 func isAuthExempt(path string) bool {
+	if strings.HasPrefix(path, "/auth/") {
+		return true
+	}
 	switch path {
-	case "/auth", "/api/health",
+	case "/api/health",
 		"/assets/icon.svg", "/assets/icon-192.png",
 		"/assets/icon-512.png", "/assets/icon-maskable-512.png":
 		return true
@@ -145,7 +156,7 @@ func isAuthExempt(path string) bool {
 }
 
 // AuthGuard returns middleware that requires a valid token (via cookie
-// or bearer header) for every route except /auth and /api/health.
+// or bearer header) for every route except /auth/<token> and /api/health.
 //
 // An empty token disables the guard entirely. This is a testing-only
 // escape hatch — main.go always calls LoadOrCreateAuthToken before
@@ -162,12 +173,17 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 				return
 			}
 			if !tokensEqual(tokenFromRequest(r, token), token) {
-				// Self-heal: accept the capability token in the query string
-				// on any GET, set the cookie, and redirect with the token
-				// stripped. An iOS standalone (home-screen) relaunch restores
-				// the last-viewed URL into a cookie jar that may have lost the
-				// cookie; this lets any tokened URL — not just /auth — recover.
-				if r.Method == http.MethodGet && tokensEqual(r.URL.Query().Get("token"), token) {
+				// Self-heal: accept the capability token in the query string on
+				// any GET other than /auth itself, set the cookie, and redirect
+				// with the token stripped. An iOS standalone (home-screen)
+				// relaunch restores the last-viewed URL into a cookie jar that
+				// may have lost the cookie; this lets any other tokened URL
+				// recover. /auth is excluded deliberately: its own token now
+				// lives in the path (see HandleAuth), and JESSE'S RULING
+				// (2026-09-01) replaces the query form outright, with no
+				// backward compatibility — accepting ?token= here for /auth
+				// would resurrect exactly the form that was removed.
+				if r.Method == http.MethodGet && !strings.HasPrefix(r.URL.Path, "/auth") && tokensEqual(r.URL.Query().Get("token"), token) {
 					setAuthCookie(w, token)
 					q := r.URL.Query()
 					q.Del("token")
@@ -188,7 +204,7 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 							"This browser hasn't been authorized for this hub. Get the\n"+
 							"auth URL from the hub operator (logged at startup) or read\n"+
 							"the auth token from "+TokenFileName+" in the hub state\n"+
-							"directory, then visit /auth?token=<value>.",
+							"directory, then visit /auth/<value>.",
 						http.StatusUnauthorized)
 					return
 				}
@@ -226,11 +242,16 @@ func setAuthCookie(w http.ResponseWriter, token string) {
 	})
 }
 
-// HandleAuth implements GET /auth?token=<t>: validates the token in the
-// query, sets the auth cookie, and redirects to /.
+// HandleAuth implements GET /auth/<t>: validates the token carried in the
+// path (mounted as a subtree, e.g. "/auth/", so the full remainder of the
+// path after the prefix is the token — matching the existing /s/ and
+// /thread/ prefix-route convention), sets the auth cookie, and redirects
+// to /. The token lives in the path, not a query parameter, because the
+// iOS system QR-code scanner truncates a scanned URL's query string before
+// handoff to Safari, silently dropping a query-string token.
 func HandleAuth(token string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		presented := r.URL.Query().Get("token")
+		presented := strings.TrimPrefix(r.URL.Path, "/auth/")
 		if !tokensEqual(presented, token) {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
@@ -250,8 +271,10 @@ func HandleAuth(token string) http.HandlerFunc {
 
 // AuthURLFor constructs the visible auth URL for a given external base
 // (e.g., "http://magic-kingdom.tailnet.ts.net:9180"). The base should
-// NOT include a trailing slash.
+// NOT include a trailing slash. The token is escaped for a path segment
+// (not a query parameter) so it survives the iOS system QR scanner's
+// query-string truncation before handoff to Safari.
 func AuthURLFor(base, token string) string {
 	base = strings.TrimRight(base, "/")
-	return base + "/auth?token=" + url.QueryEscape(token)
+	return base + "/auth/" + url.PathEscape(token)
 }

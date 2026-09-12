@@ -17,10 +17,11 @@ func (s *Session) webSearch(ctx context.Context, query string) (any, error) {
 	// google_search in the tools array, avoiding the API conflict.
 	p := s.currentProfile()
 	req := llm.Request{
-		Model:     p.Model(),
-		Provider:  p.ID(),
-		Messages:  []llm.Message{llm.User(query)},
-		WebSearch: true,
+		AdapterTimeout: s.providerAdapterTimeout(),
+		Model:          p.Model(),
+		Provider:       p.ID(),
+		Messages:       []llm.Message{llm.User(query)},
+		WebSearch:      true,
 	}
 
 	resp, err := s.client.Complete(ctx, req)

@@ -74,7 +74,7 @@ placeholder is not a stable hook at all — see step 6.
 
 6. **[browser, optional]** Repeat steps 2-3 to kill the respawned daemon,
    then drive the *other* entry point from a browser: navigate to
-   `/auth?token=$TOKEN&next=/s/local:$SID` and type into the textarea inside
+   `/auth/$TOKEN?next=/s/local:$SID` and type into the textarea inside
    `[data-testid="composer-input-card"]` (`aria-label="Message"`,
    `panes/session/composer/Composer.tsx:760,783`). Address it by that
    testid, never by placeholder text: the placeholder is
@@ -126,10 +126,6 @@ placeholder is not a stable hook at all — see step 6.
   land on `hubThreadResume`. Steps 5 and 6 are the same assertion from two
   sides — running only step 5 still covers the resume chain. There is no
   `/s/<id>/send` shim any more; that path 404s.
-- This test exercises the LOCAL source resume path. For codex /
-  managed-launch sessions, `t65c` + `ws5f` cover the equivalent path
-  — write a `reconnect-codex-managed.md` scenario for that flow if
-  you have a working codex setup.
 - The `Reconnect & retry` button (kata `e465`) is surfaced only by a
   connection-class `turn.error`, which reaches the client from the
   daemon's own diagnostic or from a persisted `TURN_FAILURE` entry —

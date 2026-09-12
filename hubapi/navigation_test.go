@@ -146,3 +146,48 @@ func TestNavigationMutationSharesAppWireTargetShape(t *testing.T) {
 		t.Fatalf("mutation JSON = %s, want %s", got, want)
 	}
 }
+
+func TestNavigationRecordWireShapeOmitsRevisionAndRejectsObsoleteRevision(t *testing.T) {
+	snapshot := NavigationSnapshot{
+		Metadata: []byte(`{"generation_id":"g","revision":1}`),
+		Entities: []NavigationEntityRecord{{Key: "entity", Kind: "session", Value: []byte(`{}`)}},
+		Containers: []NavigationOrderContainer{{
+			Key:      "container",
+			Owner:    NavigationContainerOwner{Kind: "resource_root", Slot: "sessions"},
+			Children: []string{"entity"},
+		}},
+	}
+	wire, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Entities   []map[string]json.RawMessage `json:"entities"`
+		Containers []map[string]json.RawMessage `json:"containers"`
+	}
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range append(decoded.Entities, decoded.Containers...) {
+		if _, ok := record["revision"]; ok {
+			t.Fatalf("normalized record emitted obsolete revision: %s", wire)
+		}
+	}
+
+	for name, obsolete := range map[string]string{
+		"entity":    `{"key":"entity","revision":1,"kind":"session","value":{}}`,
+		"container": `{"key":"container","revision":1,"owner":{"kind":"resource_root","slot":"sessions"},"children":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var destination any
+			if name == "entity" {
+				destination = new(NavigationEntityRecord)
+			} else {
+				destination = new(NavigationOrderContainer)
+			}
+			if err := json.Unmarshal([]byte(obsolete), destination); err == nil {
+				t.Fatal("obsolete record revision was accepted")
+			}
+		})
+	}
+}

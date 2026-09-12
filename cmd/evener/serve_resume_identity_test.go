@@ -67,7 +67,7 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 	probe := &serveResumeIdentityProbe{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 	var cancel context.CancelFunc
 	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
 		next, stop := context.WithCancel(ctx)
@@ -75,11 +75,11 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 		return next, stop
 	}
 	entriesForm := deps.prepareAppIdentityFromEntries
-	deps.prepareAppIdentityFromEntries = func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error) {
+	deps.prepareAppIdentityFromEntries = func(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error) {
 		probe.entriesFormUsed = true
 		probe.gotThreadID = threadID
 		probe.gotEntryCount = len(entries)
-		return entriesForm(sourceID, threadID, ref, header, entries)
+		return entriesForm(sourceID, threadID, ref, transcriptPath, header, entries)
 	}
 	fileForm := deps.prepareAppIdentity
 	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {

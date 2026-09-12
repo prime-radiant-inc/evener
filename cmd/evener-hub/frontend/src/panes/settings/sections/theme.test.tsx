@@ -36,6 +36,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-theme");
   delete document.body.dataset.phoneDensity;
   delete document.body.dataset.fontSize;
+  delete document.body.dataset.transcriptMeasure;
   resetPrefsStoreForTests();
   resetToastStoreForTests();
 });
@@ -96,11 +97,11 @@ describe("Phone density", () => {
   });
 
   // The help copy must name the gate that's actually shipped in tokens.css
-  // (@media (max-width: 900px), matching useIsMobile's own breakpoint) -
+  // (@media (max-width: 899px), matching useIsMobile's own breakpoint) -
   // not a stale number that names a different, unimplemented gate.
-  test("the help copy states the shipped 900px density gate", () => {
+  test("the help copy states the shipped 899px density gate", () => {
     renderWithToasts();
-    expect(screen.getByText(/phones \(≤900px\)/)).toBeTruthy();
+    expect(screen.getByText(/phones \(≤899px\)/)).toBeTruthy();
   });
 });
 
@@ -114,5 +115,18 @@ describe("Font size", () => {
 
     expect(prefsStore.getState().fontSize).toBe("xl");
     expect(document.body.dataset.fontSize).toBe("xl");
+  });
+});
+
+describe("Transcript width", () => {
+  test("defaults to Reading and updates the pref plus document.body.dataset.transcriptMeasure", async () => {
+    const user = userEvent.setup();
+    renderWithToasts();
+    expect(screen.getByRole("radio", { name: "Reading" }).getAttribute("aria-checked")).toBe("true");
+
+    await user.click(screen.getByRole("radio", { name: "Wide" }));
+
+    expect(prefsStore.getState().transcriptMeasure).toBe("wide");
+    expect(document.body.dataset.transcriptMeasure).toBe("wide");
   });
 });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -119,6 +120,17 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 	for {
 		gitPath := filepath.Join(dir, ".git")
 		info, statErr := os.Stat(gitPath)
+		if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+			// Only an absence the filesystem actually reported lets the walk
+			// move on: a stat that failed for want of permission (or on a
+			// filesystem error) leaves it unknown whether a .git is there. Say
+			// so rather than walking past it, or the caller memoizes an absence
+			// nothing ever observed — the walk shares gitRootCache with
+			// GitRootOrEmpty, and a cached "not a repository" outlives the
+			// condition that produced it. This error is not an exit status, so
+			// mainRepoRootUncached's classification treats it as transient.
+			return "", false, true, fmt.Errorf("stat %q: %w", gitPath, statErr)
+		}
 		if statErr == nil {
 			if info.IsDir() {
 				return resolveClean(dir), true, true, nil

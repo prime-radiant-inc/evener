@@ -1,0 +1,45 @@
+{
+  "case": "bedrock-sonnet-5-stream",
+  "ref": "bedrock/anthropic.claude-sonnet-5",
+  "stream": true,
+  "method": "POST",
+  "url": "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages",
+  "headers": {
+    "Anthropic-Version": "2023-06-01",
+    "Content-Type": "application/json",
+    "X-Api-Key": "\u003ccredential\u003e"
+  },
+  "body": {
+    "cache_control": {
+      "type": "ephemeral"
+    },
+    "max_tokens": 128000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "What is the weather in Oslo?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "anthropic.claude-sonnet-5",
+    "stream": true,
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are terse.",
+        "type": "text"
+      }
+    ],
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive"
+    }
+  },
+  "pruned_fields": null
+}

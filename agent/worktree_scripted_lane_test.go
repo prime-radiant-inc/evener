@@ -378,6 +378,19 @@ func (r *scriptedLaneRepo) launchInside(t *testing.T, dir string) *scriptedLaneR
 // the scripted registry.
 func (r *scriptedLaneRepo) restoreSession(t *testing.T, meta schema.SessionMeta, launchDir string) *Session {
 	t.Helper()
+	sess, err := r.restoreSessionOn(execenv.NewLocalExecutionEnvironment(launchDir), meta, r.restoreConfig())
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	return sess
+}
+
+// restoreSessionOn restores meta onto a caller-built environment with cfg (the
+// scripted boundary from restoreConfig plus whatever the caller adds), filling
+// the profile defaults the harness's sessions use. The caller owns the error
+// and the close.
+func (r *scriptedLaneRepo) restoreSessionOn(env execenv.ExecutionEnvironment, meta schema.SessionMeta, cfg RestoreSessionConfig) (*Session, error) {
 	if meta.ProfileID == "" {
 		meta.ProfileID = "openai"
 	}
@@ -385,24 +398,22 @@ func (r *scriptedLaneRepo) restoreSession(t *testing.T, meta schema.SessionMeta,
 		meta.Model = "gpt-5.2"
 	}
 	meta.Config.NoProjectPrompts = true
-	sess, err := RestoreSessionFromMetaWithConfig(
-		w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(launchDir), meta,
-		RestoreSessionConfig{StateDir: r.stateDir, testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			noSyncJobStore:      true,
-			environmentInfo:     scriptedEnvironmentInfo,
-			worktreeGitRunner: func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
-				return r.git.run
-			},
-		}},
-	)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
-	}
-	t.Cleanup(func() { sess.Close() })
-	return sess
+	return RestoreSessionFromMetaWithConfig(w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"), env, meta, cfg)
+}
+
+// restoreConfig is the restore-side counterpart of the session config
+// newScriptedLaneRepoWithConfig overlays: the same scripted git boundary,
+// against r's isolated state dir.
+func (r *scriptedLaneRepo) restoreConfig() RestoreSessionConfig {
+	return RestoreSessionConfig{StateDir: r.stateDir, testOnly: testConfig{
+		skipGitSnapshot:     true,
+		minimalSystemPrompt: true,
+		noSyncJobStore:      true,
+		environmentInfo:     scriptedEnvironmentInfo,
+		worktreeGitRunner: func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+			return r.git.run
+		},
+	}}
 }
 
 // launchSession is the scripted counterpart of wtLaunchSession: a managed

@@ -14,22 +14,55 @@ import (
 )
 
 type hubRelayHandle struct {
-	ready       chan struct{}
-	err         error
-	ctx         context.Context
-	cancel      context.CancelFunc
-	established bool
-	lease       appsource.RelaySessionLease
-	commands    int
-	closeOnce   sync.Once
-	thread      appwire.Thread
+	ready         chan struct{}
+	err           error
+	ctx           context.Context
+	cancel        context.CancelFunc
+	established   bool
+	lease         appsource.RelaySessionRoutePublicationLease
+	closeOnce     sync.Once
+	canonical     appwire.Ref
+	done          chan struct{}
+	initializing  bool
+	stopping      bool
+	removed       bool
+	relayKeys     map[string]*relayKeyState
+	pendingKeys   map[string]*relayKeyState
+	pendingStates map[*relayKeyState]struct{}
+	routes        map[string]*relayKeyState
+	// commandOwners includes commands whose relay-key generation was remapped
+	// while they were in flight, so the displaced handle cannot close early.
+	commandOwners int
+	pendingRoutes int
+	routeChanged  chan struct{}
+}
+
+type relayKeyState struct {
+	commands        int
+	generation      uint64
+	relayKey        string
+	thread          appwire.Thread
+	argsByCallID    map[string]string
+	routingKeys     map[string]struct{}
+	stopRequested   bool
+	retiring        bool
+	removeOnDrain   bool
+	retireOwner     *relayKeyState
+	publications    int
+	publicationDone chan struct{}
+	done            chan struct{}
 }
 
 type hubThreadReadResult struct {
-	response appwire.ThreadReadResponse
-	handoff  appsource.RelayHandoff
-	release  func()
-	once     sync.Once
+	// relayKey is the acquired delivery owner, not the response's session ID.
+	relayKey          string
+	lifecycleKey      string
+	response          appwire.ThreadReadResponse
+	itemCandidates    appsource.ItemCandidateResult
+	hasItemCandidates bool
+	handoff           appsource.RelayHandoff
+	release           func()
+	once              sync.Once
 }
 
 func (r *hubThreadReadResult) finish(commit bool) bool {
@@ -83,6 +116,11 @@ func (relayTimerClock) Wait(ctx context.Context, delay time.Duration) error {
 }
 
 var hubRelayIdleInterval = 250 * time.Millisecond
+
+// hubRelayPendingDeliveryLimit bounds unresolved targeted frames per canonical
+// listener. At the limit the listener applies upstream backpressure; it never
+// acknowledges speculatively or allocates a worker per attacker-chosen target.
+const hubRelayPendingDeliveryLimit = 64
 
 const (
 	relayRetryMinDelay = 100 * time.Millisecond
@@ -150,13 +188,13 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 //
 // Local threads only, which is every thread that reaches this relay: the past
 // index is the local source's, and a source the hub does NOT answer from it
-// (the Codex bridge) would be told a resume story that is not true.
+// (a non-local source) would be told a resume story that is not true.
 //
 // One key is replaced, the rest of the payload is passed through as raw JSON —
 // re-minting it from the fields this hub understands would silently drop
 // anything a newer daemon added (the shape enrichOutputImageNotification uses
 // on this same stream, for the same reason).
-func stampClosedThreadCapabilities(notification appwire.Notification) appwire.Notification {
+func stampClosedThreadCapabilities(notification appwire.Notification, allowFork bool) appwire.Notification {
 	if notification.Method != appwire.NotifyThreadStatusChanged {
 		return notification
 	}
@@ -171,12 +209,54 @@ func stampClosedThreadCapabilities(notification appwire.Notification) appwire.No
 	if status.Type != appwire.ThreadStatusClosed {
 		return notification
 	}
-	capabilities, err := json.Marshal(pastThreadCapabilities())
+	set := pastThreadCapabilities()
+	if !allowFork {
+		set.ForkFromTurn = false
+	}
+	capabilities, err := json.Marshal(set)
 	if err != nil {
 		return notification
 	}
 	params["capabilities"] = capabilities
 	stamped, err := json.Marshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = stamped
+	return notification
+}
+
+// stampForkCapability adds the hub-owned action to an existing capability
+// update. Other permissions and fields remain the daemon's current values.
+func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
+	if notification.Method != appwire.NotifyThreadStatusChanged {
+		return notification
+	}
+	var params struct {
+		Status       appwire.ThreadStatus       `json:"status"`
+		Capabilities map[string]json.RawMessage `json:"capabilities"`
+	}
+	if json.Unmarshal(notification.Params, &params) != nil || params.Capabilities == nil {
+		return notification
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(notification.Params, &raw); err != nil {
+		return notification
+	}
+	fenced := hubForkRecoveryFenced(appwire.Thread{Status: params.Status})
+	if allowFork && !fenced {
+		params.Capabilities["forkFromTurn"] = json.RawMessage("true")
+	} else {
+		// Clear a stale daemon value as well as refusing to add the action. The
+		// notification is the client's authoritative status transition.
+		params.Capabilities["forkFromTurn"] = json.RawMessage("false")
+	}
+	encoded, err := json.Marshal(params.Capabilities)
+	if err != nil {
+		return notification
+	}
+	raw["capabilities"] = encoded
+	stamped, err := json.Marshal(raw)
 	if err != nil {
 		return notification
 	}
@@ -191,19 +271,23 @@ type hubRelayFunctions struct {
 	startTurn           func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
 	startRelayForThread func(context.Context, appwire.Thread) error
 	stopRelay           func(string)
+	stopCanonicalRelay  func(appwire.Ref)
+	relayCommandCount   func(string) int
+	relayPublished      func(string) bool
 }
 
 var observeHubRelayFunctions func(hubRelayFunctions)
 var observeHubRelayWait func()
 
 // threadRelayTarget resolves the relay key (source.ID()+":"+threadID) and the
-// bare threadID for a read-shaped request. thread/read's relay, its recovery
-// paths, and thread/unsubscribe all derive the key here so a subscribe and
-// its unsubscribe can never disagree about which registry entry they name.
+// bare threadID for a read-shaped request. This is the delivery routing
+// identity, not the canonical session identity used to cancel pending reads.
+// thread/read's relay, its recovery paths, and thread/unsubscribe use it.
 func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams) (string, string, error) {
 	threadID := strings.TrimSpace(params.ThreadID)
-	if threadID == "" && params.Ref != "" {
-		ref, err := appwire.ParseRef(params.Ref)
+	refInput := strings.TrimSpace(params.Ref)
+	if threadID == "" && refInput != "" {
+		ref, err := appwire.ParseRef(refInput)
 		if err != nil {
 			return "", "", err
 		}
@@ -215,24 +299,130 @@ func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams)
 	return source.ID() + ":" + threadID, threadID, nil
 }
 
+type relayNotificationRouting int
+
+const (
+	relayNotificationUntargeted relayNotificationRouting = iota
+	relayNotificationMalformed
+	relayNotificationTargeted
+)
+
+// relayNotificationRoutingKey normalizes the authoritative identity carried
+// by a relay frame. String ref has the same precedence as the browser reducer,
+// including empty and syntactically invalid strings. Wrong-typed present
+// fields are malformed rather than absent, so they cannot fall through.
+func relayNotificationRoutingKey(notification appwire.Notification, sourceID string) (string, relayNotificationRouting) {
+	var params map[string]json.RawMessage
+	if len(notification.Params) == 0 || json.Unmarshal(notification.Params, &params) != nil {
+		return "", relayNotificationMalformed
+	}
+	if raw, ok := params["ref"]; ok {
+		var value any
+		if json.Unmarshal(raw, &value) != nil {
+			return "", relayNotificationMalformed
+		}
+		ref, ok := value.(string)
+		if !ok {
+			return "", relayNotificationMalformed
+		}
+		return ref, relayNotificationTargeted
+	}
+	if raw, ok := params["threadId"]; ok {
+		var value any
+		if json.Unmarshal(raw, &value) != nil {
+			return "", relayNotificationMalformed
+		}
+		threadID, ok := value.(string)
+		if !ok {
+			return "", relayNotificationMalformed
+		}
+		return sourceID + ":" + threadID, relayNotificationTargeted
+	}
+	return "", relayNotificationUntargeted
+}
+
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
 	relayIdleInterval := hubRelayIdleInterval
 	retryClock := newRelayRetryClock()
 	if cfg.RelayHooks.RetryWait != nil {
 		retryClock = relayRetryClockFunc(cfg.RelayHooks.RetryWait)
 	}
-	registerSubscription := func(ctx context.Context, relayKey string, replace bool) bool {
+	registerSubscription := func(ctx context.Context, relayKey string, replace bool, expectedLifecycle ...string) error {
 		if cfg.RelayHooks.RegisterSubscription != nil {
-			return cfg.RelayHooks.RegisterSubscription(ctx, relayKey, replace)
+			if !cfg.RelayHooks.RegisterSubscription(ctx, relayKey, replace) {
+				return context.Canceled
+			}
+			return nil
 		}
-		if replace {
-			return appserver.ReplaceSubscriptions(ctx, relayKey)
-		}
-		return appserver.Subscribe(ctx, relayKey)
+		return appserver.SubscribeWithAdmission(ctx, relayKey, replace, expectedLifecycle...)
 	}
 	relayTarget := threadRelayTarget
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
+	pendingRelays := map[string]map[*relayKeyState]*hubRelayHandle{}
+	canonicalRelays := map[appwire.Ref]*hubRelayHandle{}
+	relayGenerations := map[string]uint64{}
+	removeStateRoutesLocked := func(handle *hubRelayHandle, state *relayKeyState) {
+		if state == nil {
+			return
+		}
+		for routingKey := range state.routingKeys {
+			if handle.routes[routingKey] == state {
+				delete(handle.routes, routingKey)
+			}
+			delete(state.routingKeys, routingKey)
+		}
+	}
+	bindStateRouteLocked := func(handle *hubRelayHandle, routingKey string, state *relayKeyState) {
+		if routingKey == "" {
+			return
+		}
+		if previous := handle.routes[routingKey]; previous != nil && previous != state {
+			delete(previous.routingKeys, routingKey)
+		}
+		handle.routes[routingKey] = state
+		state.routingKeys[routingKey] = struct{}{}
+	}
+	removeRelayKeyStateLocked := func(handle *hubRelayHandle, state *relayKeyState) bool {
+		if state == nil || state.publications != 0 || relayedThreads[state.relayKey] != handle || handle.relayKeys[state.relayKey] != state {
+			return false
+		}
+		state.retiring = true
+		removeStateRoutesLocked(handle, state)
+		delete(handle.relayKeys, state.relayKey)
+		delete(relayedThreads, state.relayKey)
+		close(state.done)
+		return true
+	}
+	signalRouteChangeLocked := func(handle *hubRelayHandle) {
+		close(handle.routeChanged)
+		handle.routeChanged = make(chan struct{})
+	}
+	registerPendingStateLocked := func(handle *hubRelayHandle, state *relayKeyState) {
+		owners := pendingRelays[state.relayKey]
+		if owners == nil {
+			owners = make(map[*relayKeyState]*hubRelayHandle)
+			pendingRelays[state.relayKey] = owners
+		}
+		owners[state] = handle
+		handle.pendingStates[state] = struct{}{}
+		handle.pendingKeys[state.relayKey] = state
+	}
+	unregisterPendingStateLocked := func(handle *hubRelayHandle, state *relayKeyState) bool {
+		owners := pendingRelays[state.relayKey]
+		if owners == nil || owners[state] != handle {
+			return false
+		}
+		delete(owners, state)
+		if len(owners) == 0 {
+			delete(pendingRelays, state.relayKey)
+		}
+		delete(handle.pendingStates, state)
+		if handle.pendingKeys[state.relayKey] == state {
+			delete(handle.pendingKeys, state.relayKey)
+		}
+		return true
+	}
 	finishHandleLocked := func(handle *hubRelayHandle, err error) {
 		select {
 		case <-handle.ready:
@@ -250,92 +440,383 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 		})
 	}
-	retireRelayHandle := func(relayKey string, handle *hubRelayHandle) {
-		relayMu.Lock()
-		if relayedThreads[relayKey] == handle {
-			delete(relayedThreads, relayKey)
+	removeRelayHandleLocked := func(handle *hubRelayHandle) bool {
+		if handle == nil || handle.removed {
+			return false
 		}
+		for _, state := range handle.relayKeys {
+			if state.publications != 0 {
+				return false
+			}
+		}
+		if handle.canonical != (appwire.Ref{}) && canonicalRelays[handle.canonical] == handle {
+			delete(canonicalRelays, handle.canonical)
+		}
+		for relayKey, current := range relayedThreads {
+			if current == handle {
+				delete(relayedThreads, relayKey)
+			}
+		}
+		for relayKey, state := range handle.relayKeys {
+			removeStateRoutesLocked(handle, state)
+			delete(handle.relayKeys, relayKey)
+			close(state.done)
+		}
+		for state := range handle.pendingStates {
+			unregisterPendingStateLocked(handle, state)
+			close(state.done)
+		}
+		for routingKey := range handle.routes {
+			delete(handle.routes, routingKey)
+		}
+		handle.removed = true
+		if handle.done != nil {
+			close(handle.done)
+		}
+		return true
+	}
+	maybeFinishHandleLocked := func(handle *hubRelayHandle) bool {
+		if handle == nil || handle.removed || handle.initializing || len(handle.relayKeys) != 0 || len(handle.pendingStates) != 0 || handle.commandOwners != 0 {
+			return false
+		}
+		if !removeRelayHandleLocked(handle) {
+			return false
+		}
+		finishHandleLocked(handle, context.Canceled)
+		return true
+	}
+	removeStoppedStateLocked := func(handle *hubRelayHandle, state *relayKeyState) bool {
+		if state == nil || state.commands != 0 || state.publications != 0 {
+			return false
+		}
+		if pendingRelays[state.relayKey][state] == handle {
+			unregisterPendingStateLocked(handle, state)
+			close(state.done)
+			return true
+		}
+		return removeRelayKeyStateLocked(handle, state)
+	}
+	retireRelayHandle := func(handle *hubRelayHandle) {
+		var closeHandle bool
+		relayMu.Lock()
+		handle.stopping = true
+		for _, state := range handle.relayKeys {
+			state.stopRequested = true
+			state.retiring = true
+			state.retireOwner = nil
+			removeStoppedStateLocked(handle, state)
+		}
+		for state := range handle.pendingStates {
+			state.stopRequested = true
+			removeStoppedStateLocked(handle, state)
+		}
+		closeHandle = maybeFinishHandleLocked(handle)
 		relayMu.Unlock()
-		closeRelayHandle(handle)
+		if closeHandle {
+			closeRelayHandle(handle)
+		}
 	}
 	startAcknowledgedFanout := func(
-		relayKey string,
-		threadID string,
-		ref string,
 		handle *hubRelayHandle,
 		deliveries <-chan appsource.RelayDelivery,
 	) {
 		go func() {
 			ticker := time.NewTicker(relayIdleInterval)
 			defer ticker.Stop()
-			defer retireRelayHandle(relayKey, handle)
-			argsByCallID := map[string]string{}
+			defer retireRelayHandle(handle)
+			type relayTargetState struct {
+				handle       *hubRelayHandle
+				state        *relayKeyState
+				routingKey   string
+				relayKey     string
+				threadID     string
+				ref          string
+				thread       appwire.Thread
+				argsByCallID map[string]string
+			}
+			type pendingRelayDelivery struct {
+				delivery   appsource.RelayDelivery
+				routingKey string
+				routing    relayNotificationRouting
+			}
+			pendingDeliveries := make([]pendingRelayDelivery, 0, hubRelayPendingDeliveryLimit)
+			// routeChangeWait is the wake-up a parked frame waits on.
+			// signalRouteChangeLocked closes handle.routeChanged and installs a
+			// fresh one, so this must be taken before the routes are read that
+			// decide to park: a capture taken afterwards can be the replacement
+			// channel, and the frame then sleeps through the very publication it
+			// is waiting for until unrelated traffic on the same key wakes it.
+			// A capture that is already closed by the time the loop selects on
+			// it just costs one extra resolution pass.
+			var routeChangeWait <-chan struct{}
+			captureRouteChange := func() {
+				relayMu.Lock()
+				routeChangeWait = handle.routeChanged
+				relayMu.Unlock()
+			}
+			acknowledge := func(delivery appsource.RelayDelivery) {
+				if delivery.Acknowledge != nil {
+					delivery.Acknowledge()
+				}
+			}
+			defer func() {
+				for _, pending := range pendingDeliveries {
+					acknowledge(pending.delivery)
+				}
+			}()
+			targetState := func(routingKey string, state *relayKeyState) relayTargetState {
+				parsedRef, _ := appwire.ParseRef(state.relayKey)
+				target := relayTargetState{
+					handle:       handle,
+					state:        state,
+					routingKey:   routingKey,
+					relayKey:     state.relayKey,
+					threadID:     parsedRef.ThreadID,
+					ref:          state.relayKey,
+					thread:       state.thread,
+					argsByCallID: state.argsByCallID,
+				}
+				if state.thread.ID != "" {
+					target.threadID = state.thread.ID
+				}
+				if state.thread.Evener.Ref != "" {
+					target.ref = state.thread.Evener.Ref
+				}
+				return target
+			}
+			lookupTargets := func(routingKey string, routing relayNotificationRouting) ([]relayTargetState, bool) {
+				relayMu.Lock()
+				defer relayMu.Unlock()
+				var targets []relayTargetState
+				if routing == relayNotificationTargeted {
+					state := handle.routes[routingKey]
+					if state != nil && !state.retiring && handle.relayKeys[state.relayKey] == state && relayedThreads[state.relayKey] == handle {
+						targets = append(targets, targetState(routingKey, state))
+					}
+				} else {
+					targets = make([]relayTargetState, 0, len(handle.relayKeys))
+					for currentKey, state := range handle.relayKeys {
+						if !state.retiring && relayedThreads[currentKey] == handle {
+							targets = append(targets, targetState("", state))
+						}
+					}
+				}
+				pending := routing == relayNotificationTargeted && len(targets) == 0 && handle.pendingRoutes != 0 && !handle.stopping
+				return targets, pending
+			}
+			publishTarget := func(delivery appsource.RelayDelivery, target relayTargetState) {
+				notification := delivery.Notification
+				// The edits only this hub can make to a local daemon's
+				// notification on its way to a browser: the images it can
+				// resolve off disk, and the answer to what a thread can still
+				// be asked to do once the daemon announcing its own close is
+				// gone.
+				if strings.HasPrefix(target.relayKey, "local:") {
+					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
+					// Both stampers return the frame untouched for any other
+					// method, so the method is checked before the answer is
+					// computed rather than after. This is the hottest path the
+					// projection sits on — every frame of every subscribed
+					// session — and the projection is not free: it scans the
+					// roster, resolves the target session and reads the
+					// deletion store. enrichOutputImageNotification above
+					// guards itself the same way.
+					if notification.Method == appwire.NotifyThreadStatusChanged {
+						ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
+						notification = stampClosedThreadCapabilities(notification, ownsFork)
+						notification = stampForkCapability(notification, ownsFork)
+					}
+				}
+				if cfg.RelayHooks.BeforeCanonicalPublish != nil {
+					cfg.RelayHooks.BeforeCanonicalPublish(target.relayKey, notification)
+				}
+				relayMu.Lock()
+				current := !handle.stopping && !target.state.retiring &&
+					handle.relayKeys[target.relayKey] == target.state &&
+					relayedThreads[target.relayKey] == handle
+				if current && target.routingKey != "" {
+					current = handle.routes[target.routingKey] == target.state
+				}
+				if current {
+					if target.state.publications == 0 {
+						target.state.publicationDone = make(chan struct{})
+					}
+					target.state.publications++
+				}
+				relayMu.Unlock()
+				if !current {
+					return
+				}
+				if cfg.RelayHooks.AfterCanonicalPublishEntry != nil {
+					cfg.RelayHooks.AfterCanonicalPublishEntry(target.relayKey, notification)
+				}
+				_, publicationErr := withDeletionTargetOwnership(context.Background(), cfg, target.ref, target.threadID, "", func() (struct{}, error) {
+					server.Broadcast(target.relayKey, notification.Method, notification.Params)
+					return struct{}{}, nil
+				})
+				_ = publicationErr
+				var closeHandle bool
+				relayMu.Lock()
+				target.state.publications--
+				if target.state.publications == 0 {
+					close(target.state.publicationDone)
+					target.state.publicationDone = nil
+					if (target.state.removeOnDrain && target.state.retireOwner == nil) ||
+						(target.state.stopRequested && target.state.commands == 0) {
+						removeRelayKeyStateLocked(target.handle, target.state)
+					}
+				}
+				closeHandle = maybeFinishHandleLocked(target.handle)
+				relayMu.Unlock()
+				if closeHandle {
+					closeRelayHandle(target.handle)
+				}
+			}
+			publishDelivery := func(delivery appsource.RelayDelivery, targets []relayTargetState) {
+				for _, target := range targets {
+					publishTarget(delivery, target)
+				}
+				acknowledge(delivery)
+			}
+			processPending := func() {
+				captureRouteChange()
+				kept := pendingDeliveries[:0]
+				for _, pending := range pendingDeliveries {
+					targets, wait := lookupTargets(pending.routingKey, pending.routing)
+					if wait {
+						kept = append(kept, pending)
+						continue
+					}
+					publishDelivery(pending.delivery, targets)
+				}
+				pendingDeliveries = kept
+			}
+			hasPendingTarget := func(routingKey string) bool {
+				for _, pending := range pendingDeliveries {
+					if pending.routingKey == routingKey {
+						return true
+					}
+				}
+				return false
+			}
+			acceptDelivery := func(delivery appsource.RelayDelivery) {
+				captureRouteChange()
+				routingKey, routing := relayNotificationRoutingKey(delivery.Notification, handle.canonical.SourceID)
+				if routing == relayNotificationTargeted && hasPendingTarget(routingKey) {
+					pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
+					if delivery.Proceed != nil {
+						delivery.Proceed()
+					}
+					processPending()
+					return
+				}
+				targets, pending := lookupTargets(routingKey, routing)
+				if pending {
+					pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
+					if observeHubRelayWait != nil {
+						observeHubRelayWait()
+					}
+					if delivery.Proceed != nil {
+						delivery.Proceed()
+					}
+					return
+				}
+				publishDelivery(delivery, targets)
+			}
+			retireIdle := func() bool {
+				type idleCandidate struct {
+					relayKey string
+					state    *relayKeyState
+					commands int
+				}
+				relayMu.Lock()
+				active := canonicalRelays[handle.canonical] == handle && !handle.stopping
+				candidates := make([]idleCandidate, 0, len(handle.relayKeys))
+				if active {
+					for relayKey, state := range handle.relayKeys {
+						if relayedThreads[relayKey] == handle && state.commands == 0 && !state.retiring {
+							candidates = append(candidates, idleCandidate{relayKey: relayKey, state: state, commands: state.commands})
+						}
+					}
+					if len(handle.relayKeys) == 0 && handle.commandOwners == 0 {
+						handle.stopping = true
+						active = false
+					}
+				}
+				relayMu.Unlock()
+				if !active {
+					return true
+				}
+				idleCandidates := candidates[:0]
+				for _, candidate := range candidates {
+					if server.SubscriberCount(candidate.relayKey) == 0 {
+						idleCandidates = append(idleCandidates, candidate)
+					}
+				}
+				if len(idleCandidates) == 0 {
+					return false
+				}
+				if cfg.RelayHooks.IdleExit != nil {
+					cfg.RelayHooks.IdleExit(handle.canonical.ThreadID)
+				}
+				revalidated := idleCandidates[:0]
+				for _, candidate := range idleCandidates {
+					if server.SubscriberCount(candidate.relayKey) == 0 {
+						revalidated = append(revalidated, candidate)
+					}
+				}
+				if len(revalidated) == 0 {
+					return false
+				}
+				relayMu.Lock()
+				removed := 0
+				if canonicalRelays[handle.canonical] == handle && !handle.stopping {
+					for _, candidate := range revalidated {
+						if relayedThreads[candidate.relayKey] == handle &&
+							handle.relayKeys[candidate.relayKey] == candidate.state &&
+							candidate.state.commands == candidate.commands {
+							candidate.state.removeOnDrain = true
+							if removeRelayKeyStateLocked(handle, candidate.state) {
+								removed++
+							}
+						}
+					}
+				}
+				retired := canonicalRelays[handle.canonical] == handle && len(handle.relayKeys) == 0 && handle.commandOwners == 0
+				if retired {
+					handle.stopping = true
+				}
+				relayMu.Unlock()
+				for range removed {
+					if cfg.RelayHooks.AfterIdleDelete != nil {
+						cfg.RelayHooks.AfterIdleDelete(handle.canonical.ThreadID)
+					}
+				}
+				return retired
+			}
 			for {
+				var deliveryInput <-chan appsource.RelayDelivery
+				if len(pendingDeliveries) < hubRelayPendingDeliveryLimit {
+					deliveryInput = deliveries
+				}
+				var routeChanged <-chan struct{}
+				if len(pendingDeliveries) != 0 {
+					routeChanged = routeChangeWait
+				}
 				select {
 				case <-handle.ctx.Done():
 					return
+				case <-routeChanged:
+					processPending()
 				case <-ticker.C:
-					relayMu.Lock()
-					active := relayedThreads[relayKey] == handle
-					commands := handle.commands
-					candidate := active && commands == 0 && server.SubscriberCount(relayKey) == 0
-					relayMu.Unlock()
-					if !active {
+					if retireIdle() {
 						return
 					}
-					if !candidate {
-						continue
-					}
-					if cfg.RelayHooks.IdleExit != nil {
-						cfg.RelayHooks.IdleExit(threadID)
-					}
-					relayMu.Lock()
-					retired := relayedThreads[relayKey] == handle &&
-						handle.commands == 0 &&
-						server.SubscriberCount(relayKey) == 0
-					if retired {
-						delete(relayedThreads, relayKey)
-					}
-					relayMu.Unlock()
-					if retired {
-						if cfg.RelayHooks.AfterIdleDelete != nil {
-							cfg.RelayHooks.AfterIdleDelete(threadID)
-						}
-						return
-					}
-				case delivery, ok := <-deliveries:
+				case delivery, ok := <-deliveryInput:
 					if !ok {
 						return
 					}
-					relayMu.Lock()
-					active := relayedThreads[relayKey] == handle
-					thread := handle.thread
-					relayMu.Unlock()
-					if active {
-						notification := delivery.Notification
-						// The edits only this hub can make to a local daemon's
-						// notification on its way to a browser: the images it can
-						// resolve off disk, and the answer to what a thread can still
-						// be asked to do once the daemon announcing its own close is
-						// gone.
-						if strings.HasPrefix(relayKey, "local:") {
-							notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
-							notification = stampClosedThreadCapabilities(notification)
-						}
-						_, publicationErr := withDeletionTargetOwnership(cfg, ref, threadID, "", func() (struct{}, error) {
-							server.Broadcast(relayKey, notification.Method, notification.Params)
-							return struct{}{}, nil
-						})
-						if publicationErr != nil && isTargetDeletedError(publicationErr) {
-							if delivery.Acknowledge != nil {
-								delivery.Acknowledge()
-							}
-							return
-						}
-					}
-					if delivery.Acknowledge != nil {
-						delivery.Acknowledge()
-					}
+					acceptDelivery(delivery)
 				}
 			}
 		}()
@@ -345,64 +826,317 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		source appsource.RelaySessionSource,
 		base appsource.Source,
 		params appwire.ThreadReadParams,
-	) (*hubRelayHandle, func(), error) {
-		relayKey, threadID, err := relayTarget(base, params)
+		canonicalRef appwire.Ref,
+	) (*hubRelayHandle, *relayKeyState, func(context.Context, appwire.Thread) error, func(), error) {
+		relayKey, _, err := relayTarget(base, params)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, nil, err
+		}
+		stoppedRelayKeyLocked := func(preferred *hubRelayHandle) <-chan struct{} {
+			owners := pendingRelays[relayKey]
+			if preferred != nil {
+				if preferred.stopping {
+					return preferred.done
+				}
+				if current := preferred.relayKeys[relayKey]; current != nil && (current.stopRequested || current.retiring) {
+					return current.done
+				}
+				if pending := preferred.pendingKeys[relayKey]; pending != nil && owners[pending] == preferred && pending.stopRequested {
+					return pending.done
+				}
+			}
+			if currentHandle := relayedThreads[relayKey]; currentHandle != nil {
+				if current := currentHandle.relayKeys[relayKey]; current != nil && current.stopRequested {
+					return current.done
+				}
+			}
+			for pending := range owners {
+				if pending.stopRequested {
+					return pending.done
+				}
+			}
+			return nil
+		}
+		beginRelayKeyLocked := func(handle *hubRelayHandle) (*relayKeyState, <-chan struct{}) {
+			if handle.routes == nil {
+				handle.routes = make(map[string]*relayKeyState)
+			}
+			if handle.stopping {
+				return nil, handle.done
+			}
+			if stopped := stoppedRelayKeyLocked(handle); stopped != nil {
+				return nil, stopped
+			}
+			owners := pendingRelays[relayKey]
+			state := handle.relayKeys[relayKey]
+			if relayedThreads[relayKey] != handle || state == nil {
+				state = handle.pendingKeys[relayKey]
+				if state != nil && (owners[state] != handle || state.generation != relayGenerations[relayKey]) {
+					state = nil
+				}
+			}
+			if state == nil {
+				relayGenerations[relayKey]++
+				state = &relayKeyState{
+					relayKey:     relayKey,
+					generation:   relayGenerations[relayKey],
+					argsByCallID: make(map[string]string),
+					routingKeys:  make(map[string]struct{}),
+					done:         make(chan struct{}),
+				}
+				registerPendingStateLocked(handle, state)
+			}
+			state.commands++
+			handle.commandOwners++
+			handle.pendingRoutes++
+			return state, nil
+		}
+		waitForStoppedGeneration := func(done <-chan struct{}) error {
+			if observeHubRelayWait != nil {
+				observeHubRelayWait()
+			}
+			select {
+			case <-done:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		commandFunctions := func(handle *hubRelayHandle, state *relayKeyState) (func(context.Context, appwire.Thread) error, func()) {
+			routesPending := true
+			resolveRoutesLocked := func() {
+				if !routesPending {
+					return
+				}
+				routesPending = false
+				handle.pendingRoutes--
+				signalRouteChangeLocked(handle)
+			}
+			publish := func(publicationCtx context.Context, thread appwire.Thread) error {
+				var retirementHandle *hubRelayHandle
+				var retirementState *relayKeyState
+				restoreRetirementLocked := func() {
+					if retirementState != nil && retirementState.retireOwner == state &&
+						retirementHandle != nil && relayedThreads[relayKey] == retirementHandle &&
+						retirementHandle.relayKeys[relayKey] == retirementState && !retirementState.stopRequested {
+						retirementState.retiring = false
+						retirementState.removeOnDrain = false
+						retirementState.retireOwner = nil
+					}
+					retirementHandle = nil
+					retirementState = nil
+				}
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						relayMu.Lock()
+						if routesPending {
+							if pendingRelays[relayKey][state] == handle {
+								unregisterPendingStateLocked(handle, state)
+								close(state.done)
+							}
+							restoreRetirementLocked()
+							resolveRoutesLocked()
+						}
+						relayMu.Unlock()
+						panic(recovered)
+					}
+				}()
+				for {
+					if err := publicationCtx.Err(); err != nil {
+						relayMu.Lock()
+						if routesPending {
+							if pendingRelays[relayKey][state] == handle {
+								unregisterPendingStateLocked(handle, state)
+								close(state.done)
+							}
+							restoreRetirementLocked()
+							resolveRoutesLocked()
+						}
+						relayMu.Unlock()
+						return err
+					}
+					var drain <-chan struct{}
+					var closeHandles []*hubRelayHandle
+					relayMu.Lock()
+					if !routesPending {
+						relayMu.Unlock()
+						return nil
+					}
+					current := relayedThreads[relayKey] == handle && handle.relayKeys[relayKey] == state
+					pending := pendingRelays[relayKey][state] == handle
+					eligible := !handle.stopping && !state.stopRequested && !state.retiring &&
+						(current || (pending && state.generation == relayGenerations[relayKey]))
+					if !eligible {
+						restoreRetirementLocked()
+					}
+					if eligible && pending {
+						if previous := relayedThreads[relayKey]; previous != nil && previous != handle {
+							retirementHandle = previous
+							retirementState = previous.relayKeys[relayKey]
+							if retirementState != nil {
+								retirementState.retiring = true
+								retirementState.removeOnDrain = true
+								retirementState.retireOwner = state
+								if retirementState.publications != 0 {
+									drain = retirementState.publicationDone
+								} else {
+									removeRelayKeyStateLocked(previous, retirementState)
+									if maybeFinishHandleLocked(previous) {
+										closeHandles = append(closeHandles, previous)
+									}
+								}
+							}
+						}
+						if drain == nil {
+							unregisterPendingStateLocked(handle, state)
+						}
+					}
+					if drain != nil {
+						relayMu.Unlock()
+						for _, closeHandle := range closeHandles {
+							closeRelayHandle(closeHandle)
+						}
+						if observeHubRelayWait != nil {
+							observeHubRelayWait()
+						}
+						select {
+						case <-drain:
+							continue
+						case <-publicationCtx.Done():
+							relayMu.Lock()
+							if routesPending {
+								if pendingRelays[relayKey][state] == handle {
+									unregisterPendingStateLocked(handle, state)
+									close(state.done)
+								}
+								restoreRetirementLocked()
+								resolveRoutesLocked()
+							}
+							relayMu.Unlock()
+							return publicationCtx.Err()
+						}
+					}
+					if eligible {
+						removeStateRoutesLocked(handle, state)
+						state.thread = thread
+						bindStateRouteLocked(handle, relayKey, state)
+						sourceID := thread.Source
+						if sourceID == "" {
+							sourceID = handle.canonical.SourceID
+						}
+						if thread.ID != "" {
+							bindStateRouteLocked(handle, sourceID+":"+thread.ID, state)
+						}
+						bindStateRouteLocked(handle, thread.Evener.Ref, state)
+						handle.relayKeys[relayKey] = state
+						// Route identity and downstream ownership publish in one
+						// relayMu critical section, after the displaced generation's
+						// already-entered publications have drained.
+						relayedThreads[relayKey] = handle
+					} else if pending && !state.stopRequested && !handle.stopping {
+						unregisterPendingStateLocked(handle, state)
+						close(state.done)
+					}
+					resolveRoutesLocked()
+					relayMu.Unlock()
+					for _, closeHandle := range closeHandles {
+						closeRelayHandle(closeHandle)
+					}
+					return nil
+				}
+			}
+			release := func() {
+				var closeHandle bool
+				relayMu.Lock()
+				resolveRoutesLocked()
+				if state.commands > 0 && handle.commandOwners > 0 {
+					state.commands--
+					handle.commandOwners--
+				}
+				if state.commands == 0 && pendingRelays[relayKey][state] == handle {
+					unregisterPendingStateLocked(handle, state)
+					close(state.done)
+				}
+				if state.stopRequested && state.commands == 0 && state.publications == 0 {
+					removeStoppedStateLocked(handle, state)
+				}
+				closeHandle = maybeFinishHandleLocked(handle)
+				relayMu.Unlock()
+				if closeHandle {
+					closeRelayHandle(handle)
+				}
+			}
+			return publish, release
 		}
 		for {
 			relayMu.Lock()
-			existing := relayedThreads[relayKey]
+			existing := canonicalRelays[canonicalRef]
+			if stopped := stoppedRelayKeyLocked(existing); stopped != nil {
+				relayMu.Unlock()
+				if err := waitForStoppedGeneration(stopped); err != nil {
+					return nil, nil, nil, nil, err
+				}
+				continue
+			}
 			if existing != nil {
 				ready := existing.ready
 				relayMu.Unlock()
 				select {
 				case <-ready:
 				case <-ctx.Done():
-					return nil, nil, ctx.Err()
+					return nil, nil, nil, nil, ctx.Err()
 				}
 				relayMu.Lock()
-				if relayedThreads[relayKey] != existing || existing.err != nil {
+				if canonicalRelays[canonicalRef] != existing || existing.err != nil {
 					err := existing.err
 					relayMu.Unlock()
 					if err != nil {
-						return nil, nil, err
+						return nil, nil, nil, nil, err
 					}
 					continue
 				}
-				existing.commands++
+				state, stopped := beginRelayKeyLocked(existing)
 				relayMu.Unlock()
-				return existing, func() {
-					relayMu.Lock()
-					if existing.commands > 0 {
-						existing.commands--
+				if stopped != nil {
+					if err := waitForStoppedGeneration(stopped); err != nil {
+						return nil, nil, nil, nil, err
 					}
-					relayMu.Unlock()
-				}, nil
+					continue
+				}
+				publish, release := commandFunctions(existing, state)
+				return existing, state, publish, release, nil
 			}
 			relayCtx, cancelRelay := context.WithCancel(context.Background())
 			handle := &hubRelayHandle{
-				ready:    make(chan struct{}),
-				ctx:      relayCtx,
-				cancel:   cancelRelay,
-				commands: 1,
+				ready:         make(chan struct{}),
+				ctx:           relayCtx,
+				cancel:        cancelRelay,
+				canonical:     canonicalRef,
+				done:          make(chan struct{}),
+				initializing:  true,
+				relayKeys:     make(map[string]*relayKeyState),
+				pendingKeys:   make(map[string]*relayKeyState),
+				pendingStates: make(map[*relayKeyState]struct{}),
+				routes:        make(map[string]*relayKeyState),
+				routeChanged:  make(chan struct{}),
 			}
-			relayedThreads[relayKey] = handle
+			canonicalRelays[canonicalRef] = handle
 			relayMu.Unlock()
 
-			lease, acquireErr := source.AcquireRelaySession(params)
+			lease, acquireErr := source.AcquireRelaySession(canonicalRef)
 			var deliveries <-chan appsource.RelayDelivery
 			if acquireErr == nil && lease == nil {
 				acquireErr = appwire.SessionUnavailable("source returned no RelaySession lease")
 			}
 			if acquireErr == nil {
 				relayMu.Lock()
-				active := relayedThreads[relayKey] == handle
+				active := canonicalRelays[canonicalRef] == handle && !handle.stopping
 				if active {
 					handle.lease = lease
 				}
 				relayMu.Unlock()
 				if !active {
+					lease.Close()
 					acquireErr = context.Canceled
 				}
 			}
@@ -413,65 +1147,116 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				acquireErr = appwire.SessionUnavailable("RelaySession returned no delivery stream")
 			}
 			relayMu.Lock()
-			if acquireErr != nil || relayedThreads[relayKey] != handle {
-				if relayedThreads[relayKey] == handle {
-					delete(relayedThreads, relayKey)
-				}
+			handle.initializing = false
+			if acquireErr != nil || canonicalRelays[canonicalRef] != handle || handle.stopping {
 				if acquireErr == nil {
 					acquireErr = context.Canceled
 				}
+				removeRelayHandleLocked(handle)
 				finishHandleLocked(handle, acquireErr)
 				relayMu.Unlock()
 				closeRelayHandle(handle)
-				return nil, nil, acquireErr
+				return nil, nil, nil, nil, acquireErr
+			}
+			state, stopped := beginRelayKeyLocked(handle)
+			if stopped != nil {
+				delete(canonicalRelays, canonicalRef)
+				finishHandleLocked(handle, context.Canceled)
+				relayMu.Unlock()
+				closeRelayHandle(handle)
+				if err := waitForStoppedGeneration(stopped); err != nil {
+					return nil, nil, nil, nil, err
+				}
+				continue
 			}
 			handle.established = true
 			finishHandleLocked(handle, nil)
 			relayMu.Unlock()
-			startAcknowledgedFanout(relayKey, threadID, params.Ref, handle, deliveries)
-			return handle, func() {
-				relayMu.Lock()
-				if handle.commands > 0 {
-					handle.commands--
-				}
-				relayMu.Unlock()
-			}, nil
+			startAcknowledgedFanout(handle, deliveries)
+			publish, release := commandFunctions(handle, state)
+			return handle, state, publish, release, nil
 		}
 	}
 	readThread := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (*hubThreadReadResult, error) {
 		needsRelay := params.Subscribe || relayOnThreadRead(source)
 		relaySource, atomic := source.(appsource.RelaySessionSource)
 		if !atomic || !needsRelay {
+			if combined, ok := source.(appsource.CombinedItemReadSource); ok &&
+				params.IncludeTurns {
+				response, candidates, err := combined.ReadThreadWithItemCandidates(ctx, params)
+				return &hubThreadReadResult{
+					response: response, itemCandidates: candidates, hasItemCandidates: err == nil,
+				}, err
+			}
 			response, err := source.ReadThread(ctx, params)
 			return &hubThreadReadResult{response: response}, err
 		}
 		if err := deletionFenceError(cfg, params.Ref, params.ThreadID, ""); err != nil {
 			return nil, err
 		}
-		handle, release, err := acquireRelaySession(ctx, relaySource, source, params)
+		var canonicalRef appwire.Ref
+		var lifecycleKey string
+		var err error
+		if paired, ok := relaySource.(interface {
+			ResolveRelaySessionWithAdmission(appwire.ThreadReadParams) (appwire.Ref, string, error)
+		}); ok {
+			canonicalRef, lifecycleKey, err = paired.ResolveRelaySessionWithAdmission(params)
+		} else {
+			canonicalRef, err = relaySource.ResolveRelaySession(params)
+		}
 		if err != nil {
 			return nil, err
 		}
+		handle, state, publish, release, err := acquireRelaySession(ctx, relaySource, source, params, canonicalRef)
+		if err != nil {
+			return nil, err
+		}
+		if lifecycleKey == "" {
+			lifecycleKey = state.relayKey
+		}
+		var releaseOnce sync.Once
+		releaseCommand := func() { releaseOnce.Do(release) }
+		var read *hubThreadReadResult
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if read != nil {
+					read.finish(false)
+				} else {
+					releaseCommand()
+				}
+				panic(recovered)
+			}
+		}()
 		readParams := params
 		readParams.Subscribe = true
-		result, err := handle.lease.Read(ctx, readParams)
+		result, err := handle.lease.ReadWithRoutePublication(ctx, readParams, publish)
+		if result.Handoff != nil {
+			read = &hubThreadReadResult{
+				relayKey:     state.relayKey,
+				lifecycleKey: lifecycleKey,
+				response:     result.Response,
+				handoff:      result.Handoff,
+				release:      releaseCommand,
+			}
+		}
 		if err != nil {
-			release()
+			if read != nil {
+				read.finish(false)
+			} else {
+				releaseCommand()
+			}
 			return nil, err
 		}
-		if result.Handoff == nil {
-			release()
+		if read == nil {
+			releaseCommand()
 			return nil, appwire.SessionUnavailable("atomic thread read returned no live continuation")
 		}
-		relayMu.Lock()
-		if handle.lease != nil {
-			handle.thread = result.Response.Thread
-		}
-		relayMu.Unlock()
-		read := &hubThreadReadResult{
-			response: result.Response,
-			handoff:  result.Handoff,
-			release:  release,
+		// Canonical leases invoke publish before their pre-cut acknowledgement
+		// barrier. This idempotent call verifies the returned response without a
+		// base-only compatibility path.
+		if err := publish(ctx, result.Response.Thread); err != nil {
+			read.finish(false)
+			return nil, err
 		}
 		if err := deletionFenceError(cfg, params.Ref, read.response.Thread.ID, ""); err != nil {
 			read.finish(false)
@@ -483,22 +1268,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if read == nil || read.handoff == nil {
 			return true
 		}
-		sourceID := strings.TrimSpace(read.response.Thread.Source)
-		if ref, err := appwire.ParseRef(params.Ref); err == nil {
-			sourceID = ref.SourceID
-		}
-		if sourceID == "" {
-			sourceID = "local"
-		}
-		// Keyed on the response's Thread.ID rather than the request's
-		// ref.ThreadID: the daemon maps a stable ref back to the live session
-		// id before answering (server/appwire_runtime.go appThreadIDForRead),
-		// so the two coincide on every reachable path, and thread/unsubscribe
-		// resolves through the same mapping. Kept explicit so a future source
-		// that lets them diverge shows exactly where to look.
-		relayKey := sourceID + ":" + read.response.Thread.ID
+		relayKey := read.relayKey
 		captured, err := withDeletionTargetOwnership(
-			cfg,
+			ctx, cfg,
 			params.Ref,
 			read.response.Thread.ID,
 			"",
@@ -523,6 +1295,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					appserver.CaptureSubscriptionHandoff{
 						Commit: func() { read.finish(true) },
 						Abort:  func() { read.finish(false) },
+					},
+					func() appserver.SubscriptionTarget {
+						return appserver.SubscriptionTarget{ThreadID: relayKey, LifecycleKey: read.lifecycleKey}
 					},
 				), nil
 			},
@@ -551,9 +1326,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			return appwire.ThreadReadResponse{}, err
 		}
 		threadID := read.response.Thread.ID
-		relayKey := source.ID() + ":" + threadID
+		relayKey := read.relayKey
 		registered, err := withDeletionTargetOwnership(
-			cfg,
+			ctx, cfg,
 			params.Ref,
 			threadID,
 			"",
@@ -561,8 +1336,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if !read.handoff.Prepare() {
 					return false, appwire.SessionUnavailable("relay handoff could not be prepared")
 				}
-				if !registerSubscription(ctx, relayKey, params.ReplaceSubscription) {
-					return false, nil
+				if err := registerSubscription(ctx, relayKey, params.ReplaceSubscription, read.lifecycleKey); err != nil {
+					return false, err
 				}
 				if !read.finish(true) {
 					return false, appwire.SessionUnavailable("relay handoff could not be committed")
@@ -647,12 +1422,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cfg.RelayHooks.BeforeExistingRegistration != nil {
 					cfg.RelayHooks.BeforeExistingRegistration(threadID)
 				}
-				if !registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription) {
-					return false, context.Canceled
+				if err := registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription); err != nil {
+					return false, err
 				}
 				return true, nil
 			}
-			registered, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", registerExisting)
+			registered, err := withDeletionTargetOwnership(ctx, cfg, subscribeParams.Ref, threadID, "", registerExisting)
 			if err != nil {
 				return err
 			}
@@ -712,9 +1487,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			cancelRelay()
 			return err
 		}
-		if !registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription) {
+		if err = registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription); err != nil {
 			delete(relayedThreads, relayKey)
-			err = context.Canceled
 			finishHandleLocked(relayHandle, err)
 			relayMu.Unlock()
 			cancelRelay()
@@ -986,9 +1760,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					return appwire.TurnStartResponse{}, fenceErr
 				}
 			}
+			if daemonOwnershipMayHaveChanged(err) {
+				if restartErr := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID); restartErr != nil {
+					return appwire.TurnStartResponse{}, restartErr
+				}
+			}
 			return appwire.TurnStartResponse{}, err
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
 			return source.StartTurn(ctx, params)
 		})
 	}
@@ -1007,7 +1786,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			ref = appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String()
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, thread.ID)
+		source, err := sourceForThreadWithDeletionFence(cfg, sources, ref, thread.ID)
 		if err != nil {
 			return nil //nolint:nilerr // best-effort relay: an unresolvable source means nothing to relay, not a caller error
 		}
@@ -1025,17 +1804,96 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		return nil
 	}
-	stopRelay := func(key string) {
+	stopCanonicalRelay := func(ref appwire.Ref) {
+		var closeHandle bool
+		var cancelInitializing context.CancelFunc
 		relayMu.Lock()
-		handle := relayedThreads[key]
-		if handle != nil {
-			delete(relayedThreads, key)
-			finishHandleLocked(handle, context.Canceled)
+		handle := canonicalRelays[ref]
+		if handle != nil && !handle.removed {
+			handle.stopping = true
+			if handle.initializing {
+				cancelInitializing = handle.cancel
+			}
+			for _, state := range handle.relayKeys {
+				state.stopRequested = true
+				state.retiring = true
+				state.retireOwner = nil
+				removeStoppedStateLocked(handle, state)
+			}
+			for state := range handle.pendingStates {
+				state.stopRequested = true
+				removeStoppedStateLocked(handle, state)
+			}
+			signalRouteChangeLocked(handle)
+			closeHandle = maybeFinishHandleLocked(handle)
 		}
 		relayMu.Unlock()
-		if handle != nil {
+		if cancelInitializing != nil {
+			cancelInitializing()
+		}
+		if closeHandle {
 			closeRelayHandle(handle)
 		}
+	}
+	stopRelay := func(relayKey string) {
+		var closeHandles []*hubRelayHandle
+		relayMu.Lock()
+		handle := relayedThreads[relayKey]
+		if handle != nil && handle.canonical == (appwire.Ref{}) {
+			if removeRelayHandleLocked(handle) {
+				finishHandleLocked(handle, context.Canceled)
+				closeHandles = append(closeHandles, handle)
+			}
+		} else {
+			handles := make(map[*hubRelayHandle]struct{})
+			if handle != nil {
+				handles[handle] = struct{}{}
+				state := handle.relayKeys[relayKey]
+				if state != nil {
+					state.stopRequested = true
+					state.retiring = true
+					state.retireOwner = nil
+					removeStoppedStateLocked(handle, state)
+				}
+			}
+			for state, pendingHandle := range pendingRelays[relayKey] {
+				handles[pendingHandle] = struct{}{}
+				if state != nil {
+					state.stopRequested = true
+					removeStoppedStateLocked(pendingHandle, state)
+				}
+			}
+			for currentHandle := range handles {
+				signalRouteChangeLocked(currentHandle)
+				if maybeFinishHandleLocked(currentHandle) {
+					closeHandles = append(closeHandles, currentHandle)
+				}
+			}
+		}
+		relayMu.Unlock()
+		for _, closeHandle := range closeHandles {
+			closeRelayHandle(closeHandle)
+		}
+	}
+	relayCommandCount := func(key string) int {
+		relayMu.Lock()
+		defer relayMu.Unlock()
+		count := 0
+		if handle := relayedThreads[key]; handle != nil {
+			if state := handle.relayKeys[key]; state != nil {
+				count += state.commands
+			}
+		}
+		for state := range pendingRelays[key] {
+			count += state.commands
+		}
+		return count
+	}
+	relayPublished := func(key string) bool {
+		relayMu.Lock()
+		defer relayMu.Unlock()
+		handle := relayedThreads[key]
+		return handle != nil && handle.relayKeys[key] != nil
 	}
 	return hubRelayFunctions{
 		startRelay:          startRelay,
@@ -1044,5 +1902,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		startTurn:           startTurn,
 		startRelayForThread: startRelayForThread,
 		stopRelay:           stopRelay,
+		stopCanonicalRelay:  stopCanonicalRelay,
+		relayCommandCount:   relayCommandCount,
+		relayPublished:      relayPublished,
 	}
 }

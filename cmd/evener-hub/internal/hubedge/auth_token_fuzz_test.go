@@ -14,6 +14,8 @@ func FuzzAuthGuard(f *testing.F) {
 		{"POST", "/api/run", "", "secret", "application/json"},
 		{"GET", "/api/health", "", "", ""},
 		{"GET", "/x?token=secret", "", "", "text/html"},
+		{"GET", "/auth/secret", "", "", "text/html"},
+		{"GET", "/auth?token=secret", "", "", "text/html"},
 	} {
 		f.Add(seed.method, seed.path, seed.cookie, seed.bearer, seed.accept)
 	}
@@ -51,7 +53,7 @@ func FuzzHandleAuth(f *testing.F) {
 		if len(next) > 4096 {
 			t.Skip()
 		}
-		req := httptest.NewRequest(http.MethodGet, "/auth?token=secret&next="+url.QueryEscape(next), nil)
+		req := httptest.NewRequest(http.MethodGet, "/auth/secret?next="+url.QueryEscape(next), nil)
 		rec := httptest.NewRecorder()
 		HandleAuth("secret").ServeHTTP(rec, req)
 		if rec.Code != http.StatusFound {

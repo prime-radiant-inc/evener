@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,9 +27,14 @@ func (*sseReadTimeoutError) Is(target error) bool {
 	return target == ErrSSEReadTimeout
 }
 
-// APITimeoutSourceForSSE identifies only the timeout emitted by Evener's own SSE
-// timer. Provider and body errors are opaque transport/decode evidence.
+// APITimeoutSourceForSSE identifies only timeouts emitted by Evener's own SSE
+// or response-body timer. Other provider/body errors remain opaque evidence.
 func APITimeoutSourceForSSE(err error) APITimeoutSource {
+	// errors.As would invoke behavior-bearing As/Unwrap methods on opaque
+	// provider errors; timeout ownership must not execute those methods.
+	if _, ok := err.(*responseIdleTimeoutError); ok { //nolint:errorlint // Provider errors are untrusted; inspect only the owned inert timeout.
+		return APITimeoutResponseIdle
+	}
 	if _, ok := err.(*sseReadTimeoutError); ok { //nolint:errorlint // Provider errors are untrusted; inspect only Evener's concrete inert wrapper.
 		return APITimeoutSSERead
 	}
@@ -51,7 +57,7 @@ type SSEOption func(*sseOptions)
 
 // WithStreamReadTimeout sets a per-read timeout for SSE parsing. If no data
 // is received within d, ParseSSE returns an error. The timer resets after
-// each line of data is read. A zero or negative duration disables the timeout.
+// each underlying read returns bytes, including partial lines and comments. A zero or negative duration disables the timeout.
 func WithStreamReadTimeout(d time.Duration) SSEOption {
 	return func(o *sseOptions) { o.streamReadTimeout = d }
 }
@@ -103,6 +109,10 @@ func (p *sseParser) processLine(line string, fn func(SSEEvent) error) (bool, err
 
 // ParseSSE parses Server-Sent Events from r and invokes fn for each complete event.
 // It handles "event:" and "data:" lines and emits an event on blank-line boundaries.
+// The caller retains ownership of r: ParseSSE never closes it. With a read
+// timeout, a background read may remain blocked after ParseSSE returns; callers
+// must close or otherwise interrupt their reader to release it. An arbitrary
+// borrowed io.Reader cannot be forcibly interrupted by this parser.
 func ParseSSE(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, opts ...SSEOption) error {
 	var cfg sseOptions
 	for _, o := range opts {
@@ -147,13 +157,21 @@ func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) err
 // goroutine reads lines from r and sends them on a channel. The main loop
 // selects between that channel, the timeout timer, and context cancellation.
 func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, timeout time.Duration) error {
-	br := bufio.NewReader(r)
+	timer := &sseReadTimer{timer: time.NewTimer(timeout), timeout: timeout}
+	defer timer.stop()
+	done := make(chan struct{})
+	defer close(done)
+	br := bufio.NewReader(&sseActivityReader{reader: r, progress: timer.progress})
 
 	lineCh := make(chan readResult, 1)
 	go func() {
 		for {
 			line, err := br.ReadString('\n')
-			lineCh <- readResult{line, err}
+			select {
+			case lineCh <- readResult{line, err}:
+			case <-done:
+				return
+			}
 			if err != nil {
 				return
 			}
@@ -161,13 +179,10 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 	}()
 
 	var p sseParser
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 
 	for {
 		select {
 		case res := <-lineCh:
-			timer.Reset(timeout)
 
 			line := res.line
 			err := res.err
@@ -184,7 +199,7 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 				return p.flush(fn)
 			}
 
-		case <-timer.C:
+		case <-timer.timer.C:
 			return &sseReadTimeoutError{timeout: timeout}
 
 		case <-ctx.Done():
@@ -192,3 +207,33 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 		}
 	}
 }
+
+type sseActivityReader struct {
+	reader   io.Reader
+	progress func()
+}
+
+func (r *sseActivityReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.progress()
+	}
+	return n, err
+}
+
+// sseReadTimer owns progress and cleanup for the asynchronous SSE reader.
+type sseReadTimer struct {
+	mu      sync.Mutex
+	timer   *time.Timer
+	timeout time.Duration
+	stopped bool
+}
+
+func (t *sseReadTimer) progress() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.stopped {
+		t.timer.Reset(t.timeout)
+	}
+}
+func (t *sseReadTimer) stop() { t.mu.Lock(); defer t.mu.Unlock(); t.stopped = true; t.timer.Stop() }

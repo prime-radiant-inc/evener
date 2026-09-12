@@ -18,7 +18,29 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/registry"
 )
+
+// namedOpenAIInstanceProfile is a profile on an openai-backed instance under a
+// user-assigned name: side calls route on the instance name, and the cheap
+// model still comes from the provider behind it.
+func namedOpenAIInstanceProfile(t *testing.T, name, model string) *provider.Profile {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{name: {Base: "openai", APIKey: "test"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	p, err := provider.Resolve(r, name+"/"+model)
+	if err != nil {
+		t.Fatalf("resolve %s/%s: %v", name, model, err)
+	}
+	return p
+}
 
 func refusal(status int, message string) func(string, string) error {
 	return func(prov, _ string) error {
@@ -121,56 +143,21 @@ func TestCallerDeduplicatesConcurrentCheapRefusalProbes(t *testing.T) {
 	}
 }
 
+// TestCallerRunsConcurrentSuccessfulCheapRequestsIndependently pins that a
+// healthy cheap route is never serialized behind one shared probe: every
+// caller issues its own cheap request, gets its own answer back, and none is
+// pushed onto the session model. Only a refusal is a route property worth
+// sharing (see TestCallerRunsConcurrentCheapRefusalsAsOneProbe).
 func TestCallerRunsConcurrentSuccessfulCheapRequestsIndependently(t *testing.T) {
 	const callers = 8
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// TRIPWIRE: in-process scripted adapter with no I/O; only fires on a
+	// genuine deadlock in the probe machinery.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	started := make(chan struct{}, callers)
-	overlap := make(chan struct{})
-	releaseAll := make(chan struct{})
-	validated := make(chan struct{}, callers)
-	var current atomic.Int32
-	var maximum atomic.Int32
-	var cheapCalls atomic.Int32
-	var overlapOnce sync.Once
 	adapter := &contextTrackingAdapter{Provider: "openai"}
-	adapter.Validate = func(string) error {
-		validated <- struct{}{}
-		return nil
-	}
-	adapter.Respond = func(ctx context.Context, req llm.Request) (llm.Response, error) {
-		if req.Model != "gpt-4.1-nano" {
-			return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
-		}
-		now := current.Add(1)
-		if now >= 2 {
-			overlapOnce.Do(func() { close(overlap) })
-		}
-		for {
-			old := maximum.Load()
-			if now <= old || maximum.CompareAndSwap(old, now) {
-				break
-			}
-		}
-		started <- struct{}{}
-		defer current.Add(-1)
-		if cheapCalls.Add(1) == 1 {
-			for range callers {
-				select {
-				case <-validated:
-				case <-ctx.Done():
-					return llm.Response{}, ctx.Err()
-				}
-			}
-			return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
-		}
-		select {
-		case <-releaseAll:
-			return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
-		case <-ctx.Done():
-			return llm.Response{}, ctx.Err()
-		}
+	adapter.Respond = func(_ context.Context, req llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant(req.Messages[0].Text())}, nil
 	}
 
 	caller := cheapmodel.New(clientWith(adapter))
@@ -199,20 +186,6 @@ func TestCallerRunsConcurrentSuccessfulCheapRequestsIndependently(t *testing.T) 
 		<-ready
 	}
 	close(start)
-
-	select {
-	case <-started:
-	case <-ctx.Done():
-		t.Fatal("first cheap request did not start")
-	}
-	overlapped := false
-	select {
-	case <-overlap:
-		overlapped = true
-	case <-ctx.Done():
-		t.Errorf("healthy cheap requests never overlapped")
-	}
-	close(releaseAll)
 	wg.Wait()
 	close(errs)
 	close(responses)
@@ -220,11 +193,14 @@ func TestCallerRunsConcurrentSuccessfulCheapRequestsIndependently(t *testing.T) 
 	for err := range errs {
 		t.Errorf("concurrent Complete: %v", err)
 	}
-	if got := maximum.Load(); got < 2 {
-		t.Fatalf("maximum concurrent healthy cheap calls = %d, want at least 2", got)
+	models := adapter.Models()
+	if len(models) != callers {
+		t.Fatalf("provider calls = %d, want one cheap call per caller (%d): %v", len(models), callers, models)
 	}
-	if !overlapped {
-		t.Fatalf("healthy cheap requests did not overlap")
+	for _, model := range models {
+		if model != "gpt-4.1-nano" {
+			t.Fatalf("provider calls = %v, want every one on the cheap model", models)
+		}
 	}
 	for response := range responses {
 		if _, ok := expected[response]; !ok {
@@ -309,16 +285,20 @@ func TestCallerDoesNotRetryWhenTheCheapModelIsTheSessionModel(t *testing.T) {
 	}
 }
 
-func TestCallerUsesStaticCompatibilityWithoutAProbe(t *testing.T) {
+// TestCallerSkipsARouteTheClientCannotServe pins the proactive half of the
+// pair: a cheap route the client refuses outright (spec §7.3 — an id off the
+// Codex allowlist is the only reference that fails to resolve) is never
+// probed, and the request runs on the session model instead.
+func TestCallerSkipsARouteTheClientCannotServe(t *testing.T) {
 	tracker := servesOnly("openai", "main", refusal(400, "unexpected model"))
-	adapter := &declaredModelAdapter{ModelTrackingAdapter: tracker, served: "main"}
-	caller := cheapmodel.New(clientWith(adapter))
+	caller := cheapmodel.New(clientWith(tracker))
+	profile := provider.WithCheapModel(provider.NewOpenAIProfile("main"), "openai-codex/not-on-the-allowlist")
 
-	if _, err := complete(t, caller, provider.NewOpenAIProfile("main")); err != nil {
+	if _, err := complete(t, caller, profile); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	if got, want := tracker.Models(), []string{"main"}; !slices.Equal(got, want) {
-		t.Fatalf("models = %v, want %v", got, want)
+		t.Fatalf("models = %v, want %v (the unservable cheap route is never probed)", got, want)
 	}
 }
 
@@ -420,7 +400,7 @@ func TestCallerKeepsRefusalsAcrossModelSwitchButNotProviderSwitch(t *testing.T) 
 	if got, want := openAI.Models(), []string{"gpt-4.1-nano", "main", "main-2"}; !slices.Equal(got, want) {
 		t.Fatalf("openai models = %v, want %v", got, want)
 	}
-	bedrockProfile := provider.WithProviderID(provider.NewOpenAIProfile("bedrock-main"), "bedrock")
+	bedrockProfile := namedOpenAIInstanceProfile(t, "bedrock", "bedrock-main")
 	if _, err := complete(t, caller, bedrockProfile); err != nil {
 		t.Fatalf("bedrock Complete: %v", err)
 	}
@@ -429,22 +409,9 @@ func TestCallerKeepsRefusalsAcrossModelSwitchButNotProviderSwitch(t *testing.T) 
 	}
 }
 
-type declaredModelAdapter struct {
-	*agenttest.ModelTrackingAdapter
-	served string
-}
-
-func (a *declaredModelAdapter) ValidateModel(model string) error {
-	if model == a.served {
-		return nil
-	}
-	return fmt.Errorf("model %s is not supported (served: %s)", model, a.served)
-}
-
 type contextTrackingAdapter struct {
 	Provider string
 	Respond  func(context.Context, llm.Request) (llm.Response, error)
-	Validate func(string) error
 
 	mu     sync.Mutex
 	models []string
@@ -469,13 +436,6 @@ func (a *contextTrackingAdapter) Complete(ctx context.Context, req llm.Request) 
 
 func (a *contextTrackingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
-}
-
-func (a *contextTrackingAdapter) ValidateModel(model string) error {
-	if a.Validate != nil {
-		return a.Validate(model)
-	}
-	return nil
 }
 
 func (a *contextTrackingAdapter) Models() []string {

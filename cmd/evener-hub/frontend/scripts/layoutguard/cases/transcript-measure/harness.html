@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>transcript-measure layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body { margin: 0; background: var(--surface-0); font-family: var(--font-sans); }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px; }
+  .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+  /* The pane's content box: PaneScaffold's body minus its padding. Each
+     fixture sets its own width from case.json's widthMatrix - the two
+     entries are 1440 and 1920 windows minus the 280px rail and the pane's
+     own 2 x 24px padding. */
+  .pane { box-sizing: border-box; background: var(--surface-1); }
+</style>
+</head>
+<body data-font-size="m" data-transcript-measure="reading">
+<!-- Reproduces AgentMessageItem's exchange-opener DOM (AgentMessageItem.tsx's
+     wrap(): .message.opener > SpeakerAvatar .tile + .column > .header + .bubble
+     > Markdown .root > p) inside TurnBlock's .turn, against the REAL class
+     names from turnblock/agentmessageitem/speakeravatar/markdown. The geometry
+     under test: how many characters a plain paragraph gets per line, and
+     whether .turn is centred in the pane. -->
+<main class="fixtures"></main>
+
+<template id="fixture-template">
+  <section class="fixture">
+    <div class="fixtureLabel"></div>
+    <div class="pane" data-pane>
+      <div class="turn" data-turn>
+        <div class="message opener">
+          <span class="tile" aria-hidden="true"></span>
+          <div class="column">
+            <div class="header"><span class="name">Agent</span><span class="meta">preview/preview-model · 2m ago</span></div>
+            <div class="bubble">
+              <div class="root">
+                <p data-prose>The transcript display flow is ready. I inspected the projection layer and its test coverage, then traced how each turn is reduced into display items before the virtual list renders them. The reducer keys subagent modules on turn id alone, which two sessions can share, so I added the session ref to the key and updated the three call sites that read it. The focused view and the read-only pane both render the same item components, so the change lands in both places without a second edit. Tests cover the cross-session case now, and the guard that measures overflow at four widths still passes without a change to its fixtures.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>
+
+<script>
+const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
+const template = document.querySelector("#fixture-template");
+const fixtureRoot = document.querySelector(".fixtures");
+for (const spec of fixtures) {
+  const fragment = template.content.cloneNode(true);
+  const fixture = fragment.querySelector(".fixture");
+  fixture.dataset.width = String(spec.width);
+  fixture.dataset.window = String(spec.window);
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.window}px window / ${spec.width}px pane`;
+  fixture.querySelector("[data-pane]").style.width = `${spec.width}px`;
+  fixtureRoot.append(fragment);
+}
+
+// Distinct line-box tops of the paragraph's inline content = rendered line
+// count; the same Range technique the critique measured the live app with.
+function lineCount(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const tops = new Set();
+  for (const rect of range.getClientRects()) tops.add(Math.round(rect.top));
+  return tops.size;
+}
+
+window.measure = () =>
+  [...document.querySelectorAll(".fixture")].map((fixture) => {
+    const pane = fixture.querySelector("[data-pane]").getBoundingClientRect();
+    const turn = fixture.querySelector("[data-turn]").getBoundingClientRect();
+    const prose = fixture.querySelector("[data-prose]");
+    const lines = lineCount(prose);
+    const chars = prose.textContent.length;
+    return {
+      window: Number(fixture.dataset.window),
+      width: Number(fixture.dataset.width),
+      lines,
+      chars,
+      charsPerLine: chars / Math.max(1, lines),
+      turnWidth: turn.width,
+      leftGap: turn.left - pane.left,
+      rightGap: pane.right - turn.right,
+      fontSize: getComputedStyle(prose).fontSize,
+    };
+  });
+</script>
+</body>
+</html>

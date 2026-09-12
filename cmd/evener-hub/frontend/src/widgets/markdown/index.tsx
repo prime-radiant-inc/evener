@@ -1,13 +1,16 @@
 import DOMPurify from "dompurify";
-import { Marked, type RendererObject, type Tokens } from "marked";
-import { useMemo } from "react";
+import { Marked, type RendererObject, type Token, type Tokens } from "marked";
+import { type Ref, useMemo, useRef } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
+import { markdownLexer } from "./lexer";
 import styles from "./markdown.module.css";
 import { closeOpenMarkdown } from "./streaming";
 
 export interface MarkdownProps {
   source: string;
+  /** Lets a caller attach actions to sanitized content without a layout wrapper. */
+  ref?: Ref<HTMLDivElement>;
   /** True while `source` is a possibly-truncated stream still in flight:
    * constructs left open at the tail (unterminated `**`/`*`/`~~`, inline
    * code, fenced code blocks) are closed before parsing via
@@ -93,6 +96,10 @@ const renderer: RendererObject = {
 // consumer of the `marked` package that might get added to this app later.
 const md = new Marked({ gfm: true, renderer });
 
+// Re-exported so existing `widgets/markdown` import sites keep working; the
+// instance lives in ./lexer.ts (UI-free, no renderer to leak widget markup).
+export { markdownLexer } from "./lexer";
+
 // Sanitizes the OUTPUT html, not the markdown source - this is DOMPurify's
 // documented pairing with marked (marked itself performs no sanitization).
 // The allowlist is every tag/attribute marked's defaults or the overrides
@@ -154,6 +161,166 @@ const SANITIZE_CONFIG = {
   ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align"],
 };
 
+// Live re-parse throttle: a full marked + DOMPurify pass per streamed token
+// is O(n^2) over a long stream. Below this source length every live render
+// takes the same full-parse path as before (all existing live tests stay on
+// it); past it, only the tail window is re-parsed per render while the
+// settled head is served from a prefix-keyed cache. Grown past the window
+// mid-stream, the head cache fills once per new head text and then hits.
+// Any stream whose tail carries block structure falls back to the full parse
+// (slower, exactly today's behavior - correctness first); only a
+// paragraphs-only tail takes the windowed path.
+const LIVE_WINDOWED_MIN_LENGTH = 2000;
+// The tail window re-parsed on every live render past the threshold above -
+// sized to cover the in-progress paragraph still being written without
+// re-parsing the whole document.
+const LIVE_TAIL_WINDOW = 1000;
+
+// Block constructs that can tokenize differently as a standalone document
+// than as the tail of a larger one, so the windowed live path below must not
+// engage while the tail window contains them: a list continues over blank
+// lines (one list vs two changes the HTML), a fenced block or table can span
+// the split point, and a link definition resolves references anywhere. Any
+// hit falls back to the full parse. Paragraph-only tails are the sound case:
+// no other CommonMark block spans a blank line, and raw HTML needs no gate -
+// the html() override escapes it to text identically in both paths.
+const TAIL_BLOCK_MARKER =
+  /^ {0,3}#{1,6}(?:[ \t]+|\r?$)|^ {0,3}(?:=+|-+)[ \t]*\r?$|^ {0,3}(?:[-+*](?:[ \t]+|\r?$)|\d{1,9}[.)](?:[ \t]+|\r?$))|^ {0,3}(`{3,}|~{3,})|^ {0,3}>|^ {0,3}(?:\*[ \t]*){3,}\r?$|^ {0,3}(?:-[ \t]*){3,}\r?$|^ {0,3}(?:_[ \t]*){3,}\r?$|^\s*\||^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$|^ {0,3}\[[^\]\n]+\]:|<!\[CDATA\[|\]\]>/m;
+
+// Head-side hazards for the split: a link definition or table delimiter row
+// in the head can resolve structure in the tail (a `[label]` use, table
+// rows) that a standalone tail parse would leave literal, so any hit falls
+// back to the full parse. The link-definition arm also matches `>`-quoted
+// and list-item-nested definitions (valid anywhere a block can nest, and
+// registered globally by marked): without it a head-side definition would
+// leave the tail's `[label]` use literal under the windowed parse. Verified
+// against the shared lexer: top-level, blockquote-nested, and list-nested
+// definitions all trip this pattern while definition-free heads do not.
+// Shapes the pattern cannot cover (an escaped label like `[foo\]bar]: /url`
+// has no `[...]:` span for it to match; a definition indented as a list-item
+// continuation sits past its 0-3-space allowance) are caught by the
+// shared-lexer check in the gate below instead.
+const HEAD_SPLIT_HAZARD =
+  /^(?: {0,3}>[ \t]?)+ {0,3}\[[^\]\n]+\]:|^ {0,3}(?: {0,3}>[ \t]?)* {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+.*\[[^\]\n]+\]:|^ {0,3}\[[^\]\n]+\]:|^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$/m;
+
+// HTML blocks (CommonMark types 1-6: pre/script/style/textarea, comments,
+// processing instructions, declarations, CDATA, block tags) run past blank
+// lines until their terminator, so a split inside one severs it with no
+// markdown marker in the tail for TAIL_BLOCK_MARKER to trip. A block start in
+// the head, or a block ender in the tail (whose opener may sit anywhere
+// upstream, including before the head), falls back to the full parse.
+const HTML_BLOCK_START =
+  /^ {0,3}(?:<(?:pre|script|style|textarea)(?:[\s>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\[|<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[\s>/]|$))/im;
+const HTML_BLOCK_END = /<\/(?:pre|script|style|textarea)>|-->|\?>|\]\]>/i;
+
+// Splits a long live source into a settled head (ending on a blank line) and
+// the streaming tail after it, or null when there is no blank-line boundary
+// whose tail is at most LIVE_TAIL_WINDOW (one very long paragraph still
+// streaming). The boundary is the FIRST at/after the window edge, so the tail
+// holds at most the window - taking the last boundary at/before the edge
+// instead would accept a tail holding the entire remainder of a long
+// paragraph. CRLF sources carry no "\n\n" span (a \r sits between the \n
+// pair), so both line endings are searched and the earliest boundary wins.
+// Leading blank lines of the tail are skipped - insignificant in both paths;
+// a tail of nothing but blanks likewise declines the windowed path.
+function splitLiveSource(source: string): { head: string; tail: string } | null {
+  const edge = source.length - LIVE_TAIL_WINDOW;
+  const lf = source.indexOf("\n\n", edge);
+  const crlf = source.indexOf("\r\n\r\n", edge);
+  const blank = lf === -1 ? crlf : crlf === -1 ? lf : Math.min(lf, crlf);
+  if (blank === -1) return null;
+  const separator = source.startsWith("\r\n\r\n", blank) ? 4 : 2;
+  let tailStart = blank + separator;
+  while (source.charAt(tailStart) === "\n" || source.charAt(tailStart) === "\r") tailStart += 1;
+  if (tailStart >= source.length) return null;
+  return { head: source.slice(0, blank + separator), tail: source.slice(tailStart) };
+}
+
+// Exact link-definition detection through the shared lexer: a definition on
+// either side of the split registers globally with marked and resolves
+// `[label]` uses anywhere in the whole - including across the split - that a
+// standalone tail parse would leave literal, so any `def` token, top level
+// or nested in a blockquote/list/table, falls back to the full parse. A
+// lexer failure fails closed to the full parse as well.
+function containsLinkDefinition(source: string): boolean {
+  let tokens: Token[];
+  try {
+    tokens = markdownLexer.lexer(source);
+  } catch {
+    return true;
+  }
+  return tokensContainDef(tokens);
+}
+
+function tokensContainDef(tokens: Token[]): boolean {
+  // Any unexpected shape (malformed tokens, a future marked token type with
+  // unguarded nesting) fails closed to the full parse: a missed `def` would
+  // resolve differently under the windowed halves, while a spurious fallback
+  // is exactly today's behavior.
+  try {
+    for (const token of tokens) {
+      if (token.type === "def") return true;
+      if ("tokens" in token && tokensContainDef(token.tokens ?? [])) return true;
+      if ("items" in token) {
+        for (const item of token.items ?? []) {
+          if (tokensContainDef(item?.tokens ?? [])) return true;
+        }
+      }
+      if (token.type === "table") {
+        for (const cell of [...(token.header ?? []), ...(token.rows ?? []).flat()]) {
+          if (tokensContainDef(cell?.tokens ?? [])) return true;
+        }
+      }
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+// The head-side gate verdicts cached per exact head text: every one of them
+// (balance scan, hazard patterns, shared-lexer definition check) is a pure
+// function of the head string, so a verdict computed for a head stays valid
+// until the head text itself changes. Re-running them on every live render
+// would reintroduce the O(n^2) the head HTML cache exists to avoid. (The
+// tail is window-bounded, so it lexes/scans per render with no cache.)
+interface HeadGateVerdict {
+  headSource: string;
+  balanced: boolean;
+  hazard: boolean;
+  htmlStart: boolean;
+  hasDef: boolean;
+}
+
+function headGateVerdict(head: string, cache: { current: HeadGateVerdict | null }): HeadGateVerdict {
+  const hit = cache.current;
+  if (hit !== null && hit.headSource === head) return hit;
+  // The regex gates below carry no /g flag, so .test is stateless and the
+  // cached verdict cannot depend on lastIndex carryover.
+  const verdict: HeadGateVerdict = {
+    headSource: head,
+    balanced: closeOpenMarkdown(head) === head,
+    hazard: HEAD_SPLIT_HAZARD.test(head),
+    htmlStart: HTML_BLOCK_START.test(head),
+    hasDef: containsLinkDefinition(head),
+  };
+  cache.current = verdict;
+  return verdict;
+}
+
+// The tail's first non-blank line, when indented, could still belong to a
+// list item open in the head (indented continuation joins it across the
+// blank line), so it declines the windowed path. Non-indented content can
+// never rejoin a head block across a blank line.
+function tailStartsIndented(tail: string): boolean {
+  const lines = tail.split("\n");
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    return line.charAt(0) === " " || line.charAt(0) === "\t";
+  }
+  return false;
+}
+
 /**
  * Renders a markdown source string: marked tokenizes and generates HTML,
  * DOMPurify sanitizes it against a fixed allowlist, and the result is set
@@ -163,10 +330,81 @@ const SANITIZE_CONFIG = {
  * source is treated as a truncated stream and its open constructs are
  * closed before parsing (see streaming.ts).
  */
-export function Markdown({ source, live = false }: MarkdownProps) {
+export function Markdown({ source, live = false, ref }: MarkdownProps) {
+  // Live streams re-render per streamed token, and each render re-parses the
+  // whole message (marked + DOMPurify) - O(n^2) over a long stream. Past the
+  // window above, the settled head is served from a cache keyed on its own
+  // exact prefix text (a changed head is a cache miss and re-parses, never
+  // stale output), while only the tail window is re-parsed per render with
+  // the live auto-close, so formatting still previews while streaming. The
+  // windowed path engages ONLY when the split is sound (see the gates
+  // below); anything else takes the full-parse fallback, which is exactly
+  // the pre-throttle behavior for every input. Settled renders (live=false)
+  // always take the settled full-parse path unchanged, so the final HTML is
+  // byte-identical with or without this throttle.
+  const headCacheRef = useRef<{ headSource: string; headHtml: string } | null>(null);
+  // Backs headGateVerdict below - same cache discipline as headCacheRef:
+  // keyed on the head's own exact text, never stale, misses evaluate once.
+  const headGateCacheRef = useRef<HeadGateVerdict | null>(null);
   const html = useMemo(() => {
-    const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
-    return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
+    if (!live || source.length <= LIVE_WINDOWED_MIN_LENGTH) {
+      const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
+      return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
+    }
+    // The windowed path is sound only when NOTHING spans the split. Its
+    // keystone is whole-source balance, derived WITHOUT re-walking the whole
+    // source: the split sits on a blank line, and closeOpenMarkdown resets
+    // every non-fence state (emphasis, code spans) at blank lines, while a
+    // fence left open at the boundary would leave the head itself unbalanced -
+    // so given a balanced head, the whole is balanced exactly when the tail
+    // scanned standalone is balanced. The head must be closed at the boundary
+    // too (a fence opened in the head and closed in the tail is
+    // whole-balanced but still spans the split - the head-balance arm
+    // backstops that shape, and the tail's fence run trips TAIL_BLOCK_MARKER
+    // for it as well). The only cross-boundary structure a balanced whole can
+    // otherwise carry is forward references (link definitions, table
+    // delimiters) and blank-line-spanning HTML blocks, excluded by
+    // HEAD_SPLIT_HAZARD and the HTML gates; the tail must be paragraphs-only
+    // on fresh content (TAIL_BLOCK_MARKER, tailStartsIndented). Anything else
+    // takes the full-parse fallback, which is exactly the pre-throttle
+    // behavior for every input. The tail keeps the full block parse - never
+    // an inline-only one. Head-side verdicts come from the per-head cache
+    // above, so a settled head pays its scans once per distinct head text;
+    // the residual per-render cost on the engaged path is the window-bounded
+    // tail scans/lexes/close (TAIL_BLOCK_MARKER, tailStartsIndented, tail
+    // lexer, HTML_BLOCK_END, tail balance) and the tail re-parse - all
+    // O(tail) - plus the whole-source re-parse on fallback. closedTail is
+    // hoisted so the gate's balance arm and the tail parse share one scan.
+    const split = splitLiveSource(source);
+    const headVerdict = split === null ? null : headGateVerdict(split.head, headGateCacheRef);
+    const closedTail = split === null ? null : closeOpenMarkdown(split.tail);
+    if (
+      split === null ||
+      headVerdict === null ||
+      closedTail === null ||
+      !headVerdict.balanced ||
+      headVerdict.hazard ||
+      headVerdict.hasDef ||
+      containsLinkDefinition(split.tail) ||
+      headVerdict.htmlStart ||
+      HTML_BLOCK_END.test(split.tail) ||
+      TAIL_BLOCK_MARKER.test(split.tail) ||
+      tailStartsIndented(split.tail) ||
+      closedTail !== split.tail
+    ) {
+      const rawHtml = md.parse(closeOpenMarkdown(source), { async: false });
+      return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
+    }
+    const cached = headCacheRef.current;
+    const headHtml =
+      cached !== null && cached.headSource === split.head
+        ? cached.headHtml
+        : DOMPurify.sanitize(md.parse(split.head, { async: false }), SANITIZE_CONFIG);
+    if (cached === null || cached.headSource !== split.head) {
+      headCacheRef.current = { headSource: split.head, headHtml };
+    }
+    const tailHtml = DOMPurify.sanitize(md.parse(closedTail, { async: false }), SANITIZE_CONFIG);
+    return headHtml + tailHtml;
   }, [source, live]);
 
   // Reviewed: this is the narrow, legitimate case for dangerouslySetInnerHTML
@@ -179,5 +417,5 @@ export function Markdown({ source, live = false }: MarkdownProps) {
   // filtering for href/src is untouched - SANITIZE_CONFIG never sets
   // ALLOWED_URI_REGEXP). See this file's own comments above for the rest.
   // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via DOMPurify + escaped renderer overrides, see above
-  return <div className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div ref={ref} className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
 }

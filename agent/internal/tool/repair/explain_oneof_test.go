@@ -61,3 +61,81 @@ func TestExplainSchemaError_OneOfConstraintDoesNotReportMissingArgument(t *testi
 		t.Fatalf("message must name the constrained field sandbox_net: %q", msg)
 	}
 }
+
+// delegateOneOfEnumParams mirrors delegateOneOfParams with a single
+// non-string-enum property in place of the string-enum "sandbox": the
+// second oneOf branch requires prop and constrains it to enum. enum takes
+// any slice or array type: []any (integer enum values are float64, as they
+// are when a tool schema is JSON-decoded into map[string]any) or a
+// genuinely typed slice like []int or []bool, which schema compilation
+// accepts and preserves through cloning just the same.
+func delegateOneOfEnumParams(prop, typ string, enum any) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"task": map[string]any{"type": "string"},
+			prop:   map[string]any{"type": typ, "enum": enum},
+		},
+		"required": []any{"task"},
+		"oneOf": []any{
+			map[string]any{"not": map[string]any{"required": []string{prop}}},
+			map[string]any{
+				"required": []string{prop},
+				"properties": map[string]any{
+					prop: map[string]any{"enum": enum},
+				},
+			},
+		},
+	}
+}
+
+// Issue #625 case 2: a branch requirement must name its enum's allowed
+// values whatever their JSON type, and render them as that type. Bare, for
+// a number: quoting one would assert a JSON string and coach a retry with
+// {"n": "1"}, which fails validation again the same way.
+func TestExplainSchemaError_OneOfBranchNamesIntegerEnumValues(t *testing.T) {
+	params := delegateOneOfEnumParams("n", "integer", []any{float64(1), float64(2), float64(3)})
+	args := map[string]any{"task": "ping", "n": float64(5)}
+	msg := ExplainSchemaError("delegate", params, args, "", "not")
+	if !strings.Contains(msg, `"n" must be one of 1, 2, 3`) {
+		t.Fatalf("message must render branch 1's integer enum allowed values bare (not quoted): %q", msg)
+	}
+}
+
+// A boolean enum renders bare too. Quoted, `"flag" must be one of "true",
+// "false"` is indistinguishable from how the same code renders a string
+// enum, though the schema requires a JSON boolean.
+func TestExplainSchemaError_OneOfBranchNamesBooleanEnumValues(t *testing.T) {
+	params := delegateOneOfEnumParams("flag", "boolean", []any{true, false})
+	args := map[string]any{"task": "ping", "flag": "true"}
+	msg := ExplainSchemaError("delegate", params, args, "", "not")
+	if !strings.Contains(msg, `"flag" must be one of true, false`) {
+		t.Fatalf("message must render branch 1's boolean enum allowed values bare (not quoted): %q", msg)
+	}
+	if strings.Contains(msg, `"true", "false"`) {
+		t.Fatalf("message quoted the boolean enum values, visually asserting the wrong JSON type: %q", msg)
+	}
+}
+
+// A genuinely typed Go slice (not []any) must name its branch's allowed
+// values the same as its []any equivalent above: schema compilation accepts
+// this shape and preserves it through cloning, so it reaches branchRequirement
+// still typed.
+func TestExplainSchemaError_OneOfBranchNamesTypedIntSliceEnumValues(t *testing.T) {
+	params := delegateOneOfEnumParams("n", "integer", []int{1, 2, 3})
+	args := map[string]any{"task": "ping", "n": 5}
+	msg := ExplainSchemaError("delegate", params, args, "", "not")
+	if !strings.Contains(msg, `"n" must be one of 1, 2, 3`) {
+		t.Fatalf("message must render branch 1's typed []int enum allowed values bare: %q", msg)
+	}
+}
+
+func TestExplainSchemaError_OneOfBranchNamesTypedBoolSliceEnumValues(t *testing.T) {
+	params := delegateOneOfEnumParams("flag", "boolean", []bool{true, false})
+	args := map[string]any{"task": "ping", "flag": "true"}
+	msg := ExplainSchemaError("delegate", params, args, "", "not")
+	if !strings.Contains(msg, `"flag" must be one of true, false`) {
+		t.Fatalf("message must render branch 1's typed []bool enum allowed values bare: %q", msg)
+	}
+}

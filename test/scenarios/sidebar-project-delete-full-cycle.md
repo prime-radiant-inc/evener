@@ -59,7 +59,7 @@ Steps 1-4 and 6 are **browser-free** and carry every exact assertion. Only step
    `projects[]` — and not merely moved into `archived_projects[]` or
    `test_runs[]`.
 5. **(d) Open pane, then delete its project.** In `$W2`, spawn and let finish a
-   session; navigate the browser to `/auth?token=$TOKEN&next=/s/local:$SID2`
+   session; navigate the browser to `/auth/$TOKEN?next=/s/local:$SID2`
    and confirm the session pane is up. Then delete that project — either from
    the row menu (`⋯` → **Delete project…** → the `Delete project?` dialog's
    **Delete** button; see Sharp edges) or with the same AppWire request from a

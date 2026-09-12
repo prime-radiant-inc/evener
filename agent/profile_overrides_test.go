@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
@@ -240,8 +241,8 @@ func TestWithCommunicateOutputSchema_Anthropic(t *testing.T) {
 	}
 	p := WithCommunicateOutputSchema(base, schema)
 
-	if p.BehaviorTag() != "anthropic" {
-		t.Fatalf("got behavior tag %q, want anthropic", p.BehaviorTag())
+	if p.Surface() != registry.SurfaceAnthropic {
+		t.Fatalf("got surface %q, want anthropic", p.Surface())
 	}
 	if p.ID() != "anthropic" {
 		t.Fatalf("got ID %q, want anthropic", p.ID())
@@ -349,12 +350,12 @@ func TestWithContextWindow_NonPositiveIsNoOp(t *testing.T) {
 	}
 }
 
-func TestWithContextWindow_PreservesAnthropicBehaviorTag(t *testing.T) {
+func TestWithContextWindow_PreservesAnthropicIdentity(t *testing.T) {
 	t.Parallel()
 	base := newAnthropicProfile("claude-opus-4-6")
 	p := WithContextWindow(base, 500_000)
-	if p.BehaviorTag() != "anthropic" {
-		t.Fatalf("WithContextWindow changed behavior tag to %q, want anthropic", p.BehaviorTag())
+	if p.Surface() != registry.SurfaceAnthropic || p.ID() != "anthropic" {
+		t.Fatalf("WithContextWindow changed identity to %s/%s, want anthropic/anthropic", p.ID(), p.Surface())
 	}
 	if got := p.ContextWindowSize(); got != 500_000 {
 		t.Fatalf("ContextWindowSize() = %d, want 500000", got)

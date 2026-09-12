@@ -21,17 +21,15 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
@@ -71,10 +69,6 @@ func (s *listenerHTTPServer) ListenAndServe() error {
 	return s.Serve(s.ln)
 }
 
-type hubShutdowner interface {
-	Shutdown(context.Context) error
-}
-
 type navigationPublisher interface {
 	BroadcastAll(string, any)
 }
@@ -102,34 +96,33 @@ type hubOptions struct {
 	configPath   string
 	addr         string
 	evenerBinary string
+	appwireTrace string
 }
 
 type mainDeps struct {
-	loadConfig         func(string) (Config, error)
-	ensureDirs         func() error
-	acquireLock        func(string) (func(), error)
-	newToken           func() (string, error)
-	loadAuthToken      func(string) (string, error)
-	loadCredentials    func(string) (*credentials.Store, error)
-	loadProviderConfig func(string) (providercfg.Config, bool, error)
-	materializeConfig  func(string, ...llm.EnvOption) (providercfg.Config, error)
-	notifyContext      func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
-	listen             func(context.Context, string, string) (net.Listener, error)
-	serve              func(context.Context, hubHTTPServer, hubShutdowner) error
-	afterWeb           func(*WebServer)
+	loadConfig      func(string) (Config, error)
+	ensureDirs      func() error
+	acquireLock     func(string) (func(), error)
+	newToken        func() (string, error)
+	loadAuthToken   func(string) (string, error)
+	loadCredentials func(string) (*credentials.Store, error)
+	loadRegistry    hubcore.RegistryLoader
+	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	listen          func(context.Context, string, string) (net.Listener, error)
+	serve           func(context.Context, hubHTTPServer) error
+	afterWeb        func(*WebServer)
 }
 
 func defaultMainDeps() mainDeps {
 	return mainDeps{
-		loadConfig:         LoadConfig,
-		ensureDirs:         cmdutil.EnsureUserConfigDirs,
-		acquireLock:        hostlock.AcquireLock,
-		newToken:           newHubToken,
-		loadAuthToken:      hubedge.LoadOrCreateAuthToken,
-		loadCredentials:    credentials.LoadStore,
-		loadProviderConfig: providercfg.LoadFile,
-		materializeConfig:  cmdutil.MaterializeProvidersConfig,
-		notifyContext:      signal.NotifyContext,
+		loadConfig:      LoadConfig,
+		ensureDirs:      cmdutil.EnsureUserConfigDirs,
+		acquireLock:     hostlock.AcquireLock,
+		newToken:        newHubToken,
+		loadAuthToken:   hubedge.LoadOrCreateAuthToken,
+		loadCredentials: credentials.LoadStore,
+		loadRegistry:    cmdutil.LoadRegistry,
+		notifyContext:   signal.NotifyContext,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
@@ -187,10 +180,35 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	defer release()
 
+	var appwireTrace *appserver.WebSocketTrace
+	if opts.appwireTrace != "" {
+		tracePath, absErr := filepath.Abs(opts.appwireTrace)
+		if absErr != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace path: %v\n", absErr)
+			return fmt.Errorf("resolve appwire trace path: %w", absErr)
+		}
+		appwireTrace, err = appserver.NewWebSocketTrace(tracePath)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace: %v\n", err)
+			return fmt.Errorf("create appwire trace: %w", err)
+		}
+		defer func() {
+			if closeErr := appwireTrace.Close(); closeErr != nil {
+				_, _ = fmt.Fprintf(stderr, "[hub] close appwire trace: %v\n", closeErr)
+			}
+		}()
+		_, _ = fmt.Fprintf(stderr, "[hub] recording raw browser AppWire frames at %s; this file contains sensitive data\n", tracePath)
+	}
+
 	// Resolve runtime paths.
 	runDir := cfg.RunDir
 	if runDir == "" {
 		runDir = rendezvous.DefaultDir()
+	}
+	// Initial ownership discovery must be ready before any request can resume
+	// a saved session; the background watcher is not a startup barrier.
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		return fmt.Errorf("prepare runtime directory: %w", err)
 	}
 	stateGlob := cfg.StateGlob
 	if stateGlob == "" {
@@ -229,35 +247,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
-	providersConfigPath := envvars.EVENERProvidersConfig.Getenv()
-	if providersConfigPath == "" {
-		providersConfigPath = filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
-	}
-	// credentials.toml is always a sibling of providers.toml, wherever
-	// EVENER_PROVIDERS_CONFIG points it — matching cmdutil.LoadProviderConfigAt's
-	// resolution so the hub and a plain `evener` client agree on the store.
-	credsStore, err := deps.loadCredentials(filepath.Join(filepath.Dir(providersConfigPath), "credentials.toml"))
+	providersConfigPath, noUserLayer := cmdutil.ProvidersConfigPath()
+	credentialsPath := cmdutil.CredentialsPath()
+	credsStore, err := deps.loadCredentials(credentialsPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
 		return err
 	}
-	var loadedProviderConfig *providercfg.Config
-	if pcfg, exists, pcfgErr := deps.loadProviderConfig(providersConfigPath); pcfgErr != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
-		return pcfgErr
-	} else if exists {
-		loadedProviderConfig = &pcfg
-	} else {
-		// File absent — materialize a descriptors-only providers.toml from the
-		// environment so the hub has a single source of truth and spawned
-		// children load the same file via EVENER_PROVIDERS_CONFIG.
-		materialized, matErr := deps.materializeConfig(providersConfigPath)
-		if matErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
-			return matErr
-		}
-		loadedProviderConfig = &materialized
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
+	// A providers.toml the registry cannot read is a diagnostic, not a
+	// startup failure: the hub keeps an implicit-only registry, every child
+	// it spawns resolves the same set, and instance writes stay refused
+	// until the user fixes the file by hand (spec §10, §14.1).
+	hubReg := hubcore.NewProviderRegistry(deps.loadRegistry)
+	if err := hubReg.Reload(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v — starting with implicit instances only\n", err)
 	}
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
@@ -268,15 +271,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		EvenerBinary:        resolvedEvenerBinary,
 		RunDir:              runDir,
 		HubToken:            hubToken,
-		Creds:               credsStore,
-		StateRoot:           hubStateRoot,
+		Registry:            hubReg,
 		ProvidersConfigPath: providersConfigPath,
+		CredentialsPath:     credentialsPath,
+		NoUserLayer:         noUserLayer,
 	}
-	var codexLauncher *codexlaunch.CodexLauncher
-	if len(cfg.CodexLaunches) > 0 {
-		codexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
-	}
-
 	// stateDir is the parent of the projects/ directory; used for ForkSession
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
@@ -345,6 +344,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	cfg.Addr = hubListener.Addr().String()
 
+	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
+	if err != nil {
+		_ = hubListener.Close()
+		return fmt.Errorf("load recovery state: %w", err)
+	}
 	deletionStore, err := hubcore.NewDeletionStore(hubStateRoot)
 	if err != nil {
 		_ = hubListener.Close()
@@ -354,6 +358,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if transcriptDisplayStoreErr != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] transcript display state: %v\n", transcriptDisplayStoreErr)
 	}
+	keybindingsStore, keybindingsStoreErr := hubcore.NewKeybindingsStore(hubStateRoot)
+	if keybindingsStoreErr != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] keybindings state: %v\n", keybindingsStoreErr)
+	}
 
 	// Resolve the registry root once for this hub process. Launch configuration
 	// may override XDG_CONFIG_HOME for a child, so the child must receive this
@@ -361,7 +369,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	pluginRoot := plugins.NewManager("").Root
 
 	// Web
-	web := NewWebServer(hubcore.WebConfig{
+	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
 		MobileBaseURL:             cfg.MobileBaseURL,
@@ -370,6 +378,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		PluginRoot:                pluginRoot,
 		TranscriptDisplayStore:    transcriptDisplayStore,
 		TranscriptDisplayStoreErr: transcriptDisplayStoreErr,
+		KeybindingsStore:          keybindingsStore,
+		KeybindingsStoreErr:       keybindingsStoreErr,
 		RunDir:                    runDir,
 		PastIndexPath:             pastIndexDB,
 		Roster:                    roster,
@@ -378,19 +388,29 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Favorite:                  favorite,
 		PinSections:               pinSections,
 		Spawner:                   spawner,
+		APILogDefault:             cfg.APILog,
 		DeletionStore:             deletionStore,
+		ResumeLocks:               resumeLocks,
 		PastPerPage:               cfg.PastResultsPerPage,
 		StateDir:                  stateDir,
 		CredsStore:                credsStore,
-		ProviderConfig:            loadedProviderConfig,
+		Registry:                  hubReg,
 		ProvidersConfigPath:       providersConfigPath,
-		CodexSources:              cfg.CodexSources,
-		CodexLaunches:             cfg.CodexLaunches,
-		CodexLauncher:             codexLauncher,
+		CredentialsPath:           credentialsPath,
+		NoUserLayer:               noUserLayer,
 		PokeAttention:             pokeAttention,
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
-	})
+	}, appwireTrace)
+	if appwireTrace != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if shutdownErr := web.appRPC.Shutdown(shutdownCtx); shutdownErr != nil {
+				_, _ = fmt.Fprintf(stderr, "[hub] drain AppWire trace connections: %v\n", shutdownErr)
+			}
+		}()
+	}
 
 	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
 	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild
@@ -464,7 +484,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// that never did, so a fresh install whose first interaction is the web
 	// UI (Settings → Marketplaces & Plugins) saw zero marketplaces until a
 	// session happened to spawn and seed them first.
-	seedHubMarketplaces()
+	seedHubMarketplaces(ctx)
 
 	// Plugin auto-upgrade daemon (design doc §9.1): refreshes every known
 	// marketplace, then upgrades every installed, git-backed plugin with
@@ -494,9 +514,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): %s\n", hubedge.AuthURLFor("http://"+authHost, authToken))
 	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
-	if err := deps.serve(ctx, srv, codexShutdowner(codexLauncher)); err != nil {
+	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
@@ -510,6 +530,7 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
 	fs.StringVar(&opts.evenerBinary, "evener", "", "path to evener binary (default: 'evener' on PATH)")
+	fs.StringVar(&opts.appwireTrace, "appwire-trace", "", "write raw per-connection browser AppWire frames to a new JSONL file")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()
@@ -554,20 +575,7 @@ func advertisedHubHost(addr string, hostname func() (string, error)) string {
 	return host + port
 }
 
-// codexShutdowner converts a possibly-absent launcher into a companion
-// serveHub can honestly nil-check. Assigning a nil *CodexLauncher straight to
-// the interface yields a value with a type but no data, which is NOT equal to
-// nil - so serveHub's `if companion != nil` would pass and Shutdown would take
-// l.Mu.Lock() on a nil receiver. A hub with no codex launches configured is
-// the default, so that is every graceful shutdown.
-func codexShutdowner(l *codexlaunch.CodexLauncher) hubShutdowner {
-	if l == nil {
-		return nil
-	}
-	return l
-}
-
-func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) error {
+func serveHub(ctx context.Context, srv hubHTTPServer) error {
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
@@ -575,9 +583,6 @@ func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) e
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
-		if companion != nil {
-			_ = companion.Shutdown(shutdownCtx)
-		}
 	}()
 	err := srv.ListenAndServe()
 	if ctx.Err() != nil {
@@ -602,6 +607,9 @@ func printHubEnvVars(w io.Writer) {
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
+	// Every implicit provider the registry knows reads its own key and base
+	// URL; naming them all here would be a second, drifting roster.
+	_, _ = fmt.Fprintf(tw, "  %s\t%s\n", "<ID>_API_KEY / <ID>_BASE_URL", "any implicit provider's key or base URL (evener providers list)")
 	_ = tw.Flush()
 }
 

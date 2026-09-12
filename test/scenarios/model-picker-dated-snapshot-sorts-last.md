@@ -39,10 +39,13 @@ list.
 
 1. Send `model/list` over the authenticated AppWire connection and read the
    provider's group in `result.data` order.
-   Within each provider run, every id matching `-\d{8}(-v\d+)?$`
-   (`datedSnapshotSuffix`, `app_models.go#datedSnapshotSuffix`) must come after every id
-   in that run that doesn't. Providers themselves sort ascending
-   (`sortModelDescriptors`, `app_models.go`).
+   Within each provider run, every dated-snapshot id — a trailing
+   `-YYYYMMDD` with its optional `-vN`/`-vN:N` revision, or Vertex's
+   `@YYYYMMDD` (`isDatedSnapshotModelID`,
+   `app_models.go#isDatedSnapshotModelID`, which applies the registry's own
+   `registry.StripDatedSuffix`) — must come after every id in that run that
+   doesn't. Providers themselves sort ascending (`sortModelDescriptors`,
+   `app_models.go`).
 2. Same check through the TUI's own path: `modelPickerItems` applies the
    identical predicate over `buildModelPickerItems`'s unordered output
    (`cmd/evener-tui/hub_commands.go#modelPickerItems`).
@@ -125,13 +128,14 @@ Investigated and ruled out:
 - **`openrouter`** (no API key needed for its live, unauthenticated
   public `/models` listing — verified reachable, 340 real models,
   including `qwen/qwen3.5-plus-20260420` which *does* match the 8-digit
-  dated regex) was ruled out one layer further upstream:
-  `launchCheckModelVisible`
-  (`cmd/evener/internal/launchcheck/launchcheck.go#launchCheckModelVisible`) filters every
-  `openrouter`-tagged model to ones with an exact embedded-catalog match
-  AND `SupportsTools` (`:286-288`) — none of the real openrouter ids
-  (including the qwen dated pair) satisfy that filter, so they never
-  reach the picker at all regardless of this track's own code.
+  dated regex) was ruled out one layer further upstream: on that build the
+  launch check filtered every `openrouter`-tagged model to ones with an
+  exact embedded-catalog match AND `SupportsTools` — none of the real
+  openrouter ids (including the qwen dated pair) satisfy that filter, so
+  they never reach the picker at all regardless of this track's own code.
+  The provider registry replaced that catalog filter with the spec §5
+  visibility rule (`llm/client.go#liveSaysNoTools`), which drops a row only
+  when the provider's own listing says it serves no tools.
 
 Given no live path existed, the rule was verified as passing, on that
 build, via:

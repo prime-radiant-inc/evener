@@ -247,7 +247,7 @@ func TestLocalSessionDecisionAliasesUsesAuthorityAndExcludesRemoteRefs(t *testin
 	const sessionID = "canonical-session"
 	authority := FavoriteAuthority{Sessions: []FavoriteSessionAuthority{{
 		ID:      sessionID,
-		Aliases: []string{sessionID, "local:" + sessionID, "codex:" + sessionID, "local:other"},
+		Aliases: []string{sessionID, "local:" + sessionID, "remote:" + sessionID, "local:other"},
 	}}}
 	got := LocalSessionDecisionAliases(sessionID, authority)
 	want := []string{sessionID, "local:" + sessionID}

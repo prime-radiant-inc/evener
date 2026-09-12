@@ -22,7 +22,7 @@ export interface AppwireClientOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v3";
+export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v5";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
 
@@ -30,6 +30,16 @@ class ProtocolVersionMismatchError extends Error {
   constructor(received: string) {
     super(`AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received ${received}`);
     this.name = "ProtocolVersionMismatchError";
+  }
+}
+
+class InitializeValidationError extends Error {
+  readonly field: string;
+
+  constructor(field: string) {
+    super(`invalid initialize response at ${field}`);
+    this.name = "InitializeValidationError";
+    this.field = field;
   }
 }
 
@@ -99,6 +109,105 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+const INITIALIZE_RESPONSE_KEYS = ["serverInfo", "protocolVersion", "sourceId", "features"] as const;
+const INITIALIZE_RESPONSE_OPTIONAL_KEYS = ["navigation"] as const;
+
+const FEATURE_KEYS = [
+  "threadList",
+  "threadTurnsList",
+  "turnStart",
+  "turnSteer",
+  "threadClear",
+  "threadShutdown",
+  "forkFromTurn",
+  "tasks",
+  "transcriptList",
+  "modelList",
+  "directoryComplete",
+  "auth",
+] as const;
+const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
+const NAVIGATION_CAPABILITY_KEYS = ["version", "generationId", "sequence"] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasRequiredAndOptionalKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean {
+  const actual = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key)) && actual.every((key) => allowed.has(key));
+}
+
+/** Runtime boundary for the untyped JSON-RPC initialize result. */
+export function decodeInitializeResponse(value: unknown): InitializeResponse {
+  if (
+    !isRecord(value) ||
+    !hasRequiredAndOptionalKeys(value, INITIALIZE_RESPONSE_KEYS, INITIALIZE_RESPONSE_OPTIONAL_KEYS)
+  ) {
+    throw new InitializeValidationError("response");
+  }
+  const serverInfo = value.serverInfo;
+  const features = value.features;
+  const navigation = value.navigation;
+  if (
+    !isRecord(serverInfo) ||
+    !hasRequiredAndOptionalKeys(serverInfo, ["name", "version"]) ||
+    typeof serverInfo.name !== "string" ||
+    serverInfo.name.trim() === "" ||
+    typeof serverInfo.version !== "string" ||
+    serverInfo.version.trim() === ""
+  ) {
+    throw new InitializeValidationError("serverInfo");
+  }
+  if (typeof value.protocolVersion !== "string" || value.protocolVersion.trim() === "") {
+    throw new InitializeValidationError("protocolVersion");
+  }
+  if (typeof value.sourceId !== "string" || value.sourceId.trim() === "") {
+    throw new InitializeValidationError("sourceId");
+  }
+  if (
+    !isRecord(features) ||
+    !hasRequiredAndOptionalKeys(features, FEATURE_KEYS, FEATURE_OPTIONAL_KEYS) ||
+    FEATURE_KEYS.some((key) => typeof features[key] !== "boolean") ||
+    FEATURE_OPTIONAL_KEYS.some((key) => Object.hasOwn(features, key) && typeof features[key] !== "boolean")
+  ) {
+    throw new InitializeValidationError("features");
+  }
+  if (Object.hasOwn(value, "navigation")) {
+    if (
+      !isRecord(navigation) ||
+      !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS, ["readVersions"])
+    ) {
+      throw new InitializeValidationError("navigation");
+    }
+    if (
+      Object.hasOwn(navigation, "readVersions") &&
+      (!Array.isArray(navigation.readVersions) ||
+        navigation.readVersions.some((version) => !Number.isSafeInteger(version) || version < 1))
+    ) {
+      throw new InitializeValidationError("navigation.readVersions");
+    }
+    if (
+      typeof navigation.version !== "number" ||
+      !Number.isSafeInteger(navigation.version) ||
+      navigation.version < 1 ||
+      typeof navigation.generationId !== "string" ||
+      navigation.generationId.trim() === "" ||
+      typeof navigation.sequence !== "number" ||
+      !Number.isSafeInteger(navigation.sequence) ||
+      navigation.sequence < 0
+    ) {
+      throw new InitializeValidationError("navigation");
+    }
+  }
+  return value as unknown as InitializeResponse;
+}
+
 export class AppwireClient {
   private readonly url: string;
   private readonly socketFactory: (url: string) => WebSocketLike;
@@ -110,6 +219,8 @@ export class AppwireClient {
   private readonly clientInfo: { name: string; version: string };
 
   private socket: WebSocketLike | null = null;
+  private recoveryClient: AppwireClient | null = null;
+  private resumePending = false;
   private connectionState: ConnectionState = "idle";
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
@@ -121,8 +232,10 @@ export class AppwireClient {
   private handshakeReject: ((err: Error) => void) | null = null;
   private readonly notificationHandlers = new Set<(n: AnyNotification) => void>();
   private readonly stateChangeHandlers = new Set<(s: ConnectionState) => void>();
-  private readonly readyHandlers = new Set<() => void>();
+  private readonly handshakeResultHandlers = new Set<(result: InitializeResponse) => void>();
+  private readonly readyHandlers = new Set<(initialize: InitializeResponse) => void>();
   private connectPromise: Promise<InitializeResponse> | null = null;
+  private latestInitialize: InitializeResponse | null = null;
 
   // Heartbeat: one interval timer, armed on entering "ready" and disarmed on
   // leaving it (drop or close()). Its ping rides the same request()/pending
@@ -181,6 +294,7 @@ export class AppwireClient {
   }
 
   close(): void {
+    this.recoveryClient?.close();
     if (this.connectionState === "closed") return;
     const socket = this.socket;
     this.socket = null;
@@ -206,6 +320,70 @@ export class AppwireClient {
     this.disarmReconnect();
     this.failAllPending(new ConnectionClosedError("AppwireClient: closed"));
     this.setState("closed");
+  }
+
+  // Explicit Resume discards the old transport backlog before acknowledging
+  // recovery. Pending requests fail normally; they are never replayed here.
+  async resumeThread(ref: string): Promise<MethodTypes["thread/resume"]["result"]> {
+    if (this.resumePending) throw new Error("A session resume is already pending");
+    const socket = this.socket;
+    if (this.connectionState !== "ready" || !socket) throw new Error("Connect to the hub before resuming this session");
+    this.resumePending = true;
+    let stopReady = () => {};
+    let stopState = () => {};
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const connected = new Promise<void>((resolve, reject) => {
+      stopReady = this.onReady(() => resolve());
+      stopState = this.onStateChange((state) => {
+        if (state === "closed") reject(new ConnectionClosedError("AppwireClient: closed"));
+      });
+      timeout = setTimeout(
+        () => reject(new Error("Connection refresh timed out; try Resume again")),
+        DEFAULT_REQUEST_TIMEOUT_MS,
+      );
+    });
+    try {
+      this.handleSocketLoss(socket, 1000);
+      try {
+        socket.close();
+      } catch {
+        /* The retired transport is already detached. */
+      }
+      this.retryNow();
+      await connected;
+      return await this.request("thread/resume", { ref });
+    } finally {
+      clearTimeout(timeout);
+      stopReady();
+      stopState();
+      this.resumePending = false;
+    }
+  }
+
+  // Recovery owns one short-lived connection so a saturated primary request
+  // queue cannot prevent the user's stop request from reaching the hub.
+  async forceStop(ref: string): Promise<void> {
+    if (this.isClosed()) throw new ConnectionClosedError("AppwireClient: closed");
+    if (this.recoveryClient) throw new Error("A force stop is already pending");
+    const recovery = new AppwireClient({
+      url: this.url,
+      socketFactory: this.socketFactory,
+      now: this.now,
+      clientInfo: this.clientInfo,
+    });
+    this.recoveryClient = recovery;
+    // Bound socket-open and handshake waits. The RPC owns a separate timeout
+    // so connection setup cannot consume its response window.
+    const timeout = setTimeout(() => recovery.close(), DEFAULT_REQUEST_TIMEOUT_MS);
+    try {
+      await recovery.connect();
+      clearTimeout(timeout);
+      await recovery.request("evener/thread/forceStop", { ref });
+    } finally {
+      clearTimeout(timeout);
+      recovery.close();
+      this.recoveryClient = null;
+    }
   }
 
   request<M extends MethodName>(
@@ -254,9 +432,19 @@ export class AppwireClient {
     };
   }
 
+  // Publishes the strictly decoded initialize result for every socket that
+  // completes the handshake, including automatic reconnects. Results are
+  // emitted only while that socket is still the client's current generation.
+  onHandshakeResult(cb: (result: InitializeResponse) => void): () => void {
+    this.handshakeResultHandlers.add(cb);
+    return () => {
+      this.handshakeResultHandlers.delete(cb);
+    };
+  }
+
   // onReady fires on every transition into "ready", including future
   // reconnects.
-  onReady(cb: () => void): () => void {
+  onReady(cb: (initialize: InitializeResponse) => void): () => void {
     this.readyHandlers.add(cb);
     return () => {
       this.readyHandlers.delete(cb);
@@ -301,7 +489,11 @@ export class AppwireClient {
   // connect (performHandshake) and every reconnect attempt, so both paths
   // leave the same evidence for ConnectionBanner's "reload this page" copy.
   private noteProtocolFailure(error: unknown): boolean {
-    if (error instanceof ProtocolVersionMismatchError || error instanceof HandshakeRejectedError) {
+    if (
+      error instanceof ProtocolVersionMismatchError ||
+      error instanceof HandshakeRejectedError ||
+      error instanceof InitializeValidationError
+    ) {
       this.terminalReasonValue = "protocol";
       return true;
     }
@@ -335,7 +527,7 @@ export class AppwireClient {
     socket.onerror = () => this.handleSocketError();
     socket.onclose = (ev) => this.handleSocketLoss(socket, ev.code);
 
-    const result = await this.request("initialize", {
+    const rawResult = await this.request("initialize", {
       protocolVersion: APPWIRE_PROTOCOL_VERSION,
       clientInfo: this.clientInfo,
       capabilities: DEFAULT_CAPABILITIES,
@@ -345,16 +537,31 @@ export class AppwireClient {
       }
       throw error;
     });
+    const result = decodeInitializeResponse(rawResult);
     if (result.protocolVersion !== APPWIRE_PROTOCOL_VERSION) {
       throw new ProtocolVersionMismatchError(result.protocolVersion);
     }
     this.sendFrame({ method: "initialized", params: {} });
-    this.setState("ready");
+    this.enterReady(result);
+    if (!this.isClosed() && this.socket === socket) {
+      this.publishHandshakeResult(result);
+    }
     // The handshake itself genuinely succeeded, so this still resolves with
     // `result` even if a reentrant close() just ran: only the side effect
     // (arming a timer this client will never get to disarm again) is guarded.
     if (!this.isClosed()) this.armHeartbeat();
     return result;
+  }
+
+  private publishHandshakeResult(result: InitializeResponse): void {
+    for (const cb of Array.from(this.handshakeResultHandlers)) {
+      try {
+        cb(result);
+      } catch {
+        // A subscriber cannot turn a successful protocol handshake into a
+        // connection failure.
+      }
+    }
   }
 
   // teardownFailedSocket clears a socket that dialAndHandshake failed to
@@ -571,7 +778,10 @@ export class AppwireClient {
       return;
     }
     if (msg.method) {
-      const notification = { method: msg.method, params: msg.params ?? {} } as AnyNotification;
+      const notification = {
+        method: msg.method,
+        params: msg.params ?? {},
+      } as AnyNotification;
       for (const handler of Array.from(this.notificationHandlers)) {
         try {
           handler(notification);
@@ -584,6 +794,12 @@ export class AppwireClient {
 
   private sendFrame(frame: { method: string; params: unknown }): void {
     this.socket?.send(JSON.stringify(frame));
+  }
+
+  private enterReady(value: InitializeResponse): void {
+    this.latestInitialize = value;
+    this.connectPromise = Promise.resolve(value);
+    this.setState("ready");
   }
 
   private failAllPending(err: Error): void {
@@ -610,7 +826,8 @@ export class AppwireClient {
     if (next === "ready") {
       for (const cb of Array.from(this.readyHandlers)) {
         try {
-          cb();
+          if (!this.latestInitialize) throw new Error("AppwireClient: ready without initialize result");
+          cb(this.latestInitialize);
         } catch {
           // See above.
         }

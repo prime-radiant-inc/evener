@@ -517,21 +517,20 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 	cases := []struct {
 		name    string
 		profile *provider.Profile
-		want    []string
 	}{
-		{"openai", NewOpenAIProfile("test"), []string{"low", "medium", "high", "xhigh"}},
-		{"anthropic", newAnthropicProfile("test"), []string{"low", "medium", "high", "max"}},
-		{"gemini", newGeminiProfile("test"), []string{"low", "medium", "high"}},
+		{"openai", NewOpenAIProfile("gpt-5.2")},
+		{"anthropic", newAnthropicProfile("claude-opus-4-6")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.profile.ReasoningEffortLevels(); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("ReasoningEffortLevels: got %v, want %v", got, tc.want)
+			want := tc.profile.ReasoningEffortLevels()
+			if len(want) == 0 {
+				t.Fatalf("%s/%s advertises no effort ladder", tc.profile.ID(), tc.profile.Model())
 			}
 			// The schema enum additionally carries the "inherit" sentinel so
 			// strict-mode providers (which force-require the property) let the
 			// model decline to override the session's effort.
-			wantEnum := append(append([]string(nil), tc.want...), "inherit")
+			wantEnum := append(append([]string(nil), want...), "inherit")
 			// The enum should surface in the task_list update schema.
 			var td *llm.ToolDefinition
 			for i := range tc.profile.ToolDefinitions() {
@@ -546,7 +545,7 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 			}
 			props := td.Parameters["properties"].(map[string]any)
 
-			tasks := props["tasks"].(map[string]any)
+			tasks := props["add"].(map[string]any)
 			taskItems := tasks["items"].(map[string]any)
 			taskProps := taskItems["properties"].(map[string]any)
 			appendEffort := taskProps["reasoning_effort"].(map[string]any)
@@ -565,7 +564,7 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 				t.Fatalf("append task type enum: got %v", gotTypes)
 			}
 
-			updates := props["updates"].(map[string]any)
+			updates := props["update"].(map[string]any)
 			items := updates["items"].(map[string]any)
 			updProps := items["properties"].(map[string]any)
 			effort := updProps["reasoning_effort"].(map[string]any)
@@ -790,8 +789,7 @@ func TestTaskListTool_UpdateWithNotes(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [{"type": "research", "description": "Build project", "prompt": "Run make"}]
+			"add": [{"type": "research", "description": "Build project", "prompt": "Run make"}]
 		}`),
 	})
 
@@ -799,7 +797,7 @@ func TestTaskListTool_UpdateWithNotes(t *testing.T) {
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress", "notes": "make failed with missing libfoo"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "in_progress", "notes": "make failed with missing libfoo"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update with notes error: %s", updateRes.Output)
@@ -809,7 +807,7 @@ func TestTaskListTool_UpdateWithNotes(t *testing.T) {
 	viewRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c3",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "view"}`),
+		Arguments: json.RawMessage(`{}`),
 	})
 	if !strings.Contains(viewRes.Output, "make failed with missing libfoo") {
 		t.Fatalf("view should contain notes: %s", viewRes.Output)
@@ -835,8 +833,7 @@ func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [{"type": "implement", "description": "Do the work", "prompt": "Build it"}]
+			"add": [{"type": "implement", "description": "Do the work", "prompt": "Build it"}]
 		}`),
 	})
 
@@ -844,7 +841,7 @@ func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress", "reasoning_effort": "high"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "in_progress", "reasoning_effort": "high"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update with reasoning_effort error: %s", updateRes.Output)
@@ -853,7 +850,7 @@ func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
 	viewRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c3",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "view"}`),
+		Arguments: json.RawMessage(`{}`),
 	})
 	if !strings.Contains(viewRes.Output, "high") {
 		t.Fatalf("view should report reasoning_effort high: %s", viewRes.Output)
@@ -863,7 +860,7 @@ func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
 	xhigh := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c4",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress", "reasoning_effort": "xhigh"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "in_progress", "reasoning_effort": "xhigh"}]}`),
 	})
 	if xhigh.IsError {
 		t.Fatalf("xhigh should be accepted by OpenAI profile: %s", xhigh.Output)
@@ -886,8 +883,7 @@ func TestTaskListTool_AppendPreservesReasoningEffortAndType(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [{"type": "fix", "description": "Repair flaky test", "prompt": "Stabilize the test after the regression", "reasoning_effort": "xhigh"}]
+			"add": [{"type": "fix", "description": "Repair flaky test", "prompt": "Stabilize the test after the regression", "reasoning_effort": "xhigh"}]
 		}`),
 	})
 	if appendRes.IsError {
@@ -926,8 +922,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [
+			"add": [
 				{"type": "research", "description": "Read auth code", "prompt": "Read the auth module"},
 				{"type": "research", "description": "Write tests", "prompt": "Write tests for auth"}
 			]
@@ -941,7 +936,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	if !strings.Contains(appendRes.Output, "Added 2 task(s)") {
 		t.Fatalf("append output missing acknowledgment: %s", appendRes.Output)
 	}
-	if !strings.Contains(appendRes.Output, "Progress: 0/2") {
+	if !strings.Contains(appendRes.Output, "Progress: 0 done, 0 cancelled, 2 remaining (2 total)") {
 		t.Fatalf("append output missing progress: %s", appendRes.Output)
 	}
 
@@ -949,7 +944,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	viewRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "view"}`),
+		Arguments: json.RawMessage(`{}`),
 	})
 	if viewRes.IsError {
 		t.Fatalf("view error: %s", viewRes.Output)
@@ -962,7 +957,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c3",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "done"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
@@ -972,7 +967,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	viewRes2 := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c4",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "view"}`),
+		Arguments: json.RawMessage(`{}`),
 	})
 	if !strings.Contains(viewRes2.Output, "[done]") {
 		t.Fatalf("view after update missing done status: %s", viewRes2.Output)
@@ -1354,6 +1349,10 @@ func TestTaskStore_Progress(t *testing.T) {
 	if total != 3 || done != 1 {
 		t.Fatalf("after updates: expected total=3 done=1, got total=%d done=%d", total, done)
 	}
+	summary := s.Summary()
+	if summary.Cancelled != 1 || summary.Remaining != 1 {
+		t.Fatalf("after updates: Summary=%+v, want cancelled=1 remaining=1", summary)
+	}
 }
 
 func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
@@ -1401,8 +1400,7 @@ func TestTaskListTool_AppendWithDependsOn(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [
+			"add": [
 				{"type": "research", "description": "Task A", "prompt": "Do A"},
 				{"type": "research", "description": "Task B", "prompt": "Do B", "depends_on": [1]}
 			]
@@ -1416,7 +1414,7 @@ func TestTaskListTool_AppendWithDependsOn(t *testing.T) {
 	viewRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "view"}`),
+		Arguments: json.RawMessage(`{}`),
 	})
 	if viewRes.IsError {
 		t.Fatalf("view error: %s", viewRes.Output)
@@ -1460,8 +1458,7 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [
+			"add": [
 				{"type": "research", "description": "Task A", "prompt": "Do A"},
 				{"type": "research", "description": "Task B", "prompt": "Do B", "depends_on": [1]}
 			]
@@ -1477,7 +1474,7 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "done"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
@@ -1495,6 +1492,18 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 	}
 	if !strings.Contains(updateRes.Output, "Progress") {
 		t.Fatalf("tool response should include Progress: %s", updateRes.Output)
+	}
+	var updateState []taskToolState
+	if err := json.Unmarshal(updateRes.ToolState, &updateState); err != nil {
+		t.Fatalf("decode update ToolState: %v; raw=%s", err, updateRes.ToolState)
+	}
+	for _, state := range updateState {
+		if state.ID == 2 {
+			if state.Started == nil || !*state.Started {
+				t.Fatalf("auto-advanced task ToolState marker = %v, want true", state.Started)
+			}
+			break
+		}
 	}
 
 	// Steering queue should carry the current-task SYSTEM-REMINDER for task 2.
@@ -1518,6 +1527,58 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 	}
 }
 
+func TestTaskListTool_UpdateNonCurrentLeavesExistingCurrentMarkerFalse(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "add",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{"add":[
+			{"type":"implement","description":"first","prompt":"first"},
+			{"type":"implement","description":"current","prompt":"current"},
+			{"type":"implement","description":"non-current","prompt":"non-current"}
+		]}`),
+	})
+	// Completing task 1 auto-advances task 2, making it the existing current
+	// task before this call completes the unrelated task 3.
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "advance",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"update":[{"id":1,"status":"done"}]}`),
+	})
+	res := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "complete-non-current",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"update":[{"id":3,"status":"done"}]}`),
+	})
+	if res.IsError {
+		t.Fatalf("complete non-current: %s", res.Output)
+	}
+	var state []taskToolState
+	if err := json.Unmarshal(res.ToolState, &state); err != nil {
+		t.Fatalf("decode ToolState: %v; raw=%s", err, res.ToolState)
+	}
+	for _, task := range state {
+		if task.ID == 2 {
+			if task.Started == nil || *task.Started {
+				t.Fatalf("existing current ToolState marker = %v, want false", task.Started)
+			}
+			return
+		}
+	}
+	t.Fatal("ToolState missing existing current task")
+}
+
 func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1537,8 +1598,7 @@ func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [
+			"add": [
 				{"type": "research", "description": "Task A", "prompt": "Do A"},
 				{"type": "research", "description": "Task B", "prompt": "Do B"}
 			]
@@ -1553,11 +1613,28 @@ func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 2, "status": "in_progress"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 2, "status": "in_progress"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
+	assertStartedMarker := func(toolState []byte, want bool) {
+		t.Helper()
+		var state []taskToolState
+		if err := json.Unmarshal(toolState, &state); err != nil {
+			t.Fatalf("decode ToolState: %v; raw=%s", err, toolState)
+		}
+		for _, task := range state {
+			if task.ID == 2 {
+				if task.Started == nil || *task.Started != want {
+					t.Fatalf("task 2 ToolState marker = %v, want %t", task.Started, want)
+				}
+				return
+			}
+		}
+		t.Fatal("ToolState missing task 2")
+	}
+	assertStartedMarker(updateRes.ToolState, true)
 
 	// Tool response stays minimal.
 	if strings.Contains(updateRes.Output, "Task B") {
@@ -1580,6 +1657,17 @@ func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 	if !strings.Contains(queue[0], `<CURRENT-TASK id="2">`) {
 		t.Fatalf("manual in_progress steering should target task 2: %s", queue[0])
 	}
+
+	// Reasserting the current status is not another transition.
+	reassertRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"update":[{"id": 2, "status": "in_progress", "notes": "still working"}]}`),
+	})
+	if reassertRes.IsError {
+		t.Fatalf("reassert error: %s", reassertRes.Output)
+	}
+	assertStartedMarker(reassertRes.ToolState, false)
 }
 
 func TestTaskListTool_UpdateRejectsMultipleInProgress(t *testing.T) {
@@ -1601,8 +1689,7 @@ func TestTaskListTool_UpdateRejectsMultipleInProgress(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [
+			"add": [
 				{"type": "research", "description": "Task A", "prompt": "Do A"},
 				{"type": "research", "description": "Task B", "prompt": "Do B"}
 			]
@@ -1612,7 +1699,7 @@ func TestTaskListTool_UpdateRejectsMultipleInProgress(t *testing.T) {
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress"}, {"id": 2, "status": "in_progress"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "in_progress"}, {"id": 2, "status": "in_progress"}]}`),
 	})
 	if !updateRes.IsError {
 		t.Fatalf("expected tool error for two in_progress in one update; got output: %s", updateRes.Output)
@@ -1642,8 +1729,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [{"type": "research", "description": "Only task", "prompt": "Do it"}]
+			"add": [{"type": "research", "description": "Only task", "prompt": "Do it"}]
 		}`),
 	})
 
@@ -1651,7 +1737,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "done"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
@@ -1680,14 +1766,13 @@ func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
 		ID:   "task-append",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+			"add": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
 		}`),
 	})
 	updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
 		ID:        "task-done",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "done"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
@@ -1726,14 +1811,13 @@ func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *t
 		ID:   "task-append",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+			"add": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
 		}`),
 	})
 	updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
 		ID:        "task-done",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "done"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
@@ -1802,14 +1886,13 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 				ID:   "task-append",
 				Name: "task_list",
 				Arguments: json.RawMessage(`{
-					"action": "append",
-					"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+					"add": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
 				}`),
 			})
 			updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
 				ID:        "task-done",
 				Name:      "task_list",
-				Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+				Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "done"}]}`),
 			})
 			if updateRes.IsError {
 				t.Fatalf("update error: %s", updateRes.Output)
@@ -1907,8 +1990,7 @@ func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [
+			"add": [
 				{"type": "research", "description": "Task A", "prompt": "Do A"},
 				{"type": "research", "description": "Task B", "prompt": "Do B", "depends_on": [1]},
 				{"type": "research", "description": "Task C", "prompt": "Do C", "depends_on": [2]}
@@ -1920,13 +2002,13 @@ func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
 	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "in_progress"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 1, "status": "in_progress"}]}`),
 	})
 
 	updateRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "c3",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 3, "status": "cancelled"}]}`),
+		Arguments: json.RawMessage(`{"update":[{"id": 3, "status": "cancelled"}]}`),
 	})
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
@@ -2086,8 +2168,7 @@ func TestTaskListTool_AppendResponseIsMinimal(t *testing.T) {
 		ID:   "c1",
 		Name: "task_list",
 		Arguments: json.RawMessage(`{
-			"action": "append",
-			"tasks": [
+			"add": [
 				{"type": "research", "description": "Task A", "prompt": "Do A"},
 				{"type": "research", "description": "Task B", "prompt": "Do B", "depends_on": [1]}
 			]

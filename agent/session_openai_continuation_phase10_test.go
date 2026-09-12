@@ -14,8 +14,7 @@ import (
 func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate(t *testing.T) {
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
-		Provider:          "openai",
-		CanFallbackToChat: true,
+		Provider: "openai",
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
@@ -33,9 +32,6 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 				if requestMessagesContainText(req.Messages, "phase10 prior user marker") {
 					t.Fatalf("delta request included prior marker: %+v", req.Messages)
 				}
-				if !requestMessagesContainText(req.FullHistoryFallbackMessages, "phase10 prior user marker") {
-					t.Fatalf("fallback sidecar missing prior marker: %+v", req.FullHistoryFallbackMessages)
-				}
 				return agenttest.FinalResponse("phase 10 delta")
 			},
 		},
@@ -43,7 +39,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
@@ -80,8 +76,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory(t *testing.T) {
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
-		Provider:          "openai",
-		CanFallbackToChat: true,
+		Provider: "openai",
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
@@ -106,7 +101,7 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
@@ -137,8 +132,7 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger(t *testing.T) {
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
-		Provider:          "openai",
-		CanFallbackToChat: true,
+		Provider: "openai",
 		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 			return phase4DIContinuationPlan(req), nil
 		},
@@ -152,7 +146,7 @@ func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadow
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{

@@ -21,7 +21,7 @@ import { type PaneTypeId, paneFor } from "./paneRegistry";
 // point (Jesse: "there should only ever be one pane in the 'main group'").
 export type PaneSlot = "main" | "secondary";
 
-type PrimaryPaneType = "settings" | "spawn" | "session";
+type PrimaryPaneType = "settings" | "spawn" | "session" | "welcome";
 
 export interface OpenPaneRecord {
   id: string;
@@ -34,6 +34,35 @@ export interface OpenPaneRecord {
   // geometry (splits, drag-reorder) from that point forward, and DockHost's
   // reconciliation only ever adds a panel for an id once.
   slot: PaneSlot;
+}
+
+// Open's exact return surface is not part of transcript params or saved layout:
+// a same-ref SESSION and transcript are distinct retained contexts. Object keys
+// bind each edge to these pane lifetimes, not IDs a restore/reset can reuse.
+const transcriptOpenOrigins = new Map<OpenPaneRecord, OpenPaneRecord>();
+
+export function recordTranscriptOpenOrigin(pane: OpenPaneRecord, origin: OpenPaneRecord | undefined): void {
+  transcriptOpenOrigins.delete(pane);
+  const panes = workspaceStore.getState().panes;
+  const params = pane.params as { ref?: unknown; parentRef?: unknown };
+  if (
+    pane.type === "transcript" &&
+    origin !== undefined &&
+    origin !== pane &&
+    panes.includes(pane) &&
+    panes.includes(origin) &&
+    (origin.type === "session" || origin.type === "transcript") &&
+    typeof params.parentRef === "string" &&
+    params.parentRef !== "" &&
+    params.parentRef !== params.ref &&
+    (origin.params as { ref?: unknown }).ref === params.parentRef
+  ) {
+    transcriptOpenOrigins.set(pane, origin);
+  }
+}
+
+export function transcriptOpenOrigin(pane: OpenPaneRecord): OpenPaneRecord | undefined {
+  return transcriptOpenOrigins.get(pane);
 }
 
 export interface WorkspaceStoreState {
@@ -129,7 +158,7 @@ export function cancelPaneFocus(paneId: string): void {
 // the mismatch unrepresentable instead of merely unwritten.
 function primaryMatches(pane: OpenPaneRecord | null, type: PrimaryPaneType, params: unknown): boolean {
   if (pane?.type !== type) return false;
-  // Settings and spawn are singletons: their type IS their identity, and a
+  // Settings, spawn, and welcome are singletons: their type IS their identity, and a
   // section change is a params update to the pane that already holds it.
   if (type !== "session") return true;
   return (pane.params as { ref?: unknown }).ref === (params as { ref?: unknown }).ref;
@@ -383,6 +412,16 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     }
   },
 }));
+
+// One removal boundary covers close, primary replacement (including duplicate
+// removal), restore, and reset. Host remounts only change focus/API, so retain
+// these edges. Pruning never mutates panes or emits another store notification.
+workspaceStore.subscribe((state, previous) => {
+  if (state.panes === previous.panes) return;
+  for (const [pane, origin] of transcriptOpenOrigins) {
+    if (!state.panes.includes(pane) || !state.panes.includes(origin)) transcriptOpenOrigins.delete(pane);
+  }
+});
 
 export function useWorkspaceStore(): WorkspaceStoreState;
 export function useWorkspaceStore<T>(selector: (state: WorkspaceStoreState) => T): T;

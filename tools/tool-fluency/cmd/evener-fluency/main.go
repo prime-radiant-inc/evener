@@ -30,18 +30,7 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/glm"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/evener/llm/providers/minimax"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
-	_ "primeradiant.com/evener/llm/providers/openaicompat"
-	_ "primeradiant.com/evener/llm/providers/openrouter"
-	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
+	_ "primeradiant.com/evener/llm/providers/all"
 )
 
 var exitProcess = os.Exit
@@ -117,7 +106,10 @@ func catalogTools(modelRef string) ([]catalogTool, error) {
 	if err != nil {
 		return nil, err
 	}
-	profile, err := cmdutil.ResolveProfileForProvider(providerName, modelName)
+	// The catalog is what a model of this shape is offered, so it resolves on
+	// the embedded registry: no credentials, no network, and no dependence on
+	// whatever the developer happens to have configured.
+	profile, err := provider.Resolve(provider.EmbeddedRegistry(), providerName+"/"+modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -468,11 +460,9 @@ type probeMetrics struct {
 // here would silently misclassify metrics the day a profile gains or
 // changes a rename (roborev Medium on f5e1017).
 func wireNameToCanonicalForModel(modelRef string) (map[string]string, error) {
-	providerName, modelName, err := splitModelRef(modelRef)
-	if err != nil {
-		return nil, err
-	}
-	profile, err := cmdutil.ResolveProfileForProvider(providerName, modelName)
+	// Resolve on the embedded registry, like catalogTools: no credentials,
+	// no network, and no dependence on developer configuration.
+	profile, err := provider.Resolve(provider.EmbeddedRegistry(), modelRef)
 	if err != nil {
 		return nil, err
 	}
@@ -842,7 +832,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if err != nil {
 		return err
 	}
-	client, provCfg, hasProvConfig, err := runnerLoadClient(llm.WithStateDir(res.StateDir))
+	client, err := runnerLoadClient(res.StateDir)
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
@@ -852,7 +842,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	}
 	defer closeAPILog() //nolint:errcheck
 
-	profile, err := runnerInitialProfile(provCfg, modelRef)
+	profile, err := runnerInitialProfile(client, modelRef)
 	if err != nil {
 		return err
 	}
@@ -866,7 +856,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	}
 
 	sessCfg := buildLiveSessionConfig(cfg, res.StateDir)
-	sessCfg.ResolveProfile = cmdutil.BuildResolveProfile(provCfg, hasProvConfig)
+	sessCfg.ResolveProfile = cmdutil.BuildResolveProfile(client)
 	if effort.Set {
 		sessCfg.ReasoningEffort = effort.Value
 	}
@@ -992,8 +982,8 @@ func maybeClearOpenAIAPIKey(shouldClear bool) func() {
 	}
 }
 
-func runnerInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef) (*provider.Profile, error) {
-	raw, err := cmdutil.ResolveProfileWithLiveWindow(cfg, modelRef.Qualified())
+func runnerInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef) (*provider.Profile, error) {
+	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
 	if err != nil {
 		return nil, err
 	}
@@ -1006,24 +996,12 @@ func runnerApplyFastCheapModel(profile *provider.Profile, raw string, client *ll
 	}
 	raw = strings.TrimSpace(raw)
 	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
-		if !runnerClientHasProvider(client, cheapProvider) {
+		if !client.HasProvider(cheapProvider) {
 			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
 				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
 		}
 	}
 	return provider.WithCheapModel(profile, raw), nil
-}
-
-func runnerClientHasProvider(client *llm.Client, name string) bool {
-	if client == nil {
-		return false
-	}
-	for _, p := range client.ProviderNames() {
-		if strings.EqualFold(p, name) {
-			return true
-		}
-	}
-	return false
 }
 
 func unavailableFinding(probe probeFile, available map[string]bool) *finding {

@@ -3,9 +3,11 @@ package plugins
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +121,142 @@ func TestDoctor_OrphanCacheDir_NoneWhenReferenced(t *testing.T) {
 	}
 	if hasFinding(findings, "orphaned cache directory") {
 		t.Errorf("referenced cache dir flagged as orphan: %+v", findings)
+	}
+}
+
+// A materialize creates its sha directory before it records the registry
+// entry, and gc drops the entry before it removes the directory, so a walk
+// that runs between either pair calls a live install an orphan. Waiting for
+// the writer is only half of it: the registry the walk compares the cache
+// against has to be the one the writer left, not the one Doctor read on its
+// way in.
+func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing.T) {
+	m := NewManager(t.TempDir())
+	dir := m.pluginCacheDir("acme", "widget", "deadbeef")
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	if err != nil {
+		t.Fatalf("materialize acquire: %v", err)
+	}
+	// The window a materialize leaves open: the directory is on disk and the
+	// registry does not name it yet.
+	writePlugin(t, dir, "widget", nil)
+
+	type report struct {
+		findings []DoctorFinding
+		err      error
+	}
+	reports := make(chan report, 1)
+	go func() {
+		findings, doctorErr := m.Doctor()
+		reports <- report{findings, doctorErr}
+	}()
+
+	// Long enough that a walk which does not wait for the lock has already
+	// made its (wrong) report by the time the entry lands.
+	time.Sleep(200 * time.Millisecond)
+	saveErr := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+		"widget@acme": {{InstallPath: dir, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceGitHub, Repo: "acme/widget"}}},
+	}})
+	release()
+	if saveErr != nil {
+		t.Fatal(saveErr)
+	}
+
+	got := <-reports
+	if got.err != nil {
+		t.Fatalf("Doctor: %v", got.err)
+	}
+	if hasFinding(got.findings, "orphaned cache directory") {
+		t.Errorf("a materialize in flight was reported as an orphan: %+v", got.findings)
+	}
+}
+
+// A writer that holds the store lock for longer than the walk is willing to
+// wait is exactly the writer whose half-finished work the walk would
+// misreport, so the report says the check was skipped rather than guessing at
+// it.
+func TestDoctor_OrphanCacheDir_ReportsAHeldStoreLockInsteadOfGuessing(t *testing.T) {
+	m := NewManager(t.TempDir())
+	dir := m.pluginCacheDir("acme", "widget", "deadbeef")
+	writePlugin(t, dir, "widget", nil)
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	if err != nil {
+		t.Fatalf("writer acquire: %v", err)
+	}
+	defer release()
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if hasFinding(findings, "orphaned cache directory") {
+		t.Errorf("orphan claimed while a writer holds the store lock: %+v", findings)
+	}
+	f := findFinding(t, findings, "unreferenced cache directories")
+	if f.Level != LevelWarn {
+		t.Errorf("skipped check level = %s, want %s", f.Level, LevelWarn)
+	}
+	if f.Remediation == "" {
+		t.Error("skipped check has no remediation")
+	}
+}
+
+// storeTree is every path under root, relative and sorted: what a read-only
+// verb has to hand back untouched.
+func storeTree(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		paths = append(paths, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+// The store lock is a file the writers create, so waiting on it the way they
+// take it would leave one behind in a store that has never had a writer —
+// a mutation from the one verb that promises to make none. Such a store also
+// has nobody to wait for, so the walk still answers.
+func TestDoctor_OrphanCacheDir_LeavesAStoreWithNoLockFileAlone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	orphan := m.pluginCacheDir("acme", "widget", "deadbeef")
+	writePlugin(t, orphan, "widget", nil)
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	before := storeTree(t, m.Root)
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if f := findFinding(t, findings, orphan); f.Level != LevelWarn {
+		t.Errorf("orphan cache dir level = %s, want %s", f.Level, LevelWarn)
+	}
+	if _, statErr := os.Stat(m.lockPath()); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("Doctor created the store lock %s (stat err = %v)", m.lockPath(), statErr)
+	}
+	if after := storeTree(t, m.Root); !slices.Equal(before, after) {
+		t.Errorf("Doctor changed the store\nbefore = %v\nafter  = %v", before, after)
 	}
 }
 
@@ -589,4 +727,96 @@ func TestDoctor_CleanStoreHasNoFailOrWarn(t *testing.T) {
 			t.Errorf("clean store produced a non-OK finding: %+v", f)
 		}
 	}
+}
+
+// Doctor is the read-only report, and an unusable store root is the
+// environment problem that explains every other check failing. It is reported
+// the way Doctor reports the rest of the environment — a FAIL finding, not an
+// error — and reported without touching the working directory: the writability
+// probe used to create its temp file under a relative root such as ".", which
+// is a write from the one verb that promises not to make any.
+func TestDoctor_ReportsARootThatIsNotResolvedWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name    string
+		root    string
+		wantErr string
+	}{
+		{"no root could be resolved", "", "no plugin store root is configured"},
+		{"the root is the working directory", ".", "not an absolute path"},
+		{"the root names a relative directory", "store", "not an absolute path"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+			plantAmbientStore(t, cwd)
+			before := dirNames(t, cwd)
+			// The probe removes its temp file, so the directory listing alone
+			// would not notice it. Watch the seam instead.
+			origCreateTemp := doctorCreateTemp
+			t.Cleanup(func() { doctorCreateTemp = origCreateTemp })
+			probed := ""
+			doctorCreateTemp = func(dir, pattern string) (doctorTempFile, error) {
+				probed = dir
+				return origCreateTemp(dir, pattern)
+			}
+
+			// git does not live under the store root, so its availability is
+			// still worth reporting — and is still really checked, which a
+			// stub that disagrees with this machine is what proves.
+			origGitAvailable := doctorGitAvailable
+			t.Cleanup(func() { doctorGitAvailable = origGitAvailable })
+			doctorGitAvailable = func() bool { return false }
+
+			m := &Manager{Root: test.root, Stderr: io.Discard}
+			findings, err := m.Doctor()
+			if err != nil {
+				t.Fatalf("Doctor error = %v, want the root reported as a finding", err)
+			}
+			if len(findings) != 2 {
+				t.Fatalf("findings = %+v, want the git finding and the unusable-root finding", findings)
+			}
+			git := findings[0]
+			if git.Level != LevelWarn || git.Category != catEnvironment || !strings.Contains(git.Message, "git not found on PATH") {
+				t.Errorf("first finding = %+v, want git availability reported despite the root", git)
+			}
+			got := findings[1]
+			if got.Level != LevelFail || got.Category != catEnvironment {
+				t.Errorf("finding = %+v, want a FAIL under %q", got, catEnvironment)
+			}
+			if !strings.Contains(got.Message, test.wantErr) {
+				t.Errorf("finding message = %q, want it to contain %q", got.Message, test.wantErr)
+			}
+			if got.Remediation == "" {
+				t.Error("finding has no remediation")
+			}
+			// The probe refuses on its own too, so a caller that reaches it
+			// directly cannot write into the working directory either.
+			if exists, probeErr := m.checkStoreWritable(); probeErr == nil || exists {
+				t.Errorf("checkStoreWritable = %v, %v; want a refusal that probes nothing", exists, probeErr)
+			}
+			if probed != "" {
+				t.Errorf("the writability probe created a file under %q", probed)
+			}
+			if after := dirNames(t, cwd); !slices.Equal(before, after) {
+				t.Errorf("working directory went from %v to %v; Doctor wrote to it", before, after)
+			}
+		})
+	}
+}
+
+// dirNames is the sorted contents of dir, for asserting that a call left it
+// exactly as it found it.
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	slices.Sort(names)
+	return names
 }

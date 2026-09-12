@@ -15,7 +15,7 @@ import { type FormEvent, useEffect, useId, useState } from "react";
 import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { MCPServerSpec, SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
-import { extensionsStore, useExtensionsStore } from "../../../stores/extensions";
+import { directoryActions, extensionsStore, useExtensionsStore } from "../../../stores/extensions";
 import {
   Button,
   Chip,
@@ -224,6 +224,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
           <section className={CLASS.section}>
             <h3 className={CLASS.sectionTitle}>MCP config files</h3>
             <PathListEditor
+              directory={directoryActions}
               label="MCP config files"
               addLabel="New config file"
               kind="file"

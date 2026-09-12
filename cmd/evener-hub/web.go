@@ -13,7 +13,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/httpsec"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
@@ -47,14 +46,20 @@ type WebServer struct {
 	manifestFS fs.FS
 
 	frontendHash              string
+	recoveryStoreErr          error
 	deletionStoreErr          error
 	transcriptDisplayStoreErr error
+	keybindingsStoreErr       error
 }
 
 var manifestMarshal = json.Marshal
 
 // NewWebServer constructs the web server.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
+	return newWebServer(cfg, nil)
+}
+
+func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace) *WebServer {
 	var deletionStoreErr error
 	if cfg.DeletionStore == nil {
 		cfg.DeletionStore, deletionStoreErr = hubcore.NewDeletionStore(cfg.HubStateRoot)
@@ -63,15 +68,22 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	if cfg.TranscriptDisplayStore == nil {
 		cfg.TranscriptDisplayStore, transcriptDisplayStoreErr = hubcore.NewTranscriptDisplayStore(cfg.HubStateRoot)
 	}
-	sources := newHubSourceRegistry(cfg)
-	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
-		cfg.CodexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
+	keybindingsStoreErr := cfg.KeybindingsStoreErr
+	if cfg.KeybindingsStore == nil {
+		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
 	}
+	sources := newHubSourceRegistry(cfg)
 	// One resume-lock registry backs both the REST send path (lockForSession)
 	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume
 	// triggered on either transport serializes a racing resume on the other.
+	var recoveryStoreErr error
 	if cfg.ResumeLocks == nil {
-		cfg.ResumeLocks = hubcore.NewResumeLocks()
+		if cfg.HubStateRoot == "" {
+			// Embedders without a state root explicitly use process-local state.
+			cfg.ResumeLocks = hubcore.NewResumeLocks()
+		} else {
+			cfg.ResumeLocks, recoveryStoreErr = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
+		}
 	}
 	fHash, _ := frontendDistHash(distFS())
 	web := &WebServer{
@@ -84,17 +96,19 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
 		deletionStoreErr:          deletionStoreErr,
+		recoveryStoreErr:          recoveryStoreErr,
 		transcriptDisplayStoreErr: transcriptDisplayStoreErr,
+		keybindingsStoreErr:       keybindingsStoreErr,
 	}
 	if web.cfg.LiveModels == nil {
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
+	web.appRPC = newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
-	if deletionStoreErr == nil {
+	if deletionStoreErr == nil && recoveryStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}
 	return web
@@ -129,6 +143,11 @@ func validAssetPath(next http.Handler) http.Handler {
 }
 
 func (s *WebServer) Handler() http.Handler {
+	if s.recoveryStoreErr != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "recovery state unavailable", http.StatusServiceUnavailable)
+		})
+	}
 	mux := http.NewServeMux()
 
 	// Assets — the embedded PWA icons + manifest, auth-exempt per hubedge.
@@ -173,8 +192,9 @@ func (s *WebServer) Handler() http.Handler {
 
 	// API
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
+	mux.HandleFunc("/api/debug/subscriptions", s.handleAPIDebugSubscriptions)
 
-	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))
+	mux.HandleFunc("/auth/", hubedge.HandleAuth(s.cfg.AuthToken))
 
 	auth := hubedge.AuthGuard(s.cfg.AuthToken)
 	// Optional opt-in (EVENER_RECORD_HTTP) inbound-request recorder for fuzz-corpus
@@ -211,7 +231,7 @@ func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if token := s.cfg.AuthToken; token != "" {
-		manifest["start_url"] = "/auth?token=" + url.QueryEscape(token) + "&next=" + url.QueryEscape("/")
+		manifest["start_url"] = hubedge.AuthURLFor("", token) + "?next=" + url.QueryEscape("/")
 	}
 	out, err := manifestMarshal(manifest)
 	if err != nil {

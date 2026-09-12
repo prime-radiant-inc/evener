@@ -35,6 +35,10 @@ var ErrAllModelsRefused = errors.New("all auxiliary models refused")
 type Caller struct {
 	client *llm.Client
 
+	// AdapterTimeout is the session's default policy for auxiliary requests.
+	// Set before use; explicit request policies take precedence.
+	AdapterTimeout *llm.AdapterTimeout
+
 	mu      sync.Mutex
 	refused map[route]struct{}
 	probes  map[route]*probeCall
@@ -94,6 +98,9 @@ func (c *Caller) run(ctx context.Context, profile *provider.Profile, cheap route
 }
 
 func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap route, req llm.Request) (llm.Response, bool, error) {
+	if req.AdapterTimeout == nil {
+		req.AdapterTimeout = c.AdapterTimeout
+	}
 	active := sessionModel(profile)
 	if cheap != active && !c.serves(cheap) {
 		cheap = active
@@ -259,7 +266,7 @@ func (c *Caller) serves(r route) bool {
 	c.mu.Lock()
 	_, refused := c.refused[r]
 	c.mu.Unlock()
-	return !refused && c.client.ValidateModelCompatibility(r.provider, r.model) == nil
+	return !refused && c.client.CanServe(r.provider, r.model)
 }
 
 // refusesModel reports whether err is the provider saying it will not serve the
@@ -271,8 +278,8 @@ func (c *Caller) serves(r route) bool {
 // price of that conservatism is maintenance — if a provider rewords its refusal
 // this reactive path silently stops firing and auxiliary calls fail instead of
 // falling back. That degradation is bounded because the proactive half of the
-// pair, serves(), already skips pairs the client's own model-compatibility
-// validator knows about, so a new wording costs the fallback, not the session.
+// pair, serves(), already skips routes the client says it cannot serve
+// (CanServe), so a new wording costs the fallback, not the session.
 func refusesModel(err error) bool {
 	if llm.Classify(err) != llm.ErrorClassPermanent {
 		return false

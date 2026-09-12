@@ -400,7 +400,7 @@ func TestCovFetchHubStatus(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			readCalls++
-			if params.Ref != "local:01TEST" || !params.IncludeTurns || params.ItemsView != "full" {
+			if params.Ref != "local:01TEST" || params.IncludeTurns || params.ItemsView != "" || params.ItemLimit != 0 {
 				t.Errorf("thread/read params = %#v", params)
 			}
 			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
@@ -444,31 +444,6 @@ func TestCovFetchHubTranscriptTargets(t *testing.T) {
 	msg, ok := fetchHubTranscriptTargets(client, ref)().(hubTranscriptTargetsMsg)
 	if !ok || msg.err != nil || len(msg.targets) != 1 || msg.targets[0].Ref != "local:01CHILD" {
 		t.Fatalf("transcript targets result = %#v", msg)
-	}
-}
-
-// TestCovFetchHubModelsForHarness exercises model fetch for harness.
-func TestCovFetchHubModelsForHarness(t *testing.T) {
-	var calls []appwire.ModelListParams
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-			calls = append(calls, params)
-			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
-		})
-	})
-	defer cleanup()
-	msg, ok := fetchHubModelsForHarness(client, "codex", "/tmp")().(hubModelsMsg)
-	if !ok || msg.err != nil || msg.harness != "codex" || len(msg.models) != 1 || msg.models[0].ID != "gpt-5" {
-		t.Fatalf("harness model result = %#v", msg)
-	}
-
-	// Empty harness (trimmed).
-	msg, ok = fetchHubModelsForHarness(client, "  ", "/tmp")().(hubModelsMsg)
-	if !ok || msg.err != nil || msg.harness != "" || len(msg.models) != 1 || msg.models[0].ID != "openai/gpt-5" {
-		t.Fatalf("default model result = %#v", msg)
-	}
-	if len(calls) != 2 || calls[0].Harness != "codex" || calls[0].CWD != "/tmp" || calls[1].Harness != "" || calls[1].CWD != "/tmp" {
-		t.Fatalf("model/list calls = %#v", calls)
 	}
 }
 
@@ -625,10 +600,10 @@ func TestCovIsDatedSnapshotModelID(t *testing.T) {
 	}
 }
 
-// TestCovModelInfoMetaTail exercises catalog meta tail rendering.
+// TestCovModelInfoMetaTail exercises descriptor meta tail rendering.
 func TestCovModelInfoMetaTail(t *testing.T) {
-	// Nil.
-	if got := modelInfoMetaTail(nil); got != "" {
+	// A descriptor carrying nothing but its identity.
+	if got := modelInfoMetaTail(appwire.ModelDescriptor{Provider: "p", Model: "m"}); got != "" {
 		t.Fatalf("got %q, want empty", got)
 	}
 }

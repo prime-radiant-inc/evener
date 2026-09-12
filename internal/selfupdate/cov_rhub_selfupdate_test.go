@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -151,7 +153,7 @@ func TestExtractReleaseArchiveMissingBinary(t *testing.T) {
 	if err := os.WriteFile(archivePath, tarGz(t, entries, nil), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	err := extractReleaseArchive(archivePath, root, filepath.Join(t.TempDir(), "out"))
+	err := extractReleaseArchive(t.Context(), archivePath, root, filepath.Join(t.TempDir(), "out"))
 	if err == nil || !strings.Contains(err.Error(), "did not contain") {
 		t.Fatalf("err=%v, want missing-binary error", err)
 	}
@@ -172,7 +174,7 @@ func TestExtractReleaseArchiveRejectsNonRegularFile(t *testing.T) {
 	if err := os.WriteFile(archivePath, tarGz(t, entries, dirs), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	err := extractReleaseArchive(archivePath, root, filepath.Join(t.TempDir(), "out"))
+	err := extractReleaseArchive(t.Context(), archivePath, root, filepath.Join(t.TempDir(), "out"))
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("err=%v, want non-regular-file error", err)
 	}
@@ -183,25 +185,25 @@ func TestExtractReleaseArchiveBadGzip(t *testing.T) {
 	if err := os.WriteFile(archivePath, []byte("not gzip"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := extractReleaseArchive(archivePath, "root", filepath.Join(t.TempDir(), "out")); err == nil {
+	if err := extractReleaseArchive(t.Context(), archivePath, "root", filepath.Join(t.TempDir(), "out")); err == nil {
 		t.Fatal("expected gzip error")
 	}
 	// A missing archive file surfaces an open error.
-	if err := extractReleaseArchive(filepath.Join(t.TempDir(), "nope"), "root", t.TempDir()); err == nil {
+	if err := extractReleaseArchive(t.Context(), filepath.Join(t.TempDir(), "nope"), "root", t.TempDir()); err == nil {
 		t.Fatal("expected open error for missing archive")
 	}
 }
 
-func TestCopyExecutableMissingSource(t *testing.T) {
-	err := copyExecutable(filepath.Join(t.TempDir(), "nope"), filepath.Join(t.TempDir(), "dst"))
+func TestStageExecutableMissingSource(t *testing.T) {
+	_, err := stageExecutable(t.Context(), filepath.Join(t.TempDir(), "nope"), t.TempDir(), "evener")
 	if err == nil {
-		t.Fatal("expected error copying a missing source")
+		t.Fatal("expected error staging a missing source")
 	}
 }
 
 func TestInstallExtractedBinariesMissingSource(t *testing.T) {
-	// extractDir has no binaries, so copyExecutable fails on the first one.
-	err := installExtractedBinaries(t.TempDir(), filepath.Join(t.TempDir(), "share"), filepath.Join(t.TempDir(), "bin"))
+	// extractDir has no binaries, so staging fails on the first one.
+	_, err := installExtractedBinaries(t.Context(), t.TempDir(), filepath.Join(t.TempDir(), "share"), filepath.Join(t.TempDir(), "bin"))
 	if err == nil {
 		t.Fatal("expected error when extracted binaries are absent")
 	}
@@ -247,14 +249,30 @@ func TestUpgradeStageFailures(t *testing.T) {
 		}
 	})
 	t.Run("extract", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("bad gzip")) }))
+		bad := []byte("bad gzip")
+		sum := sha256.Sum256(bad)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+				_, _ = fmt.Fprintf(w, "%x  evener_linux_amd64.tar.gz\n", sum)
+				return
+			}
+			_, _ = w.Write(bad)
+		}))
 		defer server.Close()
 		if _, err := Upgrade(t.Context(), Options{Prefix: t.TempDir(), GOOS: "linux", GOARCH: "amd64", RepoURL: server.URL}); err == nil {
 			t.Fatal("expected error")
 		}
 	})
 	t.Run("install", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(releaseArchive(t, "evener_linux_amd64")) }))
+		archive := releaseArchive(t, "evener_linux_amd64")
+		sum := sha256.Sum256(archive)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+				_, _ = fmt.Fprintf(w, "%x  evener_linux_amd64.tar.gz\n", sum)
+				return
+			}
+			_, _ = w.Write(archive)
+		}))
 		defer server.Close()
 		block := filepath.Join(t.TempDir(), "block")
 		if err := os.WriteFile(block, nil, 0o600); err != nil {
@@ -277,7 +295,7 @@ func TestExtractArchiveErrors(t *testing.T) {
 		if err := os.WriteFile(block, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := extractReleaseArchive(archive, root, filepath.Join(block, "out")); err == nil {
+		if err := extractReleaseArchive(t.Context(), archive, root, filepath.Join(block, "out")); err == nil {
 			t.Fatal("expected error")
 		}
 	})
@@ -288,7 +306,7 @@ func TestExtractArchiveErrors(t *testing.T) {
 		_ = gz.Close()
 		archive := filepath.Join(t.TempDir(), "a")
 		_ = os.WriteFile(archive, buf.Bytes(), 0o600)
-		if err := extractReleaseArchive(archive, root, t.TempDir()); err == nil {
+		if err := extractReleaseArchive(t.Context(), archive, root, t.TempDir()); err == nil {
 			t.Fatal("expected error")
 		}
 	})
@@ -298,14 +316,14 @@ func TestExtractArchiveErrors(t *testing.T) {
 		_ = os.WriteFile(archive, tarGz(t, entries, nil), 0o600)
 		out := t.TempDir()
 		_ = os.WriteFile(filepath.Join(out, installBinaries[0]), nil, 0o600)
-		if err := extractReleaseArchive(archive, root, out); err == nil {
+		if err := extractReleaseArchive(t.Context(), archive, root, out); err == nil {
 			t.Fatal("expected error")
 		}
 	})
 	t.Run("ignores unrelated entry", func(t *testing.T) {
 		archive := filepath.Join(t.TempDir(), "a")
 		_ = os.WriteFile(archive, tarGz(t, map[string][]byte{"unrelated/readme": []byte("x")}, nil), 0o600)
-		if err := extractReleaseArchive(archive, root, t.TempDir()); err == nil || !strings.Contains(err.Error(), "did not contain") {
+		if err := extractReleaseArchive(t.Context(), archive, root, t.TempDir()); err == nil || !strings.Contains(err.Error(), "did not contain") {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -318,16 +336,16 @@ func TestInstallDirectoryAndSymlinkErrors(t *testing.T) {
 	}
 	block := filepath.Join(t.TempDir(), "block")
 	_ = os.WriteFile(block, nil, 0o600)
-	if err := installExtractedBinaries(extract, filepath.Join(block, "share"), t.TempDir()); err == nil {
+	if _, err := installExtractedBinaries(t.Context(), extract, filepath.Join(block, "share"), t.TempDir()); err == nil {
 		t.Fatal("share mkdir")
 	}
-	if err := installExtractedBinaries(extract, t.TempDir(), filepath.Join(block, "bin")); err == nil {
+	if _, err := installExtractedBinaries(t.Context(), extract, t.TempDir(), filepath.Join(block, "bin")); err == nil {
 		t.Fatal("bin mkdir")
 	}
 	binDir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(binDir, installBinaries[0]), 0o755)
 	_ = os.WriteFile(filepath.Join(binDir, installBinaries[0], "keep"), nil, 0o600)
-	if err := installExtractedBinaries(extract, t.TempDir(), binDir); err == nil {
+	if _, err := installExtractedBinaries(t.Context(), extract, t.TempDir(), binDir); err == nil {
 		t.Fatal("symlink")
 	}
 }
@@ -387,36 +405,33 @@ func TestExtractCopyAndCloseErrors(t *testing.T) {
 	oldCopy, oldClose := copyStream, closeFile
 	t.Cleanup(func() { copyStream, closeFile = oldCopy, oldClose })
 	copyStream = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy") }
-	if err := extractReleaseArchive(archive, root, t.TempDir()); err == nil {
+	if err := extractReleaseArchive(t.Context(), archive, root, t.TempDir()); err == nil {
 		t.Fatal("copy")
 	}
 	copyStream = oldCopy
 	closeFile = func(*os.File) error { return errors.New("close") }
-	if err := extractReleaseArchive(archive, root, t.TempDir()); err == nil {
+	if err := extractReleaseArchive(t.Context(), archive, root, t.TempDir()); err == nil {
 		t.Fatal("close")
 	}
 }
 
-func TestCopyExecutableIOErrors(t *testing.T) {
-	src := filepath.Join(t.TempDir(), "src")
+func TestStageExecutableIOErrors(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
 	_ = os.WriteFile(src, []byte("body"), 0o755)
-	oldCopy, oldClose, oldRename := copyStream, closeFile, renameFile
-	t.Cleanup(func() { copyStream, closeFile, renameFile = oldCopy, oldClose, oldRename })
+	oldCopy, oldClose := copyStream, closeFile
+	t.Cleanup(func() { copyStream, closeFile = oldCopy, oldClose })
 	copyStream = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy") }
-	if err := copyExecutable(src, filepath.Join(t.TempDir(), "dst")); err == nil {
+	if _, err := stageExecutable(t.Context(), src, dir, "evener"); err == nil {
 		t.Fatal("copy")
 	}
 	copyStream = oldCopy
 	closeFile = func(*os.File) error { return errors.New("close") }
-	if err := copyExecutable(src, filepath.Join(t.TempDir(), "dst")); err == nil {
+	if _, err := stageExecutable(t.Context(), src, dir, "evener"); err == nil {
 		t.Fatal("close")
 	}
 	closeFile = oldClose
-	renameFile = func(string, string) error { return errors.New("rename") }
-	if err := copyExecutable(src, filepath.Join(t.TempDir(), "dst")); err == nil {
-		t.Fatal("rename")
-	}
-	if err := copyExecutable(src, filepath.Join(t.TempDir(), "missing", "dst")); err == nil {
+	if _, err := stageExecutable(t.Context(), src, filepath.Join(dir, "missing"), "evener"); err == nil {
 		t.Fatal("open output")
 	}
 }

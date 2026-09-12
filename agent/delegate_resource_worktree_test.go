@@ -45,6 +45,47 @@ func TestStableDelegateWorktree_RootCloseCleansEligibleScratch(t *testing.T) {
 	}
 }
 
+// TestStableDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch covers
+// issue #695: a stable-receiver watch (the observer-sidecar class, #655)
+// synthesizes send.To as the stableWatchReceiverTarget sentinel, never the
+// delegate ID, so the dispose gate's plain send.To/ResolvedSendTo comparison
+// against id misses it. The gate must also catch a watch whose receiver
+// identity (receiverSessionID/receiverDelegateID) names the delegate being
+// disposed.
+func TestStableDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch(t *testing.T) {
+	r := newWorktreeRepo(t)
+	id, _, _ := r.seedStableIsolationLane(t)
+
+	childSessionID := "child-" + id
+	key := watchKey{
+		VisibleSessionID:   r.s.id,
+		Target:             "job_source",
+		SendTo:             stableWatchReceiverTarget,
+		ReceiverSessionID:  childSessionID,
+		ReceiverDelegateID: id,
+	}
+	cfg := &watchConfig{
+		id:                 "w1",
+		watchID:            "watch-1",
+		target:             "job_source",
+		send:               &watchSendArgs{To: stableWatchReceiverTarget},
+		receiverSessionID:  childSessionID,
+		receiverDelegateID: id,
+		stableReceiver:     true,
+	}
+	r.s.jobManager.mu.Lock()
+	r.s.jobManager.watches[key] = cfg
+	r.s.jobManager.mu.Unlock()
+
+	_, err := r.s.worktreeDispose(context.Background(), id, false, false)
+	if err == nil {
+		t.Fatal("expected dispose to be refused while a receiver-routed watch targets the delegate, got success")
+	}
+	if !strings.Contains(err.Error(), "is the target of an armed or pending watch send") {
+		t.Fatalf("dispose error = %v, want the watch-gate refusal", err)
+	}
+}
+
 func TestStableDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *testing.T) {
 	t.Run("dirty", func(t *testing.T) {
 		r := newWorktreeRepo(t)

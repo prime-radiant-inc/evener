@@ -121,7 +121,7 @@ func fuzzExactRepair(t *testing.T) {
 	t.Helper()
 	call := llm.ToolCallData{ID: "orphan", Name: "tool"}
 	s := &Session{history: []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}})}}
-	if s.repairOrphanedToolResults("restore") != 1 {
+	if s.repairOrphanedToolResults(context.Background(), "restore") != 1 {
 		t.Fatal("orphan was not repaired")
 	}
 	s.retryPendingCallerWatchSendsAfterRepair(context.Background())
@@ -149,7 +149,11 @@ func fuzzExactNamer(t *testing.T) {
 	launcher := &Session{stateDir: t.TempDir(), profile: WithCheapModel(NewOpenAIProfile("main"), "cheap")}
 	launcher.nameSessionFromTextFunc = func(context.Context, string, string) error { return nil }
 	eligible := schema.NewTurn(schema.TurnSummary, llm.User("summary"))
-	(&Session{stateDir: t.TempDir(), profile: NewOpenAIProfile("main")}).launchCompactionNamer(context.Background(), eligible)
+	fallback := &Session{stateDir: t.TempDir(), profile: NewOpenAIProfile("main")}
+	fallback.launchCompactionNamer(context.Background(), eligible)
+	// The active model enables naming without a cheap model. Join its log
+	// writer before TempDir cleanup removes the session directory.
+	fallback.sendersWG.Wait()
 	launcher.launchCompactionNamer(context.Background(), empty)
 	launcher.naming.value, launcher.naming.source = "manual", sessionNameSourceUser
 	launcher.launchCompactionNamer(context.Background(), eligible)
@@ -165,7 +169,7 @@ func fuzzExactNamer(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcher.naming.value, launcher.naming.source = "manual", sessionNameSourceUser
-	if err := launcher.applySessionNameResult(sessionNameResult{Name: "late", Source: sessionNameSourceCompaction}); err != nil {
+	if err := launcher.applySessionNameResult(sessionNameResult{Name: "late", Source: sessionNameSourceCompaction}, ungatedFoldRevision); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +213,7 @@ func fuzzExactNamer(t *testing.T) {
 	s.appendSessionNamerLog(sessionlog.SessionLogEntry{})
 
 	s.closing = true
-	if err := s.applySessionNameResult(sessionNameResult{Name: "late", Source: sessionNameSourcePrompt}); !errors.Is(err, context.Canceled) {
+	if err := s.applySessionNameResult(sessionNameResult{Name: "late", Source: sessionNameSourcePrompt}, ungatedFoldRevision); !errors.Is(err, context.Canceled) {
 		t.Fatalf("late name result error = %v", err)
 	}
 }

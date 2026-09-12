@@ -96,8 +96,8 @@ type hubSessionDetail struct {
 	// Usage, WorkMillis, and ActiveTurnStartedAt mirror thread.Evener's WS2
 	// working-state/token metrics so the session header chip strip and the
 	// /status details drawer can render them without a fresh round-trip.
-	// Usage is nil when the source reports no token data (old daemon, Codex
-	// thread, or zero usage).
+	// Usage is nil when a source-backed thread reports no token data or the
+	// session has zero usage.
 	Usage               *appwire.EvenerUsage
 	WorkMillis          int64
 	ActiveTurnStartedAt int64

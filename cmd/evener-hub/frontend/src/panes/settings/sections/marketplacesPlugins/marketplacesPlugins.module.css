@@ -265,3 +265,42 @@
   flex-direction: column;
   gap: var(--space-3);
 }
+
+/* MarketplaceSheet body (the sheet is the editor, spec 2026-09-07 §3): the
+ * form above the meta table, then Refresh, then the danger zone under a
+ * divider - the same shape as the provider sheet. */
+.sheetForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.sheetNote {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.sheetError {
+  margin: 0;
+  color: var(--danger-ink);
+  font-size: var(--font-size-caption);
+}
+
+.sheetActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sheetActions > button {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.sheetDivider {
+  margin: var(--space-3) 0;
+  border: none;
+  border-top: 1px solid var(--edge);
+}

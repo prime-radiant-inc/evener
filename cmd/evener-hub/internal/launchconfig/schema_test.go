@@ -14,7 +14,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	}
 	want := []string{
 		"agent", "model", "reasoning_effort", "fast_cheap_model",
-		"context_strategy", "openai_responses_continuation", "max_rounds", "max_subagent_depth",
+		"context_strategy", "provider_idle_timeout", "openai_responses_continuation", "max_rounds", "max_subagent_depth",
 		"max_concurrent_delegate_turns", "max_retained_terminal",
 		"no_project_prompts", "non_interactive", "app_replay_size",
 		"system_prompt_mode", "system_prompt_file", "system_prompt_text",
@@ -23,6 +23,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"model_fallbacks", "enabled_plugins", "env",
 		"sandbox", "sandbox_net",
 		"verbose", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
+		"api_log",
 	}
 	wantSet := map[string]bool{}
 	for _, field := range want {

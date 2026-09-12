@@ -60,6 +60,27 @@ func CatalogMethodNames(scope MethodScope) []string {
 	return out
 }
 
+// KnownWireName reports whether name is a wire name this catalog defines:
+// any request method, any outbound notification, or the client's initialized
+// handshake notification. Callers that must not echo client-controlled
+// strings verbatim (log lines, advisories) use it to decide whether a name
+// is one of ours.
+func KnownWireName(name string) bool {
+	return knownWireNames[name]
+}
+
+var knownWireNames = func() map[string]bool {
+	names := make(map[string]bool, len(Methods)+len(Notifications)+1)
+	for _, m := range Methods {
+		names[m.Name] = true
+	}
+	for _, n := range Notifications {
+		names[n.Name] = true
+	}
+	names[MethodInitialized] = true
+	return names
+}()
+
 // MethodSpec is one request method in the AppWire catalog: the wire name, the
 // Go param/result types (zero values, so the doc generator can reflect their
 // JSON fields), the scope, and a one-line summary.
@@ -92,9 +113,9 @@ var Methods = []MethodSpec{
 	{MethodInitialize, InitializeParams{}, InitializeResponse{}, ScopeConnection, "Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set."},
 	{MethodPing, EmptyParams{}, EmptyResponse{}, ScopeConnection, "Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat)."},
 	{MethodThreadList, ThreadListParams{}, ThreadListResponse{}, ScopeBoth, "Lists threads; the daemon returns its single session."},
-	{MethodThreadRead, ThreadReadParams{}, ThreadReadResponse{}, ScopeBoth, "Reads one thread and optionally subscribes to its live updates."},
+	{MethodThreadRead, ThreadReadParams{}, ThreadReadResponse{}, ScopeBoth, "Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items."},
 	{MethodThreadUnsubscribe, ThreadUnsubscribeParams{}, EmptyResponse{}, ScopeBoth, "Drops this connection's live-update subscription to a thread without reading it."},
-	{MethodThreadTurnsList, ThreadTurnsListParams{}, ThreadTurnsListResponse{}, ScopeBoth, "Pages turns backward (older) for lazy transcript loading; the cold load seeds the latest window via thread/read(turnLimit)."},
+	{MethodThreadTurnsList, ThreadTurnsListParams{}, ThreadTurnsListResponse{}, ScopeBoth, "Pages atomic projected items backward (older) for lazy transcript loading; requests require an opaque item cursor."},
 	{MethodThreadTurnItemsList, ThreadTurnItemsListParams{}, ThreadTurnItemsListResponse{}, ScopeUnimplemented, "Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router."},
 	{MethodThreadStart, ThreadStartParams{}, ThreadStartResponse{}, ScopeHub, "Starts a new thread and attaches a live-update relay."},
 	{MethodThreadResume, ThreadResumeParams{}, ThreadResumeResponse{}, ScopeHub, "Resumes an existing session and attaches its relay."},
@@ -105,6 +126,7 @@ var Methods = []MethodSpec{
 	{MethodThreadReasoningEffortSet, ThreadReasoningEffortSetParams{}, EmptyResponse{}, ScopeBoth, "Sets reasoning effort, normalizing and validating the value."},
 	{MethodThreadVisionModelSet, ThreadVisionModelSetParams{}, EmptyResponse{}, ScopeBoth, "Sets the vision side-channel routing (\"\", \"off\", or a model ref)."},
 	{MethodThreadCompactStart, ThreadCompactStartParams{}, EmptyResponse{}, ScopeBoth, "Starts a context-compaction pass on the session."},
+	{MethodEvenerThreadForceStop, ThreadForceStopParams{}, EmptyResponse{}, ScopeHub, "Explicitly terminates a verified local daemon and confirms exit; saved session data is retained."},
 	{MethodThreadShutdown, ThreadShutdownParams{}, EmptyResponse{}, ScopeBoth, "Shuts the session down (the daemon runs it asynchronously)."},
 	{MethodTurnStart, TurnStartParams{}, TurnStartResponse{}, ScopeBoth, "Starts a new user turn and reserves a turn ID."},
 	{MethodTurnSteer, TurnSteerParams{}, TurnSteerResponse{}, ScopeBoth, "Injects a steering message into the active turn."},
@@ -125,7 +147,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},
 	{MethodEvenerGitHead, GitHeadParams{}, GitHeadResponse{}, ScopeHub, "Reads git HEAD for a working directory."},
 	{MethodEvenerMobilePairing, MobilePairingParams{}, MobilePairingResponse{}, ScopeHub, "Creates a validated mobile pairing URL for the authenticated web application."},
-	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag."},
+	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource as a normalized v2 snapshot or delta, optionally conditional on its exact base."},
 	{MethodEvenerFavoriteSet, FavoriteSetParams{}, FavoriteSetResponse{}, ScopeHub, "Sets or clears a project favorite and returns the committed navigation invalidation targets."},
 	{MethodEvenerArchiveSet, ArchiveParams{}, ArchiveResponse{}, ScopeHub, "Sets or clears an explicit project or session archive decision and returns its committed navigation receipt."},
 	{MethodEvenerProjectDelete, ProjectDeleteParams{}, ProjectDeleteResponse{}, ScopeHub, "Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt."},
@@ -137,6 +159,8 @@ var Methods = []MethodSpec{
 	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches live and persisted sessions for the hub command palette."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a evener binary upgrade."},
+	{MethodEvenerUpdateCheck, UpdateCheckParams{}, UpdateCheckResponse{}, ScopeHub, "Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request."},
+	{MethodEvenerUpdateApply, UpdateApplyParams{}, UpdateApplyResponse{}, ScopeHub, "Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds."},
 	{MethodEvenerAuthStatus, AuthStatusParams{}, AuthStatusResponse{}, ScopeHub, "Reports auth/credential status for a provider."},
 	{MethodEvenerAuthTest, AuthTestParams{}, AuthTestResponse{}, ScopeHub, "Tests the effective credentials for one configured provider instance without starting a session."},
 	{MethodEvenerAuthLoginStart, AuthLoginStartParams{}, AuthLoginStartResponse{}, ScopeHub, "Begins an OAuth login flow; returns a flow ID and URL."},
@@ -144,6 +168,8 @@ var Methods = []MethodSpec{
 	{MethodEvenerAuthLogout, AuthLogoutParams{}, AuthLogoutResponse{}, ScopeHub, "Logs out a provider; broadcasts evener/auth/updated."},
 	{MethodEvenerAuthList, EmptyParams{}, AuthListResponse{}, ScopeHub, "Lists auth status for all providers."},
 	{MethodEvenerAuthApiKeySet, AuthApiKeySetParams{}, AuthStatusResponse{}, ScopeHub, "Stores a provider API key; broadcasts evener/auth/updated."},
+	{MethodEvenerAuthApiKeyClear, AuthApiKeyClearParams{}, AuthStatusResponse{}, ScopeHub, "Clears a provider's stored file-layer key only, leaving any OAuth/ADC/env credential untouched; broadcasts evener/auth/updated."},
+	{MethodEvenerAuthCredentialJsonSet, AuthCredentialJsonSetParams{}, AuthStatusResponse{}, ScopeHub, "Stores a Google credential JSON (service-account or application-default) for a gcp-adc instance after validating it; broadcasts evener/auth/updated."},
 	{MethodEvenerAuthDeviceStart, AuthDeviceStartParams{}, AuthDeviceStartResponse{}, ScopeHub, "Begins a device-code auth flow (or signals fallback)."},
 	{MethodEvenerAuthDevicePoll, AuthDevicePollParams{}, AuthDevicePollResponse{}, ScopeHub, "Polls a device-code flow; broadcasts evener/auth/updated when authorized."},
 	{MethodEvenerLaunchResolve, LaunchConfigResolveParams{}, LaunchConfigResolved{}, ScopeHub, "Resolves the effective launch config for a cwd."},
@@ -163,6 +189,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerMarketplaceAdd, MarketplaceAddParams{}, MarketplaceListResponse{}, ScopeHub, "Registers a plugin marketplace; returns the updated list."},
 	{MethodEvenerMarketplaceRemove, MarketplaceNameParams{}, MarketplaceListResponse{}, ScopeHub, "Unregisters a plugin marketplace; returns the updated list."},
 	{MethodEvenerMarketplaceRefresh, MarketplaceNameParams{}, MarketplaceListResponse{}, ScopeHub, "Pulls a marketplace's latest catalog; returns the updated list."},
+	{MethodEvenerMarketplaceEdit, MarketplaceEditParams{}, MarketplaceListResponse{}, ScopeHub, "Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated."},
 	{MethodEvenerMarketplaceBrowse, MarketplaceBrowseParams{}, MarketplaceBrowseResponse{}, ScopeHub, "Lists a marketplace's plugin catalog for browsing/install."},
 	{MethodEvenerPluginList, EmptyParams{}, PluginListResponse{}, ScopeHub, "Lists installed plugins."},
 	{MethodEvenerPluginInstall, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Installs a plugin from a marketplace; returns the updated list."},
@@ -172,9 +199,14 @@ var Methods = []MethodSpec{
 	{MethodEvenerPluginDisable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Disables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginSetAutoUpgrade, PluginSetAutoUpgradeParams{}, PluginListResponse{}, ScopeHub, "Sets an installed plugin's auto-upgrade flag; returns the updated list."},
 	{MethodEvenerCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display."},
-	{MethodEvenerSettingsOverview, EmptyParams{}, SettingsOverviewResponse{}, ScopeHub, "Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data."},
+	{MethodEvenerSpawnSlashCatalog, SpawnSlashCatalogParams{}, SpawnSlashCatalogResponse{}, ScopeHub, "Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer."},
+	{MethodEvenerSettingsOverview, EmptyParams{}, SettingsOverviewResponse{}, ScopeHub, "Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data."},
 	{MethodEvenerSettingsTranscriptDisplayGet, EmptyParams{}, TranscriptDisplayDefaults{}, ScopeHub, "Reads the canonical Desktop and Mobile transcript-display defaults."},
 	{MethodEvenerSettingsTranscriptDisplayPatch, TranscriptDisplayDefaultsPatchParams{}, TranscriptDisplayPatchResponse{}, ScopeHub, "Updates one transcript-display default using an expected revision and returns the canonical value."},
+	{MethodEvenerSettingsKeybindingsGet, EmptyParams{}, KeybindingsOverrides{}, ScopeHub, "Reads the canonical user keybinding overrides (version, revision, rules)."},
+	{MethodEvenerSettingsKeybindingsPatch, KeybindingsPatchParams{}, KeybindingsOverrides{}, ScopeHub, "Replaces the user keybinding overrides using an expected revision and returns the canonical value."},
+	{MethodEvenerSettingsAgentsDocGet, EmptyParams{}, AgentsDocResponse{}, ScopeHub, "Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content."},
+	{MethodEvenerSettingsAgentsDocSet, AgentsDocSetParams{}, AgentsDocResponse{}, ScopeHub, "Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed."},
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
 }
 
@@ -259,12 +291,14 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerLaunchUpdated, EvenerLaunchUpdatedParams{}, "Broadcast after a launch layer/trust mutation. Clients refresh launch config."},
 	{NotifyEvenerAttentionChanged, AttentionChangedPayload{}, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
 	{NotifyEvenerNavigationInvalidated, NavigationInvalidatedPayload{}, "Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources."},
-	{NotifyEvenerMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list."},
-	{NotifyEvenerPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list."},
+	{NotifyEvenerMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list."},
+	{NotifyEvenerPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list."},
 	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
-	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
+	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list outcome counts (total/done/cancelled/remaining) changed."},
 	{NotifyEvenerGoalUpdated, GoalUpdatedParams{}, "The session's complete structured goal state changed; null clears it."},
 	{NotifyEvenerSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve."},
 	{NotifyEvenerSandboxEscalationResolved, SandboxEscalationResolved{}, "A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card."},
 	{NotifyEvenerSettingsTranscriptDisplayChanged, TranscriptDisplayChangedParams{}, "Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration."},
+	{NotifyEvenerSettingsKeybindingsChanged, KeybindingsOverrides{}, "Broadcast after the user keybinding overrides change; carries the revision and canonical rules."},
+	{NotifyEvenerSettingsAgentsDocChanged, AgentsDocResponse{}, "Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content."},
 }

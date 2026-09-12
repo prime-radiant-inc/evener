@@ -8,6 +8,7 @@ import styles from "./welcome.module.css";
 const CLASS = {
   actions: requireClass(styles.actions, "welcome.module.css", "actions"),
   hints: requireClass(styles.hints, "welcome.module.css", "hints"),
+  hintList: requireClass(styles.hintList, "welcome.module.css", "hintList"),
   hintRow: requireClass(styles.hintRow, "welcome.module.css", "hintRow"),
   hintFooter: requireClass(styles.hintFooter, "welcome.module.css", "hintFooter"),
 };
@@ -24,6 +25,7 @@ const CHORD_HINTS: { keys: string[]; desc: string }[] = [
 export interface WelcomeContentProps {
   note?: string;
   showNewSession?: boolean;
+  showResume?: boolean;
   showHints?: boolean;
 }
 
@@ -54,21 +56,21 @@ function resumeCandidate(navigation: NavigationStoreState) {
 }
 
 /**
- * Presentational body of the Welcome pane: the "Jump back in" resume
- * candidate, an optional "New session" action, orientation text, and
+ * Presentational body of the Welcome pane: the optional "Jump back in"
+ * resume candidate, an optional "New session" action, orientation text, and
  * optional chord hints. No example prompts, and no host-conditional
  * ("am I mobile?") behavior - this component renders exactly what its
- * props ask for regardless of the viewport. The Welcome pane decides
- * which of these to show.
+ * props ask for regardless of the viewport. The host decides which of these
+ * to show.
  */
-export function WelcomeContent({ note, showNewSession, showHints }: WelcomeContentProps) {
+export function WelcomeContent({ note, showNewSession, showResume = true, showHints }: WelcomeContentProps) {
   const navigation = useNavigationStore();
   const candidate = resumeCandidate(navigation);
 
   return (
     <div className={CLASS.actions}>
       {note && <p>{note}</p>}
-      {candidate !== undefined && (
+      {showResume && candidate !== undefined && (
         <Button variant="primary" onClick={() => goToSession(candidate.ref)}>
           Jump back in: {candidate.title}
         </Button>
@@ -83,12 +85,16 @@ export function WelcomeContent({ note, showNewSession, showHints }: WelcomeConte
       </p>
       {showHints && (
         <div className={CLASS.hints}>
-          {CHORD_HINTS.map((hint) => (
-            <div className={CLASS.hintRow} key={hint.desc}>
-              <KeyHint keys={hint.keys} />
-              <span>{hint.desc}</span>
-            </div>
-          ))}
+          <dl className={CLASS.hintList}>
+            {CHORD_HINTS.map((hint) => (
+              <div className={CLASS.hintRow} key={hint.desc}>
+                <dt>
+                  <KeyHint keys={hint.keys} />
+                </dt>
+                <dd>{hint.desc}</dd>
+              </div>
+            ))}
+          </dl>
           <p className={CLASS.hintFooter}>
             <KeyHint keys={["?"]} /> inside the command palette shows all shortcuts.
           </p>

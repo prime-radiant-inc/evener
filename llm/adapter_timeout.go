@@ -27,6 +27,8 @@ const (
 	APITimeoutSSERead APITimeoutSource = "sse_read_timeout"
 	// APITimeoutTransport identifies a timeout owned by the caller's HTTP transport.
 	APITimeoutTransport APITimeoutSource = "transport_timeout"
+	// APITimeoutResponseIdle identifies byte inactivity in any response body.
+	APITimeoutResponseIdle APITimeoutSource = "response_idle_timeout"
 )
 
 // APIAttemptContextOwnership keeps caller cancellation distinct from timeout
@@ -106,7 +108,7 @@ func attemptOwnedTimeout(owner APIAttemptContextOwnership, decodeErr, transportE
 		return owner.Attempt != nil && owner.Attempt.Err() == context.DeadlineExceeded
 	case APITimeoutResponseHeader:
 		return transportErr != nil
-	case APITimeoutSSERead:
+	case APITimeoutSSERead, APITimeoutResponseIdle:
 		return decodeErr != nil || transportErr != nil
 	case APITimeoutTransport:
 		return true
@@ -118,7 +120,7 @@ func attemptOwnedTimeout(owner APIAttemptContextOwnership, decodeErr, transportE
 // ApplyAdapterTimeout creates a context with the Request deadline from
 // AdapterTimeout. Request bounds the whole non-streaming call and the complete
 // lifetime of a streaming HTTP attempt, including response headers and body
-// consumption. StreamRead remains a separate idle timeout between SSE lines.
+// consumption. StreamRead remains a separate idle timeout between response bytes.
 // Caller-supplied context and HTTP client policies remain authoritative; the
 // earliest deadline wins. The streaming argument is retained for source
 // compatibility with adapters that distinguish request phases elsewhere.
@@ -134,19 +136,23 @@ func ApplyAdapterTimeout(ctx context.Context, at *AdapterTimeout, _ bool) (conte
 }
 
 // AdapterTransport returns a configured clone of http.DefaultTransport. Connect
-// bounds context-aware dialing without replacing caller hooks, and Request bounds
-// the wait for response headers. Context-free Dial and DialTLS remain
+// bounds context-aware dialing without replacing caller hooks. The shortest positive
+// Request, StreamRead, or existing header timeout bounds the wait for response headers.
+// Context-free Dial and DialTLS remain
 // caller-authoritative. Returns nil when neither timeout is configured.
 func AdapterTransport(at *AdapterTimeout) *http.Transport {
 	return configuredAdapterTransport(http.DefaultTransport.(*http.Transport), at)
 }
 
 func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.Transport {
-	if at == nil || (at.Connect <= 0 && at.Request <= 0) {
+	if at == nil || (at.Connect <= 0 && at.Request <= 0 && at.StreamRead <= 0) {
 		return nil
 	}
 	transport := base.Clone()
 	if at.Connect > 0 {
+		if transport.TLSHandshakeTimeout <= 0 || transport.TLSHandshakeTimeout > at.Connect {
+			transport.TLSHandshakeTimeout = at.Connect
+		}
 		connectTimeout := at.Connect
 		dialContext := transport.DialContext
 		if dialContext == nil && transport.Dial == nil { //nolint:staticcheck // Preserve a caller-supplied legacy Dial hook rather than overriding it.
@@ -170,8 +176,10 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 		// Dial and DialTLS have no contexts to bound safely without goroutines that
 		// may leak. Preserve them unchanged as caller-authoritative transport policy.
 	}
-	if at.Request > 0 {
-		transport.ResponseHeaderTimeout = at.Request
+	for _, timeout := range []time.Duration{at.Request, at.StreamRead} {
+		if timeout > 0 && (transport.ResponseHeaderTimeout <= 0 || transport.ResponseHeaderTimeout > timeout) {
+			transport.ResponseHeaderTimeout = timeout
+		}
 	}
 	return transport
 }
@@ -222,7 +230,7 @@ func (t *responseHeaderTimeoutTransport) APILogTransportUsesStandardCompression(
 // transport timeouts. Standard transports are cloned; opaque RoundTrippers and
 // caller client policy, including Timeout, remain authoritative.
 func ClientWithAdapterTimeout(client *http.Client, at *AdapterTimeout) *http.Client {
-	if at == nil || (at.Connect <= 0 && at.Request <= 0) {
+	if at == nil || (at.Connect <= 0 && at.Request <= 0 && at.StreamRead <= 0) {
 		return client
 	}
 
@@ -231,15 +239,25 @@ func ClientWithAdapterTimeout(client *http.Client, at *AdapterTimeout) *http.Cli
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	transport, ok := base.(*http.Transport)
-	if !ok {
-		return &clientCopy
+	compression := false
+	if transport, ok := base.(*http.Transport); ok {
+		configured := configuredAdapterTransport(transport, at)
+		if at.StreamRead > 0 {
+			compression = !configured.DisableCompression
+			configured.DisableCompression = true
+		}
+		base = configured
+		// A preserved (including equal) caller bound remains caller-owned.
+		ownsHeaderTimeout := configured.ResponseHeaderTimeout > 0 &&
+			(transport.ResponseHeaderTimeout <= 0 || configured.ResponseHeaderTimeout < transport.ResponseHeaderTimeout)
+		if ownsHeaderTimeout {
+			base = &responseHeaderTimeoutTransport{base: configured}
+		}
 	}
-	configured := configuredAdapterTransport(transport, at)
-	clientCopy.Transport = configured
-	if at.Request > 0 {
-		clientCopy.Transport = &responseHeaderTimeoutTransport{base: configured}
+	if at.StreamRead > 0 {
+		base = &idleResponseTransport{base: base, timeout: at.StreamRead, compression: compression}
 	}
+	clientCopy.Transport = base
 	return &clientCopy
 }
 

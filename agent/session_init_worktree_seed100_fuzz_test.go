@@ -110,7 +110,13 @@ func fuzzWorktreeCloseResumeRegressionPrograms(t *testing.T) {
 		{"dispose-unchanged-lock", TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked},
 		{"dispose-race", TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked},
 		{"dispose-branch", TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone},
-		{"close-unlock-fails", TestUnlockOwnManagedWorktreeAtClose_LeaveFailsWarns},
+		{"close-unlock-stranded", TestUnlockOwnManagedWorktreeAtClose_ClearsStrandedOwnMarker},
+		{"close-unlock-foreign", TestUnlockOwnManagedWorktreeAtClose_LeavesForeignMarker},
+		{"close-unlock-child", TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker},
+		{"close-unlock-delegate", TestUnlockOwnManagedWorktreeAtClose_LeavesDelegateMarker},
+		{"close-unlock-budget", TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget},
+		{"close-unlock-listing-fails", TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns},
+		{"close-unlock-unlock-fails", TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns},
 		{"close-unlock-nonlocal", TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp},
 		{"close-unlock-root", TestUnlockOwnManagedWorktreeAtClose_UnresolvableMainRootNoOp},
 		{"init-nonlocal", TestInitInside_NonLocalEnvNoOp},
@@ -155,7 +161,7 @@ func fuzzInitW3RegressionPrograms(t *testing.T) {
 		{"communicate-nudge", TestS5Cov_SubagentNeedsCommunicateNudge},
 		{"strategy-all", TestS2Cov_SelectStrategy_AllNamedStrategies},
 		{"strategy-unknown", TestS2Cov_SelectStrategy_UnknownStrategyFails},
-		{"fallback-cross-provider", TestS2Cov_ValidateModelFallbacks_RejectsCrossProvider},
+		{"fallback-cross-surface", TestS2Cov_ValidateModelFallbacks_RejectsCrossSurface},
 	}
 	for _, program := range programs {
 		t.Run(program.name, program.run)

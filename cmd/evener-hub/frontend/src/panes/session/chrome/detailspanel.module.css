@@ -22,8 +22,8 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
-  text-transform: uppercase;
-  color: var(--ink-low);
+  line-height: var(--line-height-ui);
+  color: var(--ink-mid);
 }
 
 /* One label/value row per fact, label above value so the exact figures get a
@@ -55,7 +55,8 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
 }
@@ -80,5 +81,6 @@
  * nothing - the whole point of showing it here is that it is copyable in full.
  * anywhere (not break-all) keeps it breaking at natural boundaries. */
 .path {
+  font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }

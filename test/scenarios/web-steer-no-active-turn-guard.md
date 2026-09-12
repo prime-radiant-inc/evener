@@ -48,7 +48,7 @@ HUB=http://127.0.0.1:$PORT
    echo "$detail" | jq '{state, active_turn_id, steer: .capabilities.steer, queue: .capabilities.queue}'
    ```
 
-2. Navigate to `/auth?token=$TOKEN&next=/s/local:$SID` and wait for
+2. Navigate to `/auth/$TOKEN?next=/s/local:$SID` and wait for
    `[data-testid="composer-input-card"]`.
 
 3. Type text into the composer, then press **Shift+Enter**. The Steer button

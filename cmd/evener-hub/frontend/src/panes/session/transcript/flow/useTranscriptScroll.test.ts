@@ -127,6 +127,45 @@ function makeMeasure(initial: ScrollMetrics) {
   };
 }
 
+// jsdom implements no TouchEvent constructor, so a touch is a plain Event
+// carrying the one field the hook reads.
+function touchEvent(type: string, clientY: number): Event {
+  const event = new Event(type, { bubbles: true });
+  Object.defineProperty(event, "touches", { value: [{ clientY }] });
+  return event;
+}
+
+function pointerEvent(type: string, init: PointerEventInit): PointerEvent {
+  return new PointerEvent(type, { bubbles: true, ...init });
+}
+
+// A mouse drag's events, the shape the pointer path is meant to track.
+const MOUSE_DOWN: PointerEventInit = { pointerType: "mouse", button: 0, buttons: 1, isPrimary: true };
+const MOUSE_DRAG: PointerEventInit = { pointerType: "mouse", button: -1, buttons: 1, isPrimary: true };
+
+// Native middle-button autoscroll: press, then the port scrolls continuously.
+const MIDDLE_DOWN: PointerEventInit = { pointerType: "mouse", button: 1, buttons: 4, isPrimary: true };
+const MIDDLE_DRAG: PointerEventInit = { pointerType: "mouse", button: -1, buttons: 4, isPrimary: true };
+
+// jsdom computes no layout, so the port's own geometry is defined outright -
+// the marker predicate reads it from the DOM, not through the `measure` seam.
+// Kept in step with what `measure` reports, since a browser could not disagree.
+function definePort(el: HTMLElement, metrics: ScrollMetrics): void {
+  Object.defineProperty(el, "scrollHeight", { value: metrics.scrollHeight, configurable: true });
+  Object.defineProperty(el, "clientHeight", { value: metrics.clientHeight, configurable: true });
+  el.scrollTop = metrics.scrollTop;
+}
+
+// An independently scrollable descendant, like the sandbox-escalation panel
+// (tools/sandboxescalation.module.css is overflow-y:auto inside the transcript).
+function nestedScroller(port: HTMLElement, metrics: ScrollMetrics): HTMLElement {
+  const inner = document.createElement("div");
+  inner.style.overflowY = "auto";
+  port.appendChild(inner);
+  definePort(inner, metrics);
+  return inner;
+}
+
 const AT_BOTTOM: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
 const SCROLLED_AWAY: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 };
 
@@ -302,6 +341,1324 @@ describe("clearing the pill", () => {
   });
 });
 
+// The jump-to-latest pill is a SCROLL-POSITION affordance (docs/web-ui/
+// decisions.md: "a jump-to-latest pill when scrolled up"), not a new-content
+// counter: it must be on offer whenever the reader is away from the bottom,
+// even when nothing new has arrived - and a jump that lands short must leave
+// it on offer rather than stranding the reader with no affordance.
+describe("the pill while scrolled back (no new content)", () => {
+  test("scrolling away from the bottom makes the pill visible even when nothing new arrived", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    expect(result.current.pillVisible).toBe(false);
+    expect(result.current.pillCount).toBe(0);
+
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.pillVisible).toBe(true);
+    // Still no count - nothing arrived; the pill is the plain jump-to-latest form.
+    expect(result.current.pillCount).toBe(0);
+    expect(result.current.pillError).toBe(false);
+  });
+
+  test("scrolling back to the bottom hides the pill again", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(true);
+
+    act(() => {
+      set(AT_BOTTOM);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(false);
+  });
+
+  test("an attention-worthy thread upgrades the scrolled-back pill to needs-you even at count 0", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillNeedsYou).toBe(false);
+
+    // The awaiting flip can land after the reader scrolled away (no new
+    // items at all) - the visible pill still upgrades in place.
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }) });
+    expect(result.current.pillNeedsYou).toBe(true);
+  });
+
+  test("at the bottom, an attention-worthy thread alone does not show the pill", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { askPending: true }),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+
+    expect(result.current.pillVisible).toBe(false);
+    expect(result.current.pillNeedsYou).toBe(false);
+  });
+
+  test("a jump that lands short of the bottom leaves the pill on offer instead of stranding the reader", () => {
+    const { ref, el } = makeListHandle();
+    // Start at the bottom with the pill hidden, then scroll away so the pill
+    // appears - the test must prove the JUMP preserves that visibility across
+    // a short landing, not merely that a pre-existing pill survives one.
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+
+    expect(result.current.pillVisible).toBe(false);
+
+    // Scroll away from the bottom: the pill appears (plain "latest" form).
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(true);
+
+    act(() => result.current.jumpToBottom());
+    // The post-jump scroll event reports the short landing - the measure seam
+    // stays at SCROLLED_AWAY, simulating the real failure mode, where the
+    // virtualizer's estimate-derived landing is corrected by later
+    // measurements to somewhere that is NOT the true bottom...
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    // ...and the pill must still be on offer (plain form), not cleared.
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("an append before the jump's landing is confirmed does not auto-stick on the unconfirmed jump", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) } },
+    );
+
+    // Scroll away: the pill appears and wasAtBottomRef is honestly false.
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(true);
+
+    act(() => result.current.jumpToBottom());
+    scrollToIndex.mockClear(); // drop the jump's own scrollToIndex call
+
+    // An item arrives in the click -> landing-confirmation window: it must be
+    // counted on the pill, NOT auto-stuck. Auto-sticking here is exactly the
+    // yank an optimistic wasAtBottomRef caused - the jump's arrival has not
+    // been confirmed by any scroll event yet.
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]) });
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(result.current.pillCount).toBe(1);
+
+    // The landing's scroll event confirms arrival at the bottom: the pill
+    // clears...
+    act(() => {
+      set(AT_BOTTOM);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(false);
+    expect(result.current.pillCount).toBe(0);
+
+    // ...and from then on appends stick to the bottom again.
+    scrollToIndex.mockClear();
+    rerender({
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"]), turn("t4", ["i4"])]),
+    });
+    expect(scrollToIndex).toHaveBeenCalledWith(3, { align: "end" });
+  });
+
+  test("a jump with stale at-bottom trackers (DOM moved without a scroll event) still measures the reader as away", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    // Mounted at the bottom: both trackers say at-bottom. Then the DOM moves
+    // WITHOUT a scroll event (content growth above the viewport, measurement
+    // corrections): the seam now reads scrolled-away, but the trackers are
+    // stale - exactly the state roborev's race describes.
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) } },
+    );
+    expect(result.current.pillVisible).toBe(false);
+
+    set(SCROLLED_AWAY); // no scroll event: the trackers do not observe this
+
+    // The click's pre-jump measurement is authoritative: the reader is away,
+    // so the pill goes on offer immediately...
+    act(() => result.current.jumpToBottom());
+    expect(result.current.pillVisible).toBe(true);
+
+    // ...and an append in the landing window counts on the pill instead of
+    // auto-sticking on the stale at-bottom state.
+    scrollToIndex.mockClear();
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]) });
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(result.current.pillCount).toBe(1);
+  });
+});
+
+describe("jumpToBottom landing reliability", () => {
+  test("jumpToBottom pins the scroll element to its true DOM maximum, not only the virtualizer's estimate-derived offset", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    scrollToIndex.mockClear(); // drop the initial-mount positioning call
+
+    act(() => result.current.jumpToBottom());
+
+    // The virtualizer scroll is still requested (it engages measurement and
+    // the end-anchor machinery)...
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+    // ...and the scroll element is pinned to the TRUE bottom by real DOM
+    // geometry (scrollHeight - clientHeight), exact regardless of how wrong
+    // the virtualizer's estimates for unmeasured rows are.
+    expect(el.scrollTop).toBe(SCROLLED_AWAY.scrollHeight - SCROLLED_AWAY.clientHeight);
+  });
+
+  // The transcript scroll guard's "pill is visible at mount" failure, root-caused
+  // in headless Chrome: the virtualizer's scroll-to-end reconcile loop settles
+  // after ONE frame whose target stopped moving (virtual-core 3.17
+  // reconcileScroll, STABLE_FRAMES = 1), so a measurement batch landing after
+  // that frame grows the content with the loop already torn down. The end-anchor
+  // that is meant to hold the end then follows only part of the growth - measured
+  // there as scrollHeight 17076 -> 17221 while the offset moved 16374 -> 16432,
+  // leaving 87px - and 87px is far past its own 4px threshold, so it disengages
+  // for good. The geometry then never moves again (the guard held it still for
+  // 3s), and a session the reader has not touched sits short of the latest
+  // content offering a jump-to-latest pill.
+  test("content measured in below a transcript already at the bottom re-pins to the new bottom rather than reading as the reader leaving", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+    expect(result.current.pillVisible).toBe(false);
+
+    act(() => {
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
+    expect(result.current.pillVisible).toBe(false);
+  });
+
+  // The window round 1's geometry-only classifier left open (roborev, medium, on
+  // 448e8a4): a native scroll event can coalesce the reader's own upward delta
+  // with a virtualizer correction that EXCEEDS it, so the event's net geometry -
+  // more content, offset advanced - is byte-identical to a pure correction.
+  // Geometry cannot tell those apart at all; only the input that produced the
+  // event can, which is why the classifier now takes a reader gesture in the
+  // same frame as a veto.
+  test("an upward gesture coalesced with a larger forward correction leaves the reader where they scrolled", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+    expect(result.current.pillVisible).toBe(false);
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+      // The DOM and the measurement seam move TOGETHER, as they do in a
+      // browser: by the time the listener runs, the event's net offset is
+      // already committed. The veto's job is not to restore the pre-event
+      // offset - nothing can, the reader is where the event left them - it is
+      // to leave that offset alone instead of pinning it to the bottom.
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(16432);
+    expect(el.scrollTop).not.toBe(17221 - 702);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test.each([
+    [
+      "a touch drag",
+      (el: HTMLElement) => {
+        el.dispatchEvent(touchEvent("touchstart", 400));
+        el.dispatchEvent(touchEvent("touchmove", 460));
+      },
+    ],
+    [
+      "a pointer drag",
+      (el: HTMLElement) => {
+        el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+        el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
+      },
+    ],
+  ])("%s in the same frame vetoes the correction re-pin too", (_label, gesture) => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      gesture(el);
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(16432);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a transcript scroll action routed through markGesture vetoes the correction re-pin", () => {
+    // The app's own Alt+Arrow scroll chords are dispatched from `window` by
+    // useTranscriptScrollKeys, which then writes scrollTop directly - a port
+    // listener never sees them (roborev medium 1 on f998582). So the marker is
+    // exposed and called at the source instead of inferred from key names.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      result.current.markGesture();
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(16432);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("Space on a focused control inside the transcript is not a scroll - the correction still re-pins", () => {
+    // roborev medium 2 on f998582. Space activates a focused button and types a
+    // space in the ask dock's input (the port's own trailing row); neither
+    // scrolls the transcript. A veto here is a FALSE veto, and a false veto is
+    // not neutral - the fall-through marks the reader away from the bottom, so
+    // every later correction fails the at-bottom clause and the strand this PR
+    // fixes comes back for good.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    const input = document.createElement("input");
+    el.appendChild(input);
+    el.scrollTop = 16374;
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
+  });
+
+  test("a bare click is not a gesture - the correction still re-pins", () => {
+    // The veto must stay narrow: a pointerdown with no movement - a click, or
+    // the start of a text selection - leaves the mount fix working. A veto that
+    // fired on it would put the strand back. (Keystrokes are no longer part of
+    // this: the port has no keydown listener at all since the marker moved to
+    // useTranscriptScrollKeys, which the Space test above pins.)
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
+  });
+
+  test("a drag released outside the transcript stops marking gestures (roborev low 1)", () => {
+    // pointerdown lands on the port, but a mouse pointer gets no implicit
+    // capture, so a selection drag released over the composer or another pane
+    // never delivers pointerup here. Tracking "a drag is in progress" from those
+    // two events alone therefore latches on forever, and every later pointermove
+    // over the transcript marks a gesture - which, because a veto marks the
+    // reader away from the bottom, disarms the correction for good.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+      // The release happens elsewhere: the port sees no pointerup at all.
+    });
+
+    act(() => {
+      // A plain move with no button held - the pointer is just passing over.
+      el.dispatchEvent(pointerEvent("pointermove", { ...MOUSE_DRAG, buttons: 0 }));
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
+  });
+
+  test("a stalled animation frame cannot leave a gesture vetoing later corrections (roborev low 2)", () => {
+    // requestAnimationFrame does not run in a hidden tab, so the frame-boundary
+    // clear can be arbitrarily late. The gesture is therefore also consumed by
+    // the scroll event it explains: here the gesture's own event is still at the
+    // bottom (nothing to correct), and the correction that follows must re-pin.
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { ref, el } = makeListHandle();
+      const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+      renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      );
+      el.scrollTop = 16374;
+
+      act(() => {
+        el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120 }));
+        el.dispatchEvent(new Event("scroll"));
+      });
+
+      act(() => {
+        el.scrollTop = 16432;
+        set({ scrollTop: 16432, scrollHeight: 17221 });
+        el.dispatchEvent(new Event("scroll"));
+      });
+
+      expect(el.scrollTop).toBe(17221 - 702);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  // Every marker that can fire without the port actually moving is a false-veto
+  // path, and a false veto disarms the correction until the reader returns to
+  // the bottom. These pin the ones that can be made exact from the event alone.
+  test.each([
+    ["a horizontal wheel", (el: HTMLElement) => el.dispatchEvent(new WheelEvent("wheel", { deltaX: -120, deltaY: 0 }))],
+    [
+      "a sideways touch drag",
+      (el: HTMLElement) => {
+        el.dispatchEvent(touchEvent("touchstart", 400));
+        el.dispatchEvent(touchEvent("touchmove", 400));
+      },
+    ],
+    [
+      // The drag began on the transcript and left it; a later move with a
+      // button still held is someone else's drag passing over, not this
+      // transcript being scrolled.
+      "a drag that left the transcript",
+      (el: HTMLElement) => {
+        el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+        el.dispatchEvent(pointerEvent("pointerleave", MOUSE_DRAG));
+        el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
+      },
+    ],
+  ])("%s does not scroll the transcript - the correction still re-pins", (_label, notAScroll) => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      notAScroll(el);
+      el.scrollTop = 16432;
+      set({ scrollTop: 16432, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(17221 - 702);
+  });
+
+  // --- a gesture that cannot move the port is not a gesture ---------------
+  //
+  // Over-marking is the harmful direction: one false veto records the reader as
+  // away from the bottom, which disarms the correction until they return there.
+  // These cover input that reaches the port but moves nothing - it is already at
+  // that limit, or an independently scrollable descendant consumes it.
+  const PORT_AT_BOTTOM: ScrollMetrics = { scrollTop: 16519, scrollHeight: 17221, clientHeight: 702 };
+  const PORT_AFTER_GROWTH: ScrollMetrics = { scrollTop: 16577, scrollHeight: 17366, clientHeight: 702 };
+  const TRUE_BOTTOM_AFTER_GROWTH = PORT_AFTER_GROWTH.scrollHeight - PORT_AFTER_GROWTH.clientHeight;
+
+  function mountAtBottom(start: ScrollMetrics = PORT_AT_BOTTOM) {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(start);
+    const view = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    definePort(el, start);
+    return { el, set, result: view.result };
+  }
+
+  /** The late measurement correction the gesture markers must not veto. */
+  function landCorrection(el: HTMLElement, set: (m: Partial<ScrollMetrics>) => void) {
+    definePort(el, PORT_AFTER_GROWTH);
+    set(PORT_AFTER_GROWTH);
+    el.dispatchEvent(new Event("scroll"));
+  }
+
+  test("a wheel into the bottom the port is already at marks nothing", () => {
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a wheel into the top the port is already at marks nothing", () => {
+    // A transcript that exactly fits its port is at BOTH limits at once, which
+    // is the only way to be at the top with the correction still armed: a
+    // scrollable port sitting at the top is not at the bottom, so wasAtBottom is
+    // already false and nothing could be vetoed there anyway.
+    const fits: ScrollMetrics = { scrollTop: 0, scrollHeight: 702, clientHeight: 702 };
+    const { el, set } = mountAtBottom(fits);
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a wheel a nested scroller can still answer marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const inner = nestedScroller(el, { scrollTop: 500, scrollHeight: 2000, clientHeight: 400 });
+
+    act(() => {
+      inner.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  // A nested scroller with only a FEW pixels of room is still a scroller that
+  // answers the input. isAtBottom's 4px band is the safe direction on the port
+  // (it under-marks), but the unsafe one here: reading "at its limit" lets the
+  // walk pass, the port marks, the nested scroller eats the wheel, and the port
+  // never moves - the false veto the predicate's own comment rules out.
+  //
+  // Reachable only downward, and only in this PR's own scenario: the port clause
+  // needs room below the port, which means content grew there since the last
+  // scroll event while wasAtBottom is still true.
+  const NESTED_3PX_FROM_ITS_BOTTOM: ScrollMetrics = { scrollTop: 1597, scrollHeight: 2000, clientHeight: 400 };
+
+  /** Content measured in below the port, with no scroll event yet. */
+  function growBelow(el: HTMLElement, set: (m: Partial<ScrollMetrics>) => void) {
+    const grown = { ...PORT_AT_BOTTOM, scrollHeight: PORT_AFTER_GROWTH.scrollHeight };
+    definePort(el, grown);
+    set(grown);
+  }
+
+  test("a wheel a nested scroller can still answer by 3px marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const inner = nestedScroller(el, NESTED_3PX_FROM_ITS_BOTTOM);
+
+    act(() => {
+      growBelow(el, set);
+      inner.dispatchEvent(new WheelEvent("wheel", { deltaY: 120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a finger a nested scroller can still answer by 3px marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const inner = nestedScroller(el, NESTED_3PX_FROM_ITS_BOTTOM);
+
+    act(() => {
+      growBelow(el, set);
+      // Finger moving UP pushes content down: the same direction as the wheel above.
+      inner.dispatchEvent(touchEvent("touchstart", 460));
+      inner.dispatchEvent(touchEvent("touchmove", 400));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a wheel over a nested scroller at its OWN limit reaches the port and marks", () => {
+    // The suppression must stay narrow: a nested scroller that cannot move in
+    // this direction passes the input on, and that really is a reader scroll.
+    const { el, set, result } = mountAtBottom();
+    const inner = nestedScroller(el, { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 });
+
+    act(() => {
+      inner.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a finger swiping into the bottom the port is already at marks nothing", () => {
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      // Finger moving UP pushes content down: scrollTop would increase.
+      el.dispatchEvent(touchEvent("touchstart", 460));
+      el.dispatchEvent(touchEvent("touchmove", 400));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a finger a nested scroller can still answer marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const inner = nestedScroller(el, { scrollTop: 500, scrollHeight: 2000, clientHeight: 400 });
+
+    act(() => {
+      inner.dispatchEvent(touchEvent("touchstart", 400));
+      inner.dispatchEvent(touchEvent("touchmove", 460));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a horizontal swipe delivered as BOTH touch and pointer events marks nothing", () => {
+    // A finger produces both streams. The touch path ignores sideways movement;
+    // the pointer path must not adopt the same finger as a drag and mark it.
+    const { el, set } = mountAtBottom();
+    const finger: PointerEventInit = { pointerType: "touch", button: 0, buttons: 1, isPrimary: true };
+
+    act(() => {
+      el.dispatchEvent(touchEvent("touchstart", 400));
+      el.dispatchEvent(pointerEvent("pointerdown", finger));
+      el.dispatchEvent(touchEvent("touchmove", 400));
+      el.dispatchEvent(pointerEvent("pointermove", { ...finger, button: -1 }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a middle-button autoscroll marks, so a correction does not snap the reader back", () => {
+    // Middle-button autoscroll produces a STREAM of scroll events, so leaving it
+    // unmarked is not a one-frame cost: every correction that lands while the
+    // reader is autoscrolling re-pins over them.
+    const { el, set, result } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", MIDDLE_DOWN));
+      el.dispatchEvent(pointerEvent("pointermove", MIDDLE_DRAG));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  // Native autoscroll keeps scrolling the port while the pointer sits still, so
+  // there are no further pointermoves to mark and the one from the initial move
+  // has long expired. These run that expiry explicitly through the frame stub
+  // rather than waiting on a real frame.
+  function holdButtonThenLetTheMarkExpire(el: HTMLElement, down: PointerEventInit, drag: PointerEventInit) {
+    const frames = captureFrames();
+    const forMove = frames.scheduledBy(() =>
+      act(() => {
+        el.dispatchEvent(pointerEvent("pointerdown", down));
+        el.dispatchEvent(pointerEvent("pointermove", drag));
+      }),
+    );
+    act(() => frames.run(forMove));
+    frames.restore();
+  }
+
+  test("a held middle button keeps vetoing while the pointer sits still", () => {
+    const { el, set, result } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a held PRIMARY button is not a standing veto - the correction still re-pins", () => {
+    // A selection drag holds the primary button for as long as the reader is
+    // choosing text, and it scrolls nothing while they pause.
+    const { el, set } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MOUSE_DOWN, MOUSE_DRAG);
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("releasing the middle button ends the standing veto", () => {
+    const { el, set } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => el.dispatchEvent(pointerEvent("pointerup", { ...MIDDLE_DRAG, button: 1, buttons: 0 })));
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("the window losing focus ends the standing veto", () => {
+    // The release lands wherever focus went, so the port never sees pointerup.
+    // Nothing else bounds this state, and every correction vetoed meanwhile
+    // disarms the re-pin until the reader returns to the bottom.
+    const { el, set } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => window.dispatchEvent(new Event("blur")));
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("the document becoming hidden ends the standing veto", () => {
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      const { el, set } = mountAtBottom();
+
+      holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+      if (original) Object.defineProperty(Document.prototype, "visibilityState", original);
+    }
+  });
+
+  // A pointer drag marks without producing any scroll event of its own - the
+  // least exact marker, deliberately kept - and the clearing frame does not run
+  // while the document is hidden. So a marker set just before the tab goes away
+  // survives until the first scroll event after return, which after content grew
+  // meanwhile is the measurement correction it then vetoes.
+  //
+  // requestAnimationFrame is stubbed to never fire, which is what a hidden
+  // document does to it.
+  function dragMarksWhileFramesAreStalled(el: HTMLElement) {
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+      el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
+    });
+  }
+
+  test("a marker pending when the document goes hidden does not veto the correction after return", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      const { el, set } = mountAtBottom();
+
+      dragMarksWhileFramesAreStalled(el);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+      if (original) Object.defineProperty(Document.prototype, "visibilityState", original);
+      raf.mockRestore();
+    }
+  });
+
+  test("the hidden document cancels the pending clearing frame and frees its handle", () => {
+    // Same reason the session switch does it: without the null, markGesture sees
+    // a non-null handle on the next gesture, returns early, and that marker
+    // never gets a clearing frame at all.
+    const frames = captureFrames();
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      const { el, set } = mountAtBottom();
+
+      const forFirst = frames.scheduledBy(() => dragMarksWhileFramesAreStalled(el));
+      expect(forFirst).toHaveLength(1);
+
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      expect(frames.cancelled).toContain(forFirst[0]);
+
+      const forSecond = frames.scheduledBy(() => dragMarksWhileFramesAreStalled(el));
+      expect(forSecond).toHaveLength(1);
+
+      act(() => frames.run(forSecond));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+      if (original) Object.defineProperty(Document.prototype, "visibilityState", original);
+      frames.restore();
+    }
+  });
+
+  test("a visibilitychange back to visible leaves a pending marker alone", () => {
+    // The counterpart of the standing-veto control below: the marker's clear is
+    // for the hidden edge too, not for any visibilitychange.
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { el, set, result } = mountAtBottom();
+
+      dragMarksWhileFramesAreStalled(el);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+      expect(result.current.pillVisible).toBe(true);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  test("a visibilitychange back to visible does NOT end the standing veto", () => {
+    // The clear is for the hidden edge only: a tab coming back to the front
+    // while the reader still holds the button is still an autoscroll.
+    const { el, set, result } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a move that no longer carries the middle button ends the standing veto", () => {
+    // The release can arrive as a plain move whose buttons have dropped the
+    // middle bit, with no pointerup on the port at all.
+    const { el, set } = mountAtBottom();
+
+    holdButtonThenLetTheMarkExpire(el, MIDDLE_DOWN, MIDDLE_DRAG);
+    act(() => el.dispatchEvent(pointerEvent("pointermove", { ...MIDDLE_DRAG, buttons: 0 })));
+    act(() => landCorrection(el, set));
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a ctrl-wheel is zoom, not a scroll - the correction still re-pins", () => {
+    // Browser zoom, and what a macOS trackpad pinch arrives as. It never moves
+    // the port, so marking it is pure over-marking.
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, ctrlKey: true, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a shift-wheel is horizontal - the correction still re-pins", () => {
+    // Shift+wheel scrolls horizontally, and engines differ on how they say so:
+    // some zero deltaY and fill deltaX, others keep a non-zero deltaY with
+    // shiftKey set. The port is overflow-x:clip (virtuallist.module.css), so
+    // horizontal input moves it in neither case.
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, shiftKey: true, bubbles: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a wheel a descendant already claimed does not reach the port - the correction still re-pins", () => {
+    const { el, set } = mountAtBottom();
+    // A plain child, deliberately not a scroller: the nested walk must not be
+    // what saves this, or the test would pass for the wrong reason.
+    const child = document.createElement("div");
+    el.appendChild(child);
+    child.addEventListener("wheel", (event) => event.preventDefault());
+
+    act(() => {
+      child.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("the same wheel from the same child, unclaimed, DOES mark", () => {
+    // The sibling of the case above, and what makes its point self-verifying:
+    // the child is not a scroller, so the nested walk is not what suppressed
+    // that one - preventDefault was.
+    const { el, set, result } = mountAtBottom();
+    const child = document.createElement("div");
+    el.appendChild(child);
+
+    act(() => {
+      child.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(PORT_AFTER_GROWTH.scrollTop);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a secondary-button drag cannot inherit a primary drag the port never saw end", () => {
+    // The drag flag is set for the primary button and read on any move with a
+    // button held, so a secondary drag can pick up a primary drag that was never
+    // ended here. Getting there needs the port to miss the release: press
+    // primary inside it, lose focus with the cursor still and inside (no
+    // pointerup, no pointerleave, no button-free move), release elsewhere, come
+    // back and drag with the right button.
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+      window.dispatchEvent(new Event("blur"));
+    });
+
+    act(() => {
+      const right: PointerEventInit = { pointerType: "mouse", button: 2, buttons: 2, isPrimary: true };
+      el.dispatchEvent(pointerEvent("pointerdown", right));
+      el.dispatchEvent(pointerEvent("pointermove", { ...right, button: -1 }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a right-button drag marks nothing", () => {
+    const { el, set } = mountAtBottom();
+    const right: PointerEventInit = { pointerType: "mouse", button: 2, buttons: 2, isPrimary: true };
+
+    act(() => {
+      el.dispatchEvent(pointerEvent("pointerdown", right));
+      el.dispatchEvent(pointerEvent("pointermove", { ...right, button: -1 }));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  test("a touch that began outside the port is not marked on its first move, after an earlier touch ended", () => {
+    // The "no recorded start" guard only works while lastTouchY is null, so a
+    // finished touch has to clear it - otherwise the guard is true exactly once
+    // per mount and every later outside-start move compares against a stale Y.
+    const { el, set } = mountAtBottom();
+
+    act(() => {
+      el.dispatchEvent(touchEvent("touchstart", 400));
+      el.dispatchEvent(touchEvent("touchmove", 460));
+      // A scroll event that is not a correction consumes that legitimate mark.
+      el.dispatchEvent(new Event("scroll"));
+      el.dispatchEvent(touchEvent("touchend", 460));
+    });
+
+    act(() => {
+      el.dispatchEvent(touchEvent("touchmove", 500));
+      landCorrection(el, set);
+    });
+
+    expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+  });
+
+  // --- a session switch is nobody's gesture -------------------------------
+  //
+  // A marker exists to veto the event its own gesture caused. The first scroll
+  // event a newly-opened session gets is its mount's scroll-to-end - the most
+  // consequential one it will ever get, and the one this PR exists to land at
+  // the true bottom. No gesture aimed at the previous transcript can be
+  // responsible for it, so a switch must not leave a marker standing.
+  //
+  // requestAnimationFrame is stubbed out in these: the clearing frame not having
+  // run is exactly the reachable window (a wheel and a sidebar click in one
+  // frame, or a wheel just as the tab is hidden, where rAF does not run at all).
+  function mountSwitchable() {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(PORT_AT_BOTTOM);
+    const view = renderHook(
+      ({ r }) =>
+        useTranscriptScroll({
+          ref: r,
+          model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { r: "ref_a" } },
+    );
+    definePort(el, PORT_AT_BOTTOM);
+    return { el, set, rerender: view.rerender };
+  }
+
+  test.each([
+    ["a wheel", (el: HTMLElement) => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }))],
+    [
+      "a finger",
+      (el: HTMLElement) => {
+        el.dispatchEvent(touchEvent("touchstart", 400));
+        el.dispatchEvent(touchEvent("touchmove", 460));
+      },
+    ],
+    [
+      "a mouse drag",
+      (el: HTMLElement) => {
+        el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN));
+        el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
+      },
+    ],
+  ])("%s left pending by a session switch does not veto the new session's correction", (_label, gesture) => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { el, set, rerender } = mountSwitchable();
+
+      act(() => gesture(el));
+      act(() => rerender({ r: "ref_b" }));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  // The no-op stub the cases above use never schedules a frame, so it cannot see
+  // the other half of the switch's cleanup: cancelling the old session's
+  // clearing frame AND nulling its handle, so the new session's first gesture
+  // can schedule a frame of its own. Without the null, markGesture sees a
+  // non-null handle, returns early, and session B's marker is never cleared at
+  // all - a permanently pending veto, the failure this PR exists to prevent.
+  // This stub keeps the callbacks instead of dropping them, and only ever runs
+  // the ones scheduled in a named window, so React's own frames are left alone.
+  function captureFrames() {
+    const scheduled = new Map<number, FrameRequestCallback>();
+    const cancelled: number[] = [];
+    let nextHandle = 0;
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      nextHandle += 1;
+      scheduled.set(nextHandle, callback);
+      return nextHandle;
+    });
+    const caf = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
+      cancelled.push(handle);
+      scheduled.delete(handle);
+    });
+    const pending = () => [...scheduled.keys()];
+    return {
+      cancelled,
+      pending,
+      /** Handles that appeared while `schedule` ran and are still uncancelled. */
+      scheduledBy(schedule: () => void): number[] {
+        const before = pending();
+        schedule();
+        return pending().filter((handle) => !before.includes(handle));
+      },
+      run(handles: number[]) {
+        for (const handle of handles) {
+          const callback = scheduled.get(handle);
+          scheduled.delete(handle);
+          callback?.(0);
+        }
+      },
+      restore() {
+        raf.mockRestore();
+        caf.mockRestore();
+      },
+    };
+  }
+
+  test("a session switch cancels the old clearing frame and lets the new session schedule its own", () => {
+    const frames = captureFrames();
+    try {
+      const { el, set, rerender } = mountSwitchable();
+      const wheelUp = () => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
+
+      const forA = frames.scheduledBy(() => act(() => wheelUp()));
+      expect(forA).toHaveLength(1);
+
+      act(() => rerender({ r: "ref_b" }));
+      expect(frames.cancelled).toContain(forA[0]);
+
+      // The handle was nulled too, so this gesture gets a frame of its own.
+      const forB = frames.scheduledBy(() => act(() => wheelUp()));
+      expect(forB).toHaveLength(1);
+
+      act(() => frames.run(forB));
+      act(() => landCorrection(el, set));
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      frames.restore();
+    }
+  });
+
+  test("a session switch ends a drag in progress, so a later move marks nothing", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { el, set, rerender } = mountSwitchable();
+
+      act(() => el.dispatchEvent(pointerEvent("pointerdown", MOUSE_DOWN)));
+      act(() => rerender({ r: "ref_b" }));
+      act(() => {
+        // The button is still down, but this drag belongs to the session that
+        // is no longer on screen.
+        el.dispatchEvent(pointerEvent("pointermove", MOUSE_DRAG));
+        landCorrection(el, set);
+      });
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  test("a session switch forgets the touch position, so a move with no start marks nothing", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      const { el, set, rerender } = mountSwitchable();
+
+      act(() => el.dispatchEvent(touchEvent("touchstart", 400)));
+      act(() => rerender({ r: "ref_b" }));
+      act(() => {
+        el.dispatchEvent(touchEvent("touchmove", 460));
+        landCorrection(el, set);
+      });
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  test("a reader scrolling back while content is still measuring in keeps their position and gets the pill", () => {
+    // The same growth, but the offset moved BACKWARDS - only the reader moves a
+    // transcript away from the bottom, so this must not be re-pinned. This is
+    // the discriminator the correction above turns on; without it the correction
+    // would fire on any scroll-away that happened to carry grown geometry.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 12000;
+
+    act(() => {
+      set({ scrollTop: 12000, scrollHeight: 17221 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(12000);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a scroll port that changed size is not a content correction - the reader keeps the pill", () => {
+    // The correction above reads "more content in the same box". A clientHeight
+    // that moved means the box itself changed (a resized pane, or geometry
+    // measured for the first time), which this must not silently re-pin away
+    // from: the reader ends up away from the bottom and needs the offer.
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 16374, scrollHeight: 17076, clientHeight: 702 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    el.scrollTop = 16374;
+
+    act(() => {
+      set({ scrollHeight: 17221, clientHeight: 400 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(16374);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("the error-anchor jump does NOT pin to the bottom - it lands on the failed turn", () => {
+    const { ref, el } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    act(() => result.current.jumpToBottom());
+
+    expect(el.scrollTop).toBe(0);
+  });
+});
+
 // The error anchor (contracts-transcript-scroll-liveness.md §5, lines
 // 113-114): a failed turn arriving while the reader is scrolled away is
 // remembered so the pill can point at it and jump straight there, instead
@@ -318,7 +1675,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           renderedRowCount: rowCount,
           sourceTurnRowIndexes: rowIndexes,
@@ -355,7 +1712,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -375,7 +1739,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -394,7 +1765,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -423,7 +1801,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -436,7 +1821,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -450,7 +1842,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -465,7 +1864,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
@@ -483,11 +1889,18 @@ describe("the error anchor (failed turn)", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" }); // t2 (first), not t3
   });
 
-  test("clicking with an active error anchor jumps to the failed turn's index (align start), not the bottom, and clears the pill", () => {
+  test("clicking with an active error anchor jumps to the failed turn's index (align start), not the bottom, and clears the error/count state while the pill stays on offer", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
@@ -499,13 +1912,23 @@ describe("the error anchor (failed turn)", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
     expect(result.current.pillError).toBe(false);
     expect(result.current.pillCount).toBe(0);
+    // The anchor jump lands mid-transcript, NOT at the bottom: the plain
+    // jump-to-latest pill must remain on offer.
+    expect(result.current.pillVisible).toBe(true);
   });
 
   test("after jumping to an error anchor, the next append does not auto-stick to bottom (the reader is not actually there)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
@@ -533,7 +1956,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -560,7 +1983,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -584,7 +2007,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -611,7 +2034,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -630,6 +2053,40 @@ describe("the error anchor (failed turn)", () => {
     expect(result.current.pillArrowDirection).toBe("up"); // Anchor (index 1) is above visible range
   });
 
+  test("clicking the pill clears the error anchor and resets the arrow to down (the next jump heads for the bottom)", () => {
+    const { ref, el, setVisibleRange } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    // Scroll so the anchor (index 1) is above the visible range: arrow up.
+    act(() => {
+      setVisibleRange({ startIndex: 5, endIndex: 9 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillArrowDirection).toBe("up");
+
+    // The click jumps to the anchor and clears it; the pill stays visible
+    // (still scrolled away) as a plain jump-to-latest pill, whose next jump
+    // goes DOWN to the bottom - the arrow must not stay stale at "up".
+    act(() => result.current.jumpToBottom());
+    expect(result.current.pillError).toBe(false);
+    expect(result.current.pillVisible).toBe(true);
+    expect(result.current.pillArrowDirection).toBe("down");
+  });
+
   test("the pill's arrow points down when the error anchor is within or below the visible range", () => {
     const { ref, el, setVisibleRange } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
@@ -639,7 +2096,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -666,7 +2123,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -686,30 +2143,47 @@ describe("the error anchor (failed turn)", () => {
 });
 
 describe("the needs-you upgrade", () => {
-  test("the pill upgrades to needs-you in place when the status flip lands in a LATER render than the content that produced it", () => {
-    const { ref } = makeListHandle();
-    const { measure } = makeMeasure(SCROLLED_AWAY);
-    const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
-      { initialProps: { m: model([turn("t1", ["i1"])], { status: { type: "idle" } }) } },
-    );
+  test.each(["awaiting", "warning", "restartRequired"] as const)(
+    "the %s pill upgrades to needs-you in place when the status flip lands in a LATER render than the content that produced it",
+    (statusType) => {
+      const { ref } = makeListHandle();
+      const { measure } = makeMeasure(SCROLLED_AWAY);
+      const { result, rerender } = renderHook(
+        ({ m }) =>
+          useTranscriptScroll({
+            ref: "ref_a",
+            model: m,
+            listRef: ref,
+            loadOlder: vi.fn(() => Promise.resolve()),
+            measure,
+          }),
+        { initialProps: { m: model([turn("t1", ["i1"])], { status: { type: "idle" } }) } },
+      );
 
-    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: "idle" } }) });
-    expect(result.current.pillCount).toBe(1);
-    expect(result.current.pillNeedsYou).toBe(false);
+      rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: "idle" } }) });
+      expect(result.current.pillCount).toBe(1);
+      expect(result.current.pillNeedsYou).toBe(false);
 
-    // Same content, later render: status alone flips to awaiting.
-    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: "awaiting" } }) });
+      // Same content, later render: status alone requires attention.
+      rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: statusType } }) });
 
-    expect(result.current.pillCount).toBe(1); // unchanged - no new content in this render
-    expect(result.current.pillNeedsYou).toBe(true);
-  });
+      expect(result.current.pillCount).toBe(1); // unchanged - no new content in this render
+      expect(result.current.pillNeedsYou).toBe(true);
+    },
+  );
 
   test("askPending alone (independent of status.type) also upgrades the pill", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])], { askPending: false }) } },
     );
 
@@ -726,7 +2200,7 @@ describe("the needs-you upgrade", () => {
         ref: "ref_a",
         model: model([turn("t1", ["i1"])], { askPending: true }),
         listRef: ref,
-        loadOlder: vi.fn(),
+        loadOlder: vi.fn(() => Promise.resolve()),
         measure,
       }),
     );
@@ -803,7 +2277,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t2", ["i2"])]) } },
     );
 
@@ -826,7 +2307,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure({ scrollTop: 200, scrollHeight: 500, clientHeight: 100 });
     const { rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t2", ["i2"])]) } },
     );
     el.scrollTop = 200;
@@ -841,7 +2329,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure(AT_BOTTOM);
     const { rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     el.scrollTop = 111; // arbitrary sentinel the stick/no-op path must not touch via the prepend math
@@ -868,7 +2363,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
@@ -895,7 +2397,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t2", ["i2"])]) } },
     );
 
@@ -939,7 +2448,7 @@ describe("mount positioning", () => {
         ref: "ref_never_seen",
         model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
         listRef: ref,
-        loadOlder: vi.fn(),
+        loadOlder: vi.fn(() => Promise.resolve()),
         measure,
       }),
     );
@@ -963,7 +2472,7 @@ describe("mount positioning", () => {
         ref: "ref_a",
         model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
         listRef: ref,
-        loadOlder: vi.fn(),
+        loadOlder: vi.fn(() => Promise.resolve()),
         measure,
       }),
     );
@@ -983,7 +2492,7 @@ describe("mount positioning", () => {
           ref: "ref_hydrating",
           model: m,
           listRef: list.ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
         }),
       { initialProps: { m: undefined as ThreadModel | undefined } },
@@ -1024,7 +2533,7 @@ describe("ref change on a persistent pane instance (sidebar click to a different
           ref: r,
           model: model([turn("t1", ["i1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           measureAnchors: () => positions,
         }),
@@ -1048,7 +2557,7 @@ describe("ref change on a persistent pane instance (sidebar click to a different
           ref: r,
           model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
         }),
       { initialProps: { r: "ref_a" } },
@@ -1068,7 +2577,8 @@ describe("ref change on a persistent pane instance (sidebar click to a different
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ r, m }) => useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ r, m }) =>
+        useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(() => Promise.resolve()), measure }),
       {
         initialProps: {
           r: "ref_a",
@@ -1092,7 +2602,8 @@ describe("ref change on a persistent pane instance (sidebar click to a different
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ r, m }) => useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ r, m }) =>
+        useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(() => Promise.resolve()), measure }),
       {
         initialProps: {
           r: "ref_a",
@@ -1129,7 +2640,7 @@ describe("same-ref remount (model undefined -> defined on the same ref)", () => 
           ref: "ref_a",
           model: m,
           listRef: list.ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) as ThreadModel | undefined } },
@@ -1175,6 +2686,72 @@ describe("view-mode anchor preservation", () => {
     expect(transformedAnchors.every((anchor) => anchor.index >= 0 && anchor.index < 2)).toBe(true);
   });
 
+  test("an anchor captured on a call that has since folded restores to its run row", () => {
+    // roborev on PR #947: only the first folded entry's id used to map to the
+    // run; the second and third had no anchor to restore to.
+    const positions: ViewAnchorPosition[] = [
+      { id: "run:a", sourceIndex: 0, index: 0, offset: 0, isMessage: false, members: ["a", "b", "c"] },
+      { id: "agent-4", sourceIndex: 4, index: 1, offset: 0, isMessage: true },
+    ];
+    expect(
+      restoreTopAnchor(
+        captureTopAnchor({ id: "b", sourceIndex: 1, index: 0, offset: 12, isMessage: false }),
+        positions,
+      ),
+    ).toEqual({ id: "run:a", index: 0, offset: 12 });
+  });
+
+  // roborev on PR #947 (round seven): one source item wears a different id
+  // per view - intent:<id> in Intent, <id> in Tools/Full, run:<id> once it
+  // folds - so a restore across a view change has to match by source
+  // identity (with the source index agreeing), not by the literal id.
+  test("a position captured on an intent proxy restores to the same source item in a tool-call view", () => {
+    const positions: ViewAnchorPosition[] = [
+      { id: "a", sourceIndex: 0, index: 0, offset: 0, isMessage: false },
+      { id: "b", sourceIndex: 1, index: 1, offset: 0, isMessage: false },
+      { id: "agent-4", sourceIndex: 4, index: 2, offset: 0, isMessage: true },
+    ];
+    expect(
+      restoreTopAnchor(
+        captureTopAnchor({ id: "intent:b", sourceIndex: 1, index: 0, offset: 7, isMessage: false }),
+        positions,
+      ),
+    ).toEqual({ id: "b", index: 1, offset: 7 });
+  });
+
+  test("a position captured on an intent proxy restores to the folded run that now holds its source item", () => {
+    const positions: ViewAnchorPosition[] = [
+      { id: "run:a", sourceIndex: 0, index: 0, offset: 0, isMessage: false, members: ["a", "b", "c"] },
+      { id: "agent-4", sourceIndex: 4, index: 1, offset: 0, isMessage: true },
+    ];
+    expect(
+      restoreTopAnchor(
+        captureTopAnchor({ id: "intent:b", sourceIndex: 1, index: 0, offset: 7, isMessage: false }),
+        positions,
+      ),
+    ).toEqual({ id: "run:a", index: 0, offset: 7 });
+  });
+
+  test("a tool-call view position restores to its intent proxy in Intent view", () => {
+    const positions: ViewAnchorPosition[] = [
+      { id: "intent:b", sourceIndex: 1, index: 3, offset: 0, isMessage: false },
+      { id: "agent-4", sourceIndex: 4, index: 4, offset: 0, isMessage: true },
+    ];
+    expect(
+      restoreTopAnchor(captureTopAnchor({ id: "b", sourceIndex: 1, index: 0, offset: 7, isMessage: false }), positions),
+    ).toEqual({ id: "intent:b", index: 3, offset: 7 });
+  });
+
+  test("the same identity at a different source index is another item: the nearest message wins instead", () => {
+    const positions: ViewAnchorPosition[] = [
+      { id: "agent-0", sourceIndex: 0, index: 0, offset: 0, isMessage: true },
+      { id: "intent:b", sourceIndex: 5, index: 1, offset: 0, isMessage: false },
+    ];
+    expect(
+      restoreTopAnchor(captureTopAnchor({ id: "b", sourceIndex: 1, index: 0, offset: 7, isMessage: false }), positions),
+    ).toEqual({ id: "agent-0", index: 0, offset: 7 });
+  });
+
   test("captures and restores the same stable entry and viewport offset", () => {
     const anchor = captureTopAnchor({ id: "turn-4", sourceIndex: 4, index: 4, offset: 18, isMessage: true });
 
@@ -1197,7 +2774,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("t1", ["i1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           viewKey,
           measureAnchors: () => positions,
@@ -1254,7 +2831,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("t1", ["i1"]), turn("turn-4", ["i4"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           viewKey,
           measureAnchors,
@@ -1291,7 +2868,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("mixed-turn", ["user-1", "tool-1", "agent-1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           viewKey,
           anchorEntries,
@@ -1324,7 +2901,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("t1", ["i1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure: metrics.measure,
           viewKey,
           measureAnchors: () => positions,
@@ -1355,7 +2932,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("t1", ["i1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           viewKey,
           anchorEntries,
@@ -1531,7 +3108,13 @@ describe("no-model / not-yet-mounted safety", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
     const { result } = renderHook(() =>
-      useTranscriptScroll({ ref: "ref_a", model: undefined, listRef: ref, loadOlder: vi.fn(), measure }),
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: undefined,
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
     );
 
     expect(result.current.pillCount).toBe(0);
@@ -1542,9 +3125,154 @@ describe("no-model / not-yet-mounted safety", () => {
   test("listRef.current null (VirtualList not yet mounted, e.g. an empty transcript): no crash", () => {
     const notMountedRef = createRef<VirtualListHandle>() as React.RefObject<VirtualListHandle | null>;
     const { result } = renderHook(() =>
-      useTranscriptScroll({ ref: "ref_a", model: model([]), listRef: notMountedRef, loadOlder: vi.fn() }),
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([]),
+        listRef: notMountedRef,
+        loadOlder: vi.fn(() => Promise.resolve()),
+      }),
     );
 
     expect(result.current.pillCount).toBe(0);
   });
+});
+
+describe("ask dock activation edge (roborev PR #854)", () => {
+  // The pending-questions dock is a virtual row now (TranscriptBody's
+  // trailingRow), and an in-progress ask_user item COMPLETING activates it
+  // without any turn/item shape change - neither itemCount nor firstTurnId
+  // nor failedTurns moves, so the content-changed effect never fires for
+  // it. Without a dedicated edge, the dock would appear invisibly below a
+  // scrolled-away reader while the composer's input row is hidden, leaving
+  // no visible path to the answer controls.
+  test("a dock activating while the reader is scrolled away surfaces the new-content pill as needs-you", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, askDockPending, epoch, rowCount }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          askDockPending,
+          askDockActivationEpoch: epoch,
+          renderedRowCount: rowCount,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false, epoch: 0, rowCount: 1 } },
+    );
+    expect(result.current.pillCount).toBe(0);
+
+    // The item completes: the transcript's shape is unchanged, only the
+    // dock activates (and the wire's askPending flips, which is what makes
+    // the pill needs-you). The row count grows by the synthetic dock row.
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }), askDockPending: true, epoch: 1, rowCount: 2 });
+
+    expect(result.current.pillCount).toBe(1);
+    expect(result.current.pillNeedsYou).toBe(true);
+
+    // The pill's jump lands on the dock row itself (the count fix's half).
+    act(() => result.current.jumpToBottom());
+    expect(scrollToIndex).toHaveBeenLastCalledWith(1, { align: "end" });
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("a dock activating while the reader is at the bottom adds no pill", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m, askDockPending, epoch }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          askDockPending,
+          askDockActivationEpoch: epoch,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false, epoch: 0 } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }), askDockPending: true, epoch: 1 });
+
+    // The end-anchored list already followed the appended row into view -
+    // a pill would claim there is something unseen when there is not.
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("a session opened with an already-pending ask does not fire the edge", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { askPending: true }),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+        askDockPending: true,
+        askDockActivationEpoch: 1,
+      }),
+    );
+    // Initial mount scrolls to the end (the dock row is visible) - nothing
+    // is unseen, so no pill.
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("an atomic pending-set replacement re-fires the edge for a scrolled-away reader", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, epoch }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          askDockPending: true,
+          askDockActivationEpoch: epoch,
+        }),
+      // Pending throughout: a snapshot resync swapped the old (answered
+      // elsewhere) batch for a new one. askDockPending never leaves true,
+      // so a boolean edge could never re-fire - the epoch is the signal.
+      { initialProps: { m: model([turn("t1", ["i1"])], { askPending: true }), epoch: 1 } },
+    );
+    expect(result.current.pillCount).toBe(0); // mount: no edge
+
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }), epoch: 2 });
+
+    expect(result.current.pillCount).toBe(1);
+    expect(result.current.pillNeedsYou).toBe(true);
+  });
+});
+
+test("the pill is needs-you on the dock edge even when the wire's snapshot-only askPending has not landed", () => {
+  const { ref } = makeListHandle();
+  const { measure } = makeMeasure(SCROLLED_AWAY);
+  const { result, rerender } = renderHook(
+    ({ m, askDockPending, epoch }) =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: m,
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+        askDockPending,
+        askDockActivationEpoch: epoch,
+      }),
+    // model.askPending stays FALSE throughout: the field is
+    // snapshot-authoritative (only hydrateThread sets it - no notification
+    // carries it, per reducer.test.ts), so a live-arriving ask leaves it
+    // unset until the next snapshot. The dock's own pending signal is the
+    // live one.
+    { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false, epoch: 0 } },
+  );
+
+  rerender({ m: model([turn("t1", ["i1"])]), askDockPending: true, epoch: 1 });
+
+  expect(result.current.pillCount).toBe(1);
+  expect(result.current.pillNeedsYou).toBe(true);
 });

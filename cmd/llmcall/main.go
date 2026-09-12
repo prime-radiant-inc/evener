@@ -13,12 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
-	openaiprovider "primeradiant.com/evener/llm/providers/openai"
 )
 
 // llmcall is a minimal single-call CLI for the unified llm client.
@@ -28,7 +26,6 @@ import (
 // - No tool calls allowed (tool_choice=none; error if any are returned).
 // - No system prompt by default; optional --system / --system-file / --system-append.
 func main() {
-	openaiprovider.ClientVersion = buildinfo.Version()
 	if err := llmcallEntry(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "llmcall: %v\n", err)
 		osExit(1)
@@ -37,7 +34,7 @@ func main() {
 
 var osExit = os.Exit
 var llmcallEntry = llmcallMain
-var newLLMClientFromEnv = llm.NewFromEnv
+var newLLMClient = func() (*llm.Client, error) { return cmdutil.LoadClient("") }
 
 type stringSliceFlag = cmdutil.StringSliceFlag
 
@@ -190,9 +187,6 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 	if cfg.model == "" {
 		cfg.model = envvars.EVENERModel.Getenv()
 	}
-	if cfg.provider == "" {
-		return fmt.Errorf("no provider specified: use --provider or set %s/%s", envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
-	}
 	if cfg.model == "" {
 		return fmt.Errorf("no model specified: use --model or set %s/%s", envvars.LLMModel.Name, envvars.EVENERModel.Name)
 	}
@@ -217,11 +211,19 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 
 	client := cfg.client
 	if client == nil {
-		c, err := newLLMClientFromEnv()
+		c, err := newLLMClient()
 		if err != nil {
 			return fmt.Errorf("LLM client setup: %w", err)
 		}
 		client = c
+	}
+	// An unnamed provider takes the client's default instance; only when the
+	// registry names none is there nothing to call.
+	if cfg.provider == "" {
+		cfg.provider = client.DefaultProvider()
+	}
+	if cfg.provider == "" {
+		return fmt.Errorf("no provider specified: use --provider or set %s/%s", envvars.LLMProvider.Name, envvars.EVENERProvider.Name)
 	}
 
 	system := ""

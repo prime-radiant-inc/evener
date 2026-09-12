@@ -6,8 +6,6 @@
 // ever imported, regardless of what else the app happens to have loaded -
 // the real SessionPane composition must never depend on import ORDER to
 // get tool calls rendered correctly.
-import "./ToolCallItem";
-import "./tools";
 import type { ReactNode } from "react";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
@@ -17,7 +15,7 @@ import {
   type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
-import { FailureGlyph } from "../../../widgets";
+import "./tools";
 import {
   disclosureDefault,
   isDisclosureOpen,
@@ -29,11 +27,11 @@ import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";
 import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
-import { ToolCallCluster } from "./ToolCallCluster";
+import { ToolCallItem } from "./ToolCallItem";
+import { ToolRunGroup } from "./ToolRunGroup";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
-import { shouldGroup, toolRunFor } from "./toolGrouping";
 import { toolRendererFor } from "./toolRenderers";
-import { itemScopeKey } from "./tools/subagentModuleStore";
+import { foldTurnEntries, type ToolRun } from "./toolRuns";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
 import { itemRendererFor, threadFingerprintForItem } from "./types";
@@ -97,6 +95,20 @@ export function projectedEntryAnchor(entry: ProjectedEntry, viewAnchorIndex: num
   } as const;
 }
 
+// A folded run stands in for its entries in the anchor list too: it borrows
+// the first folded entry's turn and source index, under the run's own id, so
+// no two anchors can ever claim the same id when the run is open.
+function runAnchorFor(run: ToolRun, viewAnchorIndex: number | undefined) {
+  const first = run.entries[0];
+  if (!first) return undefined;
+  const anchor = projectedEntryAnchor({ ...first, id: run.id }, viewAnchorIndex);
+  if (!anchor) return undefined;
+  // The ids this anchor stands in for, so a scroll position or focus
+  // captured on the second or third call (useTranscriptScroll) still finds
+  // its way back to the run once the calls have folded.
+  return { ...anchor, "data-view-anchor-members": run.entries.map((entry) => entry.id).join(",") };
+}
+
 export interface ProjectedIntentGroupProps {
   entries: readonly Extract<ProjectedEntry, { kind: "intent" }>[];
   rowId?: string;
@@ -104,6 +116,9 @@ export interface ProjectedIntentGroupProps {
   separatorTurn?: TurnModel;
   viewAnchorIndex?: number;
   showSeenDivider?: boolean;
+  sessionRef?: string;
+  renderContext?: TranscriptRenderContextValue;
+  thread?: ThreadModel;
 }
 
 export function ProjectedIntentGroup({
@@ -113,6 +128,9 @@ export function ProjectedIntentGroup({
   separatorTurn,
   viewAnchorIndex,
   showSeenDivider = false,
+  sessionRef,
+  renderContext,
+  thread,
 }: ProjectedIntentGroupProps) {
   const context = useTranscriptRenderContext();
   const { config } = context;
@@ -144,9 +162,21 @@ export function ProjectedIntentGroup({
         </summary>
         <div className={transcriptStyles.intentGroupItems}>
           {entries.map((entry) => (
-            <div key={entry.id} className={transcriptStyles.intent} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
-              {entry.failed && <FailureGlyph />}
-              {entry.rationale}
+            <div key={entry.id} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+              <ToolCallItem
+                item={entry.item}
+                turn={{ id: entry.turnId, status: "completed", items: [entry.item] }}
+                live={entry.item.status === "inProgress"}
+                sessionRef={sessionRef}
+                projectedSummary={!entry.item.description?.trim() ? entry.rationale : undefined}
+                renderContext={renderContext ?? context}
+                thread={thread}
+                threadFingerprint={threadFingerprintForItem(
+                  entry.item,
+                  thread,
+                  toolRendererFor(entry.item.toolName ?? "").summarySuffix?.(entry.item, thread),
+                )}
+              />
             </div>
           ))}
         </div>
@@ -198,36 +228,27 @@ export function TurnBlock({
     visibleItems.every((item, index) => item === sourceTurn.items[index]);
   const shownTurn: TurnModel = allItemsVisible ? sourceTurn : { ...sourceTurn, items: [...visibleItems] };
   const viewAnchorFor = (entry: ProjectedEntry) => projectedEntryAnchor(entry, viewAnchorIndex);
+  // Once a turn has settled, a run of uneventful tool calls collapses to one
+  // row (critique R9, toolRuns.ts). "inProgress" is the wire's own live turn
+  // status (the projector reads the same literal), so a turn still working
+  // keeps every call visible as it arrives.
+  const laidOut = foldTurnEntries(projectedTurn);
   const renderedEntries: ReactNode[] = [];
-  for (let index = 0; index < projectedTurn.entries.length; index += 1) {
-    const entry = projectedTurn.entries[index];
+  for (let index = 0; index < laidOut.length; index += 1) {
+    const entry = laidOut[index];
     if (!entry) continue;
-    if (entry.kind === "intent") {
-      const group: Extract<ProjectedEntry, { kind: "intent" }>[] = [entry];
-      while (projectedTurn.entries[index + 1]?.kind === "intent") {
-        index += 1;
-        const next = projectedTurn.entries[index];
-        if (next?.kind === "intent") group.push(next);
-      }
-      renderedEntries.push(
-        <ProjectedIntentGroup key={`intent-group:${group[0]?.id}`} entries={group} viewAnchorIndex={viewAnchorIndex} />,
-      );
-      continue;
-    }
-    const item = entry.item;
-    const run =
-      entry.kind === "item" && item.type === "commandExecution" ? toolRunFor([...visibleItems], item.id) : undefined;
-    if (run && shouldGroup(run)) {
-      if (!run.isFirst) continue;
+    if (entry.kind === "run") {
       renderedEntries.push(
         <div
-          key={itemScopeKey(sessionRef, item.id)}
+          key={entry.id}
           className={CLASS.runContent}
           data-testid="run-content"
-          {...viewAnchorFor(entry)}
+          // The whole run is one position for scroll coordination, open or
+          // closed - see ToolRunGroup's header.
+          {...runAnchorFor(entry, viewAnchorIndex)}
         >
-          <ToolCallCluster
-            items={run.items}
+          <ToolRunGroup
+            run={entry}
             turn={shownTurn}
             sessionRef={sessionRef}
             renderContext={itemRenderContext}
@@ -237,6 +258,26 @@ export function TurnBlock({
       );
       continue;
     }
+    if (entry.kind === "intent") {
+      const group: Extract<ProjectedEntry, { kind: "intent" }>[] = [entry];
+      while (laidOut[index + 1]?.kind === "intent") {
+        index += 1;
+        const next = laidOut[index];
+        if (next?.kind === "intent") group.push(next);
+      }
+      renderedEntries.push(
+        <ProjectedIntentGroup
+          key={`intent-group:${group[0]?.id}`}
+          entries={group}
+          viewAnchorIndex={viewAnchorIndex}
+          sessionRef={sessionRef}
+          renderContext={itemRenderContext}
+          thread={thread}
+        />,
+      );
+      continue;
+    }
+    const item = entry.item;
     const ItemRenderer = itemRendererFor(item.type);
     const renderedItem = (
       <ItemRenderer
@@ -247,6 +288,8 @@ export function TurnBlock({
         opensExchange={exchangeOpeners?.has(item.id)}
         agentLabel={agentLabel}
         projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
+        contentFree={entry.kind === "thinking"}
+        redacted={entry.kind === "critical" && entry.redacted}
         renderContext={itemRenderContext}
         thread={thread}
         threadFingerprint={threadFingerprintForItem(

@@ -1,7 +1,8 @@
 import { expect, test, vi } from "vitest";
 import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
+import type { NormalizedResource } from "./codec";
 import { applyNavigationInvalidation, NavigationRevalidator } from "./revalidator";
-import { keyID, type NavigationResponse, type ResourceKey } from "./types";
+import { keyID, NavigationBaseInvalidError, type NavigationResponse, type ResourceKey } from "./types";
 
 const key: ResourceKey = { kind: "project", projectKey: "p" };
 const d = <T>() => {
@@ -9,6 +10,41 @@ const d = <T>() => {
   const promise = new Promise<T>((r) => (resolve = r));
   return { promise, resolve };
 };
+
+test("a superseded load awaits its trailing retry instead of failing", async () => {
+  const first = d<NavigationResponse>();
+  const second = d<NavigationResponse>();
+  const r = new NavigationRevalidator("g");
+  let calls = 0;
+  const pending = r.load(key, async () => {
+    calls++;
+    return (calls === 1 ? first : second).promise;
+  });
+  // A force during the flight supersedes the in-flight response: the first
+  // run fails its token check and flags a rerun.
+  r.force([key]);
+  first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "stale" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(2);
+  // The original load promise must still be pending (not rejected with the
+  // superseded failure) while the trailing run is in flight.
+  let settled: string | null = null;
+  void pending.then(
+    () => {
+      settled = "resolved";
+    },
+    () => {
+      settled = "rejected";
+    },
+  );
+  await Promise.resolve();
+  expect(settled).toBeNull();
+  second.resolve({ status: 200, generationID: "g", revision: 1, etag: "b", data: "good" });
+  const result = await pending;
+  expect(settled).toBe("resolved");
+  expect(result.error).toBeNull();
+  expect(result.data).toBe("good");
+});
 
 test("coalesces and trails invalidation without aborting useful read", async () => {
   const one = d<NavigationResponse>();
@@ -30,13 +66,113 @@ test("coalesces and trails invalidation without aborting useful read", async () 
   expect(r.get(key)?.data).toBe("new");
 });
 
-test("reset retains data but clears validators and reruns", async () => {
+test("generation reset retains the graph provisionally but restarts without old authority", async () => {
+  const fresh = d<NavigationResponse>();
   const r = new NavigationRevalidator("g");
-  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "good" }));
+  const graph = Object.freeze({
+    metadata: Object.freeze({ generation_id: "g", revision: 1 }),
+    entities: new Map(),
+    containers: new Map(),
+  });
+  const normalized: NormalizedResource = Object.freeze({
+    key,
+    graph,
+    version: Object.freeze({ generationId: "g", revision: 1, etag: "a" }),
+    presence: "present",
+  });
+  const request = vi.fn((_signal: AbortSignal, _base?: unknown) =>
+    request.mock.calls.length === 1
+      ? Promise.resolve({
+          status: 200 as const,
+          generationID: "g",
+          revision: 1,
+          etag: "a",
+          data: { value: "good" },
+          normalized,
+        })
+      : fresh.promise,
+  );
+  await r.load(key, request);
+  const retained = r.get(key);
   r.resetGeneration("h");
-  expect(r.get(key)?.data).toBe("good");
+  const restarted = r.get(key);
+
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(request.mock.calls[0]).toEqual([expect.any(AbortSignal), undefined]);
+  expect(request.mock.calls[1]).toEqual([expect.any(AbortSignal), undefined]);
+  expect(restarted?.data).toBe(retained?.data);
+  expect(restarted?.normalized).toBe(normalized);
+  expect(restarted?.normalized?.graph).toBe(graph);
+  expect(restarted).toMatchObject({
+    generationID: "h",
+    loadedRevision: null,
+    targetRevision: null,
+    etag: null,
+    stale: true,
+    loading: true,
+    error: null,
+  });
+  expect(restarted?.version).toBeUndefined();
+
+  fresh.resolve({ status: 200, generationID: "h", revision: 1, etag: "fresh", data: { value: "fresh" } });
+});
+
+test("invalid delta clears only the unusable base and performs one forced snapshot recovery", async () => {
+  const r = new NavigationRevalidator("g");
+  const installedGraph = Object.freeze({
+    metadata: Object.freeze({ generation_id: "g", revision: 1 }),
+    entities: new Map(),
+    containers: new Map(),
+  });
+  const installed: NormalizedResource = Object.freeze({
+    key,
+    graph: installedGraph,
+    version: { generationId: "g", revision: 1, etag: "a" },
+    presence: "present",
+  });
+  const forced = d<NavigationResponse>();
+  const forcedStarted = d<void>();
+  const bases: unknown[] = [];
+  let calls = 0;
+  const request = vi.fn(async (_signal: AbortSignal, baseValue?: unknown) => {
+    bases.push(baseValue);
+    calls++;
+    if (calls === 1)
+      return { status: 200, generationID: "g", revision: 1, etag: "a", data: { stable: true }, normalized: installed };
+    if (calls === 2) throw new NavigationBaseInvalidError();
+    forcedStarted.resolve();
+    return forced.promise;
+  });
+  await r.load(key, request);
+  const retainedData = r.get(key)?.data;
+
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  await forcedStarted.promise;
+
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(bases).toEqual([undefined, installed.version, undefined]);
+  expect(r.get(key)?.data).toBe(retainedData);
+  expect(r.get(key)?.normalized).toBe(installed);
+  expect(r.get(key)?.normalized?.graph).toBe(installedGraph);
+  expect(r.get(key)?.version).toBeUndefined();
   expect(r.get(key)?.etag).toBeNull();
-  expect(r.get(key)?.stale).toBe(true);
+
+  const recovered: NormalizedResource = Object.freeze({
+    ...installed,
+    version: { generationId: "g", revision: 2, etag: "b" },
+  });
+  forced.resolve({
+    status: 200,
+    generationID: "g",
+    revision: 2,
+    etag: "b",
+    data: { stable: false },
+    normalized: recovered,
+  });
+  await r.waitForTargets([{ kind: "project", projectKey: "p", revision: 2 }]);
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(r.get(key)?.normalized).toBe(recovered);
+  expect(r.get(key)?.stale).toBe(false);
 });
 
 test("304 and protocol contradictions fail closed", async () => {
@@ -154,6 +290,17 @@ test("deep snapshots resist nested mutation and listener failures do not poison 
   expect(retained?.loading).toBe(false);
 });
 
+test("resetGeneration rejects invalidation waiters so new-generation notifications cannot resolve them", async () => {
+  const r = new NavigationRevalidator("g");
+  const waiter = r.waitForInvalidation(() => true);
+  const settled = waiter.promise.then(
+    () => "resolved",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  r.resetGeneration("h");
+  expect(await settled).toMatch(/generation mismatch/);
+});
+
 test("reset ignores abort-resistant old response and starts one fresh generation request", async () => {
   const old = d<NavigationResponse>();
   const fresh = d<NavigationResponse>();
@@ -208,13 +355,13 @@ test.each([
 test("force during a same-revision deferred request queues exactly one conditional trailing read", async () => {
   const first = d<NavigationResponse>();
   const second = d<NavigationResponse>();
-  const etags: (string | null)[] = [];
+  const bases: unknown[] = [];
   const r = new NavigationRevalidator("g");
-  const request = vi.fn((_: AbortSignal, etag: string | null) => {
-    etags.push(etag);
-    if (etags.length === 1)
+  const request = vi.fn((_: AbortSignal, base?: unknown) => {
+    bases.push(base);
+    if (bases.length === 1)
       return Promise.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "seed" });
-    return (etags.length === 2 ? first : second).promise;
+    return (bases.length === 2 ? first : second).promise;
   });
   await r.load(key, request);
   r.invalidate({ kind: "project", projectKey: "p", revision: 1 });
@@ -224,7 +371,7 @@ test("force during a same-revision deferred request queues exactly one condition
   first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
   for (let i = 0; i < 5; i++) await Promise.resolve();
   expect(request).toHaveBeenCalledTimes(3);
-  expect(etags).toEqual([null, "a", "a"]);
+  expect(bases).toEqual([undefined, undefined, undefined]);
   second.resolve({ status: 304, generationID: "g", revision: 1, etag: "a" });
   await original;
   expect(r.get(key)?.stale).toBe(false);
@@ -257,9 +404,9 @@ test("generation-mismatched payload resets and still applies its targets", async
 test("sequence duplicates and reordering do not force, but a gap forces retained callbacks", async () => {
   const r = new NavigationRevalidator("g");
   let calls = 0;
-  await r.load(key, async (_, etag) => {
+  await r.load(key, async () => {
     calls++;
-    return { status: 200, generationID: "g", revision: 1, etag: etag ?? "a", data: "x" };
+    return { status: 200, generationID: "g", revision: 1, etag: "a", data: "x" };
   });
   applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [] });
   applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [] });
@@ -381,17 +528,17 @@ test("reset aborts old signal once and keeps fresh loading/error/ETag ownership"
 });
 
 test("valid 304 sends stored validator and retains last-good state", async () => {
-  const etags: (string | null)[] = [];
+  const bases: unknown[] = [];
   const data = { value: 1 };
   const r = new NavigationRevalidator("g");
   await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data }));
   const retained = r.get(key)?.data;
   r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
-  await r.load(key, async (_, etag) => {
-    etags.push(etag);
+  await r.load(key, async (_, base) => {
+    bases.push(base);
     return { status: 304, generationID: "g", revision: 2, etag: "a" };
   });
-  expect(etags).toEqual(["a"]);
+  expect(bases).toEqual([undefined]);
   expect(r.get(key)).toMatchObject({
     data: retained,
     loadedRevision: 2,
@@ -432,33 +579,29 @@ test("wildcard and sequence gaps request their exact loaded scopes, including de
   const section: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 10 };
   const catalog: ResourceKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 10 };
   const location: ResourceKey = { kind: "location", ref: "here" };
-  const calls: { key: ResourceKey; etag: string | null }[] = [];
+  const calls: { key: ResourceKey; base: unknown }[] = [];
   const r = new NavigationRevalidator("g");
   for (const loaded of [manifest, key, page, section, catalog, location]) {
-    await r.load(loaded, async (_, etag) => {
-      calls.push({ key: loaded, etag });
+    await r.load(loaded, async (_, base) => {
+      calls.push({ key: loaded, base });
       return { status: 200, generationID: "g", revision: calls.length, etag: keyID(loaded), data: loaded.kind };
     });
   }
   let start = calls.length;
   applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [{ kind: "all_loaded_projects" }] });
   for (let i = 0; i < 6; i++) await Promise.resolve();
-  expect(calls.slice(start).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
-    ["project", keyID(key)],
-    ["project_page", keyID(page)],
-    ["location", keyID(location)],
-  ]);
+  expect(calls.slice(start).map(({ key: loaded }) => loaded.kind)).toEqual(["project", "project_page", "location"]);
 
   start = calls.length;
   applyNavigationInvalidation(r, { generationId: "g", sequence: 3, targets: [] });
   for (let i = 0; i < 6; i++) await Promise.resolve();
-  expect(calls.slice(start).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
-    ["manifest", keyID(manifest)],
-    ["project", keyID(key)],
-    ["project_page", keyID(page)],
-    ["section", keyID(section)],
-    ["catalog", keyID(catalog)],
-    ["location", keyID(location)],
+  expect(calls.slice(start).map(({ key: loaded }) => loaded.kind)).toEqual([
+    "manifest",
+    "project",
+    "project_page",
+    "section",
+    "catalog",
+    "location",
   ]);
   expect(r.get(location)?.stale).toBe(false);
 });
@@ -466,11 +609,11 @@ test("wildcard and sequence gaps request their exact loaded scopes, including de
 test("generation reset applies targets and a satisfying fresh response needs no trailing read", async () => {
   const old = d<NavigationResponse>();
   const fresh = d<NavigationResponse>();
-  const etags: (string | null)[] = [];
+  const bases: unknown[] = [];
   const r = new NavigationRevalidator("old");
-  const request = vi.fn((_: AbortSignal, etag: string | null) => {
-    etags.push(etag);
-    return (etags.length === 1 ? old : fresh).promise;
+  const request = vi.fn((_: AbortSignal, base?: unknown) => {
+    bases.push(base);
+    return (bases.length === 1 ? old : fresh).promise;
   });
   const oldLoad = r.load(key, request);
   applyNavigationInvalidation(r, {
@@ -479,12 +622,12 @@ test("generation reset applies targets and a satisfying fresh response needs no 
     targets: [{ kind: "project", projectKey: "p", revision: 5 }],
   });
   expect(request).toHaveBeenCalledTimes(2);
-  expect(etags).toEqual([null, null]);
+  expect(bases).toEqual([undefined, undefined]);
   fresh.resolve({ status: 200, generationID: "new", revision: 5, etag: "fresh", data: "fresh" });
   old.resolve({ status: 200, generationID: "old", revision: 99, etag: "old", data: "old" });
   for (let i = 0; i < 7; i++) await Promise.resolve();
   expect(request).toHaveBeenCalledTimes(2);
-  expect(etags).toEqual([null, null]);
+  expect(bases).toEqual([undefined, undefined]);
   await oldLoad;
   for (let i = 0; i < 4; i++) await Promise.resolve();
   expect(r.get(key)).toMatchObject({
@@ -604,12 +747,18 @@ test("initially loading registered target blocks until the trailing target revis
   const waiting = r.waitForTargets([{ kind: "project", projectKey: "p", revision: 2 }]).then(() => (resolved = true));
   r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
   initial.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
-  await loading;
+  // The original load promise now trails the retry instead of settling with
+  // the superseded revision, so awaiting it here would deadlock with the
+  // target resolution below; assert the waiter blocks first.
   for (let i = 0; i < 5; i++) await Promise.resolve();
   expect(resolved).toBe(false);
   target.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "new" });
   await waiting;
   expect(resolved).toBe(true);
+  // ...and the chained load resolves with the recovered state.
+  const loaded = await loading;
+  expect(loaded.error).toBeNull();
+  expect(loaded.data).toBe("new");
 });
 
 test("invalidation waiter is cancellable and ignores unrelated typed events", async () => {

@@ -43,14 +43,14 @@ func TestS2Cov_MaybeWarnContextUsage(t *testing.T) {
 	go col.drain(sess)
 
 	// A tiny context window makes even a small request cross the 80% threshold.
-	small := NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{ContextWindow: 4})
+	small := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 4)
 	bigReq := llm.Request{Messages: []llm.Message{llm.User(strings.Repeat("token ", 200))}}
 	if !sess.maybeWarnContextUsage(small, bigReq) {
 		t.Fatal("expected a context-usage warning over threshold")
 	}
 
 	// A huge window with a tiny request stays under the threshold.
-	big := NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{ContextWindow: 1_000_000})
+	big := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 1_000_000)
 	if sess.maybeWarnContextUsage(big, llm.Request{Messages: []llm.Message{llm.User("hi")}}) {
 		t.Fatal("did not expect a warning under threshold")
 	}
@@ -63,5 +63,17 @@ func TestS2Cov_MaybeWarnContextUsage(t *testing.T) {
 	<-col.done // wait for the drain goroutine to consume every event before asserting
 	if !col.contains("Context usage at") {
 		t.Fatalf("no context-usage warning emitted; got %v", col.messages())
+	}
+	// The informational notice must not carry the diagnostic classifier's
+	// generic error title/hint (final_fix_warning_test.go's output-reduction
+	// test covers the same contract for the clamp warning): the Web UI renders
+	// the title on the warning chip, and "Evener error" there reads as a
+	// failure for what is routine context accounting.
+	for _, w := range col.warnings() {
+		if strings.Contains(w.Message, "Context usage at") {
+			if w.Title == "Evener error" || strings.Contains(strings.ToLower(w.Hint), "session log") {
+				t.Fatalf("context-usage warning classified as an error: title=%q hint=%q", w.Title, w.Hint)
+			}
+		}
 	}
 }

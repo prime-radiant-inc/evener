@@ -14,6 +14,7 @@ import type {
   SandboxEscalationRequested,
   TaskAggregate,
   ThreadCapabilities,
+  ThreadItemPosition,
   ThreadStatus,
 } from "./types.gen";
 
@@ -36,6 +37,10 @@ export interface ItemImage {
 export interface ItemModel {
   id: string;
   turnId: string;
+  // Stable identity across historical/live projections. Display ids can be
+  // minted differently for the same persisted transcript item.
+  transcriptKey?: string;
+  position?: ThreadItemPosition;
   // The item's 1-based position in the parent transcript's ENTRY list (wire
   // ThreadItem.transcriptEntryIndex), counting every entry - user, assistant,
   // checkpoint - not just the ones that opened a turn. This is the only field
@@ -205,7 +210,16 @@ export interface ThreadDiagnostics {
 
 export interface ThreadModel {
   ref: string;
+  parentRef?: string;
   threadId: string;
+  // The serving session image bytes belong to (the wire Thread.sessionId at
+  // hydrate, falling back to the thread id exactly as the hub's
+  // stampThreadImageURLs does). reducer.ts rebuilds sha-addressed
+  // /s/{route}/images/{sha} fallbacks from this — never from ref, which can
+  // be a stable workspace alias for a different session than the one that
+  // served the bytes. Optional so models assembled by hand (test fixtures,
+  // dev harnesses) keep compiling; the reducer falls back to threadId there.
+  imageSessionId?: string;
   // The current daemon/session instance behind this stable ref. Clear uses
   // it as the fencing precondition so an intent cannot replace a newer
   // instance that took the ref after a reconnect or restart.
@@ -293,9 +307,9 @@ export interface ThreadModel {
   contextWindow: number;
   contextPressure: number;
   // Usage is null (not a zero-valued object) when the daemon has no token
-  // data at all (old daemon, or a Codex-bridged thread) - EvenerThread.Usage's
-  // own doc comment: "nil is how a fresh/old-daemon/codex thread signals 'no
-  // token data' rather than rendering ↑0 ↓0." No live push.
+  // data at all (an old daemon or a source-backed thread that omits the field) -
+  // EvenerThread.Usage uses nil to signal "no token data" rather than rendering
+  // ↑0 ↓0. No live push.
   usage: EvenerUsage | null;
   // Cost is the session-level estimated dollar total (wire: EvenerThread.Cost) -
   // the "~$X.XX" string EstimateCost derives SERVER-SIDE from the cumulative
@@ -321,9 +335,9 @@ export interface ThreadModel {
   //
   // undefined means nobody counted — an unreadable transcript, a session with
   // no transcript at all, or a producer that does not derive it (an old daemon,
-  // a Codex-sourced thread). A real 0 means the whole session was counted and
-  // nothing failed. Consumers must render BOTH as nothing: absent is unknown,
-  // and zero is not news.
+  // a source-backed thread that omits the field). A real 0 means the whole
+  // session was counted and nothing failed. Consumers must render BOTH as
+  // nothing: absent is unknown, and zero is not news.
   // Snapshot-only like usage/cost/workMillis; no live push.
   failedToolCalls?: number;
   workMillis: number;

@@ -62,7 +62,7 @@ func exerciseTranscriptSurface(t testing.TB) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.jsonl")
 	ScanPrelude(missing, 1<<20)
-	TurnsFromFile(missing, 1<<20, nil)
+	ItemTurnsFromFile(missing, 1<<20, nil)
 
 	path := filepath.Join(dir, "session.jsonl")
 	data := []byte(
@@ -73,10 +73,10 @@ func exerciseTranscriptSurface(t testing.TB) {
 		t.Fatal(err)
 	}
 	ScanPrelude(path, 1<<20)
-	TurnsFromFile(path, 1<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+	ItemTurnsFromFile(path, 1<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "agentMessage", ID: "item", TurnID: turnID}}
 	})
-	TurnsFromFile(path, 1<<20, func(schema.Turn, string, int) []appwire.ThreadItem { return nil })
+	ItemTurnsFromFile(path, 1<<20, func(schema.Turn, string, int) []appwire.ThreadItem { return nil })
 
 	PreludeTurn(transcript.Header{})
 	_ = CompactionDescription("checkpoint")
@@ -111,16 +111,16 @@ func exerciseTranscriptSurface(t testing.TB) {
 
 	cache := NewTurnCache()
 	cache.max = 1
-	cache.TurnsFromFile(path, 1<<20, nil)
-	cache.TurnsFromFile(path, 1<<20, nil)
-	cache.TurnsFromFile(missing, 1<<20, nil)
+	cache.ItemTurnsFromFile(path, 1<<20, nil)
+	cache.ItemTurnsFromFile(path, 1<<20, nil)
+	cache.ItemTurnsFromFile(missing, 1<<20, nil)
 	second := filepath.Join(dir, "second.jsonl")
 	if err := os.WriteFile(second, []byte(`{"kind":"header","format_version":2}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cache.TurnsFromFile(second, 1<<20, nil)
+	cache.ItemTurnsFromFile(second, 1<<20, nil)
 	if err := os.Chtimes(path, time.Unix(1, 0), time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}
-	cache.TurnsFromFile(path, 1<<20, nil)
+	cache.ItemTurnsFromFile(path, 1<<20, nil)
 }

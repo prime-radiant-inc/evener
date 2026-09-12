@@ -1,0 +1,49 @@
+{
+  "case": "groq-chat-stream",
+  "ref": "groq/openai/gpt-oss-120b",
+  "stream": true,
+  "method": "POST",
+  "url": "https://api.groq.com/openai/v1/chat/completions",
+  "headers": {
+    "Authorization": "Bearer \u003ccredential\u003e",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "max_tokens": 65536,
+    "messages": [
+      {
+        "content": "You are terse.",
+        "role": "system"
+      },
+      {
+        "content": "What is the weather in Oslo?",
+        "role": "user"
+      }
+    ],
+    "model": "openai/gpt-oss-120b",
+    "reasoning_effort": "high",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tool_choice": "required",
+    "tools": [
+      {
+        "function": {
+          "description": "Current weather",
+          "name": "weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "pruned_fields": null
+}

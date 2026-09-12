@@ -15,18 +15,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/llm"
-
-	// Blank imports to register provider factories.
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/glm"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/evener/llm/providers/minimax"
-	_ "primeradiant.com/evener/llm/providers/openai"
-	_ "primeradiant.com/evener/llm/providers/openaicompat"
-	_ "primeradiant.com/evener/llm/providers/openrouter"
-	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
+	_ "primeradiant.com/evener/llm/providers/all" // register every protocol and auth scheme
+	"primeradiant.com/evener/llm/registry"
 )
 
 // providerConfig holds a test model and the env keys that gate the provider.
@@ -85,12 +75,21 @@ func skipIfNoImageProviders(t *testing.T) {
 	t.Skip("no vision-capable LLM API keys set; skipping image integration smoke test")
 }
 
+// liveClient builds the client these live tests dispatch through: the real
+// registry, so the developer's environment and user layer name the instances
+// exactly as a real run would.
+func liveClient(t *testing.T) *llm.Client {
+	t.Helper()
+	r, err := registry.Load()
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	return llm.NewClient(llm.WithRegistry(r))
+}
+
 func TestIntegration_BasicGeneration(t *testing.T) {
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	for _, p := range providers {
 		if !p.available() {
@@ -122,10 +121,7 @@ func TestIntegration_BasicGeneration(t *testing.T) {
 
 func TestIntegration_Streaming(t *testing.T) {
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	for _, p := range providers {
 		if !p.available() {
@@ -178,10 +174,7 @@ func TestIntegration_Streaming(t *testing.T) {
 
 func TestIntegration_ToolCalling(t *testing.T) {
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	for _, p := range providers {
 		if !p.available() {
@@ -225,10 +218,7 @@ func TestIntegration_ToolCalling(t *testing.T) {
 
 func TestIntegration_ImageInput(t *testing.T) {
 	skipIfNoImageProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	// Generate a 10x10 red PNG using Go's image/png encoder.
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
@@ -283,10 +273,7 @@ func TestIntegration_ImageInput(t *testing.T) {
 
 func TestIntegration_StructuredOutput(t *testing.T) {
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	schema := map[string]any{
 		"type": "object",
@@ -333,10 +320,7 @@ func TestIntegration_StructuredOutput(t *testing.T) {
 
 func TestIntegration_ErrorHandling(t *testing.T) {
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	for _, p := range providers {
 		if !p.available() {
@@ -369,10 +353,7 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 
 func TestIntegration_ImageInputURL(t *testing.T) {
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	// Small, publicly accessible PNG. Use httpbin which doesn't block API servers.
 	imageURL := "https://httpbin.org/image/png"
@@ -411,10 +392,7 @@ func TestIntegration_ImageInputURL(t *testing.T) {
 
 func TestIntegration_StreamingWithTools(t *testing.T) {
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	weatherTool := llm.Tool{
 		Definition: llm.ToolDefinition{
@@ -481,10 +459,7 @@ func TestIntegration_PromptCaching_MultiTurn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping multi-turn caching test in short mode")
 	}
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	// Use a large system prompt to make caching worthwhile.
 	systemPrompt := strings.Repeat("You are a helpful assistant. ", 200) // ~1200 words
@@ -552,10 +527,7 @@ func TestIntegration_ParallelToolCalls(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	weatherTool := llm.Tool{
 		Definition: llm.ToolDefinition{
@@ -613,10 +585,7 @@ func TestIntegration_MultiStepToolLoop(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 	skipIfNoProviders(t)
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	// A tool that returns unpredictable codes. The model cannot know the values
 	// without calling, so it must actually invoke the tool. Each call returns a
@@ -688,10 +657,7 @@ func TestIntegration_ReasoningTokens(t *testing.T) {
 	}
 	skipIfNoProviders(t)
 
-	client, err := llm.NewFromEnv()
-	if err != nil {
-		t.Fatalf("NewFromEnv: %v", err)
-	}
+	client := liveClient(t)
 
 	for _, p := range reasoningProviders {
 		if !p.available() {

@@ -1,9 +1,12 @@
 import {
+  createContext,
   Fragment,
   forwardRef,
   type KeyboardEvent,
+  memo,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -11,31 +14,26 @@ import {
   useRef,
   useState,
 } from "react";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import { Button, Chevron } from "../../../widgets";
-import { requireClass } from "../../../widgets/internal/requireClass";
-import { OpenTranscriptButton } from "../transcript/openTranscript";
-import { ActivityRowDetail } from "./ActivityRowDetail";
 import {
   type ActivityDelegate,
   type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
-} from "./activityData";
-import {
-  formatQuietAge,
-  formatUsagePair,
-  isFailedStatus,
-  jobStatusDotState,
-  quietAnchorMillis,
-} from "./activityFormat";
+} from "../../../protocol/activityData";
+import { Button, Chevron } from "../../../widgets";
+import { requireClass } from "../../../widgets/internal/requireClass";
+import { OpenTranscriptButton } from "../transcript/openTranscript";
+import { ActivityRowDetail } from "./ActivityRowDetail";
+import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import {
   type ActivityDelegateRow,
   type ActivityFoldRow,
   type ActivityJobRow,
   type ActivityRow,
+  activityDelegateState,
   buildActivityRows,
+  jobIsFailed,
 } from "./activityRows";
 
 export interface ActivityTreeProps {
@@ -45,6 +43,11 @@ export interface ActivityTreeProps {
   continuationFailures?: Record<string, string | undefined>;
   onContinue?: (targetID: string, continuation: string) => void;
   loadingContinuationID?: string;
+  // A root refresh in flight is about to replace this tree, every branch's
+  // continuation token included, so no page may be requested against it. A page
+  // already loading blocks the others the same way: the panel carries one
+  // request at a time, so only the branch that asked first can be answered.
+  rootRefreshing?: boolean;
 }
 
 export interface ActivityTreeHandle {
@@ -71,7 +74,7 @@ const CLASS = {
 };
 
 function delegateStatusText(delegate: ActivityDelegate): string {
-  return stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
+  return activityDelegateState(delegate).status;
 }
 
 function delegateName(delegate: ActivityDelegate): string {
@@ -102,11 +105,10 @@ function kindStateClass(state: string): string | undefined {
   }
 }
 
-// transcriptTarget mirrors ActivityTranscriptAction exactly: the ref is
-// trimmed and a row with no ref gets no transcript action at all (that
-// component renders null in the same situation). There is deliberately no
-// `job:<id>` fallback - the backend populates transcriptRef, and
-// ActivityTranscriptAction has no fallback either.
+// transcriptTarget mirrors OpenTranscriptButton's own gate: the ref is
+// trimmed and a row with no ref gets no transcript action at all. There is
+// deliberately no `job:<id>` fallback - the backend populates
+// transcriptRef.
 function transcriptTarget(row: ActivityJobRow | ActivityDelegateRow): string | undefined {
   const ref = row.transcriptRef?.trim();
   return ref ? ref : undefined;
@@ -126,9 +128,13 @@ function parseMillis(value: string | undefined): number | undefined {
 
 // terminalSegment renders the duration (endedAt - startedAt, quiet-age
 // bucketed) when both endpoints parse, else the status text - colored danger
-// when the status itself is the failure, so a failed row with no endedAt
+// when the outcome is failure, so a failed row with no endedAt
 // never needs a second "failed" suffix.
-function terminalSegment(job: { startedAt: string; endedAt?: string } | undefined, statusText: string): MetaSegment {
+function terminalSegment(
+  job: { startedAt: string; endedAt?: string } | undefined,
+  statusText: string,
+  failed: boolean,
+): MetaSegment {
   if (job) {
     const start = parseMillis(job.startedAt);
     const end = parseMillis(job.endedAt);
@@ -136,7 +142,7 @@ function terminalSegment(job: { startedAt: string; endedAt?: string } | undefine
       return { key: "duration", text: formatQuietAge(end - start) };
     }
   }
-  return { key: "status", text: statusText, tone: isFailedStatus(statusText) ? "failed" : undefined };
+  return { key: "status", text: statusText, tone: failed ? "failed" : undefined };
 }
 
 function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
@@ -148,7 +154,7 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
     ];
   }
   // No "failed" suffix: the colored kind glyph already carries the outcome.
-  return [terminalSegment(job, job.status)];
+  return [terminalSegment(job, job.status, jobIsFailed(job))];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
@@ -177,7 +183,11 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
     segments.push({ key: "duration", text: formatQuietAge(delegate.durationMs) });
   } else {
     segments.push(
-      terminalSegment({ startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt }, statusText),
+      terminalSegment(
+        { startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt },
+        statusText,
+        activityDelegateState(delegate).failed,
+      ),
     );
   }
   return segments;
@@ -253,8 +263,370 @@ function collectContinuations(
   return strips;
 }
 
+// TreeNowContext carries the live rows' ticking clock. TreeTickProvider is
+// the only setInterval in this file, and only context consumers (the live
+// meta cluster and live detail strips) re-render on each tick: memoized rows
+// and the tree chrome never subscribe, so a tick touches live leaves only.
+const TreeNowContext = createContext<number>(0);
+
+function TreeTickProvider({ live, children }: { live: boolean; children: ReactNode }): ReactNode {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [live]);
+  return <TreeNowContext.Provider value={now}>{children}</TreeNowContext.Provider>;
+}
+
+function RowSegments({ segments }: { segments: MetaSegment[] }): ReactNode {
+  return (
+    <span className={CLASS.denseMeta}>
+      {segments.map((segment, index) => (
+        <Fragment key={segment.key}>
+          {index > 0 ? " · " : null}
+          <span
+            className={
+              segment.tone === "failed" ? CLASS.denseFailed : segment.tone === "quiet" ? CLASS.denseQuiet : undefined
+            }
+          >
+            {segment.text}
+          </span>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
+// LiveMetaSegments is the per-row tick subscriber for live rows: it reads the
+// clock straight from context so the memoized row above it stays asleep.
+function LiveMetaSegments({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
+  const now = useContext(TreeNowContext);
+  const segments = row.kind === "job" ? jobMetaSegments(row, now) : delegateMetaSegments(row, now);
+  return <RowSegments segments={segments} />;
+}
+
+// Terminal rows never read the clock - terminalSegment derives the duration
+// from startedAt/endedAt, never from `now` - so the static cluster renders
+// once per row and holds no subscription. The 0 only fills `now`'s slot.
+const StaticMetaSegments = memo(function StaticMetaSegments({
+  row,
+}: {
+  row: ActivityJobRow | ActivityDelegateRow;
+}): ReactNode {
+  const segments = row.kind === "job" ? jobMetaSegments(row, 0) : delegateMetaSegments(row, 0);
+  return <RowSegments segments={segments} />;
+});
+
+function LiveRowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
+  const now = useContext(TreeNowContext);
+  return <ActivityRowDetail row={row} now={now} />;
+}
+
+// Static detail strips carry no running age (metaText's terminal line has no
+// clock term), so they render once with a dummy instant and never subscribe.
+const RowDetail = memo(function RowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
+  if (!row.live) return <ActivityRowDetail row={row} now={0} />;
+  return <LiveRowDetail row={row} />;
+});
+
+interface FoldRowViewProps {
+  row: ActivityFoldRow;
+  expanded: boolean;
+  tabIndex: number;
+  onToggleFold: (foldID: string) => void;
+  onFocusRow: (id: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
+  registerRowRef: (id: string, element: HTMLDivElement | null) => void;
+}
+
+// Fold rows carry no clock text, so a memoized view with no subscription
+// renders once per (row, expanded, focus) and sleeps through every tick.
+const FoldRowView = memo(function FoldRowView({
+  row,
+  expanded,
+  tabIndex,
+  onToggleFold,
+  onFocusRow,
+  onKeyDown,
+  registerRowRef,
+}: FoldRowViewProps): ReactNode {
+  const label = `${row.inactiveCount} inactive`;
+  const accessibleLabel = row.failedCount > 0 ? `${label} · ${row.failedCount} failed` : label;
+  return (
+    <div
+      ref={(element) => {
+        registerRowRef(row.id, element);
+      }}
+      role="treeitem"
+      aria-label={accessibleLabel}
+      aria-level={row.level}
+      aria-expanded={expanded}
+      tabIndex={tabIndex}
+      className={CLASS.foldRow}
+      onFocus={() => onFocusRow(row.id)}
+      onKeyDown={(event) => onKeyDown(event, row)}
+      onClick={() => onToggleFold(row.id)}
+    >
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label={`${expanded ? "Collapse" : "Expand"} inactive entries`}
+        className={CLASS.rowToggle}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleFold(row.id);
+        }}
+      >
+        <Chevron direction={expanded ? "down" : "right"} size={12} />
+      </button>
+      <span className={CLASS.denseName}>
+        {label}
+        {row.failedCount > 0 && <span className={CLASS.denseFailed}>{` · ${row.failedCount} failed`}</span>}
+      </span>
+    </div>
+  );
+});
+
+interface DenseRowViewProps {
+  row: ActivityJobRow | ActivityDelegateRow;
+  detailOpen: boolean;
+  tabIndex: number;
+  onSetDetailOpen: (row: ActivityJobRow | ActivityDelegateRow, open: boolean) => void;
+  onFocusRow: (id: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
+  registerRowRef: (id: string, element: HTMLDivElement | null) => void;
+}
+
+// The row chrome (name, glyph, transcript button, focus, disclosure) is all
+// snapshot data, so the memoized view re-renders only when its own props
+// change; the ticking pieces live one level down in LiveMetaSegments (the
+// quiet-age cluster) and RowDetail (the open strip), which subscribe alone.
+const DenseRowView = memo(function DenseRowView({
+  row,
+  detailOpen,
+  tabIndex,
+  onSetDetailOpen,
+  onFocusRow,
+  onKeyDown,
+  registerRowRef,
+}: DenseRowViewProps): ReactNode {
+  const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
+  const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
+  const target = transcriptTarget(row);
+  const statusState = jobStatusDotState(statusText, true);
+  const failed = row.kind === "job" ? jobIsFailed(row.job) : activityDelegateState(row.delegate).failed;
+  // Work that has ended says so through its outcome, the verdict the fold and
+  // the badge already count; only live work still reads its status.
+  const liveState = statusState !== "needs-you" ? "working" : statusState;
+  const kindState = failed ? "failed" : row.live ? liveState : "ended";
+  const kindClass = kindStateClass(kindState);
+  return (
+    <Fragment>
+      <div
+        ref={(element) => {
+          registerRowRef(row.id, element);
+        }}
+        role="treeitem"
+        aria-label={name}
+        aria-level={row.level}
+        aria-expanded={detailOpen}
+        tabIndex={tabIndex}
+        className={CLASS.denseRow}
+        onFocus={() => onFocusRow(row.id)}
+        onKeyDown={(event) => onKeyDown(event, row)}
+        // Clicking the title toggles the disclosure, same as the chevron;
+        // the transcript opens only from the row's open button.
+        onClick={() => onSetDetailOpen(row, !detailOpen)}
+      >
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label={`${detailOpen ? "Hide" : "Show"} details for ${name}`}
+          aria-expanded={detailOpen}
+          className={CLASS.rowToggle}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSetDetailOpen(row, !detailOpen);
+          }}
+        >
+          <Chevron direction={detailOpen ? "down" : "right"} size={12} />
+        </button>
+        <span
+          role="img"
+          aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
+          className={kindClass ? `${CLASS.denseKind} ${kindClass}` : CLASS.denseKind}
+        >
+          {row.kind === "delegate" ? "⌘" : "$"}
+        </span>
+        <span className={row.live ? `${CLASS.denseName} ${CLASS.denseNameLive}` : CLASS.denseName}>{name}</span>
+        {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} tabIndex={-1} />}
+        {row.live ? <LiveMetaSegments row={row} /> : <StaticMetaSegments row={row} />}
+      </div>
+      {detailOpen && <RowDetail row={row} />}
+    </Fragment>
+  );
+});
+
+interface ContinuationStripViewProps {
+  strip: ContinuationStrip;
+  failure: string | undefined;
+  loadingContinuationID?: string;
+  rootRefreshing?: boolean;
+  onContinue: (targetID: string, continuation: string) => void;
+}
+
+const ContinuationStripView = memo(function ContinuationStripView({
+  strip,
+  failure,
+  loadingContinuationID,
+  rootRefreshing,
+  onContinue,
+}: ContinuationStripViewProps): ReactNode {
+  return (
+    <div className={CLASS.rowActions}>
+      <span className={CLASS.rowContinuation}>
+        {failure ?? strip.branchError ?? "This branch is partially retained."}
+      </span>
+      {strip.token && (
+        <Button
+          variant="quiet"
+          size="xs"
+          tabIndex={-1}
+          disabled={rootRefreshing || loadingContinuationID !== undefined}
+          onClick={(event) => {
+            event.stopPropagation();
+            onContinue(strip.targetID, strip.token ?? "");
+          }}
+        >
+          {loadingContinuationID === strip.targetID ? "Loading…" : "Load more"}
+        </Button>
+      )}
+    </div>
+  );
+});
+
+interface RowBlockProps {
+  slice: ActivityRow[];
+  stripsByAfterRowID: Map<string, ContinuationStrip[]>;
+  expandedFolds: Set<string>;
+  effectiveFocusedID: string | null;
+  isDetailOpen: (row: ActivityJobRow | ActivityDelegateRow) => boolean;
+  onToggleFold: (foldID: string) => void;
+  onSetDetailOpen: (row: ActivityJobRow | ActivityDelegateRow, open: boolean) => void;
+  onFocusRow: (id: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
+  registerRowRef: (id: string, element: HTMLDivElement | null) => void;
+  continuationFailures: Record<string, string | undefined>;
+  loadingContinuationID?: string;
+  rootRefreshing?: boolean;
+  onContinue?: (targetID: string, continuation: string) => void;
+}
+
+// Rows arrive flat with levels; a delegate's child-session rows are the
+// contiguous deeper-level block right after it and nest one group deeper. A
+// plain (unmemoized) component: it holds no clock itself, and the tree only
+// re-renders it on real data/focus/detail changes - never on a tick.
+function RowBlock({
+  slice,
+  stripsByAfterRowID,
+  expandedFolds,
+  effectiveFocusedID,
+  isDetailOpen,
+  onToggleFold,
+  onSetDetailOpen,
+  onFocusRow,
+  onKeyDown,
+  registerRowRef,
+  continuationFailures,
+  loadingContinuationID,
+  rootRefreshing,
+  onContinue,
+}: RowBlockProps): ReactNode[] {
+  const out: ReactNode[] = [];
+  let cursor = 0;
+  while (cursor < slice.length) {
+    const row = slice[cursor];
+    if (!row) break;
+    const tabIndex = row.id === effectiveFocusedID ? 0 : -1;
+    if (row.kind === "fold") {
+      out.push(
+        <FoldRowView
+          key={row.id}
+          row={row}
+          expanded={expandedFolds.has(row.id)}
+          tabIndex={tabIndex}
+          onToggleFold={onToggleFold}
+          onFocusRow={onFocusRow}
+          onKeyDown={onKeyDown}
+          registerRowRef={registerRowRef}
+        />,
+      );
+    } else {
+      out.push(
+        <DenseRowView
+          key={row.id}
+          row={row}
+          detailOpen={isDetailOpen(row)}
+          tabIndex={tabIndex}
+          onSetDetailOpen={onSetDetailOpen}
+          onFocusRow={onFocusRow}
+          onKeyDown={onKeyDown}
+          registerRowRef={registerRowRef}
+        />,
+      );
+    }
+    for (const strip of stripsByAfterRowID.get(row.id) ?? []) {
+      out.push(
+        onContinue ? (
+          <ContinuationStripView
+            key={`${strip.targetID}-continuation`}
+            strip={strip}
+            failure={continuationFailures[strip.targetID]}
+            loadingContinuationID={loadingContinuationID}
+            rootRefreshing={rootRefreshing}
+            onContinue={onContinue}
+          />
+        ) : null,
+      );
+    }
+    let end = cursor + 1;
+    while (end < slice.length) {
+      const candidate = slice[end];
+      if (!candidate || candidate.level <= row.level) break;
+      end++;
+    }
+    if (end > cursor + 1) {
+      out.push(
+        // role="group" is the WAI-ARIA treeview pattern's nested-children container.
+        // biome-ignore lint/a11y/useSemanticElements: role="group" is deliberate tree semantics
+        <div role="group" className={CLASS.indentGuide} key={`${row.id}-group`}>
+          <RowBlock
+            slice={slice.slice(cursor + 1, end)}
+            stripsByAfterRowID={stripsByAfterRowID}
+            expandedFolds={expandedFolds}
+            effectiveFocusedID={effectiveFocusedID}
+            isDetailOpen={isDetailOpen}
+            onToggleFold={onToggleFold}
+            onSetDetailOpen={onSetDetailOpen}
+            onFocusRow={onFocusRow}
+            onKeyDown={onKeyDown}
+            registerRowRef={registerRowRef}
+            continuationFailures={continuationFailures}
+            loadingContinuationID={loadingContinuationID}
+            rootRefreshing={rootRefreshing}
+            onContinue={onContinue}
+          />
+        </div>,
+      );
+    }
+    cursor = end;
+  }
+  return out;
+}
+
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
-  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID },
+  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID, rootRefreshing },
   ref,
 ) {
   // Detail strips are per-row, not an accordion: each row carries its own
@@ -264,27 +636,27 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   // rows stay inert - they are only ever read for rows the current tree
   // actually renders.
   const [detailOverrides, setDetailOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
-  const [now, setNow] = useState(() => Date.now());
   const rows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
 
-  function isDetailOpen(row: ActivityJobRow | ActivityDelegateRow): boolean {
-    return detailOverrides.get(row.id) ?? row.defaultDetailOpen;
-  }
+  // Stable callbacks so the memoized row views below only re-render when
+  // their own row's data, disclosure, or focus actually changes.
+  const isDetailOpen = useCallback(
+    (row: ActivityJobRow | ActivityDelegateRow): boolean => detailOverrides.get(row.id) ?? row.defaultDetailOpen,
+    [detailOverrides],
+  );
 
-  function setDetailOpen(row: ActivityJobRow | ActivityDelegateRow, open: boolean): void {
+  const setDetailOpen = useCallback((row: ActivityJobRow | ActivityDelegateRow, open: boolean): void => {
     setDetailOverrides((current) => {
       const next = new Map(current);
       next.set(row.id, open);
       return next;
     });
-  }
+  }, []);
   const expandedFolds = useMemo(() => new Set(expandedFoldIDs), [expandedFoldIDs]);
+  // The ticking clock lives in TreeTickProvider below, gated on this same
+  // flag: no live rows, no interval - the old effect's contract, minus the
+  // tree-wide setNow that re-rendered every row each second.
   const hasLive = rows.some((row) => row.kind !== "fold" && row.live);
-  useEffect(() => {
-    if (!hasLive) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [hasLive]);
 
   const strips = useMemo(
     () => collectContinuations(tree, rows, continuationFailures),
@@ -329,251 +701,118 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     rowRefs.current.get(id)?.focus();
   });
 
-  function activateRow(row: ActivityRow): void {
-    if (row.kind === "fold") {
-      onToggleFold(row.id);
-      return;
-    }
-    // Row activation is the disclosure, same as the chevron: the transcript
-    // opens only from the row's own open button, never from the title.
-    setDetailOpen(row, !isDetailOpen(row));
-  }
+  // Stable identities so memoized rows only re-render when their own row's
+  // props (data, disclosure, focus) actually change - never on a tick.
+  const registerRowRef = useCallback((id: string, element: HTMLDivElement | null): void => {
+    if (element) rowRefs.current.set(id, element);
+    else rowRefs.current.delete(id);
+  }, []);
 
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>, row: ActivityRow): void {
-    const index = indexByID.get(row.id);
-    if (index === undefined) return;
-    switch (event.key) {
-      case "ArrowDown": {
-        event.preventDefault();
-        const next = rows[index + 1];
-        if (next) focusRow(next.id);
-        break;
+  const focusRowByID = useCallback((id: string): void => {
+    setFocusedID(id);
+  }, []);
+
+  const activateRow = useCallback(
+    (row: ActivityRow): void => {
+      if (row.kind === "fold") {
+        onToggleFold(row.id);
+        return;
       }
-      case "ArrowUp": {
-        event.preventDefault();
-        const previous = rows[index - 1];
-        if (previous) focusRow(previous.id);
-        break;
-      }
-      case "ArrowRight": {
-        event.preventDefault();
-        if (row.kind === "fold") {
-          if (!expandedFolds.has(row.id)) onToggleFold(row.id);
-        } else {
-          setDetailOpen(row, true);
+      // Row activation is the disclosure, same as the chevron: the transcript
+      // opens only from the row's own open button, never from the title.
+      setDetailOpen(row, !isDetailOpen(row));
+    },
+    [isDetailOpen, onToggleFold, setDetailOpen],
+  );
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow): void => {
+      const index = indexByID.get(row.id);
+      if (index === undefined) return;
+      // Alt/Ctrl/Meta mean the key belongs elsewhere: Alt+ArrowUp/Down and
+      // Alt+Home/End are the global transcript scroll/jump chords, and the
+      // dispatcher's editable test does not shield them from these row divs -
+      // a blanket preventDefault here would swallow them (roborev PR #884
+      // round 3). Shift stays: coarse-step and range conventions aside, the
+      // tree's own behavior is unchanged by it.
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      switch (event.key) {
+        case "ArrowDown": {
+          event.preventDefault();
+          const next = rows[index + 1];
+          if (next) focusRow(next.id);
+          break;
         }
-        break;
-      }
-      case "ArrowLeft": {
-        event.preventDefault();
-        if (row.kind === "fold") {
-          if (expandedFolds.has(row.id)) onToggleFold(row.id);
-        } else if (isDetailOpen(row)) {
-          setDetailOpen(row, false);
-        } else if (row.parentID && indexByID.has(row.parentID)) {
-          // parentID is the delegate ROW's id for child-session rows (Task 5
-          // contract), so it resolves through the row index directly; root
-          // rows' parentID is a session node id, which is never a row.
-          focusRow(row.parentID);
+        case "ArrowUp": {
+          event.preventDefault();
+          const previous = rows[index - 1];
+          if (previous) focusRow(previous.id);
+          break;
         }
-        break;
+        case "ArrowRight": {
+          event.preventDefault();
+          if (row.kind === "fold") {
+            if (!expandedFolds.has(row.id)) onToggleFold(row.id);
+          } else {
+            setDetailOpen(row, true);
+          }
+          break;
+        }
+        case "ArrowLeft": {
+          event.preventDefault();
+          if (row.kind === "fold") {
+            if (expandedFolds.has(row.id)) onToggleFold(row.id);
+          } else if (isDetailOpen(row)) {
+            setDetailOpen(row, false);
+          } else if (row.parentID && indexByID.has(row.parentID)) {
+            // parentID is the delegate ROW's id for child-session rows (Task 5
+            // contract), so it resolves through the row index directly; root
+            // rows' parentID is a session node id, which is never a row.
+            focusRow(row.parentID);
+          }
+          break;
+        }
+        case "Enter":
+        case " ":
+        case "Spacebar":
+        case "Space": {
+          // Enter/Space from a nested control (the chevron button, the Load
+          // more button) is that control's own activation; the row must not
+          // fire a second activation for it. Arrows, by contrast, always mean
+          // row navigation even when focus sits on a nested control (Firefox
+          // and Safari focus buttons on click).
+          if (event.target !== event.currentTarget) return;
+          event.preventDefault();
+          activateRow(row);
+          break;
+        }
+        default:
+          break;
       }
-      case "Enter":
-      case " ":
-      case "Spacebar":
-      case "Space": {
-        // Enter/Space from a nested control (the chevron button, the Load
-        // more button) is that control's own activation; the row must not
-        // fire a second activation for it. Arrows, by contrast, always mean
-        // row navigation even when focus sits on a nested control (Firefox
-        // and Safari focus buttons on click).
-        if (event.target !== event.currentTarget) return;
-        event.preventDefault();
-        activateRow(row);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  function renderSegments(segments: MetaSegment[]): ReactNode {
-    return (
-      <span className={CLASS.denseMeta}>
-        {segments.map((segment, index) => (
-          <Fragment key={segment.key}>
-            {index > 0 ? " · " : null}
-            <span
-              className={
-                segment.tone === "failed" ? CLASS.denseFailed : segment.tone === "quiet" ? CLASS.denseQuiet : undefined
-              }
-            >
-              {segment.text}
-            </span>
-          </Fragment>
-        ))}
-      </span>
-    );
-  }
-
-  function renderContinuationStrip(strip: ContinuationStrip): ReactNode {
-    if (!onContinue) return null;
-    const failure = continuationFailures[strip.targetID];
-    return (
-      <div className={CLASS.rowActions} key={`${strip.targetID}-continuation`}>
-        <span className={CLASS.rowContinuation}>
-          {failure ?? strip.branchError ?? "This branch is partially retained."}
-        </span>
-        {strip.token && (
-          <Button
-            variant="quiet"
-            size="xs"
-            tabIndex={-1}
-            disabled={loadingContinuationID === strip.targetID}
-            onClick={(event) => {
-              event.stopPropagation();
-              onContinue(strip.targetID, strip.token ?? "");
-            }}
-          >
-            {loadingContinuationID === strip.targetID ? "Loading…" : "Load more"}
-          </Button>
-        )}
-      </div>
-    );
-  }
-
-  function renderFoldRow(row: ActivityFoldRow): ReactNode {
-    const expanded = expandedFolds.has(row.id);
-    const label = `${row.inactiveCount} inactive`;
-    const accessibleLabel = row.failedCount > 0 ? `${label} · ${row.failedCount} failed` : label;
-    return (
-      <div
-        key={row.id}
-        ref={(element) => {
-          if (element) rowRefs.current.set(row.id, element);
-          else rowRefs.current.delete(row.id);
-        }}
-        role="treeitem"
-        aria-label={accessibleLabel}
-        aria-level={row.level}
-        aria-expanded={expanded}
-        tabIndex={row.id === effectiveFocusedID ? 0 : -1}
-        className={CLASS.foldRow}
-        onFocus={() => setFocusedID(row.id)}
-        onKeyDown={(event) => handleKeyDown(event, row)}
-        onClick={() => onToggleFold(row.id)}
-      >
-        <button
-          type="button"
-          tabIndex={-1}
-          aria-label={`${expanded ? "Collapse" : "Expand"} inactive entries`}
-          className={CLASS.rowToggle}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleFold(row.id);
-          }}
-        >
-          <Chevron direction={expanded ? "down" : "right"} size={12} />
-        </button>
-        <span className={CLASS.denseName}>
-          {label}
-          {row.failedCount > 0 && <span className={CLASS.denseFailed}>{` · ${row.failedCount} failed`}</span>}
-        </span>
-      </div>
-    );
-  }
-
-  function renderDenseRow(row: ActivityJobRow | ActivityDelegateRow): ReactNode {
-    const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
-    const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
-    const target = transcriptTarget(row);
-    const detailOpen = isDetailOpen(row);
-    const segments = row.kind === "job" ? jobMetaSegments(row, now) : delegateMetaSegments(row, now);
-    const kindState = jobStatusDotState(statusText, row.live ? undefined : true);
-    const kindClass = kindStateClass(kindState);
-    return (
-      <Fragment key={row.id}>
-        <div
-          ref={(element) => {
-            if (element) rowRefs.current.set(row.id, element);
-            else rowRefs.current.delete(row.id);
-          }}
-          role="treeitem"
-          aria-label={name}
-          aria-level={row.level}
-          aria-expanded={detailOpen}
-          tabIndex={row.id === effectiveFocusedID ? 0 : -1}
-          className={CLASS.denseRow}
-          onFocus={() => setFocusedID(row.id)}
-          onKeyDown={(event) => handleKeyDown(event, row)}
-          // Clicking the title toggles the disclosure, same as the chevron;
-          // the transcript opens only from the row's open button.
-          onClick={() => setDetailOpen(row, !detailOpen)}
-        >
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label={`${detailOpen ? "Hide" : "Show"} details for ${name}`}
-            aria-expanded={detailOpen}
-            className={CLASS.rowToggle}
-            onClick={(event) => {
-              event.stopPropagation();
-              setDetailOpen(row, !detailOpen);
-            }}
-          >
-            <Chevron direction={detailOpen ? "down" : "right"} size={12} />
-          </button>
-          <span
-            role="img"
-            aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
-            className={kindClass ? `${CLASS.denseKind} ${kindClass}` : CLASS.denseKind}
-          >
-            {row.kind === "delegate" ? "⌘" : "$"}
-          </span>
-          <span className={row.live ? `${CLASS.denseName} ${CLASS.denseNameLive}` : CLASS.denseName}>{name}</span>
-          {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} iconOnly tabIndex={-1} />}
-          {renderSegments(segments)}
-        </div>
-        {detailOpen && <ActivityRowDetail row={row} now={now} />}
-      </Fragment>
-    );
-  }
-
-  // Rows arrive flat with levels; a delegate's child-session rows are the
-  // contiguous deeper-level block right after it and nest one group deeper.
-  function renderRowBlock(slice: ActivityRow[]): ReactNode[] {
-    const out: ReactNode[] = [];
-    let cursor = 0;
-    while (cursor < slice.length) {
-      const row = slice[cursor];
-      if (!row) break;
-      out.push(row.kind === "fold" ? renderFoldRow(row) : renderDenseRow(row));
-      for (const strip of stripsByAfterRowID.get(row.id) ?? []) {
-        out.push(renderContinuationStrip(strip));
-      }
-      let end = cursor + 1;
-      while (end < slice.length) {
-        const candidate = slice[end];
-        if (!candidate || candidate.level <= row.level) break;
-        end++;
-      }
-      if (end > cursor + 1) {
-        out.push(
-          // role="group" is the WAI-ARIA treeview pattern's nested-children container.
-          // biome-ignore lint/a11y/useSemanticElements: role="group" is deliberate tree semantics
-          <div role="group" className={CLASS.indentGuide} key={`${row.id}-group`}>
-            {renderRowBlock(slice.slice(cursor + 1, end))}
-          </div>,
-        );
-      }
-      cursor = end;
-    }
-    return out;
-  }
+    },
+    [activateRow, expandedFolds, focusRow, indexByID, isDetailOpen, onToggleFold, rows, setDetailOpen],
+  );
 
   return (
-    <div ref={treeRef} role="tree" className={CLASS.tree}>
-      {renderRowBlock(rows)}
-    </div>
+    <TreeTickProvider live={hasLive}>
+      <div ref={treeRef} role="tree" className={CLASS.tree}>
+        <RowBlock
+          slice={rows}
+          stripsByAfterRowID={stripsByAfterRowID}
+          expandedFolds={expandedFolds}
+          effectiveFocusedID={effectiveFocusedID}
+          isDetailOpen={isDetailOpen}
+          onToggleFold={onToggleFold}
+          onSetDetailOpen={setDetailOpen}
+          onFocusRow={focusRowByID}
+          onKeyDown={handleKeyDown}
+          registerRowRef={registerRowRef}
+          continuationFailures={continuationFailures}
+          loadingContinuationID={loadingContinuationID}
+          rootRefreshing={rootRefreshing}
+          onContinue={onContinue}
+        />
+      </div>
+    </TreeTickProvider>
   );
 });

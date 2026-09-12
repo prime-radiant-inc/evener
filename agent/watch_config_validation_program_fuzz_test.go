@@ -169,9 +169,9 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 	}{
 		{watchArgs{Events: []string{"assistant.message"}}, "invalid_request: assistant.message"},
 		{watchArgs{Events: []string{"not-real"}}, "invalid_request: unknown event"},
-		{watchArgs{Every: 2}, "invalid_request: every requires exactly"},
+		{watchArgs{Every: 2}, "invalid_request: every requires events naming exactly one kind"},
 		{watchArgs{Events: []string{"*"}, Every: 2}, "invalid_request: every requires a single concrete"},
-		{watchArgs{EventFilter: &watchEventFilter{}}, "invalid_request: event_filter requires events"},
+		{watchArgs{EventFilter: &watchEventFilter{}}, "invalid_request: event_filter requires events naming assistant.tool"},
 		{watchArgs{Events: []string{"communicate"}, EventFilter: &watchEventFilter{}}, "invalid_request: event_filter matches assistant.tool events; parent"},
 		{watchArgs{Events: []string{"job.notification"}, EventFilter: &watchEventFilter{}}, "invalid_request: event_filter matches assistant.tool events; use"},
 		{watchArgs{Events: []string{"assistant.tool"}, EventFilter: &watchEventFilter{Status: "bad"}}, "invalid_request: event_filter.status"},
@@ -210,7 +210,7 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 		ReceiverSessionID:  " receiver ",
 		ReceiverDelegateID: " dlg_wcvp ",
 	}
-	cfg, err := newWatchConfig(a, frozenTestTime)
+	cfg, err := newWatchConfig(a, frozenTestTime, "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
@@ -244,7 +244,7 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 		t.Fatal("receiver identity must contribute to config hash")
 	}
 	wcvpRequireErrorPrefix(t, func() error {
-		_, err := newWatchConfig(watchArgs{Target: "job_wcvp", OutputMatch: "("}, frozenTestTime)
+		_, err := newWatchConfig(watchArgs{Target: "job_wcvp", OutputMatch: "("}, frozenTestTime, "")
 		return err
 	}(), "invalid_request: output_match")
 	receiver := watchArgs{StableReceiver: true}
@@ -594,7 +594,7 @@ func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 		t.Fatalf("live child token manager = %p, want %p", got, child)
 	}
 
-	cfg, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}, frozenTestTime)
+	cfg, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}, frozenTestTime, "")
 	if err != nil {
 		t.Fatalf("new token config: %v", err)
 	}
@@ -671,7 +671,7 @@ func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 		t.Fatalf("settlement ledger delivered=%v pending=%v", delivered, pending)
 	}
 
-	watchCfg, err := newWatchConfig(watchArgs{Target: "job_wcvp", Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: runtimeMessageAliasCaller, Message: r.text()}}, frozenTestTime)
+	watchCfg, err := newWatchConfig(watchArgs{Target: "job_wcvp", Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: runtimeMessageAliasCaller, Message: r.text()}}, frozenTestTime, "")
 	if err != nil {
 		t.Fatalf("new snapshot config: %v", err)
 	}

@@ -115,3 +115,43 @@ func TestS5Cov_SubagentNeedsCommunicateNudge(t *testing.T) {
 		t.Error("a named agent should not need the nudge")
 	}
 }
+
+// uncomparableEnv is an execution environment Go cannot compare with `==`: a
+// struct VALUE carrying a map. Nothing calls its methods; the embedded
+// interface is there to satisfy the type.
+type uncomparableEnv struct {
+	execenv.ExecutionEnvironment
+	roots map[string]string
+}
+
+// Environment ownership is decided by identity — a child settles the
+// environment it holds unless that is the very object its live parent works in
+// — so the comparison has to answer for any environment a session can run on,
+// including a double whose dynamic type `==` refuses to compare.
+func TestS5Cov_SameEnvironment(t *testing.T) {
+	first := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	second := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if !sameEnvironment(first, first) {
+		t.Error("an environment is not the same as itself")
+	}
+	if sameEnvironment(first, second) {
+		t.Error("two distinct environments compared equal")
+	}
+	if sameEnvironment(first, first.WithWorkingDirectory(t.TempDir())) {
+		t.Error("a clone compared equal to the environment it was built from")
+	}
+	if !sameEnvironment(nil, nil) {
+		t.Error("two absent environments are not the same")
+	}
+	if sameEnvironment(first, nil) || sameEnvironment(nil, first) {
+		t.Error("an environment compared equal to none at all")
+	}
+	// `==` would panic on this pair rather than answer.
+	one := uncomparableEnv{roots: map[string]string{"a": "b"}}
+	if sameEnvironment(one, one) {
+		t.Error("an environment nothing can alias compared equal")
+	}
+	if sameEnvironment(first, one) {
+		t.Error("environments of different types compared equal")
+	}
+}

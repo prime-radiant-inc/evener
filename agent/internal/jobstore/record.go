@@ -98,6 +98,14 @@ type WatchConfigSnapshot struct {
 	SourceDelegateID         string `json:"source_delegate_id,omitempty"`
 	SourceDelegateGeneration uint64 `json:"source_delegate_generation,omitempty"`
 	StableReceiver           bool   `json:"stable_receiver,omitempty"`
+	// A timer's mode and note are part of its configured identity: a one-shot
+	// and a repeating timer collapse to the same derived interval, and the note
+	// is what its fire says on arrival. These stay after the receiver fields for
+	// the same reason those stayed last — a non-timer config omits all three, so
+	// its JSON encoding, and the config hash taken over it, are unchanged.
+	AfterSeconds  int    `json:"after_seconds,omitempty"`
+	RepeatSeconds int    `json:"repeat_seconds,omitempty"`
+	Note          string `json:"note,omitempty"`
 }
 
 type WatchEventFilterSnapshot struct {
@@ -160,6 +168,13 @@ type JobRecord struct {
 	ExhaustionLimit  int     `json:"exhaustion_limit,omitempty"`
 	Description      string  `json:"description,omitempty"`
 	Command          string  `json:"command,omitempty"`
+	// Intent is the tool call's `intent` argument (the model's own one-line
+	// statement of why this command is being run), captured at launch.
+	// Distinct from Description (the shell tool's separate `description`
+	// arg): Description is a human gloss for the command; Intent is the
+	// purpose the caller stated. Both may be present, and either may be
+	// empty when the model omitted it.
+	Intent string `json:"intent,omitempty"`
 	// Background reports that a shell job is running in the background rather
 	// than being waited on inline: stamped at launch for mode:"background", and
 	// at promotion when a foreground command outlives its block timeout. No

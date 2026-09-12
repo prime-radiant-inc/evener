@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -69,6 +71,83 @@ func TestRelayedCloseFrameCarriesTheHubsCapabilitiesForTheEndedThread(t *testing
 	}
 }
 
+func TestRelayedCloseFrameOffersForkForAStoppedPersistedDescendant(t *testing.T) {
+	thread := appwire.Thread{
+		ID:        "subagent-closed",
+		SessionID: "subagent-closed",
+		Source:    "local",
+		Evener: appwire.EvenerThread{
+			Ref:  "local:subagent-closed",
+			Kind: "subagent",
+		},
+	}
+	deliveries := make(chan appsource.RelayDelivery, 1)
+	handoff := &recordingRelayHandoff{
+		committed: make(chan struct{}),
+		aborted:   make(chan struct{}),
+		onCommit: func() {
+			deliveries <- appsource.RelayDelivery{
+				Notification: appwire.Notification{
+					Method: appwire.NotifyThreadStatusChanged,
+					Params: testRawJSON(t, map[string]any{
+						"threadId":        thread.ID,
+						"ref":             thread.Evener.Ref,
+						"status":          appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+						"descendant_note": "preserve",
+					}),
+				},
+				Acknowledge: func() {},
+			}
+		},
+	}
+	client := relayedNotificationClient(t, thread, deliveries, handoff)
+	notification := <-client.Notifications()
+
+	var params struct {
+		Capabilities   appwire.ThreadCapabilities `json:"capabilities"`
+		DescendantNote string                     `json:"descendant_note"`
+	}
+	if err := json.Unmarshal(notification.Params, &params); err != nil {
+		t.Fatalf("unmarshal relayed descendant close frame: %v", err)
+	}
+	if !params.Capabilities.ForkFromTurn {
+		t.Fatalf("stopped persisted descendant close capabilities omit fork: %+v", params.Capabilities)
+	}
+	if !params.Capabilities.Send || !params.Capabilities.Compact || params.DescendantNote != "preserve" {
+		t.Fatalf("descendant close capabilities or unknown field changed: capabilities=%+v note=%q", params.Capabilities, params.DescendantNote)
+	}
+}
+
+func TestRelayedCloseFrameRechecksRecoveryLocksAfterSubscription(t *testing.T) {
+	thread := appwire.Thread{ID: "recovering", SessionID: "recovering", Source: "local", Evener: appwire.EvenerThread{Ref: "local:recovering"}}
+	deliveries := make(chan appsource.RelayDelivery, 1)
+	handoff := &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})}
+	locks := hubcore.NewResumeLocks()
+	client := relayedNotificationClient(t, thread, deliveries, handoff, func(cfg *hubcore.WebConfig) { cfg.ResumeLocks = locks })
+	// The subscription has captured an idle snapshot before recovery begins.
+	finish := locks.BeginForceStop([]string{"recovering"})
+	if err := locks.PersistForceStop([]string{"recovering"}, "recovering"); err != nil {
+		t.Fatal(err)
+	}
+	finish(false)
+	deliveries <- appsource.RelayDelivery{Notification: appwire.Notification{
+		Method: appwire.NotifyThreadStatusChanged,
+		Params: testRawJSON(t, appwire.ThreadStatusChangedParams{ThreadID: thread.ID, Ref: thread.Evener.Ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}}),
+	}, Acknowledge: func() {}}
+	select {
+	case notification := <-client.Notifications():
+		var params appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.Capabilities == nil || params.Capabilities.ForkFromTurn {
+			t.Fatalf("recovery lock re-enabled fork: %+v", params.Capabilities)
+		}
+	case <-t.Context().Done():
+		t.Fatal("no close notification after recovery began")
+	}
+}
+
 // The invariant, stated: what the close frame pushes is what the very next read
 // returns. A reload is what used to heal a session that ended mid-turn, and it
 // healed it by asking the hub — so the pushed set has to BE the hub's answer,
@@ -79,7 +158,7 @@ func TestClosedThreadCapabilitiesMatchTheReadThatWouldAnswerTheReload(t *testing
 		Meta:     schema.SessionMeta{ID: "sess_ended", Model: "claude-opus-4-5"},
 		StateDir: t.TempDir(),
 	}
-	read := requirePastEntryThread(t, hubcore.WebConfig{}, entry, false)
+	read := requirePastEntryThread(t, hubcore.WebConfig{StateDir: entry.StateDir}, entry, false)
 
 	if got := pastThreadCapabilities(); got != read.Evener.Capabilities {
 		t.Fatalf("close-frame capabilities = %+v, want the read's %+v", got, read.Evener.Capabilities)
@@ -104,7 +183,7 @@ func TestRelayedStatusFramesOtherThanCloseAreLeftToTheDaemon(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original)
+	got := stampClosedThreadCapabilities(original, true)
 
 	if string(got.Params) != string(original.Params) {
 		t.Fatalf("idle frame was rewritten to %s, want it untouched (%s)", got.Params, original.Params)
@@ -123,7 +202,7 @@ func TestNonStatusNotificationsPassTheCloseStampUntouched(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original)
+	got := stampClosedThreadCapabilities(original, true)
 
 	if string(got.Params) != string(original.Params) {
 		t.Fatalf("turn/completed was rewritten to %s, want it untouched (%s)", got.Params, original.Params)
@@ -145,7 +224,7 @@ func TestCloseStampPreservesFieldsItDoesNotUnderstand(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original)
+	got := stampClosedThreadCapabilities(original, true)
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(got.Params, &fields); err != nil {
@@ -159,6 +238,118 @@ func TestCloseStampPreservesFieldsItDoesNotUnderstand(t *testing.T) {
 	}
 }
 
+func TestHubRelayRelayKeyImageMetadata(t *testing.T) {
+	const (
+		rootRef    = "local:image-root"
+		childRef   = "local:image-child"
+		missingRef = "local:image-missing"
+	)
+	rootDir := t.TempDir()
+	childDir := t.TempDir()
+	imageBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	for path, contents := range map[string][]byte{
+		filepath.Join(rootDir, "root.png"):                    imageBytes,
+		filepath.Join(rootDir, "borrowed-only-from-root.png"): imageBytes,
+		filepath.Join(childDir, "child.png"):                  imageBytes,
+	} {
+		if err := os.WriteFile(path, contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pool := &aliasRelayPool{}
+	source := &aliasRelaySource{
+		pool: pool,
+		canonicalRefs: map[string]appwire.Ref{
+			"image-root":    {SourceID: "local", ThreadID: "image-root"},
+			"image-child":   {SourceID: "local", ThreadID: "image-root"},
+			"image-missing": {SourceID: "local", ThreadID: "image-root"},
+		},
+		threads: map[string]appwire.Thread{
+			"image-root": {
+				ID: "image-root", SessionID: "root-session", Source: "local", CWD: rootDir,
+				Evener: appwire.EvenerThread{Ref: rootRef},
+			},
+			"image-child": {
+				ID: "image-child", SessionID: "child-session", Source: "local", CWD: childDir,
+				Evener: appwire.EvenerThread{Ref: childRef},
+			},
+			"image-missing": {
+				ID: "image-missing", Source: "local",
+				Evener: appwire.EvenerThread{Ref: missingRef},
+			},
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		StateDir:     t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize client: %v", err)
+	}
+	for _, ref := range []string{rootRef, childRef, missingRef} {
+		if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+			t.Fatalf("subscribe client to %s: %v", ref, err)
+		}
+	}
+	awaitLiveHubSubscriptions(t, appServer, 3)
+
+	tests := []struct {
+		name       string
+		ref        string
+		threadID   string
+		itemID     string
+		callID     string
+		path       string
+		wantImages []appwire.OutputImage
+	}{
+		{name: "root uses root metadata", ref: rootRef, threadID: "image-root", itemID: "root-item", callID: "root-call", path: "root.png", wantImages: []appwire.OutputImage{{Source: "written-file", Path: "root.png"}}},
+		{name: "child uses child metadata", ref: childRef, threadID: "image-child", itemID: "child-item", callID: "child-call", path: "child.png", wantImages: []appwire.OutputImage{{Source: "written-file", Path: "child.png"}}},
+		{name: "missing metadata does not borrow root", ref: missingRef, threadID: "image-missing", itemID: "missing-item", callID: "missing-call", path: "borrowed-only-from-root.png"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			started := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+				"ref": tc.ref, "threadId": tc.threadID, "turnId": "turn-image",
+				"item": appwire.ThreadItem{
+					Type: "commandExecution", ID: tc.itemID, ToolName: "write_file", CallID: tc.callID,
+					ArgumentsJSON: `{"file_path":"` + tc.path + `"}`, Status: appwire.TurnStatusInProgress,
+				},
+			}).Notification
+			pool.emit(t, *started)
+			completed := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+				"ref": tc.ref, "threadId": tc.threadID, "turnId": "turn-image",
+				"item": appwire.ThreadItem{
+					Type: "commandExecution", ID: tc.itemID, ToolName: "write_file", CallID: tc.callID,
+					Output: "wrote", Status: appwire.TurnStatusCompleted,
+				},
+			}).Notification
+			pool.emit(t, *completed)
+			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+			items := aliasCompletedItemsUntilBarrier(t, client, tc.itemID)
+			if len(items) != 1 {
+				t.Fatalf("completed item broadcasts = %d, want exactly one", len(items))
+			}
+			got := items[0].OutputImages
+			if len(got) != len(tc.wantImages) {
+				t.Fatalf("OutputImages = %+v, want %+v", got, tc.wantImages)
+			}
+			for i := range got {
+				if got[i].Source != tc.wantImages[i].Source || got[i].Path != tc.wantImages[i].Path {
+					t.Fatalf("OutputImages = %+v, want %+v", got, tc.wantImages)
+				}
+			}
+		})
+	}
+}
+
 // relayedNotificationClient stands up the hub in front of a scripted local
 // relay session and subscribes to it, so a test can assert on the notification
 // a browser really receives rather than on the daemon's own bytes.
@@ -167,6 +358,7 @@ func relayedNotificationClient(
 	thread appwire.Thread,
 	deliveries chan appsource.RelayDelivery,
 	handoff *recordingRelayHandoff,
+	configure ...func(*hubcore.WebConfig),
 ) *appwire.Client {
 	t.Helper()
 	source := &relaySessionTestSource{
@@ -181,10 +373,15 @@ func relayedNotificationClient(
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
+	cfg := hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),
+		StateDir:     t.TempDir(),
 		Past:         hubcore.NewPastIndex(""),
-	}, sources)
+	}
+	for _, configureConfig := range configure {
+		configureConfig(&cfg)
+	}
+	appServer := newHubAppServer(cfg, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)

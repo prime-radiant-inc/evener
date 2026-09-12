@@ -9,12 +9,13 @@ import {
 } from "./sections";
 
 // Section inventory verified against templates/partials/settings.html:13-31
-// (16 exact) - see the wave-7 floor doc's own citation of that range - plus
-// two sections with no legacy counterpart, "about" and "mobile" (see
-// sections.ts's own doc comment).
+// (15 exact after Codex launch controls were removed) - see the wave-7
+// floor doc's own citation of that range - plus
+// four sections with no legacy counterpart, "keybindings", "about", "mobile", and
+// "agents-md" (see sections.ts's own doc comment).
 
-test("has exactly 18 sections", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(18);
+test("has exactly 19 sections", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(19);
 });
 
 test("every section id is unique", () => {
@@ -22,34 +23,41 @@ test("every section id is unique", () => {
   expect(new Set(ids).size).toBe(ids.length);
 });
 
-test("the 5 ungrouped sections are General/Theme/Transcript display/Display/Notifications, in this order, first", () => {
+test("the 6 ungrouped sections are General/Theme/Transcript display/Display/Notifications/Keybindings, in this order, first", () => {
   const ungrouped = SETTINGS_SECTIONS.filter((s) => s.cluster === undefined);
-  expect(ungrouped.map((s) => s.label)).toEqual(["General", "Theme", "Transcript display", "Display", "Notifications"]);
-  expect(SETTINGS_SECTIONS.slice(0, 5)).toEqual(ungrouped);
+  expect(ungrouped.map((s) => s.label)).toEqual([
+    "General",
+    "Theme",
+    "Transcript display",
+    "Display",
+    "Notifications",
+    "Keybindings",
+  ]);
+  expect(SETTINGS_SECTIONS.slice(0, 6)).toEqual(ungrouped);
 });
 
-test('the "Agents & models" cluster has exactly these 5 sections, in order, right after the ungrouped ones', () => {
+test('the "Agent setup" cluster has exactly these 5 sections, in order, right after the ungrouped ones', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "agents-models");
   expect(cluster.map((s) => s.label)).toEqual([
     "Providers & credentials",
     "Agents",
+    "AGENTS.md",
     "Evener launch",
-    "Codex launch",
     "In-repo config",
   ]);
-  expect(SETTINGS_SECTIONS.slice(5, 10)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(6, 11)).toEqual(cluster);
 });
 
-test('the "Extensions" cluster has exactly these 4 sections, in order, right after "Agents & models"', () => {
+test('the "Extensions" cluster has exactly these 4 sections, in order, right after "Agent setup"', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "extensions");
   expect(cluster.map((s) => s.label)).toEqual(["Marketplaces & Plugins", "Plugins", "Skills", "MCP servers"]);
-  expect(SETTINGS_SECTIONS.slice(10, 14)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(11, 15)).toEqual(cluster);
 });
 
 test('the "Daemon" cluster has exactly these 4 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "daemon");
   expect(cluster.map((s) => s.label)).toEqual(["Hub", "Mobile app", "Storage", "About"]);
-  expect(SETTINGS_SECTIONS.slice(14, 18)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(15, 19)).toEqual(cluster);
 });
 
 test('"About" is the very last section overall', () => {
@@ -61,7 +69,7 @@ test("the credentials section's id is exactly credentials (the /credentials alia
 });
 
 test("SETTINGS_CLUSTERS lists the 3 labeled clusters in nav order", () => {
-  expect(SETTINGS_CLUSTERS.map((c) => c.label)).toEqual(["Agents & models", "Extensions", "Daemon"]);
+  expect(SETTINGS_CLUSTERS.map((c) => c.label)).toEqual(["Agent setup", "Extensions", "Daemon"]);
 });
 
 test("every section's cluster field (when set) references a real cluster id", () => {

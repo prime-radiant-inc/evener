@@ -48,33 +48,6 @@ func TestCovBeginProviderOperationNoSink(t *testing.T) {
 	}
 }
 
-// TestCovValidateModelCompatibilityNilClient covers the nil-client guard
-// in ValidateModelCompatibility (client.go line 413-414).
-func TestCovValidateModelCompatibilityNilClient(t *testing.T) {
-	var c *Client
-	if err := c.ValidateModelCompatibility("any", "any"); err != nil {
-		t.Fatalf("ValidateModelCompatibility on nil client = %v, want nil", err)
-	}
-}
-
-// TestCovValidateModelCompatibilityWithValidator covers the path where
-// the adapter implements ModelCompatibilityValidator.
-func TestCovValidateModelCompatibilityWithValidator(t *testing.T) {
-	c := NewClient()
-	wantErr := errors.New("unsupported by validator")
-	validator := &modelValidatorAdapter{name: "validator", validateErr: wantErr}
-	c.Register(validator)
-	err := c.ValidateModelCompatibility("validator", "unsupported-model")
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("validation error = %v, want validator error identity", err)
-	}
-	if len(validator.validatedModels) != 1 || validator.validatedModels[0] != "unsupported-model" {
-		t.Fatalf("validated models = %q, want [unsupported-model]", validator.validatedModels)
-	}
-}
-
-// TestCovBeginAPIAttemptGroupScopeNilContext covers the nil-ctx path
-// (api_attempt_scope.go line 22-23).
 func TestCovBeginAPIAttemptGroupScopeNilContext(t *testing.T) {
 	var input context.Context
 	ctx, scope := BeginAPIAttemptGroupScope(input)
@@ -132,29 +105,6 @@ func TestCovBeginAPIAttemptGroupScopeOwnedSettleResult(t *testing.T) {
 	}
 }
 
-// modelValidatorAdapter is a fake adapter that implements
-// ModelCompatibilityValidator.
-type modelValidatorAdapter struct {
-	name            string
-	validateErr     error
-	validatedModels []string
-}
-
-func (a *modelValidatorAdapter) Name() string { return a.name }
-func (a *modelValidatorAdapter) Complete(_ context.Context, _ Request) (Response, error) {
-	return Response{}, nil
-}
-func (a *modelValidatorAdapter) Stream(_ context.Context, _ Request) (Stream, error) {
-	return nil, nil
-}
-func (a *modelValidatorAdapter) ValidateModel(model string) error {
-	a.validatedModels = append(a.validatedModels, model)
-	return a.validateErr
-}
-
-// sinkMiddleware wraps a recordingAPIAttemptSink as a Middleware so it can be
-// registered via Client.Use and discovered by beginProviderOperation as an
-// APIAttemptSink.
 type sinkMiddleware struct {
 	sink *recordingAPIAttemptSink
 }

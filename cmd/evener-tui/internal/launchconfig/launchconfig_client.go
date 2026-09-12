@@ -115,6 +115,20 @@ func CmdAuthApiKeySet(client *appwire.Client, provider, value string) tea.Cmd {
 	}
 }
 
+// CmdAuthCredentialJsonSet stores a Google credential JSON for a gcp-adc
+// instance. The hub validates the document before storing it, so its error is
+// the parse failure, and the result is the same status the API-key set
+// returns — the credential store changed either way.
+func CmdAuthCredentialJsonSet(client *appwire.Client, provider, value string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var resp appwire.AuthStatusResponse
+		err := client.Request(ctx, appwire.MethodEvenerAuthCredentialJsonSet, appwire.AuthCredentialJsonSetParams{Provider: provider, Value: value}, &resp)
+		return AuthApiKeySetResultMsg{Status: resp, Err: err}
+	}
+}
+
 func CmdAuthLogout(client *appwire.Client, provider string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

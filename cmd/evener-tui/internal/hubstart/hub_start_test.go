@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -347,7 +348,7 @@ func TestDialHubRPCReportsIncompatibleAPIForMismatchedProtocol(t *testing.T) {
 	defer srv.Close()
 	addr := HubAddress{BaseURL: srv.URL}
 
-	_, err := dialHubRPC(context.Background(), addr, srv.Client(), nil)
+	_, err := dialHubRPC(context.Background(), addr, srv.Client(), nil, nil)
 	if err == nil {
 		t.Fatal("dialHubRPC accepted a mismatched protocol version")
 	}
@@ -414,6 +415,35 @@ func TestStartHubClientWritesStartupDiagnosticsToLogFile(t *testing.T) {
 	}
 }
 
+// TestConnectionLogfAppendsToLogFile pins the appwire.Client connection-
+// lifecycle sink (issue #783): dialHubRPC wires it to connectionLogf, which
+// must land formatted lines in the TUI's own diagnostics file rather than
+// the process's stderr — a -debug TUI session has no alternate screen to
+// protect a live bubbletea render from a stray stderr write.
+func TestConnectionLogfAppendsToLogFile(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "conn.log")
+	logf := connectionLogf(logFile)
+	logf("appwire: keepalive ping failed (%s): %v; closing connection", "5s", errors.New("boom"))
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if got := string(data); !strings.Contains(got, "keepalive ping failed (5s): boom; closing connection") {
+		t.Fatalf("log=%q, want formatted keepalive line", got)
+	}
+}
+
+// TestConnectionLogfDiscardsWithoutLogFile proves the sink is a safe no-op
+// when no --log-file/EVENER_TUI_LOG_FILE was configured: with no path to
+// append to there is nothing to create, and the call must return without
+// panicking rather than falling back to stderr, matching
+// WriteStartupDiagnostic's own behavior.
+func TestConnectionLogfDiscardsWithoutLogFile(t *testing.T) {
+	logf := connectionLogf("")
+	logf("appwire: keepalive ping failed: %v", errors.New("boom"))
+}
+
 func TestStartLocalHubReportsImmediateExitOutput(t *testing.T) {
 	withLocalHubImmediateExitWindow(t, 30*time.Second)
 	t.Setenv(immediateExitHubHelperEnv, "1")
@@ -442,6 +472,15 @@ func withLocalHubImmediateExitWindow(t *testing.T, window time.Duration) {
 
 func writeExecutable(t *testing.T, path string) {
 	t.Helper()
+
+	// Hold ForkLock across the write, matching install_test.go's
+	// writeExecutable: os.WriteFile holds path open for writing, and a
+	// sibling parallel test that forks for its own os/exec in that window
+	// leaves the child holding the write fd until it execs, so a later exec
+	// of path fails with ETXTBSY (golang/go#22315). Reading the lock across
+	// the write excludes any concurrent fork.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

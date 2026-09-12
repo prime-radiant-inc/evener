@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -173,7 +174,7 @@ func TestClient_DefaultAdapterTimeout_DoesNotOverrideExplicit(t *testing.T) {
 
 // TestClient_GoogleProviderRoutes verifies that the "google" provider key routes
 // to the registered "google" adapter directly. After PRI-1880, the Gemini profile
-// id is "google" so req.Provider=="google" hits c.providers["google"] without any
+// id is "google" so req.Provider=="google" hits c.overrides["google"] without any
 // rewrite. The old gemini→google alias in normalizeProviderName is removed.
 func TestClient_GoogleProviderRoutes(t *testing.T) {
 	c := NewClient()
@@ -431,7 +432,7 @@ func (s *nonClosingStream) Close() error               { return nil }
 // away; the robustness now lives in the canonical wrapper.)
 func TestProviderStampStream_CloseWithoutDraining(t *testing.T) {
 	inner := &nonClosingStream{events: make(chan StreamEvent)}
-	ps := newProviderStampStream(inner, "ollama", "")
+	ps := newProviderStampStream(inner, "ollama")
 
 	// out is buffered at 128. Sending 129 events to the unbuffered inner channel
 	// fills the buffer and parks the pump on the 129th forward-to-out; when the
@@ -499,12 +500,19 @@ func (a *initializableFakeAdapter) Initialize(ctx context.Context) error {
 	return nil
 }
 
-type toolChoiceFakeAdapter struct {
+// blockingInitAdapter's Initialize closes started the instant it begins and
+// then blocks on release, letting a test synchronize on "initialization is
+// in progress" without sleeping.
+type blockingInitAdapter struct {
 	fakeAdapter
+	started chan struct{}
+	release chan struct{}
 }
 
-func (a *toolChoiceFakeAdapter) SupportsToolChoice(mode string) bool {
-	return mode == "auto" || mode == "required"
+func (a *blockingInitAdapter) Initialize(context.Context) error {
+	close(a.started)
+	<-a.release
+	return nil
 }
 
 func TestClient_Close_CallsClosableAdapters(t *testing.T) {
@@ -552,6 +560,48 @@ func TestClient_Register_NonInitializable_NoPanic(t *testing.T) {
 	c.Register(&fakeAdapter{name: "plain"})
 }
 
+// TestClient_Register_DispatchCannotReachAdapterBeforeInitializeReturns pins
+// the ordering Complete's dispatch depends on: an adapter is only reachable
+// by name once its Initializer has returned. A blocking Initialize proves
+// this deterministically — while Register is still inside Initialize,
+// neither Complete nor ProviderNames may see the adapter, whatever else is
+// running concurrently; once Initialize returns, both do.
+func TestClient_Register_DispatchCannotReachAdapterBeforeInitializeReturns(t *testing.T) {
+	adapter := &blockingInitAdapter{
+		name:    "blockinit",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	c := NewClient()
+
+	registerDone := make(chan struct{})
+	go func() {
+		c.Register(adapter)
+		close(registerDone)
+	}()
+
+	<-adapter.started // Initialize is running.
+
+	req := Request{Provider: "blockinit", Model: "m", Messages: []Message{User("hi")}}
+	if _, err := c.Complete(context.Background(), req); err == nil {
+		t.Fatal("Complete reached the adapter while its Initialize was still running")
+	}
+	if names := c.ProviderNames(); len(names) != 0 {
+		t.Fatalf("ProviderNames = %v while Initialize was still running, want none", names)
+	}
+
+	close(adapter.release) // let Initialize return
+	<-registerDone
+
+	resp, err := c.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete after Initialize returned: %v", err)
+	}
+	if resp.Provider != "blockinit" {
+		t.Fatalf("Complete resp.Provider = %q, want blockinit", resp.Provider)
+	}
+}
+
 // TestClient_LookupNormalizesProviderCase verifies that provider lookup
 // is case-insensitive: a CLI passing --provider OLLAMA must still hit
 // the registered "ollama" adapter. Without normalization, callers that
@@ -588,6 +638,71 @@ func TestClient_LookupNormalizesProviderCase(t *testing.T) {
 	}
 }
 
+// TestClient_HasProvider pins the case-insensitive "is this provider
+// registered" check shared by every provider-name validation that needs one
+// (--fast-cheap-model, --vision-model, and their session-side twin): a single
+// Client method rather than three identical copies of this loop.
+func TestClient_HasProvider(t *testing.T) {
+	var nilClient *Client
+	if nilClient.HasProvider("openai") {
+		t.Error("nil client should never have a provider")
+	}
+
+	c := NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	if !c.HasProvider("openai") {
+		t.Error("expected registered provider to be found")
+	}
+	// Match is case-insensitive.
+	if !c.HasProvider("OpenAI") {
+		t.Error("provider match should be case-insensitive")
+	}
+	if c.HasProvider("anthropic") {
+		t.Error("unregistered provider should not be found")
+	}
+}
+
+// TestClient_ConcurrentRegisterAndSetDefaultProviderNoRace hammers Register
+// and SetDefaultProvider against concurrent readers of the same state —
+// ProviderNames, DefaultProvider, CanServe, and Complete's dispatch — to
+// pin that a client stays safe to register providers on after it is already
+// shared across goroutines. Run with -race: overrides is a plain map, so an
+// unsynchronized Register racing a reader is a "concurrent map writes"
+// fatal unconditionally, not just a finding the race detector reports.
+func TestClient_ConcurrentRegisterAndSetDefaultProviderNoRace(t *testing.T) {
+	c := NewClient()
+
+	const n = 64
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			c.Register(&fakeAdapter{name: fmt.Sprintf("prov%d", i)})
+		})
+	}
+	for i := range n {
+		wg.Go(func() {
+			c.SetDefaultProvider(fmt.Sprintf("prov%d", i))
+		})
+	}
+	for i := range n {
+		wg.Go(func() {
+			_ = c.ProviderNames()
+			_ = c.DefaultProvider()
+			_ = c.CanServe(fmt.Sprintf("prov%d", i), "model")
+			_, _ = c.Complete(context.Background(), Request{
+				Provider: fmt.Sprintf("prov%d", i),
+				Model:    "model",
+				Messages: []Message{User("hi")},
+			})
+		})
+	}
+	wg.Wait()
+
+	if got := len(c.ProviderNames()); got != n {
+		t.Fatalf("ProviderNames() len = %d, want %d (a lost registration under concurrent writes)", got, n)
+	}
+}
+
 // TestNormalizeProviderName_GeminiNoRewrite verifies that after removing the
 // gemini→google routing alias, normalizeProviderName("gemini") returns "gemini"
 // unchanged. Routing now relies on the profile id being "google" (PRI-1880).
@@ -603,48 +718,6 @@ func TestNormalizeProviderName_GeminiNoRewrite(t *testing.T) {
 	}
 }
 
-func TestClient_SupportsToolChoice(t *testing.T) {
-	c := NewClient()
-	c.Register(&toolChoiceFakeAdapter{name: "openai"})
-
-	if !c.SupportsToolChoice("openai", "auto") {
-		t.Fatalf("expected auto to be supported")
-	}
-	if !c.SupportsToolChoice("openai", "required") {
-		t.Fatalf("expected required to be supported")
-	}
-	if c.SupportsToolChoice("openai", "named") {
-		t.Fatalf("expected named to be unsupported")
-	}
-	// Non-implementing adapter returns true by default.
-	c.Register(&fakeAdapter{name: "plain"})
-	if !c.SupportsToolChoice("plain", "auto") {
-		t.Fatalf("expected default true for non-implementing adapter")
-	}
-}
-
-// TestClient_ValidateModelCompatibility_NoOpWithoutInterface verifies that
-// ValidateModelCompatibility is a no-op (nil) for an adapter that doesn't
-// implement ModelCompatibilityValidator, and for an unknown provider name —
-// mirroring SupportsToolChoice's default-permissive dispatch shape.
-func TestClient_ValidateModelCompatibility_NoOpWithoutInterface(t *testing.T) {
-	c := NewClient()
-	c.Register(&fakeAdapter{name: "plain"})
-
-	if err := c.ValidateModelCompatibility("plain", "any-model"); err != nil {
-		t.Fatalf("ValidateModelCompatibility on non-implementing adapter = %v, want nil", err)
-	}
-	if err := c.ValidateModelCompatibility("no-such-provider", "any-model"); err != nil {
-		t.Fatalf("ValidateModelCompatibility on unknown provider = %v, want nil", err)
-	}
-}
-
-// --- Instance-name identity tests (PRI-1880) ---
-
-// instanceAdapter simulates an adapter that always hardcodes its own type
-// name ("openaicompat") into responses and errors, regardless of what instance
-// name it is registered under. The client must stamp the instance name
-// (req.Provider) over whatever the adapter returned.
 type instanceAdapter struct {
 	typeName    string // hardcoded type, e.g. "openaicompat"
 	errToReturn error  // if set, Complete returns this error and Stream emits it
@@ -686,8 +759,8 @@ func TestClient_Complete_StampsInstanceNameOnResponse(t *testing.T) {
 	c := NewClient()
 	// Register adapter under instance name "work"; it hardcodes "openaicompat".
 	adapter := &instanceAdapter{typeName: "openaicompat"}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -705,8 +778,8 @@ func TestClient_Complete_StampsInstanceNameOnError(t *testing.T) {
 	// Adapter hardcodes "openaicompat" in its error; instance name is "work".
 	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -729,8 +802,8 @@ func TestClient_Complete_PreservesEmptyProviderError(t *testing.T) {
 	c := NewClient()
 	// A ConfigurationError has Provider()==""; the client must leave it alone.
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -750,8 +823,8 @@ func TestClient_Complete_PreservesEmptyProviderError(t *testing.T) {
 func TestClient_Stream_StampsInstanceNameOnFinishResponse(t *testing.T) {
 	c := NewClient()
 	adapter := &instanceAdapter{typeName: "openaicompat"}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -779,8 +852,8 @@ func TestClient_Stream_StampsInstanceNameOnErrorEvent(t *testing.T) {
 	c := NewClient()
 	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -812,8 +885,8 @@ func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
 	c := NewClient()
 	// ConfigurationError has Provider()=="" — must not be stamped.
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
+	c.overrides["work"] = adapter
+	c.pinnedDefault = "work"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -838,127 +911,6 @@ func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
 	}
 	if llmErr.Provider() != "" {
 		t.Fatalf("stream error provider = %q, want \"\" (empty provider must not be stamped)", llmErr.Provider())
-	}
-}
-
-// --- BehaviorTag stamping via nameToTag (PRI-1880) ---
-
-func TestClient_SetNameToTag_StampsBehaviorTagOnCompleteError(t *testing.T) {
-	c := NewClient()
-	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
-	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
-	c.SetNameToTag(map[string]string{"work": "openai"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var llmErr Error
-	if !errors.As(err, &llmErr) {
-		t.Fatalf("expected llm.Error, got %T", err)
-	}
-	if llmErr.BehaviorTag() != "openai" {
-		t.Fatalf("BehaviorTag() = %q, want \"openai\"", llmErr.BehaviorTag())
-	}
-}
-
-func TestClient_SetNameToTag_StampsBehaviorTagOnStreamError(t *testing.T) {
-	c := NewClient()
-	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
-	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
-	c.providers["work"] = adapter
-	c.defaultProvider = "work"
-	c.SetNameToTag(map[string]string{"work": "openai"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
-	if err != nil {
-		t.Fatalf("Stream open: %v", err)
-	}
-	defer st.Close() //nolint:errcheck
-
-	var gotErr error
-	for ev := range st.Events() {
-		if ev.Type == StreamEventError {
-			gotErr = ev.Err
-		}
-	}
-	if gotErr == nil {
-		t.Fatal("expected StreamEventError, got none")
-	}
-	var llmErr Error
-	if !errors.As(gotErr, &llmErr) {
-		t.Fatalf("expected llm.Error, got %T", gotErr)
-	}
-	if llmErr.BehaviorTag() != "openai" {
-		t.Fatalf("stream error BehaviorTag() = %q, want \"openai\"", llmErr.BehaviorTag())
-	}
-}
-
-func TestClient_NilNameToTag_BehaviorTagEmpty(t *testing.T) {
-	// With no nameToTag set, BehaviorTag() should be empty (nil map = identity, no tag set).
-	c := NewClient()
-	adapterErr := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
-	adapter := &instanceAdapter{typeName: "openai", errToReturn: adapterErr}
-	c.providers["openai"] = adapter
-	c.defaultProvider = "openai"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := c.Complete(ctx, Request{Provider: "openai", Model: "m", Messages: []Message{User("hi")}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var llmErr Error
-	if !errors.As(err, &llmErr) {
-		t.Fatalf("expected llm.Error, got %T", err)
-	}
-	// No nameToTag: BehaviorTag() should be "" (no explicit tag stamped).
-	if llmErr.BehaviorTag() != "" {
-		t.Fatalf("BehaviorTag() = %q, want empty when no nameToTag set", llmErr.BehaviorTag())
-	}
-}
-
-// --- BehaviorTagOf public accessor (PRI-1880 phase-1b) ---
-
-// TestClient_BehaviorTagOf_WithMapping verifies that BehaviorTagOf returns the
-// mapped tag when a nameToTag entry exists.
-func TestClient_BehaviorTagOf_WithMapping(t *testing.T) {
-	c := NewClient()
-	c.SetNameToTag(map[string]string{
-		"or-work":  "openrouter",
-		"ora-work": "openrouter-anthropic",
-	})
-	if got := c.BehaviorTagOf("or-work"); got != "openrouter" {
-		t.Fatalf("BehaviorTagOf(or-work) = %q, want \"openrouter\"", got)
-	}
-	if got := c.BehaviorTagOf("ora-work"); got != "openrouter-anthropic" {
-		t.Fatalf("BehaviorTagOf(ora-work) = %q, want \"openrouter-anthropic\"", got)
-	}
-}
-
-// TestClient_BehaviorTagOf_IdentityFallback verifies that BehaviorTagOf returns
-// the name itself when no mapping exists (identity fallback).
-func TestClient_BehaviorTagOf_IdentityFallback(t *testing.T) {
-	c := NewClient()
-	c.SetNameToTag(map[string]string{"or-work": "openrouter"})
-	if got := c.BehaviorTagOf("unknown"); got != "unknown" {
-		t.Fatalf("BehaviorTagOf(unknown) = %q, want \"unknown\" (identity fallback)", got)
-	}
-}
-
-// TestClient_BehaviorTagOf_NilMap verifies that BehaviorTagOf returns the name
-// itself when nameToTag is nil (env path / no config).
-func TestClient_BehaviorTagOf_NilMap(t *testing.T) {
-	c := NewClient()
-	// no SetNameToTag call → nameToTag is nil
-	if got := c.BehaviorTagOf("openrouter"); got != "openrouter" {
-		t.Fatalf("BehaviorTagOf(openrouter) nil map = %q, want \"openrouter\"", got)
 	}
 }
 

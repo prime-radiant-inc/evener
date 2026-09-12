@@ -58,7 +58,9 @@ func markAPILogErrorObserved(err error) error {
 }
 
 // APILogger persists canonical transport attempts and logical-call settlements.
-// NewAPILogger writes one file; NewSessionAPILogger routes by session id.
+// NewAPILogger writes one file; NewSessionAPILogger routes by session id;
+// NewSessionOwnershipAPILogger holds each session's ownership target without
+// durably recording.
 type APILogger struct {
 	file *os.File
 	mu   sync.Mutex
@@ -72,6 +74,11 @@ type APILogger struct {
 	sessionsDir   string
 	sessionFiles  map[string]*os.File
 	quarantineErr error
+	// discardRecords is the ownership-only mode: appends admitted through the
+	// sink are dropped instead of persisted. The middleware, group binding, and
+	// per-session locks all keep working, so attempt identity and turn protocol
+	// stamping are unaffected — only the durable record is gone.
+	discardRecords bool
 }
 
 // NewAPILogger opens one private canonical API-log file for durable appends.
@@ -89,13 +96,28 @@ func NewAPILogger(path string) (*APILogger, error) {
 // NewSessionAPILogger routes private canonical API-log appends by session ID
 // beneath the state's sessions directory.
 func NewSessionAPILogger(stateDir string) (*APILogger, error) {
+	return newSessionAPILogger(stateDir, false)
+}
+
+// NewSessionOwnershipAPILogger acquires the same per-session API-log targets
+// NewSessionAPILogger routes — creating and privately locking each session's
+// file so ReserveSession/ReleaseSession ownership behaves identically — but
+// discards durable appends. This is the attach mode for sessions that did not
+// opt into API-request logging: the ownership file stays empty instead of
+// persisting every provider request and response body.
+func NewSessionOwnershipAPILogger(stateDir string) (*APILogger, error) {
+	return newSessionAPILogger(stateDir, true)
+}
+
+func newSessionAPILogger(stateDir string, discardRecords bool) (*APILogger, error) {
 	sessionsDir := filepath.Join(stateDir, "sessions")
 	if err := ensurePrivateAPILogDirectory(sessionsDir); err != nil {
 		return nil, err
 	}
 	return &APILogger{
-		sessionsDir:  sessionsDir,
-		sessionFiles: map[string]*os.File{},
+		sessionsDir:    sessionsDir,
+		sessionFiles:   map[string]*os.File{},
+		discardRecords: discardRecords,
 	}, nil
 }
 
@@ -123,7 +145,20 @@ func (l *APILogger) sessionFileWithError(sessionID string) (*os.File, error) {
 	}
 	f, err := apiLogOpenFile(filepath.Join(l.sessionsDir, base+".api.jsonl"))
 	if err != nil {
-		l.sessionFiles[base] = nil
+		if !errors.Is(err, ErrAPILogTargetLocked) {
+			// Cache the failure so repeated appends to the same base don't
+			// keep retrying a failure that won't clear itself on its own,
+			// e.g. a permissions error or a corrupt target (see
+			// TestSessionFileWithErrorNilCache). A locked target is
+			// different: the contender holding the flock can release it at
+			// any moment (issue #744 — a hub-spawned daemon or another
+			// evener process against the same project state dir), so don't
+			// latch that failure. Leave the cache miss in place and let the
+			// next append retry the open — deliberately, since a retry
+			// costs one flock syscall and this is best-effort forensic
+			// logging, not a hot path.
+			l.sessionFiles[base] = nil
+		}
 		return nil, err
 	}
 	l.sessionFiles[base] = f
@@ -371,6 +406,12 @@ func (l *APILogger) observeClosedAppend(ctx context.Context, failure APILogFailu
 }
 
 func (l *APILogger) appendCanonicalRecord(ctx context.Context, record apilog.APILogRecord, failure APILogFailure) error {
+	if l.discardRecords {
+		// Ownership-only mode: nothing reaches storage, so nothing is admitted,
+		// opened, or written. Returning before admission keeps Close/Release
+		// waits trivially satisfied.
+		return nil
+	}
 	if err := l.admitCanonicalAppend(); err != nil {
 		return err
 	}

@@ -64,6 +64,18 @@ export function formatElapsed(ms: number): string {
   return `${hours}h${String(totalMinutes % 60).padStart(2, "0")}m`;
 }
 
+// Split a markdown mandate into the first paragraph (visible) and the rest
+// (behind a disclosure). Shared by ActivityRowDetail and DelegateStatusBody
+// so the paragraph-split rule lives in one place.
+export function splitMandate(task: string | undefined): { first: string; rest: string } | undefined {
+  if (!task || task.trim() === "") return undefined;
+  const paragraphs = task.split(/\n\s*\n/);
+  return {
+    first: paragraphs[0] ?? "",
+    rest: paragraphs.slice(1).join("\n\n"),
+  };
+}
+
 // Returns the first substantive markdown line as plain text.
 export function plainQuoteLine(text: string): string {
   for (const raw of text.split("\n")) {

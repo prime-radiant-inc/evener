@@ -32,7 +32,7 @@
 //    not an out-of-band "a loadOlder call is in flight" flag: a live append
 //    can land while a loadOlder request is still in flight, and diffing the
 //    data's own shape stays correct regardless of that interleaving.
-import { type RefObject, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ThreadModel, TurnModel } from "../../../../protocol/model";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
@@ -56,6 +56,31 @@ export interface UseTranscriptScrollOptions {
   renderedRowCount?: number;
   /** Source turn id to active transformed-row index. */
   sourceTurnRowIndexes?: ReadonlyMap<string, number>;
+  /**
+   * The session pane's pending-questions dock is a virtual row
+   * (TranscriptBody's trailingRow), and an in-progress ask_user item
+   * COMPLETING activates it without any turn/item shape change - neither
+   * itemCount nor firstTurnId nor failedTurns moves, so the content-changed
+   * effect never fires for it. This option carries the dock's own pending
+   * signal (askDockStore via Session.tsx's useAskDockPending) so the hook
+   * can treat its rising edge as new content: a reader who is not at the
+   * bottom gets the new-content pill (needs-you styling comes free -
+   * isAttentionWorthy reads the wire's askPending), and jumpToBottom lands
+   * on the dock row because renderedRowCount counts it (same PR's count
+   * fix). A reader at the bottom gets nothing: the end-anchored list
+   * already followed the appended row into view.
+   */
+  askDockPending?: boolean;
+  /**
+   * The dock pending set's activation counter (askDockStore's
+   * activationEpoch). The pill edge keys on THIS, not the boolean: a
+   * snapshot resync can atomically replace the pending set (old batch
+   * answered elsewhere, new one pending) without the boolean ever leaving
+   * true, and that replacement is exactly the moment a scrolled-away reader
+   * most needs the pill. Same-set additions don't bump it - the reader was
+   * already told.
+   */
+  askDockActivationEpoch?: number;
 }
 
 export interface ViewAnchorPosition {
@@ -70,6 +95,9 @@ export interface ViewAnchorPosition {
   height?: number;
   /** User/agent content survives every focused representation. */
   isMessage: boolean;
+  /** For a folded tool run (toolRuns.ts): the entry ids it stands in for. A
+   * capture on any of them resolves to this anchor. */
+  members?: readonly string[];
 }
 
 export interface ViewAnchor {
@@ -94,12 +122,36 @@ export function captureTopAnchor(position: ViewAnchorPosition): ViewAnchor {
   };
 }
 
+// The rendered position that stands for a captured anchor's source item. One
+// source item wears a different id per view - intent:<id> in Intent, <id> in
+// Tools/Full, tools:<id>:… for a summary, run:<id> once it folds - so after
+// the literal id, match the source identity (sourceIdentity strips the view
+// prefixes) with the source index agreeing where the capture carries one,
+// then a folded run whose members carry the item (roborev on PR #947).
+function positionForAnchor(
+  anchor: { id: string; sourceIndex?: number },
+  positions: readonly ViewAnchorPosition[],
+): ViewAnchorPosition | undefined {
+  const exact = positions.find((position) => position.id === anchor.id);
+  if (exact) return exact;
+  const identity = sourceIdentity(anchor.id);
+  const sameSource = positions.find(
+    (position) =>
+      sourceIdentity(position.id) === identity &&
+      (anchor.sourceIndex === undefined || position.sourceIndex === anchor.sourceIndex),
+  );
+  if (sameSource) return sameSource;
+  return positions.find((position) =>
+    position.members?.some((member) => member === anchor.id || sourceIdentity(member) === identity),
+  );
+}
+
 export function restoreTopAnchor(
   anchor: ViewAnchor,
   positions: readonly ViewAnchorPosition[],
 ): RestoredViewAnchor | undefined {
-  const exact = positions.find((position) => position.id === anchor.id);
-  if (exact) return { id: exact.id, index: exact.index, offset: anchor.offset };
+  const same = positionForAnchor(anchor, positions);
+  if (same) return { id: same.id, index: same.index, offset: anchor.offset };
 
   const nearest = positions
     .filter((position) => position.isMessage)
@@ -117,6 +169,7 @@ function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
   return Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).map((row, renderedIndex) => {
     const rect = row.getBoundingClientRect();
     const sourceIndex = Number(row.dataset.viewAnchorSourceIndex ?? renderedIndex);
+    const members = row.dataset.viewAnchorMembers;
     return {
       id: row.dataset.viewAnchorId ?? "",
       sourceIndex,
@@ -124,6 +177,7 @@ function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
       offset: rect.top - viewportTop,
       height: rect.height,
       isMessage: row.dataset.viewAnchorMessage === "true",
+      ...(members ? { members: members.split(",") } : {}),
     };
   });
 }
@@ -152,6 +206,10 @@ const capturedFocusMetadata = new WeakMap<CapturedTranscriptView, CapturedFocusM
 
 function sourceIdentity(id: string): string {
   if (id.startsWith("intent:")) return id.slice("intent:".length);
+  // A folded tool run's anchor is its first entry's id under the run prefix
+  // (toolRuns.ts): a focus captured on that entry before the turn settled
+  // still resolves to the run it folded into.
+  if (id.startsWith("run:")) return id.slice("run:".length);
   if (id.startsWith("tools:")) return id.slice("tools:".length).split(":")[0] ?? id;
   return id;
 }
@@ -235,33 +293,55 @@ function anchorFromCapture(
 ): ViewAnchor | undefined {
   const metadata = capturedAnchorMetadata.get(captured);
   if (metadata) return metadata;
-  const source = candidates.find((candidate) => candidate.id === captured.anchorId);
+  if (captured.anchorId === undefined) return undefined;
+  const source = positionForAnchor({ id: captured.anchorId }, candidates);
   if (!source) return undefined;
   return captureTopAnchor({ ...source, offset: captured.anchorOffset });
 }
 
+// A folded run's anchor answers for every entry it folded (its members): a
+// focus captured on the third call of a run that has since folded restores to
+// the run - its summary when closed, the row itself when open.
+function membersMatch(members: readonly string[] | undefined, metadata: CapturedFocusMetadata): boolean {
+  return (
+    members?.some((member) => member === metadata.anchorId || sourceIdentity(member) === metadata.sourceIdentity) ??
+    false
+  );
+}
+
 function focusCandidateMatches(candidate: ViewAnchorPosition, metadata: CapturedFocusMetadata): boolean {
   if (candidate.id === metadata.anchorId) return true;
+  if (membersMatch(candidate.members, metadata)) return true;
   if (sourceIdentity(candidate.id) !== metadata.sourceIdentity) return false;
   return metadata.sourceIndex === undefined || candidate.sourceIndex === metadata.sourceIndex;
 }
 
 function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadata): boolean {
   if (candidate.dataset.viewAnchorId === metadata.anchorId) return true;
+  if (membersMatch(candidate.dataset.viewAnchorMembers?.split(","), metadata)) return true;
   if (sourceIdentity(candidate.dataset.viewAnchorId ?? "") !== metadata.sourceIdentity) return false;
   const sourceIndex = sourceIndexFromDataset(candidate);
   return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
 }
 
-function closedIntentSummary(anchor: HTMLElement): HTMLElement | undefined {
-  if (!anchor.dataset.viewAnchorId?.startsWith("intent:")) return undefined;
-  const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
-  const summary = details?.querySelector(":scope > summary");
+// A closed disclosure that owns the anchor: an intent-group entry's anchor
+// sits INSIDE its <details>, a folded tool run's anchor wraps its own
+// <details> (TurnBlock's runAnchorFor), so the two are looked up from
+// opposite directions. Either way the summary is the thing to focus.
+function closedGroupSummary(anchor: HTMLElement): HTMLElement | undefined {
+  const id = anchor.dataset.viewAnchorId ?? "";
+  let summary: Element | null | undefined;
+  if (id.startsWith("intent:")) {
+    const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
+    summary = details?.querySelector(":scope > summary");
+  } else if (id.startsWith("run:")) {
+    summary = anchor.querySelector(':scope > details[data-testid="tool-run"]:not([open]) > summary');
+  }
   return summary instanceof HTMLElement ? summary : undefined;
 }
 
 function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): boolean {
-  const summary = closedIntentSummary(anchor);
+  const summary = closedGroupSummary(anchor);
   if (summary) {
     summary.focus();
     if (summary.ownerDocument.activeElement === summary) return true;
@@ -464,10 +544,18 @@ export function useTranscriptViewRegistration(
 export interface UseTranscriptScrollResult {
   /** Items rendered since the reader last was at (or returned to) the bottom. */
   pillCount: number;
+  /** True whenever the jump-to-latest pill should be on offer: the reader is
+   * away from the bottom (even with nothing new - the pill is a scroll-
+   * position affordance first, per docs/web-ui/decisions.md's "a
+   * jump-to-latest pill when scrolled up"), OR unseen items/failures are
+   * pending. Sourced from real DOM geometry in the scroll listener, so a
+   * jump that lands short leaves it true instead of stranding the reader. */
+  pillVisible: boolean;
   /** True while the pill is showing AND the thread is currently attention-worthy
    * (askPending, or a status the pane's own Cadence mapping treats as needs-you) -
    * recomputed live every render, so a later status flip upgrades the pill
-   * in place even if it lands after the content that produced it. */
+   * in place even if it lands after the reader scrolled away or after the
+   * content that produced it. */
   pillNeedsYou: boolean;
   /** True while a failed turn the reader hasn't seen yet is anchored (see
    * "the error anchor" below) - outranks pillNeedsYou per the pinned
@@ -481,11 +569,21 @@ export interface UseTranscriptScrollResult {
    * anchor (if active) is above the current viewport, "down" otherwise
    * (normal case: new content below, or no error anchor). */
   pillArrowDirection: "up" | "down";
-  /** Scrolls to the last turn and clears the pill - unless an error anchor
-   * is active, in which case it jumps to THAT turn's index instead (see
-   * "the error anchor" below). Also the target for a manual click on
-   * NewContentPill. */
+  /** Scrolls to the last turn and clears the pill's count/error state -
+   * unless an error anchor is active, in which case it jumps to THAT turn's
+   * index instead (see "the error anchor" below). The pill's VISIBILITY is
+   * not cleared by the click itself: it stays on offer until the landing's
+   * scroll event (or an at-bottom measurement at click time) confirms
+   * arrival. Also the target for a manual click on NewContentPill. */
   jumpToBottom: () => void;
+  /** Announce that the READER is moving the transcript right now, for scroll
+   * actions this hook cannot observe from the scroll port: the transcript's
+   * keyboard chords are dispatched from `window` and write `scrollTop`
+   * directly (useTranscriptScrollKeys), so no port listener ever sees them.
+   * Call it immediately BEFORE the scroll write. The bottom-hold correction
+   * refuses to re-pin while a gesture is pending in the same frame - see the
+   * scroll listener. Stable identity; safe to call from a long-lived handler. */
+  markGesture: () => void;
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
   /** Finish a pending restore after VirtualList reports new measurements. */
@@ -499,7 +597,7 @@ function totalItemCount(model: ThreadModel | undefined): number {
   return total;
 }
 
-// Mirrors Session.tsx's own cadenceStateForStatus mapping (awaiting/warning
+// Mirrors Session.tsx's own cadenceStateForStatus mapping (awaiting/warning/restartRequired
 // -> needs-you) rather than importing it: flow/ is composed BY Session.tsx,
 // not the other way around (same "deliberately separate, parallel small
 // mapping function" precedent Session.tsx itself follows relative to
@@ -507,7 +605,12 @@ function totalItemCount(model: ThreadModel | undefined): number {
 // is checked independently since it need not always coincide with status.type.
 function isAttentionWorthy(model: ThreadModel | undefined): boolean {
   if (!model) return false;
-  return model.askPending || model.status.type === "awaiting" || model.status.type === "warning";
+  return (
+    model.askPending ||
+    model.status.type === "awaiting" ||
+    model.status.type === "warning" ||
+    model.status.type === "restartRequired"
+  );
 }
 
 // The error-anchor's failure signal is TURN-level (this rewrite's own
@@ -542,6 +645,110 @@ function failedTurnCount(model: ThreadModel | undefined): number {
   return n;
 }
 
+/**
+ * The scrollTop change a vertical input asks for: 1 toward the bottom, -1 toward
+ * the top. A wheel with positive deltaY and a finger moving UP both push content
+ * down, so both are 1.
+ */
+type ScrollDirection = 1 | -1;
+
+/** PointerEvent.buttons bits. A drag is only ever begun for these two. */
+const PRIMARY_BUTTON_BIT = 1;
+const MIDDLE_BUTTON_BIT = 4;
+const DRAG_BUTTON_BITS = PRIMARY_BUTTON_BIT | MIDDLE_BUTTON_BIT;
+
+/**
+ * Can the PORT still move that way? Uses the same at-bottom band the rest of the
+ * hook decides by, so this agrees with what wasAtBottom will say. The band's
+ * error here is safe: a port within the band of its bottom reads as "cannot
+ * move", so a downward input goes unmarked.
+ */
+function portCanScroll(metrics: ScrollMetrics, direction: ScrollDirection): boolean {
+  if (direction === -1) return metrics.scrollTop > 0;
+  return !isAtBottom(metrics);
+}
+
+/**
+ * Has this element any room left that way, EXACTLY - no tolerance band.
+ *
+ * The band's error inverts for a nested candidate: a scroller three pixels from
+ * its own bottom would read as "at its limit", the walk below would let the
+ * input through, the port would mark - and then that scroller would eat the
+ * wheel and the port would never move. That is precisely the false veto this
+ * predicate must never produce, so the nested question is asked exactly.
+ */
+function hasRoomToScroll(el: Element, direction: ScrollDirection): boolean {
+  if (direction === -1) return el.scrollTop > 0;
+  return el.scrollHeight - el.scrollTop - el.clientHeight > 0;
+}
+
+/** An element that scrolls vertically on its own, independently of the port. */
+function isIndependentVerticalScroller(el: Element): boolean {
+  if (el.scrollHeight <= el.clientHeight) return false;
+  const overflowY = getComputedStyle(el).overflowY;
+  return overflowY === "auto" || overflowY === "scroll";
+}
+
+/**
+ * Can a vertical input landing on `target` actually move `port`? Two ways it
+ * cannot:
+ *
+ * The port's own geometry arrives as `portMetrics` rather than being read off
+ * the element: the at-bottom decision goes through this hook's injectable
+ * measurement seam everywhere else, for the reason scrollMetrics.ts states (a
+ * jsdom element's layout is all zeroes, so a helper that takes the element
+ * cannot be tested honestly). The nested walk below has no such seam and reads
+ * the DOM directly - there is nothing it could be measured through, and its
+ * answer is about elements this hook never otherwise looks at.
+ *
+ *   the port is already at that limit; or
+ *   something between the target and the port is an independent vertical
+ *   scroller with room left in that direction, so IT answers the input and the
+ *   event merely bubbles past (the sandbox-escalation panel is overflow-y:auto
+ *   inside the transcript).
+ *
+ * Both are read from state that exists BEFORE the browser scrolls, which is a
+ * plain read of the present - not the after-the-fact geometry inference this
+ * design replaced. A nested scroller with NO room that way passes the input on,
+ * so that case still counts as a gesture.
+ *
+ * Marking therefore implies the port has room beyond the at-bottom band AND
+ * nothing on the way to it has any room to answer the input first - so a mark
+ * is a scroll the port will really feel, and being wrong costs an unmarked real
+ * scroll rather than a false veto. That matters because a false veto disarms the
+ * bottom-hold correction until the reader returns to the bottom, where an
+ * unmarked scroll costs a single frame.
+ *
+ * A nested scroller with LESS room than the input's delta does not split it:
+ * Chrome scrolls that element to its own limit and keeps the remainder, chaining
+ * to the port only on a LATER event, which then finds no room here and marks.
+ * Measured in the browser guards' own headless Chrome 153.0.8010.36 - a 120px
+ * wheel over a scroller with 3px left moved the scroller 3px and the port not at
+ * all - so "has any room" is the right question to ask, not "has room enough".
+ * Latching is browser-defined; an engine that split the delta instead would make
+ * this under-mark, which is the safe direction.
+ *
+ * The one band left: an ancestor with overscroll-behavior other than `auto`
+ * refuses to chain the input onward when it reaches its own limit, so it can
+ * swallow an input this says will reach the port. Not modelled - computing it
+ * would mean reading a second property per ancestor for a case the transcript
+ * does not currently build.
+ */
+function verticalInputCanMovePort(
+  port: HTMLElement,
+  portMetrics: ScrollMetrics,
+  target: EventTarget | null,
+  direction: ScrollDirection,
+): boolean {
+  if (!portCanScroll(portMetrics, direction)) return false;
+  let node = target instanceof Element ? target : null;
+  while (node !== null && node !== port) {
+    if (isIndependentVerticalScroller(node) && hasRoomToScroll(node, direction)) return false;
+    node = node.parentElement;
+  }
+  return true;
+}
+
 export function useTranscriptScroll({
   ref,
   model,
@@ -553,6 +760,8 @@ export function useTranscriptScroll({
   anchorEntries,
   renderedRowCount: renderedRowCountInput,
   sourceTurnRowIndexes,
+  askDockPending = false,
+  askDockActivationEpoch = 0,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -566,8 +775,247 @@ export function useTranscriptScroll({
   // scroll position changes (in handleScroll), so it's always in sync with
   // the current viewport state.
   const [pillArrowDirection, setPillArrowDirection] = useState<"up" | "down">("down");
+  // "The reader is away from the bottom" as RENDER state (wasAtBottomRef is
+  // the same fact as a ref, for the long-lived scroll closure). This is what
+  // lets the pill be a scroll-position affordance - visible whenever the
+  // reader has scrolled back, even with zero new items - rather than only a
+  // new-content counter. Updated everywhere wasAtBottomRef is written:
+  // handleScroll (the common path), the one-time mount init, and the per-ref
+  // reset. jumpToBottom SETS it in the error-anchor branch (the landing is
+  // deliberately not the bottom) and, in the bottom-seeking branch, clears
+  // it ONLY from a measurement that already reads at-bottom (where no scroll
+  // - and so no landing event - will happen); otherwise the scroll triggered
+  // by the jump fires handleScroll on landing, which clears it only once the
+  // reader has ACTUALLY arrived - so a jump that lands short leaves the pill
+  // on offer instead of vanishing into a stranded mid-transcript position.
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const wasAtBottomRef = useRef(true);
+  // Reader-gesture state for the bottom-hold correction (see the scroll
+  // listener). Hook-level rather than effect-local so markGesture can be handed
+  // out with a stable identity.
+  //
+  // A marker vetoes the event its own gesture caused, and nothing else. A
+  // session switch cannot be that event: the first scroll a newly-opened session
+  // gets is its own mount scroll-to-end, which no gesture aimed at the previous
+  // transcript is responsible for, and which is the landing this correction
+  // exists to get right. So the per-ref reset below clears them all - the three
+  // pieces of state and the pending clearing frame's handle, whose null is what
+  // lets the new session's first gesture schedule a frame of its own - alongside
+  // every other piece of per-session state.
+  const gesturePendingRef = useRef(false);
+  const gestureClearFrameRef = useRef<number | null>(null);
+  const pointerDraggingRef = useRef(false);
+  const middleButtonHeldRef = useRef(false);
+  const lastTouchYRef = useRef<number | null>(null);
+  // The geometry the previous measurement saw. Read only to classify the NEXT
+  // scroll event (see handleScroll). Deliberately NOT reset alongside the other
+  // per-ref state below: the mount block reseeds it from a fresh measurement in
+  // the same effect pass, before the scroll listener is attached, so no handler
+  // can ever read the previous session's geometry.
+  const lastScrollGeometryRef = useRef<ScrollMetrics>({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 });
+  // Announce that the reader is moving the transcript right now. Cleared on the
+  // next animation frame, which is exactly "this frame": a frame's scroll steps
+  // run BEFORE its requestAnimationFrame callbacks, so every scroll event the
+  // gesture can be responsible for is delivered while the flag is up, and none
+  // of the next frame's corrections see it.
+  //
+  // That frame may never arrive - requestAnimationFrame does not run while the
+  // tab is hidden, and the first frame after it becomes visible again can be
+  // arbitrarily far away - so the scroll listener also CONSUMES the flag on the
+  // event it explains, and the document going hidden clears it outright. Between
+  // the three, a gesture vetoes the event it caused and nothing later.
+  //
+  // Over-marking is the dangerous direction, not under-marking. A veto falls
+  // through to the ordinary path below, which records the reader as away from
+  // the bottom, so the at-bottom clause fails for every later correction until
+  // the reader actually returns to the bottom: one false veto reinstates the
+  // mount strand permanently, rather than costing a single frame.
+  const markGesture = useCallback(() => {
+    gesturePendingRef.current = true;
+    if (gestureClearFrameRef.current !== null) return;
+    gestureClearFrameRef.current = requestAnimationFrame(() => {
+      gestureClearFrameRef.current = null;
+      gesturePendingRef.current = false;
+    });
+  }, []);
+  // How exact each marker is, since over-marking is the harmful direction:
+  //
+  //   scroll chords - EXACT. useTranscriptScrollKeys writes the offset itself
+  //     and marks only when the write moved it (its scrollPortBy).
+  //   wheel         - a sideways wheel scrolls nothing here and never marks,
+  //     whether it says so with a zero deltaY or with shiftKey; nor does a zoom
+  //     gesture (ctrl-wheel) or one a descendant has already claimed via
+  //     preventDefault. A vertical one marks only when
+  //     verticalInputCanMovePort says it can reach and move the port: not into a
+  //     limit the port is already at, and not when a nested scroller will answer
+  //     it instead.
+  //   touch         - the same predicate, on real vertical movement only, so a
+  //     sideways swipe and a swipe a nested scroller answers are both ignored.
+  //   pointer drag  - the LEAST exact, and deliberately kept: a selection drag
+  //     that moves without scrolling marks a gesture, which no handler can tell
+  //     from a scrollbar drag that does scroll. The PRIMARY button marks only
+  //     while the pointer moves, so a held one is never a standing veto; a held
+  //     MIDDLE button is an autoscroll in progress and vetoes for as long as it
+  //     is down, stationary pointer included. Ruled out are a finger (it has the
+  //     touch path, which is more exact), a secondary button, a drag that is
+  //     over (no button held), and one that has left the port.
+  const startPointerDrag = useCallback((event: PointerEvent) => {
+    // A finger produces BOTH event streams. The touch path knows about
+    // direction and nested scrollers; adopting the same finger here as a drag
+    // would mark every sideways swipe and undo that exactness.
+    //
+    // The primary button drags a scrollbar or a selection; the middle button is
+    // native autoscroll, which scrolls the port continuously for as long as it
+    // is held - so leaving it out costs a re-pin on every correction that lands
+    // while it is moving, not a single frame. The secondary button opens a menu
+    // and never scrolls. Where the middle button does nothing at all, this marks
+    // a drag that moves nothing: the same trade the path already makes for a
+    // selection drag.
+    //
+    // The two buttons are tracked differently, because their held states mean
+    // opposite things.
+    //
+    // A mark comes from pointermove and lasts one frame, which is the whole
+    // story for the PRIMARY button: a selection drag holds it for as long as the
+    // reader is choosing text and scrolls nothing while they pause, so a held
+    // primary button must never be a standing veto - that is the permanent false
+    // veto this design treats as the harmful direction.
+    //
+    // A held MIDDLE button is the opposite: native autoscroll scrolls the port
+    // continuously while the pointer sits still, producing a stream of scroll
+    // events with no pointermove to mark any of them. So it is tracked as a
+    // state rather than an event, and the scroll listener reads it. Being a
+    // state, it is bounded by its clears rather than by any clock: the button
+    // coming up, a move without it, the pointer leaving the port, the pane
+    // switching session, and focus or visibility going away.
+    //
+    // Two trades come with it. On a platform where a middle-button hold does
+    // nothing at all it is a standing veto over a transcript that is not moving,
+    // which needs the reader to press and hold the middle button over the
+    // transcript while content grows. And because pointerleave is one of the
+    // clears, an autoscroll that carries on with the cursor outside the port
+    // goes unmarked from then on - under-marking, the safe side, and the same
+    // trade pointerleave already makes for a drag.
+    if (event.pointerType === "touch") return;
+    if ((event.button !== 0 && event.button !== 1) || !event.isPrimary) return;
+    if (event.button === 1) middleButtonHeldRef.current = true;
+    pointerDraggingRef.current = true;
+  }, []);
+  // A mouse pointer gets no implicit capture, so a drag released outside the
+  // port never delivers pointerup to it, and a drag that started elsewhere can
+  // wander in with its button still down. Two answers, neither alone complete:
+  // the held button ends a drag wherever it was released, and leaving the port
+  // ends it too, so a foreign drag entering later is not adopted. The trade is
+  // that a drag which leaves the port and returns - an edge auto-scroll - stops
+  // marking; under-marking is the safe direction here.
+  const continuePointerDrag = useCallback(
+    (event: PointerEvent) => {
+      // Ahead of both reading AND writing the flag: a finger must neither mark
+      // a mouse drag nor end one.
+      if (event.pointerType === "touch") return;
+      // The middle bit going away ends the autoscroll even when another button
+      // is still down, and even when the release never reaches this port.
+      if ((event.buttons & MIDDLE_BUTTON_BIT) === 0) middleButtonHeldRef.current = false;
+      // A move carrying neither button a drag is begun for ends the drag rather
+      // than continuing it. Testing the mask, not just "some button is down",
+      // is what stops a secondary drag inheriting a primary one the port never
+      // saw end: the flag survives a blur, and every later right-button move
+      // would otherwise mark from a button the drag path never accepted.
+      if ((event.buttons & DRAG_BUTTON_BITS) === 0) {
+        pointerDraggingRef.current = false;
+        return;
+      }
+      if (pointerDraggingRef.current) markGesture();
+    },
+    [markGesture],
+  );
+  // Deliberately NOT filtered by pointerType, unlike the two above: ending a
+  // drag is the under-marking direction, so a stray touch pointerup clearing a
+  // mouse drag costs an unmarked scroll. Ignoring it would keep the drag marked
+  // only until the mouse's own pointerup, its next button-free move, or a
+  // pointerleave - a short window, not a latch, but still the over-marking side
+  // of the trade.
+  const endPointerDrag = useCallback(() => {
+    pointerDraggingRef.current = false;
+    middleButtonHeldRef.current = false;
+  }, []);
+  // The autoscroll state is the only gesture state with no clock and nothing to
+  // consume it, so everything that ends it has to be named. A middle press over
+  // the transcript can be released anywhere - once focus leaves, the port sees
+  // no pointerup at all - and until something says otherwise this would keep
+  // vetoing, with every vetoed correction disarming the re-pin. Losing focus and
+  // going hidden are both "the release, wherever it happens, is not ours to
+  // see". pointerDraggingRef needs no equivalent: it only acts on a later
+  // pointermove, which carries its own buttons.
+  const endAutoscrollOnFocusLoss = useCallback(() => {
+    middleButtonHeldRef.current = false;
+  }, []);
+  // A hidden document stops the clearing frame as well as hiding the scroll, so
+  // it bounds the pending MARKER too, not just the autoscroll: a drag marks
+  // without producing any scroll event of its own, and that marker would
+  // otherwise survive until the first scroll after return - which, if content
+  // grew meanwhile, is the measurement correction it would then veto. Blur needs
+  // no equivalent: a blurred window is still rendering, so the frame boundary is
+  // still the marker's bound there.
+  const forgetGesturesWhenHidden = useCallback(() => {
+    if (document.visibilityState !== "hidden") return;
+    middleButtonHeldRef.current = false;
+    gesturePendingRef.current = false;
+    if (gestureClearFrameRef.current !== null) {
+      cancelAnimationFrame(gestureClearFrameRef.current);
+      gestureClearFrameRef.current = null;
+    }
+  }, []);
+  const markWheel = useCallback(
+    (event: WheelEvent) => {
+      // None of these move this port. ctrl-wheel is the browser's zoom gesture,
+      // and a macOS trackpad pinch arrives as one. shift-wheel is horizontal,
+      // and the port is overflow-x:clip (virtuallist.module.css) so it pans in
+      // no engine - engines disagree on whether they zero deltaY or leave it set
+      // while scrolling sideways, and reading shiftKey needs no such guess. A
+      // wheel a descendant already claimed will not reach the port either.
+      if (event.ctrlKey || event.shiftKey || event.defaultPrevented) return;
+      if (event.deltaY === 0) return;
+      const port = event.currentTarget;
+      if (!(port instanceof HTMLElement)) return;
+      if (!verticalInputCanMovePort(port, measure(port), event.target, event.deltaY > 0 ? 1 : -1)) return;
+      markGesture();
+    },
+    [markGesture, measure],
+  );
+  const startTouch = useCallback((event: TouchEvent) => {
+    lastTouchYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
+  const continueTouch = useCallback(
+    (event: TouchEvent) => {
+      const y = event.touches[0]?.clientY ?? null;
+      const last = lastTouchYRef.current;
+      lastTouchYRef.current = y;
+      // A first move with no recorded start (the touch began outside the port)
+      // is not marked; the next one with real movement is.
+      if (y === null || last === null || y === last) return;
+      const port = event.currentTarget;
+      if (!(port instanceof HTMLElement)) return;
+      // A finger moving UP - clientY decreasing - pushes content down.
+      if (!verticalInputCanMovePort(port, measure(port), event.target, y < last ? 1 : -1)) return;
+      markGesture();
+    },
+    [markGesture, measure],
+  );
+  // A finished touch has to clear the recorded Y, or the "no recorded start"
+  // guard above is true exactly once per mount and every later outside-start
+  // move compares against a stale value.
+  const endTouch = useCallback(() => {
+    lastTouchYRef.current = null;
+  }, []);
+  useEffect(
+    () => () => {
+      if (gestureClearFrameRef.current !== null) cancelAnimationFrame(gestureClearFrameRef.current);
+    },
+    [],
+  );
+
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
   const initializedRef = useRef(false);
@@ -694,6 +1142,11 @@ export function useTranscriptScroll({
     setErrorAnchorIndex(null);
     errorAnchorIndexRef.current = null;
     errorAnchorTurnIdRef.current = undefined;
+    // With the anchor gone the pill's next jump heads for the bottom, never
+    // up - and because the pill now STAYS VISIBLE after an anchor click, a
+    // stale "up" arrow would otherwise render on the plain "latest" pill
+    // until the next scroll event recomputes it.
+    setPillArrowDirection("down");
   }, []);
 
   const jumpToBottom = useCallback(() => {
@@ -705,13 +1158,73 @@ export function useTranscriptScroll({
       // "the error anchor" - the whole point of an anchor is to land THERE).
       listRef.current?.scrollToIndex(anchor, { align: "start" });
       wasAtBottomRef.current = false;
+      // Mirror into render state like every other wasAtBottomRef write site:
+      // the landing is not the bottom, so the pill stays on offer.
+      setAwayFromBottom(true);
     } else {
       const count = renderedRowCountRef.current;
-      if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
-      wasAtBottomRef.current = true;
+      // Bottom state is NEVER set optimistically: wasAtBottomRef and
+      // awayFromBottom only come from measured geometry. So measure BEFORE
+      // requesting any scroll - scrollToIndex can synchronously move the DOM
+      // to its estimate-derived end, which would make an after-the-fact
+      // measurement describe the jump's own unconfirmed landing rather than
+      // the reader's position at click time.
+      const el = listRef.current?.getScrollElement();
+      const m = el ? measure(el) : undefined;
+      if (m && isAtBottom(m)) {
+        // Already at the true bottom by measurement: no scroll will happen,
+        // so no landing event will fire - confirm arrival from the
+        // measurement itself.
+        wasAtBottomRef.current = true;
+        setAwayFromBottom(false);
+      } else {
+        // The pre-jump measurement is authoritative for the reader's CURRENT
+        // position: they are away from the bottom. Write that into both
+        // trackers before requesting the jump - the DOM can move without a
+        // scroll event (content growth above the viewport, measurement
+        // corrections), leaving the trackers stale at at-bottom, and a stale
+        // at-bottom would let an append in the landing window auto-stick and
+        // would hide the pill the moment clearPill() runs below.
+        wasAtBottomRef.current = false;
+        setAwayFromBottom(true);
+        // scrollToIndex engages the virtualizer's own machinery (scrollState
+        // -> measurement during the scroll, the reconcile loop, and the
+        // anchorToEnd pinning that holds the end across later
+        // estimate->measured corrections). But its target offset derives from
+        // the measurement cache - ESTIMATES for every row between here and
+        // the end that has never been rendered - so the landing it computes
+        // is not guaranteed to be the true bottom, and whether a correction
+        // arrives afterward is timing-dependent (the reconcile loop settles
+        // after one stable frame; ResizeObserver delivery is async). That
+        // shortfall was the unreliable jump: the pill had already been
+        // cleared, and with no new content arriving there was no affordance
+        // left to recover with.
+        //
+        // So after engaging the virtualizer, pin the scroll element to its
+        // true DOM maximum directly - exact by construction, whatever the
+        // estimates say. Later measurement corrections only ever change
+        // scrollHeight, and the end-anchor (threshold 4px; the pin leaves the
+        // distance at 0) keeps the viewport pinned to the new true end.
+        //
+        // Arrival is confirmed only by the landing's own scroll event
+        // (handleScroll): until then the reader is still away, so an append
+        // in that window increments the pill instead of auto-sticking on an
+        // unconfirmed jump, and a landing that later corrections leave short
+        // keeps the pill on offer.
+        if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
+        if (el) {
+          // Pin from LIVE geometry, re-measured after scrollToIndex: the
+          // pre-jump measurement m is only for the at-bottom classification
+          // above - engaging the virtualizer may already have corrected the
+          // DOM maximum, and a pin computed from the stale value could land
+          // short.
+          const live = measure(el);
+          el.scrollTop = Math.max(0, live.scrollHeight - live.clientHeight);
+        }
+      }
     }
     clearPill();
-  }, [listRef, clearPill]);
+  }, [listRef, clearPill, measure]);
 
   const captureViewAnchor = useCallback(() => {
     const el = listRef.current?.getScrollElement();
@@ -789,6 +1302,7 @@ export function useTranscriptScroll({
       refForInitRef.current = ref;
       initializedRef.current = false;
       wasAtBottomRef.current = true;
+      setAwayFromBottom(false);
       firstTurnIdRef.current = undefined;
       baselineItemCountRef.current = 0;
       pendingViewAnchorRef.current = null;
@@ -797,6 +1311,16 @@ export function useTranscriptScroll({
       errorAnchorIndexRef.current = null;
       errorAnchorTurnIdRef.current = undefined;
       setPillCount(0);
+      // The next event any of these would meet is the mount scroll below, which
+      // belongs to the new session and to no gesture.
+      gesturePendingRef.current = false;
+      if (gestureClearFrameRef.current !== null) {
+        cancelAnimationFrame(gestureClearFrameRef.current);
+        gestureClearFrameRef.current = null;
+      }
+      pointerDraggingRef.current = false;
+      middleButtonHeldRef.current = false;
+      lastTouchYRef.current = null;
     }
     prevHasContentRef.current = hasContent;
 
@@ -812,7 +1336,9 @@ export function useTranscriptScroll({
       const count = renderedRowCountRef.current;
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       const m = measure(el);
+      lastScrollGeometryRef.current = m;
       wasAtBottomRef.current = isAtBottom(m);
+      setAwayFromBottom(!wasAtBottomRef.current);
       firstTurnIdRef.current = firstTurnId;
       baselineItemCountRef.current = itemCountRef.current;
       // Turns present at mount (e.g. a cold-opened session whose history
@@ -835,7 +1361,70 @@ export function useTranscriptScroll({
       // possibility.
       if (!el) return;
       const m = measure(el);
+      // Consumed here, not merely read: see markGesture on why the frame
+      // boundary alone cannot be trusted to clear it. A held middle button is
+      // read rather than consumed - native autoscroll scrolls the port for as
+      // long as it is down, so every scroll event it produces is the reader's.
+      const gestured = gesturePendingRef.current || middleButtonHeldRef.current;
+      gesturePendingRef.current = false;
+      // Content measured in BELOW a transcript that was already at the true
+      // bottom, in the SAME scroll port, with the offset never moving
+      // backwards: the virtualizer correcting its own estimates, not the reader
+      // leaving.
+      //
+      // The offset clause alone does not carry that premise - the virtualizer
+      // writes scrollTop too (applyScrollAdjustment), and writes it BACKWARDS
+      // when a row above the viewport shrinks. What excludes a shrink is the
+      // scrollHeight clause: there is strictly MORE content than the last
+      // measurement saw. And a correction only ever changes how much content
+      // there is, never the size of the box holding it, so a clientHeight that
+      // moved is a resized (or first-ever-measured) viewport, which is not this
+      // case and keeps the pill it would otherwise suppress.
+      //
+      // One narrow window where this misreads the reader: an upward flick begun
+      // from the EXACT bottom during a mount-time measurement storm can have its
+      // first frame swallowed, when a forward correction coalesced into the same
+      // frame exceeds the reader's own delta and the net offset reads as
+      // advanced. It self-releases on the very next event, where their continued
+      // scroll moves the offset back with no further growth to hide it.
+      //
+      // The end-anchor is meant to hold the end across those corrections, but
+      // its follow can under-count one that lands after the scroll-to-end
+      // reconcile has already torn down (virtual-core's reconcileScroll settles
+      // on the first frame whose target stops moving) - measured in the
+      // transcript scroll guard as scrollHeight 17076 -> 17221 against an offset
+      // that moved only 16374 -> 16432. Past the anchor's own 4px threshold it
+      // disengages, and nothing moves the transcript again: a session the reader
+      // has never touched is stranded short of the latest content, offering a
+      // jump-to-latest pill at mount.
+      //
+      // So re-pin to the new true bottom - exact from the geometry in hand,
+      // whatever the estimates say, the same pin jumpToBottom lands on - and
+      // leave the trackers describing the bottom they already described. Arrival
+      // is confirmed by the pin's own scroll event, like every other landing
+      // here; a pin that a further correction leaves short is simply corrected
+      // again by the next one.
+      //
+      // The early return defers the REST of this listener - the error anchor's
+      // own clear, the pill's arrow direction, and the near-top loadOlder
+      // trigger - to that same pin event. It always arrives: this branch is only
+      // taken when the gap is already past the at-bottom threshold, so the
+      // assignment genuinely moves scrollTop and the browser dispatches for it.
+      const previous = lastScrollGeometryRef.current;
+      lastScrollGeometryRef.current = m;
+      if (
+        !gestured &&
+        wasAtBottomRef.current &&
+        !isAtBottom(m) &&
+        m.clientHeight === previous.clientHeight &&
+        m.scrollHeight > previous.scrollHeight &&
+        m.scrollTop >= previous.scrollTop
+      ) {
+        el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
+        return;
+      }
       wasAtBottomRef.current = isAtBottom(m);
+      setAwayFromBottom(!wasAtBottomRef.current);
       if (wasAtBottomRef.current) clearPill();
       // The error anchor also clears on its own once its failed turn
       // scrolls into the rendered range - narrower than clearPill above
@@ -878,7 +1467,33 @@ export function useTranscriptScroll({
     }
 
     el.addEventListener("scroll", handleScroll);
-    return () => el.removeEventListener("scroll", handleScroll);
+    el.addEventListener("wheel", markWheel, { passive: true });
+    el.addEventListener("touchstart", startTouch, { passive: true });
+    el.addEventListener("touchmove", continueTouch, { passive: true });
+    el.addEventListener("touchend", endTouch, { passive: true });
+    el.addEventListener("touchcancel", endTouch, { passive: true });
+    el.addEventListener("pointerdown", startPointerDrag, { passive: true });
+    el.addEventListener("pointermove", continuePointerDrag, { passive: true });
+    el.addEventListener("pointerup", endPointerDrag, { passive: true });
+    el.addEventListener("pointercancel", endPointerDrag, { passive: true });
+    el.addEventListener("pointerleave", endPointerDrag, { passive: true });
+    window.addEventListener("blur", endAutoscrollOnFocusLoss, { passive: true });
+    document.addEventListener("visibilitychange", forgetGesturesWhenHidden, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", handleScroll);
+      el.removeEventListener("wheel", markWheel);
+      el.removeEventListener("touchstart", startTouch);
+      el.removeEventListener("touchmove", continueTouch);
+      el.removeEventListener("touchend", endTouch);
+      el.removeEventListener("touchcancel", endTouch);
+      el.removeEventListener("pointerdown", startPointerDrag);
+      el.removeEventListener("pointermove", continuePointerDrag);
+      el.removeEventListener("pointerup", endPointerDrag);
+      el.removeEventListener("pointercancel", endPointerDrag);
+      el.removeEventListener("pointerleave", endPointerDrag);
+      window.removeEventListener("blur", endAutoscrollOnFocusLoss);
+      document.removeEventListener("visibilitychange", forgetGesturesWhenHidden);
+    };
     // firstTurnId is intentionally NOT a dependency: it's only read inside
     // the initializedRef-guarded one-time block above, which - since
     // initializedRef never resets - executes exactly once per mount, at
@@ -896,7 +1511,27 @@ export function useTranscriptScroll({
     // all - it exists purely to force a re-run at the "VirtualList mounts
     // for the first time" transition (a ref becoming non-null triggers no
     // re-render/effect on its own; hasContent flipping does).
-  }, [ref, listRef, measure, clearPill, hasContent]);
+    //
+    // The gesture handlers ARE listed, rather than left to the ignore above:
+    // every one is useCallback-stable, so naming them costs no extra effect
+    // runs, and it keeps this rule's silence scoped to the two flags it was
+    // written for.
+  }, [
+    ref,
+    listRef,
+    measure,
+    clearPill,
+    hasContent,
+    markWheel,
+    startTouch,
+    continueTouch,
+    endTouch,
+    startPointerDrag,
+    continuePointerDrag,
+    endPointerDrag,
+    endAutoscrollOnFocusLoss,
+    forgetGesturesWhenHidden,
+  ]);
 
   // A mode change commits a different row set into the same VirtualList. This
   // layout effect runs after that commit and after the list's own layout work,
@@ -906,6 +1541,25 @@ export function useTranscriptScroll({
   useLayoutEffect(() => {
     restoreViewAnchorAfterMeasurement();
   }, [viewKey, restoreViewAnchorAfterMeasurement]);
+
+  // The ask dock's activation edge (see the options' own doc comments): new
+  // answerable content appeared below without any transcript shape change.
+  // Keyed on the activation EPOCH, not the pending boolean, so an atomic
+  // pending-set replacement (a resync swapping an answered-elsewhere batch
+  // for a new one) re-fires it while the boolean never left true. Declared
+  // AFTER the mount effect above so a ref change (which resets
+  // wasAtBottomRef to true for the fresh open) is already reflected when
+  // this edge evaluates, and a session OPENED with an already-pending ask
+  // never fires it - initial mount scrolls to the end, so the dock starts
+  // visible and there is nothing unseen to count.
+  const prevAskDockEpochRef = useRef(askDockActivationEpoch);
+  useLayoutEffect(() => {
+    const previous = prevAskDockEpochRef.current;
+    prevAskDockEpochRef.current = askDockActivationEpoch;
+    if (askDockActivationEpoch === previous || askDockActivationEpoch === 0) return;
+    if (!initializedRef.current || wasAtBottomRef.current) return;
+    setPillCount((count) => count + 1);
+  }, [askDockActivationEpoch]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn
@@ -1031,9 +1685,26 @@ export function useTranscriptScroll({
     if (errorAnchorIndexRef.current !== rowIndex) setErrorAnchorIndex(rowIndex);
   }, [renderedRowCount, sourceTurnRowIndexes, rowIndexForTurn]);
 
+  // pillVisible is the union of every reason to offer the jump: scrolled
+  // back (the always-on case), unseen items pending, or an unseen failure
+  // anchored. The latter two imply the former in practice (both are only
+  // ever set while wasAtBottomRef is false, which handleScroll had already
+  // mirrored into awayFromBottom) - listing them just keeps the value right
+  // even in the gap between a content change and the next scroll event.
+  const pillVisible = awayFromBottom || pillCount > 0 || errorAnchorIndex !== null;
+
   return {
     pillCount,
-    pillNeedsYou: pillCount > 0 && isAttentionWorthy(model),
+    markGesture,
+    pillVisible,
+    // needs-you is gated on VISIBILITY, not on a nonzero count: an awaiting
+    // flip that lands after the reader scrolled away (no new items at all)
+    // still upgrades the on-offer pill in place. The dock's own pending
+    // signal is part of the predicate, not just the model: model.askPending
+    // is snapshot-authoritative (only hydrateThread sets it - no
+    // notification carries it), so a live-arriving ask would otherwise read
+    // as generic "new" content until the next snapshot.
+    pillNeedsYou: pillVisible && (isAttentionWorthy(model) || askDockPending),
     pillError: errorAnchorIndex !== null,
     pillArrowDirection,
     jumpToBottom,

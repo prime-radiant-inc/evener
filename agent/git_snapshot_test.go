@@ -67,7 +67,7 @@ func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
 	dir := t.TempDir()
 	env := &snapshotCountingEnv{root: dir}
 
-	inRepo, branch, modified, untracked, commits := snapshotGit(env, dir)
+	inRepo, branch, modified, untracked, commits := snapshotGit(context.Background(), env, dir)
 	if inRepo {
 		t.Fatal("expected inRepo=false for non-git directory")
 	}
@@ -119,7 +119,7 @@ func TestGitOriginURL_ReturnsOrigin(t *testing.T) {
 	mustExec(t, env, dir, "git init")
 	mustExec(t, env, dir, "git remote add origin https://github.com/example/repo.git")
 
-	got := gitOriginURL(env, dir)
+	got := gitOriginURL(context.Background(), env, dir)
 	if got != "https://github.com/example/repo.git" {
 		t.Fatalf("gitOriginURL: got %q, want %q", got, "https://github.com/example/repo.git")
 	}
@@ -132,7 +132,7 @@ func TestGitOriginURL_NoOrigin(t *testing.T) {
 
 	mustExec(t, env, dir, "git init")
 
-	got := gitOriginURL(env, dir)
+	got := gitOriginURL(context.Background(), env, dir)
 	if got != "" {
 		t.Fatalf("gitOriginURL: got %q, want empty", got)
 	}
@@ -143,16 +143,16 @@ func TestGitOriginURL_NotGitRepo(t *testing.T) {
 	dir, _ = filepath.EvalSymlinks(dir)
 	env := execenv.NewLocalExecutionEnvironment(dir)
 
-	got := gitOriginURL(env, dir)
+	got := gitOriginURL(context.Background(), env, dir)
 	if got != "" {
 		t.Fatalf("gitOriginURL: got %q, want empty", got)
 	}
 }
 
 func TestGitOriginURL_NilEnv(t *testing.T) {
-	got := gitOriginURL(nil, "/tmp/whatever")
+	got := gitOriginURL(context.Background(), nil, "/tmp/whatever")
 	if got != "" {
-		t.Fatalf("gitOriginURL(nil): got %q, want empty", got)
+		t.Fatalf("gitOriginURL(context.Background(), nil): got %q, want empty", got)
 	}
 }
 
@@ -178,7 +178,7 @@ func TestSnapshotGit_InGitRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inRepo, branch, mod, untracked, commits := snapshotGit(env, dir)
+	inRepo, branch, mod, untracked, commits := snapshotGit(context.Background(), env, dir)
 	if !inRepo {
 		t.Fatal("expected inRepo=true")
 	}
@@ -200,7 +200,7 @@ func TestSnapshotGit_NotAGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
-	inRepo, _, _, _, _ := snapshotGit(env, dir)
+	inRepo, _, _, _, _ := snapshotGit(context.Background(), env, dir)
 	if inRepo {
 		t.Fatal("expected inRepo=false for non-git directory")
 	}
@@ -215,7 +215,7 @@ func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inRepo, _, _, _, commits := snapshotGit(env, dir)
+	inRepo, _, _, _, commits := snapshotGit(context.Background(), env, dir)
 	if !inRepo {
 		t.Fatal("expected inRepo=true")
 	}
@@ -253,7 +253,7 @@ func TestSnapshotGit_TracksModifiedAndUntracked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, mod, untracked, _ := snapshotGit(env, dir)
+	_, _, mod, untracked, _ := snapshotGit(context.Background(), env, dir)
 	if mod != 1 {
 		t.Errorf("expected 1 modified, got %d", mod)
 	}

@@ -19,14 +19,14 @@ func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
 
 	workDir := fs.String("dir", "", "working directory hint")
 	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
-	instance := fs.String("instance", "openai", "instance name (default: openai)")
+	instance := fs.String("instance", codexInstance, "instance name (default: "+codexInstance+")")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener openai status [flags]\n\n")
 		_, _ = fmt.Fprintf(stderr, "Show the current OpenAI auth status.\n\n")
 		_, _ = fmt.Fprintf(stderr, "Flags:\n")
 		_, _ = fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		_, _ = fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
-		_, _ = fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: openai)\n")
+		_, _ = fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: %s)\n", codexInstance)
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -42,7 +42,7 @@ func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
 	}
 	instanceName := strings.TrimSpace(*instance)
 	if instanceName == "" {
-		instanceName = "openai"
+		instanceName = codexInstance
 	}
 
 	status, err := openAIStatusAction(resolvedStateDir, instanceName)
