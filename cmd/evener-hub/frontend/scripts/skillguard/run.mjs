@@ -584,7 +584,10 @@ class Driver {
       if (state.text !== ${JSON.stringify(before.text)}) return true;
       if (state.chips.length !== ${JSON.stringify(before.chips.length)}) return true;
       if (state.tiles !== ${JSON.stringify(before.tiles)}) return true;
-      if (state.submitDisabled === true) return true;
+      // A disabled button is evidence only of a TRANSITION — the click's own
+      // actionPending — never a resting state: a click that did nothing while
+      // the button sat disabled for an unrelated reason must not pass.
+      if (state.submitDisabled === true && ${JSON.stringify(before.submitDisabled)} === false) return true;
       const toast = document.querySelector("section[aria-label='Notifications']");
       if (toast && toast.textContent.trim() !== "" && toast.textContent !== ${JSON.stringify(beforeToast)}) return true;
       return null;
@@ -648,6 +651,60 @@ class Driver {
       `(() => { const state = ${this.composerStateExpr(ref)}; return state && state.steerVisible ? true : null; })()`,
       { timeoutMs, label: `active turn (Steer visible) for ${ref}` },
     );
+  }
+
+  // A POSITIVE turn-end barrier. steerVisible reads the daemon's own status:
+  // it is false only once the session reports idle, so once this passes, no
+  // leg of the previous turn can still be in flight daemon-side. Every hold
+  // in the choreography is armed only after this barrier, because a hold
+  // captures the NEXT provider request — arming it while the previous
+  // scenario's turn still has an undispatched leg (a drain's steering leg,
+  // which the daemon only sends after the held first leg returns) would
+  // steal that leg: the captured request never completes, the turn never
+  // ends, and the next submit silently routes to the client-side queue.
+  // Reply waits cannot substitute: a drain produces a reply per leg, and
+  // the first leg's reply arrives while the drain leg is still pending.
+  async waitForTurnIdle(ref, { timeoutMs = 30000 } = {}) {
+    await this.waitPage(
+      `(() => { const state = ${this.composerStateExpr(ref)}; return state && state.steerVisible === false ? true : null; })()`,
+      { timeoutMs, label: `previous turn ended (session idle) for ${ref}` },
+    );
+  }
+
+  // clickQueueStripControl applies the composer-action lesson (see
+  // clickComposerAction's own hazard comment) to the queue strip's
+  // un-testid'd controls: the strip re-renders as its durable records settle,
+  // so a single-shot click — or the element query itself — racing that
+  // re-render fails outright. Each click is verified by an OBSERVED effect
+  // and retried; a re-click while the first landed is harmless because the
+  // strip's own busy state disables the control synchronously.
+  async clickQueueStripControl({ locate, effectExpr, label, attempts = 4 }) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await locate();
+      } catch (clickError) {
+        // The control vanishing is not yet a failure: the click may have just
+        // landed (the strip updated), or a re-render may be remounting the
+        // row. Only the effect decides.
+        const landed = await this.waitPage(effectExpr, {
+          timeoutMs: 2000,
+          label: `${label} effect after the control vanished (attempt ${attempt}/${attempts})`,
+        }).catch(() => false);
+        if (landed) return;
+        if (attempt === attempts) throw clickError;
+        continue;
+      }
+      const landed = await this.waitPage(effectExpr, {
+        timeoutMs: attempt === attempts ? 3000 : 1500,
+        label: `${label} click to take effect (attempt ${attempt}/${attempts})`,
+      }).catch(() => false);
+      if (landed) return;
+    }
+    const diagnosis = await evaluate(
+      this.send,
+      `(() => { const strip = ${this.queueStripExpr()}; return strip ? JSON.stringify(strip) : "queue strip not rendered"; })()`,
+    ).catch((error) => `diagnosis failed: ${error}`);
+    throw new Error(`${label} click never took effect: ${diagnosis}`);
   }
 
   // Every scripted turn replies with the SAME sentinel, and the transcript
@@ -735,6 +792,10 @@ async function runScenarios(driver) {
   // skill_state record and the transport scenario's stalled-transport
   // capture; a record the driver did catch must still carry prose and skill.
   const canonicalBaseline = await driver.replyBaseline();
+  // Turn-end barrier: instant here (the session has never run a turn), kept
+  // so every turn/start submit in the choreography is barriered by
+  // construction (see waitForTurnIdle).
+  await driver.waitForTurnIdle(driver.sessionA);
   await driver.clickSubmit(driver.sessionA);
   const durable = await evaluate(driver.send, driver.durableRecordsExpr()).catch(() => ({}));
   driver.milestone("durable-mutation", durable);
@@ -767,6 +828,10 @@ async function runScenarios(driver) {
   driver.milestone("draft-cleared", state);
 
   // ---- scenario: queue edit / return / drain ----
+  // Turn-end barrier: the hold below captures the NEXT provider request, so
+  // the canonical scenario's turn must be fully over first (see
+  // waitForTurnIdle).
+  await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.queueTurn);
@@ -795,12 +860,15 @@ async function runScenarios(driver) {
   });
   // Edit the queued entry: its text returns to the composer and the entry
   // leaves the queue (the durable edit is a text-only recompose — the chip is
-  // re-staged by the user, which is the documented edit contract).
-  await driver.click("button[aria-label='Edit message']");
-  await driver.waitPage(
-    `(() => { const state = ${driver.composerStateExpr(driver.sessionA)}; return state && state.text.includes(${JSON.stringify(PROSE.queue1)}) ? true : null; })()`,
-    { label: "queued text returned to composer" },
-  );
+  // re-staged by the user, which is the documented edit contract). The
+  // click is effect-verified and retried: the strip re-renders as its
+  // durable record settles and a single-shot click can be lost outright.
+  await driver.clickQueueStripControl({
+    locate: () => driver.click("button[aria-label='Edit message']"),
+    effectExpr: `(() => { const state = ${driver.composerStateExpr(driver.sessionA)};
+      return state && state.text.includes(${JSON.stringify(PROSE.queue1)}) ? true : null; })()`,
+    label: "Edit message",
+  });
   driver.milestone("queue-returned", await driver.composerState(driver.sessionA));
   await driver.press("a", 2);
   await driver.typeText(PROSE.queue2);
@@ -818,14 +886,15 @@ async function runScenarios(driver) {
     rows: queue.rows,
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
-  await driver.clickByText("Steer queue now");
   // The drain commits durably before the release below lets the held turn
   // finish; the queue strip empties once the daemon has folded the queue into
-  // the running turn.
-  await driver.waitPage(
-    `(() => { const strip = ${driver.queueStripExpr()}; return strip === null || strip.rows.length === 0 ? true : null; })()`,
-    { timeoutMs: 30000, label: "queue drained" },
-  );
+  // the running turn. The click is effect-verified and retried — a lost
+  // click here strands the whole choreography behind a held turn.
+  await driver.clickQueueStripControl({
+    locate: () => driver.clickByText("Steer queue now"),
+    effectExpr: `(() => { const strip = ${driver.queueStripExpr()}; return strip === null || strip.rows.length === 0 ? true : null; })()`,
+    label: "Steer queue now (drain)",
+  });
   driver.milestone("drain-committed", {
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
@@ -837,6 +906,15 @@ async function runScenarios(driver) {
 
 async function runScenariosPart2(driver) {
   // ---- scenario: selected steering ----
+  // Turn-end barrier: the drain from the previous scenario folds its queued
+  // input into the running turn as a steering leg the daemon dispatches only
+  // AFTER the held first leg returns — the first leg's reply arriving does
+  // NOT mean the turn is over. Arming this hold before the drain leg ran
+  // would capture THAT leg (verified failure mode: the captured leg never
+  // completes, the turn never ends, the steering submit silently routes to
+  // the client-side queue). Only the daemon's idle status clears the
+  // barrier.
+  await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.steerTurn);
@@ -866,6 +944,9 @@ async function runScenariosPart2(driver) {
   driver.milestone("steer-released", {});
 
   // ---- scenario: attachment preservation ----
+  // Turn-end barrier: this submit must route to turn/start, so the steering
+  // scenario's turn (interrupt leg included) must be fully over.
+  await driver.waitForTurnIdle(driver.sessionA);
   const imagePath = await writeFixtureImage(driver.artifactDir);
   await driver.setFocusFileInput(driver.sessionA, imagePath);
   await driver.waitPage(
@@ -940,6 +1021,8 @@ async function runScenariosPart2(driver) {
 
   // ---- scenario: failed activation + explicit retry ----
   await driver.openSession(driver.sessionA);
+  // Turn-end barrier before arming the hold (see waitForTurnIdle).
+  await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.failTurn);
@@ -968,7 +1051,10 @@ async function runScenariosPart2(driver) {
   await driver.waitPage(driver.turnFailureExpr(), { timeoutMs: 45000, label: "visible failed input" });
   driver.milestone("fail-observed", { failure: await evaluate(driver.send, driver.turnFailureExpr()) });
   // Explicit retry: the failed input kept the names and prose for correction;
-  // the user re-composes the same request and sends it again.
+  // the user re-composes the same request and sends it again. The barrier is
+  // instant (the failed turn already ended at the visible failure cap) but
+  // keeps every fresh turn/start barriered by construction.
+  await driver.waitForTurnIdle(driver.sessionA);
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.fail);
   await driver.selectSkillChip(driver.sessionA);
@@ -979,6 +1065,9 @@ async function runScenariosPart2(driver) {
   driver.milestone("fail-retried", { prose: PROSE.fail });
 
   // ---- scenario: delayed accepted-send vs newer chip edit ----
+  // Turn-end barrier before arming the hold (see waitForTurnIdle): the
+  // failed-activation retry's turn must be fully over.
+  await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.delay);
@@ -1013,6 +1102,9 @@ async function runScenariosPart2(driver) {
   await driver.press("Backspace");
 
   // ---- scenario: transport loss + recovery ----
+  // Turn-end barrier: the offline submit must persist as a turn/start
+  // mutation, so the delayed-send turn must be fully over.
+  await driver.waitForTurnIdle(driver.sessionA);
   const netBaseline = await driver.replyBaseline();
   await driver.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await driver.focusComposer(driver.sessionA);
@@ -1093,6 +1185,26 @@ async function main() {
   // helper start order.
   driver.pinnedSessionA = args.values.get("session-a");
   driver.pinnedSessionB = args.values.get("session-b");
+  // The Go owner runs this driver context-bound and cancels the context on
+  // ANY test exit path, sending SIGTERM. Node runs no cleanup on an
+  // unhandled signal and the driver's own finally-block would never fire, so
+  // its Chrome — spawned DETACHED in its own process group, unreachable from
+  // the Go side — would leak. Handle the signal here: stop the browser once,
+  // then exit with the signal's conventional code. A second signal during
+  // the cleanup exits immediately.
+  const signaled = { cleanup: false };
+  const handleSignal = (code) => {
+    if (signaled.cleanup) process.exit(code);
+    signaled.cleanup = true;
+    void (async () => {
+      try {
+        await driver.stop();
+      } catch {}
+      process.exit(code);
+    })();
+  };
+  process.on("SIGTERM", () => handleSignal(143));
+  process.on("SIGINT", () => handleSignal(130));
   try {
     try {
       await driver.start();
