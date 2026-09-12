@@ -307,7 +307,6 @@ func (s *Session) recordTurnFailure(data events.ErrorData) {
 // same "switch that governs nothing" complaint this fixes (kata qm9y).
 func (s *Session) emitHookCompleted(data events.HookEndData) {
 	data.OwningTurnID = s.hookCompletionOwner()
-	s.emit(events.EventHookEnd, data)
 	info := schema.HookInfo{
 		Event:      data.Event,
 		HookType:   data.HookType,
@@ -322,10 +321,26 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	turn.Hook = &info
 	turn.OwningTurnID = data.OwningTurnID
 
+	// Write, then announce. The two publications are not atomic, so whichever
+	// goes second can be overtaken by a concurrently recorded round, and the
+	// live and durable projections then order this hook differently inside the
+	// turn. Writing first is the direction the live/cold ordering rule wants:
+	// the entry exists before anything is told about it, so the event can only
+	// follow it. A hook completing while a fold publication holds the
+	// transcript door therefore waits for that door before announcing, and its
+	// event lands after its entry — which is the ordering, not a delay to
+	// avoid.
+	//
+	// This is THIS producer's discipline. Nothing yet requires every producer
+	// to write before announcing, and until something does, a pairing that
+	// announces first can still interleave ahead of this one; issue #1150
+	// carries that rule.
+	//
 	// SessionStart hooks run inside initSessionState, before the transcript
 	// writer exists (kata d4es). recordTurn holds the turn until it does; no
 	// buffering is needed here.
 	s.recordTurn(turn, turn)
+	s.emit(events.EventHookEnd, data)
 }
 
 // hookCompletionOwner names the logical turn a completing hook's records belong
