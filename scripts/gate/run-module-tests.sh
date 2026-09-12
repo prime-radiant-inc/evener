@@ -115,18 +115,14 @@ export AGENT_SHARD_COUNT=${AGENT_SHARD_COUNT:-8}
 # sessions, CI, and a hand-run `make test` all reach here, and a fixed budget
 # let each of them claim the whole machine. An explicit environment override
 # still wins, so test-race's AGENT_PARALLEL=6 is honored as written.
-CORES=$(load_aware_cores)
 ROOT_P=${ROOT_P-$(load_aware_workers 6)}
 AGENT_PARALLEL=${AGENT_PARALLEL-$(load_aware_workers 6)}
 AGENT_P=${AGENT_P-$(load_aware_workers 4)}
-# Modules with no explicit -p run at go's own default (GOMAXPROCS). Only pass
-# an explicit, load-aware -p when it is below the core count, so an idle run
-# keeps go's default exactly and a loaded one backs off.
-GO_P=$(load_aware_workers 0)
-GO_P_FLAG=
-if [ -n "$CORES" ] && [ "$GO_P" -lt "$CORES" ]; then
-	GO_P_FLAG="-p $GO_P"
-fi
+# Modules with no explicit -p are deliberately left alone. Go's default -p is
+# GOMAXPROCS, which is cgroup-quota aware; an explicit -p derived from the
+# host's online CPUs would oversubscribe a CPU-limited container and override a
+# user-lowered GOMAXPROCS. The three budgets above only ever tighten values
+# this script already passed.
 
 # Root discovery is normally quick, but it can block forever when the configured
 # Go caches live on a stalled volume. Keep that failure bounded without changing
@@ -370,7 +366,7 @@ module_extra() {
 			printf '%s' "$extra"
 			;;
 		*)
-			printf '%s' "$GO_P_FLAG"
+			printf ''
 			;;
 	esac
 }

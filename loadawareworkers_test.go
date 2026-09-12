@@ -60,7 +60,6 @@ func TestLoadAwareWorkersSizesToSpareCapacity(t *testing.T) {
 		{"unreadable core count keeps the caller ceiling", "4", "garbage", "0", "4"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := runLoadAwareHelper(t, `load_aware_workers "$@"`, tc.cap, tc.cores, tc.load)
@@ -92,6 +91,9 @@ func TestLoadAwareWorkersRejectsMalformedCeiling(t *testing.T) {
 func TestLoadAwareCoresReportsThisMachine(t *testing.T) {
 	t.Parallel()
 	got := runLoadAwareHelper(t, `load_aware_cores`)
+	if got == "" {
+		t.Skip("no CPU detector on this host; the unknown-core fallback is covered by the table test")
+	}
 	n, err := strconv.Atoi(got)
 	if err != nil || n < 1 {
 		t.Fatalf("load_aware_cores printed %q, want a positive integer", got)
@@ -108,10 +110,21 @@ func TestRunModuleTestsUsesLoadAwareBudgets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read run-module-tests.sh: %v", err)
 	}
-	body := string(data)
+	// Comments are stripped before matching: the header explains this wiring,
+	// and a substring assertion against raw text would pass on that prose even
+	// if the executable lines stopped calling the helper (testing.md: an
+	// assertion that matches its own comment proves nothing).
+	var body strings.Builder
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		body.WriteString(line)
+		body.WriteString("\n")
+	}
 	for _, want := range []string{"load-aware-workers.sh", "load_aware_workers"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("run-module-tests.sh does not mention %q; its -p/-parallel budgets must be sized from spare capacity", want)
+		if !strings.Contains(body.String(), want) {
+			t.Errorf("run-module-tests.sh does not reference %q outside comments; its -p/-parallel budgets must be sized from spare capacity", want)
 		}
 	}
 }
