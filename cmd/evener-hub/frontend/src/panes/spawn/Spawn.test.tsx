@@ -4183,7 +4183,15 @@ test("typing /re opens the menu with builtin and catalog matches but not /simpli
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
-      skills: [{ name: "simplify", description: "rewrite" }],
+      skills: [
+        {
+          name: "simplify",
+          description: "rewrite",
+          disableModelInvocation: false,
+          userInvocable: true,
+          available: true,
+        },
+      ],
     }));
   });
   renderSpawn(fake);
@@ -4207,7 +4215,15 @@ test("typing further narrows the spawn slash menu live", async () => {
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
-      skills: [{ name: "simplify", description: "rewrite" }],
+      skills: [
+        {
+          name: "simplify",
+          description: "rewrite",
+          disableModelInvocation: false,
+          userInvocable: true,
+          available: true,
+        },
+      ],
     }));
   });
   renderSpawn(fake);
@@ -4386,7 +4402,15 @@ test("catalog entries colliding with pre-session builtins are not offered twice"
         { name: "goal", description: "project goal runner", source: "project" },
         { name: "deploy", description: "deploy the thing", source: "project" },
       ],
-      skills: [{ name: "model", description: "project model helper" }],
+      skills: [
+        {
+          name: "model",
+          description: "project model helper",
+          disableModelInvocation: false,
+          userInvocable: true,
+          available: true,
+        },
+      ],
     }));
   });
   connectionStore.getState().connect(fake);
