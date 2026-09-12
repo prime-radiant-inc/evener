@@ -1023,3 +1023,27 @@ C1, the one Critical from Task 6's review, is closed. `TestRetirementSharedChild
 The round also fixed a regression the parent found and root-caused: the production change broke `TestRestoreIdleFailureDisposesTheChildScratch` because `ownsFresh` conflated failure-path scratch disposal with environment-ownership recording. The fix decouples them via a `mintedScratch` teardown flag that the reviewer probe-proved load-bearing.
 
 Parent gates on the accepted commit, all re-run by the parent: new test, regressed test, focused family, family under `-race` unaccompanied, and `make test` (8/8 modules) — all exit 0. Independent scoped re-review on a different model: C1 CLOSED, quality Approved, 0 Critical / 0 Important / 3 Minor record-only, carried to the hardening list for the whole-branch review.
+
+### Task 7 — ACCEPTED (`c5a2f518e` + fix `bf91d1329`)
+
+Typed lifecycle wire contracts and safe daemon retirement. Review round 1 returned spec ISSUES /
+quality Needs fixes (0 Critical, 3 Important, 4 Minor); fix round 1 addressed all fixable
+findings and the scoped re-review returned **Spec PASS / Quality Approved**, with every finding
+proven ADDRESSED and 0 Critical.
+
+The Important finding worth recording: `LifecycleUnavailable` claimed
+`mutationOutcome:"notAccepted"` when the admission fence runs before the mutation replay lookup
+and therefore cannot know whether a retried mutation was already accepted — a violation of the
+plan's own rule that a lost reply is not proof of rejection. Fixed to `unknown`. Two existing
+assertions were corrected rather than weakened, and the re-reviewer proved that by reverting the
+fix under an overlay and showing both go red against the old value. The second Important finding
+was a real coverage gap: the whole hubcore half shipped untested; four new tests close it, and
+the re-reviewer proved them regression-catching with sabotage overlays.
+
+The third Important finding was a **handoff gap**, not a code defect: the daemon-side identity
+revalidation required by plan line 916 is unowned downstream. The parent recorded it as a
+mandatory Task 8 obligation. Parent ruling also stands: the protocol version stays v5 and the
+v6 flag-day is assigned to Task 10.
+
+Parent gates on the accepted commits: focused command across all five packages (exit 0), the
+same under `-race` run alone (exit 0), and full `make test` (8/8 modules, exit 0).
