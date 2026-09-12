@@ -4172,3 +4172,46 @@ Two of three reviewers found no issues. The durable environment-event, transcrip
 2. Gates: gofmt, vet, `go test -count=1 ./...` in agent with zero non-ok lines, `-race` on the poisoned/claim sets, deadline audit, pinned golangci-lint 0 issues.
 3. Do not push. Do not merge main.
 4. Append a "Task 72" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-26-report.md`; reply with status, commit SHA, one-line test summary, concerns.
+
+## Task 73: PR #1100 round 11 (head 32bb3b9) — CI test failure + RoboRev findings
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1100 (branch codex/mobile-round-timing-replay), modules `agent/` and the root module (`server/`, `internal/apptranscript`).
+
+### CI
+
+The `tests` job at 32bb3b9 FAILED: `--- FAIL: TestCompactionOwnerDuringOverlappingMutations/late_compaction_steering` in `server/appwire_compaction_owner_overlap_test.go` with `full overlap replay item 7 differs: kind=context_compaction owner=turn_m7 key=apptranscript-item-v1:turn_m7:10:0, want kind=context_compaction owner=turn_m7 key=apptranscript-item-v1:turn_m7:8:3 (payloadEqual=true)` — the live and cold projections disagree on the context_compaction item's transcript key (entry ordinal and sub-index). Full log: /private/tmp/claude-501/-Users-jesse-git-prime-radiant-inc-evener--claude-worktrees-mobile-app-integration-6d4885/4bf3d0c3-48ad-4045-8100-dc324dbc5174/scratchpad/ci-1100-32bb3b9-tests.log (the record dump precedes the assertion). This test passed the round-9 CI run only in the sense that the earlier run failed first on the preseed race; determine whether it fails deterministically at this head (`go test -count=5 -run '^TestCompactionOwnerDuringOverlappingMutations$' ./server/` from the worktree root) and whether it failed at 3640f17e2 and at 0076bc9df (the pre-merge heads) — `git stash`-free: check out those commits in a throwaway worktree if needed, never in this one.
+
+### RoboRev verdict (verbatim, 3 reviewers; two clean)
+
+## roborev: Combined Review (`32bb3b9`)
+
+## Review Summary
+
+One Medium and one Low issue found across three reviewers; both come from the same reviewer.
+
+**Medium**
+
+- **`agent/delegate_fork_context.go:20-26`** — `snapshotDelegateContext` passes the physical transcript to `completedDelegateContext` without filtering `ContextReplay` entries. After a compaction rewrites a concurrent tool round, the transcript contains both original entries and replay copies, so a `ForkContext` delegate can inherit duplicated user/assistant/tool-call/tool-result history. Remove `ContextReplay` entries before `completedDelegateContext` processes the transcript, or use a replay-aware history projection that preserves the intended fork context without duplicate records.
+
+**Low**
+
+- **`internal/apptranscript/turn_index.go:285-310`** — A leading `ContextReplay` record is treated as a new empty indexed group because it has `StartsGroup == false` but `len(groups) == 0`. `indexedItemRanges` still consumes an entry ordinal for that empty group, while the full projection skips replay records entirely, causing later bounded item positions and transcript keys to differ from the full projection. Explicitly skip replay records when materializing indexed groups so they never allocate a logical group or entry ordinal.
+
+Two of three reviewers found no issues; the remaining reviewer confirmed the durability, replay-safe compaction, and turn-identity work is sound. The gaps are isolated to replay-aware filtering for delegate forks and leading indexed transcript records.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 8s | Total: 41m53s*
+
+
+### Coordinator rulings
+
+- **CI failure: root-cause first, no workaround.** The key divergence (cold `:10:0` vs live `:8:3`) smells like exactly the Low below — a leading or mid-run `ContextReplay` record consuming an entry ordinal in the indexed projection while the full projection skips it — now reachable because the fold's copies precede its markers (Task 63). Prove or disprove that link before fixing: if the Low's fix (skip replay records when materialising indexed groups so they allocate no logical group or entry ordinal) makes this test pass, that is the fix and the CI failure is its RED; if not, find the actual cause and report it before choosing a fix. Do not re-point the test's expected keys. If the failure is timing-dependent (the subtest is named late_compaction_steering), say what the interleaving is and make the test deterministic through an existing seam, not a sleep.
+- **Medium (`snapshotDelegateContext` hands the physical transcript to `completedDelegateContext` without dropping `ContextReplay`): verify, then fix.** A `ForkContext` delegate must inherit the same history a resume would see, not the originals plus their replay copies. Fix: filter `ContextReplay` entries before `completedDelegateContext` processes them, using the same rule `ResumeHistory` applies (or `ResumeHistory` itself if its output is the right shape), so there is one encoding of "what a reader sees after a fold". RED-first: a fold that rewrote a concurrent tool round, then a fork-context delegate snapshot, asserting each user/assistant/tool-call/tool-result appears exactly once.
+- **Low (`turn_index.go` ~285-310 leading `ContextReplay` record allocates an empty indexed group and an entry ordinal): real if the indexed and full projections disagree; fix.** Skip replay records when materialising indexed groups so they never allocate a logical group or entry ordinal, keeping the indexed and full projections' item positions and transcript keys identical. RED-first with a transcript whose first record after the anchor is a tagged replay copy (the new on-disk order), asserting the indexed projection's keys equal the full projection's — and extend the Task 63 `compaction_grouping_test.go` case if that is the natural home.
+
+### Requirements
+
+1. Order: diagnose the CI failure, then land the fixes in whichever order the diagnosis dictates; one commit per finding; RED-first with recorded output; no existing test weakened or re-pointed.
+2. Gates: gofmt, `go vet ./...` in both modules, agent `go test -count=1 ./...` with zero non-ok lines, root `./server/...`, `./internal/apptranscript/...`, `./internal/appprojector/...`, `-race -count=3` on the touched sets, deadline audit, pinned golangci-lint 0 issues in both modules. Run the failing test with `-count=5` before and after.
+3. Do not push. Do not merge main.
+4. Append a "Task 73" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-33-report.md`; reply with status, the diagnosis (which commit introduced the key divergence and why), commit SHAs, one-line test summary, concerns.
