@@ -1,4 +1,5 @@
 import type { InputItem } from "../protocol/types.gen";
+import { ownClientId } from "./mutationClientIdentity";
 import type {
   MutationAttachment,
   MutationIntent,
@@ -119,6 +120,7 @@ export class MutationOutboxIndexedDB {
         payload: { ...intent.payload, clientMutationId },
         version: 1,
         clientMutationId,
+        originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
         state: "submitting",

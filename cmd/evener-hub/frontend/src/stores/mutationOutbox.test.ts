@@ -73,6 +73,9 @@ describe("MutationOutboxIndexedDB", () => {
     expect(restored).toEqual({
       version: 1,
       clientMutationId: "mutation-1",
+      // The submitting client's identity is part of the persisted intent: it
+      // is what keeps one tab from claiming another tab's durable records.
+      originClientId: expect.any(String),
       targetRef: TARGET,
       threadId: "thread-1",
       intentSequence: 1,

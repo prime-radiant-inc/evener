@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type {
   MutationOptimisticRecord,
   MutationOutboxRecord,
@@ -119,7 +120,11 @@ function recordSubmittedHere(snapshot: {
   optimistic: MutationOptimisticRecord[];
 }): void {
   const known = pendingTurnsStore.getState().submittedHere;
+  // The outbox is shared per origin: another tab's records read back out of it
+  // are visible here but are not this client's submissions, and claiming them
+  // would reroute this tab's composer behind their sends.
   const discovered = [...snapshot.outbox, ...snapshot.optimistic]
+    .filter((record) => isOwnMutationRecord(record))
     .map((record) => record.clientMutationId)
     .filter((id) => !known.has(id));
   if (discovered.length === 0) return;
