@@ -9,6 +9,7 @@ import {
   editHumanNote,
   focusHumanNote,
   syncHumanNote,
+  teardownHumanNote,
   unmountHumanNote,
   useHumanNoteDraft,
 } from "../../../stores/humanNoteDrafts";
@@ -22,11 +23,21 @@ import styles from "./notespanel.module.css";
 // Session file URLs canonicalize to file:///absolute forms (agent
 // validation); the open-beside flow takes a filesystem path, so decode the
 // URL path back (percent-escapes from delimiter filenames included).
-function fileURLToPath(fileURL: string): string {
+export function fileURLToPath(fileURL: string): string {
+  let url: URL;
   try {
-    return decodeURIComponent(new URL(fileURL).pathname);
+    url = new URL(fileURL);
   } catch {
-    return fileURL;
+    // Not a URL at all: give the open-beside flow no path rather than the raw
+    // string it would treat as one.
+    return "";
+  }
+  try {
+    return decodeURIComponent(url.pathname);
+  } catch {
+    // A malformed escape must not turn the whole file:/// URL into the
+    // open-beside target; the undecoded path is the closest true answer.
+    return url.pathname;
   }
 }
 
@@ -141,7 +152,12 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
       unmountHumanNote(sessionRef, id);
       return;
     }
-    return () => unmountHumanNote(sessionRef, id);
+    // Closing the sheet or switching sessions unmounts the editor without a
+    // blur, so a dirty draft would be left with no timer and no save. Teardown
+    // schedules the save instead — the same FLUSHED-not-dropped rule DockHost
+    // documents for its layout debounce — while a failed save keeps its draft
+    // for an explicit retry.
+    return () => teardownHumanNote(sessionRef, id);
   }, [sessionRef, live, model.capabilities.sharedNotes]);
 
   async function handleRemoveURL(url: SessionURL) {

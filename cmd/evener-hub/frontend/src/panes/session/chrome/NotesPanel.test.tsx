@@ -22,7 +22,7 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { NotesPanel, NotesPanelBody, type NotesPanelHandle } from "./NotesPanel";
+import { fileURLToPath, NotesPanel, NotesPanelBody, type NotesPanelHandle } from "./NotesPanel";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -408,6 +408,50 @@ test("a flushed blur save does not resubmit when its original deadline passes", 
   expect(seen).toHaveLength(1);
   expect(setHumanNote).toHaveBeenCalledTimes(1);
   setHumanNote.mockRestore();
+});
+
+test("closing the panel without a blur still saves the pending draft", async () => {
+  const indexedDB = new IDBFactory();
+  vi.stubGlobal("indexedDB", indexedDB);
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fake = connectFakeClient();
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const seen: unknown[] = [];
+  let submittedResolve!: () => void;
+  const submitted = new Promise<void>((resolve) => {
+    submittedResolve = resolve;
+  });
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    submittedResolve();
+    return noteResponse(params);
+  });
+
+  const view = render(<NotesPanelBody sessionRef={model.ref} model={model} />);
+  await user.type(editor(), "draft sentinel");
+  // The sheet closes while the editor is still focused: no blur is delivered,
+  // so teardown itself has to schedule the save the blur would have.
+  await act(async () => {
+    view.unmount();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+    await submitted;
+  });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({ ref: model.ref, note: "draft sentinel" });
+});
+
+test("a malformed file URL never becomes an open-beside target", () => {
+  expect(fileURLToPath("file:///tmp/with%20space.md")).toBe("/tmp/with space.md");
+  // A malformed escape keeps the undecoded path instead of the whole URL.
+  expect(fileURLToPath("file:///tmp/bad%zz.md")).toBe("/tmp/bad%zz.md");
+  // A string that is not a URL yields no path at all.
+  expect(fileURLToPath("not a url")).toBe("");
 });
 
 // --- rule 1: capability unset hides the panel body entirely -------------------

@@ -113,6 +113,26 @@ export function unmountHumanNote(ref: string, owner: symbol): void {
 }
 export function blurHumanNote(ref: string, owner: symbol): void {
   unmountHumanNote(ref, owner);
+  scheduleHumanNoteSave(ref);
+}
+
+// teardownHumanNote is the panel going away without a blur: a sheet close or a
+// session switch unmounts the editor while it is still focused, so no blur is
+// delivered and the debounce a blur would have scheduled never exists. It drops
+// the focus owner and schedules that save instead of dropping the edit.
+//
+// A generation that already has a submission record is left alone: a save that
+// failed keeps its draft for an explicit retry rather than retrying silently on
+// the way out, and one still in flight needs no second attempt.
+export function teardownHumanNote(ref: string, owner: symbol): void {
+  unmountHumanNote(ref, owner);
+  const draft = get(ref);
+  if (!draft) return;
+  if (draft.submitted?.generation === draft.generation) return;
+  scheduleHumanNoteSave(ref);
+}
+
+function scheduleHumanNoteSave(ref: string): void {
   const draft = get(ref);
   if (!draft?.dirty || draft.focusOwners.size || draft.timer !== undefined) return;
   if (draft.submitted?.generation === draft.generation && draft.submitted.state === "submitting") return;
