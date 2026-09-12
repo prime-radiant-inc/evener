@@ -21,6 +21,7 @@
     "activityData.ts",
     "activityList.ts",
     "activityMerge.ts",
+    "itemFailure.ts",
     "jobOutput.ts",
     "model.ts",
     "reducer.ts",

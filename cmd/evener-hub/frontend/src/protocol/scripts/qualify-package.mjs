@@ -39,6 +39,7 @@ async function qualify() {
     "activityData",
     "activityList",
     "activityMerge",
+    "itemFailure",
     "jobOutput",
     "model",
     "reducer",
@@ -75,6 +76,10 @@ async function qualify() {
     "ActivityList",
     "fenceRootSession",
     "graftContinuationTree",
+    "hasItemFailure",
+    "hasFailureStatus",
+    "isNonZeroExit",
+    "isInProgressStatus",
     "parseJobLogTail",
     "SYSTEM_PRELUDE_TURN_ID",
     "pendingTextJoined",
@@ -100,6 +105,7 @@ async function qualify() {
     "AskAnswerItem",
     "ActivityTree",
     "ActivityState",
+    "ItemFailureSignals",
     "JobLogTail",
     "ThreadModel",
     "NotificationRoutingKey",
@@ -125,6 +131,10 @@ assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
 assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
 assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
+assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
+assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
+assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
+assert.equal(client.isInProgressStatus("inProgress"), true);
 assert.equal(client.parseJobLogTail(null), null);
 assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
 assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
