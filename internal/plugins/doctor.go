@@ -298,6 +298,18 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 // sources), and parse as a catalog; staleness is flagged separately and only
 // once the marketplace is otherwise healthy.
 func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFinding {
+	// Doctor reads the file as recorded, without the store lock that would
+	// rename an entry like this (lockStore), so the rename is still pending.
+	// It is the whole finding: every other remediation would name a name
+	// that is about to change. The predicate is the migration's, so doctor
+	// cannot call a name healthy that the next lock holder would rename.
+	if pendingMigration(name) {
+		return DoctorFinding{
+			Level: LevelWarn, Category: catMarketplace,
+			Message:     name + ": recorded under a name the store no longer accepts; the next plugin operation renames it",
+			Remediation: "run `evener plugin marketplace list` to rename it now; the new name is printed",
+		}
+	}
 	if ref.InstallLocation == "" {
 		return DoctorFinding{Level: LevelOK, Category: catMarketplace, Message: name + ": seeded, not yet fetched"}
 	}
