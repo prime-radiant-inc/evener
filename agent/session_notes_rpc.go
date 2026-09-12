@@ -392,6 +392,20 @@ func (s *Session) notesSnapshot() (human, agentNote string) {
 // session whose store was NEVER non-empty this process renders nothing, so a
 // fresh session's context is byte-identical to today.
 func (s *Session) notesContextBlock() string {
+	return s.renderNotesContextBlock(false)
+}
+
+// notesContextBlockForModel renders the model-facing copy of the block: the
+// framing tags stay literal and every dynamic field is escaped, so a note or
+// label carrying the closing tag cannot terminate the block and make the model
+// read attacker-chosen text as harness-authored context (persistent indirect
+// prompt injection). Only this copy escapes — the raw block is what persists,
+// displays, and feeds tool output, so real URLs and text survive.
+func (s *Session) notesContextBlockForModel() string {
+	return s.renderNotesContextBlock(true)
+}
+
+func (s *Session) renderNotesContextBlock(escape bool) string {
 	human, agentNote, urls, everProjected := s.notesProjectionSnapshot()
 	if human == "" && agentNote == "" && len(urls) == 0 {
 		if !everProjected {
@@ -399,22 +413,22 @@ func (s *Session) notesContextBlock() string {
 		}
 		return notesClearedBlock
 	}
+	field := func(value string) string {
+		if escape {
+			return html.EscapeString(value)
+		}
+		return value
+	}
 	var b strings.Builder
-	// The block is framed with literal tags and the content is user- and
-	// agent-supplied, so every dynamic field is escaped: unescaped, a note or
-	// label carrying the closing tag would terminate the block and the model
-	// would read attacker-chosen text as harness-authored context (persistent
-	// indirect prompt injection). Raw values stay raw for persistence and the
-	// wire; only this rendering escapes them, matching the goal block.
 	b.WriteString("<shared-notes>\n")
 	if human != "" {
-		b.WriteString("Human: " + html.EscapeString(human) + "\n")
+		b.WriteString("Human: " + field(human) + "\n")
 	}
 	if agentNote != "" {
-		b.WriteString("Agent: " + html.EscapeString(agentNote) + "\n")
+		b.WriteString("Agent: " + field(agentNote) + "\n")
 	}
 	for _, u := range urls {
-		b.WriteString(formatNotesLinkLine(u) + "\n")
+		b.WriteString(field(formatNotesLinkLine(u)) + "\n")
 	}
 	b.WriteString("</shared-notes>")
 	return b.String()
@@ -436,12 +450,12 @@ const notesClearedBlock = "<shared-notes>\n(empty — all shared notes and links
 // the human-readable URL/label because the model never receives the State
 // side-channel — only Output — yet urls_remove requires the id.
 func formatNotesLinkLine(u schema.SessionURL) string {
-	base := html.EscapeString(u.URL)
+	base := u.URL
 	if u.Label != "" {
-		base = fmt.Sprintf("%s (%s)", html.EscapeString(u.Label), base)
+		base = fmt.Sprintf("%s (%s)", u.Label, u.URL)
 	}
 	if u.ID != "" {
-		return fmt.Sprintf("Link: %s [id: %s]", base, html.EscapeString(u.ID))
+		return fmt.Sprintf("Link: %s [id: %s]", base, u.ID)
 	}
 	return "Link: " + base
 }
@@ -502,6 +516,9 @@ func (s *Session) maybeAppendNotesContext() {
 	if block == "" {
 		return
 	}
+	// Read beside the raw block and under the same lock, so the pair cannot
+	// straddle a notes change; the escaped copy is what the model reads.
+	modelBlock := s.notesContextBlockForModel()
 	s.mu.Lock()
 	if block == s.notesLastProjected {
 		s.mu.Unlock()
@@ -515,8 +532,9 @@ func (s *Session) maybeAppendNotesContext() {
 	// sees the newer record and stays silent instead of double-appending.
 	turn := schema.TurnNotesContext
 	body := llm.User(block)
+	modelBody := llm.User(modelBlock)
 	s.mu.Unlock()
-	s.appendTurn(turn, body)
+	s.appendTurnWithTranscriptMessage(turn, modelBody, body)
 }
 
 // resetNotesProjectionAfterCompaction clears the last-projected notes record
