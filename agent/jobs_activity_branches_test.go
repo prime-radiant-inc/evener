@@ -481,6 +481,51 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 	}
 }
 
+// TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit pins that the
+// message a skip writes is measured as part of the page. The diagnostic and
+// the advanced token are bytes the client receives like any other, so a page
+// that only fits once the entry is gone can still be pushed back over by the
+// sentence explaining why it is gone — and a response over the limit is the
+// one thing the whole trim exists to prevent.
+func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
+	t.Parallel()
+	// What the trim leaves behind once the page's only entry is gone: no
+	// entries, truncated, one continuation token.
+	shape := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root", Entries: []appwire.JobActivityEntry{},
+	}}
+	shape.Root.Branch.Truncated = true
+	shape.Root.Branch.Continuation = encodeActivityContinuation(activityContinuation{
+		Version: activityContinuationV1, RootID: "root", SessionID: "root",
+	})
+	recomputeActivitySession(&shape.Root)
+	entryless, err := json.Marshal(shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pad the label until that entry-less page sits a few bytes under the
+	// cap — far closer than the skip's own message is long.
+	label := strings.Repeat("p", activityMaxEncodedBytes-len(entryless)-8)
+	tree := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root", Label: label,
+		Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{
+			JobID: "job_huge", Description: strings.Repeat("h", activityMaxEncodedBytes),
+		})}},
+	}}
+
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > activityMaxEncodedBytes {
+		t.Fatalf("trimmed response is %d bytes, %d over the %d-byte limit -- a skip has to be measured with the diagnostic it writes", len(raw), len(raw)-activityMaxEncodedBytes, activityMaxEncodedBytes)
+	}
+}
+
 func TestTrimActivityTrailingEntry_EmptyReturnsFalse(t *testing.T) {
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}

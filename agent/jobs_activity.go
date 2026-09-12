@@ -1386,15 +1386,22 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		if !dropped.unrepresentable {
 			continue
 		}
+		// The skip is measured with the sentence it writes and the token it
+		// advances: both are bytes the client receives, so a page that only
+		// fits once the entry is gone can still be pushed back over by its
+		// own explanation. Where that happens the page cannot afford to say
+		// anything, and trimming carries on.
+		beforeSkip := dropped.session.Branch
+		skipActivityTrimmedEntry(dropped, rootID, delegatesEpoch, jobsEpochs, revision)
 		recomputeActivitySession(&tree.Root)
-		without, err := json.Marshal(tree)
+		skipped, err := json.Marshal(tree)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
-		if len(without) <= activityMaxEncodedBytes {
-			skipActivityTrimmedEntry(dropped, rootID, delegatesEpoch, jobsEpochs, revision)
+		if len(skipped) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
+		dropped.session.Branch = beforeSkip
 	}
 }
 
