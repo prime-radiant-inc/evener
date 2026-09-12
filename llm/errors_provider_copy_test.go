@@ -192,6 +192,7 @@ func TestEveryProviderAttributedErrorCopies(t *testing.T) {
 		NewUnsupportedEndpointError("p", "m", nil),
 		NewUnsupportedToolChoiceError("p", "auto"),
 		NewRequestTimeoutError("p", "m", nil),
+		NewAuthenticationError("p", "m", nil),
 	)
 	for _, err := range cases {
 		if providerOf(err) == "" {

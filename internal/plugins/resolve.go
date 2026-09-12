@@ -266,7 +266,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 	}
 
 	if rootErr == nil {
-		items, err := m.List()
+		items, err := m.List(ctx)
 		if err != nil {
 			// A caller that has left hears that it left, not a registry
 			// failure: this one is fail-soft to every caller — the hub
