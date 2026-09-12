@@ -28,6 +28,40 @@ jobs:
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
 
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile-native/package-lock.json
+
+      - name: Install native dependencies
+        run: npm ci --prefix mobile-native
+
+      - name: Test native app and shared session core
+        run: make test-native
+
+  api-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/evener-hub/frontend/src/protocol/package-lock.json
+
+      - name: Install protocol development dependencies
+        run: npm ci --prefix cmd/evener-hub/frontend/src/protocol
+
+      - name: Qualify installed AppWire package
+        run: make test-api-package
+
   static-build:
     runs-on: ubuntu-latest
     steps:
@@ -127,7 +161,7 @@ jobs:
 
   static:
     if: always()
-    needs: [static-build, lint-golangci, lint-repository, fuzz-checks]
+    needs: [static-build, lint-golangci, lint-repository, fuzz-checks, api-package, native]
     runs-on: ubuntu-latest
     steps:
       - name: Require every static lane
@@ -215,7 +249,7 @@ jobs:
   snapshot-artifacts:
     name: Build snapshot artifacts
     if: github.event_name == 'pull_request'
-    needs: [static, race-root, race-modules, tests, fuzz, web]
+    needs: [static, race-root, race-modules, tests, fuzz, web, native, api-package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

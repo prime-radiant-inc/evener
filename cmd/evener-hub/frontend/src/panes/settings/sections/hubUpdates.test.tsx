@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
@@ -122,10 +122,10 @@ test("restarting and timed-out states render their messages", async () => {
   await screen.findByText(/Up to date on snapshot/);
 
   const { hubUpdateStore } = await import("../../../stores/hubUpdate");
-  hubUpdateStore.setState({ restarting: true });
+  act(() => hubUpdateStore.setState({ restarting: true }));
   expect(await screen.findByText(/Restarting hub/)).toBeTruthy();
 
-  hubUpdateStore.setState({ restarting: false, restartTimedOut: true });
+  act(() => hubUpdateStore.setState({ restarting: false, restartTimedOut: true }));
   expect(await screen.findByText(/didn't come back within 30s/)).toBeTruthy();
 });
 

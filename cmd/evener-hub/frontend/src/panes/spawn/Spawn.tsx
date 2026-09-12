@@ -15,15 +15,12 @@ import {
   useRef,
   useState,
 } from "react";
+import { useStore } from "zustand";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type {
-  HarnessDescriptor,
-  LaunchConfigLayer,
-  LaunchOption,
-  ModelListResponse,
-  PluginSelectionError,
-} from "../../protocol/types.gen";
+import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
+import { slashCommandInvocation } from "../../shell/palette/catalogCommands";
+import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { effortLabel } from "../../shell/reasoningEffort";
 import { navigate, paneToURL } from "../../shell/routing";
@@ -59,6 +56,16 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
+import { findBuiltinArgument, matchBuiltinInvocation } from "../session/composer/builtinInvocation";
+import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
+import {
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  spliceSlashCommand,
+} from "../session/composer/slashCompletion";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
@@ -79,15 +86,23 @@ import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
-  resolveInitialDefaults,
+  modelValidityAgainstList,
   saveDefaults,
   setGlobalLastWorkingDir,
   sweepStaleModels,
 } from "./spawnDefaults";
+import { applySpawnURL, type SpawnDraft, selectSpawnDirectory, spawnDraftsStore, useDraftField } from "./spawnDrafts";
+import {
+  PRE_SESSION_BUILTIN_IDS,
+  resolveSpawnEffortItems,
+  resolveSpawnModelItems,
+  runSpawnBuiltinAfterStart,
+  spawnBuiltinCommands,
+} from "./spawnSlashMenu";
 import { startThread } from "./startThread";
-import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
+import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
 
 // Below-the-fold dialog: mounted only after the user clicks "Connect
 // provider" (connectingProvider state), never on first paint. The chunk -
@@ -268,6 +283,7 @@ const CLASS = {
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
   promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
+  promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
@@ -294,7 +310,33 @@ const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: 
   return <Loader label="Starting" startedAt={startedAt} now={now} />;
 });
 
-export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
+export default function Spawn({ focused }: PaneProps<SpawnPaneParams>) {
+  const draft = useStore(spawnDraftsStore, (state) => state.current);
+  const prefillRevision = useStore(spawnDraftsStore, (state) => state.prefillRevision);
+  const [onNewRoute, setOnNewRoute] = useState(() => window.location.pathname === "/new");
+  useLayoutEffect(() => {
+    applySpawnURL();
+    function onPopState(): void {
+      setOnNewRoute(window.location.pathname === "/new");
+      if (window.location.pathname === "/new") applySpawnURL(true);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  return draft ? <SpawnForm draft={draft} prefillRevision={prefillRevision} focused={focused && onNewRoute} /> : null;
+}
+
+// Keep the singleton's controls mounted while changing their backing draft.
+// Store-bound setters and image continuations retain their originating scope.
+function SpawnForm({
+  draft,
+  prefillRevision,
+  focused,
+}: {
+  draft: SpawnDraft;
+  prefillRevision: number;
+  focused: boolean;
+}) {
   const client = useClient();
   const toasts = useToasts();
   const providerSetup = useProviderSetup();
@@ -323,61 +365,194 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setProviderDialog(() => nextDialog);
   }, []);
 
-  const [prompt, setPrompt] = useState("");
-  const [harness, setHarness] = useState("");
-  const [model, setModel] = useState(""); // qualified "provider/model", or "" for the harness default
-  const [reasoningEffort, setReasoningEffort] = useState("");
-  const [cwd, setCwd] = useState("");
+  const [prompt, setPrompt] = useDraftField(draft, "prompt");
+  const [harness, setHarness] = useDraftField(draft, "harness");
+  const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
+  const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
+  const cwd = draft.cwd;
+  const setCwd = selectSpawnDirectory;
   const [directoryOpen, setDirectoryOpen] = useState(false);
-  const [branch, setBranch] = useState(""); // display-only (floor §1.7)
-  const [accessMode, setAccessMode] = useState("");
+  // Scoped by cwd so a draft switch can never show the previous project's
+  // branch while the new HEAD request is in flight - or indefinitely after it
+  // fails (resolveHeadBranch fails soft to "").
+  const [branchHead, setBranchHead] = useState<{ cwd: string; head: string } | null>(null);
+  const branch = branchHead !== null && branchHead.cwd === cwd ? branchHead.head : ""; // display-only (floor §1.7)
+  const [accessMode, setAccessMode] = useDraftField(draft, "accessMode");
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
-  const [advancedOverrides, setAdvancedOverrides] = useState<LaunchConfigLayer>({});
-  const [pluginSelection, setPluginSelection] = useState<PluginSelectionState>({ mode: "default" });
-  const [knownSelectionIssues, setKnownSelectionIssues] = useState<PluginSelectionError[]>([]);
+  const [advancedOverrides, setAdvancedOverrides] = useDraftField(draft, "advancedOverrides");
+  const [advancedValues, setAdvancedValues] = useDraftField(draft, "advancedValues");
+  const [advancedErrors, setAdvancedErrors] = useDraftField(draft, "advancedErrors");
+  const readAdvancedValues = useCallback(() => draft.fields.getState().advancedValues, [draft]);
+  const [pluginSelection, setPluginSelection] = useDraftField(draft, "pluginSelection");
+  const [knownSelectionIssues, setKnownSelectionIssues] = useDraftField(draft, "knownSelectionIssues");
   const pluginSelectionRef = useRef(pluginSelection);
   pluginSelectionRef.current = pluginSelection;
-  const [staleNotice, setStaleNotice] = useState<string | null>(null);
-  const [createDialogPath, setCreateDialogPath] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [staleNotice, setStaleNotice] = useDraftField(draft, "staleModelNotice");
+  const [globalModelRequest, setGlobalModelRequest] = useState<{
+    active: boolean;
+    promise: Promise<ModelListResponse>;
+  } | null>(null);
+  const [createDialogPath, setCreateDialogPath] = useDraftField(draft, "createDialogPath");
+  const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the
   // caller owns the clock. busyStartedAt is stamped once, at the submit that
   // flips busy true; StartingLoader below owns the 1s tick and mounts only
   // while busy, so no interval runs with nothing on screen reading it.
-  const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
+  const [busyStartedAt, setBusyStartedAt] = useDraftField(draft, "busyStartedAt");
+  // Own the effective layer by draft so neither its gate nor inherited labels
+  // can describe the previous project while the current resolve is pending.
+  const [defaultPreview, setDefaultPreview] = useState<{ draft: SpawnDraft; effective: LaunchConfigLayer } | null>(
+    null,
+  );
+  // Every unset launch-config control names its entry in this effective layer:
+  // "high (default)", "On (default)", etc. Unknown defaults remain plain.
+  const resolvedDefaults = defaultPreview?.draft === draft ? defaultPreview.effective : null;
   // kata xgk8: true only once evener/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
   // unconfirmable state never blocks Start (same fail-open shape as
   // preflightDir).
-  const [noDefaultModel, setNoDefaultModel] = useState(false);
+  const noDefaultModel = resolvedDefaults !== null && (resolvedDefaults.model ?? "").trim() === "";
   // The launchable-model catalog, loaded at pane level so the Effort select can
   // read the selected model's own reasoningEffortLevels without waiting for a
   // picker to open. null = not loaded or the load failed - the select stays on
   // the fallback ladder.
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  // Validity stamp for the pane catalog: the scope ("harness + cwd") the
+  // committed snapshot was fetched for, plus the loader identity that
+  // fetched it. The catalog merges snapshots across scopes for picker
+  // display continuity, but /model pre-start validation must only read a
+  // snapshot fetched for the CURRENT scope by the CURRENT loader: during
+  // the settle window after a cwd/harness change — or while a credential
+  // change-triggered refresh is pending — modelCatalog still holds the
+  // previous snapshot, and a value valid only there must not validate.
+  // null means never successfully loaded (or the last refresh failed):
+  // validation fail-closes through that window instead of accepting a
+  // value the current scope never offered.
+  const [modelCatalogStamp, setModelCatalogStamp] = useState<{
+    scope: string;
+    loader: () => Promise<ModelCatalog>;
+  } | null>(null);
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
-  const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
-  // The whole effective layer of the same launch/resolve (null until it
-  // lands, or after it fails): every launch-config control whose unset state
-  // reads "(default)" prepends its entry here - "high (default)",
-  // "On (default)", "anthropic/claude-sonnet-4 (default)" - so the word
-  // "(default)" never stands in for an answer the hub actually knows.
-  const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | null>(null);
+  const resolvedDefaultModel = (resolvedDefaults?.model ?? "").trim();
   const pluginRevision = useExtensionsStore((state) => state.pluginRevision);
   const pluginSelectionSupported = harnessSupportsPluginSelection(harness, harnesses);
   const combinedOverrides = pluginSelectionSupported
     ? withPluginSelection(advancedOverrides, pluginSelection)
     : withPluginSelection(advancedOverrides, { mode: "default" });
 
+  // Inline slash-command completion (slashCompletion.ts's own header
+  // comment - ported from Beautiful UI's prompt-bar). slashToken is the
+  // trailing-token match recomputed on every keystroke (below); null means
+  // no menu, regardless of what the prompt's text actually contains -
+  // Escape closes the menu by setting this to null directly, and typing
+  // further reopens it because the very next keystroke recomputes the
+  // match fresh. slashHighlighted is the ArrowUp/Down cursor over whatever
+  // the CURRENT filtered list is; reset to 0 whenever the token itself
+  // changes (new match, or the query narrowed/widened) rather than
+  // persisted across it - an index into a list that just changed shape is
+  // not a meaningful position to keep.
+  const [slashToken, setSlashToken] = useState<SlashToken | null>(() => parseSlashToken(prompt, prompt.length));
+  const [slashHighlighted, setSlashHighlighted] = useState(0);
+  // URL writes bypass the keystroke path, including a prefill for the current
+  // project. A restored draft should offer the same completion as typed text.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
+  useEffect(() => {
+    const text = draft.fields.getState().prompt;
+    setSlashToken(parseSlashToken(text, text.length));
+    cursorRef.current = null;
+  }, [draft, prefillRevision]);
+  // Completion can clear this draft through an older, unmounted form. Retire
+  // the token from the current prompt, not from that form's stale continuation.
+  useEffect(() => {
+    if (prompt === "") setSlashToken(null);
+  }, [prompt]);
+  // The backend already resolved the selection for this cwd plus overrides
+  // (evener/spawn/slashCatalog), so no plugin filtering applies here the
+  // way Composer's visibleCatalogCommands filters its global catalog by
+  // live session plugins.
+  const slashCatalog = useSpawnSlashCatalog({
+    client,
+    cwd,
+    harness,
+    launchOverrides: combinedOverrides,
+    pluginRevision,
+    enabled: pluginSelectionSupported,
+  });
+  // Fail-soft: loading and error both render from the last (or empty)
+  // response, never an empty loading flash or a guessed zero.
+  const catalogResponse = slashCatalog.state.response ?? { commands: [], skills: [] };
+  // Interaction honesty: while a same-cwd refresh is in flight — or the last
+  // refresh errored — the hook retains the previous response, but the menu
+  // must not offer rows the new config may have removed: a picked stale
+  // entry would submit as literal text once the session no longer loads it.
+  // Only ready rows complete; the pre-session builtins stay offered throughout.
+  const slashCatalogResponse = slashCatalog.state.status === "ready" ? catalogResponse : { commands: [], skills: [] };
+  // Pre-session builtins reserve their invocations: a catalog command or
+  // skill addressing the same "/name" would display as the builtin but always
+  // lose to it at submit (matchBuiltinInvocation runs first), so offering it
+  // is a lie. Plugin-qualified "/plugin:name" invocations never collide and
+  // pass through untouched.
+  const builtinInvocations = new Set(PRE_SESSION_BUILTIN_IDS.map((id) => `/${id}`));
+  const slashMenuCatalog = mergeSlashCommands(
+    spawnBuiltinCommands(),
+    slashCatalogResponse.commands.filter((c) => !builtinInvocations.has(slashCommandInvocation(c))),
+    (slashCatalogResponse.skills ?? []).filter((s) => !builtinInvocations.has(`/${s.name}`)),
+  );
+  // The menu is only ever open when a token matched AND the merged catalog
+  // has at least one fuzzy label hit for it - a matched-but-empty token
+  // (e.g. "/zzz" against a real catalog) shows no menu at all, same as no
+  // token matching. The pluginSelectionSupported gate is load-bearing: the
+  // hook reports ready-empty for non-evener harnesses, but
+  // spawnBuiltinCommands() merges unconditionally, so without it typing
+  // "/goal" on an external harness would still open a one-row builtin menu
+  // for a session that loads no plugins.
+  const slashItems = slashToken ? filterSlashMenuItems(slashMenuCatalog, slashToken.query) : [];
+  const slashOpen = pluginSelectionSupported && slashToken !== null && slashItems.length > 0;
+  // Singleton pane - no ref scoping needed, unlike Composer's per-ref id.
+  const slashListboxId = "spawn-slash-listbox";
+  const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
+  const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
+
+  // Textarea (widgets/textarea) takes no aria-activedescendant/aria-controls
+  // prop - it's a shared widget outside this stream's manifest - so this
+  // component sets both directly on the native node it already refs for
+  // cursor restoration below, the same imperative-DOM idiom the cursor-
+  // restore layout effect already uses on the identical ref.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    if (slashActiveId) {
+      el.setAttribute("aria-controls", slashListboxId);
+      el.setAttribute("aria-activedescendant", slashActiveId);
+    } else {
+      el.removeAttribute("aria-controls");
+      el.removeAttribute("aria-activedescendant");
+    }
+  }, [slashActiveId]);
+
+  // A freshly (re)matched token always starts highlighted at its first
+  // option - an index carried over from the PREVIOUS token's list is not a
+  // meaningful position once the list itself has changed shape. The presence
+  // flip covers Escape-dismiss→retype of the identical token (same start and
+  // query, so those deps alone would keep a stale index): reopening always
+  // restarts at the first option. Deliberately stricter than the composer's
+  // twin effect, which keeps the index across an identical-token reopen.
+  const slashTokenPresent = slashToken !== null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query/presence are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, the same match with a different query, or a dismiss→reopen flip), same idiom as the cursor-restore layout effect below
+  useEffect(() => {
+    setSlashHighlighted(0);
+  }, [slashToken?.start, slashToken?.query, slashTokenPresent]);
+
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
   // React controlled-input rationale). textRef mirrors `prompt` synchronously
   // so a late decode-failure callback never reverts newer typing.
   const textRef = useRef(prompt);
+  textRef.current = prompt;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cursorRef = useRef<number | null>(null);
@@ -390,18 +565,65 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // `busy` state stays: it still drives the disabled attribute/"Starting…"
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
-  const busyRef = useRef(false);
+  const busyRef = draft.busyRef;
   // Mirrors `model` for the default-provider-credential effect below: that
   // effect must read whether Model is CURRENTLY untouched without itself
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
   // the user picks a model - same rationale as busyRef, a ref read at async
   // resolution time rather than a dependency that reruns the effect.
-  const initialModelRef = useRef("");
   const modelRef = useRef(model);
   modelRef.current = model;
 
+  function isCurrentDraft(): boolean {
+    return spawnDraftsStore.getState().current?.fields === draft.fields;
+  }
+
+  // A launch may finish its draft after departure, but it cannot take back the
+  // screen. Observe transitions, not just the final URL/current draft: a picker
+  // need not change the URL, and A -> B -> A must not revive A's old authority.
+  const viewOwnership = useRef({});
+  useLayoutEffect(() => {
+    const revoke = () => {
+      viewOwnership.current = {};
+    };
+    const unsubscribe = spawnDraftsStore.subscribe((state, previous) => {
+      if (state.current?.fields !== previous.current?.fields) revoke();
+    });
+    // The user's most recent navigation wins: ANY real URL change - even a
+    // query-only one that keeps the same /new pathname and draft - retires a
+    // pending launch's claim to the screen. A popstate carrying no URL
+    // change (a redundant dispatch) does not revoke, and the launch's own
+    // programmatic navigate() is safe: ownsLaunchView() runs before it.
+    let lastURL = window.location.href;
+    const onNavigation = () => {
+      if (window.location.href === lastURL) return;
+      lastURL = window.location.href;
+      revoke();
+    };
+    window.addEventListener("popstate", onNavigation);
+    return () => {
+      revoke();
+      unsubscribe();
+      window.removeEventListener("popstate", onNavigation);
+    };
+  }, []);
+  // Focus can change without routing (for example, a contextual dock pane).
+  // Cleanup also permanently retires a launch when this form is unmounted.
+  useLayoutEffect(() => {
+    if (!focused) viewOwnership.current = {};
+    return () => {
+      viewOwnership.current = {};
+    };
+  }, [focused]);
+
+  function captureLaunchView(): () => boolean {
+    const owner = viewOwnership.current;
+    const active = focused && isCurrentDraft() && window.location.pathname === "/new";
+    return () => active && viewOwnership.current === owner && isCurrentDraft() && window.location.pathname === "/new";
+  }
+
   function updatePrompt(next: string): void {
-    textRef.current = next;
+    if (isCurrentDraft()) textRef.current = next;
     setPrompt(next);
   }
 
@@ -414,15 +636,38 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   const textEditor: TextEditor = {
     read: () => ({
-      text: textRef.current,
-      cursor: cursorRef.current ?? textareaRef.current?.selectionStart ?? textRef.current.length,
+      text: draft.fields.getState().prompt,
+      cursor: isCurrentDraft()
+        ? (cursorRef.current ?? textareaRef.current?.selectionStart ?? draft.fields.getState().prompt.length)
+        : draft.fields.getState().prompt.length,
     }),
     write: (next, cursor) => {
       updatePrompt(next);
-      cursorRef.current = cursor;
+      if (isCurrentDraft()) cursorRef.current = cursor;
     },
   };
-  const attachments = useAttachments(textEditor);
+  const attachments = useAttachments(textEditor, draft.attachments);
+
+  // commitSlashCompletion is Tab/plain-Enter's (handlePromptKeyDown below)
+  // and a mouse click's (SlashCompletionMenu's own onSelect) shared "the
+  // user chose this command" path: splices the item's own invocation
+  // (slashCompletion.ts's mergeSlashCommands - "/plugin:name" for a plugin
+  // command via shell/palette/commands.ts's slashCommandInvocation, bare
+  // "/id" for a built-in) in at the token's own start (never the caret,
+  // when the caret was left mid-token by an earlier Escape-then-retype -
+  // spliceSlashCommand's own doc comment), through the SAME
+  // textEditor.write() seam every other programmatic edit in this file
+  // uses, then closes the menu and returns focus to the field - mirrors
+  // Composer.tsx's own commit shape. This only ever INSERTS the invocation
+  // text - whether it goes on to execute as a built-in is Task 6's own
+  // submit interception, below.
+  function commitSlashCompletion(item: SlashMenuItem): void {
+    if (!slashToken) return;
+    const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
+    textEditor.write(spliced.text, spliced.caret);
+    setSlashToken(null);
+    textareaRef.current?.focus();
+  }
 
   const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
   const providerRequired = usesEvenerModels && providerSetup.status === "missing";
@@ -433,12 +678,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
-  // so the scoped cache below is keyed on two signals of it: this generation,
+  // so the scoped cache and global cleanup use two signals of it: this generation,
   // which evener/auth/updated advances the moment it arrives, and the
   // instance list's identity, which follows the credentials store's debounced
   // refetch and also covers an instance being added, edited or removed. On
-  // either, the loader identities change, and the catalog effect and the
-  // pickers reload (the mount-only stale-model sweep does not re-run).
+  // either, the loader identities change, the catalog effect and pickers reload,
+  // and global cleanup retires its old authority before requesting a new catalog.
   const [credentialsGeneration, setCredentialsGeneration] = useState(0);
   useEffect(
     () =>
@@ -538,9 +783,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     const nextSelection = reconcilePluginSelection(pluginSelectionRef.current, state.response);
     setPluginSelection(nextSelection);
     setKnownSelectionIssues(pluginSelectionIssues(nextSelection, state.response));
-    // A selection change clears the cached issues until its new preview settles.
-    // Re-running this effect for that selection change would restore old issues.
-  }, [pluginPreview.state, pluginSelectionSupported]);
+    // Selection edits retain issues only for still-selected names. Only a ready
+    // preview can reconcile those issues; a failed refresh cannot forgive them.
+  }, [pluginPreview.state, pluginSelectionSupported, setPluginSelection, setKnownSelectionIssues]);
 
   // A refresh triggered by a selection toggle keeps the previous response on
   // the loading state (see usePluginPreview), so the disclosure and its list
@@ -554,19 +799,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const pluginSelectionBlocked =
     explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
-  // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
-  // (harnesses, advanced schema).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only initialization; the closures it calls are stable for the first paint
+  // Draft defaults and URL prefill are owned above the form's lifetime.
+  // Mount only the asynchronous catalogs and focus the current prompt.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only catalog loading
   useEffect(() => {
-    const urlPrefill = readUrlPrefill(window.location.search);
-    const defaults = resolveInitialDefaults({ serverPrefillDir: urlPrefill.dir });
-    if (urlPrefill.prompt) updatePrompt(urlPrefill.prompt);
-    if (defaults.harness) setHarness(defaults.harness);
-    initialModelRef.current = defaults.model ?? "";
-    if (defaults.model) setModel(defaults.model);
-    if (defaults.workingDir) setCwd(defaults.workingDir);
-    if (defaults.accessMode) setAccessMode(defaults.accessMode);
-    if (defaults.reasoningEffort) setReasoningEffort(defaults.reasoningEffort);
     // Writing the prompt is what starting an agent IS, so the caret starts
     // there rather than on whichever field happens to be first in the DOM.
     textareaRef.current?.focus();
@@ -589,51 +825,50 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     };
   }, []);
 
-  // Sweep persisted defaults using the current provider configuration. A
-  // credential refresh cancels older catalogs before they can discard a model.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sweep on provider changes, not on each working-directory keystroke; the request captures the current scope
+  // Persisted defaults span every project, so only an explicitly global Evener
+  // catalog has authority to sweep them. Picker catalogs may belong to another
+  // harness or directory. Refresh/unmount retires the request for all consumers.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: auth generation and provider instances trigger a fresh global catalog
   useEffect(() => {
-    let active = true;
-    const initialModel = initialModelRef.current;
-    loadModelList().then(
+    const request = {
+      active: true,
+      promise: client.request("model/list", { harness: "evener" }),
+    };
+    setGlobalModelRequest(request);
+    request.promise.then(
       (r) => {
-        if (!active) return;
-        const { discarded } = sweepStaleModels(r.data);
-        if (initialModel && modelRef.current === initialModel && discarded.includes(initialModel)) {
-          setModel("");
-          setStaleNotice(initialModel);
-        }
+        // model/list can serialize an empty Go slice as `data: null`
+        // (appwire.ModelListResponse.Data carries no omitempty). Normalize here
+        // so the sweep never iterates a non-iterable and skips its work.
+        if (request.active) sweepStaleModels(r.data ?? []);
       },
       () => {},
     );
     return () => {
-      active = false;
+      request.active = false;
     };
-  }, [client, providerSetup.instances]);
+  }, [client, providerSetup.instances, credentialsGeneration]);
 
-  // kata 11ee: the spawn pane is a dockview singleton (index.tsx) - a second
-  // /new?dir=/?prompt= navigation while this pane is already open refocuses
-  // this SAME mounted instance instead of remounting it, so the mount-only
-  // effect above (deps []) never reruns and the new prefill is silently
-  // dropped. A popstate listener re-applies whatever of readUrlPrefill IS
-  // present on every subsequent in-app navigation - routing.ts's navigate()
-  // dispatches popstate on every push, the same signal AppShell's own
-  // routing glue and settings/sections/project.tsx's useQueryCwd both key
-  // off - without touching the sticky-defaults layering above, which is
-  // mount-only initialization, not a navigation param. A URL with neither
-  // param present (e.g. an unrelated navigation elsewhere and back) yields
-  // no entries from readUrlPrefill and so leaves both fields untouched,
-  // matching that function's own "absent param -> no entry" contract.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: install once - setCwd is a stable setter and updatePrompt closes only over the stable textRef, so the mount-time closure stays correct for every later popstate
+  // Validate each entered draft independently of storage: an earlier sweep may
+  // already have deleted its saved model while the live draft still retains it.
+  // Navigation does not cancel origin-owned validation; provider refresh does.
   useEffect(() => {
-    function onPopState(): void {
-      const urlPrefill = readUrlPrefill(window.location.search);
-      if (urlPrefill.dir) setCwd(urlPrefill.dir);
-      if (urlPrefill.prompt) updatePrompt(urlPrefill.prompt);
-    }
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+    if (!globalModelRequest || !usesEvenerModels) return;
+    const initial = draft.fields.getState();
+    if (!initial.model) return;
+    globalModelRequest.promise.then(
+      (r) => {
+        const current = draft.fields.getState();
+        if (!globalModelRequest.active || current.model !== initial.model || current.harness !== initial.harness)
+          return;
+        const verdict = modelValidityAgainstList(initial.model, r.data ?? []);
+        if (verdict === "stale" || verdict === "malformed") {
+          draft.fields.setState({ model: "", staleModelNotice: initial.model });
+        }
+      },
+      () => {},
+    );
+  }, [draft, globalModelRequest, usesEvenerModels]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
   // same model/list catalog the pickers load on demand. Reloads with the
@@ -643,14 +878,31 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // catalog is scoped by harness+cwd, so it settles with the path instead of
   // chasing every keystroke; model pickers call the same keyed loader on
   // demand.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: harness/cwd are trigger-only deps - the effect body only snapshots them into requestScope, but must re-run (and re-stamp) whenever the scope they define changes, same idiom as the cursor-restore layout effect in the composer
   useEffect(() => {
     let active = true;
+    // The scope this request fetches for, stamped on commit below. A scope
+    // change re-runs the effect and retires the previous run via active, so
+    // only the latest scope's response commits its stamp. loadCatalog's own
+    // identity is the full refresh-trigger key (client, harness, cwd,
+    // instances, generation), so stamping it invalidates the snapshot across
+    // credential/client refreshes too — not just scope changes.
+    const requestScope = `${harness}\0${cwd}`;
+    const requestLoader = loadCatalog;
     const settle = setTimeout(() => {
       loadCatalog().then(
         (catalog) => {
-          if (active) setModelCatalog((previous) => mergeCatalogSnapshot(previous, catalog));
+          if (active) {
+            setModelCatalog((previous) => mergeCatalogSnapshot(previous, catalog));
+            setModelCatalogStamp({ scope: requestScope, loader: requestLoader });
+          }
         },
-        () => {},
+        () => {
+          // Fail the stamp closed on refresh failure: the merged catalog
+          // keeps serving display, but validation must not accept values
+          // against a snapshot a failed refresh may have left behind.
+          if (active) setModelCatalogStamp(null);
+        },
       );
     }, CATALOG_SETTLE_MS);
     return () => {
@@ -658,6 +910,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       clearTimeout(settle);
     };
   }, [loadCatalog]);
+  // The catalog pre-start /model validation may read: the pane catalog only
+  // when its stamp matches the current scope AND the current loader, null
+  // otherwise. Display surfaces (pickers, effort ladder) keep the merged
+  // catalog for continuity; validation fail-closes through the mismatch
+  // window instead of accepting a value the new scope never offered.
+  const scopedModelCatalog =
+    modelCatalogStamp !== null &&
+    modelCatalogStamp.scope === `${harness}\0${cwd}` &&
+    modelCatalogStamp.loader === loadCatalog
+      ? modelCatalog
+      : null;
 
   // Branch HEAD resolution (floor §1.7): the readout is read-only, so HEAD is
   // its ONLY source - re-resolved on every working-dir change with no
@@ -667,7 +930,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (cwd.trim() === "") return undefined;
     let active = true;
     resolveHeadBranch(client, cwd).then((head) => {
-      if (active) setBranch(head);
+      if (active) setBranchHead({ cwd, head });
     });
     return () => {
       active = false;
@@ -709,9 +972,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // this effect doesn't itself re-run on every model change.
   useEffect(() => {
     if (cwd.trim() === "") {
-      setNoDefaultModel(false);
-      setResolvedDefaultModel("");
-      setResolvedDefaults(null);
+      setDefaultPreview(null);
       return undefined;
     }
     let active = true;
@@ -719,10 +980,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
         ([result, models]) => {
           if (!active) return;
-          setResolvedDefaults(result.effective);
+          setDefaultPreview({ draft, effective: result.effective });
           const defaultModel = (result.effective.model ?? "").trim();
-          setNoDefaultModel(defaultModel === "");
-          setResolvedDefaultModel(defaultModel);
           if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
           const slash = defaultModel.indexOf("/");
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
@@ -734,9 +993,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         },
         () => {
           if (active) {
-            setNoDefaultModel(false);
-            setResolvedDefaultModel("");
-            setResolvedDefaults(null);
+            setDefaultPreview(null);
           }
         },
       );
@@ -745,7 +1002,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, advancedOverrides, resolveConfig, loadModels]);
+  }, [cwd, draft, advancedOverrides, resolveConfig, loadModels, setModel]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, schema.ts's
@@ -799,11 +1056,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // a guess, and clobbering a sticky default on a guess would lose the user's
   // setting (the daemon clamps a level the model doesn't accept).
   useEffect(() => {
-    if (knownEffortLevels === null) return;
+    if (knownEffortLevels === null || scopedModelCatalog === null) return;
     if (reasoningEffort !== "" && reasoningEffort !== "none" && !knownEffortLevels.includes(reasoningEffort)) {
       setReasoningEffort("");
     }
-  }, [knownEffortLevels, reasoningEffort]);
+  }, [knownEffortLevels, reasoningEffort, setReasoningEffort, scopedModelCatalog]);
 
   function handlePluginSelectionChange(next: PluginSelectionState): void {
     setKnownSelectionIssues((issues) => {
@@ -851,9 +1108,59 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       }
       return { models: [...models, entry], recent, diagnostics };
     });
+    // The picker loads through the same keyed loadCatalog the pane effect
+    // uses, so a successful pick is a current-scope validation snapshot even
+    // when the background load failed (or hasn't landed): stamp it, or a
+    // typed /model for the just-picked model stays refused against the stale
+    // (usually null) stamp.
+    setModelCatalogStamp({ scope: `${harness}\0${cwd}`, loader: loadCatalog });
   }
 
   function handlePromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    // Inline slash-completion's own keyboard mechanics, ADAPTED for Spawn's
+    // submit model (deliberately NOT a verbatim Composer port - Composer's
+    // Enter sends, Spawn's plain Enter is a newline and only Mod/Ctrl+Enter
+    // submits): ArrowUp/Down move the highlighted option (wrapping at both
+    // ends) OVER the caret rather than moving the caret itself, unmodified Tab
+    // OR unmodified non-composing Enter commits the highlighted option,
+    // Escape dismisses without touching the prompt. Modified Tab (notably
+    // Shift+Tab) falls through for focus navigation. The committing Enter never
+    // steals a submit path - it IS the newline key in Spawn, and
+    // Mod/Ctrl+Enter always falls through to the submit branch below even
+    // with the menu open. Shift+Enter, Alt+Enter, and composing Enter keep
+    // their existing behavior (newline/composition).
+    if (slashOpen) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSlashHighlighted((i) => (i + 1) % slashItems.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSlashHighlighted((i) => (i - 1 + slashItems.length) % slashItems.length);
+        return;
+      }
+      if (
+        (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) ||
+        (event.key === "Enter" &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.shiftKey &&
+          !event.altKey &&
+          !event.nativeEvent.isComposing)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        const chosen = slashItems[slashActiveIndex] ?? slashItems[0];
+        if (chosen) commitSlashCompletion(chosen);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSlashToken(null);
+        return;
+      }
+    }
     // ⌘/Ctrl+Enter submits (floor §1.12, spawn.js:1204-1211).
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -872,18 +1179,157 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     event.target.value = ""; // re-picking the identical file must re-fire change
   }
 
-  async function doSpawn(): Promise<void> {
+  // A valid /model invocation supplies the missing model itself, so it
+  // bootstraps past the required-model guard: the value rides thread/start
+  // (doSpawn's launch-scalar path below), and neither the button nor
+  // handleSpawn may refuse a submit that CAN succeed. Unknown values still
+  // fail in doSpawn's own pre-start validation with the blocked toast. The
+  // catalog half is load-bearing: an unloaded catalog resolves zero items,
+  // so a known value typed before it lands does NOT bootstrap (and doSpawn
+  // fail-closes it the same way) - the user picks a model once the list
+  // they validated against exists.
+  const slashModelBootstrap =
+    modelRequired && pluginSelectionSupported && attachments.items.length === 0
+      ? (() => {
+          const match = matchBuiltinInvocation(prompt, spawnBuiltinCommands());
+          if (match?.command.id !== "model" || match.argsText.trim() === "") return null;
+          return findBuiltinArgument(resolveSpawnModelItems(scopedModelCatalog), match.argsText) !== undefined
+            ? match.argsText.trim()
+            : null;
+        })()
+      : null;
+
+  async function doSpawn(submittedPromptRevision: number, ownsLaunchView: () => boolean): Promise<void> {
     if (pluginSelectionBlocked) {
       busyRef.current = false;
       setBusy(false);
       setBusyStartedAt(null);
       return;
     }
+    // Submit interception for the pre-session builtins (spawnSlashMenu's
+    // allowlist: goal, model, reasoning-effort). Composer's own guard, ported:
+    // a prompt carrying attachments is never read as a command, and on a
+    // non-evener harness there is no menu and no interception - the prompt
+    // always spawns verbatim (same pluginSelectionSupported gate as slashOpen).
+    // A match is CONSUMED like in-session Composer: the invocation text is
+    // stripped from the start input (these builtins are frontend-only, so the
+    // daemon would only receive the literal slash line as noise), and the
+    // builtin applies through its own path instead. Non-builtin prompts
+    // (including plugin commands/skills) still spawn verbatim - the daemon
+    // expands those in the first input itself.
+    //
+    // /goal applies post-start via runSpawnBuiltinAfterStart (goal/set has no
+    // processing gate - it queues behind the running turn). /model and
+    // /reasoning-effort ride thread/start as launch scalars instead: the
+    // daemon refuses thread/model/set while the first input's turn is active
+    // (Conflict "session is processing"), and the effort source reads the new
+    // thread from threadsStore, which is empty until the session pane
+    // hydrates - so neither follow-up mutation can work. Their values are
+    // pre-start validated here (there is no cheaper moment to refuse), then
+    // folded into the start call under the chips, which keeps floor §1.11
+    // precedence (explicit slash value wins over ambient form state).
+    const builtinMatch =
+      pluginSelectionSupported && attachments.items.length === 0
+        ? matchBuiltinInvocation(prompt, spawnBuiltinCommands())
+        : null;
+    // Launch-scalar overrides carried by a matched /model or /reasoning-effort
+    // invocation: resolved during pre-start validation below and folded into
+    // the thread/start scalars under the chips.
+    let slashScalars: { modelProvider?: string; model?: string; reasoningEffort?: string } | null = null;
+    // Bare /goal fail-closes pre-start like bare /reasoning-effort: there is
+    // no goal to clear before the session exists, so starting one just to
+    // no-op its clearing is waste, and sending the literal "/goal" as the
+    // first turn is noise.
+    if (builtinMatch && builtinMatch.command.id === "goal" && builtinMatch.argsText.trim() === "") {
+      toasts.push("error", "/goal needs a value");
+      busyRef.current = false;
+      setBusy(false);
+      setBusyStartedAt(null);
+      return;
+    }
+    if (builtinMatch && (builtinMatch.command.id === "model" || builtinMatch.command.id === "reasoning-effort")) {
+      // Pre-start validation for enum-arg builtins: there is no cheaper
+      // moment to refuse than before the session exists. Unknown value ->
+      // toast the blocked message and abort WITHOUT thread/start - AND reset
+      // the busy guard handleSpawn set above, or Start strands disabled.
+      // Empty /model means "(default)": fail-open, no override at all.
+      const value = builtinMatch.argsText.trim();
+      if (builtinMatch.command.id === "model" && value === "") {
+        // Fall through to the ordinary start below with no model override.
+      } else {
+        // Effort validation reads the scope-stamped catalog, not the merged
+        // display ladder: same staleness hole as /model (a value valid only
+        // in the previous scope must not validate). Only PROVEN staleness
+        // fail-closes (a stamp for another scope/loader): an unknown ladder
+        // with no stamp — never loaded, failed refresh, or an entry without
+        // ladder metadata — falls back to the fallback ladder, the pre-load
+        // status quo. Conflating "don't know" with "known empty" would
+        // refuse valid values whenever the catalog lists the model without
+        // ladder details.
+        const scopeMismatch =
+          modelCatalogStamp !== null &&
+          (modelCatalogStamp.scope !== `${harness}\0${cwd}` || modelCatalogStamp.loader !== loadCatalog);
+        const scopedEffortEntry =
+          effortModel === ""
+            ? undefined
+            : scopedModelCatalog?.models.find((entry) => `${entry.provider}/${entry.model}` === effortModel);
+        const scopedKnownEffortLevels = catalogEffortLevels(scopedEffortEntry);
+        // Proven staleness fail-closes to no levels — and the chip value must
+        // not re-authorize itself through `current`: effortOptionLevels
+        // appends a missing current, so resolving against the chip would
+        // validate a value the new scope never offered. Passing "" keeps the
+        // stale chip out of the candidate set (bare effort fails closed on
+        // the empty query regardless).
+        const scopedEffortLevels = scopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
+        const scopedEffortCurrent = scopeMismatch ? "" : reasoningEffort;
+        const items =
+          builtinMatch.command.id === "model"
+            ? resolveSpawnModelItems(scopedModelCatalog)
+            : resolveSpawnEffortItems(scopedEffortLevels, scopedEffortCurrent);
+        // Bare /reasoning-effort fails CLOSED pre-start: the "" head of
+        // resolveSpawnEffortItems (the "(default)" entry) must not count as
+        // known here, so an empty effort value toasts
+        // "/reasoning-effort needs a value" and aborts without thread/start
+        // (palette parity - in-session bare /reasoning-effort errors with no
+        // side effects). Bare /model stays fail-open via the branch above.
+        const matched =
+          builtinMatch.command.id === "reasoning-effort" && value === ""
+            ? undefined
+            : findBuiltinArgument(items, builtinMatch.argsText);
+        if (!matched) {
+          const message = value
+            ? `/${builtinMatch.command.id}: unknown value "${value}"`
+            : `/${builtinMatch.command.id} needs a value`;
+          toasts.push("error", message);
+          busyRef.current = false;
+          setBusy(false);
+          setBusyStartedAt(null);
+          return;
+        }
+        if (builtinMatch.command.id === "model" && matched) {
+          const { provider, model: modelId } = splitModelId(matched.id);
+          slashScalars = { modelProvider: provider, model: modelId };
+        } else if (builtinMatch.command.id === "reasoning-effort" && matched) {
+          slashScalars = { reasoningEffort: matched.id };
+        }
+      }
+    }
     // The advanced schema's sandbox wins over the access-mode chip (floor §1.8);
     // its model/reasoningEffort win over the chips (floor §1.11) - resolveScalars
     // hoists them into the top-level fields the daemon prefers over overrides.
+    // An explicit /model or /reasoning-effort invocation wins over ALL of
+    // that: the user typed the value as the submit itself, so it is the most
+    // specific intent in the room. The overlay applies AFTER resolveScalars
+    // (not as chip input to it) because resolveScalars gives overrides.model /
+    // overrides.reasoningEffort precedence - folding the slash value into the
+    // chips would let an Advanced Options value silently win instead.
     const overrides = combinedOverrides;
-    const scalars = resolveScalars({ model, reasoningEffort }, overrides);
+    const resolved = resolveScalars({ model, reasoningEffort }, overrides);
+    const scalars: { modelProvider?: string; model?: string; reasoningEffort?: string } = {
+      modelProvider: slashScalars?.modelProvider ?? resolved.modelProvider,
+      model: slashScalars?.model ?? resolved.model,
+      reasoningEffort: slashScalars?.reasoningEffort ?? resolved.reasoningEffort,
+    };
     // Snapshot before the await (mirrors Composer.tsx's submitAction) so an
     // attachment staged WHILE this request is in flight isn't in the set
     // clearSubmitted removes below - it survives untouched, same contract
@@ -891,7 +1337,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
     const { ref } = await startThread(client, {
       cwd,
-      prompt,
+      // A matched builtin is consumed: its invocation text is stripped so the
+      // session starts dormant/configured rather than with a literal slash
+      // line as its first turn. Anything else spawns verbatim.
+      prompt: builtinMatch ? "" : prompt,
       attachments: attachments.toInputAttachments(),
       harness: harness || undefined,
       modelProvider: scalars.modelProvider,
@@ -900,6 +1349,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       accessMode,
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
     });
+    if (builtinMatch && builtinMatch.command.id === "goal") {
+      // Post-start application runs AFTER navigation below: awaiting goal/set
+      // here would hold the UI in "Starting…" for the RPC timeout on a
+      // delayed follow-up even though the session already exists (and a retry
+      // could then create a duplicate session). Failure still toasts without
+      // blocking anything - the session started fine, only the follow-up
+      // setting failed. Not awaited: the pane stays mounted behind the
+      // session pane (floor §1.14), and toasts are global, so the outcome
+      // still surfaces.
+      void runSpawnBuiltinAfterStart(builtinMatch.command.id, builtinMatch.argsText, ref, toasts);
+    }
     saveDefaults({
       cwd,
       harness,
@@ -916,9 +1376,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // user returns to it. Sticky defaults (harness/model/cwd/access
     // mode, floor §1.9-§1.10) are deliberately left untouched - only the
     // one-shot prompt/attachments reset.
-    updatePrompt("");
+    if (draft.fields.getState().promptRevision === submittedPromptRevision) {
+      updatePrompt("");
+    }
     attachments.clearSubmitted(submittedMarkers);
-    handlePluginSelectionChange({ mode: "default" });
+    if (draft.fields.getState().pluginSelection === pluginSelection) {
+      handlePluginSelectionChange({ mode: "default" });
+    }
     // Same defect class: both callers set busy=true before awaiting this
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"
@@ -927,7 +1391,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setBusy(false);
     setBusyStartedAt(null);
     const url = paneToURL("session", { ref });
-    if (url) navigate(url);
+    if (url && ownsLaunchView()) navigate(url);
   }
 
   async function handleSpawn(): Promise<void> {
@@ -937,7 +1401,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // ⌘/Ctrl+Enter chord (handlePromptKeyDown) reaches this function directly
     // - a submit that CANNOT succeed must never fire regardless of path in.
     // The field's own inline note already says why, so no toast here.
-    if (modelRequired || providerRequired) return;
+    if ((modelRequired && slashModelBootstrap === null) || providerRequired) return;
     if (pluginSelectionBlocked) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
@@ -951,6 +1415,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     busyRef.current = true;
     setBusy(true);
     setBusyStartedAt(Date.now());
+    const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const ownsLaunchView = captureLaunchView();
     try {
       const outcome = await preflightDir(client, cwd);
       if (outcome.kind === "abort") {
@@ -967,7 +1433,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         setBusyStartedAt(null);
         return;
       }
-      await doSpawn();
+      await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
       // can reject with AppwireClient's own "cannot call ... while state is
@@ -990,9 +1456,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     busyRef.current = true;
     setBusy(true);
     setBusyStartedAt(Date.now());
+    const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const ownsLaunchView = captureLaunchView();
     try {
       await createDir(client, path);
-      await doSpawn();
+      await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
       // can reject with AppwireClient's own "cannot call ... while state is
@@ -1077,140 +1545,177 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         </div>
 
         {/* The prompt shares its card and attachment controls with the session composer. */}
-        <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-          <PromptCard
-            data-testid="spawn-prompt-card"
-            controlsTestId="spawn-controls"
-            field={
-              <Textarea
-                ref={textareaRef}
-                value={prompt}
-                onChange={(e) => updatePrompt(e.target.value)}
-                onKeyDown={handlePromptKeyDown}
-                onPaste={handlePaste}
-                // Short, because the intro above the card already asks the
-                // question and states the dormant-start rule; a placeholder
-                // that repeats them spends the field's one line on nothing.
-                placeholder="Describe the task…"
-                aria-label="Prompt"
-                autoGrow
-                // The PromptCard around it draws the one border this field
-                // needs and owns the focus ring - without this the field drew
-                // its own box inside the card's, and its resize grabber floated
-                // loose in the corner between them.
-                seamless
-                // The page's primary input, so it opens at a size worth writing
-                // in rather than growing into one. This is also what absorbs
-                // the slack that used to sit dead below the button.
-                minLines={6}
-              />
-            }
-            leading={
-              /* The composer's own leading cluster (Composer.tsx's .leading):
-                 attach, then the model trigger, then effort. All stay INSIDE
-                 the card's control row at every width - choosing a model and
-                 an effort is the same act wherever it happens, so it is the
-                 same component (ModelSwitchTrigger) and the same StatusRow
-                 quiet-effort recipe rather than a bespoke boxed variant below
-                 the card. */
-              <div className={CLASS.leading}>
-                <IconButton
-                  label="Attach image"
-                  icon={<AttachIcon />}
-                  variant="quiet"
-                  size="xs"
-                  type="button"
-                  data-testid="spawn-attach"
-                  onClick={() => fileInputRef.current?.click()}
+        {/* The positioned anchor for the inline slash menu above the card -
+            PromptCard's props are field/leading/actions only, so the menu
+            cannot go inside it (nor is Composer's own menu inside its card
+            either - it sits in Composer.tsx's positioned .formAnchor
+            wrapper). Rendered as this wrapper's first child, mirroring
+            Composer's anchor-above-card placement. */}
+        <div className={CLASS.promptAnchor}>
+          {slashOpen && (
+            <SlashCompletionMenu
+              id={slashListboxId}
+              items={slashItems}
+              highlightedIndex={slashActiveIndex}
+              onSelect={commitSlashCompletion}
+            />
+          )}
+          <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
+            <PromptCard
+              data-testid="spawn-prompt-card"
+              controlsTestId="spawn-controls"
+              field={
+                <Textarea
+                  ref={textareaRef}
+                  value={prompt}
+                  onChange={(e) => {
+                    updatePrompt(e.target.value);
+                    // Every keystroke re-evaluates the trailing-token match
+                    // fresh - a token Escape just closed reopens on the very
+                    // next text change rather than staying closed
+                    // indefinitely.
+                    const caret = e.target.selectionStart ?? e.target.value.length;
+                    setSlashToken(parseSlashToken(e.target.value, caret));
+                  }}
+                  onKeyDown={handlePromptKeyDown}
+                  onPaste={handlePaste}
+                  // Blur is the slash menu's own "clicked/tabbed away
+                  // entirely" close: without it a Tab-away leaves a stale
+                  // menu. SlashCompletionMenu's own options preventDefault()
+                  // on their mousedown specifically so a MOUSE click on an
+                  // option never reaches this handler in the first place -
+                  // see that component's own comment - so this only ever
+                  // fires for a genuine "focus left the field".
+                  onBlur={() => setSlashToken(null)}
+                  // Short, because the intro above the card already asks the
+                  // question and states the dormant-start rule; a placeholder
+                  // that repeats them spends the field's one line on nothing.
+                  placeholder="Describe the task…"
+                  aria-label="Prompt"
+                  autoGrow
+                  // The PromptCard around it draws the one border this field
+                  // needs and owns the focus ring - without this the field drew
+                  // its own box inside the card's, and its resize grabber floated
+                  // loose in the corner between them.
+                  seamless
+                  // The page's primary input, so it opens at a size worth writing
+                  // in rather than growing into one. This is also what absorbs
+                  // the slack that used to sit dead below the button.
+                  minLines={6}
                 />
-                {/* The label follows the same rules the old desktop field's
-                    did - the required-choice word when the hub has confirmed
-                    no default (kata xgk8), otherwise the chosen model, the
-                    resolved default model's own "<model> (default)", or
-                    plain "(default)" until the resolve lands. */}
-                <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
-                  <ModelSwitchTrigger
-                    label={
-                      modelRequired
-                        ? MODEL_CHOOSE_LABEL
-                        : model || (resolvedDefaultModel !== "" ? `${resolvedDefaultModel} (default)` : "(default)")
-                    }
-                    value={model}
-                    loadCatalog={loadCatalog}
-                    onPick={handleModelPickEntry}
-                    data-testid="spawn-model-trigger"
-                    valueTestId="spawn-model-value"
+              }
+              leading={
+                /* The composer's own leading cluster (Composer.tsx's .leading):
+                   attach, then the model trigger, then effort. All stay INSIDE
+                   the card's control row at every width - choosing a model and
+                   an effort is the same act wherever it happens, so it is the
+                   same component (ModelSwitchTrigger) and the same StatusRow
+                   quiet-effort recipe rather than a bespoke boxed variant below
+                   the card. */
+                <div className={CLASS.leading}>
+                  <IconButton
+                    label="Attach image"
+                    icon={<AttachIcon />}
+                    variant="quiet"
+                    size="xs"
+                    type="button"
+                    data-testid="spawn-attach"
+                    onClick={() => fileInputRef.current?.click()}
                   />
-                </span>
-                {/* StatusRow's quiet-effort recipe (statusrow.module.css's
-                    .effortTrigger): the current value IS the visible control -
-                    a real native <select> laid over its own readout at zero
-                    opacity - so the row stays one quiet line instead of
-                    growing a bordered box. The readout renders the SELECTED
-                    option's own label - including the resolved default's
-                    ("high (default)"), never the bare value - so what the
-                    user sees is what the select holds. Same ladder contract
-                    the removed FormRow select kept: the selected model's own
-                    levels, the fallback ladder when the catalog can't say,
-                    and a disabled control when the model cannot reason at all
-                    (effortDisabled) rather than no control - pre-launch the
-                    setting is still discoverable beside the model it belongs
-                    to. */}
-                <span
-                  className={CLASS.effortTrigger}
-                  data-testid="spawn-effort"
-                  data-disabled={effortDisabled ? "true" : undefined}
-                >
-                  <span className={CLASS.effortSeparator} aria-hidden="true">
-                    ·
+                  {/* The label follows the same rules the old desktop field's
+                      did - the required-choice word when the hub has confirmed
+                      no default (kata xgk8), otherwise the chosen model, the
+                      resolved default model's own "<model> (default)", or
+                      plain "(default)" until the resolve lands. */}
+                  <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
+                    <ModelSwitchTrigger
+                      label={
+                        modelRequired
+                          ? MODEL_CHOOSE_LABEL
+                          : model || (resolvedDefaultModel !== "" ? `${resolvedDefaultModel} (default)` : "(default)")
+                      }
+                      value={model}
+                      loadCatalog={loadCatalog}
+                      onPick={handleModelPickEntry}
+                      data-testid="spawn-model-trigger"
+                      valueTestId="spawn-model-value"
+                    />
                   </span>
-                  <span className={CLASS.effortValue} data-testid="spawn-effort-value" aria-hidden="true">
-                    {effortOptions.find((option) => option.value === reasoningEffort)?.label ??
-                      effortLabel(reasoningEffort, effortLevels)}
-                  </span>
-                  <span className={CLASS.effortChevron} aria-hidden="true">
-                    <Chevron direction="down" />
-                  </span>
-                  <label className={CLASS.srOnly} htmlFor="spawn-reasoning-effort">
-                    Prompt reasoning effort
-                  </label>
-                  <select
-                    id="spawn-reasoning-effort"
-                    className={CLASS.effortSelect}
-                    value={reasoningEffort}
-                    onChange={(e) => setReasoningEffort(e.target.value)}
-                    disabled={effortDisabled}
+                  {/* StatusRow's quiet-effort recipe (statusrow.module.css's
+                      .effortTrigger): the current value IS the visible control -
+                      a real native <select> laid over its own readout at zero
+                      opacity - so the row stays one quiet line instead of
+                      growing a bordered box. The readout renders the SELECTED
+                      option's own label - including the resolved default's
+                      ("high (default)"), never the bare value - so what the
+                      user sees is what the select holds. Same ladder contract
+                      the removed FormRow select kept: the selected model's own
+                      levels, the fallback ladder when the catalog can't say,
+                      and a disabled control when the model cannot reason at all
+                      (effortDisabled) rather than no control - pre-launch the
+                      setting is still discoverable beside the model it belongs
+                      to. */}
+                  <span
+                    className={CLASS.effortTrigger}
+                    data-testid="spawn-effort"
+                    data-disabled={effortDisabled ? "true" : undefined}
                   >
-                    {effortOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </span>
-              </div>
-            }
-            actions={
-              <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
-                <Button
-                  variant="primary"
-                  size="xs"
-                  data-testid="spawn-submit"
-                  aria-label="Start"
-                  icon={busy ? undefined : <SendIcon />}
-                  onClick={() => void handleSpawn()}
-                  disabled={busy || modelRequired || providerRequired || pluginSelectionBlocked}
-                >
-                  {busy ? (
-                    <StartingLoader startedAt={busyStartedAt ?? Date.now()} />
-                  ) : (
-                    <span className={CLASS.submitLabel}>Start</span>
-                  )}
-                </Button>
-              </Tooltip>
-            }
-          />
-        </Dropzone>
+                    <span className={CLASS.effortSeparator} aria-hidden="true">
+                      ·
+                    </span>
+                    <span className={CLASS.effortValue} data-testid="spawn-effort-value" aria-hidden="true">
+                      {effortOptions.find((option) => option.value === reasoningEffort)?.label ??
+                        effortLabel(reasoningEffort, effortLevels)}
+                    </span>
+                    <span className={CLASS.effortChevron} aria-hidden="true">
+                      <Chevron direction="down" />
+                    </span>
+                    <label className={CLASS.srOnly} htmlFor="spawn-reasoning-effort">
+                      Prompt reasoning effort
+                    </label>
+                    <select
+                      id="spawn-reasoning-effort"
+                      className={CLASS.effortSelect}
+                      value={reasoningEffort}
+                      onChange={(e) => setReasoningEffort(e.target.value)}
+                      disabled={effortDisabled}
+                    >
+                      {effortOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                </div>
+              }
+              actions={
+                <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
+                  <Button
+                    variant="primary"
+                    size="xs"
+                    data-testid="spawn-submit"
+                    aria-label="Start"
+                    icon={busy ? undefined : <SendIcon />}
+                    onClick={() => void handleSpawn()}
+                    disabled={
+                      busy ||
+                      (modelRequired && slashModelBootstrap === null) ||
+                      providerRequired ||
+                      pluginSelectionBlocked
+                    }
+                  >
+                    {busy ? (
+                      <StartingLoader startedAt={busyStartedAt ?? Date.now()} />
+                    ) : (
+                      <span className={CLASS.submitLabel}>Start</span>
+                    )}
+                  </Button>
+                </Tooltip>
+              }
+            />
+          </Dropzone>
+        </div>
         {providerRequired && (
           <div className={CLASS.notice} role="status">
             <span>Connect a provider to use a model. Sign in or add an API key here.</span>
@@ -1345,6 +1850,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           createDirectory={createDirectory}
           options={schemaOptions}
           onOverridesChange={setAdvancedOverrides}
+          values={advancedValues}
+          onValuesChange={setAdvancedValues}
+          errors={advancedErrors}
+          onErrorsChange={setAdvancedErrors}
+          readValues={readAdvancedValues}
+          draftId={draft}
           validatePath={validatePath}
           resolveConfig={resolveConfig}
           loadCatalog={loadCatalog}
@@ -1371,7 +1882,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       </div>
 
       <ConfirmDialog
-        open={createDialogPath !== null}
+        open={focused && createDialogPath !== null}
         title="Create directory?"
         confirmLabel="Create & start"
         destructive={false}

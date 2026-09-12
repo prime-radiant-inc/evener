@@ -542,7 +542,7 @@ func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *
 	c := root.delegateController
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	root.close(ctx, true)
+	root.close(ctx, closeOptions{cleanupEnv: true})
 	c.mu.Lock()
 	stop := c.stop
 	aggregate := c.durable[fixture.delegateID]

@@ -699,6 +699,12 @@ func (c *Client) MarketplaceAdd(ctx context.Context, params MarketplaceAddParams
 	return out, err
 }
 
+func (c *Client) MarketplaceEdit(ctx context.Context, params MarketplaceEditParams) (MarketplaceListResponse, error) {
+	var out MarketplaceListResponse
+	err := c.request(ctx, MethodEvenerMarketplaceEdit, params, &out)
+	return out, err
+}
+
 func (c *Client) MarketplaceRemove(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
 	var out MarketplaceListResponse
 	err := c.request(ctx, MethodEvenerMarketplaceRemove, params, &out)
@@ -726,6 +732,12 @@ func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
 func (c *Client) PluginPreview(ctx context.Context, params PluginPreviewParams) (PluginPreviewResponse, error) {
 	var out PluginPreviewResponse
 	err := c.request(ctx, MethodEvenerPluginPreview, params, &out)
+	return out, err
+}
+
+func (c *Client) SpawnSlashCatalog(ctx context.Context, params SpawnSlashCatalogParams) (SpawnSlashCatalogResponse, error) {
+	var out SpawnSlashCatalogResponse
+	err := c.request(ctx, MethodEvenerSpawnSlashCatalog, params, &out)
 	return out, err
 }
 

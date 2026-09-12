@@ -52,10 +52,11 @@ import {
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu } from "../../widgets/menu";
-import { Tree, type TreeRowInfo } from "../../widgets/tree";
+import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate, paneToURL } from "../routing";
+import { useIsMobile } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import {
   assignSessionPin,
@@ -106,6 +107,7 @@ const CLASS = {
   parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
+  staticSectionLabel: requireClass(styles.staticSectionLabel, "Rail.module.css", "staticSectionLabel"),
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
   sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
@@ -190,13 +192,26 @@ function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: stri
 function isPassiveRailNode(node: RailNode): boolean {
   return node.kind === "loading" || node.kind === "job";
 }
+
+// One shared Tree wrapper for the rail's sections: the rail renders on
+// desktop (RailHost) AND mobile (StackHost's rail slot), but the global Alt
+// chords are desktop-only - so only the desktop instance releases
+// Alt-held arrows/Home/End from the tree. On mobile the chords are inert,
+// and released Alt+ArrowLeft/Right would fall through to the browser's
+// history navigation, so the tree keeps them tree-owned (roborev PR #1044
+// round-9 medium 1).
+function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
+  const isMobile = useIsMobile();
+  return <Tree {...props} releaseModifierKeys={!isMobile} />;
+}
+
 function RailSection({ title, nodes, onToggle, onActivate, actions, projectRetryCallback }: RailSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   if (nodes.length === 0) return null;
   return (
     <section className={CLASS.section}>
-      <h3 className={CLASS.sectionTitle}>{title}</h3>
-      <Tree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />
+      <h3 className={`${CLASS.sectionTitle} ${CLASS.staticSectionLabel}`}>{title}</h3>
+      <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />
     </section>
   );
 }
@@ -247,7 +262,7 @@ function PinnedRailSection({
         </div>
       </div>
       {open && (
-        <Tree
+        <RailTree
           nodes={[
             ...sessionNodes(section.sessions ?? [], isExpanded),
             ...pinSectionOverflowNode(
@@ -285,10 +300,15 @@ function ArchivedSection({
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   return (
     <section className={CLASS.section}>
-      <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
+      <button
+        type="button"
+        className={`${CLASS.sectionDisclosure} ${CLASS.staticSectionLabel}`}
+        aria-expanded={open}
+        onClick={onToggleOpen}
+      >
         <Chevron direction={open ? "down" : "right"} /> {`Archived sessions (${count})`}
       </button>
-      {open && <Tree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
+      {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
     </section>
   );
 }

@@ -474,3 +474,50 @@ func TestRecordWatchSendsWakesOwnerOnDurablePrefix(t *testing.T) {
 		}
 	})
 }
+
+// TestPersistPendingWatchSendPersistsEachEvictionOnce guards the batch path
+// against persisting an eviction's terminal events twice: once in the group
+// write and again in a per-eviction loop. A duplicated EventWatchSendEvicted
+// collapses invisibly in the durable fold (a map keyed by watch), so this
+// counts the raw journal records instead — exactly one eviction event per
+// overflow, on both the batch seam and the nil-seam sequential protocol.
+func TestPersistPendingWatchSendPersistsEachEvictionOnce(t *testing.T) {
+	t.Parallel()
+	for _, seam := range []string{"batch", "sequential"} {
+		t.Run(seam, func(t *testing.T) {
+			t.Parallel()
+			jm := newTestJM(t)
+			installWatchBelowValidation(t, jm, watchArgs{
+				Target: "caller",
+				Events: []string{"assistant.message"},
+				Send:   &watchSendArgs{To: "dlg_obs"},
+			})
+			cfg := onlyWatchConfigForTest(t, jm)
+			build := func(target string) watchSendDelivery {
+				jm.mu.Lock()
+				defer jm.mu.Unlock()
+				return jm.watchSendSnapshot(cfg, target, "test", events.SessionEvent{SessionID: jm.sessionID})
+			}
+			for i := range defaultWatchSendPendingCap {
+				if _, _, ok, err := jm.recordWatchSend(build(fmt.Sprintf("target_%d", i))); err != nil || !ok {
+					t.Fatalf("fill send %d: ok=%v err=%v", i, ok, err)
+				}
+			}
+			if seam == "sequential" {
+				jm.appendEvents = nil
+			}
+			if _, _, ok, err := jm.recordWatchSend(build("target_overflow")); err != nil || !ok {
+				t.Fatalf("overflow send: ok=%v err=%v", ok, err)
+			}
+			evicted := 0
+			for _, event := range loadJobStoreEvents(t, jm) {
+				if event.Kind == jobstore.EventWatchSendEvicted {
+					evicted++
+				}
+			}
+			if evicted != 1 {
+				t.Fatalf("%s seam persisted %d EventWatchSendEvicted records, want exactly 1 (no double-persist)", seam, evicted)
+			}
+		})
+	}
+}

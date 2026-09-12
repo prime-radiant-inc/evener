@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -19,9 +20,9 @@ import (
 //
 // The grouping rule reproduces the live allocation from the file alone:
 //
-//   - USER_INPUT opens a logical turn. STEERING joins that open turn because
-//     live steering is attached to the active turn; only a steer with no open
-//     group starts a group of its own.
+//   - USER_INPUT and typed goal-continuation STEERING open a logical turn.
+//     Ordinary STEERING follows its explicit OwningTurnID when present;
+//     otherwise it joins the open turn because live steering attaches there.
 //   - CONTINUATIONS extend the open logical turn: ASSISTANT, TOOL,
 //     TOOL_RESULTS, and TURN_FAILURE (a failure closes nothing — the daemon
 //     may retry after a failure, and grouping it into the opener's turn keeps
@@ -32,13 +33,13 @@ import (
 //     turn, grouped with nothing, and CLOSES the open group. This matches live
 //     gap-turn semantics.
 //
-// Turn ids are exact for client-mutation turns (the opener's persisted
+// Turn ids are exact for client-mutation and goal turns (the opener's persisted
 // StableTurnID or its entry-index fallback) and stable-but-not-live-identical
-// for daemon-minted/continuation turns.
+// for other daemon-minted turns.
 
-// opensLogicalTurn reports whether a turn kind starts a new logical turn.
-func opensLogicalTurn(kind schema.TurnKind) bool {
-	return kind == schema.TurnUserInput
+// opensLogicalTurn distinguishes top-level goal input from ordinary steering.
+func opensLogicalTurn(kind schema.TurnKind, goalContinuation bool) bool {
+	return kind == schema.TurnUserInput || kind == schema.TurnSteering && goalContinuation
 }
 
 // continuesLogicalTurn reports whether a turn kind extends the open logical
@@ -56,7 +57,7 @@ func continuesLogicalTurn(kind schema.TurnKind) bool {
 // continuations once this kind has been appended: openers and continuations
 // leave a group open; standalone kinds close it.
 func groupOpenAfter(kind schema.TurnKind) bool {
-	return opensLogicalTurn(kind) || continuesLogicalTurn(kind)
+	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind)
 }
 
 // recordStartsGroup reports whether a record of this kind starts a new
@@ -64,9 +65,12 @@ func groupOpenAfter(kind schema.TurnKind) bool {
 // there is none). Openers always start a group; continuations join the open
 // group (start one only when the previous record closed it); standalone kinds
 // always start — and close — their own group.
-func recordStartsGroup(kind, prevKind schema.TurnKind) bool {
-	if opensLogicalTurn(kind) {
+func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool, owningTurnID, openTurnID string) bool {
+	if opensLogicalTurn(kind, goalContinuation) {
 		return true
+	}
+	if kind == schema.TurnSteering && owningTurnID != "" {
+		return !groupOpenAfter(prevKind) || owningTurnID != openTurnID
 	}
 	if continuesLogicalTurn(kind) {
 		return !groupOpenAfter(prevKind)
@@ -103,9 +107,16 @@ type logicalTurnAccumulator struct {
 // group).
 func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, items []appwire.ThreadItem) {
 	kind := entry.Kind
+	owner := entry.OwningTurnID
 	switch {
-	case opensLogicalTurn(kind):
+	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
+		a.open = true
+	case kind == schema.TurnSteering && owner != "":
+		if a.open && len(a.turns) > 0 && a.turns[len(a.turns)-1].turnID == owner {
+			break
+		}
+		a.turns = append(a.turns, groupedTurn{turnID: owner})
 		a.open = true
 	case continuesLogicalTurn(kind) && a.open && len(a.turns) > 0:
 		// Join the open group.
@@ -188,8 +199,12 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 func stampGroupedTurnFromEntries(turn *appwire.Turn, entries []schema.Turn) {
 	var startedAt *int64
 	var usage llm.Usage
+	interrupted := false
 	for _, entry := range entries {
 		StampTurnFailure(turn, entry)
+		if entry.Kind == schema.TurnSteering && entry.SteeringKind == events.SteeringKindInterrupted {
+			interrupted = true
+		}
 		if startedAt == nil && !entry.Timestamp.IsZero() {
 			ms := entry.Timestamp.UnixMilli()
 			startedAt = &ms
@@ -197,6 +212,9 @@ func stampGroupedTurnFromEntries(turn *appwire.Turn, entries []schema.Turn) {
 		usage = usage.Add(entry.Usage)
 	}
 	turn.StartedAt = startedAt
+	if interrupted && turn.Status != appwire.TurnStatusFailed {
+		turn.Status = appwire.TurnStatusInterrupted
+	}
 	if u := appwire.EvenerUsageFromLLM(usage); u != nil {
 		turn.Usage = u
 	}

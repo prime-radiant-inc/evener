@@ -65,6 +65,14 @@ export interface ToolRendererDescriptor {
   //                     must see, so it breaks a run exactly like "never".
   fold?: "never" | "quiet" | "consequential";
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
+  // hasBody answers per-item whether the body would render anything.
+  // ToolCallItem keys the row's expandability off body presence today, so a
+  // descriptor whose body returns null for some items (a summary-only
+  // rendering) would offer a disclosure that opens to nothing. Absence keeps
+  // today's behavior: any registered body means expandable. The one case
+  // today is job_watch, whose clear and terminal catch-up summaries ARE the
+  // rendering.
+  hasBody?(item: ItemModel): boolean;
   // outputImageSize sizes the generic output-images gallery ToolCallItem
   // renders after the body: undefined keeps the default 96px thumbnails,
   // "large" displays each image whole at up to 600px square. The one case
@@ -144,14 +152,16 @@ export interface ToolRendererDescriptor {
   // updates the moment the answer arrives without item itself needing a new
   // identity.
   summarySuffix?(item: ItemModel, model: ThreadModel | undefined): string | undefined;
-  // summaryHiddenWhenExpanded drops the row's summary line while the row is
+  // summaryWhenExpanded replaces the row's summary TEXT while the row is
   // open. The one case today is shell: its summary IS the raw one-line
   // command, and the expanded body already renders that same command
-  // pretty-printed (ShellCommandBlock), so an open row would show the call
-  // twice - the collapsed row keeps the summary, where it is the only glance
-  // at the command. Undefined (every other tool) renders the summary in both
+  // pretty-printed (ShellCommandBlock), so an open row showing the raw line
+  // would show the call twice. The summary line itself stays - hiding it
+  // (the old shape of this field) lifted the disclosure chevron off the line
+  // it rides, onto the intent line or adrift on an intent-less row - so only
+  // the text swaps. Undefined (every other tool) renders summary() in both
   // states, as before.
-  summaryHiddenWhenExpanded?: boolean;
+  summaryWhenExpanded?: string;
   // summaryLink, if present, is a URL that appears verbatim inside this
   // row's own summary() text and should render as a real, clickable link
   // rather than plain text - kata xw3t, the collapsed-row counterpart to

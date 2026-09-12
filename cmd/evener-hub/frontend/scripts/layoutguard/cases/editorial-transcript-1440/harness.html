@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="resolved.css"><style>body { margin: 0; } #root { max-width: 100%; }</style></head><body data-font-size="m"><div id="root"></div><script type="module">
+window.measure = async () => {
+  const { measureEditorialTranscript } = await import('/src/dev/surface-sections/transcript-guard.ts');
+  return measureEditorialTranscript();
+};
+</script></body></html>

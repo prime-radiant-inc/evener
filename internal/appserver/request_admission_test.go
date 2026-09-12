@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,8 +83,8 @@ func TestRequestAdmissionFailureKeepsConnectionUsable(t *testing.T) {
 
 func TestRecoveryConnectionReachesHandlerWhilePrimaryQueueIsFull(t *testing.T) {
 	server := NewServer(ServerConfig{})
-	blocked := make(chan struct{}, 1)
-	server.blockedEnqueue = func() { blocked <- struct{}{} }
+	blocked := make(chan struct{})
+	server.blockedEnqueue = sync.OnceFunc(func() { close(blocked) })
 	started, release := parkThreadList(t, server)
 	enteredRecovery := make(chan struct{})
 	HandleTyped(server.Router(), appwire.MethodEvenerThreadForceStop, func(context.Context, appwire.ThreadForceStopParams) (appwire.EmptyResponse, error) {
@@ -111,8 +112,8 @@ func TestConnectionAdmissionPrecedesUnreadBacklog(t *testing.T) {
 	server := NewServer(ServerConfig{ConnectionAdmissionContext: func(ctx context.Context) context.Context {
 		return context.WithValue(ctx, requestAdmissionTestKey{}, generation.Load())
 	}})
-	blocked := make(chan struct{}, 1)
-	server.blockedEnqueue = func() { blocked <- struct{}{} }
+	blocked := make(chan struct{})
+	server.blockedEnqueue = sync.OnceFunc(func() { close(blocked) })
 	started, release := parkThreadList(t, server)
 	var resumed, mutated atomic.Int32
 	check := func(ctx context.Context) error {

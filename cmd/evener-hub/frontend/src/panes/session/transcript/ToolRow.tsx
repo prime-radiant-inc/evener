@@ -14,9 +14,10 @@
 //   being merged - and the full text on the hover title); EXPANDED it wraps
 //   in full, so an open row always shows the whole call. The one exception:
 //   a descriptor whose expanded body already shows the summary's content
-//   (shell - the body renders the command pretty-printed) drops line 2
-//   entirely while open (summaryHiddenWhenExpanded), so the call never
-//   appears twice.
+//   (shell - the body renders the command pretty-printed) swaps line 2 for
+//   the descriptor's placeholder while open (the caller passes
+//   summaryWhenExpanded as the summary text), so the call never appears
+//   twice and the chevron keeps its line.
 //
 //   - the kind icon sits in the RAIL beside the rationale line (Jesse's
 //     review call): pulled --speaker-gutter left into the padding the
@@ -145,11 +146,6 @@ export interface ToolRowProps {
    * controlling `summaryOpen`, and a separate .bodyTrigger chevron controls
    * `expanded`. Intent-less rows are unchanged regardless. */
   onToggleSummary?: () => void;
-  /** When true, the summary line is hidden even if `summaryOpen` is true -
-   * the descriptor's summaryHiddenWhenExpanded, derived by the caller
-   * (ToolCallItem) as `expanded && descriptor.summaryHiddenWhenExpanded`.
-   * The body chevron moves to the intent line (data-intent-trailing). */
-  summaryHidden?: boolean;
 }
 
 /** The one rule for reading a tool call's stated intent (ItemModel.description):
@@ -241,7 +237,6 @@ export function ToolRow({
   bodyId,
   summaryOpen = false,
   onToggleSummary,
-  summaryHidden = false,
 }: ToolRowProps) {
   const generatedBodyId = useId();
   const disclosureBodyId = bodyId ?? generatedBodyId;
@@ -253,7 +248,6 @@ export function ToolRow({
   // intent-bearing rows. Intent-less rows keep the legacy overlay pattern
   // (one trigger controls the body) regardless of which props are passed.
   const twoLevel = hasIntent && onToggleSummary !== undefined;
-  const summaryVisible = summaryOpen && !summaryHidden;
   // `status` is typed ReactNode, so it admits values that render nothing and
   // carry no accessible name - null, undefined, false (the common
   // `condition && <Node/>` idiom) - alongside a real status node. Only a
@@ -288,7 +282,7 @@ export function ToolRow({
     <span
       className={CLASS.chevron}
       aria-hidden="true"
-      data-open={(twoLevel ? summaryVisible : expanded) ? "true" : "false"}
+      data-open={(twoLevel ? summaryOpen : expanded) ? "true" : "false"}
       data-testid="tool-row-chevron"
     >
       <Chevron />
@@ -448,6 +442,29 @@ export function ToolRow({
     );
   }
 
+  // When the summary line is collapsed (summaryOpen=false) but the body is
+  // expanded, the body chevron rides the intent line (data-intent-trailing
+  // makes the intent button shrink to share it). When the summary line is
+  // open, the body chevron rides INLINE at the end of the summary text - a
+  // sibling of the words it opens, never sprung to the line's far edge -
+  // while the .bodyTrigger button stays behind it as an empty full-line
+  // overlay so the whole line still toggles the body.
+  const bodyTriggerOnIntentLine = twoLevel && !summaryOpen && expanded;
+  const bodyTriggerOnSummaryLine = twoLevel && summaryOpen;
+  // The inline slot exists only when there is summary text to carry the
+  // chevron; a summary-less line keeps the chevron inside the button.
+  const bodyChevronInline = bodyTriggerOnSummaryLine && hasSummary;
+  const bodyChevron = (
+    <span
+      className={CLASS.chevron}
+      aria-hidden="true"
+      data-open={expanded ? "true" : "false"}
+      data-testid="tool-row-body-chevron"
+    >
+      <Chevron />
+    </span>
+  );
+
   const summaryContent = (
     <>
       {hasSummary && (
@@ -474,6 +491,12 @@ export function ToolRow({
           {hasIntent && trailing && anchorSplit === undefined ? (
             <span className={CLASS.summaryTrailing}>{trailing}</span>
           ) : null}
+          {/* The two-level body chevron rides inline at the end of the summary
+              text, after the trailing control - the same end-of-text slot the
+              grammar gives every chevron. The .bodyTrigger overlay button
+              (below) carries the click target; this span sits inside the
+              pointer-events-none .summary, so it never double-hits. */}
+          {bodyChevronInline ? bodyChevron : null}
         </span>
       )}
       {/* Rows with no intent trail the control at the summary line's end. An
@@ -498,9 +521,11 @@ export function ToolRow({
   // coexists with the intent button's summary disclosure in two-level mode.
   // On the summary line it is an OVERLAY (absolute, full width/height) so the
   // entire summary line is clickable to toggle the body — same pattern as the
-  // intent-less overlay trigger. The chevron rides at the end as a visual
-  // indicator. On the intent line (summary hidden, body expanded) it is a
-  // normal flex item beside the intent button.
+  // intent-less overlay trigger. Its chevron rides INLINE at the end of the
+  // summary text instead (the span rendered inside .summary above), so it hugs
+  // the words it opens; only a summary-less line keeps the chevron inside the
+  // button. On the intent line (summary hidden, body expanded) it is a normal
+  // flex item beside the intent button.
   const bodyTriggerButton = twoLevel ? (
     <button
       type="button"
@@ -511,23 +536,15 @@ export function ToolRow({
       aria-label={summaryLabel}
       onClick={() => onToggle?.()}
     >
-      <span className={CLASS.chevron} aria-hidden="true" data-open={expanded ? "true" : "false"}>
-        <Chevron />
-      </span>
+      {bodyChevronInline ? null : bodyChevron}
     </button>
   ) : null;
-  // When the summary is not visible but the body is expanded, the body
-  // chevron rides the intent line (data-intent-trailing makes the intent
-  // button shrink to share it). When the summary is visible, the body
-  // chevron rides the end of the summary line instead.
-  const bodyTriggerOnIntentLine = twoLevel && !summaryVisible && expanded;
-  const bodyTriggerOnSummaryLine = twoLevel && summaryVisible;
 
   // Intent button attributes differ between two-level and legacy modes.
   // In two-level mode the intent button controls the summary disclosure;
   // in legacy mode it controls the body disclosure directly.
-  const triggerExpanded = twoLevel ? summaryVisible : expanded;
-  const triggerControls = twoLevel ? (summaryVisible ? summaryRegionId : undefined) : disclosureBodyId;
+  const triggerExpanded = twoLevel ? summaryOpen : expanded;
+  const triggerControls = twoLevel ? (summaryOpen ? summaryRegionId : undefined) : disclosureBodyId;
   const triggerOnClick = twoLevel ? () => onToggleSummary?.() : () => onToggle?.();
 
   return (

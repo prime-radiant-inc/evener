@@ -256,10 +256,13 @@ step precedes anything that moves on disk:
    `atomicWriteFile`.
 
 A failure after step 3 renames the directories back before returning, and
-never saves either file. A failure in step 5 after the registry saved but
-before the marketplaces file saved is reported as an error naming the
-inconsistency; `evener-doctor`'s plugin check already reports registry
-entries that name no marketplace.
+never saves either file. A failure saving either file in step 5 renames the
+directories back and restores the registry file to what the edit found, so a
+failed edit changes nothing; the error names the file that failed to save.
+Only a failure of that restore itself leaves the store inconsistent, and the
+error names both files and the marketplace whose plugins the registry still
+keys under the new name; `evener-doctor`'s plugin check already reports
+registry entries that name no marketplace.
 
 The frontend `extensionsStore` gains `editMarketplace(params)` and drops
 the browse cache entry for the old name after a rename.

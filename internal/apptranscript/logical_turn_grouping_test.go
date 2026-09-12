@@ -4,10 +4,12 @@ import (
 	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/llm"
 )
 
 // itemKey builds the canonical transcript key the way production does, so the
@@ -69,6 +71,118 @@ func TestItemReadersGroupContinuationEntries(t *testing.T) {
 		if got, want := turnIDs(read.turns), []string{"turn_1"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s item turn ids = %v, want one logical turn %v", read.name, got, want)
 		}
+	}
+}
+
+func TestItemReadersHonorSteeringOwner(t *testing.T) {
+	for name, owner := range map[string]string{"active": "turn_m10", "carrier": "turn_m11"} {
+		entries := []transcript.Entry{
+			{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("first"), StableTurnID: "turn_m10"}},
+			{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")}},
+			{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User("steer"), StableTurnID: "mutation_m11", OwningTurnID: owner}},
+			{Kind: "entry", Seq: 4, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("followup")}},
+		}
+		path := writeEntries(t, entries...)
+		full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+		wantIDs := []string{"turn_m10"}
+		if name == "carrier" {
+			wantIDs = []string{"turn_m10", owner}
+		}
+		if got := turnIDs(full); !reflect.DeepEqual(got, wantIDs) {
+			t.Fatalf("%s full IDs = %v, want %v", name, got, wantIDs)
+		}
+		var paged []appwire.Turn
+		cursor := ""
+		for {
+			page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, cursor, 1, boundedTestProjector)
+			paged = append(page.Turns, paged...)
+			if page.NextCursor == "" {
+				break
+			}
+			cursor = page.NextCursor
+		}
+		if got := turnIDs(paged); !reflect.DeepEqual(got, wantIDs) {
+			t.Errorf("%s paged IDs = %v, want %v", name, got, wantIDs)
+		}
+		if got, want := keysForTurns(paged), keysForTurns(full); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s paged keys = %v, want full keys %v", name, got, want)
+		}
+		cache := NewTurnCache()
+		window, _, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:" + name, Limit: 1}, boundedTestProjector)
+		if err != nil {
+			t.Fatalf("%s LatestItemWindowFromFile: %v", name, err)
+		}
+		var itemKeys []string
+		for _, candidate := range window.Candidates {
+			itemKeys = append(itemKeys, candidate.Item.TranscriptKey)
+		}
+		for window.OlderCursor != "" {
+			window, _, err = cache.PreviousItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:" + name, Cursor: window.OlderCursor, Limit: 1}, boundedTestProjector)
+			if err != nil {
+				t.Fatalf("%s PreviousItemWindowFromFile: %v", name, err)
+			}
+			previousKeys := make([]string, 0, len(window.Candidates))
+			for _, candidate := range window.Candidates {
+				previousKeys = append(previousKeys, candidate.Item.TranscriptKey)
+			}
+			itemKeys = append(previousKeys, itemKeys...)
+		}
+		var wantKeys []string
+		for _, turn := range full {
+			wantKeys = append(wantKeys, keysFor(turn)...)
+		}
+		if !reflect.DeepEqual(itemKeys, wantKeys) {
+			t.Errorf("%s item-window keys = %v, want full keys %v", name, itemKeys, wantKeys)
+		}
+	}
+}
+
+func keysForTurns(turns []appwire.Turn) []string {
+	keys := make([]string, 0)
+	for _, turn := range turns {
+		keys = append(keys, keysFor(turn)...)
+	}
+	return keys
+}
+
+func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		name := "interrupted"
+		want := appwire.TurnStatusInterrupted
+		if failed {
+			name, want = "failed after interruption", appwire.TurnStatusFailed
+		}
+		t.Run(name, func(t *testing.T) {
+			entries := []transcript.Entry{
+				{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("input"), StableTurnID: "turn_m2"}},
+				{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User("interrupted"), SteeringKind: events.SteeringKindInterrupted}},
+			}
+			if failed {
+				entries = append(entries, transcript.Entry{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnFailure, Error: &schema.TurnFailureInfo{Message: "provider failed"}}})
+			}
+			path := writeEntries(t, entries...)
+			names := map[string]string{}
+			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+				return ProjectTurn(turnID, turnIndex, turn, names, nil, nil)
+			})
+			page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, "", 50, func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+				return ProjectTurn(turnID, turnIndex, turn, toolNames, nil, nil)
+			})
+			for reader, turns := range map[string][]appwire.Turn{"full": full, "indexed": page.Turns} {
+				if len(turns) != 1 || turns[0].Status != want {
+					t.Fatalf("%s turns = %+v, want one %s turn", reader, turns, want)
+				}
+				found := false
+				for _, item := range turns[0].Items {
+					if item.SteeringKind == events.SteeringKindInterrupted {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("%s lost interrupted steering item", reader)
+				}
+			}
+		})
 	}
 }
 

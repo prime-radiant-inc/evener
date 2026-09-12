@@ -160,9 +160,9 @@ func TestIntg_ExecTool_PreToolUseInvalidUpdatedInputErrors(t *testing.T) {
 	}`)
 	collect := drainEvents(sess)
 
-	// Existing arguments are malformed JSON, so merging the hook's updatedInput
-	// into them fails and the tool call is rejected before it runs.
-	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"`), "")
+	// An unfinished string cannot be repaired by appending an outer brace, so
+	// merging the hook's updatedInput fails before the tool runs.
+	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original`), "")
 
 	if !res.IsError {
 		t.Fatalf("malformed-args + updatedInput should error; got %+v", res)
@@ -172,6 +172,28 @@ func TestIntg_ExecTool_PreToolUseInvalidUpdatedInputErrors(t *testing.T) {
 	}
 	if got := ran.Load(); got != 0 {
 		t.Errorf("probe tool ran %d time(s) despite invalid updatedInput; want 0", got)
+	}
+	sess.Close()
+	collect()
+}
+
+func TestIntg_ExecTool_PreToolUseRepairsMissingOuterBrace(t *testing.T) {
+	t.Parallel()
+	sess, ran := intg_hookSession(t, `{
+		"hooks": {
+			"PreToolUse": [
+				{"matcher": "*", "hooks": [{"type": "command", "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"updatedInput\":{\"path\":\"rewritten\"}}}'"}]}
+			]
+		}
+	}`)
+	collect := drainEvents(sess)
+
+	res := sess.execTool(context.Background(), intg_probeCall(`{"path":"original"`), "")
+	if res.IsError || res.Output != "path=rewritten" {
+		t.Fatalf("repaired arguments should accept hook update: %+v", res)
+	}
+	if got := ran.Load(); got != 1 {
+		t.Errorf("probe tool ran %d times; want 1", got)
 	}
 	sess.Close()
 	collect()

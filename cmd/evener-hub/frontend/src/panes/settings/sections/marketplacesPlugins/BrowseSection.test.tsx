@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -87,6 +87,37 @@ test("expanding a node lazily fetches its catalog once; re-expanding does not re
   await user.click(toggle); // re-expand
   expect(screen.getByText("linter")).toBeTruthy();
   expect(browseSpy).toHaveBeenCalledTimes(1);
+});
+
+// A marketplace change from another client retires every cached catalog,
+// including the one an expanded node is showing. Nothing toggles, so the node
+// is the only thing that can ask for the replacement.
+test("an expanded marketplace whose catalog was retired re-browses; a collapsed one does not", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
+  extensionsStore.setState({
+    marketplaces: [MARKETPLACE_A, MARKETPLACE_B],
+    plugins: [],
+    browseCatalogs: new Map([
+      ["acme-plugins", { status: "loaded" as const, plugins: [{ name: "linter" }] }],
+      ["other-plugins", { status: "loaded" as const, plugins: [{ name: "formatter" }] }],
+    ]),
+  });
+  const browseSpy = vi.fn(() => ({ name: "acme-plugins", plugins: [{ name: "fresh-linter" }] }));
+  fake.on("evener/marketplace/browse", browseSpy);
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
+  render(<Harness initialExpanded={new Set(["acme-plugins"])} />);
+  expect(screen.getByText("linter")).toBeTruthy();
+  expect(browseSpy).not.toHaveBeenCalled();
+
+  act(() => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }));
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Expanded marketplace did not start its replacement browse");
+  await act(() => browse.value);
+
+  expect(await screen.findByText("fresh-linter")).toBeTruthy();
+  const browseCalls = fake.calls.filter((c) => c.method === "evener/marketplace/browse");
+  expect(browseCalls.map((c) => c.params)).toEqual([{ name: "acme-plugins" }]);
 });
 
 // FIX 2c: the loading state gets the Loader widget instead of a static
@@ -244,7 +275,7 @@ test("typing a filter query auto-expands (after the debounce) a marketplace with
   );
   render(<Harness />);
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "lint");
-  await vi.advanceTimersByTimeAsync(150);
+  await act(() => vi.advanceTimersByTimeAsync(150));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: /acme-plugins/ }).getAttribute("aria-expanded")).toBe("true"),
   );
@@ -268,6 +299,81 @@ test("clearing the filter immediately collapses every node with no debounce", as
   expect(screen.getByRole("button", { name: /acme-plugins/ }).getAttribute("aria-expanded")).toBe("false");
 });
 
+// The tree-wide "Loading marketplaces…" belongs to one query's catalog load,
+// and a keystroke can outrun that query mid-load. Both then wait on the same
+// in-flight catalogs; the newer query is the one that clears the flag and
+// expands its matches, and the outrun query returns without clearing a flag
+// that is no longer its to clear.
+test("a filter query outrun by a newer one leaves the tree loading no longer than the newer one", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("evener/marketplace/browse", async () => {
+    await gate;
+    return { name: "acme-plugins", plugins: [{ name: "linter" }] };
+  });
+  render(<Harness />);
+  const filter = screen.getByPlaceholderText("Filter plugins…");
+  await user.type(filter, "li");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  expect(screen.getByText("Loading marketplaces…")).toBeTruthy();
+
+  // The next keystroke, while that catalog is still in flight.
+  await user.type(filter, "n");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  await act(async () => {
+    release();
+    await gate;
+  });
+
+  await waitFor(() => expect(screen.queryByText("Loading marketplaces…")).toBeNull());
+  const toggle = screen.getByRole("button", { name: /acme-plugins/ });
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByText("linter")).toBeTruthy();
+});
+
+// A catalog can already be loading when a query runs - a click expanded the
+// node, a retire sent an expanded node back for a replacement, an earlier
+// keystroke's query started it - and only the request's own promise says when
+// it lands. A query that does not wait for it decides the marketplace has no
+// match while its plugins are still on the wire, and nothing reruns the
+// filter afterwards.
+test("the filter waits for a catalog that was already loading when the query ran", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("evener/marketplace/browse", async () => {
+    await gate;
+    return { name: "acme-plugins", plugins: [{ name: "linter" }] };
+  });
+  render(<Harness />);
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  await user.type(screen.getByPlaceholderText("Filter plugins…"), "lin");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  // findByText, not getByText: this query starts no request of its own, so
+  // no store update comes along to flush the filterLoading render with it.
+  expect(await screen.findByText("Loading marketplaces…")).toBeTruthy();
+
+  await act(async () => {
+    release();
+    await gate;
+  });
+
+  await waitFor(() => expect(screen.queryByText("Loading marketplaces…")).toBeNull());
+  expect(screen.getByRole("button", { name: /acme-plugins/ }).getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByText("linter")).toBeTruthy();
+});
+
 test("zero matches anywhere shows a not-found message quoting the query", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
@@ -276,6 +382,6 @@ test("zero matches anywhere shows a not-found message quoting the query", async 
   fake.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
   render(<Harness />);
   await user.type(screen.getByPlaceholderText("Filter plugins…"), "zzz");
-  await vi.advanceTimersByTimeAsync(150);
+  await act(() => vi.advanceTimersByTimeAsync(150));
   expect(await screen.findByText('No plugins match "zzz".')).toBeTruthy();
 });

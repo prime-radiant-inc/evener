@@ -109,6 +109,7 @@ const (
 	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
 	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
 	MethodEvenerMarketplaceRefresh    = "evener/marketplace/refresh"
+	MethodEvenerMarketplaceEdit       = "evener/marketplace/edit"
 	MethodEvenerMarketplaceBrowse     = "evener/marketplace/browse"
 	MethodEvenerPluginList            = "evener/plugin/list"
 	MethodEvenerPluginInstall         = "evener/plugin/install"
@@ -118,6 +119,7 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
+	MethodEvenerSpawnSlashCatalog     = "evener/spawn/slashCatalog"
 	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
 	// hub/runtime, storage, agent roster, and probed MCP servers. See
@@ -2185,6 +2187,10 @@ type ModelDescriptor struct {
 	InputCostPerMillion   *float64 `json:"inputCostPerMillion,omitempty"`
 	OutputCostPerMillion  *float64 `json:"outputCostPerMillion,omitempty"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
+	// Warnings carries the registry's resolved-row notes (e.g. a global-only
+	// model under a regional Vertex location) so the model picker can flag a
+	// row the resolver itself warns about.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type ModelListDiagnostic struct {
@@ -2884,9 +2890,9 @@ type CommandDescriptor struct {
 	PluginName   string `json:"pluginName,omitempty"`
 	Description  string `json:"description,omitempty"`
 	ArgumentHint string `json:"argumentHint,omitempty"`
-	// Source is "plugin" or "user"; "project" is reserved for a future
-	// project-scoped catalog (project commands are cwd-dependent and never
-	// appear in the hub-wide catalog).
+	// Source is "plugin", "user", or "project". "project" is returned by the
+	// spawn-scoped catalog (project commands are cwd-dependent); it never
+	// appears in the hub-wide catalog.
 	Source string `json:"source,omitempty"`
 }
 
@@ -2930,6 +2936,7 @@ type LaunchConfigLayer struct {
 	MCPs                        []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                         map[string]string `json:"env,omitempty"`
 	Verbose                     *bool             `json:"verbose,omitempty"`
+	APILog                      *bool             `json:"apiLog,omitempty"`
 	TraceFile                   string            `json:"traceFile,omitempty"`
 	CPUProfile                  string            `json:"cpuProfile,omitempty"`
 	ExportATIFPath              string            `json:"exportATIFPath,omitempty"`            //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
@@ -3041,6 +3048,26 @@ type PluginPreviewParams struct {
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
 }
 
+// SpawnSlashCatalogParams requests the slash catalog a spawn with these
+// inputs would load. Field names and shapes match ThreadStartParams exactly:
+// when this call and a thread/start agree on all three, the menu shows what
+// that start would load. Model, effort, access mode, and prompt text do not
+// affect the inventory and are deliberately absent.
+type SpawnSlashCatalogParams struct {
+	CWD             string             `json:"cwd"`
+	Harness         string             `json:"harness,omitempty"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogResponse is the pre-session slash inventory: the commands
+// and skills a session started with the params would offer. Row shapes reuse
+// CommandDescriptor and EvenerSkillInfo verbatim so the web composer merges
+// them with mergeSlashCommands unchanged.
+type SpawnSlashCatalogResponse struct {
+	Commands []CommandDescriptor `json:"commands"`
+	Skills   []EvenerSkillInfo   `json:"skills,omitempty"`
+}
+
 // PluginPreviewResponse is the launch plugin inventory and structured
 // diagnostics returned by evener/plugin/preview.
 type PluginPreviewResponse struct {
@@ -3099,8 +3126,8 @@ type MarketplaceEntry struct {
 }
 
 // MarketplaceListResponse is the result of evener/marketplace/list. Every
-// marketplace mutation (add/remove/refresh) also returns this, so a client
-// can re-render from the response without a separate list round-trip.
+// marketplace mutation (add/edit/remove/refresh) also returns this, so a
+// client can re-render from the response without a separate list round-trip.
 type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
 }
@@ -3110,6 +3137,17 @@ type MarketplaceListResponse struct {
 type MarketplaceAddParams struct {
 	Name   string                 `json:"name,omitempty"`
 	Source MarketplaceSourceInput `json:"source"`
+}
+
+// MarketplaceEditParams is the params for evener/marketplace/edit (spec
+// 2026-09-07 §3). NewName renames the registered marketplace (empty means
+// unchanged); Source replaces its source and re-fetches it (absent means
+// unchanged). Installed plugins are unaffected beyond being re-keyed under
+// the new name.
+type MarketplaceEditParams struct {
+	Name    string                  `json:"name"`
+	NewName string                  `json:"newName,omitempty"`
+	Source  *MarketplaceSourceInput `json:"source,omitempty"`
 }
 
 // MarketplaceNameParams identifies one registered marketplace by name — the

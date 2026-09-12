@@ -431,6 +431,17 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			ClientMutationID:     turn.ClientMutationID,
 		}}
 	case schema.TurnSteering:
+		if turn.GoalContinuation != nil {
+			return []appwire.ThreadItem{{
+				Type:                 "systemMessage",
+				ID:                   fmt.Sprintf("item_goal_continuation_%d", turnIndex),
+				TurnID:               turnID,
+				TranscriptEntryIndex: turnIndex,
+				Description:          "Goal",
+				Text:                 turn.GoalContinuation.Text,
+				Status:               appwire.TurnStatusCompleted,
+			}}
+		}
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
 		text := turn.Message.Text()
 		if text == "" && len(images) > 0 {

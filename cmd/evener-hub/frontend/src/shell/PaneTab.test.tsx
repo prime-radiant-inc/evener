@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import type { IDockviewPanelHeaderProps } from "dockview-core";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../protocol/model";
@@ -127,10 +127,12 @@ test("the dot re-renders when the thread's status changes, with no remount", asy
   render(<PaneTab {...tabProps({ paneType: "session", paneParams: { ref: "ref_a" } })} />);
   expect(screen.queryByRole("img")).toBeNull();
 
-  threadsStore.setState((s) => {
-    const next = new Map(s.threads);
-    next.set("ref_a", { ...next.get("ref_a")!, status: { type: "awaiting" } });
-    return { threads: next };
+  act(() => {
+    threadsStore.setState((s) => {
+      const next = new Map(s.threads);
+      next.set("ref_a", { ...next.get("ref_a")!, status: { type: "awaiting" } });
+      return { threads: next };
+    });
   });
   expect(await screen.findByRole("img", { name: "Needs you" })).toBeTruthy();
 });

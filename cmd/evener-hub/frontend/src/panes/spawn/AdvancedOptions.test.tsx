@@ -70,6 +70,9 @@ function renderPanel(
       resolveConfig={resolveConfig as (o: unknown) => Promise<LaunchConfigResolved>}
       loadCatalog={loadCatalog}
       complete={complete}
+      values={over.values}
+      onValuesChange={over.onValuesChange}
+      readValues={over.readValues}
       resolvedDefaults={over.resolvedDefaults}
     >
       {children}
@@ -760,4 +763,25 @@ test("the Advanced options toggle gets comfortable padding and reaches the tap f
   const rule = coarse![1]!.match(/\.toggle\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .toggle").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
+});
+
+// RoboRev PR1131 finding 6: showResolved resolved collectAdvancedOverrides from
+// the render snapshot (`values`) instead of currentValues(), so an edit merged
+// into the draft by a just-settled async validation is missing from the preview.
+// Here readValues is the live draft reader and values is the stale render
+// snapshot: the preview must reflect the live value.
+test("show resolved config resolves from the live draft values, not the render snapshot", async () => {
+  const user = userEvent.setup();
+  const resolveConfig = vi.fn().mockResolvedValue(RESOLVED);
+  renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })], {
+    values: { maxRounds: { value: "1" } },
+    readValues: () => ({ maxRounds: { value: "2" } }),
+    resolveConfig,
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByRole("button", { name: "Show resolved config" }));
+
+  await waitFor(() => expect(resolveConfig).toHaveBeenCalled());
+  expect(resolveConfig).toHaveBeenCalledWith({ maxRounds: 2 });
 });

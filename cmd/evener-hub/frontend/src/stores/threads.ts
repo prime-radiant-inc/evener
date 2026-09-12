@@ -24,7 +24,6 @@ import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
   GoalSetResponse,
-  InputItem,
   ModelListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
@@ -33,7 +32,7 @@ import type {
 } from "../protocol/types.gen";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { translateAttachmentMarkers } from "./attachmentMarkers";
+import { buildComposerInput, buildInput, type InputAttachment } from "./composerInput";
 import { connectionStore } from "./connection";
 import { MutationDispatcher } from "./mutationDispatcher";
 import {
@@ -48,6 +47,8 @@ import {
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
+
+export type { InputAttachment } from "./composerInput";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
 // hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER
@@ -66,13 +67,6 @@ import { resetTasksPanelStoreForTests } from "./tasksPanel";
 // durable outbox record, the recovery draft that rebuilds a composer - pairs
 // text and attachment by identity instead of re-deriving the pairing from
 // array position. buildInput drops it when it assembles the wire input.
-export interface InputAttachment {
-  marker: number;
-  mediaType: string;
-  data: string; // base64-encoded bytes (wire InputItem.data)
-  name?: string;
-}
-
 export type ComposerMutationRoute = "send" | "queue" | "steer" | "drain";
 
 // ForkFromTurnOptions mirrors ThreadForkParams verbatim (appwire/types.go:
@@ -1125,24 +1119,6 @@ export function appendFrameTime(times: number[], now: number): number[] {
   return next.length > FRAME_TIMES_MAX_ENTRIES ? next.slice(next.length - FRAME_TIMES_MAX_ENTRIES) : next;
 }
 
-// buildInput assembles the wire turn/start|steer|queue|drainAsSteer input
-// array: an optional leading text item (queueText allows empty/whitespace-
-// only text when attachments are present - parity finding §B, "image-only
-// queue entries are valid" - so this only omits the text item, never
-// rejects the call), then one image item per attachment. The text arrives
-// verbatim: any new SUBMIT path through here owes it the same
-// translateAttachmentMarkers pass composerMutationIntent applies.
-function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] {
-  const input: InputItem[] = [];
-  if (text.trim()) input.push({ type: "text", text });
-  for (const att of attachments ?? []) {
-    const image: InputItem = { type: "image", mediaType: att.mediaType, data: att.data };
-    if (att.name !== undefined) image.name = att.name;
-    input.push(image);
-  }
-  return input;
-}
-
 function attachmentBlob(attachment: InputAttachment): Blob {
   const bytes = Uint8Array.from(atob(attachment.data), (character) => character.charCodeAt(0));
   return new Blob([bytes], { type: attachment.mediaType });
@@ -1178,7 +1154,7 @@ function composerMutationIntent(
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
-  const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
+  const input = buildComposerInput(text, attachments);
   const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,

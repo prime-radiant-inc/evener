@@ -184,11 +184,18 @@ type Credential struct {
 // merged across every layer. A prunable field absent from Provenance was
 // never set by a layer; it came from the protocol baseline (spec §8.2).
 type Resolved struct {
-	Instance          string            `json:"instance,omitempty"`
-	ProviderID        string            `json:"provider_id,omitempty"`
-	Protocol          string            `json:"protocol,omitempty"`
-	Surface           string            `json:"surface,omitempty"`
-	Transport         Transport         `json:"transport"`
+	Instance   string    `json:"instance,omitempty"`
+	ProviderID string    `json:"provider_id,omitempty"`
+	Protocol   string    `json:"protocol,omitempty"`
+	Surface    string    `json:"surface,omitempty"`
+	Transport  Transport `json:"transport"`
+	// HostDerivedByRule is true when the transport's host rule produced the
+	// base URL's authority from its input — today only the vertex-location rule
+	// turning GOOGLE_VERTEX_LOCATION into the endpoint host (spec §9.4) — rather
+	// than the config naming that host, literally or through a supplied
+	// variable. Hidden from JSON: it is resolve's own note to the code that
+	// reads the transport afterwards, never part of a wire shape.
+	HostDerivedByRule bool              `json:"-"`
 	ModelID           string            `json:"model_id,omitempty"`
 	WireID            string            `json:"wire_id,omitempty"`
 	Model             Model             `json:"model"`

@@ -3,7 +3,7 @@
 // per-row metadata (capability badges, cost, context window). No React, no
 // wire - unit-tested in isolation (catalogView.test.ts). The widget
 // (index.tsx) composes these into rows; the swap sites never see them.
-import type { ModelCatalogEntry } from "./index";
+import type { ModelCatalogEntry } from "./types";
 
 /** One selectable row of the model picker: an identified, labelled option plus
  * the catalog metadata its rich row renders. */

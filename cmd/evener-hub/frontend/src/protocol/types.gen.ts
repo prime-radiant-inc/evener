@@ -810,6 +810,7 @@ export interface LaunchConfigLayer {
   mcps?: MCPServerSpec[];
   env?: Record<string, string>;
   verbose?: boolean;
+  apiLog?: boolean;
   traceFile?: string;
   cpuProfile?: string;
   exportATIFPath?: string;
@@ -906,6 +907,12 @@ export interface MarketplaceCatalogPlugin {
   author?: string;
 }
 
+export interface MarketplaceEditParams {
+  name: string;
+  newName?: string;
+  source?: MarketplaceSourceInput;
+}
+
 export interface MarketplaceEntry {
   name: string;
   source: MarketplaceSourceInput;
@@ -952,6 +959,7 @@ export interface ModelDescriptor {
   inputCostPerMillion?: number;
   outputCostPerMillion?: number;
   reasoningEffortLevels?: string[];
+  warnings?: string[];
 }
 
 export interface ModelListDiagnostic {
@@ -1558,6 +1566,17 @@ export interface Source {
   label: string;
   kind: string;
   online: boolean;
+}
+
+export interface SpawnSlashCatalogParams {
+  cwd: string;
+  harness?: string;
+  launchOverrides?: LaunchConfigLayer;
+}
+
+export interface SpawnSlashCatalogResponse {
+  commands: CommandDescriptor[];
+  skills?: EvenerSkillInfo[];
 }
 
 export interface TaskAggregate {
@@ -2233,6 +2252,7 @@ export const METHOD_NAMES = [
   "evener/marketplace/add",
   "evener/marketplace/remove",
   "evener/marketplace/refresh",
+  "evener/marketplace/edit",
   "evener/marketplace/browse",
   "evener/plugin/list",
   "evener/plugin/install",
@@ -2242,6 +2262,7 @@ export const METHOD_NAMES = [
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
   "evener/command/list",
+  "evener/spawn/slashCatalog",
   "evener/settings/overview",
   "evener/settings/transcriptDisplay/get",
   "evener/settings/transcriptDisplay/patch",
@@ -2420,6 +2441,7 @@ export interface MethodTypes {
   "evener/marketplace/add": { params: MarketplaceAddParams; result: MarketplaceListResponse };
   "evener/marketplace/remove": { params: MarketplaceNameParams; result: MarketplaceListResponse };
   "evener/marketplace/refresh": { params: MarketplaceNameParams; result: MarketplaceListResponse };
+  "evener/marketplace/edit": { params: MarketplaceEditParams; result: MarketplaceListResponse };
   "evener/marketplace/browse": { params: MarketplaceBrowseParams; result: MarketplaceBrowseResponse };
   "evener/plugin/list": { params: EmptyParams; result: PluginListResponse };
   "evener/plugin/install": { params: PluginRefParams; result: PluginListResponse };
@@ -2429,6 +2451,7 @@ export interface MethodTypes {
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
+  "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
   "evener/settings/transcriptDisplay/get": { params: EmptyParams; result: TranscriptDisplayDefaults };
   "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };

@@ -250,6 +250,14 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 	if n.TranscriptRef != "" {
 		attrs = append(attrs, notificationAttr("transcript_ref", n.TranscriptRef))
 	}
+	// A job-targeted fire, teardown notice, or send-rail diagnostic carries
+	// no timer WatchID, but its originating watch rides OriginWatchID — emit
+	// it so a reader can identify which watch to inspect or clear. Timers
+	// keep their existing emit path below; the WatchID guard keeps the two
+	// from ever doubling the attribute.
+	if n.OriginWatchID != "" && n.WatchID == "" {
+		attrs = append(attrs, notificationAttr("watch_id", n.OriginWatchID))
+	}
 	if n.Status == jobNotificationEventWatch && n.JobID == "" {
 		if n.WatchID != "" {
 			attrs = append(attrs, notificationAttr("watch_id", n.WatchID))

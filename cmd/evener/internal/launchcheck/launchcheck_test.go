@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,15 +87,19 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
 	}
 	var out struct {
-		Protocol string `json:"protocol"`
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
+		Protocol    string   `json:"protocol"`
+		Provider    string   `json:"provider"`
+		Model       string   `json:"model"`
+		LaunchFlags []string `json:"launch_flags"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
 	}
 	if out.Protocol != appwire.ProtocolVersion || out.Provider != "gw" || out.Model != "glm-5" {
 		t.Fatalf("launch check output=%+v", out)
+	}
+	if !slices.Contains(out.LaunchFlags, "api-log") {
+		t.Fatalf("launch_flags=%v, want it to advertise api-log", out.LaunchFlags)
 	}
 	// Literal check: catches a change to the ProtocolVersion constant value.
 	if out.Protocol != "evener-appwire-v5" {
@@ -302,4 +307,74 @@ func TestLaunchCheckSeesOnlyTheDeclaredInstances(t *testing.T) {
 				inst.Name, inst.BaseURL)
 		}
 	}
+}
+
+// TestLaunchCheckCarriesResolvedWarnings proves the resolved-row notes the
+// registry attaches (a global-only Gemini under a regional Vertex location)
+// survive into the launch contract's models, which is the hub picker's primary
+// source. A config built on the vertex preset with models_endpoint "-" makes
+// the listing registry-only: no network, but the rows resolve with warnings.
+func TestLaunchCheckCarriesResolvedWarnings(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+[providers.vtx]
+base = "google-vertex"
+models_endpoint = "-"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateRoot := t.TempDir()
+	env := map[string]string{
+		"GOOGLE_VERTEX_PROJECT":  "p",
+		"GOOGLE_VERTEX_LOCATION": "us-central1",
+		"OLLAMA_HOST":            "127.0.0.1:1",
+	}
+
+	old := launchCheckLoadClient
+	t.Cleanup(func() { launchCheckLoadClient = old })
+	launchCheckLoadClient = func(stateDir string) (*llm.Client, error) {
+		r, _, err := cmdutil.LoadRegistry(
+			registry.WithConfigPath(cfgPath),
+			registry.WithStateRoot(stateRoot),
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithEnv(func(k string) (string, bool) { v, ok := env[k]; return v, ok }),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return cmdutil.NewRegistryClient(r, stateDir), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--models",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Models []struct {
+			Provider string   `json:"provider"`
+			Model    string   `json:"model"`
+			Warnings []string `json:"warnings"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	for _, m := range out.Models {
+		if m.Provider != "vtx" || m.Model != "gemini-3.5-flash" {
+			continue
+		}
+		if !slices.ContainsFunc(m.Warnings, func(w string) bool {
+			return strings.Contains(w, "regional Vertex location")
+		}) {
+			t.Fatalf("gemini-3.5-flash warnings=%v, want the regional-location note", m.Warnings)
+		}
+		return
+	}
+	t.Fatalf("models=%+v, want vtx/gemini-3.5-flash", out.Models)
 }

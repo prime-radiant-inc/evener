@@ -121,18 +121,27 @@ func lockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) func() {
 }
 
 func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string) error {
+	return deletionFenceErrorNaming(cfg, ref, threadID, ref, clientMutationID)
+}
+
+// deletionFenceErrorNaming looks the fence up under (ref, threadID) and names
+// reportRef in the refusal. Fork resolves a stable workspace ref to the session
+// that ref currently names, so the fence belongs to the resolved session while
+// the message belongs to the ref the client asked about — naming the resolved
+// id would report an identity the request never mentioned.
+func deletionFenceErrorNaming(cfg hubcore.WebConfig, ref, threadID, reportRef, clientMutationID string) error {
 	if cfg.DeletionStore == nil {
 		return nil
 	}
 	if _, deleted := cfg.DeletionStore.TargetState(ref, threadID); !deleted {
 		return nil
 	}
-	if ref == "" {
-		ref = localAppRef(threadID)
+	if reportRef == "" {
+		reportRef = localAppRef(threadID)
 	}
 	return appwire.WireError{
 		Code:    appwire.CodeUnavailable,
-		Message: "target has been deleted: " + ref,
+		Message: "target has been deleted: " + reportRef,
 		Data: appwire.ErrorData{
 			EvenerErrorInfo:  appwire.ErrorActionUnavailable,
 			ClientMutationID: clientMutationID,
@@ -202,13 +211,20 @@ func isSessionRecoveryAdmissionError(err error) bool {
 	return ok
 }
 
+// sessionResumeRequiredError is the refusal for an action whose session is
+// under a recovery fence, whether the hub holds it in the resume locks or the
+// session's own daemon announces it in the status it reports.
+func sessionResumeRequiredError() error {
+	return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires an explicit thread/resume before submitting another action")}
+}
+
 func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
 	if err := sessionConnectionRecoveryError(ctx, cfg, ref, threadID); err != nil {
 		return err
 	}
 	state := sessionRecoveryState(cfg, ref, threadID)
 	if state.Stopping > 0 || state.ResumeRequired {
-		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires an explicit thread/resume before submitting another action")}
+		return sessionResumeRequiredError()
 	}
 	if state.Epoch != epoch {
 		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery canceled this pending action; submit it again")}

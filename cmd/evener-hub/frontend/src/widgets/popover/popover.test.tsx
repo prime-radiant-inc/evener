@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { Popover } from "./index";
 
@@ -116,7 +116,9 @@ test("re-measures placement when the panel's own size changes after opening", as
 
     const grow = callbacks[0];
     if (!grow) throw new Error("expected Popover to observe its panel for size changes");
-    grow([], {} as ResizeObserver);
+    await act(async () => {
+      grow([], {} as ResizeObserver);
+    });
 
     expect(panel.style.top).not.toBe("");
     expect(panel.style.left).not.toBe("");

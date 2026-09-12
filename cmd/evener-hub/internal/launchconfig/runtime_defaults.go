@@ -13,6 +13,11 @@ import (
 const (
 	LayerEnv     LayerName = "env"
 	LayerBuiltin LayerName = "builtin"
+	// LayerHub is the hub.toml floor source: the hub-wide default applied to
+	// fields the hub owns (api_log today) when every file layer left them
+	// unset. It beats the builtin floor for those fields and loses to any
+	// layer value.
+	LayerHub LayerName = "hub"
 )
 
 // ApplyEnvDefaults returns resolved with the effective layer's
@@ -176,6 +181,12 @@ func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema 
 			if out.Effective.Verbose == nil && opt.BuiltinDefaultBool != nil {
 				v := *opt.BuiltinDefaultBool
 				out.Effective.Verbose = &v
+				set(opt.Field)
+			}
+		case "apiLog":
+			if out.Effective.APILog == nil && opt.BuiltinDefaultBool != nil {
+				v := *opt.BuiltinDefaultBool
+				out.Effective.APILog = &v
 				set(opt.Field)
 			}
 		case "exportATIFProviderHandles":
