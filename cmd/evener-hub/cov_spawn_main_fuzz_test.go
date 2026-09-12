@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,8 +26,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 		data string
 	}{
 		{0, ""}, {0, "addr = 'localhost:1'\nplugin_auto_upgrade_interval = '1s'\n"},
-		{0, "["}, {1, "xdg"}, {1, "windows-profile"}, {1, "windows-drive"},
-		{1, "windows-temp"}, {1, "home"}, {1, "temp"}, {2, "body"},
+		{0, "["}, {1, "xdg"}, {1, "home"}, {1, "nohome"}, {2, "body"},
 		{2, strings.Repeat("x", httpRecorderMaxBodyBytes+1)}, {3, "dev"}, {3, "embed"},
 		{4, "args"}, {4, "empty"}, {5, "tail"}, {5, "token"},
 	} {
@@ -65,25 +65,28 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			}
 		case 1:
 			env := map[string]string{}
-			goos := "linux"
+			// A supplied env with no XDG_STATE_HOME and no home resolves to
+			// cmdutil's "."-rooted fallback; it never reads the process env.
+			want := filepath.Join(".local", "state", "evener")
 			switch data {
 			case "xdg":
-				env["XDG_STATE_HOME"] = " /state "
-			case "windows-profile":
-				goos, env["USERPROFILE"] = "windows", " C:\\Users\\u "
-			case "windows-drive":
-				goos, env["HOMEDRIVE"], env["HOMEPATH"] = "windows", "C:", "\\Users\\u"
-			case "windows-temp":
-				goos = "windows"
+				stateHome := t.TempDir()
+				env[envvars.XDGStateHome.Name] = stateHome
+				want = filepath.Join(stateHome, "evener")
 			case "home":
-				env["HOME"] = " /home/u "
+				// Exercise the home arm with the host's spelling so the seed
+				// keeps covering it on every platform.
+				home := t.TempDir()
+				if runtime.GOOS == "windows" {
+					env[envvars.UserProfile.Name] = home
+				} else {
+					env[envvars.Home.Name] = home
+				}
+				want = filepath.Join(home, ".local", "state", "evener")
 			}
-			got := openAIStateDirFromLookup(goos, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
-			if got == "" {
-				t.Fatal("empty state dir")
+			if got := openAIStateDirFromEnvMap(env); got != want {
+				t.Fatalf("openAIStateDirFromEnvMap(%v) = %q, want %q", env, got, want)
 			}
-			_ = openAIStateDirFromEnvMap(env)
-			_ = openAIStateDirFromEnvList([]string{"HOME=/home/u", "HOME=/last"})
 		case 2:
 			root := t.TempDir()
 			t.Setenv(envvars.EVENERRecordHTTP.Name, "1")

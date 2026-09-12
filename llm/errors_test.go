@@ -388,6 +388,27 @@ func TestNewRequestTimeoutError_IsRetryable(t *testing.T) {
 	}
 }
 
+func TestNewAuthenticationError_IsNotRetryable(t *testing.T) {
+	refused := errors.New(`oauth2: "invalid_grant" "Token has been expired or revoked."`)
+	err := NewAuthenticationError("vertex", `instance "vertex": application-default credentials were refused (invalid_grant)`, refused)
+	var e Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected Error interface")
+	}
+	if Kind(err) != KindAuthentication {
+		t.Fatalf("Kind() = %v, want KindAuthentication", Kind(err))
+	}
+	if e.Retryable() || retryableError(err) {
+		t.Fatal("a refused credential must not be retried")
+	}
+	if e.StatusCode() != 0 || providerOf(err) != "vertex" {
+		t.Fatalf("StatusCode() = %d, provider = %q, want 0 / vertex", e.StatusCode(), providerOf(err))
+	}
+	if !errors.Is(err, refused) {
+		t.Fatal("the refusal must stay in the chain")
+	}
+}
+
 func TestResponseHeaderTimeoutError_IsRetryable(t *testing.T) {
 	err := newResponseHeaderTimeoutError("openai", "timed out awaiting response headers", context.DeadlineExceeded)
 
