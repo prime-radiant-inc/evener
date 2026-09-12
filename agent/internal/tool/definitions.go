@@ -1078,7 +1078,9 @@ func DefUrlsAdd() llm.ToolDefinition {
 		Description: `Add a URL to the session's shared URL list. ` +
 			`Accepts http(s) URLs, file:/// URLs, and bare paths under the session ` +
 			`working directory. Re-adding an existing URL updates its label and ` +
-			`returns the existing entry.`,
+			`returns the existing entry. A bare path whose first segment contains a ` +
+			`colon is read as a URL scheme and rejected; prefix it with "./" to add ` +
+			`it as a path.`,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

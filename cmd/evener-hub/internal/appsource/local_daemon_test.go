@@ -606,6 +606,7 @@ func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/live", ThreadID: "th_live", SessionID: "sess_live"}, Status: "idle"},
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/alias", ThreadID: "th_alias"}, SessionID: "sess_alias", OwnerSessionID: "sess_live", Status: "idle", ReadOnlyAlias: true},
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/restart", ThreadID: "th_restart", SessionID: "sess_restart"}, Status: appwire.ThreadStatusRestartRequired},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/aliasrestart", ThreadID: "th_alias_restart"}, SessionID: "sess_alias_restart", OwnerSessionID: "sess_live", Status: appwire.ThreadStatusRestartRequired, ReadOnlyAlias: true},
 		}
 	}, nil)
 
@@ -631,6 +632,16 @@ func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
 	}
 	if restart.Send || restart.Steer || restart.Rename {
 		t.Fatalf("restart-required session advertised mutations: %+v", restart)
+	}
+	// The two branches compose: a read-only alias that also needs a restart keeps
+	// the alias's empty capability set, so the restart branch's read-only notes
+	// advertisement must not leak through the alias's own gate.
+	aliasRestart, ok := capsBySession["sess_alias_restart"]
+	if !ok {
+		t.Fatalf("read-only restart-required alias missing from the roster: %+v", capsBySession)
+	}
+	if aliasRestart != (appwire.ThreadCapabilities{}) {
+		t.Fatalf("read-only restart-required alias advertised capabilities: %+v", aliasRestart)
 	}
 }
 

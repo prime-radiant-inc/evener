@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"html"
 	"slices"
 	"strings"
 
@@ -405,25 +404,36 @@ func (s *Session) notesContextBlockForModel() string {
 	return escapeNotesContextBlock(s.renderNotesContextBlock())
 }
 
+// notesFramingNeutralizer neutralizes every sequence that could forge the block's
+// framing or terminate it from inside. Literal angle brackets cannot survive, so no
+// tag variant is reachable, and the entity spellings of the framing tokens are
+// escaped in turn so they cannot be decoded back into one. Every other byte passes
+// through untouched: html.EscapeString would also rewrite "&" and the quote
+// characters, handing the model a URL like "...?a=1&amp;b=2" that neither
+// notes_read nor the UI would ever show it.
+var notesFramingNeutralizer = strings.NewReplacer(
+	"&lt;", "&amp;lt;",
+	"&gt;", "&amp;gt;",
+	"<", "&lt;",
+	">", "&gt;",
+)
+
 // escapeNotesContextBlock returns the model-facing copy of a rendered
-// shared-notes block. It is the single definition of the escaping contract: the
-// renderer applies it to the live copy, and every path that puts a persisted
+// shared-notes block. It is the single definition of the framing-escape contract:
+// the renderer applies it to the live copy, and every path that puts a persisted
 // (raw) block back into model context applies it to that turn — a restored
-// transcript turn or a forked delegate's inherited prefix. The framing tags are
-// written at fixed ends of the block, so everything between them, including an
-// injected closing tag, is escaped and the block cannot be terminated from
-// inside. Text that is not a rendered block is escaped whole rather than passed
-// through raw.
+// transcript turn or a forked delegate's inherited prefix. The framing tags sit at
+// fixed ends of the block and the content between them is neutralized, so the block
+// can be neither terminated nor re-opened from inside. Text that is not a rendered
+// block is neutralized whole rather than passed through raw.
 func escapeNotesContextBlock(block string) string {
 	inner, ok := strings.CutPrefix(block, notesBlockOpen)
-	if !ok {
-		return html.EscapeString(block)
+	if ok {
+		if body, closed := strings.CutSuffix(inner, notesBlockClose); closed {
+			return notesBlockOpen + notesFramingNeutralizer.Replace(body) + notesBlockClose
+		}
 	}
-	inner, ok = strings.CutSuffix(inner, notesBlockClose)
-	if !ok {
-		return html.EscapeString(block)
-	}
-	return notesBlockOpen + html.EscapeString(inner) + notesBlockClose
+	return notesFramingNeutralizer.Replace(block)
 }
 
 func (s *Session) renderNotesContextBlock() string {

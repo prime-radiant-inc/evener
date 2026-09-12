@@ -1027,8 +1027,11 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 	if status == appwire.ThreadStatusRestartRequired {
 		// A restart-required session cannot act, but its saved notes are still
 		// readable: advertise the read capability alone and let the write gate
-		// (and the daemon's admission fence) refuse every mutation.
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: true}
+		// (and the daemon's admission fence) refuse every mutation. The alias
+		// guard is redundant with the alias gate below, which clears every
+		// capability; it is here so this advertisement never depends on that
+		// branch running after it.
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: !item.ReadOnlyAlias}
 	}
 	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0) {
 		jobs := make([]appwire.EvenerJobInfo, 0, len(item.RunningJobs)+len(item.CompletedJobs))

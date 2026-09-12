@@ -34,9 +34,11 @@ export function fileURLToPath(fileURL: string): string {
   try {
     return decodeURIComponent(url.pathname);
   } catch {
-    // A malformed escape must not turn the whole file:/// URL into the
-    // open-beside target; the undecoded path is the closest true answer.
-    return url.pathname;
+    // A malformed escape yields no path: the URL names something this system
+    // cannot interpret, and its literal bytes could name a different file than
+    // the entry means. Canonical file URLs always encode "%", so this only
+    // refuses input that did not come from url canonicalization.
+    return "";
   }
 }
 

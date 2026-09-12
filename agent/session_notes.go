@@ -171,9 +171,11 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 		// Any explicit scheme that is not http(s) or file is rejected here,
 		// BEFORE the bare-path fallback: inputs like "javascript:alert(1)",
 		// "data:text/plain,hi" or "mailto:foo@bar" carry no "://" but must
-		// never be stored as file:// entries.
+		// never be stored as file:// entries. A bare path can share the shape
+		// ("report:2024.md"), so the error names the "./" form that resolves as
+		// a path rather than only the scheme that was read.
 		if scheme, _, ok := strings.Cut(trimmed, ":"); ok && isURLScheme(scheme) {
-			return "", fmt.Errorf("urls/add: unsupported URL scheme %q", scheme)
+			return "", fmt.Errorf("urls/add: %q is read as the unsupported URL scheme %q; to add a path whose first segment contains a colon, prefix it with ./ (e.g. %q)", trimmed, scheme, "./"+trimmed)
 		}
 		if strings.Contains(trimmed, "://") {
 			scheme, _, _ := strings.Cut(trimmed, "://")

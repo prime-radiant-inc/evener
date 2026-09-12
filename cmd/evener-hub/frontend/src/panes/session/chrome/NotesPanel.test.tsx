@@ -412,8 +412,11 @@ test("a flushed blur save does not resubmit when its original deadline passes", 
 
 test("a malformed file URL never becomes an open-beside target", () => {
   expect(fileURLToPath("file:///tmp/with%20space.md")).toBe("/tmp/with space.md");
-  // A malformed escape keeps the undecoded path instead of the whole URL.
-  expect(fileURLToPath("file:///tmp/bad%zz.md")).toBe("/tmp/bad%zz.md");
+  // A malformed escape yields no path either: the URL names something we cannot
+  // interpret, and guessing the literal bytes risks opening a different file than
+  // the entry means. Canonical file URLs always encode "%", so this only rejects
+  // input this system never produced.
+  expect(fileURLToPath("file:///tmp/bad%zz.md")).toBe("");
   // A string that is not a URL yields no path at all.
   expect(fileURLToPath("not a url")).toBe("");
 });
