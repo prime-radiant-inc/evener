@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"golang.org/x/oauth2/jwt"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -182,6 +184,58 @@ func TestGCPADCReportsAStoredCredentialRefusal(t *testing.T) {
 	if !errors.Is(err, refused) {
 		t.Fatalf("err = %v, want the oauth error in the chain", err)
 	}
+}
+
+// A service-account token source is golang.org/x/oauth2/jwt, which builds its
+// RetrieveError from the response body and leaves ErrorCode empty: the
+// endpoint's refusal exists only in the body there. Drive the real source
+// against a local token endpoint — the registry refuses a credential naming a
+// foreign token_uri (spec §4), so this is the only offline way to reach that
+// shape — and check both a verdict and a transient condition.
+func TestGCPADCReadsARefusalFromTheJWTStyleError(t *testing.T) {
+	key := testServiceAccountKey(t)
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"refused", http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Invalid JWT Signature."}`, "invalid_grant"},
+		{"transient", http.StatusServiceUnavailable, `{"error":"temporarily_unavailable"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			cfg := jwt.Config{ //nolint:staticcheck // the deprecated fields are this library's only offline entry to the very path a service account takes
+				Email:      "sa@example.iam.gserviceaccount.com",
+				PrivateKey: key,
+				TokenURL:   srv.URL,
+			}
+			ts := cfg.TokenSource(context.Background())
+			_, err := ts.Token()
+			if err == nil {
+				t.Fatal("the token endpoint refused and the source reported success")
+			}
+			if got := oauthRefusal(err); got != tc.want {
+				t.Fatalf("oauthRefusal = %q, want %q (err %v)", got, tc.want, err)
+			}
+		})
+	}
+}
+
+// testServiceAccountKey returns the PEM key testServiceAccountJSON carries.
+func testServiceAccountKey(t *testing.T) []byte {
+	t.Helper()
+	var doc struct {
+		PrivateKey string `json:"private_key"`
+	}
+	if err := json.Unmarshal([]byte(testServiceAccountJSON(t)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	return []byte(doc.PrivateKey)
 }
 
 // A credential replaced under a long-running process (a re-login rewrites the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -105,14 +106,27 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 // (temporarily_unavailable on a 503, server_error), which are not verdicts on
 // the credential and must keep their retryable meaning; so does any failure
 // that carries no code at all (a deadline, an unreachable endpoint).
+//
+// The jwt token source a service account rides builds the same error without
+// filling ErrorCode, leaving the endpoint's words only in the body, so the
+// code is read from there when the field is empty.
 func oauthRefusal(err error) string {
 	refused, ok := errors.AsType[*oauth2.RetrieveError](err)
 	if !ok {
 		return ""
 	}
-	switch refused.ErrorCode {
+	code := refused.ErrorCode
+	if code == "" {
+		var body struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(refused.Body, &body) == nil {
+			code = body.Error
+		}
+	}
+	switch code {
 	case "invalid_grant", "invalid_client":
-		return refused.ErrorCode
+		return code
 	}
 	return ""
 }
