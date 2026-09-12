@@ -173,21 +173,25 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async setApiKey(provider, value) {
     const client = requireClient();
+    noteLocalAuthMutation(provider);
     return client.request("evener/auth/apiKey/set", { provider, value });
   },
 
   async setCredentialJson(provider, value) {
     const client = requireClient();
+    noteLocalAuthMutation(provider);
     return client.request("evener/auth/credentialJson/set", { provider, value });
   },
 
   async clearStoredKey(provider) {
     const client = requireClient();
+    noteLocalAuthMutation(provider);
     return client.request("evener/auth/apiKey/clear", { provider });
   },
 
   async logout(provider) {
     const client = requireClient();
+    noteLocalAuthMutation(provider);
     return client.request("evener/auth/logout", { provider });
   },
 
@@ -198,6 +202,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async loginComplete(provider, flowId, redirectUrl) {
     const client = requireClient();
+    noteLocalAuthMutation(provider);
     return client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
   },
 
@@ -208,6 +213,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async devicePoll(provider, flowId) {
     const client = requireClient();
+    noteLocalAuthMutation(provider);
     return client.request("evener/auth/device/poll", { provider, flowId });
   },
 
@@ -236,13 +242,35 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // otherwise. Mirrors stores/extensions.ts's identical
 // wiring, applied here to this store's one wire-truth list. On the wire
 // evener/auth/updated carries {provider, activeSource} (notifyAuthUpdated,
-// cmd/evener-hub/app_rpc.go:764-767), but its generated
-// EvenerAuthUpdatedPayload type is empty ({}) because codegen can't see
-// into Go's untyped map[string]string - and this refetch is
-// payload-agnostic anyway (nothing reads those fields), so a debounced
-// evener/instance/list refetch is the only option, exactly like
-// evener/navigation/invalidated's own "just refetch" contract.
+// cmd/evener-hub/app_rpc.go) matching the generated EvenerAuthUpdatedParams,
+// and `provider` is what the own-echo correlation below reads.
+//
+// The originator is in that audience too, and it must keep receiving the
+// notification - other consumers (the model-list cache's epoch guard) depend
+// on the originating client's own echo to refresh after its own save. But the
+// LISTING refetch is redundant for the originator: every local mutation site
+// fetches the listing itself once its RPC resolves (ProviderConnection's
+// refreshAndCheck, CredentialValueDialog, the section's clear handlers, the
+// OAuth dialogs' completions). Worse, the echo's refetch is misread by a
+// save/check in flight: ProviderConnection's subscription treats the
+// echo-driven listing change as an unrelated change and invalidates the fresh
+// result ("Connection or configuration changed") or cancels the check. So the
+// refetch is skipped for a notification naming a provider this client just
+// mutated. Anything else still refetches - other providers, unattributed
+// notifications, or the same provider with no recent local mutation - so
+// unrelated clients' changes keep arriving.
 const REFETCH_DEBOUNCE_MS = 250;
+const SELF_ECHO_WINDOW_MS = 2000;
+let lastLocalAuthMutation: { provider: string; at: number } | null = null;
+
+function noteLocalAuthMutation(provider: string): void {
+  lastLocalAuthMutation = { provider, at: Date.now() };
+}
+
+function isOwnAuthEcho(provider: string | undefined): boolean {
+  const marker = lastLocalAuthMutation;
+  return marker !== null && provider === marker.provider && Date.now() - marker.at <= SELF_ECHO_WINDOW_MS;
+}
 
 let wiredClient: AppwireClientLike | null = null;
 let unsubscribeNotifications: (() => void) | undefined;
@@ -264,7 +292,10 @@ function scheduleRefetch(): void {
 }
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "evener/auth/updated") scheduleRefetch();
+  if (n.method === "evener/auth/updated") {
+    if (isOwnAuthEcho(n.params.provider)) return; // own echo: the mutation site owns the listing refresh
+    scheduleRefetch();
+  }
 }
 
 function attachNotifications(client: AppwireClientLike | null): void {
@@ -313,6 +344,7 @@ if (initialClient) attachNotifications(initialClient);
 export function resetCredentialsStoreForTests(): void {
   requestVersion += 1;
   requestedList = false;
+  lastLocalAuthMutation = null;
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;

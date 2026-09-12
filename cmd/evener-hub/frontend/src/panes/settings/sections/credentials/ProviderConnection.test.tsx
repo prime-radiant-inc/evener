@@ -582,6 +582,34 @@ test("a notification refresh invalidates a pending check and a completed result"
   });
   expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
 });
+test("the originating client's own auth-update echo does not invalidate its save and check", async () => {
+  const { user, client } = setup();
+  scriptSave(client);
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "draft");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(screen.getByRole("button", { name: "Checking model list…" })).toHaveProperty("disabled", true);
+  vi.useFakeTimers();
+  await act(async () => {
+    // The hub BroadcastAlls the originator its own success echo (notifyAuthUpdated
+    // sends {provider, activeSource} to every connected client, this one included),
+    // so the real "Save and check" flow runs with its own echo in flight.
+    client.emitNotification({
+      method: "evener/auth/updated",
+      params: { provider: "anthropic", activeSource: "store" },
+    });
+    await vi.runOnlyPendingTimersAsync();
+  });
+  vi.useRealTimers();
+  await act(async () => {
+    pending.resolve({ provider: "anthropic", status: "success", message: "" });
+    await pending.promise;
+  });
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+});
 test("a superseding pending refresh cannot authorize a check from discarded metadata", async () => {
   const { user, client } = setup();
   await choose(user);
