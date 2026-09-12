@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -256,7 +257,11 @@ const defaultMaxRounds = 80
 func runSuite(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	cfg := runConfig{}
-	systemPromptAppend := defineRunFlags(fs, &cfg)
+	// The repeatable flag's storage must outlive defineRunFlags: Set appends
+	// through this pointer during Parse, so a slice returned by value before
+	// parsing would keep the pre-Parse (empty) header and drop every value.
+	var systemPromptAppend cmdutil.StringSliceFlag
+	defineRunFlags(fs, &cfg, &systemPromptAppend)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -264,8 +269,7 @@ func runSuite(args []string) error {
 	return runSuiteWithConfig(cfg)
 }
 
-func defineRunFlags(fs *flag.FlagSet, cfg *runConfig) cmdutil.StringSliceFlag {
-	var systemPromptAppend cmdutil.StringSliceFlag
+func defineRunFlags(fs *flag.FlagSet, cfg *runConfig, systemPromptAppend *cmdutil.StringSliceFlag) {
 	fs.StringVar(&cfg.model, "model", defaultModel(), "provider/model")
 	fs.StringVar(&cfg.fastCheapModel, "fast-cheap-model", "", "provider/model or bare model for Evener auxiliary side calls")
 	fs.StringVar(&cfg.harness, "harness", "cli", "execution harness: cli or live")
@@ -273,7 +277,7 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig) cmdutil.StringSliceFlag {
 	fs.StringVar(&cfg.probeFilter, "probe", "all", "probe id or all")
 	fs.StringVar(&cfg.outDir, "out", "", "result directory")
 	fs.StringVar(&cfg.evenerBin, "evener-bin", "", "evener binary to run")
-	fs.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
+	fs.Var(systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 	fs.BoolVar(&cfg.build, "build", false, "build a fresh evener binary before running")
 	fs.IntVar(&cfg.repetitions, "repetitions", 1, "repetitions per probe")
 	fs.IntVar(&cfg.maxRounds, "max-rounds", defaultMaxRounds, "tool rounds the probe session may run per input (passed to evener)")
@@ -281,7 +285,6 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig) cmdutil.StringSliceFlag {
 	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "high", "reasoning effort")
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
-	return systemPromptAppend
 }
 
 func runSuiteWithConfig(cfg runConfig) error {
@@ -320,6 +323,10 @@ func runSuiteWithConfig(cfg runConfig) error {
 	// so a scoped request never silently balloons into the full set without
 	// the caller seeing it named. See kata 73cb(a).
 	fmt.Fprint(os.Stderr, selectionSummary(cfg, probes))
+	wireNames, err := wireNameToCanonicalForModel(cfg.model)
+	if err != nil {
+		return err
+	}
 	catalog, err := catalogTools(cfg.model)
 	if err != nil {
 		return err
@@ -331,7 +338,7 @@ func runSuiteWithConfig(cfg runConfig) error {
 	var results []probeResult
 	for _, probe := range probes {
 		for rep := 1; rep <= cfg.repetitions; rep++ {
-			res := runProbe(cfg, probe, rep, available)
+			res := runProbe(cfg, probe, rep, available, wireNames)
 			results = append(results, res)
 			if err := writeProbeResult(cfg.outDir, res); err != nil {
 				return err
@@ -453,28 +460,40 @@ type probeMetrics struct {
 	PrematureFixBeforeRedTest bool
 }
 
-// wireNameToCanonical maps provider-visible wire names back to the
-// canonical tool names the registry uses. Transcripts persist the names the
-// provider emitted, and OpenAI and Gemini rename tools before the model sees
-// grep→grep_files, glob→find_files; shell→run_shell_command, grep→grep_search,
-// list_dir→list_directory). Anthropic, Kimi, GLM, and the openai-compatible
-// providers keep canonical names, which the identity mapping covers.
-var wireNameToCanonical = map[string]string{
-	// OpenAI (responses API)
-	"exec_command": "shell",
-	"grep_files":   "grep",
-	"find_files":   "glob",
-	// Gemini
-	"run_shell_command": "shell",
-	"grep_search":       "grep",
-	"list_directory":    "list_dir",
+// wireNameToCanonicalForModel derives the wire-to-canonical tool-name
+// inverse from the provider profile the run uses, so wire-name resolution
+// stays in sync with provider renaming by construction: transcripts
+// persist the names the provider emitted, and the profile is the same
+// source of truth the renderer renamed tools with. A hand-maintained copy
+// here would silently misclassify metrics the day a profile gains or
+// changes a rename (roborev Medium on f5e1017).
+func wireNameToCanonicalForModel(modelRef string) (map[string]string, error) {
+	providerName, modelName, err := splitModelRef(modelRef)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := cmdutil.ResolveProfileForProvider(providerName, modelName)
+	if err != nil {
+		return nil, err
+	}
+	var inverse map[string]string
+	for canonical, wire := range profile.ToolNameMap() {
+		if wire == canonical {
+			continue
+		}
+		if inverse == nil {
+			inverse = make(map[string]string)
+		}
+		inverse[wire] = canonical
+	}
+	return inverse, nil
 }
 
 // canonicalToolCallName resolves a transcript tool-call name to its
-// canonical registry name. Wire names map through wireNameToCanonical;
-// already-canonical and unknown names pass through.
-func canonicalToolCallName(name string) string {
-	if canonical, ok := wireNameToCanonical[name]; ok {
+// canonical registry name using the run's profile-derived wire map.
+// Already-canonical and unknown names pass through.
+func canonicalToolCallName(name string, wireNames map[string]string) string {
+	if canonical, ok := wireNames[name]; ok {
 		return canonical
 	}
 	return name
@@ -501,7 +520,12 @@ func classifyToolCall(canonical, argsJSON string) (isInvestigative, isTestRun, i
 // the full raw JSON arguments object (never the truncated preview, and never
 // assistant prose — a textual "go test" mention in prose does not reach this
 // function). A `cd pkg && go test ...` compound or `FOO=1 go test ...`
-// env-prefixed invocation counts; `go vet` does not (tests only).
+// env-prefixed invocation counts, with quoted assignment values
+// (`GOFLAGS='-mod=mod -race' go test ...`) stripped whole; `go vet` does not
+// count (tests only). Only `&&`-joined compounds are split: a test command
+// joined with `;` or `||` counts only when it starts its own segment.
+var leadingEnvAssignment = regexp.MustCompile(`^[\w.]+=(?:"[^"]*"|'[^']*'|[^\s"']*)\s+`)
+
 func isTestCommand(argsJSON string) bool {
 	decoded := struct {
 		Command string `json:"command"`
@@ -512,13 +536,15 @@ func isTestCommand(argsJSON string) bool {
 	cmd := decoded.Command
 	for segment := range strings.SplitSeq(cmd, "&&") {
 		segment = strings.TrimSpace(segment)
-		// Strip leading env VAR=VALUE assignments.
-		for strings.Contains(segment, "=") {
-			head, rest, hasRest := strings.Cut(segment, " ")
-			if !hasRest || !strings.Contains(head, "=") {
-				break
+		// Strip leading env VAR=VALUE assignments, quoted values included,
+		// so a value with spaces consumes its quotes instead of breaking the
+		// line at the first space inside them.
+		for {
+			if loc := leadingEnvAssignment.FindStringIndex(segment); loc != nil && loc[0] == 0 {
+				segment = strings.TrimSpace(segment[loc[1]:])
+				continue
 			}
-			segment = strings.TrimSpace(rest)
+			break
 		}
 		if segment == "go test" || strings.HasPrefix(segment, "go test ") {
 			return true
@@ -532,7 +558,7 @@ func isTestCommand(argsJSON string) bool {
 // excluded the same way rootSessionID excludes them) and computes the
 // phase-discipline metrics. Rounds are 1-based tool rounds: assistant turns
 // that carry at least one tool call. Zero means "never".
-func computeProbeMetrics(stateDir string) (probeMetrics, error) {
+func computeProbeMetrics(stateDir string, wireNames map[string]string) (probeMetrics, error) {
 	var m probeMetrics
 	rootID, err := rootSessionID(stateDir)
 	if err != nil {
@@ -553,7 +579,7 @@ func computeProbeMetrics(stateDir string) (probeMetrics, error) {
 		}
 		round++
 		for _, call := range turn.ToolCalls {
-			canonical := canonicalToolCallName(call.Name)
+			canonical := canonicalToolCallName(call.Name, wireNames)
 			isInvestigative, isTestRun, isSourceEdit := classifyToolCall(canonical, call.Arguments)
 			if isInvestigative {
 				m.InvestigativeCallCount++
@@ -621,8 +647,8 @@ func readRepeatKey(canonical, argsJSON string) string {
 // A transcript that cannot be read is surfaced as a finding (the run may
 // still pass its expectations, but the missing metrics are never silently
 // dropped).
-func applyProbeMetrics(res *probeResult, probe probeFile, stateDir string) {
-	m, err := computeProbeMetrics(stateDir)
+func applyProbeMetrics(res *probeResult, probe probeFile, stateDir string, wireNames map[string]string) {
+	m, err := computeProbeMetrics(stateDir, wireNames)
 	if err != nil {
 		res.Findings = append(res.Findings, finding{
 			Category: "infra",
@@ -649,10 +675,13 @@ func applyProbeMetrics(res *probeResult, probe probeFile, stateDir string) {
 	if probe.Metrics.WantsPrematureFixBeforeRedTestFlg {
 		res.Metrics["premature_fix_before_red_test_flag"] = m.PrematureFixBeforeRedTest
 	}
-	// max_tool_calls is the manifest's budget for total tool calls in the
-	// root session (#187: it was previously parsed and ignored). Exceeding
-	// it is churn, not task failure: a finding, so the run reports the
-	// overage instead of silently passing.
+	// max_tool_calls is the manifest's budget for total tool calls across
+	// every session transcript in the state dir — delegate and subagent
+	// sessions included, the same walk allTranscriptToolCounts performs
+	// (#187: it was previously parsed and ignored). Delegation is churn too,
+	// so a probe that blows its budget through child sessions still flags.
+	// Exceeding it is churn, not task failure: a finding, so the run reports
+	// the overage instead of silently passing.
 	if probe.Metrics.MaxToolCalls > 0 {
 		total := 0
 		for _, n := range res.ModelToolCounts {
@@ -674,7 +703,7 @@ type finding struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
-func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool) probeResult {
+func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool, wireNames map[string]string) probeResult {
 	start := time.Now()
 	slug := safeName(probe.ID)
 	base := filepath.Join(cfg.outDir, slug, fmt.Sprintf("rep-%02d", rep))
@@ -740,7 +769,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	}
 	// Phase-discipline metrics (#187): computed from the same transcripts
 	// the counts above already walk, reported per the probe's metrics block.
-	applyProbeMetrics(&res, probe, stateDir)
+	applyProbeMetrics(&res, probe, stateDir, wireNames)
 	if err != nil {
 		res.Error = err.Error()
 		category, status := classifyProbeError(err, ctx.Err(), stderr.String())

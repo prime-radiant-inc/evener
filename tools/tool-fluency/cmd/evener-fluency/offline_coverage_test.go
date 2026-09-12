@@ -272,17 +272,17 @@ func TestRunProbeOfflineStates(t *testing.T) {
 	// 73cb, superseding the 2026-07-13 five-second guard).
 	cfg := runConfig{model: "openai/m", harness: "cli", outDir: filepath.Join(dir, "out"), evenerBin: bin, timeout: 0, reasoningEffort: "low"}
 	probe := probeFile{ID: "pass", Prompt: "hello", Fixture: fixtureSpec{Files: map[string]string{"a.txt": "a"}}, Expect: expectSpec{Calls: []expectedCall{{Tool: "read"}}, FinalContains: []string{"ok"}}}
-	if res := runProbe(cfg, probe, 1, map[string]bool{}); res.Status != "passed" {
+	if res := runProbe(cfg, probe, 1, map[string]bool{}, nil); res.Status != "passed" {
 		t.Fatalf("pass result = %#v", res)
 	}
 
 	skip := probeFile{ID: "skip", Skip: map[string]string{"if_unavailable": "missing"}}
-	if res := runProbe(cfg, skip, 1, nil); res.Status != "skipped_unavailable" {
+	if res := runProbe(cfg, skip, 1, nil, nil); res.Status != "skipped_unavailable" {
 		t.Fatalf("skip result = %#v", res)
 	}
 
 	badFixture := probeFile{ID: "fixture", Fixture: fixtureSpec{Files: map[string]string{"../bad": "x"}}}
-	if res := runProbe(cfg, badFixture, 1, nil); res.Error == "" || len(res.Findings) != 1 {
+	if res := runProbe(cfg, badFixture, 1, nil, nil); res.Error == "" || len(res.Findings) != 1 {
 		t.Fatalf("fixture result = %#v", res)
 	}
 
@@ -292,7 +292,7 @@ func TestRunProbeOfflineStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.evenerBin = failBin
-	if res := runProbe(cfg, probeFile{ID: "infra"}, 1, nil); res.Status != "blocked_infra" {
+	if res := runProbe(cfg, probeFile{ID: "infra"}, 1, nil, nil); res.Status != "blocked_infra" {
 		t.Fatalf("infra result = %#v", res)
 	}
 }

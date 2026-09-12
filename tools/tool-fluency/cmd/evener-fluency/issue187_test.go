@@ -1,13 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm"
 )
 
@@ -36,6 +39,17 @@ func subagentMeta(t *testing.T, stateDir, sid, parent string) {
 // transcripts so a caller comparing prompting arms reads them out of
 // result.json instead of hand-reading transcripts.
 //
+// mustWireNamesForModel derives the run's wire map exactly as the runner
+// does, for tests that exercise provider-visible tool names.
+func mustWireNamesForModel(t *testing.T, modelRef string) map[string]string {
+	t.Helper()
+	wireNames, err := wireNameToCanonicalForModel(modelRef)
+	if err != nil {
+		t.Fatalf("wireNameToCanonicalForModel(%q): %v", modelRef, err)
+	}
+	return wireNames
+}
+
 // Fixture names are ANTHROPIC-realistic (canonical tool names): shell,
 // read_file, edit_file, communicate. The wire-name variants live in
 // TestProbeMetricsProviderWireNames below.
@@ -71,7 +85,7 @@ func TestProbeMetricsComputedFromTranscripts(t *testing.T) {
 	}
 	writeFluencyTranscript(t, stateDir, rootID, turns)
 
-	got, err := computeProbeMetrics(stateDir)
+	got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, "openai/test-model"))
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -101,6 +115,7 @@ func TestProbeMetricsComputedFromTranscripts(t *testing.T) {
 // provider's realistic name set — never a mix across providers.
 func TestProbeMetricsProviderWireNames(t *testing.T) {
 	tests := []struct {
+		modelRef   string
 		name       string
 		toolName   string // wire name as the provider emits it
 		args       string
@@ -109,16 +124,16 @@ func TestProbeMetricsProviderWireNames(t *testing.T) {
 		isShellFix bool // shell call driving an edit-with-test scenario
 	}{
 		// OpenAI responses API wire names.
-		{name: "openai exec_command runs go test", toolName: "exec_command", args: `{"command":"go test ./..."}`, isShellFix: true},
-		{name: "openai find_files is investigative", toolName: "find_files", args: `{"pattern":"*.go"}`, toolCalls: 1},
-		{name: "openai grep_files is investigative", toolName: "grep_files", args: `{"pattern":"Resolve"}`, toolCalls: 1},
+		{modelRef: "openai/test-model", name: "openai exec_command runs go test", toolName: "exec_command", args: `{"command":"go test ./..."}`, isShellFix: true},
+		{modelRef: "openai/test-model", name: "openai find_files is investigative", toolName: "find_files", args: `{"pattern":"*.go"}`, toolCalls: 1},
+		{modelRef: "openai/test-model", name: "openai grep_files is investigative", toolName: "grep_files", args: `{"pattern":"Resolve"}`, toolCalls: 1},
 		// Gemini wire names.
-		{name: "gemini run_shell_command runs go test", toolName: "run_shell_command", args: `{"command":"go test ./..."}`, isShellFix: true},
-		{name: "gemini grep_search is investigative", toolName: "grep_search", args: `{"pattern":"Resolve"}`, toolCalls: 1},
-		{name: "gemini list_directory is investigative", toolName: "list_directory", args: `{"path":"."}`, toolCalls: 1},
+		{modelRef: "google/test-model", name: "gemini run_shell_command runs go test", toolName: "run_shell_command", args: `{"command":"go test ./..."}`, isShellFix: true},
+		{modelRef: "google/test-model", name: "gemini grep_search is investigative", toolName: "grep_search", args: `{"pattern":"Resolve"}`, toolCalls: 1},
+		{modelRef: "google/test-model", name: "gemini list_directory is investigative", toolName: "list_directory", args: `{"path":"."}`, toolCalls: 1},
 		// Canonical names (Anthropic/Kimi/GLM) still classify.
-		{name: "anthropic shell runs go test", toolName: "shell", args: `{"command":"go test ./..."}`, isShellFix: true},
-		{name: "anthropic read_file is investigative", toolName: "read_file", args: `{"file_path":"a.go"}`, toolCalls: 1},
+		{modelRef: "anthropic/test-model", name: "anthropic shell runs go test", toolName: "shell", args: `{"command":"go test ./..."}`, isShellFix: true},
+		{modelRef: "anthropic/test-model", name: "anthropic read_file is investigative", toolName: "read_file", args: `{"file_path":"a.go"}`, toolCalls: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -153,7 +168,7 @@ func TestProbeMetricsProviderWireNames(t *testing.T) {
 			}
 			writeFluencyTranscript(t, stateDir, rootID, turns)
 
-			got, err := computeProbeMetrics(stateDir)
+			got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, tt.modelRef))
 			if err != nil {
 				t.Fatalf("computeProbeMetrics: %v", err)
 			}
@@ -191,7 +206,7 @@ func TestProbeMetricsPrematureFixFlagged(t *testing.T) {
 		}
 		writeFluencyTranscript(t, stateDir, rootID, turns)
 
-		got, err := computeProbeMetrics(stateDir)
+		got, err := computeProbeMetrics(stateDir, nil)
 		if err != nil {
 			t.Fatalf("computeProbeMetrics: %v", err)
 		}
@@ -229,7 +244,7 @@ func TestProbeMetricsPrematureFixFlagged(t *testing.T) {
 		}
 		writeFluencyTranscript(t, stateDir, rootID, turns)
 
-		got, err := computeProbeMetrics(stateDir)
+		got, err := computeProbeMetrics(stateDir, nil)
 		if err != nil {
 			t.Fatalf("computeProbeMetrics: %v", err)
 		}
@@ -260,7 +275,7 @@ func TestProbeMetricsProseMentionIsNotExecution(t *testing.T) {
 	}
 	writeFluencyTranscript(t, stateDir, rootID, turns)
 
-	got, err := computeProbeMetrics(stateDir)
+	got, err := computeProbeMetrics(stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -303,7 +318,7 @@ func TestProbeMetricsIgnoresSubagentSessions(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir)
+	got, err := computeProbeMetrics(stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -354,7 +369,7 @@ func TestProbeMetricsRepeatKeyDiscriminates(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir)
+	got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, "openai/test-model"))
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -389,7 +404,7 @@ func TestProbeMetricsCountsToolRounds(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir)
+	got, err := computeProbeMetrics(stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -409,6 +424,10 @@ func TestProbeMetricsTestCommandShapes(t *testing.T) {
 		{"go test", true},
 		{"cd pkg && go test ./...", true},
 		{"FOO=1 go test ./...", true},
+		{"FOO=bar BAZ=qux go test ./...", true},
+		{"FOO=\"a b\" go test ./...", true},
+		{"GOFLAGS='-mod=mod -race' go test ./...", true},
+		{"GREETING=\"go test\" ./build.sh", false},
 		{"cd pkg && go vet ./...", false},
 		{"go vet ./...", false},
 		{"echo hello", false},
@@ -419,10 +438,14 @@ func TestProbeMetricsTestCommandShapes(t *testing.T) {
 	}
 }
 
-// quoteJSON renders s as a JSON string literal (commands above contain no
-// characters JSON escapes beyond the quotes this adds).
+// quoteJSON renders s as a JSON string literal, escaping inner quotes so
+// commands with quoted env values stay valid JSON.
 func quoteJSON(s string) string {
-	return `"` + s + `"`
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 // TestProbeMetricsWantedByManifest verifies the manifest-driven reporting
@@ -467,7 +490,7 @@ metrics:
 	})
 
 	res := probeResult{Probe: probe.ID, CanonicalToolCounts: map[string]int{}, ModelToolCounts: map[string]int{}}
-	applyProbeMetrics(&res, probe, stateDir)
+	applyProbeMetrics(&res, probe, stateDir, nil)
 
 	if res.Metrics == nil {
 		t.Fatal("result metrics = nil, want the manifest-named metrics computed and reported")
@@ -507,7 +530,7 @@ func TestProbeMetricsSurfacesTranscriptError(t *testing.T) {
 
 	res := probeResult{Probe: "p", CanonicalToolCounts: map[string]int{}, ModelToolCounts: map[string]int{}}
 	probe := probeFile{Metrics: metricsSpec{WantsInvestigativeCallCount: true}}
-	applyProbeMetrics(&res, probe, stateDir)
+	applyProbeMetrics(&res, probe, stateDir, nil)
 
 	if len(res.Findings) == 0 {
 		t.Fatal("corrupt transcript produced no findings; metrics errors must surface, not vanish")
@@ -530,7 +553,7 @@ func TestProbeMetricsEnforcesMaxToolCalls(t *testing.T) {
 	probe := probes[0]
 
 	over := probeResult{Probe: "p", ModelToolCounts: map[string]int{"shell": 3}}
-	applyProbeMetrics(&over, probe, t.TempDir())
+	applyProbeMetrics(&over, probe, t.TempDir(), nil)
 	found := false
 	for _, f := range over.Findings {
 		if f.Title == "tool call budget exceeded" {
@@ -542,7 +565,7 @@ func TestProbeMetricsEnforcesMaxToolCalls(t *testing.T) {
 	}
 
 	under := probeResult{Probe: "p", ModelToolCounts: map[string]int{"shell": 2}}
-	applyProbeMetrics(&under, probe, t.TempDir())
+	applyProbeMetrics(&under, probe, t.TempDir(), nil)
 	for _, f := range under.Findings {
 		if f.Title == "tool call budget exceeded" {
 			t.Fatalf("under-budget run produced a budget finding: %#v", under.Findings)
@@ -558,6 +581,74 @@ func TestLoadProbesRejectsUnknownMetric(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "bad.yaml"), "schema: 1\nid: bad\nprompt: p\nmetrics:\n  not_a_real_metric: true\n")
 	if _, err := loadProbes(dir, "all"); err == nil || !strings.Contains(err.Error(), "not_a_real_metric") {
 		t.Fatalf("loadProbes err = %v, want unknown-metric error naming the key", err)
+	}
+}
+
+// TestWireNamesDeriveFromTheRunProfile pins the Medium finding on f5e1017:
+// wire-to-canonical resolution must come from the provider profile the run
+// uses -- the same source of truth the renderer renamed the tools with --
+// not a hand-maintained copy that silently misclassifies metrics the day a
+// profile gains or changes a rename.
+func TestWireNamesDeriveFromTheRunProfile(t *testing.T) {
+	cases := []struct {
+		modelRef string
+		want     map[string]string
+	}{
+		{"openai/test-model", map[string]string{
+			"exec_command": "shell",
+			"grep_files":   "grep",
+			"find_files":   "glob",
+		}},
+		{"google/test-model", map[string]string{
+			"run_shell_command": "shell",
+			"grep_search":       "grep",
+			"list_directory":    "list_dir",
+		}},
+		{"anthropic/test-model", nil},
+	}
+	for _, tc := range cases {
+		got, err := wireNameToCanonicalForModel(tc.modelRef)
+		if err != nil {
+			t.Fatalf("wireNameToCanonicalForModel(%q): %v", tc.modelRef, err)
+		}
+		for wire, canonical := range tc.want {
+			if got[wire] != canonical {
+				t.Errorf("%s: wire %q resolved to %q, want %q", tc.modelRef, wire, got[wire], canonical)
+			}
+		}
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: derived %d wire names, want exactly %d (no extra renames): %v",
+				tc.modelRef, len(got), len(tc.want), got)
+		}
+	}
+}
+
+// TestSystemPromptAppendFlagsSurviveParse pins the flag-refactor regression
+// roborev flagged High on f5e1017: defineRunFlags declared the repeatable
+// --system-prompt-append flag on a local StringSliceFlag and returned the
+// slice BY VALUE before fs.Parse ran. Set appends through the pointer into
+// the definition-scope local, so runSuite's returned copy kept the pre-Parse
+// (empty) slice header and every --system-prompt-append value was silently
+// dropped: the CLI harness forwarded no flags and the live harness set a
+// nil SystemPromptAppend. The wiring below is exactly runSuite's, so this
+// test goes through the same define/parse/read sequence the runner uses.
+func TestSystemPromptAppendFlagsSurviveParse(t *testing.T) {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	cfg := runConfig{}
+	var systemPromptAppend cmdutil.StringSliceFlag
+	defineRunFlags(fs, &cfg, &systemPromptAppend)
+	if err := fs.Parse([]string{
+		"--system-prompt-append", "/tmp/append-a.md",
+		"--system-prompt-append", "/tmp/append-b.md",
+	}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg.systemPromptAppend = []string(systemPromptAppend)
+
+	want := []string{"/tmp/append-a.md", "/tmp/append-b.md"}
+	if !slices.Equal(cfg.systemPromptAppend, want) {
+		t.Fatalf("--system-prompt-append values were dropped by the flag wiring: cfg.systemPromptAppend = %v, want %v",
+			cfg.systemPromptAppend, want)
 	}
 }
 
@@ -593,7 +684,8 @@ func TestMaxRoundsFlagIsAuthoritative(t *testing.T) {
 	// and both harnesses must agree with it.
 	var parsed runConfig
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	defineRunFlags(fs, &parsed)
+	var parsedSystemPromptAppend cmdutil.StringSliceFlag
+	defineRunFlags(fs, &parsed, &parsedSystemPromptAppend)
 	if err := fs.Parse(nil); err != nil {
 		t.Fatalf("parse defaults: %v", err)
 	}
