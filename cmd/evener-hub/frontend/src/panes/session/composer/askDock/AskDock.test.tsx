@@ -264,21 +264,32 @@ test("Send is enabled even with nothing answered - an unresolved question compos
 });
 
 test("clicking Send composes and submits through the plain send() path, then the settled batch disappears", async () => {
-  const user = userEvent.setup();
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
   fake.on("turn/start", () => new Promise(() => {}));
   render(<AskDock ref="ref_a" />);
 
   const persisted = nextMutationPersistence("ref_a");
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
-  await persisted;
+  const sendBatch = vi.spyOn(askDockStore.getState(), "sendBatch");
+  try {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
+      await persisted;
 
-  const [record] = (await readMutationPersistence("ref_a")).outbox;
-  expect(record?.payload).toMatchObject({
-    ref: "ref_a",
-    input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
-  });
+      const [record] = (await readMutationPersistence("ref_a")).outbox;
+      expect(record?.payload).toMatchObject({
+        ref: "ref_a",
+        input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
+      });
+      // Persistence is announced before sendBatch removes the submitted batch.
+      // Observe the click's real completion, without issuing another send.
+      const result = sendBatch.mock.results[0];
+      if (result?.type !== "return") throw new Error("Send did not return a batch submission");
+      await result.value;
+    });
+  } finally {
+    sendBatch.mockRestore();
+  }
   await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]));
   expect(screen.queryByText("Deploy?")).toBeNull();
 });
@@ -649,8 +660,10 @@ test("Mod+Enter on the batch invokes the primary action (send) for a single-ques
   render(<AskDock ref="ref_a" />);
 
   const persisted = nextMutationPersistence("ref_a");
-  fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", metaKey: true });
-  await persisted;
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", metaKey: true });
+    await persisted;
+  });
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
@@ -663,8 +676,10 @@ test("Mod+Enter with ctrlKey also invokes the primary action", async () => {
   render(<AskDock ref="ref_a" />);
 
   const persisted = nextMutationPersistence("ref_a");
-  fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", ctrlKey: true });
-  await persisted;
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", ctrlKey: true });
+    await persisted;
+  });
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
@@ -804,8 +819,10 @@ test("plain Enter in the free-text answer input invokes the primary action", asy
   await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
 
   const persisted = nextMutationPersistence("ref_a");
-  fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter" });
-  await persisted;
+  await act(async () => {
+    fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter" });
+    await persisted;
+  });
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
@@ -925,7 +942,7 @@ test("activation focus waits for visibility, then lets the browser reveal the co
     observer.report(false);
     expect(focusSpy).not.toHaveBeenCalled();
 
-    observer.report(true);
+    act(() => observer.report(true));
     const dock = document.querySelector("[data-ask-response-dock]");
     await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
     expect(focusSpy).toHaveBeenCalled();
@@ -979,7 +996,7 @@ test("activation while off-screen steals no focus; becoming visible focuses the 
     expect(document.activeElement).toBe(document.body);
     expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted ?? false).toBe(false);
 
-    observer.report(true);
+    act(() => observer.report(true));
     const dock = document.querySelector("[data-ask-response-dock]");
     await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
     expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted).toBe(true);
@@ -1264,7 +1281,7 @@ test("a mid-send batch's editing controls are disabled while the open batch stay
   askDockStore.getState().setNote("ref_a", sendingKey, "mid-flight edit");
   expect(askDockStore.getState().byRef.get("ref_a")?.answers[sendingKey]?.resolution ?? null).toBeNull();
   expect(askDockStore.getState().byRef.get("ref_a")?.answers[sendingKey]?.note ?? "").toBe("");
-  askDockStore.getState().setNote("ref_a", openKey, "fine here");
+  act(() => askDockStore.getState().setNote("ref_a", openKey, "fine here"));
   expect(askDockStore.getState().byRef.get("ref_a")?.answers[openKey]?.note).toBe("fine here");
 });
 

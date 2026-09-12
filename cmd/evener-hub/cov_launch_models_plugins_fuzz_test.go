@@ -39,7 +39,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 	f.Fuzz(func(t *testing.T, _ byte) {
 		ctx := context.Background()
 
-		ctl := newHubLaunchController(t.TempDir())
+		ctl := newHubLaunchController(t.TempDir(), false)
 		badCWD := filepath.Join(t.TempDir(), "missing")
 		_, _ = ctl.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: badCWD})
 		_, _ = ctl.GetLayer(ctx, appwire.LaunchConfigGetLayerParams{CWD: badCWD})
@@ -60,7 +60,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		if err := os.WriteFile(badRoot, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		broken := newHubLaunchController(badRoot)
+		broken := newHubLaunchController(badRoot, false)
 		_, _ = broken.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: cwd})
 		_, _ = broken.GetLayer(ctx, appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: "global"})
 		_, _ = broken.SetLayer(ctx, appwire.LaunchConfigSetLayerParams{CWD: cwd, Layer: "global"})
@@ -81,7 +81,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		if err := os.WriteFile(filepath.Join(trustCWD, ".evener", "launch.toml"), []byte("model = \"p/m\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		trustCtl := newHubLaunchController(trustRoot)
+		trustCtl := newHubLaunchController(trustRoot, false)
 		resolved, err := trustCtl.Resolve(ctx, appwire.LaunchConfigResolveParams{CWD: trustCWD})
 		if err != nil || resolved.Repo == nil {
 			t.Fatalf("resolve repo: %+v %v", resolved, err)

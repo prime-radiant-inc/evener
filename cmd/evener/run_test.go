@@ -113,7 +113,7 @@ func TestRunResumeRestoresRecordedPluginDirs(t *testing.T) {
 		got = append([]string(nil), meta.Config.PluginDirs...)
 		return nil, errors.New("stop after restore config")
 	}
-	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+	runAttachAPILogger = func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error) {
 		return func(string) error { return nil }, func() error { return nil }, nil
 	}
 
@@ -188,7 +188,7 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	var persisted schema.SessionMeta
 	stateDir := t.TempDir()
 	var reserved string
-	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+	runAttachAPILogger = func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error) {
 		return func(id string) error { reserved = id; return nil }, func() error { return nil }, nil
 	}
 	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, meta schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
@@ -281,7 +281,7 @@ func TestRunResumeWithNonLockReservationFailureRemovesChild(t *testing.T) {
 	stateDir := t.TempDir()
 	reservationErr := errors.New("quarantine API log target")
 	var childID string
-	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+	runAttachAPILogger = func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error) {
 		return func(id string) error {
 			childID = id
 			return reservationErr
@@ -1429,9 +1429,9 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 				// during the client work just before it) is only noticed by
 				// the gate that follows it.
 				attach := runAttachAPILogger
-				runAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer) (func(string) error, func() error, error) {
+				runAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer, recordAttempts bool) (func(string) error, func() error, error) {
 					interrupt()
-					return attach(client, stateDir, warnings)
+					return attach(client, stateDir, warnings, recordAttempts)
 				}
 			},
 		},

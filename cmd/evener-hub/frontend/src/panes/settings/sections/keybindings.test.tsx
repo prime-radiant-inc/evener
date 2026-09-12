@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ACTIONS } from "../../../keybindings/actions";
@@ -721,13 +721,10 @@ test("a stale save's error does not surface into a reopened capture", async () =
   const client = new FakeClient("ready");
   client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
   let rejectPatch: ((error: Error) => void) | undefined;
-  client.on(
-    "evener/settings/keybindings/patch",
-    () =>
-      new Promise<KeybindingsOverrides>((_resolve, reject) => {
-        rejectPatch = reject;
-      }),
-  );
+  const pendingPatch = new Promise<KeybindingsOverrides>((_resolve, reject) => {
+    rejectPatch = reject;
+  });
+  client.on("evener/settings/keybindings/patch", () => pendingPatch);
   await wireClient(client, true);
   render(<KeybindingsSection />);
 
@@ -745,9 +742,9 @@ test("a stale save's error does not surface into a reopened capture", async () =
   // hubError - the section-level alert is the store's contract for any
   // failed patch, capture or not; what the generation token guards is the
   // row/capture continuation.)
-  rejectPatch?.(new Error("hub exploded"));
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0);
+  await act(async () => {
+    rejectPatch?.(new Error("hub exploded"));
+    await expect(pendingPatch).rejects.toThrow("hub exploded");
   });
   expect(within(rowFor("Open the command palette")).queryByRole("alert")).toBeNull();
   // hubError also makes the whole section read-only (editable includes
@@ -999,7 +996,7 @@ test("a confirmed hub payload clears a stale row error - and leaves an unrelated
   // inline error clears WITH it - the bindings it described are no longer
   // the truth (the palette was never unbound).
   failPatch = false;
-  await keybindingsStore.getState().refreshOverrides();
+  await act(() => keybindingsStore.getState().refreshOverrides());
   expect(keybindingsStore.getState().hubError).toBeNull();
   await waitFor(() => expect(within(row).queryByRole("alert")).toBeNull());
 
@@ -1009,9 +1006,11 @@ test("a confirmed hub payload clears a stale row error - and leaves an unrelated
   // read-only for the flight and cancels captures by design (finding 18) -
   // the notification path confirms a payload without the loading gate.
   const box = await enterCapture("Focus the composer");
-  client.emitNotification({
-    method: "evener/settings/keybindings/changed",
-    params: overridesPayload(1, []),
+  act(() => {
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(1, []),
+    });
   });
   expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(box);
 });
@@ -1127,13 +1126,10 @@ test("editable flipping false mid-capture closes the box and a resolving in-flig
   const client = new FakeClient("ready");
   client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
   let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
-  client.on(
-    "evener/settings/keybindings/patch",
-    () =>
-      new Promise<KeybindingsOverrides>((resolve) => {
-        resolvePatch = resolve;
-      }),
-  );
+  const pendingPatch = new Promise<KeybindingsOverrides>((resolve) => {
+    resolvePatch = resolve;
+  });
+  client.on("evener/settings/keybindings/patch", () => pendingPatch);
   await wireClient(client, true);
   render(<KeybindingsSection />);
 
@@ -1145,16 +1141,18 @@ test("editable flipping false mid-capture closes the box and a resolving in-flig
 
   // Support drops while the save is in flight: the row goes read-only and
   // the capture must close with it.
-  connectionStore.setState({
-    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  await act(async () => {
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
   });
   await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
   expect(screen.queryByRole("button", { name: /shortcut for Open the command palette/ })).toBeNull();
 
   // The stale save resolves: no capture reopens, no row-level error.
-  resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
-  await new Promise((resolve) => {
-    setTimeout(resolve, 0);
+  await act(async () => {
+    resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+    await pendingPatch;
   });
   expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
   expect(within(rowFor("Open the command palette")).queryByRole("alert")).toBeNull();
@@ -1167,16 +1165,20 @@ test("editable true → false → true leaves the row read-only then editable ag
   await enterCapture("Open the command palette");
 
   // Support drops: capture cancelled, editing affordance gone.
-  connectionStore.setState({
-    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  await act(async () => {
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
   });
   await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
   expect(screen.queryByRole("button", { name: /shortcut for Open the command palette/ })).toBeNull();
 
   // Support returns (the store re-refreshes the hub payload on its own):
   // the chord button comes back and opens a NEW capture.
-  connectionStore.setState({
-    features: { ...(await client.connect()).features, keybindingsSettings: true },
+  await act(async () => {
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
   });
   const chordButton = await screen.findByRole("button", { name: "Change the shortcut for Open the command palette" });
   await userEvent.setup().click(chordButton);
@@ -1253,9 +1255,11 @@ test("a Reset preflight rejection's row error clears on the next confirmed paylo
   // Nothing hub-sourced follows on its own: the error persists until a
   // confirmed payload lands (the composer rule was removed through another
   // client), then clears with the apply.
-  client.emitNotification({
-    method: "evener/settings/keybindings/changed",
-    params: overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  act(() => {
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    });
   });
   await waitFor(() => expect(within(row).queryByRole("alert")).toBeNull());
   expect(keybindingsStore.getState().hubError).toBeNull();
@@ -1290,11 +1294,15 @@ test("a generation-fenced queued write's row error clears on the next confirmed 
   // A support flap ends the ready generation: the flap-back begins a NEW
   // generation and re-refreshes (revision 3 again), confirming state - that
   // apply-serial bump happens BEFORE either row error exists.
-  connectionStore.setState({
-    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  await act(async () => {
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
   });
-  connectionStore.setState({
-    features: { ...(await client.connect()).features, keybindingsSettings: true },
+  await act(async () => {
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
   });
   await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
 
@@ -1310,9 +1318,11 @@ test("a generation-fenced queued write's row error clears on the next confirmed 
 
   // A confirmed payload for the NEW generation supersedes the bindings the
   // error described: the row error clears.
-  client.emitNotification({
-    method: "evener/settings/keybindings/changed",
-    params: overridesPayload(5, []),
+  act(() => {
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(5, []),
+    });
   });
   await waitFor(() => expect(within(composerRow).queryByRole("alert")).toBeNull());
 });
@@ -1330,13 +1340,17 @@ test("a wedged support loss keeps the overrides firing and the status does not c
   // the support drop's un-apply restore exact-matches, throws, and rolls
   // back. palette.open's default is $mod+K with legacyEitherMod, so the
   // restored base serializes "Control+[Meta]+K" (Meta OPTIONAL).
-  keybindingsRegistry.getState().registerBinding({
-    id: "foreign.squatter",
-    actionId: "foreign.action",
-    chord: "Control+[Meta]+K",
+  act(() => {
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "Control+[Meta]+K",
+    });
   });
-  connectionStore.setState({
-    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  await act(async () => {
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
   });
 
   const alert = await screen.findByRole("alert");
@@ -1406,13 +1420,17 @@ test("Retry does not appear on an unsupported hub, even with the rollback alert 
   render(<KeybindingsSection />);
   // The wedge rolls the support drop's un-apply back (finding-35 staging):
   // the rollback alert shows, but the hub is unsupported - no Retry.
-  keybindingsRegistry.getState().registerBinding({
-    id: "foreign.squatter",
-    actionId: "foreign.action",
-    chord: "Control+[Meta]+K",
+  act(() => {
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "Control+[Meta]+K",
+    });
   });
-  connectionStore.setState({
-    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  await act(async () => {
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
   });
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain("still in effect");
@@ -1434,10 +1452,12 @@ test("Retry is disabled while a refresh is in flight through the rollback window
 
   // The wedge: a foreign binding squatting palette.open's default chord, so
   // the rewire's un-apply restore throws and rolls back.
-  keybindingsRegistry.getState().registerBinding({
-    id: "foreign.squatter",
-    actionId: "foreign.action",
-    chord: "Control+[Meta]+K",
+  act(() => {
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "Control+[Meta]+K",
+    });
   });
   const clientB = new FakeClient("ready");
   let resolveGet: ((p: KeybindingsOverrides) => void) | undefined;
@@ -1448,9 +1468,11 @@ test("Retry is disabled while a refresh is in flight through the rollback window
         resolveGet = resolve;
       }),
   );
-  connectionStore.getState().connect(clientB);
-  connectionStore.setState({
-    features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+  act(() => connectionStore.getState().connect(clientB));
+  await act(async () => {
+    connectionStore.setState({
+      features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+    });
   });
   await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
   expect(keybindingsStore.getState().hubError).toContain("still in effect");
@@ -1466,7 +1488,7 @@ test("Retry is disabled while a refresh is in flight through the rollback window
 
   // Unwedge; the refresh lands, clears the rollback error, and the control
   // unmounts.
-  keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+  act(() => keybindingsRegistry.getState().unregisterBinding("foreign.squatter"));
   resolveGet?.(overridesPayload(1, []));
   await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();

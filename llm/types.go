@@ -700,7 +700,9 @@ func ReasoningEffortRank(effort string) int {
 // e.g. "xhigh" against a wire-spelled ["high","max"] resolves to "max"); a
 // request above the model's top supported level is lowered to that level.
 // Empty, "none", unknown vocabulary, or an empty supported set pass through
-// unchanged so the provider can decide. This is the single guard that keeps
+// unchanged so the provider can decide; callers that spell the level on the
+// wire use VouchedEffort instead, which refuses a level the ladder does not
+// list. This is the single guard that keeps
 // loop-detector escalation, the --reasoning-effort flag, and the UI selector
 // from sending a level a model rejects (e.g. "max" to a model that only
 // supports minimal/low/medium/high).
@@ -738,6 +740,32 @@ func ClampReasoningEffort(requested string, supportedLevels []string) string {
 		return highest
 	}
 	return requested
+}
+
+// VouchedEffort returns the level to write onto a field that spells the effort
+// NAME — reasoning_effort, reasoning.effort, output_config.effort, or the
+// string-thinking "thinking" value — clamped within the row's listed
+// EffortValues. It returns "" when the row lists no ladder, or when the
+// requested value clamps to nothing the ladder lists: evener never forces an
+// effort name that the resolved row cannot vouch for. The explicit off
+// sentinel ("none") is handled by the adapters' thinking-format logic, not
+// here, so it also returns "".
+//
+// Rows that derive a numeric budget instead of spelling the level
+// (anthropic budget_tokens/budget+effort, the google thinkingConfig) do not
+// use this: such a row legitimately states no effort ladder and still needs
+// the requested effort to size its budget.
+func VouchedEffort(requested string, levels []string) string {
+	v := ClampReasoningEffort(requested, levels)
+	if v == "" || v == ReasoningEffortNone {
+		return ""
+	}
+	for _, l := range levels {
+		if strings.EqualFold(strings.TrimSpace(l), v) {
+			return v
+		}
+	}
+	return ""
 }
 
 // IntFromAny extracts an integer from a JSON-decoded value.

@@ -768,7 +768,9 @@ test("desktop Activity waits for the body's first root attempt before owning lat
 
   const current = threadsStore.getState().threads.get("ref_activity_fresh");
   if (!current) throw new Error("missing activity freshness model");
-  threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
+  act(() => {
+    threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
+  });
   // Two more fetches, not one: the unmount hands refresh ownership back to
   // the chrome, which first catches up on bump 1 (the body's attempt ran at
   // a null bump), and bump 2 - arriving while that catch-up is in flight -

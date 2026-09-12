@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import TranscriptSurfaceSection from "./transcript";
@@ -43,4 +43,35 @@ test("uses fixed fixture timestamps and no live streaming markers", () => {
   const rows = screen.getAllByTestId("tool-call-item");
   expect(rows.length).toBeGreaterThan(0);
   expect(screen.queryByText(/elapsed|streaming/i)).toBeNull();
+});
+
+test("preview collaborators use the supplied owner projection, not the stale launch receipt", () => {
+  const { container } = render(<TranscriptSurfaceSection />);
+  for (const theme of ["light", "dark"]) {
+    const view = within(container.querySelector<HTMLElement>(`[data-theme="${theme}"]`)!);
+    const cards = view.getAllByTestId("subagent-row");
+    expect(cards.map((card) => card.dataset.kind)).toEqual([
+      "running",
+      "running",
+      "done",
+      "failed",
+      "stopped",
+      "failed",
+      "unknown",
+      "unknown",
+    ]);
+    expect(cards[1]?.dataset.attention).toBe("true");
+    expect(view.getAllByTestId("delegate-lifecycle").map((label) => label.textContent)).toEqual([
+      "Running",
+      "Running◆ Needs attention",
+      "Idle · reported",
+      "Failed",
+      "Stopped",
+      "Exhausted",
+      "Status unavailable",
+      "Status unavailable",
+    ]);
+    for (const card of cards)
+      expect(within(card).getByTestId("subagent-stats").textContent).not.toMatch(/\d+ (turn|call)/);
+  }
 });
