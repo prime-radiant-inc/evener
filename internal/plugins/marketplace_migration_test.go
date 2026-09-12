@@ -2092,6 +2092,55 @@ func TestMarketplaceNameMigration_AliasesThroughASymlinkAreOneMarketplace(t *tes
 	}
 }
 
+// A refused name can derive a component no filesystem will take: longer than one
+// name may be, or carrying a byte a name cannot. The migration still has to
+// happen — falling back to "marketplace" the way an unrepresentable name does —
+// rather than leaving the store failing every operation on the probe.
+func TestMarketplaceNameMigration_ADerivedNameTheFilesystemCannotHoldFallsBack(t *testing.T) {
+	cases := []struct {
+		what string
+		name string
+	}{
+		{"longer than one component", strings.Repeat("a", 300) + "/b"},
+		{"a NUL byte", "a\x00/b"},
+		{"a control character", "a\x01/b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.what, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			m.Stderr = io.Discard
+			// The store's own two directories, as a real one has them: the
+			// probe's error differs when they are missing.
+			for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := m.saveMarketplaces(Marketplaces{tc.name: {
+				Source:      Source{Kind: SourceURL, URL: "https://example.invalid/x.git"},
+				LastUpdated: time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := m.migrateStore(context.Background()); err != nil {
+				t.Fatalf("migrateStore: %v", err)
+			}
+			mk, err := m.loadMarketplaces()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := mk["marketplace"]; !ok || len(mk) != 1 {
+				t.Fatalf("marketplaces = %v, want marketplace alone", mk)
+			}
+			// Every later operation must work on the migrated store too.
+			if _, err := m.ListMarketplaces(context.Background()); err != nil {
+				t.Fatalf("ListMarketplaces: %v", err)
+			}
+		})
+	}
+}
+
 // The marker's other half: a move that fails and cannot put back what it moved
 // leaves the store between the two names, so the marker stays and the error
 // names it, for the next lock holder to finish the rename from.

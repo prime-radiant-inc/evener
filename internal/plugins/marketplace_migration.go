@@ -485,10 +485,25 @@ func (m *Manager) migrationOrder(names []string) ([]string, error) {
 	return order, nil
 }
 
+// maxComponentBytes is the longest a single filesystem component may be. NAME_MAX
+// is 255 on the filesystems the store sits on, and numberedNameReserve is what
+// the "-2", "-3", … a taken name's replacement can add, so a derived name within
+// maxMigratedNameBytes still fits once freeMarketplaceName numbers it.
+const (
+	maxComponentBytes    = 255
+	numberedNameReserve  = len("-999999")
+	maxMigratedNameBytes = maxComponentBytes - numberedNameReserve
+)
+
 // migratedMarketplaceName derives the name a refused one is renamed to: path
 // separators split it and the "." and ".." components go, the rest joined
-// by '-'; every '@' becomes '-'; a scratch name loses its dot; and a name
-// with nothing left, or one the store still refuses, becomes "marketplace".
+// by '-'; every '@' becomes '-'; a scratch name loses its dot; and a name with
+// nothing left, one the store still refuses, or one that no filesystem will take
+// as a path component becomes "marketplace". The last is not hypothetical: the
+// derived name becomes a directory name, and a legacy name can derive one longer
+// than a component may be, or carrying a byte no filename can carry, which would
+// otherwise fail the probe that looks for it and leave every store operation
+// failing rather than migrating the name away.
 func migratedMarketplaceName(name string) string {
 	var parts []string
 	for _, part := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
@@ -500,10 +515,35 @@ func migratedMarketplaceName(name string) string {
 	if derived == stagingCloneName || derived == asideCloneName {
 		derived = derived[1:]
 	}
-	if validNameComponent("marketplace", derived) != nil {
+	if !usableMarketplaceName(derived) {
 		return "marketplace"
 	}
 	return derived
+}
+
+// usableMarketplaceName reports whether name can stand as one store path
+// component: the store's own rules for a name, no byte a filename cannot carry,
+// and short enough that the numbered replacement a collision appends still fits
+// one component.
+func usableMarketplaceName(name string) bool {
+	if !pathComponentName(name) {
+		return false
+	}
+	if strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return false
+	}
+	return validNameComponent("marketplace", name) == nil
+}
+
+// pathComponentName reports whether name can stand as one filesystem component
+// at all: no byte a filename cannot carry, and no longer than a component may
+// be. A name that cannot has no directory in the store, because nothing could
+// have created one, so nothing is probed for it. Control characters are not
+// excluded here even though usableMarketplaceName excludes them from a name the
+// migration invents: a filesystem that takes them holds their directories, and
+// those have to move like any other.
+func pathComponentName(name string) bool {
+	return len(name) <= maxComponentBytes && !strings.ContainsRune(name, 0)
 }
 
 // freeMarketplaceName is base, or the first of base-2, base-3, … that nothing
@@ -945,6 +985,13 @@ func (m *Manager) marketplaceDirsAreItsOwn(mk Marketplaces, name string) (bool, 
 // a git-backed one is left unfetched with its in-store cache behind it, under a
 // name no later operation derives.
 func (m *Manager) marketplaceDirsInStore(name string) (bool, error) {
+	if !pathComponentName(name) {
+		// No filesystem takes this name as a directory, so the store cannot
+		// hold one and there is nothing to probe: answering "outside" sends the
+		// entry down the re-key path, which is all a name with no directories
+		// has left to do.
+		return false, nil
+	}
 	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
 		resolvedDir, derived, err := namedDir(dir, name)
 		if err != nil {
