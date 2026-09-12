@@ -279,6 +279,7 @@ export interface EvenerDiagnostics {
   hookEvents?: EvenerHookEventStatus[];
   jobs?: EvenerJobInfo[];
   delegates?: EvenerDelegateInfo[];
+  watches?: EvenerWatchInfo[];
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
   delegateDiagnostics?: string[];
@@ -418,6 +419,27 @@ export interface EvenerUsage {
   outputTokens?: number;
   cacheReadTokens?: number;
   totalTokens?: number;
+}
+
+export interface EvenerWatchCadence {
+  kind: string;
+  seconds?: number;
+}
+
+export interface EvenerWatchInfo {
+  id: string;
+  source: string;
+  target?: string;
+  sendTo?: string;
+  note?: string;
+  cadence?: EvenerWatchCadence[];
+  outputMatch?: string;
+  events?: string[];
+  wildcardEvents?: boolean;
+  deliveries: number;
+  createdAt: string;
+  active: boolean;
+  endReason?: string;
 }
 
 export interface FavoriteSetParams {

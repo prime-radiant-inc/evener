@@ -163,15 +163,16 @@ type HookEventStatus struct {
 
 // DetailedStatus captures the full session configuration for AppWire diagnostics.
 type DetailedStatus struct {
-	Tools      []ToolInfo           `json:"tools,omitempty"`
-	MCP        []MCPServerInfo      `json:"mcp,omitempty"`
-	Skills     []SkillInfo          `json:"skills,omitempty"`
-	Plugins    []PluginStatusInfo   `json:"plugins,omitempty"`
-	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
-	Jobs       []JobStatusInfo      `json:"jobs,omitempty"`
-	Delegates  []DelegateStatusInfo `json:"delegates,omitempty"`
-	TurnSlots  *TurnSlotStatus      `json:"turn_slots,omitempty"`
-	Agents     []string             `json:"agents,omitempty"`
+	Tools      []ToolInfo              `json:"tools,omitempty"`
+	MCP        []MCPServerInfo         `json:"mcp,omitempty"`
+	Skills     []SkillInfo             `json:"skills,omitempty"`
+	Plugins    []PluginStatusInfo      `json:"plugins,omitempty"`
+	HookEvents []HookEventStatus       `json:"hook_events,omitempty"`
+	Jobs       []JobStatusInfo         `json:"jobs,omitempty"`
+	Delegates  []DelegateStatusInfo    `json:"delegates,omitempty"`
+	Watches    []agent.WatchStatusInfo `json:"watches,omitempty"`
+	TurnSlots  *TurnSlotStatus         `json:"turn_slots,omitempty"`
+	Agents     []string                `json:"agents,omitempty"`
 }
 
 // MarshalJSON preserves an explicit empty plugin inventory while keeping a

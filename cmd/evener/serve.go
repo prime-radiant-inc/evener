@@ -1675,6 +1675,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			Usage: cloneServeUsage(delegate.Usage), Worktree: cloneServeWorktree(delegate.Worktree),
 		})
 	}
+	out.Watches = append([]agent.WatchStatusInfo(nil), ds.Watches...)
 	if ds.TurnSlots != nil {
 		out.TurnSlots = &server.TurnSlotStatus{
 			InUse: ds.TurnSlots.InUse, Cap: ds.TurnSlots.Cap, Jobs: ds.TurnSlots.Jobs, Drives: ds.TurnSlots.Drives,

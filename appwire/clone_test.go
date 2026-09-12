@@ -133,3 +133,36 @@ func TestCloneThreadClonesTaskAggregateCurrent(t *testing.T) {
 		t.Fatalf("clone current task = %+v, changed with source", clone.Evener.Tasks.Current)
 	}
 }
+
+// TestCloneEvenerDiagnosticsOwnsWatches proves the diagnostics clone deep-copies
+// the watch list: mutating the clone's rows, cadence, or events must not reach
+// the source, which stays aliased in caches otherwise.
+func TestCloneEvenerDiagnosticsOwnsWatches(t *testing.T) {
+	source := &EvenerDiagnostics{Watches: []EvenerWatchInfo{{
+		ID:      "w1",
+		Source:  "self",
+		Note:    "wake me",
+		Cadence: []EvenerWatchCadence{{Kind: "every", Seconds: 10}},
+		Events:  []string{"assistant.tool"},
+		Active:  true,
+	}}}
+	clone := cloneEvenerDiagnostics(source)
+	if !reflect.DeepEqual(clone, source) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, source)
+	}
+	clone.Watches[0].ID = "mutated"
+	clone.Watches[0].Cadence[0].Kind = "mutated"
+	clone.Watches[0].Events[0] = "mutated"
+	if source.Watches[0].ID != "w1" ||
+		source.Watches[0].Cadence[0].Kind != "every" ||
+		source.Watches[0].Events[0] != "assistant.tool" {
+		t.Fatalf("source watch changed through its clone: %+v", source.Watches[0])
+	}
+	clone.Watches = append(clone.Watches, EvenerWatchInfo{ID: "w2"})
+	if len(source.Watches) != 1 {
+		t.Fatalf("appending to the clone's slice changed the source: %d rows", len(source.Watches))
+	}
+	if CloneEvenerWatches(nil) != nil {
+		t.Fatal("CloneEvenerWatches(nil) must stay nil")
+	}
+}

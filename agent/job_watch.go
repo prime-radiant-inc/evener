@@ -2434,6 +2434,78 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 	return entries
 }
 
+// liveWatchStatuses snapshots the session's visible live watches as structured
+// status rows. It walks the same jm.watches map under the same lock and reuses
+// the same visibility predicate as liveWatchSummaries, so the two projections
+// always agree on which watches are visible; only liveWatchSummaries feeds
+// job_list's model-facing output, and this one leaves it untouched.
+func (jm *jobManager) liveWatchStatuses() []WatchStatusInfo {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	statuses := make([]WatchStatusInfo, 0, len(jm.watches))
+	for key, cfg := range jm.watches {
+		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
+			continue
+		}
+		_ = key
+		statuses = append(statuses, watchStatusInfoFromConfig(cfg))
+	}
+	sort.SliceStable(statuses, func(i, j int) bool {
+		if statuses[i].Source != statuses[j].Source {
+			return statuses[i].Source < statuses[j].Source
+		}
+		return statuses[i].ID < statuses[j].ID
+	})
+	return statuses
+}
+
+// watchStatusInfoFromConfig projects one live config into its structured
+// status row. It reads only config fields and never mutates them.
+func watchStatusInfoFromConfig(cfg *watchConfig) WatchStatusInfo {
+	if cfg == nil {
+		return WatchStatusInfo{}
+	}
+	return WatchStatusInfo{
+		ID:             cfg.id,
+		Source:         watchPublicSource(cfg.sourcePublic, cfg.target),
+		Target:         cfg.target,
+		SendTo:         watchSendTo(cfg),
+		Note:           cfg.note,
+		Cadence:        watchCadencesOf(cfg),
+		OutputMatch:    cfg.outputMatch,
+		Events:         append([]string(nil), cfg.events...),
+		WildcardEvents: cfg.wildcardEvents,
+		Deliveries:     cfg.deliveries,
+		CreatedAt:      cfg.createdAt.Format(time.RFC3339Nano),
+		// A one-shot that already fired but is still registered only until its
+		// durable teardown lands (firedPendingEnd) is no longer armed.
+		Active: !cfg.firedPendingEnd,
+	}
+}
+
+// watchCadencesOf projects a config's orthogonal trigger sources into cadence
+// rows in the same order watchConditionSummary renders them. A timer's
+// progressIntervalMS is timerSeconds*1000, so the timer branch comes first and
+// prevents the timer from also reading as a progress cadence.
+func watchCadencesOf(cfg *watchConfig) []WatchCadenceInfo {
+	var cadences []WatchCadenceInfo
+	if cfg.outputMatch != "" {
+		cadences = append(cadences, WatchCadenceInfo{Kind: "output"})
+	}
+	switch {
+	case cfg.timer && cfg.oneShot:
+		cadences = append(cadences, WatchCadenceInfo{Kind: "after", Seconds: float64(cfg.timerSeconds)})
+	case cfg.timer:
+		cadences = append(cadences, WatchCadenceInfo{Kind: "every", Seconds: float64(cfg.timerSeconds)})
+	case cfg.progressIntervalMS > 0:
+		cadences = append(cadences, WatchCadenceInfo{Kind: "progress", Seconds: float64(cfg.progressIntervalMS) / 1000})
+	}
+	if cfg.wildcardEvents || len(cfg.events) > 0 {
+		cadences = append(cadences, WatchCadenceInfo{Kind: "events"})
+	}
+	return cadences
+}
+
 // watchListEntryLess orders watch rows by (Source, ID) — the shared ordering
 // for every receiver-keyed watch projection.
 func watchListEntryLess(entries []watchListEntry) func(i, j int) bool {
