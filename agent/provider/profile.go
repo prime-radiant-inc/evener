@@ -292,8 +292,10 @@ func (p *Profile) MaxOutputTokens() int {
 // SupportsReasoning is false only for an explicit reasoning = false row.
 func (p *Profile) SupportsReasoning() bool { return !p.res.Caps.ReasoningDisabled() }
 
-// ReasoningEffortLevels is the row's effort ladder; empty passes any
-// requested effort through unchanged (spec §7.4).
+// ReasoningEffortLevels is the row's effort ladder. An empty ladder vouches
+// for no level: a builder that spells the effort name omits it, while
+// budget-shaped thinking still sizes its budget from the requested effort
+// (see llm.VouchedEffort).
 func (p *Profile) ReasoningEffortLevels() []string {
 	if p.res.Caps.ReasoningDisabled() {
 		return nil

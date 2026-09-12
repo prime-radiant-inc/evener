@@ -394,7 +394,9 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
       } else {
         if (destination === "replacement Composer") cleanup();
         fake.on("thread/read", () => readResponse("ref_b", idleFocusThread("ref_b")));
-        await threadsStore.getState().ensureThread("ref_b");
+        await act(async () => {
+          await threadsStore.getState().ensureThread("ref_b");
+        });
         const second = render(<Composer ref="ref_b" />);
         destinationElement = second
           .getAllByRole("textbox", { name: "Message" })

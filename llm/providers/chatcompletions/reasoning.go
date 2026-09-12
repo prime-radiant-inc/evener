@@ -47,33 +47,42 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 		if !alwaysOn {
 			return
 		}
-		wire = llm.ClampReasoningEffort("medium", caps.EffortValues)
+		wire = "medium"
 	}
+	// VouchedEffort clamps within the row's ladder and refuses a level the
+	// ladder does not list, so a row with no ladder writes no effort name.
+	// The non-level enable objects below still fire, keeping a
+	// mandatory-thinking row on without a level it cannot accept.
+	level := llm.VouchedEffort(wire, caps.EffortValues)
 	switch format {
 	case "", "openai":
-		if capable {
-			body["reasoning_effort"] = wire
+		if capable && level != "" {
+			body["reasoning_effort"] = level
 		}
 	case "openrouter":
+		// OpenRouter is the documented exception to the vouch gate: it
+		// normalizes reasoning.effort itself and its model listing often
+		// omits supported efforts, so the requested level is passed through
+		// unconditionally and the gateway maps it to a budget.
 		if explicit {
 			body["reasoning"] = map[string]any{"effort": wire}
-		} else {
+		} else if alwaysOn {
 			body["reasoning"] = map[string]any{"enabled": true}
 		}
 	case "zai":
 		body["thinking"] = map[string]any{"type": "enabled", "clear_thinking": false}
-		if explicit && capable {
-			body["reasoning_effort"] = wire
+		if explicit && capable && level != "" {
+			body["reasoning_effort"] = level
 		}
 	case "deepseek":
 		body["thinking"] = map[string]any{"type": "enabled"}
-		if explicit && capable {
-			body["reasoning_effort"] = wire
+		if explicit && capable && level != "" {
+			body["reasoning_effort"] = level
 		}
 	case "together":
 		body["reasoning"] = map[string]any{"enabled": true}
-		if explicit && capable {
-			body["reasoning_effort"] = wire
+		if explicit && capable && level != "" {
+			body["reasoning_effort"] = level
 		}
 	case "qwen":
 		body["enable_thinking"] = true
@@ -84,6 +93,8 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 			body["chat_template_kwargs"] = caps.ChatTemplateKwargs
 		}
 	case "string-thinking":
-		body["thinking"] = wire
+		if level != "" {
+			body["thinking"] = level
+		}
 	}
 }

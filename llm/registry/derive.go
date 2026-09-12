@@ -114,8 +114,9 @@ func (c Caps) EffortOffCapable() bool {
 // §8.4): effort ∈ ReasoningControls, which after derivation is every
 // reasoning row except one that lists controls without effort. A row with
 // no controls and no Reasoning verdict (an unknown model) is capable too,
-// so an explicit effort still reaches the wire as it did before the
-// registry.
+// so an explicit effort still reaches request shaping as it did before the
+// registry; the protocol builder then writes it only for a level an
+// EffortValues ladder vouches for (llm.VouchedEffort).
 func (c Caps) EffortCapable() bool {
 	if slices.Contains(c.ReasoningControls, "effort") {
 		return true
