@@ -655,7 +655,27 @@ run_bounded_package_list() {
 						return 1
 					fi
 					return 0
+				else
+					# Read inside the else branch: once the `if` compound
+					# closes, $? is the compound's own status, not the reap's.
+					list_status=$?
 				fi
+				# Only an attempt this script killed is a timeout. `kill -0` above
+				# answers for a zombie too, so an attempt that exited on its own —
+				# just before the deadline, or between the deadline and the stop —
+				# reaches here with a status of its own: a verdict about the package
+				# list, which retrying only repeats and a timeout diagnostic buries.
+				# The stop sends SIGTERM and then SIGKILL, and bash reports a
+				# signalled child as 128 plus the signal number, so those two numbers
+				# are what a stopped attempt looks like and everything else is the
+				# attempt speaking for itself.
+				case "$list_status" in
+					143 | 137) ;;
+					*)
+						cat "$package_list_stderr" >&2
+						return "$list_status"
+						;;
+				esac
 				if [ "$attempt" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					return 1
