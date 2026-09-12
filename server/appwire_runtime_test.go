@@ -269,9 +269,13 @@ func TestAppDiagnosticsFromDetailedStatus_ProjectsWatches(t *testing.T) {
 		OutputMatch: "",
 		Events:      []string{"assistant.tool"},
 		Deliveries:  3,
-		CreatedAt:   "1970-01-01T00:16:40Z",
-		Active:      true,
-		EndReason:   "",
+		DeliveryTimes: []string{
+			"1970-01-01T00:16:40Z",
+			"1970-01-01T00:16:41Z",
+		},
+		CreatedAt: "1970-01-01T00:16:40Z",
+		Active:    true,
+		EndReason: "",
 	}}}
 	got := appDiagnosticsFromDetailedStatus(ds)
 	if len(got.Watches) != 1 {
@@ -289,9 +293,17 @@ func TestAppDiagnosticsFromDetailedStatus_ProjectsWatches(t *testing.T) {
 	if !reflect.DeepEqual(w.Events, []string{"assistant.tool"}) {
 		t.Fatalf("Events = %+v, want [assistant.tool]", w.Events)
 	}
+	wantDeliveryTimes := []string{"1970-01-01T00:16:40Z", "1970-01-01T00:16:41Z"}
+	if !reflect.DeepEqual(w.DeliveryTimes, wantDeliveryTimes) {
+		t.Fatalf("DeliveryTimes = %+v, want %+v", w.DeliveryTimes, wantDeliveryTimes)
+	}
 	got.Watches[0].Events[0] = "mutated"
 	if ds.Watches[0].Events[0] != "assistant.tool" {
 		t.Fatal("projection aliased the agent event slice")
+	}
+	got.Watches[0].DeliveryTimes[0] = "mutated"
+	if ds.Watches[0].DeliveryTimes[0] != "1970-01-01T00:16:40Z" {
+		t.Fatal("projection aliased the agent delivery-time slice")
 	}
 }
 

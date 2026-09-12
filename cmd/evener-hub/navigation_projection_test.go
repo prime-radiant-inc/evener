@@ -3,6 +3,7 @@ package hub
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,7 @@ func TestNavigationSummaryDoesNotAggregateWatchesAcrossSessions(t *testing.T) {
 					ID: "watch-a", Source: "timer", Target: "session-b", SendTo: "session-b",
 					Note: "owner watch", Cadence: []appwire.EvenerWatchCadence{{Kind: "every", Seconds: 600}},
 					Deliveries: 2, CreatedAt: "2026-09-12T10:00:00Z", Active: true,
+					DeliveryTimes: []string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"},
 				}},
 			},
 			{
@@ -194,13 +196,57 @@ func TestNavigationSummaryDoesNotAggregateWatchesAcrossSessions(t *testing.T) {
 		watch.Deliveries != 2 || !watch.Active {
 		t.Fatalf("session-a projected watch = %+v, want the carried fields", watch)
 	}
+	wantDeliveryTimes := []string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"}
+	if !reflect.DeepEqual(watch.DeliveryTimes, wantDeliveryTimes) {
+		t.Fatalf("session-a DeliveryTimes = %+v, want %+v", watch.DeliveryTimes, wantDeliveryTimes)
+	}
 	if len(rowB.Watches) != 1 || rowB.Watches[0].ID != "watch-b" {
 		t.Fatalf("session-b watches = %+v, want only watch-b", rowB.Watches)
+	}
+	if rowB.Watches[0].DeliveryTimes == nil || len(rowB.Watches[0].DeliveryTimes) != 0 {
+		t.Fatalf("session-b DeliveryTimes = %#v, want an empty non-nil list when the source row carries none", rowB.Watches[0].DeliveryTimes)
 	}
 	for _, carried := range rowB.Watches {
 		if carried.ID == "watch-a" {
 			t.Fatalf("session-b aggregates session-a's watch: %+v", rowB.Watches)
 		}
+	}
+}
+
+// TestNavigationWatchDeliveryTimesBoundedLikeOtherWatchStrings proves the
+// delivery timeline gets the same per-string bound every other watch field
+// gets, so one pathological instant cannot dominate the row, while a normal
+// RFC3339 instant passes through unchanged.
+func TestNavigationWatchDeliveryTimesBoundedLikeOtherWatchStrings(t *testing.T) {
+	long := strings.Repeat("a", maxNavigationLabelRunes+64)
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{{
+				ID: "watch-a", Source: "output",
+				DeliveryTimes: []string{"2026-09-12T10:00:00Z", long},
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	if len(resource.Current.Sessions) != 1 || len(resource.Current.Sessions[0].Watches) != 1 {
+		t.Fatalf("projected rows = %+v, want one session with one watch", resource.Current.Sessions)
+	}
+	got := resource.Current.Sessions[0].Watches[0].DeliveryTimes
+	if len(got) != 2 || got[0] != "2026-09-12T10:00:00Z" {
+		t.Fatalf("DeliveryTimes = %+v, want the short instant carried unchanged", got)
+	}
+	if runes := len([]rune(got[1])); runes != maxNavigationLabelRunes || !strings.HasSuffix(got[1], "…") {
+		t.Fatalf("over-long instant truncated to %d runes (suffix %q), want %d runes ending in an ellipsis", runes, got[1][len(got[1])-3:], maxNavigationLabelRunes)
 	}
 }
 

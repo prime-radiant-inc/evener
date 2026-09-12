@@ -454,6 +454,7 @@ export interface EvenerWatchInfo {
   events?: string[];
   wildcardEvents?: boolean;
   deliveries: number;
+  deliveryTimes?: string[];
   createdAt: string;
   active: boolean;
   endReason?: string;
@@ -1280,6 +1281,7 @@ export interface NavigationWatchSummary {
   events?: string[];
   wildcard_events?: boolean;
   deliveries: number;
+  delivery_times?: string[];
   created_at: string;
   active: boolean;
   end_reason?: string;
