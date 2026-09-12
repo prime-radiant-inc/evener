@@ -222,7 +222,7 @@ names eight runtime modules; the ninth below is dead.
 | `sessionErrors.ts` (42) | **no** | web (2), native (2) | PACKAGE CANDIDATE (2 consumers) |
 | `stableDelegate.ts` (12) | **no** | web (3), native (1) | PACKAGE CANDIDATE (2 consumers) |
 | `jobOutput.ts` (35) | **no** | web (2), native (1) | PACKAGE CANDIDATE (2 consumers) |
-| `docContent.ts` (99) | **yes, since #1184** | web (5), native 0 | PACKAGE CANDIDATE — the two URL builders ship and are qualified; `readDocFile` needs a fetch/base-URL/auth port (C24) |
+| `docContent.ts` (99) | **yes, since #1184** | web (5), native 0 | PACKAGE CANDIDATE — the module ships and `docFileRawURL`/`docImageURL`/`DOC_FILE_MAX_BYTES`/`DocFileError` are exported and qualified, but `readDocFile` is deliberately kept off `index.ts` until C24 gives it a base-URL and fetch port |
 | `testing/` (6 files) | **no** | 136 web files import `testing/fakeClient`; 25 name `AppwireClientLike` | PACKAGE CANDIDATE — the type must leave `testing/` |
 
 ## 6. The package boundary
@@ -324,7 +324,7 @@ re-query before acting.
 
 | Plan PR | GitHub | State | What it changed here |
 | --- | --- | --- | --- |
-| A1 | #1184 | open (head `68a1da7c2`) | Ships **all ten** unpacked modules, `docContent.ts` included (`files` goes 6 → 16) — the earlier plan held `docContent` back, but the PR shipped it and the runner asserts `docFileRawURL("s","p")` while deliberately never calling `readDocFile` (`qualify-package.mjs:28-31`). So C24 now owns only the fetch/URL/auth port, not the move. The runner also smoke-calls every other shipped module |
+| A1 | #1184 | open (head `038851d7f`) | Ships **all ten** unpacked modules, `docContent.ts` included (`files` goes 6 → 16) — the earlier plan held the whole module back; the PR shipped it and split it at the entry point instead. `docFileRawURL`, `docImageURL`, `DOC_FILE_MAX_BYTES` and `DocFileError` are exported and qualified (`qualify-package.mjs:110-111,155`); `readDocFile` is deliberately absent from `index.ts`, with the reason written there, because it hardcodes a relative URL and the browser `fetch` global. So C24 owns the port and the re-export, not the move. The runner also smoke-calls every other shipped module |
 | A2 | #1188 | open | `protocol/clientLike.ts` declares `AppwireClientLike`, exported from `index.ts` and in the build `files`. 25 importers rewritten, `FakeClient` imports left alone — §0 fact 3 above is corrected to match |
 | A5 | #1186 | **merged** (`2245f9715`) | Deleted the dead `mobile/src/dev/conversationFixtures.ts`, which takes `mobile/src` from the 7,615 lines tabulated in §4 down to 6,841 and made `mobile-native` typecheck every file under `mobile/src`, so the gap that hid it is closed too |
 | B1 | #1189 | open | `protocol/itemFailure.ts`; the web and native predicates were byte-identical in behavior. Surfaced the third predicate now recorded above |
