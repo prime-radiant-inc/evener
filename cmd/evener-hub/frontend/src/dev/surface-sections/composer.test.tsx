@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../../panes/session/composer/askDock/askDockStore";
-import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import ComposerSurfaceSection from "./composer";
 
