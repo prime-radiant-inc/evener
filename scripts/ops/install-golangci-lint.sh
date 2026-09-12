@@ -64,6 +64,14 @@ bindir="$(go env GOPATH)/bin"
 # fills it with printf -v and exits on any failure.
 attempt_scratch=""
 trap scratch_rm EXIT
+# A signal ends the script without running the EXIT trap, and a CI cancellation
+# lands during the fetch more often than anywhere else, so the scratch would be
+# left behind on the runner. Each of these cleans up and exits with the
+# conventional 128 plus the signal number; scratch_rm is safe to run twice, so
+# the EXIT trap that follows changes nothing.
+trap 'scratch_rm; exit 129' HUP
+trap 'scratch_rm; exit 130' INT
+trap 'scratch_rm; exit 143' TERM
 scratch_dir attempt_scratch evener-golangci-install
 attempt_log="$attempt_scratch/attempt.stderr"
 
