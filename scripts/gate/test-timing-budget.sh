@@ -28,8 +28,17 @@
 # always exits 0: the tree must stay green until a real baseline is blessed
 # (`make test-rebaseline`), never fail on a budget nobody has measured yet.
 #
+# The one thing that fails in EVERY mode, --check or not, is a broken
+# measurement: `go list` or `go test` exiting nonzero, or a package go list
+# reported that the go test -json stream never mentions (issue #172 — a
+# package that fails to build used to contribute no rows, so --bless quietly
+# wrote a budget without it). A failed measurement exits before the comparison
+# and before any --bless: there is no honest baseline to write from a stream
+# nobody vouches for.
+#
 # Usage:
-#   scripts/gate/test-timing-budget.sh                # measure + print, never fails
+#   scripts/gate/test-timing-budget.sh                # measure + print (fails
+#                                                  # only on a broken measurement)
 #   scripts/gate/test-timing-budget.sh --check         # also enforce (see policy below)
 #   scripts/gate/test-timing-budget.sh --bless         # make test-rebaseline: overwrite
 #                                                  # every measured package's budget
@@ -43,8 +52,9 @@
 #   scripts/gate/test-timing-budget.sh --measured FILE  # skip go test/vitest entirely
 #                                                   # and compare FILE's already-
 #                                                   # measured "SUM\t<pkg>\t<secs>" /
-#                                                   # "TEST\t<pkg>\t<name>\t<secs>"
-#                                                   # rows — how a caller drives
+#                                                   # "TEST\t<pkg>\t<name>\t<secs>" /
+#                                                   # "PKG\t<pkg>" rows — how a
+#                                                   # caller drives
 #                                                   # the comparison contract with
 #                                                   # fixture durations, exactly like
 #                                                   # the coverage-floor web row's reuse of the vitest report
@@ -110,18 +120,30 @@ scratch_dir work evener-testbudget
 measured="$work/measured.tsv"
 : >"$measured"
 
-# go_test_json_to_tsv PACKAGE_JSON_LOG >> measured.tsv — appends one
-# "SUM\t<package>\t<seconds>" line per package (summing only TOP-LEVEL
-# Test/Example results, never subtests, so a parent's elapsed and its
+# go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE >> measured.tsv
+# — appends one "SUM\t<package>\t<seconds>" line per package (summing only
+# TOP-LEVEL Test/Example results, never subtests, so a parent's elapsed and its
 # subtests' elapsed are not both counted) and one
 # "TEST\t<package>\t<name>\t<seconds>" line per test AND subtest result, which
 # is what the ceiling check needs to catch a slow subtest a top-level-only sum
 # would hide.
+#
+# It also emits one "PKG\t<package>" line per package-level terminal event
+# (pass/fail/skip with no Test field). go test -json emits exactly one such
+# event for EVERY package it was asked to test — including a package with no
+# test files (skip) and a package that fails to build (fail). The expected-
+# packages file lists what `go list ./...` reported, one import path per line;
+# any of those the stream never mentions is the silent-drop shape issue #172
+# filed (a build-failed package contributing no rows, so --bless quietly wrote
+# a budget without it) and fails the whole run. The check is a set difference
+# in the parser, not a per-package grep, so a 74-package root module costs one
+# comparison pass, not 74 subprocesses.
 go_test_json_to_tsv() {
-	python3 - "$1" <<'PY'
+	python3 - "$1" "$2" <<'PY'
 import json, sys
 
 sums = {}
+seen = set()
 with open(sys.argv[1]) as fh:
 	for line in fh:
 		line = line.strip()
@@ -133,16 +155,27 @@ with open(sys.argv[1]) as fh:
 			continue
 		if ev.get("Action") not in ("pass", "fail", "skip"):
 			continue
+		pkg = ev.get("Package", "")
 		test = ev.get("Test")
 		if not test:
+			seen.add(pkg)
+			print(f"PKG\t{pkg}")
 			continue
-		pkg = ev.get("Package", "")
 		elapsed = ev.get("Elapsed", 0.0)
 		print(f"TEST\t{pkg}\t{test}\t{elapsed}")
 		if "/" not in test:
 			sums[pkg] = sums.get(pkg, 0.0) + elapsed
 for pkg, total in sums.items():
 	print(f"SUM\t{pkg}\t{total}")
+
+with open(sys.argv[2]) as fh:
+	expected = {line.strip() for line in fh if line.strip()}
+missing = expected - seen
+if missing:
+	for pkg in sorted(missing):
+		print(f"test-timing-budget: package {pkg} listed by go list produced no "
+			"terminal event in the go test -json stream", file=sys.stderr)
+	sys.exit(1)
 PY
 }
 
@@ -182,27 +215,49 @@ else
 	for m in $modules; do
 		[ -f "$repo_root/$m/go.mod" ] || { echo "test-timing-budget: no module at $m, skipping" >&2; continue; }
 		name="$m"; [ "$name" = "." ] && name="root"
-		log="$work/$(printf '%s' "$name" | tr / _).jsonl"
+		base="$work/$(printf '%s' "$name" | tr / _)"
+		log="$base.jsonl"
+		pkglist="$base.packages"
 		short="$(module_short_flag "$m")"
-		if [ "$m" = "." ]; then
-			pkgs=()
-			while IFS= read -r pkg; do
-				case "$pkg" in
-					*/cmd/evener-fuzzcov|*/cmd/evener-fuzz-harvest) continue ;;
-				esac
-				pkgs+=("$pkg")
-			done < <(cd "$repo_root/$m" && go list ./... 2>/dev/null)
-			if [ "${#pkgs[@]}" -eq 0 ]; then
-				echo "test-timing-budget: go list ./... in $m returned no packages" >&2
-				go_measure_failed=1; continue
-			fi
-			( cd "$repo_root/$m" && go test -json -count=1 $short \
-				-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
-		else
-			( cd "$repo_root/$m" && go test -json -count=1 $short \
-				-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" ./... ) >"$log" 2>"$log.stderr"
+		pkgs=()
+		# Status captured BEFORE any negation: under bash 3.2 (macOS stock) an
+		# `if ! ( ... ) >file` whose OUTER redirection fails (unwritable scratch,
+		# ENOSPC) has the failure eaten by the negation and the guard silently
+		# skipped. Capturing $? first attributes every nonzero — producer exit
+		# or redirection failure — to this branch.
+		( cd "$repo_root/$m" && go list ./... ) >"$pkglist.raw" 2>"$base.go-list.stderr"
+		gl_status=$?
+		if [ "$gl_status" -ne 0 ]; then
+			echo "test-timing-budget: go list ./... in $m exited nonzero (see $base.go-list.stderr)" >&2
+			go_measure_failed=1; continue
 		fi
-		go_test_json_to_tsv "$log" >>"$measured"
+		while IFS= read -r pkg; do
+			case "$pkg" in
+				*/cmd/evener-fuzzcov|*/cmd/evener-fuzz-harvest) continue ;;
+			esac
+			pkgs+=("$pkg")
+		done <"$pkglist.raw"
+		if [ "${#pkgs[@]}" -eq 0 ]; then
+			echo "test-timing-budget: go list ./... in $m returned no packages" >&2
+			go_measure_failed=1; continue
+		fi
+		printf '%s\n' "${pkgs[@]}" >"$pkglist"
+		# Same capture-before-negation shape as the go list block above, for
+		# the same bash 3.2 reason: a failed outer redirection must land here,
+		# not be eaten by `!`.
+		( cd "$repo_root/$m" && go test -json -count=1 $short \
+			-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
+		gt_status=$?
+		if [ "$gt_status" -ne 0 ]; then
+			echo "test-timing-budget: go test in $m exited nonzero (see $log.stderr)" >&2
+			go_measure_failed=1; continue
+		fi
+		# The package-completeness oracle (issue #172) runs inside the parser:
+		# a package in $pkglist with no terminal event in the stream is a
+		# silent drop, and the parse exits nonzero rather than bless around it.
+		if ! go_test_json_to_tsv "$log" "$pkglist" >>"$measured"; then
+			go_measure_failed=1; continue
+		fi
 	done
 
 	if $web; then
@@ -275,6 +330,13 @@ with open(measured_path) as fh:
 		elif parts[0] == "TEST":
 			_, pkg, name, secs = parts
 			tests.append((pkg, name, float(secs)))
+		elif parts[0] == "PKG":
+			# A package-level terminal event. It seeds the package at 0 so a
+			# package whose every test was filtered out (or that has no test
+			# files at all) still appears in the report and in a blessed
+			# budget — the completeness contract's other half: what the
+			# producer vouches for must be recorded, not just what ran.
+			sums.setdefault(parts[1], 0.0)
 
 try:
 	with open(budget_path) as fh:
@@ -330,7 +392,10 @@ if bless:
 	budget["packages"] = {pkg: round(m, 2) for pkg, m in sums.items()}
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
 	with open(budget_path, "w") as fh:
-		json.dump(budget, fh, indent="\t")
+		# indent=1 (spaces) is the checked-in file's format: byte-identical
+		# re-serialization. A tab here (issue #172) would reformat all ~130
+		# lines on the first rebaseline and defeat review-the-diff.
+		json.dump(budget, fh, indent=1)
 		fh.write("\n")
 	lines.append(f"blessed budget -> {budget_path}")
 
