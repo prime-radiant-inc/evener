@@ -527,6 +527,81 @@ func TestSkillDelivery_DeletedSourceBeforeDispatch(t *testing.T) {
 	}
 }
 
+// TestSkillDelivery_FailedReloadNotifiesNextDispatch is the restore-window
+// failure path at the provider boundary: a delivery obligation is pending
+// (the state a restart restores from metadata), its carrier is not in the
+// retained history, and its recorded source no longer resolves. The dispatch
+// seam records the typed failure and finalizes the obligation — and the very
+// request that dispatch sends must carry the failure explanation, not some
+// later continuation. With no compaction handoff pending, nothing else
+// rebuilds the request after the notification is appended, so this asserts
+// on the captured provider request, not on prose.
+func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	missing := filepath.Join(root, "skills", "opaque", "SKILL.md")
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSession(t, withAdapter(adapter), withDir(root),
+		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+	// The restored-window state: an obligation whose carrier never joined the
+	// retained history and whose source is gone. persistSkillToolObligations
+	// is the same seam the tool route records obligations through.
+	obligation := schema.SkillDeliveryObligation{
+		InvocationID: "inv-restore-window",
+		ToolCallID:   "skill-1",
+		Identity: schema.SkillContentIdentity{
+			Name:           "opaque",
+			DeclaredName:   "opaque",
+			Source:         missing,
+			FileDigest:     "restored-file",
+			RenderedDigest: "restored-render",
+		},
+		Route: "model_tool",
+	}
+	if err := s.persistSkillToolObligations(&schema.SkillTurnState{Obligations: []schema.SkillDeliveryObligation{obligation}}); err != nil {
+		t.Fatalf("record restored obligation: %v", err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "REQUEST_next", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("requests=%d", len(adapter.Requests()))
+	}
+	explanationSeen := false
+	for _, msg := range adapter.Requests()[0].Messages {
+		for _, part := range msg.Content {
+			if part.Kind == llm.ContentText && strings.Contains(part.Text, `Skill "opaque" is no longer available from `+missing) {
+				explanationSeen = true
+			}
+		}
+	}
+	if !explanationSeen {
+		t.Fatal("the dispatch that finalized the failed reload never carried the failure explanation to the model")
+	}
+	// The failure still finalizes exactly as before: typed outcome, no pending
+	// obligation, no false delivery, no success event.
+	failedOutcome := false
+	for _, state := range skillTurnStates(s) {
+		for _, outcome := range state.Outcomes {
+			if outcome.InvocationID == "inv-restore-window" && outcome.Status == "failed" && outcome.ErrorCode == "source_missing" {
+				failedOutcome = true
+			}
+		}
+	}
+	if !failedOutcome {
+		t.Fatal("no typed source_missing failure outcome for the unrestorable source")
+	}
+	if got := lifecycleObligations(s); len(got) != 0 {
+		t.Fatalf("failed reload left obligations: %+v", got)
+	}
+	if got := lifecycleInventory(s); len(got) != 0 {
+		t.Fatalf("failed reload recorded inventory: %+v", got)
+	}
+}
+
 // TestSkillDelivery_TransportRetry proves a transport retry after the final
 // admission does not double-commit: the retried dispatch carries the same
 // complete body and no duplicate success event fires.
