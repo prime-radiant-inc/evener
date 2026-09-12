@@ -67,7 +67,10 @@ func regionalVertexGlobalOnlyRemedy(res registry.Resolved, status int, body []by
 	if !derived {
 		return "", false
 	}
-	if status != http.StatusNotFound || !strings.Contains(string(body), "Publisher model") {
+	// The phrase is matched without regard to case: the regional body observed
+	// on 2026-09-12 reads "Publisher model", and the remedy should not depend
+	// on the provider's capitalization.
+	if status != http.StatusNotFound || !strings.Contains(strings.ToLower(string(body)), "publisher model") {
 		return "", false
 	}
 	if loc == "global" || loc == "us" || loc == "eu" {

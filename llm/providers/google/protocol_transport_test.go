@@ -192,19 +192,26 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 // A publisher model Vertex serves from its global endpoint only 404s on a
 // regional one. The raw message tells the user to check the region without
 // naming the remedy; the reclassifier turns it into a configuration error
-// that does (the same class the registry warns about at resolve time).
+// that does (the same class the registry warns about at resolve time). The
+// match does not depend on the provider's casing: the regional body observed
+// on 2026-09-12 reads "Publisher model", and the same message with a capital M
+// takes the same path rather than dropping the guidance silently.
 func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) {
-	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
-	srv, _ := protoServer(t, http.StatusNotFound, body)
-	res := vertexAuthorityRes(t, srv, "us-central1")
+	for _, phrase := range []string{"Publisher model", "Publisher Model"} {
+		t.Run(phrase, func(t *testing.T) {
+			body := `{"error":{"code":404,"message":"` + phrase + ` ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+			srv, _ := protoServer(t, http.StatusNotFound, body)
+			res := vertexAuthorityRes(t, srv, "us-central1")
 
-	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
-	cfgErr, ok := errors.AsType[*llm.ConfigurationError](err)
-	if !ok || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
-		t.Fatalf("regional publisher-model 404 must be an actionable configuration error: %v", err)
-	}
-	if !strings.Contains(cfgErr.Message, "not found or your project does not have access") {
-		t.Fatalf("the remedy must keep the provider's own detail visible: %q", cfgErr.Message)
+			_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+			cfgErr, ok := errors.AsType[*llm.ConfigurationError](err)
+			if !ok || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
+				t.Fatalf("regional publisher-model 404 must be an actionable configuration error: %v", err)
+			}
+			if !strings.Contains(cfgErr.Message, "not found or your project does not have access") {
+				t.Fatalf("the remedy must keep the provider's own detail visible: %q", cfgErr.Message)
+			}
+		})
 	}
 }
 
