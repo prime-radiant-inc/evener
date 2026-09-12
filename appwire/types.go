@@ -2187,6 +2187,10 @@ type ModelDescriptor struct {
 	InputCostPerMillion   *float64 `json:"inputCostPerMillion,omitempty"`
 	OutputCostPerMillion  *float64 `json:"outputCostPerMillion,omitempty"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
+	// Warnings carries the registry's resolved-row notes (e.g. a global-only
+	// model under a regional Vertex location) so the model picker can flag a
+	// row the resolver itself warns about.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type ModelListDiagnostic struct {

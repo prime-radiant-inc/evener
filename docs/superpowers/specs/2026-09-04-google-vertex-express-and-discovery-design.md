@@ -318,12 +318,19 @@ already exists in the hub's `credentialLabels.ts`.
 ### 4.3 Authenticator
 
 `tokenauth.GCPADC.tokenSource` caches one token source per instance, rebuilt
-when the credential's identity changes — its source (`adc`, `none`, `store`),
-or the stored JSON's digest; when `res.Credential.Source ==
+when the credential's identity changes — its source (`adc`, `none`, `store`)
+plus a digest of the credential's own bytes: the stored JSON for `store`, and
+for application-default credentials the JSON the library read from the host, so
+a re-login that rewrites the ADC file reaches the next request rather than the
+next process; when `res.Credential.Source ==
 "store"` it builds the token source with `google.CredentialsFromJSON(ctx,
 []byte(value), cloudPlatformScope)` instead of `FindDefaultCredentials`.
 Everything else (`ReuseTokenSource`, the bearer header, §2.2's quota
 header) is shared.
+A token endpoint that refuses the credential itself (`invalid_grant`,
+`invalid_client`) surfaces as `llm.NewAuthenticationError`, so the hub's
+credential test offers "sign in again"; any other token failure keeps its own
+meaning.
 Malformed JSON surfaces as the existing `llm.ConfigurationError` shape,
 naming the instance and "stored credential".
 

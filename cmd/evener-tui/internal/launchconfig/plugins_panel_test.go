@@ -450,7 +450,7 @@ func TestPluginsPanel_InstalledTab_RendersBadges(t *testing.T) {
 	// StatusBadge uppercases its label; check for the badge text distinctly
 	// from the plugin's own (lowercase) name so a name substring can't make
 	// the assertion pass vacuously.
-	for _, want := range []string{"broken-one", "BROKEN", "disabled-one", "DISABLED", "auto-one", "AUTO-UPGRADE", "v1.2.0"} {
+	for _, want := range []string{"broken-one", "BROKEN", "disabled-one", "OFF BY DEFAULT", "auto-one", "AUTO-UPGRADE", "v1.2.0"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("installed view missing %q:\n%s", want, v)
 		}

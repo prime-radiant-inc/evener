@@ -81,4 +81,10 @@ paths = [
   # force-added .env would pass this scan — it stays gitignored, so
   # committing it requires explicit override.
   '''(^|/)\.env$''',
+  # CocoaPods' ignored framework code-signature manifests contain public
+  # resource digests that the generic-api-key rule mistakes for credentials.
+  # Keep the exclusion to these generated manifests; tracked native sources
+  # and other working-tree files remain covered by the scan.
+  '''(^|/)mobile-native/ios/Pods/React-Core-prebuilt/React\.xcframework/_CodeSignature/CodeResources$''',
+  '''(^|/)mobile-native/ios/Pods/ReactNativeDependencies/framework/packages/react-native/ReactNativeDependencies\.xcframework/_CodeSignature/CodeResources$''',
 ]

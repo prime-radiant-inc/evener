@@ -54,7 +54,7 @@ func fuzzInstallErrors(t *testing.T) {
 	if err := SaveRegistry(m.registryPath(), reg); err != nil {
 		t.Fatal(err)
 	}
-	items, err := m.List()
+	items, err := m.List(context.Background())
 	if err != nil || len(items) != 0 {
 		t.Fatalf("empty list = %#v, %v", items, err)
 	}
@@ -88,7 +88,7 @@ func fuzzInstallErrors(t *testing.T) {
 	if err := os.WriteFile(m.registryPath(), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.List(); err == nil {
+	if _, err := m.List(context.Background()); err == nil {
 		t.Fatal("corrupt registry listed")
 	}
 	if _, err := m.UpdateAll(ctx); err == nil {
@@ -224,7 +224,7 @@ func fuzzRegistryEdges(t *testing.T) {
 
 	var warnings bytes.Buffer
 	m := &Manager{Root: block, Stderr: &warnings}
-	if got := listOrWarn(m); got != nil || warnings.Len() == 0 {
+	if got := listOrWarn(context.Background(), m); got != nil || warnings.Len() == 0 {
 		t.Fatalf("listOrWarn = %#v, %q", got, warnings.String())
 	}
 }
