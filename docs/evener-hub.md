@@ -183,11 +183,13 @@ for the full schema and semantics.
 
 Plugin selection is a new-session control. The default state leaves the
 selection omitted, so the session uses every otherwise-loadable plugin from the
-resolved explicit directories and globally enabled installed plugins. Choosing
-an individual plugin, **All**, or **None** changes the launch to an explicit
-allow-list of manifest names; **None** sends an explicit empty list and loads no
-plugins. Globally disabled plugins are never selectable, and this control does
-not change persistent plugin state.
+resolved explicit directories and installed plugins marked enabled by default.
+Every installed plugin appears in the list, including ones whose default is off.
+Choosing an individual plugin, **All**, or **None** changes the launch to an
+explicit allow-list of manifest names, and an off-by-default plugin named there
+loads for that session; **None** sends an explicit empty list and loads no
+plugins. This control does not change persistent plugin state — the plugin
+detail's **Enabled by default** switch does.
 
 In the desktop new-session pane, the summary appears between the working
 directory/model/effort controls and Advanced options:

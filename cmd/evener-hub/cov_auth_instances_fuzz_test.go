@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -48,7 +48,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		// credentials store from disk), not a pure projection of its arguments.
 		// Their correctness is exercised indirectly, through every asserted call
 		// below that runs against the controller they build.
-		_ = newHubAuthController(map[string]string{"HOME": root})
+		_ = newHubAuthController(map[string]string{envvars.XDGStateHome.Name: root})
 		_ = newHubAuthController()
 		_ = newHubAuthControllerWithStore(root, nil)
 		oldSetup := hubAuthControllerSetup
@@ -64,14 +64,9 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		if got := effectiveHubAuthEnv(map[string]string{"COV_AUTH": "launch"}); got["COV_AUTH"] != "launch" {
 			t.Fatalf("effectiveHubAuthEnv: COV_AUTH = %q, want launch env to override ambient value", got["COV_AUTH"])
 		}
-		wantStateDir := filepath.Join(root, ".local", "state", "evener")
-		if runtime.GOOS == "windows" {
-			// The Windows branch looks for USERPROFILE/HOMEDRIVE+HOMEPATH, neither of
-			// which this env map sets, so it falls back to os.TempDir() instead.
-			wantStateDir = filepath.Join(os.TempDir(), ".local", "state", "evener")
-		}
-		if got := openAIStateDirFromEnv(map[string]string{"HOME": root}); got != wantStateDir {
-			t.Fatalf("openAIStateDirFromEnv(HOME=%s) = %q, want %q", root, got, wantStateDir)
+		wantStateDir := filepath.Join(root, "evener")
+		if got := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: root}); got != wantStateDir {
+			t.Fatalf("openAIStateDirFromEnv(XDG_STATE_HOME=%s) = %q, want %q", root, got, wantStateDir)
 		}
 
 		type authStatusCase struct {

@@ -316,7 +316,13 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // no explicit choice.
   const summaryDisclosureKey = scopedDisclosureId(disclosureScope, `summary:${item.id}`);
   const summaryConfigDefault = summaryOpenByDefault(config);
-  const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryConfigDefault);
+  // The failure force-open above opens the body; it carries the summary line
+  // with it, so a failed row lands on the complete level 2 (intent + one-line
+  // tool call + body) instead of skipping the call on its way down. A
+  // superseded preval-only bounce demotes exactly as the body does (kata hgm1),
+  // and an explicit reader toggle still wins in the store.
+  const summaryFallback = summaryConfigDefault || (failed && !superseded);
+  const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryFallback);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
@@ -392,7 +398,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         // autoDefault (the fallback) from here on and survives a remount.
         onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
         summaryOpen={summaryOpen}
-        onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)}
+        onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryFallback)}
         trailing={trailingControls}
         trailingAfter={trailingAfter}
         title={detail}
