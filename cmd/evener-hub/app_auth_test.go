@@ -227,28 +227,51 @@ func TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome(t *testing.T) {
 	}
 }
 
-// TestOpenAIStateDirFromEnvFallsBackToDefaultStateRoot pins the fallback on
-// cmdutil.DefaultStateRoot rather than on a second resolution of evener's state
-// root. The two used to disagree on Windows, where this one read
-// USERPROFILE/HOMEDRIVE+HOMEPATH out of the supplied env instead of letting
-// os.UserHomeDir find the home directory, and with no home resolvable at all,
-// where it landed in os.TempDir() instead of "." (#1012).
-func TestOpenAIStateDirFromEnvFallsBackToDefaultStateRoot(t *testing.T) {
-	stateHome := t.TempDir()
-	t.Setenv(envvars.XDGStateHome.Name, stateHome)
+// TestOpenAIStateDirFromEnvUsesLaunchEnvHome pins the other half of the launch
+// override: when the launch env redirects the home directory and XDG_STATE_HOME
+// is unset, the home arm must read that supplied home, not the process
+// environment. Delegating the whole arm to the process-based
+// cmdutil.DefaultStateRoot() silently ignored the launch env, so a hub handed a
+// redirecting environment read and wrote OAuth state in the ambient home.
+func TestOpenAIStateDirFromEnvUsesLaunchEnvHome(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, "")
+	t.Setenv(envvars.Home.Name, t.TempDir())
+	launchHome := t.TempDir()
+
+	got := openAIStateDirFromEnv(map[string]string{envvars.Home.Name: launchHome})
+	if want := filepath.Join(launchHome, ".local", "state", "evener"); got != want {
+		t.Fatalf("stateDir=%q, want launch home %q", got, want)
+	}
+}
+
+// TestOpenAIStateDirFromEnvMatchesDefaultStateRoot pins the anti-drift contract
+// #1012 asked for: when the supplied env is the process env, the hub resolves
+// exactly what cmdutil.DefaultStateRoot resolves. The two used to disagree on
+// Windows, where the hub read USERPROFILE/HOMEDRIVE+HOMEPATH out of the
+// supplied env instead of letting os.UserHomeDir find the home directory.
+func TestOpenAIStateDirFromEnvMatchesDefaultStateRoot(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	t.Setenv(envvars.Home.Name, t.TempDir())
+
+	if got, want := openAIStateDirFromEnv(envToMap(os.Environ())), cmdutil.DefaultStateRoot(); got != want {
+		t.Fatalf("stateDir=%q, want cmdutil.DefaultStateRoot() %q", got, want)
+	}
+}
+
+// TestOpenAIStateDirFromEnvFallsBackWhenNoHome pins the last-resort arm: a
+// supplied environment with neither XDG_STATE_HOME nor a home resolves to
+// cmdutil's "."-rooted fallback, not back into the process environment. A
+// launch env that deliberately carries no home therefore cannot silently read
+// or write OAuth state under the ambient one.
+func TestOpenAIStateDirFromEnvFallsBackWhenNoHome(t *testing.T) {
+	processRoot := cmdutil.DefaultStateRoot()
 
 	got := openAIStateDirFromEnv(map[string]string{})
-	if want := filepath.Join(stateHome, "evener"); got != want {
+	if want := filepath.Join(".local", "state", "evener"); got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
-	if want := cmdutil.DefaultStateRoot(); got != want {
-		t.Fatalf("stateDir=%q, want cmdutil.DefaultStateRoot() %q", got, want)
-	}
-
-	// And the home arm below XDG_STATE_HOME, the one that diverged.
-	t.Setenv(envvars.XDGStateHome.Name, "")
-	if got, want := openAIStateDirFromEnv(map[string]string{}), cmdutil.DefaultStateRoot(); got != want {
-		t.Fatalf("stateDir=%q, want cmdutil.DefaultStateRoot() %q", got, want)
+	if got == processRoot {
+		t.Fatalf("stateDir=%q equals the process root; the supplied env must win", got)
 	}
 }
 

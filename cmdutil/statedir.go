@@ -3,6 +3,8 @@ package cmdutil
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/envvars"
@@ -23,15 +25,60 @@ import (
 // evener-wide root, and XDG_STATE_HOME is already the standard override for
 // it.
 func DefaultStateRoot() string {
-	base := envvars.XDGStateHome.Getenv()
+	return StateRootFromLookup(runtime.GOOS, os.LookupEnv)
+}
+
+// StateRootFromLookup resolves the same chain as DefaultStateRoot out of a
+// caller-supplied environment lookup instead of the process environment. A
+// caller holding a launch environment that is not the process environment —
+// the hub auth controller is handed one — resolves the one canonical chain
+// with it, so the hub and the rest of evener cannot drift apart (#1012).
+//
+// goos selects the home-directory spelling the way os.UserHomeDir does, so
+// callers and tests can pin Windows behavior from any host. Surrounding
+// whitespace around XDG_STATE_HOME is trimmed, matching envvars.Var.Trimmed and
+// authopenai.DefaultStateDirWithStateHome.
+func StateRootFromLookup(goos string, lookup func(string) (string, bool)) string {
+	base := ""
+	if stateHome, ok := lookup(envvars.XDGStateHome.Name); ok {
+		base = strings.TrimSpace(stateHome)
+	}
 	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
+		home := userHomeDirFromLookup(goos, lookup)
+		if home == "" {
 			home = "."
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(base, "evener")
+}
+
+// userHomeDirFromLookup resolves the home directory from a supplied environment
+// lookup using os.UserHomeDir's per-OS rules: USERPROFILE, then
+// HOMEDRIVE+HOMEPATH, on Windows; home on Plan 9; HOME elsewhere. It returns an
+// empty string when no home variable is set, the condition for which
+// os.UserHomeDir returns an error.
+func userHomeDirFromLookup(goos string, lookup func(string) (string, bool)) string {
+	switch goos {
+	case "windows":
+		if profile, ok := lookup(envvars.UserProfile.Name); ok && profile != "" {
+			return profile
+		}
+		drive, hasDrive := lookup(envvars.HomeDrive.Name)
+		path, hasPath := lookup(envvars.HomePath.Name)
+		if hasDrive && hasPath && drive != "" && path != "" {
+			return drive + path
+		}
+	case "plan9":
+		if home, ok := lookup("home"); ok && home != "" {
+			return home
+		}
+	default:
+		if home, ok := lookup(envvars.Home.Name); ok && home != "" {
+			return home
+		}
+	}
+	return ""
 }
 
 // ResolveStateKeyDir is retained for source compatibility with callers that

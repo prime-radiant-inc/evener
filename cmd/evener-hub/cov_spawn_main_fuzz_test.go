@@ -16,7 +16,6 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -65,7 +64,9 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			}
 		case 1:
 			env := map[string]string{}
-			want := cmdutil.DefaultStateRoot()
+			// A supplied env with no XDG_STATE_HOME and no home resolves to
+			// cmdutil's "."-rooted fallback; it never reads the process env.
+			want := filepath.Join(".local", "state", "evener")
 			if data == "xdg" {
 				stateHome := t.TempDir()
 				env[envvars.XDGStateHome.Name] = " " + stateHome + " "
