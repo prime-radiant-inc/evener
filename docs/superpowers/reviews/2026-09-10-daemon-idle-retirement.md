@@ -1210,3 +1210,83 @@ than introduced: `sess.Close`'s internal joins are budgeted (a pathological emit
 is joined by nothing beyond it), and `buildReplacement` assumes a single launch. Several are evidence
 hygiene: the RED log carries no HEAD marker, and the report's "files named in the log" phrasing goes
 beyond what the artifact shows — the re-reviewer corrected the writer on that rather than accepting it.
+
+### Task 10 — ACCEPTED (`544a606fee` + `58d64a0348` + `bf868f21f2` + `dee871c4ba`)
+
+Expose full discovery inventory and identity-fenced resident actions. The task was delivered by a
+replacement writer after the original was killed mid-flight by a provider quota limit; the WIP it left was
+preserved out-of-tree by the parent before handoff and reconciled rather than restarted.
+
+**What landed:** `cmd/evener-hub/app_daemons.go` and its tests (new), plus `listDaemons`, `retireDaemon`
+and `daemonIdentity`; `RetireDaemonAtEntry` on `LocalDaemonSource` using the existing exact-entry
+`withClient` pattern; `Roster.ResidentEntries` with `hubcore.ResidentEntry`; `app_daemons.go` routing in
+`app_rpc.go`; and the identity-fenced force-stop check in `app_force_stop.go`. 11 files, +1187/−16.
+
+**The inventory is the whole point of the discovery half.** Task 7 deliberately staged `evener/daemon/list`
+as `ScopeUnimplemented`; Task 10 promotes `list` to `ScopeHub` and `retire` to `ScopeBoth` and registers
+real handlers — no stub on a live router. All six required row cases are covered against a real hub RPC
+response (archived live root; compatible root with delegate aliases; incompatible live process;
+stale/unconfirmed probe; terminal dead marker; overlapping alias claims), with one row per exact process
+identity, deterministic ordering, dead records excluded while unresolved ones stay visible as unknown,
+`Lifecycle:nil`/`CanRetire:false` for unknown/stale/incompatible rows, `Blockers` non-nil so "none" never
+decodes as "unknown", and no token in the serialized response.
+
+**Protocol version decision — the flag-day assigned to this task: retain `evener-appwire-v5`.** The
+argument is that the new surface is additive: the daemon list/retire contracts already shipped on v5 in
+Task 7, so the Hub merely begins serving two previously-unimplemented methods; no message shape changed,
+and `flagday_contract_test.go` and the frontend protocol client are untouched. This is consistent with
+Jesse's standing preference to avoid a bump. The parent confirmed the implication independently:
+`types.gen.ts` legitimately needed no change, and `go generate ./appwire` is idempotent. **The v6 flag-day
+therefore remains unassigned**, with the Task 7 census retained as migration input.
+
+**The safety property, proven by sabotage rather than argument.** The reviewer neutered the identity
+comparison in `expectedDaemonConflict` under an overlay and drove `TestDaemonActionRefusesStaleRenderedIdentity`
+RED — "stale retire identity was accepted" — plus all four force-stop stale-identity cases RED, against a
+surgical GREEN control on the fence-independent inventory tests. A stale rendered row reaches neither the
+replacement daemon nor any process signal: the retire arm asserts `CodeConflict` with zero RPCs, the
+force-stop arm asserts `CodeConflict` with zero process-controller events and no recovery fence left
+behind, and the valid arm proves a fresh identity still forwards retire verbatim and runs the verified
+`open/kill/wait/close` path. Identity is computed per call from the current rendezvous entry via
+`rendezvous.OwnershipFingerprint` — the single hashing implementation — so a Generation cached across a
+replacement conflicts, which is the intended signal.
+
+**A real defect the review caught, and the reason a fix round was ordered.** `listDaemons` sorted rows by
+`strings.Compare` on `StartedAt`, which renders with `time.RFC3339Nano` — a variable-width rendering that
+trims trailing fractional zeros — so lexicographic order was not chronological (`"…00:00:00Z"` sorted
+after `"…00:00:00.5Z"`, because `'Z'` > `'.'`). Determinism held, which is why it was rated Minor, but the
+ordering was wrong for the property the plan requires. **The aggravating half was the test:** its
+`compareRows` duplicated the implementation's comparator, making it a circular oracle that could not
+detect a wrong ordering. Fixed in `bf868f21f2` by parsing with `time.Parse` and comparing `Time.Compare`,
+with the test given an independent oracle. The parent then built its own overlay swapping in the pre-fix
+implementation while keeping the new test and drove it RED (`same-ref rows are not ordered by start
+instant`) against GREEN on the fix, and the scoped re-reviewer independently reproduced the same result
+with a second, separately built overlay — so the oracle's independence is confirmed twice by two parties.
+
+**Two out-of-ownership test edits, both forced and both justified.** `appwire/daemon_test.go` updated
+`TestDaemonCatalogScopes`, which pinned Task 7's intermediate staging that Task 10 necessarily changes;
+the reviewer verified the negative "must not be in the hub catalog yet" assertion was replaced by a
+positive one that can still fail independently and that the daemon-catalog partition check was not
+dropped. `cmd/evener-hub/app_rpc_test.go` gained two names in `TestHubRPCRegistersExpectedHandlerSet`, a
+lock test explicitly designed to require naming new registrations. Same adjudicated precedent as Task 8's
+`launchargs` goldens.
+
+**Process notes worth keeping.** The original writer was killed by `kimi-code` quota exhaustion after
+completing the implementation; the parent preserved the WIP snapshot with checksums before dispatching a
+replacement, and nothing was lost. The replacement wrote its gate logs to a misplaced `./task-10-final-gates/`
+at the repo root — untracked worktree pollution that would have followed the branch into the PR — which the
+parent consolidated into the run directory and removed. As a direct consequence it missed the predecessor's
+genuine RED logs and the report wrongly claimed none existed; the parent found them and the record was
+corrected. Review then caught a residual instance of the same false claim left standing in the report's
+notes section, contradicting its own corrected Step 2, fixed in the text-only round `dee871c4ba`.
+
+**Verification.** Independent review: **spec compliant / quality Approved, 0 Critical, 1 Important, 3
+Minor**. Scoped re-review of the fix: **Approved**, with the oracle independence reproduced independently.
+Parent gates on the final commit, all run by the parent: canonical `make test` exit 0 with all 8 modules
+PASS (run after each of the three fix stages, zero `FAIL`, zero `SKIP`, zero compile-only false greens);
+the race selector run alone exit 0 across four packages; `make test-api-package` exit 0; and
+`go generate ./appwire` idempotent with a clean tree.
+
+The record-only minors go to the hardening list: no fixture exercises time-vs-PID precedence (the only
+same-ref group differs in both keys, and the writer correctly declined to add a fixture that could not
+fail); `chronologicalOrder` is a secondary check that the RED run never reaches; and the discarded parse
+error in the sort degrades deterministically to the next key, which the reviewer judged acceptable as-is.
