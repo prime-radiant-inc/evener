@@ -261,19 +261,28 @@ stop_children() {
 # stalled `go list` was left running with ppid 1, holding the GOCACHE and
 # GOMODCACHE locks that every later run on the host needs.
 stop_recorded_package_list_groups() {
-	local pgid_file recorded actual
+	local pgid_file recorded members leader_pgid
 	[ -n "$logdir" ] || return 0
 	for pgid_file in "$logdir"/*.pgid; do
 		[ -e "$pgid_file" ] || continue
 		recorded="$(cat "$pgid_file" 2>/dev/null)"
 		rm -f "$pgid_file"
 		[ -n "$recorded" ] || continue
-		# Only signal a group the attempt still owns. A recorded pid whose
-		# group is not itself has either already gone or is a number the
-		# kernel has since handed to someone else, and -PID would then name
-		# a group this runner has no business signalling.
-		actual="$(ps -o pgid= -p "$recorded" 2>/dev/null | tr -d '[:space:]')"
-		[ "$actual" = "$recorded" ] || continue
+		# What is recorded is a group, so ask about the group rather than
+		# about its leader alone: `go list` can exit with a child of the
+		# attempt still running in it, and a leader-only check would leave
+		# that child writing its package list and holding Go's cache locks.
+		# A probe that cannot run knows nothing about the group, and blind is
+		# the one state in which -PID could name a stranger, so it is left.
+		members="$(package_list_group_survivors "$recorded")" || continue
+		[ -n "$members" ] || continue
+		# Only signal a group the attempt still owns. A live group whose
+		# leader has gone can only be this attempt's, since the kernel keeps
+		# the number reserved while the group has members; a leader that is
+		# alive under some other group is a recycled pid, and -PID would then
+		# name a group this runner has no business signalling.
+		leader_pgid="$(ps -o pgid= -p "$recorded" 2>/dev/null | tr -d '[:space:]')"
+		[ -z "$leader_pgid" ] || [ "$leader_pgid" = "$recorded" ] || continue
 		stop_package_list_group "$recorded" || :
 	done
 }
