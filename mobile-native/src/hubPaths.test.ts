@@ -109,3 +109,19 @@ it("does not publish into a closed hub lifetime", async () => {
   await model.load("/new");
   expect(updates).toBe(before);
 });
+
+it.each([
+  ["a non-array payload", { ok: true }],
+  ["an array holding a non-string", ["/work/one", 42]],
+])("publishes the generic error for %s", async (_label, data) => {
+  const model = new HubPaths({
+    request: async () => ({ data }),
+  } as unknown as ConversationClientLike);
+  await model.load("/work/");
+  const snapshot = model.getSnapshot();
+  expect(snapshot.paths).toBeNull();
+  expect(snapshot.loading).toBe(false);
+  expect(snapshot.error).toBe(
+    "Could not load paths from this hub. Try again or enter the path manually.",
+  );
+});
