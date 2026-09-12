@@ -386,6 +386,21 @@ function endUnconfirmedAuthMutation(provider: string): void {
 // True exactly when this notification is this client's own echo of a
 // just-issued auth mutation; consumes the marker either way, so a stale
 // entry cannot suppress a later notification.
+//
+// The correlation is provider + issue time, and that is as exact as the wire
+// allows: evener/auth/updated carries only {provider, activeSource}
+// (types.gen.ts), with no originator id - the hub's notifyAuthUpdated
+// broadcasts to every client alike (app_rpc.go). A corner remains: another
+// client's same-provider change arriving inside the window is read as this
+// client's own echo. It is deliberately not resolved by treating same-provider
+// notifications as foreign, which would make the originator's own echo look
+// foreign and re-invalidate a successful guided save (the round-8 defect);
+// narrowing the window instead would miss the echo that arrives late. Exact
+// attribution needs an origin id on the auth mutation RPCs, echoed back in the
+// broadcast - a wire change, not a frontend one. The residual is bounded: a
+// matched notification still re-reads the listing (round 20), so only the
+// guided flow's invalidation is skipped, and only for a same-provider change
+// landing within two seconds of this client's own mutation.
 function consumeOwnAuthEcho(provider: string | undefined): boolean {
   if (provider === undefined) return false;
   const issuedAt = localAuthMutations.get(provider);

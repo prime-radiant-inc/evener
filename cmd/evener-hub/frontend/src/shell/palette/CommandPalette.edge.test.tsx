@@ -178,7 +178,8 @@ test("Shift+Enter on an in-session search result closes the palette without navi
 
 test("Mod+Enter on a search result opens in a new tab via window.open", async () => {
   const user = userEvent.setup();
-  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+  const opened = { opener: {} as unknown };
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => opened as unknown as Window);
   scriptSearch({
     live: [{ id: "live1", ref: "local:live1", title: "live result", project: "p", state: "active", age: "now" }],
     past: [],
@@ -196,6 +197,8 @@ test("Mod+Enter on a search result opens in a new tab via window.open", async ()
   // the per-client mutation identity lives there, and a shared identity
   // would let both tabs claim each other's durable sends.
   expect(openSpy).toHaveBeenCalledWith("/s/local%3Alive1", "_blank", "noopener");
+  // Safari ignores the features string, so the handle's opener is nulled too.
+  expect(opened.opener).toBeNull();
 });
 
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---

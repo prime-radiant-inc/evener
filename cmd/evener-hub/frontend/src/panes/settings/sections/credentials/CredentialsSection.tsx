@@ -216,6 +216,9 @@ export function CredentialsSection({
         const removed = (instances: InstanceEntry[]) => !instances.some((instance) => instance.name === name);
         const confirmed = applied ? removed(credentialsStore.getState().instances) : await confirmListingState(removed);
         if (!confirmed) {
+          // Close the confirm dialog with the failure: the row is gone on the
+          // host, so re-issuing the remove can only fail on a missing instance.
+          setPendingConfirm(null);
           toast.push("error", `Removed on the host, but the provider list could not be confirmed for ${name}`);
           return;
         }

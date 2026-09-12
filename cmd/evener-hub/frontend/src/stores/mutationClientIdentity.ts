@@ -38,7 +38,13 @@ export function ownClientId(): string {
   if (testIdentity !== undefined) return testIdentity;
   try {
     const stored = globalThis.sessionStorage?.getItem(STORAGE_KEY);
-    if (stored !== null && stored !== undefined && stored !== "") return stored;
+    if (stored !== null && stored !== undefined && stored !== "") {
+      // Cache the stored value too: if storage later throws (private mode, a
+      // policy change), the fallback must keep this page's identity rather
+      // than generate a new one that makes its in-flight records look foreign.
+      fallbackIdentity = stored;
+      return stored;
+    }
   } catch {
     // Best-effort: the fallback below keeps this page's identity consistent.
   }

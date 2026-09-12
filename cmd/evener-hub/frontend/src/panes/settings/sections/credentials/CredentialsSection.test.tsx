@@ -337,6 +337,9 @@ describe("the detail sheet", () => {
 
     await waitFor(() => expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy());
     expect(onInstanceRemoved).not.toHaveBeenCalled();
+    // The row is gone on the host: re-issuing the remove could only fail, so
+    // the confirm dialog closes with the failure.
+    expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
   });
 });
 
