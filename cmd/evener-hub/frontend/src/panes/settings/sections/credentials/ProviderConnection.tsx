@@ -150,7 +150,9 @@ export function ProviderConnection(props: ProviderConnectionProps) {
         {store.error && (
           <div role="alert" tabIndex={-1} ref={errorRef}>
             Providers could not be loaded.{" "}
-            <Button variant="secondary" onClick={() => void store.fetch()}>
+            {/* fetch() rejects when there is no client; the error region this
+                button lives in is already the recovery affordance. */}
+            <Button variant="secondary" onClick={() => void store.fetch().catch(() => {})}>
               Retry
             </Button>
           </div>
@@ -430,11 +432,21 @@ function SelectedConnection({
       const state = credentialsStore.getState();
       return state.instances === previous.instances || state.availableProviders === previous.availableProviders;
     };
-    await previous.fetch();
-    if (!current(token)) return;
-    if (listingUnchanged()) {
-      await credentialsStore.getState().fetch();
+    try {
+      await previous.fetch();
       if (!current(token)) return;
+      if (listingUnchanged()) {
+        await credentialsStore.getState().fetch();
+        if (!current(token)) return;
+      }
+    } catch {
+      // fetch() rejects when the client is gone (credentials.ts's
+      // requireClient contract), so a dropped connection is reported like any
+      // other refresh failure instead of escaping as an unhandled rejection.
+      if (!current(token)) return;
+      setPhase("idle");
+      setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
+      return;
     }
     const fresh = credentialsStore.getState();
     const target = findSetup(name);
@@ -547,7 +559,16 @@ function SelectedConnection({
     const token = ++operation.current;
     setPhase("refreshing");
     setError("");
-    await credentialsStore.getState().fetch();
+    try {
+      await credentialsStore.getState().fetch();
+    } catch {
+      // Same dropped-connection case as refreshAndCheck: reusing the reload's
+      // own recovery message keeps the user on an actionable path.
+      if (!current(token)) return;
+      setPhase("idle");
+      setError("The saved connection could not be loaded. Reload it or open the full editor; do not create it again.");
+      return;
+    }
     if (!current(token)) return;
     setPhase("idle");
     const state = credentialsStore.getState();

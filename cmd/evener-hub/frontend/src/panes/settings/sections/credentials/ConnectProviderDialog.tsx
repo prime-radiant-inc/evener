@@ -282,7 +282,9 @@ function ManageConnections({
             <p className={CLASS.error} role="alert">
               Failed to load providers: {friendlyErrorMessage(error)}
             </p>
-            <Button variant="secondary" onClick={() => void fetch()}>
+            {/* fetch() rejects when there is no client; this error region is
+                already the recovery affordance, so a failed retry stays here. */}
+            <Button variant="secondary" onClick={() => void fetch().catch(() => {})}>
               Retry
             </Button>
           </div>

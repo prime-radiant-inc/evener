@@ -385,6 +385,51 @@ describe("AddInstanceDialog", () => {
     expect(screen.queryByText(/Created instance work2/)).toBeNull();
   });
 
+  // A dropped connection must not silently dead-end the retry: handleSubmit
+  // reports a rejected read inline, and "Check again" fails the same way.
+  test("Check again reports a dropped connection instead of dead-ending", async () => {
+    const fake = connectFakeClient();
+    const WORK2 = instance({ name: "work2", providerId: "anthropic" });
+    const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
+    const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_WORK2);
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    let resolveCreate!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/create",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={() => {}} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await act(async () => {
+      resolveCreate(WITH_WORK2);
+    });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+
+    await act(async () => {
+      connectionStore.setState({ state: "idle", client: null });
+    });
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+    expect(await screen.findByText(/no client connected/)).toBeTruthy();
+    expect(screen.queryByText(/could not confirm work2/)).toBeNull();
+  });
+
   // A resolved reconcile is only confirmation if the listing it applied
   // actually contains the created row: reporting success on a listing that
   // never showed the instance closes the editor on a connection the host may

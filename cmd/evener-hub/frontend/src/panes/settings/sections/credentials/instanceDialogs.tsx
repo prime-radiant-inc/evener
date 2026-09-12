@@ -193,6 +193,12 @@ export function AddInstanceDialog({
       setUnconfirmedName(null);
       toast.push("success", `Created instance ${instanceName}`);
       onSuccess(instanceName);
+    } catch (err) {
+      // A dropped connection rejects the read (requireClient's contract). Keep
+      // the unconfirmed name so the user can retry once it is back, and show
+      // the failure the way the initial submit does.
+      if (!active.current) return;
+      setError(errorText(err));
     } finally {
       if (active.current) setBusy(false);
     }

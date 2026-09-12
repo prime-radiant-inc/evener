@@ -4957,6 +4957,26 @@ describe("useThreadsStore.listModels", () => {
     expect((await concurrent).data[0]?.model).toBe("fresh");
   });
 
+  test("a request in flight across a test reset cannot repopulate the fresh cache", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const inFlight = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // The reset clears the cache and the in-flight slot; a request already in
+    // flight must lose the cache write to the reset the way it loses it to a
+    // newer request, or its late answer becomes the post-reset cache.
+    resetThreadsStoreForTests();
+    pending[0]?.(fresh);
+    await inFlight;
+
+    const listSpy = vi.fn(() => ({ data: [{ provider: "google-vertex", model: "after" }] }));
+    fake.on("model/list", listSpy);
+    const after = await threadsStore.getState().listModels();
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(after.data[0]?.model).toBe("after");
+  });
+
   test("an older in-flight request landing first still loses the cache to a later refresh", async () => {
     const fake = connectFakeClient();
     const pending = deferredModelList(fake);

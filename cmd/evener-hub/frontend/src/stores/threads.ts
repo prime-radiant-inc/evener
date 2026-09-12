@@ -2963,6 +2963,11 @@ export function resetThreadsStoreForTests(): void {
   threadsIndex.clear();
   watchedThreadsIndex.clear();
   modelsCache = null;
+  // A request already in flight when the store resets must not repopulate the
+  // fresh cache: advancing the epoch and generation makes its late answer lose
+  // both guards, exactly as an auth change or a newer request would.
+  modelsEpoch += 1;
+  modelsListGeneration += 1;
   inflightModelsList = null;
   unwireNotification?.();
   unwireReady?.();

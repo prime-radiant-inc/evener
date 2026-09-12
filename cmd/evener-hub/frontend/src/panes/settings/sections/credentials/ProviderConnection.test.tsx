@@ -209,6 +209,27 @@ test("a discarded create listing retains the created name and reloads instead of
   expect(client.calls.filter((c) => c.method === "evener/instance/create")).toHaveLength(1);
 });
 
+test("a retry with the client gone reports no unhandled rejection", async () => {
+  const { user, client } = setup();
+  client.on("evener/instance/list", () => {
+    throw new Error("list denied");
+  });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+  const retry = await screen.findByRole("button", { name: "Retry" });
+
+  // fetch() rejects on a missing client (credentials.ts's requireClient
+  // contract). Reaching the end of this test instead of the runner failing on
+  // an unhandled rejection is the assertion; the load error this button lives
+  // in stays as the recovery affordance.
+  await act(async () => {
+    connectionStore.setState({ client: null });
+  });
+  await user.click(retry);
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+
 test("configuration refresh invalidates a pending OAuth start before it opens a browser", async () => {
   const { user, client } = setup();
   await choose(user, "ChatGPT / Codex");
