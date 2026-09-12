@@ -169,15 +169,29 @@ type HookEventStatus struct {
 
 // DetailedStatus captures the full session configuration for AppWire diagnostics.
 type DetailedStatus struct {
-	Tools      []ToolInfo           `json:"tools,omitempty"`
-	MCP        []MCPServerInfo      `json:"mcp,omitempty"`
-	Skills     []SkillInfo          `json:"skills,omitempty"`
-	Plugins    []PluginStatusInfo   `json:"plugins,omitempty"`
-	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
-	Jobs       []JobStatusInfo      `json:"jobs,omitempty"`
-	Delegates  []DelegateStatusInfo `json:"delegates,omitempty"`
-	TurnSlots  *TurnSlotStatus      `json:"turn_slots,omitempty"`
-	Agents     []string             `json:"agents,omitempty"`
+	Tools            []ToolInfo            `json:"tools,omitempty"`
+	MCP              []MCPServerInfo       `json:"mcp,omitempty"`
+	Skills           []SkillInfo           `json:"skills,omitempty"`
+	SkillDiagnostics []SkillDiagnosticInfo `json:"skill_diagnostics,omitempty"`
+	Plugins          []PluginStatusInfo    `json:"plugins,omitempty"`
+	HookEvents       []HookEventStatus     `json:"hook_events,omitempty"`
+	Jobs             []JobStatusInfo       `json:"jobs,omitempty"`
+	Delegates        []DelegateStatusInfo  `json:"delegates,omitempty"`
+	TurnSlots        *TurnSlotStatus       `json:"turn_slots,omitempty"`
+	Agents           []string              `json:"agents,omitempty"`
+}
+
+// SkillDiagnosticInfo is one Stage 1 skill-discovery diagnostic (collision,
+// unreadable source, invalid metadata or controls), copied verbatim from the
+// agent's catalog — the explicit source-detail view the path-free Skills
+// catalog never carries.
+type SkillDiagnosticInfo struct {
+	Category    string `json:"category"`
+	Name        string `json:"name,omitempty"`
+	Source      string `json:"source"`
+	OtherSource string `json:"other_source,omitempty"`
+	Field       string `json:"field,omitempty"`
+	Message     string `json:"message"`
 }
 
 // MarshalJSON preserves an explicit empty plugin inventory while keeping a

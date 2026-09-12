@@ -1631,6 +1631,19 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 		}
 		out.Skills = append(out.Skills, info)
 	}
+	// Stage 1 discovery diagnostics copy verbatim alongside the catalog: the
+	// path-free Skills view stays the completion source, SkillDiagnostics is
+	// the explicit source-detail view.
+	for _, d := range ds.SkillDiagnostics {
+		out.SkillDiagnostics = append(out.SkillDiagnostics, server.SkillDiagnosticInfo{
+			Category:    d.Category,
+			Name:        d.Name,
+			Source:      d.Source,
+			OtherSource: d.OtherSource,
+			Field:       d.Field,
+			Message:     d.Message,
+		})
+	}
 	for _, p := range ds.Plugins {
 		out.Plugins = append(out.Plugins, server.PluginStatusInfo{
 			Name:       p.Name,

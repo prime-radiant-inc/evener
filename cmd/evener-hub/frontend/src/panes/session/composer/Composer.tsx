@@ -1289,7 +1289,7 @@ export function Composer({ ref }: ComposerProps) {
       toasts.push("error", "Image attachment is still processing");
       return;
     }
-    const route = decideSteerRoute({ hasText, hasAttachments, queueDepth });
+    const route = decideSteerRoute({ hasText, hasAttachments, hasSkills: skillNames.length > 0, queueDepth });
     if (route === "none") {
       textareaRef.current?.focus();
       return;

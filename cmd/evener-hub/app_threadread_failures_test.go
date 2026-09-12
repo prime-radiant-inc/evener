@@ -225,9 +225,9 @@ func TestPastThreadListDoesNotDiscoverSkills(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	var calls int
 	previous := discoverPastThreadSkillCatalog
-	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) pastThreadSkillCatalog {
 		calls++
-		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+		return pastThreadSkillCatalog{Skills: []appwire.EvenerSkillInfo{{Name: "unexpected"}}}
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 
@@ -252,9 +252,9 @@ func TestPastThreadTurnsListDoesNotDiscoverSkills(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	var calls int
 	previous := discoverPastThreadSkillCatalog
-	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) pastThreadSkillCatalog {
 		calls++
-		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+		return pastThreadSkillCatalog{Skills: []appwire.EvenerSkillInfo{{Name: "unexpected"}}}
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 
@@ -271,9 +271,9 @@ func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	var calls int
 	previous := discoverPastThreadSkillCatalog
-	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) pastThreadSkillCatalog {
 		calls++
-		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+		return pastThreadSkillCatalog{Skills: []appwire.EvenerSkillInfo{{Name: "unexpected"}}}
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 	liveDiagnostics := &appwire.EvenerDiagnostics{Tools: []appwire.EvenerToolInfo{{Name: "live-tool"}}}

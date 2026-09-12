@@ -193,9 +193,17 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 		s.mu.Unlock()
 		if cancelled != nil {
 			s.skillCompactionCancelNotice(*cancelled, skillCompactionCancelSupersededNote)
-			if err := s.saveMeta(); err != nil {
+		}
+		// The clear mutates the durable pinned note even when it cancels no
+		// operation (the note's operation already retired but a fold has not
+		// consumed the note yet): without this save the stale note reappears
+		// after a restart.
+		if err := s.saveMeta(); err != nil {
+			if cancelled != nil {
 				return 0, &skillCompactionSaveError{Generation: cancelled.Generation, Reason: skillCompactionCancelSaveFailed, Err: err}
 			}
+			s.emit(events.EventWarning, warningDataFromError("persisting compaction note clear failed", err))
+			return 0, fmt.Errorf("persisting compaction note clear failed: %w", err)
 		}
 		return 0, nil
 	}

@@ -2343,6 +2343,16 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 			AllowedTools:           append([]string(nil), skill.AllowedTools...),
 		})
 	}
+	for _, d := range ds.SkillDiagnostics {
+		out.SkillDiagnostics = append(out.SkillDiagnostics, appwire.EvenerSkillDiagnostic{
+			Category:    d.Category,
+			Name:        d.Name,
+			Source:      d.Source,
+			OtherSource: d.OtherSource,
+			Field:       d.Field,
+			Message:     d.Message,
+		})
+	}
 	for _, plugin := range ds.Plugins {
 		out.Plugins = append(out.Plugins, appwire.EvenerPluginInfo{
 			Name:       plugin.Name,

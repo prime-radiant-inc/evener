@@ -1340,3 +1340,67 @@ func TestSkillActivation_RawRead(t *testing.T) {
 		t.Fatalf("raw file reads recorded typed skill state: %+v", states)
 	}
 }
+
+// TestMintSkillOperationID_SurvivesRestartWithoutInterveningSave: the minted
+// counter must be durable before the identity can reach any carrier — a
+// crash-restart with no intervening metadata save must never reissue an
+// already-minted identity. The pre-Close LoadSessionMeta captures exactly the
+// on-disk state a crash right after the mint would leave behind.
+func TestMintSkillOperationID_SurvivesRestartWithoutInterveningSave(t *testing.T) {
+	root := t.TempDir()
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	first, err := s.mintSkillOperationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := schema.LoadSessionMeta(stateDir, s.Meta().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	restored, err := RestoreSessionFromMeta(s.Client(), s.Profile(), execenv.NewLocalExecutionEnvironment(root), saved, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	second, err := restored.mintSkillOperationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == first {
+		t.Fatalf("post-restart mint reissued %q", first)
+	}
+}
+
+// TestPrepareSelectedInput_DuplicateNamesInvokeOnce: normalization deliberately
+// retains duplicate client selections, but one atomic group must not carry two
+// invocations (and two obligations/carriers) under the SAME InvocationID —
+// dedup preserves the request order, keeping the first occurrence.
+func TestPrepareSelectedInput_DuplicateNamesInvokeOnce(t *testing.T) {
+	root := t.TempDir()
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_dup1")
+	writeSkillMD(t, root, "second", "---\nname: second\ndescription: fixture\n---\nBODY_dup2")
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: t.TempDir()}), withoutGitSnapshot())
+	batch, err := s.prepareSelectedInput(context.Background(), queuedInput{
+		ID:         "q-dup-1",
+		SkillNames: []string{"opaque", "second", "opaque"},
+	}, "user_selection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch == nil || len(batch.Items) != 2 {
+		t.Fatalf("batch items = %+v, want exactly [opaque second]", batch)
+	}
+	seen := map[string]bool{}
+	for _, item := range batch.Items {
+		if seen[item.Invocation.InvocationID] {
+			t.Fatalf("duplicate InvocationID %q in one atomic group", item.Invocation.InvocationID)
+		}
+		seen[item.Invocation.InvocationID] = true
+	}
+	if batch.Items[0].Invocation.Name != "opaque" || batch.Items[1].Invocation.Name != "second" {
+		t.Fatalf("request order not preserved: %+v", batch.Items)
+	}
+}

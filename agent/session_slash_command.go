@@ -92,7 +92,10 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) slashInp
 	// A genuine user leading slash: construct the invocation from trusted
 	// call-site provenance. The invocation identity is the session's own
 	// monotonically persisted operation identity, never a client field.
-	invocationID := s.mintSkillOperationID()
+	invocationID, err := s.mintSkillOperationID()
+	if err != nil {
+		return slashInputResult{Text: input, Handled: true, Err: err}
+	}
 	invocation := skillInvocation{
 		Name:          descriptor.CatalogName,
 		Route:         "user_slash",

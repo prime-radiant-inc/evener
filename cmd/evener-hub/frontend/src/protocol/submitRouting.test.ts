@@ -57,6 +57,18 @@ test("empty text, no attachments, empty queue is a no-op (focus-only, no request
   expect(decideSteerRoute({ hasText: false, hasAttachments: false, queueDepth: 0 })).toBe("none");
 });
 
+// Skill selections are content everywhere else the composer decides (hasContent,
+// draft persistence, builtin-command interception): a selection-only steer must
+// submit, not fall through to the focus-only no-op.
+
+test("skill selections alone with an empty queue route to classic steer", () => {
+  expect(decideSteerRoute({ hasText: false, hasAttachments: false, hasSkills: true, queueDepth: 0 })).toBe("steer");
+});
+
+test("skill selections with a non-empty queue route to drain (anything + non-empty queue)", () => {
+  expect(decideSteerRoute({ hasText: false, hasAttachments: false, hasSkills: true, queueDepth: 1 })).toBe("drain");
+});
+
 // --- isTurnActive: the interrupt/steer/model-switch busy predicate ------
 // Deliberately DIFFERENT from deriveSendQueueAvailability's own gate (which
 // checks statusType alone) - this one requires BOTH statusType==="active"

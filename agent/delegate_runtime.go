@@ -1634,7 +1634,10 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 			// Fresh role preloads use the shared loader/renderer; the frozen
 			// descriptor keeps the complete rendered bodies plus their typed
 			// provenance for the delegate's lifetime.
-			invocationID := s.mintSkillOperationID()
+			invocationID, err := s.mintSkillOperationID()
+			if err != nil {
+				continue
+			}
 			batch, err := s.prepareSkillActivations(ctx, []skillInvocation{{
 				Name: name, Route: "role_preload",
 				InvocationID: invocationID, AtomicGroupID: invocationID,
