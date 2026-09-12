@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -50,6 +51,10 @@ const (
 	skillGuardSkillName        = "pkg:probe"
 	skillGuardReply            = "skillguard turn complete"
 	skillGuardChipRemovePrefix = "Remove skill pkg:probe"
+	// The SKILL.md frontmatter description, asserted verbatim in the daemon's
+	// rendered <skill-context> (skillGuardWriteSkill is its only other use, so
+	// fixture and assertion cannot drift).
+	skillGuardSkillDescription = "fixture procedure for the browser guard"
 
 	proseCanonical   = "PROSE_ALPHA_14a run the fixture check on the gamma channel"
 	proseDraft       = "PROSE_DRAFT_14b staged for the switch"
@@ -331,7 +336,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 	// Stop the helpers deterministically; their request logs and transcripts
 	// must be flushed for the assertions below.
 	for i := range entries {
-		skillGuardStopHelper(t, fixture, i, entries[i])
+		skillGuardStopHelper(t, i)
 	}
 
 	skillGuardAssert(t, fixture, milestones, entries)
@@ -415,7 +420,7 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 }
 
 func skillGuardWriteSkill(path, body string) error {
-	content := "---\nname: probe\ndescription: fixture procedure for the browser guard\n---\n" + body
+	content := "---\nname: probe\ndescription: " + skillGuardSkillDescription + "\n---\n" + body
 	return os.WriteFile(path, []byte(content), 0o600)
 }
 
@@ -440,8 +445,67 @@ func skillGuardSessionRef(entry rendezvous.Entry) string {
 }
 
 type skillGuardHelper struct {
-	cmd     *exec.Cmd
-	logPath string
+	cmd      *exec.Cmd
+	logPath  string
+	control  string
+	stopOnce sync.Once
+	waitOnce sync.Once
+	waitDone chan error
+}
+
+// wait returns the one shared cmd.Wait result. A raw second cmd.Wait fails
+// immediately ("Wait was already called"), so every waiter — the
+// choreography's exit watch, the explicit stop, and the cleanup fallback —
+// reads this channel instead of calling cmd.Wait itself.
+func (h *skillGuardHelper) wait() <-chan error {
+	h.waitOnce.Do(func() {
+		h.waitDone = make(chan error, 1)
+		go func() {
+			h.waitDone <- h.cmd.Wait()
+			// Close after the one send: the first receiver gets the real
+			// error, every later receiver (a second exit watch, the cleanup
+			// fallback) gets the zero value immediately instead of blocking
+			// forever on a drained channel.
+			close(h.waitDone)
+		}()
+	})
+	return h.waitDone
+}
+
+// exited reports whether the helper process has already been reaped.
+func (h *skillGuardHelper) exited() bool {
+	select {
+	case <-h.wait():
+		return true
+	default:
+		return false
+	}
+}
+
+// stop shuts the helper down through its fixture IPC (the real thread/shutdown
+// path that flushes the request log) with a bounded kill fallback. Idempotent:
+// whichever caller runs first — the explicit stop or the test cleanup — does
+// the work; the other is a no-op.
+func (h *skillGuardHelper) stop(index int) error {
+	var stopErr error
+	h.stopOnce.Do(func() {
+		if h.exited() {
+			return
+		}
+		if err := appendFileLine(h.control, map[string]string{"command": "shutdown"}); err != nil {
+			stopErr = fmt.Errorf("write shutdown command: %w", err)
+		}
+		select {
+		case <-h.wait():
+		case <-time.After(20 * time.Second):
+			_ = h.cmd.Process.Kill()
+			<-h.wait()
+			if stopErr == nil {
+				stopErr = fmt.Errorf("helper %d did not exit after the shutdown command; killed (its log: %s)", index, h.logPath)
+			}
+		}
+	})
+	return stopErr
 }
 
 var (
@@ -483,9 +547,18 @@ func skillGuardStartHelper(t *testing.T, fixture *skillGuardFixture, index int) 
 		t.Fatalf("start helper %s: %v", name, err)
 	}
 	skillGuardHelperMu.Lock()
-	skillGuardHelpers[index] = &skillGuardHelper{cmd: cmd, logPath: logPath}
+	skillGuardHelpers[index] = &skillGuardHelper{cmd: cmd, logPath: logPath, control: fixture.control[index]}
+	helper := skillGuardHelpers[index]
 	skillGuardHelperMu.Unlock()
-	t.Cleanup(func() { _ = logFile.Close() })
+	// Failure paths that abort before the explicit stop loop must not leak the
+	// helper daemon: cleanup stops it too (a no-op when the explicit stop
+	// already ran) before the log is closed.
+	t.Cleanup(func() {
+		if err := helper.stop(index); err != nil {
+			t.Errorf("helper %d cleanup shutdown: %v", index, err)
+		}
+		_ = logFile.Close()
+	})
 
 	// Wait for this helper's own rendezvous registration (real registration,
 	// not a synthetic one).
@@ -505,7 +578,7 @@ func skillGuardStartHelper(t *testing.T, fixture *skillGuardFixture, index int) 
 	return rendezvous.Entry{}
 }
 
-func skillGuardStopHelper(t *testing.T, fixture *skillGuardFixture, index int, entry rendezvous.Entry) {
+func skillGuardStopHelper(t *testing.T, index int) {
 	t.Helper()
 	skillGuardHelperMu.Lock()
 	helper := skillGuardHelpers[index]
@@ -513,25 +586,8 @@ func skillGuardStopHelper(t *testing.T, fixture *skillGuardFixture, index int, e
 	if helper == nil {
 		return
 	}
-	// Fixture IPC shutdown first (the real thread/shutdown path); fall back to
-	// a signal and a bounded wait so the request log is always flushed.
-	done := make(chan error, 1)
-	go func() { done <- helper.cmd.Wait() }()
-	select {
-	case <-done:
-		return
-	case <-time.After(200 * time.Millisecond):
-	}
-	if err := appendFileLine(fixture.control[index], map[string]string{"command": "shutdown"}); err != nil {
-		t.Errorf("write shutdown command: %v", err)
-	}
-	select {
-	case <-done:
-		return
-	case <-time.After(20 * time.Second):
-		t.Errorf("helper %d did not exit after the shutdown command; killing (its log: %s)", index, helper.logPath)
-		_ = helper.cmd.Process.Kill()
-		<-done
+	if err := helper.stop(index); err != nil {
+		t.Errorf("helper %d shutdown: %v", index, err)
 	}
 }
 
@@ -564,7 +620,7 @@ func runSkillGuardDriver(t *testing.T, fixture *skillGuardFixture, authURL, mile
 	// order is not the helper start order, so its "session A" is pinned to
 	// helper alpha's own session ref rather than to whichever row renders
 	// first. (roster.go derives hub refs the same way: local:<thread id>.)
-	cmd := exec.Command("node", filepath.Join("scripts", "skillguard", "run.mjs"),
+	cmd := exec.CommandContext(t.Context(), "node", filepath.Join("scripts", "skillguard", "run.mjs"),
 		"--url", authURL,
 		"--artifact-dir", fixture.artifact,
 		"--control-path", fixture.control[0],
@@ -572,6 +628,12 @@ func runSkillGuardDriver(t *testing.T, fixture *skillGuardFixture, authURL, mile
 		"--session-a", skillGuardSessionRef(entries[0]),
 		"--session-b", skillGuardSessionRef(entries[1]),
 	)
+	// The driver's Chrome is a detached process outside the driver's own
+	// process group, unreachable from Go — cancellation must go through the
+	// driver's SIGTERM handler, which closes the browser and exits. WaitDelay
+	// force-kills a driver whose handler hangs, bounding the leak either way.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 15 * time.Second
 	cmd.Dir = frontend
 	cmd.Stdout = driverLog
 	cmd.Stderr = driverLog
@@ -767,10 +829,8 @@ func (c *skillGuardChoreography) waitHelperExit(index int, timeout time.Duration
 	if helper == nil {
 		return errors.New("helper not started")
 	}
-	done := make(chan error, 1)
-	go func() { done <- helper.cmd.Wait() }()
 	select {
-	case <-done:
+	case <-helper.wait():
 		return nil
 	case <-time.After(timeout):
 		return fmt.Errorf("timeout after %s", timeout)
@@ -951,6 +1011,12 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	} else {
 		if docs[0].Name != skillGuardSkillName {
 			t.Errorf("skill-context name = %q, want %q", docs[0].Name, skillGuardSkillName)
+		}
+		if docs[0].Description != skillGuardSkillDescription {
+			t.Errorf("skill-context description = %q, want %q", docs[0].Description, skillGuardSkillDescription)
+		}
+		if docs[0].Source != fixture.skillFile[0] {
+			t.Errorf("skill-context source = %q, want %q", docs[0].Source, fixture.skillFile[0])
 		}
 		if docs[0].Instructions != skillGuardSkillBody {
 			t.Errorf("skill-context instructions = %q, want the complete fixture body %q", docs[0].Instructions, skillGuardSkillBody)
@@ -1172,8 +1238,20 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if failRequests != 1 {
 		t.Errorf("found %d provider requests carrying %q, want exactly 1 (the explicit retry)", failRequests, proseFail)
 	}
-	if failObservedAt == "" || failRequestAt == "" || failRequestAt < failObservedAt {
-		t.Errorf("the retry request (%q) did not follow the observed failure (%q)", failRequestAt, failObservedAt)
+	if failObservedAt == "" || failRequestAt == "" {
+		t.Errorf("missing the fail-activation ordering timestamps (request %q, observed %q)", failRequestAt, failObservedAt)
+	} else {
+		// Milestone timestamps are JS toISOString and request timestamps are Go
+		// RFC3339Nano — lexicographic order across the two formats is
+		// meaningless, so parse both and require the retry to land strictly
+		// after the observed failure.
+		observedAt, obsErr := time.Parse(time.RFC3339Nano, failObservedAt)
+		requestAt, reqErr := time.Parse(time.RFC3339Nano, failRequestAt)
+		if obsErr != nil || reqErr != nil {
+			t.Errorf("parse the fail-activation ordering timestamps (observed %q: %v; request %q: %v)", failObservedAt, obsErr, failRequestAt, reqErr)
+		} else if !requestAt.After(observedAt) {
+			t.Errorf("the retry request (%q) did not strictly follow the observed failure (%q)", failRequestAt, failObservedAt)
+		}
 	}
 
 	// Scenario: delayed accepted-send vs a newer chip edit. The submitted
