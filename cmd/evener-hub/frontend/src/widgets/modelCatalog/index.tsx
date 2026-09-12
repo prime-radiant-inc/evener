@@ -42,6 +42,7 @@ const CLASS = {
   rowName: requireClass(styles.rowName, "modelCatalog.module.css", "rowName"),
   check: requireClass(styles.check, "modelCatalog.module.css", "check"),
   meta: requireClass(styles.meta, "modelCatalog.module.css", "meta"),
+  warning: requireClass(styles.warning, "modelCatalog.module.css", "warning"),
   unavailable: requireClass(styles.unavailable, "modelCatalog.module.css", "unavailable"),
   panelSheet: requireClass(styles.panelSheet, "modelCatalog.module.css", "panelSheet"),
   listSheet: requireClass(styles.listSheet, "modelCatalog.module.css", "listSheet"),
@@ -293,6 +294,14 @@ export function ModelCatalogPanel({
               return (
                 <li key={row.key} role="presentation" className={CLASS.groupRow}>
                   {row.label}
+                </li>
+              );
+            }
+            if (row.kind === "warning") {
+              return (
+                <li key={row.key} role="presentation" className={CLASS.warning} data-testid="model-warning">
+                  <span aria-hidden="true">⚠ </span>
+                  {row.text}
                 </li>
               );
             }

@@ -88,6 +88,21 @@ func protoLive(srv *httptest.Server) registry.Resolved {
 	return res
 }
 
+// vertexAuthorityRes is a resolved Vertex publisher-model transport whose
+// authority the vertex-location host rule derived from loc: the provenance the
+// registry records (Resolved.HostDerivedByRule) when its base URL template
+// reads {GOOGLE_VERTEX_HOST}. What that derivation accepts and rejects is the
+// registry's own to prove; this fixture states the provenance the remedy reads.
+func vertexAuthorityRes(t *testing.T, srv *httptest.Server, loc string) registry.Resolved {
+	t.Helper()
+	res := protoLive(srv)
+	res.WireID = "gemini-3.8-flash"
+	res.Transport.HostRule = registry.HostRuleVertexLocation
+	res.Transport.Vars = map[string]string{"GOOGLE_VERTEX_LOCATION": loc, "GOOGLE_VERTEX_PROJECT": "p"}
+	res.HostDerivedByRule = true
+	return res
+}
+
 func TestProtocolCompleteUsesHeaderAuthAndModelInPath(t *testing.T) {
 	srv, got := protoServer(t, 200, generateJSON)
 	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
@@ -171,6 +186,118 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 	le, ok := errors.AsType[llm.Error](err)
 	if llm.Kind(err) != llm.KindRateLimit || !ok || le.Provider() != "gemini-prod" {
 		t.Fatalf("RESOURCE_EXHAUSTED on 400 must reclassify to a rate limit stamped with the instance: %v", err)
+	}
+}
+
+// A publisher model Vertex serves from its global endpoint only 404s on a
+// regional one. The raw message tells the user to check the region without
+// naming the remedy; the reclassifier turns it into a configuration error
+// that does (the same class the registry warns about at resolve time). The
+// match does not depend on the provider's casing: the regional body observed
+// on 2026-09-12 reads "Publisher model", and the same message with a capital M
+// takes the same path rather than dropping the guidance silently.
+func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) {
+	for _, phrase := range []string{"Publisher model", "Publisher Model"} {
+		t.Run(phrase, func(t *testing.T) {
+			body := `{"error":{"code":404,"message":"` + phrase + ` ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+			srv, _ := protoServer(t, http.StatusNotFound, body)
+			res := vertexAuthorityRes(t, srv, "us-central1")
+
+			_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+			cfgErr, ok := errors.AsType[*llm.ConfigurationError](err)
+			if !ok || !strings.Contains(cfgErr.Message, "us-central1") || !strings.Contains(cfgErr.Message, "global") {
+				t.Fatalf("regional publisher-model 404 must be an actionable configuration error: %v", err)
+			}
+			if !strings.Contains(cfgErr.Message, "not found or your project does not have access") {
+				t.Fatalf("the remedy must keep the provider's own detail visible: %q", cfgErr.Message)
+			}
+		})
+	}
+}
+
+// A regional publisher-model 404 for a model the registry does not know to be
+// global-only is ambiguous: Vertex uses the same body for "not found" and for
+// "your project does not have access to it". Rewriting it as a global-endpoint
+// remedy would hide a genuine permissions failure, so it stays the provider's
+// own error.
+func TestProtocolRegionalNonGlobalOnly404StaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := vertexAuthorityRes(t, srv, "us-central1")
+	res.WireID = "gemini-2.5-flash"
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("a model the registry does not know to be global-only must not claim a regional remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("the provider's 404 must survive: %v", err)
+	}
+}
+
+// The remedy is Vertex's: a transport whose host was not derived from a
+// Vertex location (no vertex-location host rule) is not talking to a Vertex
+// regional endpoint, whatever variables its URL templates read, so its 404
+// must not be rewritten into a Vertex location configuration error.
+func TestProtocolNonVertexTransport404StaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := vertexAuthorityRes(t, srv, "us-central1")
+	// A custom gateway transport that happens to read GOOGLE_VERTEX_LOCATION
+	// into its path: no vertex-location host rule.
+	res.Transport.HostRule = ""
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("a transport without the vertex-location host rule must not get the Vertex remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("the provider's 404 must survive: %v", err)
+	}
+}
+
+// A transport the host rule did not derive the authority for — a literal host
+// in the base URL (even one naming the location's own host with a path of its
+// own), or a GOOGLE_VERTEX_HOST supplied directly — is addressed to the route
+// the config built, so its 404 is that route's own failure and must not be
+// rewritten as a Vertex regional-location configuration error. Transport
+// resolution is where those shapes are told apart (registry's
+// TestResolve_LiteralHost* and TestResolve_DirectHost*); this covers the
+// remedy's side of the contract, and states the supplied-host shape.
+func TestProtocolUnderivedHost404StaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := protoLive(srv)
+	res.WireID = "gemini-3.8-flash"
+	res.Transport.HostRule = registry.HostRuleVertexLocation
+	res.Transport.Vars = map[string]string{
+		"GOOGLE_VERTEX_LOCATION": "us-central1",
+		"GOOGLE_VERTEX_PROJECT":  "p",
+		"GOOGLE_VERTEX_HOST":     "https://gw.example.test",
+	}
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("an underived authority must not get the location-derived remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("the provider's 404 must survive: %v", err)
+	}
+}
+
+// The same 404 against the global endpoint already names the endpoint that
+// serves the model, so it stays the provider's own error.
+func TestProtocolGlobalVertexPublisherModelNotFoundStaysProviderError(t *testing.T) {
+	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/global/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
+	srv, _ := protoServer(t, http.StatusNotFound, body)
+	res := vertexAuthorityRes(t, srv, "global")
+
+	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		t.Fatalf("a global-endpoint 404 must not claim a regional remedy: %v", err)
+	}
+	if le, ok := errors.AsType[llm.Error](err); !ok || le.StatusCode() != http.StatusNotFound {
+		t.Fatalf("global 404 must stay the provider's 404: %v", err)
 	}
 }
 

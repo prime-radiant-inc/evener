@@ -178,6 +178,30 @@ func TestModelPickerItemsFromResponse_NoRecentOmitsGroup(t *testing.T) {
 	}
 }
 
+// The hub's model/list response carries the registry's resolved-row warnings
+// (a global-only model under a regional Vertex location); the TUI picker must
+// keep them so its rows can carry the same note the web and mobile pickers
+// show, instead of offering the row bare.
+func TestModelPickerItemsFromResponse_CarriesWarnings(t *testing.T) {
+	const note = `regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash`
+	resp := appwire.ModelListResponse{
+		Data: []appwire.ModelDescriptor{
+			{Provider: "vertex", Model: "gemini-3.8-flash", Warnings: []string{note}},
+			{Provider: "vertex", Model: "gemini-2.5-flash"},
+		},
+	}
+	items := modelPickerItemsFromResponse(resp, false)
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if len(items[0].Warnings) != 1 || items[0].Warnings[0] != note {
+		t.Errorf("warned row = %#v, want the registry warning carried", items[0])
+	}
+	if len(items[1].Warnings) != 0 {
+		t.Errorf("unwarned row = %#v, want no warnings", items[1])
+	}
+}
+
 func TestVisionModelPickerItemsPrependPseudoEntriesAndFilterDescriptors(t *testing.T) {
 	models := []appwire.ModelDescriptor{
 		{Provider: "openai", Model: "gpt-3.5-turbo", SupportsVision: new(false)},
