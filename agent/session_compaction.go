@@ -242,6 +242,15 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// describe it still land, and the copies that did land carry a fold id no
 	// marker claims, which every reader already drops. The next resume replays
 	// the pre-fold transcript — a compaction lost, not turns.
+	//
+	// The cost, stated plainly: the fold is real in memory and absent from the
+	// anchor on disk, and the deferred effects do not know the difference.
+	// flush still emits EventCompactionTurn for the summary and still runs
+	// handleCompactionTurnEffects — the session namer and the task-list
+	// steering — so a watching client shows a compaction the transcript does
+	// not anchor. The TurnContextCompaction record that DOES land announces a
+	// shrink the transcript did not keep, and a resume reads it back. That is
+	// the price of not rolling back a fold whose work was done.
 	tailComplete := true
 	if commit.writesCompactionMarker() {
 		for _, turn := range rewriteTail {
@@ -607,10 +616,14 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			compactionEventWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
-		if anchor {
-			for i, turn := range pendingCompactionTurns {
-				compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
+		for i, turn := range pendingCompactionTurns {
+			// Only the anchor is withheld, and the anchor is exactly the
+			// kinds writesCompactionMarker counts — the same predicate, so
+			// the two cannot drift into disagreeing about what a marker is.
+			if !anchor && isSessionNameCompactionTurn(turn) {
+				continue
 			}
+			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 	}
