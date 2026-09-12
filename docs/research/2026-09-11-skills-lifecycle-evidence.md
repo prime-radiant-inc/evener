@@ -265,3 +265,93 @@ head on 2026-09-12 (host under concurrent roborev load):
 No assertion, filter, pairing, or tolerance was weakened; the run-1 gate
 failure was diagnosed as host-load flakiness (concurrent roborev) and the
 gate was re-run in full to a zero exit.
+
+## Post-PR-review fix round (2026-09-12, PR #1168 head de1fa62d24)
+
+A post-review fix round on the rebased head handled two things: the PR's CI
+`fuzz` job failing on the committed-seed replay, and the roborev review of the
+final head (job 8557, range a361254..de1fa62; verdict "No Critical or High
+issues; 8 Medium and 1 Low findings").
+
+### CI fuzz failure: root cause and fix
+
+RED (exact CI reproduction):
+
+```
+cd agent && GOENV=off GOFLAGS= GOWORK="$(cd .. && pwd)/go.work" \
+  go test -run '^FuzzAgentClonesShareNoMutableState$' -tags evenerfuzz -count=1 .
+--- FAIL: FuzzAgentClonesShareNoMutableState/seed#0/delegate_start_descriptor
+    clone_aliasing_fuzz_test.go:100: delegate start descriptor.FrozenSkillMetadata:
+    copy shares the original's slice backing array
+```
+
+Root cause: the branch added `FrozenSkillMetadata []schema.FrozenSkillPreload`
+to `delegatestore.Descriptor` (agent/internal/delegatestore/record.go:86-90),
+and `cloneDelegateStartDescriptor` (agent/delegate_tree_start.go) deep-copied
+every sibling slice but not that one, so clones shared the original's backing
+array. `schema.FrozenSkillPreload` is all immutable string fields, so copying
+the slice's backing array deep-copies every element. Fix:
+`clone.FrozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), descriptor.FrozenSkillMetadata...)`
+(commit 3d6169509e). GREEN: the same command now exits 0.
+
+The full `make fuzz` run then surfaced two more stale committed-seed oracles
+the skills-lifecycle contract changes had left behind (both fixed in
+8d59d5d883; a gofmt nit in that edit fixed in 22861efa9c):
+
+- `FuzzToolRegistryProgram` (agent/internal/tool) listed `use_skill` among the
+  tools that must carry a default output limit, contradicting the deliberate
+  no-default contract from e97bb663b9 (skill content is complete-or-fail at
+  the operation level; `TestToolRegistry_UseSkillHasNoDefaultTailLimit` pins
+  it). The oracle now asserts the no-limit contract explicitly.
+- `FuzzSkillDiscoveryProgram` (agent/skill) generated fixtures with non-string
+  `allowed-tools` entries, which discovery now rejects as `invalid_control`
+  (`TestSkillDiscoveryInvalidWinnerAndDiagnostics`), and called
+  `LoadSkillBody` with a bare `SkillFile`-only meta, which the loader's
+  source-identity validation rejects. The oracle now uses valid document
+  variants, asserts the invalid-controls exclusion explicitly, and loads via
+  the discovery-recorded meta.
+
+### Roborev findings (job 8557): verdicts
+
+| # | Finding | Verdict | Evidence and what changed |
+| --- | --- | --- | --- |
+| M1 | Steering routing ignores selected skills | FIXED | `decideSteerRoute` only looked at text/attachments/queue, so a selection-only Steer/Shift+Enter fell through to the focus-only no-op although `submitAction` carries `skillNames` on steer/drain (Composer.tsx:1187-1188) and the daemon contract counts selection-only input as content. Added `hasSkills` (submitRouting.ts; call site Composer.tsx:1292); red test in submitRouting.test.ts failed ("none" vs "steer") before the fix. |
+| M2 | Editing a queued message drops selected skills | DEFERRED | Behaviorally true but the data does not reach the client: the wire queue projection carries no per-entry selections at either layer — `events.QueueChangedData` (agent/events/payloads.go:439-446) and `appwire.QueueState` (appwire/types.go:760-767) both have Depth/Revision/Preview/IDs/ClientMutationIDs/Texts only — and `turn/cancelQueued` returns only a removedImages count. The daemon does hold per-entry `SkillNames` internally (queuedInput, session_lifecycle.go:2098). A fix requires an additive wire change: FIFO-aligned `SkillNames [][]string` on `QueueChangedData` + `appwire.QueueState` (+ appwire/clone.go), the projection copy (internal/appprojector/appwire_projection.go:1053-1060), the agent queue snapshot builder, the hub thread model, and the QueueStrip `onRestoreToComposer` seam + composer restore staging. Deferred as a wire/API change beyond this round. |
+| M3 | Clearing a pinned compaction note may not persist | FIXED | The clear-only branch (agent/session_skill_compaction.go) persisted only when it also cancelled an automatic pending operation; with no pending operation the cleared note stayed on disk and reappeared after restart. The clear now always saves (typed error on failure). Red test `TestSkillCompaction_ClearNotePersistsWithoutPendingOperation` (loaded meta still held "keep") passed after the fix; full TestSkillCompaction_ family green. |
+| M4 | Skill operation IDs use an in-memory counter | FIXED | Reachable: `mintSkillOperationID` incremented the persisted counter in memory only, while the minted identity could reach the durable transcript SkillState (session_tools.go:1034-1044) before the obligation save (session_skill_delivery.go:197); a crash in that window left the transcript holding `skill-op-N` with the on-disk counter at N-1. The red test reloaded from the pre-save meta and the post-restart mint reissued `skill-op-1`. The mint now persists the counter before returning and reports save failures (callers: skillToolActivate, slash command, both role-preload paths). `TestMintSkillOperationID_SurvivesRestartWithoutInterveningSave`. |
+| M5 | No dedup of SkillNames produces duplicate InvocationIDs | FIXED | Duplicates reach the path: `appwire.NormalizeMutationInput` validates per-item but never dedups (appwire/input_test.go:111-121), and the session copies the selection verbatim (session_lifecycle.go:2098), so `["x","x"]` yielded two invocations/obligations/carriers with InvocationID `inputID:x`. `prepareSelectedInput` now dedups by canonical identity, first occurrence winning, request order preserved. `TestPrepareSelectedInput_DuplicateNamesInvokeOnce` (red: 3 items, duplicate ID; green: 2). |
+| M6 | Incomplete-identity reload receipt is never consumed | REFUTED | The leave-pending behavior is the designed, pinned semantics: `TestSkillCompaction_CheckpointOnly` (agent/session_skill_compaction_publication_test.go:139-196) deliberately seeds an ordinary record with an EMPTY identity (line 149), selects it, and asserts the handoff receipt stays pending. A fix attempt (mirroring the guard in `consumedReloadPublicationsLocked`) was made, caught by that pinned test in the merge gate, and reverted (151e5b1388): consuming the receipt would silently discard an unreported reload selection. The pre-PR review's defensive-only adjudication stands. |
+| M7 | Spawn slash catalog silently drops all skills | FIXED | `hubSpawnSlashCatalog` built `appwire.EvenerSkillInfo{Name, Description}` without the three non-omitempty booleans (app_spawn_slashcatalog.go:157), so `available`/`userInvocable` serialized false and `mergeSlashCommands` (slashCompletion.ts:124) filtered every skill out of the spawn menu; the Go tests only checked names. The spawn catalog now uses session startup's portable discovery (`skill.Discover` + `UserEntries`, the same builder as the past-thread path) with real values, and the test asserts the wire flags (red before: all false). |
+| M8 | SkillDiagnostics never carried to the wire | FIXED | The chain was as described: `agent.DetailedStatus.SkillDiagnostics` exists (agent/status.go:126) but `server.DetailedStatus` lacked the field (server.go:171), `agentToServerDetailedStatus` (cmd/evener/serve.go:1604) and `appDiagnosticsFromDetailedStatus` (server/appwire_runtime.go:2325) never assigned it, and the past-thread discovery discarded `catalog.Diagnostics`. Added `server.SkillDiagnosticInfo` + field, both conversion copies, and the past-thread view now returns `{Skills, Diagnostics}` attached onto `EvenerDiagnostics`. Wire test `TestThreadReadCarriesSkillDiagnostics`; hub test `TestDiscoverPastThreadSkillsCarriesDiagnostics`. |
+| M9 | evenerfuzz fixture dereferences a nil skillActivate callback | FIXED | Confirmed by replay: `FuzzSessionToolsAuxExact/seed#0` panicked with SIGSEGV — `registerSkillTool` (agent/session_tools_communicate.go:181-183) overwrites the registration and invokes `deps.skillActivate`, which the fixture never set; its assertions also pinned the deleted inline implementation's path-notification prefix (that string exists nowhere else in the tree). The fixture now provides the callback (resolve -> skill.Load -> render) and asserts the current rendered-envelope contract. |
+
+### Re-run gates on the fix-round head
+
+| Command | Exit | Duration | Notes |
+| --- | --- | --- | --- |
+| seed replay `FuzzAgentClonesShareNoMutableState` (CI repro command) | 1 -> 0 | 0.03s / 0.04s | red before the clone fix, green after |
+| `make fuzz` | 0 | 250s | the exact CI fuzz target; zero FAIL lines |
+| `make test-api-package` | 0 | ~15s | qualified @evener/appwire-client@0.1.0 |
+| `make vet` | 0 | ~5s | no diagnostics |
+| `make merge-approval-gate` (run 5) | 0 | 329s | all lint phases PASS (naming, gofmt, evenerfuzz, eval, internal, golangci, generated, fuzz-registry, secret-scan), build PASS, ROOT_FULL waves PASS (root 142.4s, agent 11.2s, llm 12.1s, auth 2.2s, envvars 0.6s, invariant 0.5s, identifier 1.6s, web 255.2s), test-native and test-api-package PASS |
+| `TMPDIR=/tmp make test-web-browser` | 0 | 204s | 6/6 guards: web-layoutguard, web-overflowguard, web-shellguard, web-spawnguard, web-transcriptscrollguard, web-skillguard |
+| `make generate` | 0 | 1s | zero-diff (`git status --porcelain` empty after) |
+| `npx vitest run src/panes/session/composer` | 0 | 26s | 28 files / 638 tests |
+| `go test ./agent -run 'Skill|Slash|Mint' -count=1` | 0 | 2.9s | activation/delivery/slash/mint families after M3-M6 |
+| `go test ./agent -run 'Subagent|Delegate' -count=1` | 0 | 57s | delegate spawn paths after the durable-mint change |
+| `go test ./agent -run '^TestSkillReload' -count=1` | 0 | 1.4s | reload family (post-revert state) |
+| `go test ./cmd/evener-hub -run 'PastThread|DiscoverPastThread|SpawnSlashCatalog' -count=1` | 0 | 1.7s | M7/M8 hub families |
+| evenerfuzz seed replays (`FuzzSessionToolsAuxExact`, `FuzzToolRegistryProgram`, `FuzzSkillDiscoveryProgram`) | 0 | <1s each | M9 + oracle alignments |
+
+Merge-gate attempts 1-2 failed `lint-gofmt` on a formatting nit in the fuzz
+oracle edit (fixed in 22861efa9c); attempt 3 failed
+`TestSkillCompaction_CheckpointOnly`, which exposed the M6 fix as wrong and
+drove the revert (151e5b1388); attempt 4 passed the agent module but flaked in
+web-test on `scripts/browserGuardCdp.test.js` (a real-Chrome CDP probe hit its
+3000ms startup deadline under load average ~15 on 16 CPUs; the suite passes
+12/12 standalone, and the prior round recorded the same load-flake class);
+run 5 passed end to end. No assertion, filter, pairing, or tolerance was
+weakened anywhere in this round; the only assertion changes were the two stale
+fuzz oracles aligned to the deliberately changed contracts (each with the
+pinning unit test named above) and the M9 fixture, whose deleted production
+contract no longer exists anywhere in the tree.
