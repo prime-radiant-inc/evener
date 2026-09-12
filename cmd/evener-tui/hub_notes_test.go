@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 )
 
 // TestHubDetailFromThreadMapsSharedNotes asserts hubDetailFromThread carries
@@ -149,6 +150,66 @@ func TestSharedNotesCommandUnavailableWhenRestartRequired(t *testing.T) {
 	}
 	if available, reason := hubCommandAvailable(notes, hubCommandContext{mode: hubModeSession, caps: caps, live: true, state: appwire.ThreadStatusRestartRequired}); available {
 		t.Fatalf("restart-required session advertised /notes: %s", reason)
+	}
+}
+
+// TestSharedNotesSurfacesThreadSessionState pins the write gate on the surfaces
+// that build their own command context: a restart-required session keeps the
+// read capability but refuses every mutation, so neither the command palette
+// nor the slash help may offer /notes.
+func TestSharedNotesSurfacesThreadSessionState(t *testing.T) {
+	caps := hubSessionCapabilities{SharedNotes: true}
+
+	notesEntry := func(state string) tuipick.PickerPanelItem {
+		for _, entry := range commandPaletteEntriesForSession(hubModeSession, caps, true, state, nil) {
+			if entry.Command == "notes" {
+				return entry.Item
+			}
+		}
+		t.Fatalf("palette omitted /notes (state=%q)", state)
+		return tuipick.PickerPanelItem{}
+	}
+	if got := notesEntry(appwire.ThreadStatusIdle); got.DisabledReason != "" {
+		t.Fatalf("idle palette disabled /notes: %q", got.DisabledReason)
+	}
+	if got := notesEntry(appwire.ThreadStatusRestartRequired); got.DisabledReason == "" {
+		t.Fatal("restart-required palette offered /notes")
+	}
+
+	if !strings.Contains(hubSlashCommandHelpLive(caps, true, appwire.ThreadStatusIdle), "/notes") {
+		t.Fatal("idle help omitted /notes")
+	}
+	if strings.Contains(hubSlashCommandHelpLive(caps, true, appwire.ThreadStatusRestartRequired), "/notes") {
+		t.Fatal("restart-required help offered /notes")
+	}
+}
+
+// TestSharedNotesPaletteThreadsSessionState drives the production palette open,
+// which must read the session's own state rather than leaving it blank.
+func TestSharedNotesPaletteThreadsSessionState(t *testing.T) {
+	notesDisabled := func(state string) bool {
+		m := newSessionHubModel(nil)
+		m.mode = hubModeSession
+		m.detail.Capabilities = hubSessionCapabilities{SharedNotes: true}
+		m.detail.Live = true
+		m.detail.State = state
+		m.openCommandPalette()
+		if m.commandPalette == nil {
+			t.Fatal("palette not opened")
+		}
+		for _, entry := range m.commandPalette.entries {
+			if entry.Command == "notes" {
+				return entry.Item.DisabledReason != ""
+			}
+		}
+		t.Fatalf("palette omitted /notes (state=%q)", state)
+		return true
+	}
+	if notesDisabled(appwire.ThreadStatusIdle) {
+		t.Fatal("idle session palette disabled /notes")
+	}
+	if !notesDisabled(appwire.ThreadStatusRestartRequired) {
+		t.Fatal("restart-required session palette offered /notes")
 	}
 }
 

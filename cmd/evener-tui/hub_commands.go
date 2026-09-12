@@ -1257,7 +1257,7 @@ func sendHubURLRemove(client *appwire.Client, ref appwire.Ref, id string, expect
 // runHubURLRemove dispatches the /url-remove command, which takes the URL
 // entry id to remove.
 func (m *hubModel) runHubURLRemove(args string) tea.Cmd {
-	if !m.detail.Live {
+	if !sharedNotesWritable(m.detail.Live, m.detail.State) {
 		m.addSessionSystem("URL removal is not available for this session.")
 		return nil
 	}

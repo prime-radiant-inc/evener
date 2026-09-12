@@ -646,7 +646,7 @@ func hubCommandAvailable(command hubCommandDefinition, ctx hubCommandContext) (b
 
 func runHubCommandDefinition(m *hubModel, command hubCommandDefinition, args string) tea.Cmd {
 	if command.Name == "help" {
-		m.addSessionSystem(hubSlashCommandHelpLive(m.detail.Capabilities, m.detail.Live))
+		m.addSessionSystem(hubSlashCommandHelpLive(m.detail.Capabilities, m.detail.Live, m.detail.State))
 		return nil
 	}
 	if command.Run == nil {
@@ -656,11 +656,11 @@ func runHubCommandDefinition(m *hubModel, command hubCommandDefinition, args str
 }
 
 func hubCommandHelp(caps hubSessionCapabilities) string {
-	return hubCommandHelpLive(caps, true)
+	return hubCommandHelpLive(caps, true, "")
 }
 
-func hubCommandHelpLive(caps hubSessionCapabilities, live bool) string {
-	ctx := hubCommandContext{mode: hubModeSession, caps: caps, live: live}
+func hubCommandHelpLive(caps hubSessionCapabilities, live bool, state string) string {
+	ctx := hubCommandContext{mode: hubModeSession, caps: caps, live: live, state: state}
 	lines := []string{"Available commands:"}
 	for _, command := range hubCommandsForScope(hubCommandSession) {
 		available, _ := hubCommandAvailable(command, ctx)
