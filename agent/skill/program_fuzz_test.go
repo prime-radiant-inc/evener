@@ -69,21 +69,21 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 		direct := t.TempDir()
 		rawPath := skillProgramWrite(t, direct, "raw", raw)
 		invalidPath := skillProgramWrite(t, direct, "invalid", "---\n: bad: yaml: [unclosed\n---\n")
-	invalidControlsPath := skillProgramWrite(t, direct, "badcontrols", "---\nname: badcontrols\ndescription: invalid controls\nallowed-tools:\n  - 7\n---\nbody\n")
+		invalidControlsPath := skillProgramWrite(t, direct, "badcontrols", "---\nname: badcontrols\ndescription: invalid controls\nallowed-tools:\n  - 7\n---\nbody\n")
 		if err := os.WriteFile(filepath.Join(direct, "loose.md"), []byte("not a skill directory"), 0o644); err != nil {
 			t.Fatalf("write loose file: %v", err)
 		}
 		directSkills := map[string]SkillMeta{}
 		ScanSkillsDir(direct, directSkills)
 		ScanSkillsDir(filepath.Join(direct, "missing"), directSkills)
-	// Invalid controls mark the skill unavailable (TestSkillDiscoveryInvalidWinnerAndDiagnostics),
-	// so the scan view excludes it just like a malformed document.
-	if _, ok := directSkills["badcontrols"]; ok {
-		t.Fatal("ScanSkillsDir advertised a skill with invalid allowed-tools controls")
-	}
-	if _, ok := parseSkillFile(invalidControlsPath); ok {
-		t.Fatal("parseSkillFile accepted invalid allowed-tools controls")
-	}
+		// Invalid controls mark the skill unavailable (TestSkillDiscoveryInvalidWinnerAndDiagnostics),
+		// so the scan view excludes it just like a malformed document.
+		if _, ok := directSkills["badcontrols"]; ok {
+			t.Fatal("ScanSkillsDir advertised a skill with invalid allowed-tools controls")
+		}
+		if _, ok := parseSkillFile(invalidControlsPath); ok {
+			t.Fatal("parseSkillFile accepted invalid allowed-tools controls")
+		}
 		if _, ok := parseSkillFile(filepath.Join(direct, "missing", "SKILL.md")); ok {
 			t.Fatal("missing SKILL.md parsed successfully")
 		}
@@ -93,11 +93,11 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 		if _, err := LoadSkillBody(SkillMeta{SkillFile: invalidPath}); err == nil {
 			t.Fatal("LoadSkillBody invalid frontmatter succeeded")
 		}
-	if meta, ok := parseSkillFile(rawPath); ok {
-		// LoadSkillBody validates the recorded identity against the file's
-		// declared identity, so it must be handed the meta discovery recorded
-		// (carrying the declared name), never a bare path.
-		if _, err := LoadSkillBody(meta); err != nil {
+		if meta, ok := parseSkillFile(rawPath); ok {
+			// LoadSkillBody validates the recorded identity against the file's
+			// declared identity, so it must be handed the meta discovery recorded
+			// (carrying the declared name), never a bare path.
+			if _, err := LoadSkillBody(meta); err != nil {
 				t.Fatalf("LoadSkillBody rejected a skill parseSkillFile accepted: %v", err)
 			}
 		}
