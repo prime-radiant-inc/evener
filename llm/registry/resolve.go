@@ -36,10 +36,62 @@ func IsChatModelID(id string) bool {
 	return true
 }
 
-// vertexGlobalOnly lists Claude ids Anthropic serves only from the global
-// and us/eu endpoints (spec §9.4: "regional endpoints support Sonnet 4.6
-// and earlier").
-var vertexGlobalOnly = []string{"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos"}
+// vertexGlobalOnly names the model families Vertex serves only from the
+// global and us/eu endpoints, each with the regional limitation its warning
+// states. Anthropic's regional endpoints stop at Sonnet 4.6 (spec §9.4);
+// Gemini 3 and later are global-only today.
+var vertexGlobalOnly = []vertexGlobalOnlyFamily{
+	{detail: "supports Claude Sonnet 4.6 and earlier", patterns: []string{
+		"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos",
+	}},
+	{detail: "does not serve Gemini 3 or later", patterns: []string{"gemini-3"}},
+}
+
+// vertexGlobalOnlyFamily is one such family: the id substrings it covers and
+// the regional limitation the warning spells out.
+type vertexGlobalOnlyFamily struct {
+	detail   string
+	patterns []string
+}
+
+// vertexGlobalOnlyDetail returns the regional limitation for wireID when it
+// names a family Vertex serves only from the global and us/eu endpoints.
+func vertexGlobalOnlyDetail(wireID string) (string, bool) {
+	for _, family := range vertexGlobalOnly {
+		if slices.ContainsFunc(family.patterns, func(p string) bool { return familyCovers(p, wireID) }) {
+			return family.detail, true
+		}
+	}
+	return "", false
+}
+
+// familyCovers reports whether an id belongs to the family a pattern names:
+// the pattern appears at a boundary — followed by the end of the id or by a
+// separator — so "gemini-3" covers gemini-3.8-flash and gemini-3-pro-preview
+// while a longer number (gemini-30) is a different family.
+func familyCovers(pattern, wireID string) bool {
+	if pattern == "" {
+		return false
+	}
+	for start := 0; start+len(pattern) <= len(wireID); start++ {
+		if !strings.HasPrefix(wireID[start:], pattern) {
+			continue
+		}
+		if rest := wireID[start+len(pattern):]; rest == "" || strings.ContainsRune(".-:@", rune(rest[0])) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsVertexGlobalOnly reports whether wireID names a model Vertex serves only
+// from its global and us/eu endpoints — the same knowledge resolve uses for
+// its regional warning, exported for callers that must tell a regional
+// "not served here" apart from a genuine access failure.
+func IsVertexGlobalOnly(wireID string) bool {
+	_, ok := vertexGlobalOnlyDetail(wireID)
+	return ok
+}
 
 var datedSuffixRe = regexp.MustCompile(`(-\d{8}(-v\d+(:\d+)?)?|@\d{8})$`)
 
@@ -236,7 +288,7 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 		mergeCaps(&caps, layer.provider, layer.tag+"/provider", prov)
 	}
 	seedFields(&caps, rec.head.Protocol)
-	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	transport, hostDerived, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
 	// rowID/ref "" keep firstPartyEndpoint's canonical resolution row-less
 	// and glob-less, mirroring the row-less buildTransport call above -
 	// correctly so: ListModels and credential probes, this path's only
@@ -264,7 +316,7 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}
 	return Resolved{
 		Instance: rec.name, ProviderID: providerID, Protocol: rec.head.Protocol, Surface: rec.head.Surface,
-		Transport: transport, Caps: caps, Headers: r.buildHeaders(rec.head.Headers, nil),
+		Transport: transport, HostDerivedByRule: hostDerived, Caps: caps, Headers: r.buildHeaders(rec.head.Headers, nil),
 		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
 		ShadowedEnvVar: r.shadowedEnvVar(rec, cred),
 		DefaultModel:   rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
@@ -429,7 +481,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	}
 	seedFields(&caps, rowProto)
 
-	transport, tw := r.buildTransport(rec, row, rowProto)
+	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)
@@ -456,16 +508,12 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")
 	}
 	warnings = append(warnings, rec.notes...)
-	if transport.HostRule == HostRuleVertexLocation {
-		// The location the URL was actually built with (buildTransport's
-		// Vars), whichever mapping supplied it.
-		if loc, ok := transport.Vars["GOOGLE_VERTEX_LOCATION"]; ok && loc != "global" && loc != "us" && loc != "eu" {
-			for _, p := range vertexGlobalOnly {
-				if strings.Contains(hit.wireID, p) {
-					warnings = append(warnings, fmt.Sprintf("regional Vertex location %q supports Claude Sonnet 4.6 and earlier; use global, us, or eu for %s", loc, hit.wireID))
-					break
-				}
-			}
+	// Only the endpoint the host rule derived from the location is regional
+	// Vertex's to explain: a transport addressed to a route the config built is
+	// somewhere else, and that location is not its problem.
+	if loc, derived := VertexLocationDerived(transport, hostDerived); derived && loc != "global" && loc != "us" && loc != "eu" {
+		if detail, known := vertexGlobalOnlyDetail(hit.wireID); known {
+			warnings = append(warnings, fmt.Sprintf("regional Vertex location %q %s; use global, us, or eu for %s", loc, detail, hit.wireID))
 		}
 	}
 	providerID := rec.providerID
@@ -474,7 +522,8 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	}
 	return Resolved{
 		Instance: rec.name, ProviderID: providerID, Protocol: rowProto, Surface: row.Surface, Transport: transport,
-		ModelID: ref.Model, WireID: hit.wireID, Model: row, Caps: caps, Headers: headers,
+		HostDerivedByRule: hostDerived,
+		ModelID:           ref.Model, WireID: hit.wireID, Model: row, Caps: caps, Headers: headers,
 		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
 		DefaultModel: rec.head.DefaultModel, CheapModel: rec.head.CheapModel, Synthesized: hit.synthesized,
 	}, nil
@@ -637,8 +686,9 @@ func (r *Registry) transportShape(rec *record, row Model, proto string) Transpor
 }
 
 // buildTransport applies the cross-protocol rule, the row transport, the
-// protocol defaults, and variable substitution (spec §9.1).
-func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transport, []string) {
+// protocol defaults, and variable substitution (spec §9.1). It also reports
+// whether a host rule derived the base URL's authority (Resolved.HostDerivedByRule).
+func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transport, bool, []string) {
 	t := r.transportShape(rec, row, proto)
 	// The templates the URL is built from, captured before substitution, are
 	// the authoritative list of variables Resolved may expose (URL parts such
@@ -646,7 +696,8 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	// the row's own when it has one, else the provider's — and the endpoint
 	// templates. Resolved is serialized by `evener models inspect`, so no
 	// vars_env value that the URL does not use is ever exposed.
-	templates := []string{t.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint}
+	baseURLTemplate := t.BaseURL
+	templates := []string{baseURLTemplate, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint}
 
 	var warnings, varWarnings []string
 	// One lookup serves the base URL, the endpoint templates, and the Vars
@@ -668,28 +719,41 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	slices.Sort(varWarnings)
 	warnings = append(warnings, slices.Compact(varWarnings)...)
 	resolved := map[string]string{}
-	referenced := map[string]bool{}
 	for _, tpl := range templates {
-		for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
-			referenced[m[1]] = true
-			if v, ok := lookup(m[1]); ok {
-				resolved[m[1]] = v
+		for _, name := range templatePlaceholders(tpl) {
+			if v, ok := lookup(name); ok {
+				resolved[name] = v
 			}
 		}
 	}
 	// A host the vertex-location rule derived from the location used the
 	// location as surely as a path placeholder would have, so it is exposed
 	// too (and the regional warning reads it). A host supplied directly used
-	// no location.
-	if t.HostRule == HostRuleVertexLocation && referenced["GOOGLE_VERTEX_HOST"] {
-		if _, direct := lookup("GOOGLE_VERTEX_HOST"); !direct {
-			if loc, ok := lookup("GOOGLE_VERTEX_LOCATION"); ok {
-				resolved["GOOGLE_VERTEX_LOCATION"] = loc
-			}
+	// no location. Only a {GOOGLE_VERTEX_HOST} in the base URL's authority —
+	// the part of the request URL that names the endpoint — makes the rule its
+	// author, and only when the rule would accept the location: a location it
+	// refuses leaves the placeholder unresolved and derives no endpoint.
+	var hostDerived bool
+	if t.HostRule == HostRuleVertexLocation && authorityVars(baseURLTemplate)["GOOGLE_VERTEX_HOST"] {
+		_, supplied := lookup("GOOGLE_VERTEX_HOST")
+		loc, located := lookup("GOOGLE_VERTEX_LOCATION")
+		hostDerived = !supplied && located && validVertexLocation(loc)
+		if hostDerived {
+			resolved["GOOGLE_VERTEX_LOCATION"] = loc
 		}
 	}
 	t.Vars = resolved
-	return t, warnings
+	return t, hostDerived, warnings
+}
+
+// templatePlaceholders names the {VARIABLE} placeholders a URL template reads.
+func templatePlaceholders(tpl string) []string {
+	matches := placeholderRe.FindAllStringSubmatch(tpl, -1)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m[1])
+	}
+	return out
 }
 
 // buildHeaders merges header layers and applies spec §10: an unset $VAR
