@@ -62,7 +62,7 @@ test("renders name, state chips, version, marketplace, and source", async () => 
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
   expect(screen.getByText("broken")).toBeTruthy();
-  expect(screen.getByText("disabled")).toBeTruthy();
+  expect(screen.getByText("off by default")).toBeTruthy();
   expect(screen.getByText("auto-upgrade")).toBeTruthy();
   expect(screen.getByText("v1.2.0")).toBeTruthy();
   expect(screen.getByText("acme-plugins")).toBeTruthy();
@@ -89,7 +89,7 @@ test("the Enabled and Auto-upgrade switches reflect the entry's state", async ()
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  expect(screen.getByRole("switch", { name: "Enabled" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("switch", { name: "Auto-upgrade" }).getAttribute("aria-checked")).toBe("false");
   const browse = browseMarketplace.mock.results[0];
   if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
@@ -105,9 +105,9 @@ test("the Enabled switch calls pluginDisable on an enabled plugin, pluginEnable 
     return { plugins: [{ ...LINTER, enabled: false }] };
   });
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  await user.click(screen.getByRole("switch", { name: "Enabled" }));
+  await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
-    expect(screen.getByRole("switch", { name: "Enabled" }).getAttribute("aria-checked")).toBe("false"),
+    expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("false"),
   );
   expect(getToasts()).toEqual([]);
 });
@@ -121,9 +121,9 @@ test("the Enabled switch calls pluginEnable on a disabled plugin", async () => {
     return { plugins: [{ ...LINTER, enabled: true }] };
   });
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  await user.click(screen.getByRole("switch", { name: "Enabled" }));
+  await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
-    expect(screen.getByRole("switch", { name: "Enabled" }).getAttribute("aria-checked")).toBe("true"),
+    expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("true"),
   );
   expect(getToasts()).toEqual([]);
 });
@@ -136,7 +136,7 @@ test("a failed enable toggle re-enables the switch too", async () => {
     throw new Error("boom");
   });
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  const enabledSwitch = screen.getByRole("switch", { name: "Enabled" });
+  const enabledSwitch = screen.getByRole("switch", { name: "Enabled by default" });
   await user.click(enabledSwitch);
   await waitFor(() => expect((enabledSwitch as HTMLButtonElement).disabled).toBe(false));
 });
@@ -149,7 +149,7 @@ test("a failed enable toggle toasts 'Toggle enable failed'", async () => {
     throw new Error("boom");
   });
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  await user.click(screen.getByRole("switch", { name: "Enabled" }));
+  await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Toggle enable failed: boom")).toBe(true),
   );
@@ -168,13 +168,13 @@ test("the Enabled switch is disabled while its RPC is in flight, and re-enables 
       }),
   );
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  const enabledSwitch = screen.getByRole("switch", { name: "Enabled" });
+  const enabledSwitch = screen.getByRole("switch", { name: "Enabled by default" });
   await user.click(enabledSwitch);
   expect((enabledSwitch as HTMLButtonElement).disabled).toBe(true);
 
   resolveDisable({ plugins: [{ ...LINTER, enabled: false }] });
   await waitFor(() =>
-    expect((screen.getByRole("switch", { name: "Enabled" }) as HTMLButtonElement).disabled).toBe(false),
+    expect((screen.getByRole("switch", { name: "Enabled by default" }) as HTMLButtonElement).disabled).toBe(false),
   );
 });
 
