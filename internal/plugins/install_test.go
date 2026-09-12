@@ -77,7 +77,7 @@ func TestInstall_AcceptsAPluginNameThatCarriesAnAt(t *testing.T) {
 	if _, ok := reg.Plugins["wid@get@acme"]; !ok {
 		t.Fatalf("registry missing wid@get@acme: %+v", reg.Plugins)
 	}
-	items, err := m.List()
+	items, err := m.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestInstall_LazyFetchesSeededPointer(t *testing.T) {
 	if !entry.Enabled {
 		t.Error("installed entry not enabled")
 	}
-	mk, _ := m.ListMarketplaces()
+	mk, _ := m.ListMarketplaces(context.Background())
 	if mk[name].InstallLocation == "" {
 		t.Fatal("InstallLocation not backfilled after lazy fetch via Install")
 	}

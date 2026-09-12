@@ -214,7 +214,7 @@ function Plugins({
           renderItem={({ item }) => (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`${item.plugin}, ${item.marketplace}, ${item.broken ? "broken" : item.enabled ? "enabled" : "disabled"}`}
+              accessibilityLabel={`${item.plugin}, ${item.marketplace}, ${item.broken ? "broken" : item.enabled ? "enabled by default" : "off by default"}`}
               onPress={() => {
                 close();
                 setSelected({
@@ -233,7 +233,7 @@ function Plugins({
               <Copy numberOfLines={2}>{item.plugin}</Copy>
               <Copy muted numberOfLines={2}>
                 {item.marketplace} · {item.version || "Unknown version"}
-                {item.broken ? " · Broken" : !item.enabled ? " · Disabled" : ""}
+                {item.broken ? " · Broken" : !item.enabled ? " · Off by default" : ""}
                 {item.autoUpgrade ? " · Auto-upgrade" : ""}
               </Copy>
             </Pressable>
@@ -274,10 +274,10 @@ function Plugins({
               )}
               <View style={[styles.row, { minHeight: 48, gap: 16 }]}>
                 <View style={styles.fill}>
-                  <Copy>Enabled</Copy>
+                  <Copy>Enabled by default</Copy>
                 </View>
                 <Switch
-                  accessibilityLabel="Plugin enabled"
+                  accessibilityLabel="Plugin enabled by default"
                   value={entry.enabled}
                   disabled={state.busy}
                   onValueChange={(enabled) => {

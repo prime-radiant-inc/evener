@@ -17,12 +17,12 @@ import (
 
 type pluginManager interface {
 	SeedDefaultMarketplaces(context.Context) (bool, error)
-	ListMarketplaces() (plugins.Marketplaces, error)
+	ListMarketplaces(context.Context) (plugins.Marketplaces, error)
 	AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error)
 	RemoveMarketplace(context.Context, string) error
 	RefreshMarketplace(context.Context, string) error
 	Browse(context.Context, string) (plugins.Catalog, error)
-	List() ([]plugins.ListItem, error)
+	List(context.Context) ([]plugins.ListItem, error)
 	Install(context.Context, string, string) (plugins.InstallEntry, error)
 	Remove(context.Context, string, string) error
 	SetEnabled(context.Context, string, string, bool) error
@@ -100,7 +100,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		mk, err := m.ListMarketplaces()
+		mk, err := m.ListMarketplaces(context.Background())
 		if err != nil {
 			return err
 		}
@@ -227,8 +227,8 @@ func printPluginUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "  marketplace   Manage plugin marketplaces (add, remove, list, refresh, browse)\n")
 	_, _ = fmt.Fprintf(w, "  install       Install a plugin\n")
 	_, _ = fmt.Fprintf(w, "  remove        Remove an installed plugin\n")
-	_, _ = fmt.Fprintf(w, "  enable        Enable a plugin\n")
-	_, _ = fmt.Fprintf(w, "  disable       Disable a plugin\n")
+	_, _ = fmt.Fprintf(w, "  enable        Enable a plugin by default\n")
+	_, _ = fmt.Fprintf(w, "  disable       Disable a plugin by default\n")
 	_, _ = fmt.Fprintf(w, "  list          List installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  upgrade       Upgrade installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  auto-upgrade  Toggle a plugin's auto-upgrade flag (--off to disable)\n")
@@ -300,7 +300,7 @@ func renderPluginList(w io.Writer, items []plugins.ListItem, asJSON bool) error 
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintf(tw, "PLUGIN@MARKETPLACE\tVERSION\tENABLED\tAUTO-UPGRADE\tBROKEN\n")
+	_, _ = fmt.Fprintf(tw, "PLUGIN@MARKETPLACE\tVERSION\tENABLED-BY-DEFAULT\tAUTO-UPGRADE\tBROKEN\n")
 	for _, item := range items {
 		enabled := "no"
 		if item.Enabled {
@@ -322,12 +322,22 @@ func renderPluginList(w io.Writer, items []plugins.ListItem, asJSON bool) error 
 }
 
 func renderEffectivePluginList(w io.Writer, resolution plugins.LaunchPluginResolution, asJSON bool) error {
+	// The effective listing answers "what would a default launch load", so a
+	// plugin whose registry default is off is omitted here even though a
+	// session allow-list could name it. `plugin list` is the view of the full
+	// installed inventory.
+	candidates := make([]plugins.LaunchPluginCandidate, 0, len(resolution.Candidates))
+	for _, candidate := range resolution.Candidates {
+		if candidate.Selected {
+			candidates = append(candidates, candidate)
+		}
+	}
 	if asJSON {
 		result := effectivePluginListJSON{
-			Plugins:     make([]effectivePluginJSON, 0, len(resolution.Candidates)),
+			Plugins:     make([]effectivePluginJSON, 0, len(candidates)),
 			Diagnostics: resolution.Diagnostics,
 		}
-		for _, candidate := range resolution.Candidates {
+		for _, candidate := range candidates {
 			result.Plugins = append(result.Plugins, effectivePluginJSON{
 				Name: candidate.Name, Version: candidate.Version, Description: candidate.Description,
 				Source: candidate.Source, Marketplace: candidate.Marketplace, Path: candidate.Path,
@@ -338,14 +348,14 @@ func renderEffectivePluginList(w io.Writer, resolution plugins.LaunchPluginResol
 		return json.NewEncoder(w).Encode(result)
 	}
 
-	if len(resolution.Candidates) == 0 {
+	if len(candidates) == 0 {
 		_, _ = fmt.Fprintln(w, "No effective plugins.")
 		renderLaunchPluginDiagnostics(w, resolution.Diagnostics)
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "PLUGIN\tVERSION\tSOURCE\tSKILLS\tAGENTS\tCOMMANDS\tHOOKS\tMCP")
-	for _, candidate := range resolution.Candidates {
+	for _, candidate := range candidates {
 		source := string(candidate.Source)
 		if candidate.Marketplace != "" {
 			source += ":" + candidate.Marketplace
@@ -390,7 +400,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			}
 			return err
 		}
-		items, err := m.List()
+		items, err := m.List(ctx)
 		if err != nil {
 			return err
 		}
@@ -459,7 +469,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := m.SetEnabled(ctx, plugin, marketplace, true); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(stdout, "Enabled %s@%s\n", plugin, marketplace)
+		_, _ = fmt.Fprintf(stdout, "Enabled %s@%s by default\n", plugin, marketplace)
 		return nil
 
 	case "disable":
@@ -478,7 +488,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := m.SetEnabled(ctx, plugin, marketplace, false); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(stdout, "Disabled %s@%s\n", plugin, marketplace)
+		_, _ = fmt.Fprintf(stdout, "Disabled %s@%s by default\n", plugin, marketplace)
 		return nil
 
 	case "upgrade":
