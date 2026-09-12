@@ -2434,9 +2434,9 @@ func recordResumeRedirect(t *testing.T, locks *hubcore.ResumeLocks, from, to str
 // Recovery redirects chain: resuming A onto B and later B onto C leaves two
 // records, because PersistForceStop only rewrites the aliases of the group it
 // is given and RecordResolvedSession writes onto whichever group the alias
-// currently points at. A resolver that followed one hop branched B — a session
-// already retired — so the redirect is followed to a fixed point. resumeThread
-// traverses the same chains (resumeOwnership's loop), which is why they exist.
+// currently points at. One hop off A names B, a session already retired, so the
+// redirect is followed to a fixed point instead. resumeThread traverses the
+// same chains (resumeOwnership's loop), which is why they exist.
 func TestHubForkFollowsARedirectChainToItsEnd(t *testing.T) {
 	t.Run("two hops", func(t *testing.T) {
 		a, b, c := resumeThreeSessionIDs(t)
@@ -2558,31 +2558,47 @@ func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
 
 // liveDaemonForThread is a map lookup that falls through to a full roster
 // snapshot clone-and-sort for any thread that is not a live daemon's current
-// session — the bulk of a list response. One projection asked twice: once
-// through the recovery fence and again to resolve the target. It asks once.
+// session — the bulk of a list response. The recovery fence and the target
+// resolution both want that answer, so one projection resolves it once and
+// hands it to both; a thread the fences it carries already settle never pays
+// for it at all.
 func TestHubForkCapabilityResolvesLivenessOncePerProjection(t *testing.T) {
-	stateDir := t.TempDir()
-	sessionID := buildRPCParentSession(t, stateDir)
-	runDir := t.TempDir()
-	roster := hubcore.NewRoster(runDir, nil)
-	roster.Refresh()
-	var listCalls atomic.Int64
-	previousList := hubRosterList
-	hubRosterList = func(r *hubcore.Roster) []hubcore.LiveEntry {
-		listCalls.Add(1)
-		return previousList(r)
-	}
-	t.Cleanup(func() { hubRosterList = previousList })
+	for _, tc := range []struct {
+		name      string
+		fenced    bool
+		wantCalls int64
+	}{
+		{name: "forkable session", wantCalls: 1},
+		{name: "session the thread already reports as fenced", fenced: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			sessionID := buildRPCParentSession(t, stateDir)
+			runDir := t.TempDir()
+			roster := hubcore.NewRoster(runDir, nil)
+			roster.Refresh()
+			var listCalls atomic.Int64
+			previousList := hubRosterList
+			hubRosterList = func(r *hubcore.Roster) []hubcore.LiveEntry {
+				listCalls.Add(1)
+				return previousList(r)
+			}
+			t.Cleanup(func() { hubRosterList = previousList })
 
-	cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
-	thread := appwire.Thread{
-		ID: sessionID, SessionID: sessionID,
-		Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
-	}
-	if !applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn {
-		t.Fatal("a saved session with no live daemon was not advertised as forkable")
-	}
-	if got := listCalls.Load(); got != 1 {
-		t.Fatalf("one projection scanned the roster %d times, want 1", got)
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster}
+			thread := appwire.Thread{
+				ID: sessionID, SessionID: sessionID,
+				Evener: appwire.EvenerThread{
+					Ref: "local:" + sessionID, ResumeRequired: tc.fenced,
+					Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true},
+				},
+			}
+			if got := applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn; got == tc.fenced {
+				t.Fatalf("projected forkFromTurn=%v for a thread fenced=%v", got, tc.fenced)
+			}
+			if got := listCalls.Load(); got != tc.wantCalls {
+				t.Fatalf("one projection scanned the roster %d times, want %d", got, tc.wantCalls)
+			}
+		})
 	}
 }

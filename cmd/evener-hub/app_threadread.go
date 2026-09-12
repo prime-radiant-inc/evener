@@ -551,17 +551,19 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 			storageAvailable = strings.TrimSpace(entry.StateDir) != ""
 		}
 	}
-	// The alias's own fences first, because they are the cheap ones and they
-	// settle most threads on their own.
-	if !storageAvailable || !hubCanForkThread(cfg, thread) {
+	// The fences that read the thread in hand first: storage, the live-delegate
+	// check (a scan of the roster's byPID map, no snapshot) and the recovery
+	// signals the thread already carries. They are cheap next to what follows
+	// and they settle most threads on their own.
+	if !storageAvailable || !hubCanForkThread(cfg, thread) || hubForkRecoveryFenced(thread) {
 		thread.Evener.Capabilities.ForkFromTurn = false
 		return thread
 	}
 	// One roster resolution for this whole projection. Both the recovery fence
 	// and the target resolution below need the same answer, and asking twice
 	// means two full roster snapshot clone-and-sorts for every saved session in
-	// a list response. The two fences above are cheap and roster-scan free, so
-	// they still settle what they can before this is paid.
+	// a list response. Nothing above it pays that, so a thread already fenced
+	// never reaches it.
 	owner := forkThreadOwnerFor(cfg, ref.ThreadID)
 	if hubForkRecoveryFencedNow(cfg, thread, owner) {
 		thread.Evener.Capabilities.ForkFromTurn = false
