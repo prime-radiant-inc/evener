@@ -304,8 +304,11 @@ the skills-lifecycle contract changes had left behind (both fixed in
   the operation level; `TestToolRegistry_UseSkillHasNoDefaultTailLimit` pins
   it). The oracle now asserts the no-limit contract explicitly.
 - `FuzzSkillDiscoveryProgram` (agent/skill) generated fixtures with non-string
-  `allowed-tools` entries, which discovery now rejects as `invalid_control`
-  (`TestSkillDiscoveryInvalidWinnerAndDiagnostics`), and called
+  `allowed-tools` entries, which discovery now rejects as `invalid_metadata`
+  (`TestSkillControlsRejectMixedAllowedToolsArray` pins the category;
+  `invalid_control` is the boolean-controls category — this sentence said
+  `invalid_control` before the second post-review round corrected it), and
+  called
   `LoadSkillBody` with a bare `SkillFile`-only meta, which the loader's
   source-identity validation rejects. The oracle now uses valid document
   variants, asserts the invalid-controls exclusion explicitly, and loads via
@@ -355,3 +358,85 @@ weakened anywhere in this round; the only assertion changes were the two stale
 fuzz oracles aligned to the deliberately changed contracts (each with the
 pinning unit test named above) and the M9 fixture, whose deleted production
 contract no longer exists anywhere in the tree.
+
+## Second post-PR-review fix round (2026-09-12, PR #1168 head e195b04a9f)
+
+This round resumed after the previous agent died on a provider quota limit
+mid-round, leaving uncommitted work for the first two findings. Every inherited
+hunk was audited against the finding before being kept: mechanism, callers,
+lock discipline, and test-helper existence were verified against source, and
+each inherited test was proven red against the reverted production code (the
+falsification runs below) before being kept. Nothing that weakens an assertion
+or changes behavior without a test was retained.
+
+### Inherited-work audit (M-A, M-B)
+
+- M-A (kept in full): the `reloaded` → `appendedNotifications` rename makes
+  `prepareModelRequestWithError` rebuild for every appended delivery
+  notification — restored carriers AND failure explanations — instead of only
+  successful reloads. Verified the rebuild closure
+  (`rebuildForAppendedSkillTurns`, session_model_call.go:372-379) collects
+  every `s.history` turn past the caller's snapshot, so the failure
+  notification turn joins the rebuilt request; both
+  `recordSkillDeliveryNotification` call sites (session_skill_delivery.go:295
+  failure, :325 reload) are inside `prepareSkillDelivery`, and only the
+  failure site previously left the flag unset. Red pre-fix:
+  "the dispatch that finalized the failed reload never carried the failure
+  explanation to the model" (asserted on the captured provider request, not
+  prose).
+- M-B (kept in full): the reorder persists obligations (`saveMeta`) BEFORE any
+  carrier is published, rolling the batch's obligations back out of memory on
+  save failure so nothing half-admits. Restore is meta-only
+  (session_init.go:1027: `s.skillLifecycle = meta.Skills.Clone()` — no
+  reconstruction from transcript carriers), so the pre-fix window really did
+  leave a durable carrier with no durable obligation. The reverse window
+  (durable obligation, no carrier) is the designed reload path's problem
+  statement and re-delivers at the next dispatch seam. Callers
+  (session_lifecycle.go:1637, admitSteeringSelectionBatch) fail the turn
+  visibly on the error. Injection is the existing `breakSessionMetaPath`
+  (session_skill_compaction_test.go:393), the same seam the compaction
+  save-failure tests use. Red pre-fix: "failed admission left live
+  obligations" — the old code left the obligation in memory with the carrier
+  already recorded.
+- One environment note from the resume: `git stash list` was NOT empty at
+  handoff — it holds two stashes from OTHER branches (`main`,
+  `fix/625-enum-nonstring-constraint`), left untouched.
+
+### Findings verdicts
+
+| # | Finding | Verdict | Evidence and what changed |
+| --- | --- | --- | --- |
+| M-A | Failed reload notifications never reach the model | FIXED | `recordSkillDeliveryNotification` appended the failure explanation (session_skill_delivery.go:292-297 pre-fix) without setting the commit's rebuild flag, so the outgoing request omitted the explanation while `finalizeSkillDeliveryFailure` dropped the obligation. The commit field is now `appendedNotifications`, set at BOTH append sites; `prepareModelRequestWithError` (session_model_call.go:418) rebuilds on it. `TestSkillDelivery_FailedReloadNotifiesNextDispatch` seeds a pending obligation whose recorded source is gone (the restore-window state), drives `ProcessInput`, and asserts the NEXT captured provider request carries `Skill "opaque" is no longer available from …`, plus the typed `source_missing` outcome, no live obligation, no inventory. Red pre-fix with the intended message. |
+| M-B | Obligation/carrier durability window | FIXED | Pre-fix, `admitSkillActivationBatch` recorded the transcript carrier via `recordTurn` BEFORE `saveMeta`; a crash or save failure in that window left a durable carrier with no durable obligation, and restore (meta-only) lost the activation state. Now the batch's obligations persist first; carriers publish only after a successful save, and a failed save rolls the obligations back out of memory (nothing half-admits). `TestSkillActivation_AdmissionSaveFailureAdmitsNothing` injects the save failure via `breakSessionMetaPath`, asserts no live obligation and no recorded skill turn state, restores and asserts the crash window strands nothing, then retries and asserts restore sees exactly one obligation with its carrier. Red pre-fix ("failed admission left live obligations"). |
+| L-A | Queue preview/copy ignores skill items | FIXED | `recordContent` (QueueStrip.tsx:112-122) extracted only text and image items, so a skill-only durable record previewed blank and copied as "". It now also extracts the canonical skill names; `recordPreview` appends `[skill: name]` markers to the text/image preview and `handleCopy` copies text + markers. Three vitest additions in QueueStrip.test.tsx (skill-only preview+copy, text+skill copy, blocked skill-bearing row); all three red pre-fix, and the 37 pre-existing QueueStrip tests unchanged. `pendingReconcile.ts`'s `inputPreview` was deliberately NOT touched: its strings are a reconciliation MATCHING key against daemon queue previews, and the finding scoped the fix to `recordContent`. |
+| L-B | Handler validation disagrees with advertised capability | FIXED | All four input-bearing handlers validated with a literal `true` while `ThreadCapabilities.SkillInput` is a conjunction over `retrySafeTurns.Start/Steer/Queue/Drain`. Each handler now gates on its OWN seam's wiring (`fn != nil`, the very function the dispatch below requires — fn read hoisted above validation); the advertisement derives from the new `skillInputSupportedLocked()` predicate (appwire_runtime.go:2464-2475). Consumption-at-the-claim is preserved for genuinely wired endpoints: `TestAppWireMutationSkillInputResponseLossRetriesOnce` (Queue-only wiring legitimately consuming a selection at the claim) passes untouched. New `TestSkillInputValidationMatchesAdvertisedCapability`: a partially wired server must not advertise the capability, its wired endpoint still consumes skill selections, its unwired endpoint answers the typed InvalidParams "skill input is unsupported" at the gate (was the bare Unavailable pre-fix), and ordinary text keeps the endpoint's own behavior. Red pre-fix with the intended message. |
+| DOC | Evidence text says `invalid_control` where the parser emits `invalid_metadata` | FIXED | Line 307 above now reads `invalid_metadata` with the pinning test corrected to `TestSkillControlsRejectMixedAllowedToolsArray` (agent/skill/metadata_test.go:183-189); `invalid_control` is the boolean-controls category (agent/skill/metadata.go:131-149), `allowed-tools` parse failures emit `invalid_metadata` (metadata.go:151-160). Recorded inline; no history rewritten. |
+
+### Re-run gates on the second fix-round head (all serial)
+
+| Command | Exit | Duration | Notes |
+| --- | --- | --- | --- |
+| `make fuzz` | 0 | 310s | agent/invariant/fuzz modules under `-tags evenerfuzz`, fuzzcov/harvest, committed-seed replay, rapid replay (55 seed replays), decode goldens — zero FAIL lines |
+| `make test-api-package` | 0 | 3s | qualified @evener/appwire-client@0.1.0 |
+| `make vet` | 0 | 3s | no diagnostics across the non-fuzz modules |
+| `make merge-approval-gate` | 0 | 653s | lint PASS (naming 0s, gofmt 0s, evenerfuzz 36s, eval 29s, internal 0s, golangci 40s, generated 0s, fuzz-registry 3s, secret-scan 8s), build PASS, ROOT_FULL waves PASS (. 144.68s, agent 12.15s, llm 11.64s, auth 1.65s, envvars 0.58s, invariant 0.64s, identifier 1.61s, web 205.14s), test-native PASS (78 files/737 tests + shared 7 files/777 tests + tsc), test-api-package PASS |
+| `TMPDIR=/tmp make test-web-browser` (run 1) | 2 | 198s | 5/6 guards PASS; `web-skillguard` failed in its prelude — "expected two live sessions in the rail, found 0". Environmental, not a product failure: the guard's `railRowsExpr()` returns an always-truthy object so `waitPage` returns immediately instead of waiting for rows, and the check ran before the hub hydrated the rail under load average 31.3 (16 CPUs). The failure dump, captured seconds later, shows both sessions present and healthy in the rail, and both helper daemons PASSed. Same load-flake class the previous round recorded for the CDP probe. |
+| `TMPDIR=/tmp make test-web-browser` (run 2) | 0 | 197s | 6/6 guards PASS: web-layoutguard, web-overflowguard, web-shellguard, web-spawnguard, web-transcriptscrollguard, web-skillguard |
+| `make generate` | 0 | 1s | zero new diff: no generated output (types.gen.ts, docs/appwire-protocol.md, the developing-evener tables) modified; the working tree's modified set is exactly the round's ten intended files |
+
+### Affected Stage 2/3 families and touched frontend suites (all serial, all exit 0)
+
+| Command | Result |
+| --- | --- |
+| `go test ./agent -run '^(TestSkillActivation_|TestSkillDelivery_|TestSkillReload|TestSkillCompaction_|TestPinnedNote_|TestMaybeElicitNoteBeforeCompaction_|TestApplyPendingForceCompact_|TestSessionCompact_|TestFoldPublication_|TestPrepareModelRequest_)' -count=1` | 118 top-level + 42 subtest PASS, 0 skip, 0 fail |
+| `go test -race ./agent -run '^(TestSkillDelivery_|TestSkillActivation_|TestSkillReload|TestSkillCompaction_|TestFoldPublication_)' -count=1` | PASS, no race reports |
+| `go test ./server -run '^(TestAppWireMutation|TestSkillInput|TestTurnMutations|TestThreadRead)' -count=1` | 12 top-level + 31 subtest PASS |
+| `go test ./appwire/... ./internal/appwirets/... ./internal/appwiredoc/... -count=1` | all packages ok |
+| `go test ./server -count=1` (full package) | ok |
+| `npx vitest run src/panes/session/composer/queue/` | 5 files / 83 tests PASS (QueueStrip 40 incl. the 3 new) |
+| `npx vitest run` on PendingChips.test.tsx + Composer.integration.test.tsx + Composer.test.tsx (the suites that mount QueueStrip) | 3 files / 220 tests PASS |
+| `npx vitest run src/panes/session/composer` | 28 files / 641 tests PASS (638 pre-round + the 3 new L-A tests) |
+
+No assertion, filter, pairing, or tolerance was weakened in this round. The
+only behavioral changes are the four fixes above, each pinned red-before /
+green-after by its named test.
