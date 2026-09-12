@@ -17,7 +17,20 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fork delegate context: %w", err)
 	}
-	entries := completedDelegateContext(data.Entries)
+	// A fold's replay copies exist so the turns recorded while it ran survive
+	// an anchor that discards everything before it. This reader discards
+	// nothing — it takes the whole transcript — so every original is still
+	// here and a copy of one is a duplicate, exactly as ResumeHistory's
+	// no-anchor branch treats them. Filtered before grouping, so the fork
+	// inherits the conversation once.
+	physical := make([]transcript.Entry, 0, len(data.Entries))
+	for _, entry := range data.Entries {
+		if entry.Turn.ContextReplay {
+			continue
+		}
+		physical = append(physical, entry)
+	}
+	entries := completedDelegateContext(physical)
 	out := make([]transcript.Entry, 0, len(entries))
 	for _, entry := range entries {
 		t := entry.Turn

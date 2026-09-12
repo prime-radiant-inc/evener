@@ -27,6 +27,15 @@ const (
 // records.
 func compactionReplayTranscript(t *testing.T) string {
 	t.Helper()
+	s := compactionReplaySession(t)
+	return transcriptPath(s.stateDir, s.id)
+}
+
+// compactionReplaySession is compactionReplayTranscript's session, for a
+// caller that reads the fold's result through the session rather than from
+// the file.
+func compactionReplaySession(t *testing.T) *Session {
+	t.Helper()
 	entered := make(chan struct{})
 	proceed := make(chan struct{})
 	var calls atomic.Int32
@@ -71,7 +80,7 @@ func compactionReplayTranscript(t *testing.T) string {
 	if err := <-compactErr; err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	return transcriptPath(s.stateDir, s.id)
+	return s
 }
 
 // replayToolRoundParts counts how many times message names the replayed tool
@@ -364,4 +373,32 @@ func lastCompactionMarkerIndex(entries []transcript.Entry) int {
 		}
 	}
 	return -1
+}
+
+// A ForkContext delegate inherits the parent's conversation from the physical
+// transcript. After a fold that rewrote a concurrent tool round, that file
+// holds the originals AND their replay copies, so a fork that reads it
+// unfiltered starts with the round twice — the same duplicate ResumeHistory
+// drops when nothing discarded the originals, reached through a different
+// reader.
+func TestCompactionReplay_ForkContextSnapshotDropsReplayCopies(t *testing.T) {
+	t.Parallel()
+	s := compactionReplaySession(t)
+
+	entries, err := s.snapshotDelegateContext()
+	if err != nil {
+		t.Fatalf("snapshot delegate context: %v", err)
+	}
+	calls, results := 0, 0
+	for _, entry := range entries {
+		if entry.Turn.ContextReplay {
+			t.Fatalf("the fork inherited a durable replay copy: %#v", entry.Turn)
+		}
+		c, r := replayToolRoundParts(entry.Turn.Message)
+		calls += c
+		results += r
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("fork context carries %d tool calls and %d results, want the round exactly once", calls, results)
+	}
 }
