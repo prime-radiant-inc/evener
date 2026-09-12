@@ -658,12 +658,25 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 		t.Fatalf("child ResumeIndex = %d, want 6 (the child's own entry after j1, not this page's index 1)", cont.ResumeIndex)
 	}
 
-	// Empty the child, then trim the root's own delegate entry: the root is
-	// not the session the page resumed, so its mint carries no offset and no
-	// skip.
+	// The child's last remaining entry is trimmed next: the child IS the
+	// page's target, so this one is skipped — past its own position, not
+	// past this page's index 0.
 	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
 		t.Fatal("expected the child's remaining entry to be trimmed")
 	}
+	skipped, err := decodeActivityContinuation(child.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode child continuation after the skip: %v", err)
+	}
+	if skipped.ResumeIndex != 6 {
+		t.Fatalf("child ResumeIndex after the skip = %d, want 6 (past j1's own entry 5, not past this page's index 0)", skipped.ResumeIndex)
+	}
+	if !strings.Contains(child.Branch.Error, "j1") {
+		t.Fatalf("child branch error = %q, want it to name the skipped entry j1", child.Branch.Error)
+	}
+
+	// Now the root's own delegate entry: the root is not the session the
+	// page resumed, so its mint carries no offset and no skip.
 	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
 		t.Fatal("expected the root's delegate entry to be trimmed")
 	}

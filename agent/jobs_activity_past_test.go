@@ -1466,3 +1466,102 @@ func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(
 		}
 	}
 }
+
+// TestLoadSessionJobActivityTree_SizeTrimSkipsOversizedEntryOnAResumedPage
+// puts the skip on a page that is itself a resume, where the position it
+// advances to has to be the entry's own rather than this page's index 0.
+// Skipping to 1 there rewinds the walk to the second entry of the whole
+// session, re-delivering a page already seen and arriving back at the same
+// oversized entry forever. The fixture fills one page with ordinary jobs so
+// the oversized one lands on page 2, with a tail job behind it that only a
+// correctly advanced position can reach.
+func TestLoadSessionJobActivityTree_SizeTrimSkipsOversizedEntryOnAResumedPage(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "resumedskiproot"
+	const fillerCount = 20
+	filler := strings.Repeat("f", 250_000)
+	var events []jobstore.Event
+	for i := range fillerCount {
+		ts := time.Unix(int64(8000+i), 0).UTC()
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: filler,
+		})
+	}
+	oversizedAt := time.Unix(9000, 0).UTC()
+	tailAt := oversizedAt.Add(time.Second)
+	events = append(events,
+		jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: oversizedAt, JobID: "job_oversized",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &oversizedAt, Description: strings.Repeat("x", activityMaxEncodedBytes+(256<<10)),
+		},
+		jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: tailAt, JobID: "job_tail",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &tailAt, Description: "reachable only past the oversized job",
+		},
+	)
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	var branchErrors []string
+	seen := map[string]int{}
+	continuation := ""
+	pages := 0
+	for {
+		pages++
+		if pages > fillerCount {
+			t.Fatalf("walked %d pages without reaching job_tail; delivered %v", pages, delivered)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		if tree.Root.Branch.Error != "" {
+			branchErrors = append(branchErrors, tree.Root.Branch.Error)
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		if earlier, repeat := seen[next]; repeat {
+			t.Fatalf("page %d minted page %d's continuation again (%q) -- the skip rewound to this page's own index instead of the entry's", pages, earlier, next)
+		}
+		seen[next] = pages
+		continuation = next
+	}
+	if pages < 3 {
+		t.Fatalf("got %d page(s), want at least 3 -- the oversized entry must land on a page that is itself a resume", pages)
+	}
+	want := make([]string, 0, fillerCount+1)
+	for i := range fillerCount {
+		want = append(want, fmt.Sprintf("job_%02d", i))
+	}
+	want = append(want, "job_tail")
+	if len(delivered) != len(want) {
+		t.Fatalf("delivered %d entries across %d pages, want %d (every job but the oversized one, exactly once): %v", len(delivered), pages, len(want), delivered)
+	}
+	for i, id := range delivered {
+		if id != want[i] {
+			t.Fatalf("delivered[%d] = %q, want %q: %v", i, id, want[i], delivered)
+		}
+	}
+	named := false
+	for _, branchError := range branchErrors {
+		if strings.Contains(branchError, "job_oversized") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("branch errors %q name no skipped entry, want one naming job_oversized", branchErrors)
+	}
+}
