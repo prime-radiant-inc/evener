@@ -1330,12 +1330,19 @@ type activityTrimResume struct {
 	index int
 }
 
+// targets reports whether the session reached by path from the tree's root
+// is the one this page was built around: every shallower level is the
+// filtered ancestor chain, and every deeper one is a subtree the page
+// carries along.
+func (r activityTrimResume) targets(path []string) bool {
+	return len(path) == r.depth
+}
+
 // offsetAt reports the entry-index offset to apply to a session reached by
-// path from the tree's root. Only the one session the page resumed applies
-// it: every shallower level is the filtered ancestor chain, and every
-// deeper one rendered from its own top.
+// path from the tree's root. Only the page's own target applies it; every
+// other session rendered from its own top.
 func (r activityTrimResume) offsetAt(path []string) int {
-	if len(path) != r.depth {
+	if !r.targets(path) {
 		return 0
 	}
 	return r.index
@@ -1387,13 +1394,16 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 		}
 	}
 	resumeIndex := resume.offsetAt(path) + i
-	if i == 0 {
+	if i == 0 && resume.targets(path) {
 		// Trimming works from the tail, so an entry at index 0 is the only
-		// one this session's page still holds: it blew the size budget with
-		// nothing else competing for it, and a continuation pointing back at
-		// it would render the same page and mint the same token forever.
+		// one this session's page still holds — and in the page's own target
+		// nothing else can shrink around it: the resumed page renders the
+		// same entry, trims it again, and mints the same token forever.
 		// Advance past it instead, and say which entry the client will never
-		// see.
+		// see. A DEEPER session reaching index 0 says only that this page ran
+		// out of room; the continuation minted below re-targets that session,
+		// and the ancestors' own entries are gone from that page, so the
+		// entry is delivered there rather than lost here.
 		resumeIndex++
 		appendActivityBranchError(&session.Branch, activityEntryRef(*entry)+" is too large to render in one response and was skipped")
 	}

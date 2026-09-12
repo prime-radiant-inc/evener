@@ -626,7 +626,9 @@ func TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation(t *testing.T)
 // page started at the continuation's ResumeIndex, so a mint that ignores it
 // points back into the page it just returned. The offset belongs to exactly
 // one depth — the resumed session's — so a trim on the root one hop
-// shallower must not take it.
+// shallower neither takes the offset nor treats its last remaining entry as
+// unrenderable: it mints its own top-relative position, and the page that
+// re-targets it delivers the entry.
 func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	t.Parallel()
 	child := &appwire.JobActivitySession{
@@ -657,7 +659,8 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	}
 
 	// Empty the child, then trim the root's own delegate entry: the root is
-	// not the session the page resumed, so its mint carries no offset.
+	// not the session the page resumed, so its mint carries no offset and no
+	// skip.
 	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume) {
 		t.Fatal("expected the child's remaining entry to be trimmed")
 	}
@@ -668,8 +671,11 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode root continuation: %v", err)
 	}
-	if rootCont.ResumeIndex != 1 {
-		t.Fatalf("root ResumeIndex = %d, want 1 (the root rendered from its own top; the child's resume offset is not its own)", rootCont.ResumeIndex)
+	if rootCont.ResumeIndex != 0 {
+		t.Fatalf("root ResumeIndex = %d, want 0 (the root rendered from its own top, and an entry alone in a session this page is not targeting is not thereby unrenderable)", rootCont.ResumeIndex)
+	}
+	if session.Branch.Error != "" {
+		t.Fatalf("root branch error = %q, want none (only the page's own target may report an entry as too large)", session.Branch.Error)
 	}
 }
 
