@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
@@ -9,6 +10,7 @@ import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
 import { NotesPanelBody } from "../session/chrome/NotesPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
 import { NOW_TICK_MS, useNowTick } from "../session/liveness";
+import { navigationSummaryFor } from "../session/threadTitle";
 import { type SessionPanelKind, type SessionPanelParams, sessionPanelTitle } from "./index";
 
 export interface SessionPanelPaneProps extends PaneProps<SessionPanelParams> {
@@ -30,6 +32,13 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
   }
   const { ref } = params;
   const model = useThreadsStore((state) => state.threads.get(ref));
+  // The standalone Activity pane reads the same navigation-fed watches the
+  // pane footer's chrome does. It deliberately installs no clock of its own:
+  // watch detail falls back to the activity tree's own live tick (and a
+  // watch-only, live-row-free tree is static, exactly like every other row
+  // there) - the Details pane's NOW_TICK_MS clock stays Details-only.
+  const navigation = useNavigationStore();
+  const watches = navigationSummaryFor(ref, navigation)?.watches;
 
   useEffect(() => {
     let started = false;
@@ -63,7 +72,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
     kind === "tasks" ? (
       <TasksPanelBody sessionRef={ref} model={model} />
     ) : kind === "activity" ? (
-      <ActivityPanelBody sessionRef={ref} model={model} />
+      <ActivityPanelBody sessionRef={ref} model={model} watches={watches} />
     ) : kind === "notes" ? (
       <NotesPanelBody sessionRef={ref} model={model} />
     ) : (
