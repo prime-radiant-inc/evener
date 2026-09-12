@@ -5,9 +5,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -400,5 +402,85 @@ func TestCompactionReplay_ForkContextSnapshotDropsReplayCopies(t *testing.T) {
 	}
 	if calls != 1 || results != 1 {
 		t.Fatalf("fork context carries %d tool calls and %d results, want the round exactly once", calls, results)
+	}
+}
+
+// A fold's PreCompact hook completes on the fold's goroutine, which can outlive
+// the turn the fold staged under — so activeTurnOwner answers "" and the hook's
+// records land unowned. The two projections then disagree: the transcript makes
+// an unowned HOOK_COMPLETED its own logical turn and CLOSES the open group,
+// pushing everything the fold writes next into a new group, while the live
+// projector falls back to the turn it has open and keeps them together.
+//
+// The hook is one of the fold's records, so it carries the fold's owner like
+// every other one.
+func TestCompactionReplay_FoldHookCompletionCarriesTheFoldsOwner(t *testing.T) {
+	t.Parallel()
+	hooks := `{"hooks":{"PreCompact":[{"matcher":"*","hooks":[{"type":"command","command":"printf '%s\n' '{\"hookSpecificOutput\":{\"additionalContext\":\"fold-hook-owner\"}}'"}]}]}}`
+	stateDir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "fold-hook-owner-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir, PluginDirs: []string{writePluginHooks(t, "fold-hook-owner-plugin", hooks)}}))
+	seedNumberedSessionHistory(t, s, 12)
+
+	var mu sync.Mutex
+	var emitted []events.HookEndData
+	go func() {
+		for event := range s.Events() {
+			if data, ok := event.Data.(events.HookEndData); ok && event.Kind == events.EventHookEnd {
+				mu.Lock()
+				emitted = append(emitted, data)
+				mu.Unlock()
+			}
+		}
+	}()
+
+	// Idle: nothing is running, so the fold's owner is its own, and a hook
+	// reading the executing turn would find none.
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	foldOwner := ""
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnSummary || entry.Turn.Kind == schema.TurnCheckpoint {
+			foldOwner = entry.Turn.OwningTurnID
+		}
+	}
+	if foldOwner == "" {
+		t.Fatal("test setup: the fold wrote no owned marker to compare against")
+	}
+	hooks_ := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind != schema.TurnHookCompleted || entry.Turn.Hook == nil || entry.Turn.Hook.Event != "PreCompact" {
+			continue
+		}
+		hooks_++
+		if entry.Turn.OwningTurnID != foldOwner {
+			t.Fatalf("the fold's PreCompact hook entry is owned by %q, want the fold's own owner %q; unowned, it closes the fold's group on reload", entry.Turn.OwningTurnID, foldOwner)
+		}
+	}
+	if hooks_ == 0 {
+		t.Fatal("test setup: the fold ran no PreCompact hook")
+	}
+	mu.Lock()
+	live := append([]events.HookEndData(nil), emitted...)
+	mu.Unlock()
+	seen := 0
+	for _, end := range live {
+		if end.Event != "PreCompact" {
+			continue
+		}
+		seen++
+		if end.OwningTurnID != foldOwner {
+			t.Fatalf("the live PreCompact hook end is owned by %q, want %q", end.OwningTurnID, foldOwner)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("test setup: no PreCompact hook end reached the live stream")
 	}
 }

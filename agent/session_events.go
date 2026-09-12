@@ -306,7 +306,7 @@ func (s *Session) recordTurnFailure(data events.ErrorData) {
 // — turning it on would reveal only hooks that ran afterwards, which is the
 // same "switch that governs nothing" complaint this fixes (kata qm9y).
 func (s *Session) emitHookCompleted(data events.HookEndData) {
-	data.OwningTurnID = s.activeTurnOwner()
+	data.OwningTurnID = s.hookCompletionOwner()
 	s.emit(events.EventHookEnd, data)
 	info := schema.HookInfo{
 		Event:      data.Event,
@@ -326,6 +326,24 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	// writer exists (kata d4es). recordTurn holds the turn until it does; no
 	// buffering is needed here.
 	s.recordTurn(turn, turn)
+}
+
+// hookCompletionOwner names the logical turn a completing hook's records belong
+// to. A fold running its PreCompact hook owns them: that hook is one of the
+// fold's records, and the fold's goroutine can outlive the turn it staged
+// under, leaving activeTurnOwner with nothing to answer. An unowned
+// HOOK_COMPLETED is not merely unlabelled — the transcript projection makes it
+// its own logical turn and CLOSES the open group, so everything the fold writes
+// after it lands in a different group than the live projector puts it in.
+// Every other hook is owned by whatever turn is executing, as before.
+func (s *Session) hookCompletionOwner() string {
+	s.mu.Lock()
+	fold := s.foldHookOwner
+	s.mu.Unlock()
+	if fold != "" {
+		return fold
+	}
+	return s.activeTurnOwner()
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the
