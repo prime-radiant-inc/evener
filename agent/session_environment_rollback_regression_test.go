@@ -1271,3 +1271,55 @@ func TestRejectedInputDoesNotPersistItsProvisionalTurn(t *testing.T) {
 		t.Fatalf("restarted session accepted input turns = %d, want the none the rejected input accepted", got)
 	}
 }
+
+// TestPoisonedWriterRefusesToPublishAFold: a fold is the other durable write
+// the session makes, and it is one the session reports as done. The publication
+// transaction swaps model history, resets the environment tracker and tells
+// every client the context was compacted, and only then writes the checkpoint
+// and summary entries that make the fold survive a restart. A poisoned writer
+// refuses every one of those entries, so a published fold there is a compaction
+// the session announces and acts on and the transcript never holds -- the
+// restart brings back the pre-compaction history. The turn loop already fails
+// closed on this writer before admitting a turn; the fold has to fail closed
+// before publishing, for the same reason and at the same door.
+func TestPoisonedWriterRefusesToPublishAFold(t *testing.T) {
+	dir := t.TempDir()
+	sess := newScriptedSummaryCompactSession(t, "poisoned-fold-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	if err := sess.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if !sess.envTracker.State().HasSent {
+		t.Fatal("the environment tracker has nothing to lose; this test is not in the state it means to be")
+	}
+	seedNumberedSessionHistory(t, sess, 12) // > PreserveRecentTurns(6): forces a real fold
+	poisonSessionTranscript(t, sess)
+
+	sess.mu.Lock()
+	before := append([]schema.Turn(nil), sess.history...)
+	beforeRevision := sess.historyRevision
+	sess.mu.Unlock()
+	drainPendingEvents(sess)
+
+	if err := sess.Compact(t.Context()); err == nil {
+		t.Fatal("compaction against a poisoned transcript reported success")
+	}
+
+	sess.mu.Lock()
+	after := append([]schema.Turn(nil), sess.history...)
+	afterRevision := sess.historyRevision
+	sess.mu.Unlock()
+	if afterRevision != beforeRevision || !reflect.DeepEqual(after, before) {
+		t.Fatalf("history was folded on a poisoned transcript: %d turns at revision %d became %d turns at revision %d, and no transcript entry records it",
+			len(before), beforeRevision, len(after), afterRevision)
+	}
+	if !sess.envTracker.State().HasSent {
+		t.Fatal("environment tracking was reset for a fold the transcript never took: the next turn renders a full block for a compaction that did not durably happen")
+	}
+	for _, event := range drainPendingEvents(sess) {
+		if event.Kind == events.EventContextCompaction {
+			t.Fatal("a compaction the transcript refused was announced to clients")
+		}
+	}
+}

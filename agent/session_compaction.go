@@ -165,6 +165,25 @@ func (s *Session) bumpHistoryRevisionLocked() {
 // s.history's own backing array — callers may read it without locks.
 func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool) {
 	s.attentionMu.Lock()
+	// Fail closed on a transcript that has stopped accepting records, before
+	// anything is published rather than after the markers fail to land. This
+	// transaction swaps model history, resets the environment tracker and tells
+	// every client the context was compacted, and only then writes the entries
+	// that make the fold survive a restart; a poisoned writer refuses all of
+	// them, so a fold published here is one the session announces, acts on, and
+	// loses -- the restart anchors on the last marker that did land and brings
+	// the pre-compaction history back. It is the turn loop's own admission rule
+	// applied to the other durable write the session makes. Refusing reports the
+	// publication lost, which is the answer both callers already handle: a fold
+	// that did not publish runs neither commit phase.
+	//
+	// The read is under the transcript door, so no session append can poison the
+	// writer between here and the entries below -- every one of them goes
+	// through this lock.
+	if s.attachedTranscript().Poisoned() {
+		s.attentionMu.Unlock()
+		return nil, false
+	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
