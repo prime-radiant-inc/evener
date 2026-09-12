@@ -446,6 +446,17 @@ run_bounded_package_list() {
 				# would report the runner's own group — which is precisely the
 				# group no signal below may ever be aimed at.
 				list_pgid="$(ps -o pgid= -p "$list_pid" 2>/dev/null | tr -d '[:space:]')"
+				# An unreadable pgid is ambiguous, and the ambiguity is a race:
+				# the attempt can exit and be reaped between the liveness check
+				# above and this read, and then `ps` reports nothing for a
+				# process that finished rather than one that cannot be stopped.
+				# Ask the kernel again before deciding — the alternative is a
+				# completed enumeration failed with a diagnostic about a process
+				# group it did have. Still alive plus an unreadable group is a
+				# genuine "cannot aim a signal at it" and falls through.
+				if [ -z "$list_pgid" ] && ! kill -0 "$list_pid" 2>/dev/null; then
+					break
+				fi
 				if [ "$list_pgid" != "$list_pid" ]; then
 					# No group to name, so signal what a snapshot shows and
 					# stop. Nothing is waited on here: a retry would race
@@ -481,8 +492,20 @@ run_bounded_package_list() {
 					return 1
 				fi
 				# The group has no live member, so the leader is a zombie or
-				# already reaped and this reap cannot block.
-				wait "$list_pid" 2>/dev/null || :
+				# already reaped and this reap cannot block. Its status is the
+				# one thing that says whether this was a timeout at all: an
+				# attempt that finished between the deadline and the stop
+				# completed, and discarding a package list it successfully
+				# produced would turn a slow-but-working host into a failure.
+				# bash keeps a reaped job's status, so this answers even when
+				# the race above already removed the process.
+				if wait "$list_pid"; then
+					if ! mv "$attempt_list" "$package_list"; then
+						printf 'run-module-tests.sh: could not promote %s to %s\n' "$attempt_list" "$package_list" >&2
+						return 1
+					fi
+					return 0
+				fi
 				if [ "$attempt" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					return 1
