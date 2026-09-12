@@ -4,6 +4,7 @@
 // registers the real per-tool descriptors (read/grep/ls/glob/shell/diff/
 // patch/web fetch+search/delegate/job_*/ask_user/sandbox escalation).
 import { type ComponentType, createElement, Fragment } from "react";
+import { hasItemFailure } from "../../../protocol/itemFailure";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import type { ToolIconKind } from "../../../widgets";
 import { MCPToolArguments } from "./MCPToolArguments";
@@ -180,17 +181,15 @@ export interface ToolRendererDescriptor {
   summaryLink?(item: ItemModel): string | undefined;
 }
 
-// A tool call is failed when the wire carries an error/status failure or when
-// the tool descriptor has a domain-specific failure signal. Shell's nonzero
-// exit code is the important example: the command completed as a tool result,
-// but the result itself still failed. Keeping this predicate beside the
-// descriptor registry lets ToolCallItem and transcript grouping agree without
-// duplicating the registry-specific rule.
+// A tool call is failed when the shared settled-item predicate says so, or
+// when the tool descriptor has a domain-specific failure signal of its own.
+// The shared half is the same rule the transcript projector and the native
+// app apply, so a call cannot read as failed in one surface and clean in
+// another. The descriptor half stays: a tool whose failure lives in its own
+// output shape, not in error/status/exitCode, still marks its row here.
 export function toolCallFailed(item: ItemModel): boolean {
   const descriptor = toolRendererFor(item.toolName ?? "");
-  return (
-    (item.error !== undefined && item.error !== "") || item.status === "failed" || (descriptor.failed?.(item) ?? false)
-  );
+  return hasItemFailure(item) || (descriptor.failed?.(item) ?? false);
 }
 
 const registry: ToolRendererDescriptor[] = [];
