@@ -950,10 +950,13 @@ type ThreadCapabilities struct {
 	// for a evener session that can accept a goal; false for sources that do not
 	// advertise the capability, so goal/set is gated like every other thread action.
 	Goal bool `json:"goal"`
-	// SharedNotes advertises support for the shared-notes verbs (notes/human/set,
-	// notes/agent/set, urls/add, urls/remove). True for a live evener session
-	// whose daemon wires the four verbs; false for sources that do not advertise
-	// the capability, so the notes verbs are gated like every other thread action.
+	// SharedNotes advertises support for the shared-notes surface. Only two of
+	// its verbs are hub RPCs — notes/human/set and urls/remove. The other two,
+	// notes/agent/set and urls/add, are agent tools the daemon handles in
+	// session and are deliberately absent from the RPC method catalog. True for
+	// a live evener session whose daemon wires them; false for sources that do
+	// not advertise the capability, so the notes verbs are gated like every
+	// other thread action.
 	SharedNotes bool `json:"sharedNotes"`
 	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits

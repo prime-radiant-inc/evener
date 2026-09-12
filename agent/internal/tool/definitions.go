@@ -1046,8 +1046,9 @@ func DefUpdateGoal() llm.ToolDefinition {
 
 // DefNotesAgentSet returns the tool definition for notes_agent_set.
 // The model calls this to record its one-paragraph session whiteboard.
-// (Wire RPC method: notes/agent/set. Tool names cannot contain slashes —
-// see llm.ValidateToolName — so the agent tool uses snake_case.)
+// (Agent tool, not a hub RPC: the daemon handles notes/agent/set in session.
+// Tool names cannot contain slashes — see llm.ValidateToolName — so the agent
+// tool uses snake_case.)
 func DefNotesAgentSet() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "notes_agent_set",
@@ -1070,7 +1071,7 @@ func DefNotesAgentSet() llm.ToolDefinition {
 
 // DefUrlsAdd returns the tool definition for urls_add.
 // The model calls this to add a URL to the session's shared URL list.
-// (Wire RPC method: urls/add.)
+// (Agent tool, not a hub RPC: the daemon handles urls/add in session.)
 func DefUrlsAdd() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "urls_add",
