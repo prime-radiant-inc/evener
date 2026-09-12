@@ -274,7 +274,7 @@ func TestDaemonCatalogScopes(t *testing.T) {
 		t.Errorf("daemon catalog missing retire/status: %v", daemon)
 	}
 	if daemon[MethodEvenerDaemonList] {
-		t.Error("unimplemented daemon/list must not be in the daemon catalog")
+		t.Error("hub-scoped daemon/list must not be in the daemon catalog")
 	}
 	hub := map[string]bool{}
 	for _, name := range CatalogMethodNames(ScopeHub) {

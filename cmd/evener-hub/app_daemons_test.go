@@ -234,7 +234,13 @@ func TestDaemonResidentInventoryRows(t *testing.T) {
 	overlapFirst.SessionID, overlapFirst.ThreadID, overlapFirst.WorkspaceRef = overlapSession, overlapSession, "local:"+overlapSession
 	overlapSecond := residentEntryForTest(t, 5108)
 	overlapSecond.SessionID, overlapSecond.ThreadID, overlapSecond.WorkspaceRef = overlapSession, overlapSession, "local:"+overlapSession
-	overlapSecond.StartedAt = started.Add(time.Second)
+	// Use a sub-second interval: overlapFirst is at an exact second boundary
+	// (formats as "…T00:00:00Z", no fractional part) while overlapSecond is
+	// 500ms later ("…T00:00:00.5Z"). RFC3339Nano trims trailing zeros, so
+	// 'Z' (0x5A) > '.' (0x2E) and the lexicographic string comparison in the
+	// old code produces the wrong order. The time-parsing oracle below is the
+	// proof that catches this.
+	overlapSecond.StartedAt = started.Add(500 * time.Millisecond)
 
 	entries := []rendezvous.Entry{archived, aliased, incompatible, stale, unconfirmed, dead, overlapFirst, overlapSecond}
 	for i := range entries {
@@ -395,11 +401,18 @@ func TestDaemonResidentInventoryRows(t *testing.T) {
 	}
 
 	// Deterministic sort by ref, start, PID, generation.
-	compareRows := func(a, b appwire.DaemonResident) int {
+	// Independent oracle: parses StartedAt as time.Time rather than comparing
+	// the rendered RFC3339Nano string, so it detects when the implementation
+	// sorts by string instead of by time. Ref, PID, and Generation use the
+	// same comparison as the implementation because those keys are fixed-width
+	// or integer-valued and carry no variable-width hazard (see report).
+	chronologicalOrder := func(a, b appwire.DaemonResident) int {
 		if c := strings.Compare(a.Identity.Ref, b.Identity.Ref); c != 0 {
 			return c
 		}
-		if c := strings.Compare(a.Identity.StartedAt, b.Identity.StartedAt); c != 0 {
+		aTime, _ := time.Parse(time.RFC3339Nano, a.Identity.StartedAt)
+		bTime, _ := time.Parse(time.RFC3339Nano, b.Identity.StartedAt)
+		if c := aTime.Compare(bTime); c != 0 {
 			return c
 		}
 		if c := cmp.Compare(a.Identity.PID, b.Identity.PID); c != 0 {
@@ -407,7 +420,7 @@ func TestDaemonResidentInventoryRows(t *testing.T) {
 		}
 		return strings.Compare(a.Identity.Generation, b.Identity.Generation)
 	}
-	if !slices.IsSortedFunc(response.Daemons, compareRows) {
+	if !slices.IsSortedFunc(response.Daemons, chronologicalOrder) {
 		t.Fatalf("rows are not deterministically sorted: %+v", response.Daemons)
 	}
 

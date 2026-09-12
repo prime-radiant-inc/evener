@@ -141,7 +141,12 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 		if c := strings.Compare(a.Identity.Ref, b.Identity.Ref); c != 0 {
 			return c
 		}
-		if c := strings.Compare(a.Identity.StartedAt, b.Identity.StartedAt); c != 0 {
+		// RFC3339Nano trims trailing fractional zeros, making the rendered
+		// string variable-width: lexicographic comparison is not chronological
+		// ("…00Z" > "…00.5Z" because 'Z' > '.'). Parse as time.Time instead.
+		aTime, _ := time.Parse(time.RFC3339Nano, a.Identity.StartedAt)
+		bTime, _ := time.Parse(time.RFC3339Nano, b.Identity.StartedAt)
+		if c := aTime.Compare(bTime); c != 0 {
 			return c
 		}
 		if c := cmp.Compare(a.Identity.PID, b.Identity.PID); c != 0 {
