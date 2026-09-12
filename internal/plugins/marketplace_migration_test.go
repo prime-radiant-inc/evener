@@ -2780,6 +2780,82 @@ func TestMarketplaceNameMigration_AFailedRestoreKeepsTheMarker(t *testing.T) {
 	mustExist(t, entry.InstallPath)
 }
 
+// An entry an interrupted fetch left has no recorded install location and can
+// still have a clone where the fetch was filling one. Finishing a rename of it
+// must not record that leftover clone: a later Browse or Install would parse a
+// partial clone instead of clearing and re-cloning, which is exactly what the
+// normal rename avoids by following only a location the entry recorded.
+func TestMarketplaceNameMigration_ARecoveryDoesNotRecordACloneTheEntryNeverRecorded(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The record an interrupted fetch leaves: no install location, and a clone
+	// at the canonical path the fetch was filling.
+	if err := m.saveMarketplaces(Marketplaces{"a": {
+		Source:      Source{Kind: SourceURL, URL: "https://example.invalid/a.git"},
+		LastUpdated: time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	plantCatalog(t, m.marketplaceDir("a"))
+	plantRenameMarker(t, m, "a", "a-b")
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk["a-b"]
+	if !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want a-b alone", mk)
+	}
+	if ref.InstallLocation != "" {
+		t.Fatalf("InstallLocation = %q, want the entry left unfetched: nothing recorded that clone", ref.InstallLocation)
+	}
+}
+
+// The other side of it: an entry that did record a location keeps one, at the
+// name the rename took it to, however far the earlier run got.
+func TestMarketplaceNameMigration_ARecoveryKeepsTheLocationTheEntryRecorded(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.saveMarketplaces(Marketplaces{"a": {
+		Source:          Source{Kind: SourceURL, URL: "https://example.invalid/a.git"},
+		InstallLocation: m.marketplaceDir("a"),
+		LastUpdated:     time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	plantCatalog(t, m.marketplaceDir("a"))
+	plantRenameMarker(t, m, "a", "a-b")
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk["a-b"]
+	if !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want a-b alone", mk)
+	}
+	if want := m.marketplaceDir("a-b"); ref.InstallLocation != want {
+		t.Fatalf("InstallLocation = %q, want the clone recorded at %q", ref.InstallLocation, want)
+	}
+}
+
 // A never-fetched duplicate has no clone and no cache of its own for an
 // alias's rename to have moved, so finding the derived directories gone says
 // nothing about it. What it does have is a source of its own, which a merge

@@ -239,10 +239,17 @@ func (m *Manager) recoverMarkedRename() error {
 	}
 	var undo []func() error
 	if itsOwn {
+		// What the entry recorded before the rename, because the rename clears
+		// it: a location is only followed where the entry recorded one, so an
+		// entry an interrupted fetch left with a clone at the canonical path
+		// but no recorded location stays unfetched, exactly as the normal
+		// rename leaves it — recording that clone would have a later Browse or
+		// Install parse a partial clone instead of clearing and re-cloning.
+		recordedLocation := ref.InstallLocation
 		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, reg, owners); err != nil {
 			return fail(err)
 		}
-		if ref.Source.Kind != SourceDirectory {
+		if ref.Source.Kind != SourceDirectory && recordedLocation != "" {
 			// The rename's own rule, asked of the clone at the name the
 			// rename was taking it to: an entry whose clone made the move
 			// records it, and one with no clone there is unfetched, for the
