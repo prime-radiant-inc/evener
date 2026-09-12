@@ -106,7 +106,7 @@ export function AddInstanceDialog({
     setError(null);
     setBusy(true);
     try {
-      await credentialsStore.getState().create({
+      const applied = await credentialsStore.getState().create({
         name: trimmedName,
         base,
         baseUrl: baseUrl.trim(),
@@ -116,6 +116,11 @@ export function AddInstanceDialog({
         apiKeyEnv: apiKeyEnv.trim() || undefined,
         credentialHeader: trimmedCredentialHeader || undefined,
       });
+      // The listing a superseded create answered with was discarded by the
+      // store's generation guard - reconcile before steering the guided flow
+      // on the new row. Data refresh deliberately survives an unmount: the
+      // dialog is gone, but the store still owes the caller a current listing.
+      if (!applied) await credentialsStore.getState().fetch();
       if (!active.current) return;
       toast.push("success", `Created instance ${trimmedName}`);
       onSuccess(trimmedName);

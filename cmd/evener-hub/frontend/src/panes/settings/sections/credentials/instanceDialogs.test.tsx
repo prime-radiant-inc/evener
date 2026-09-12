@@ -1,10 +1,10 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
+import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
-import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 
@@ -273,6 +273,62 @@ describe("AddInstanceDialog", () => {
     await user.click(screen.getByRole("button", { name: "Create" }));
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("Created instance work").length).toBeGreaterThan(0);
+  });
+
+  // The listing a create answers with is only the truth if the store kept it.
+  // The guided flow steers on the created row, so success must not be reported
+  // against a listing a concurrent read already threw away.
+  test("a superseded create reconciles the listing before success is reported", async () => {
+    const fake = connectFakeClient();
+    const WORK2 = instance({ name: "work2", providerId: "anthropic" });
+    const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
+    const WITH_WORK2: InstanceListResponse = { instances: [WORK2], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_WORK2);
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    let resolveCreate!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/create",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    let signalSuccess!: () => void;
+    const successCalled = new Promise<void>((resolve) => {
+      signalSuccess = resolve;
+    });
+    const listingsAtSuccess: InstanceEntry[][] = [];
+    const onSuccess = vi.fn(() => {
+      listingsAtSuccess.push(credentialsStore.getState().instances);
+      signalSuccess();
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    // A listing read issued after the create wins the store race, so the
+    // create's own response - the only one carrying the new row - is discarded.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    // The reconcile read the dialog must now make sees the row.
+    fake.on("evener/instance/list", () => WITH_WORK2);
+    await act(async () => {
+      resolveCreate(WITH_WORK2);
+      await successCalled;
+    });
+    expect(onSuccess).toHaveBeenCalledWith("work2");
+    expect(listingsAtSuccess[0]).toEqual([WORK2]);
   });
 
   test("a create failure shows an inline error and a 'Create failed' toast, without calling onSuccess", async () => {

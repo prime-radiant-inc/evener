@@ -301,6 +301,60 @@ describe("mutations returning the updated instance list", () => {
     expect(credentialsStore.getState().instances).toEqual([]);
   });
 
+  // create() and remove() steer onboarding and removal flows on the strength
+  // of their own write the same way edit steers the sheet, so they owe their
+  // callers the same verdict: a response the store discarded must not read as
+  // authoritative.
+  test("create() and remove() report whether the store applied their response", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    let finishCreate!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/create",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    const created = credentialsStore.getState().create({ name: "work2", base: "openai-codex", baseUrl: "" });
+    await Promise.resolve();
+    // A listing read issued after the create wins the store race, so the
+    // create's own response is superseded before it lands.
+    await credentialsStore.getState().fetch();
+    finishCreate({
+      instances: [ONE_INSTANCE, { ...ONE_INSTANCE, name: "work2", isDefault: false }],
+      availableProviders: [],
+    });
+    expect(await created).toBe(false);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+
+    let finishRemove!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRemove = resolve;
+        }),
+    );
+    const removed = credentialsStore.getState().remove("work");
+    await Promise.resolve();
+    await credentialsStore.getState().fetch();
+    finishRemove({ instances: [], availableProviders: [] });
+    expect(await removed).toBe(false);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+
+    fake.on("evener/instance/create", () => ({
+      instances: [ONE_INSTANCE, { ...ONE_INSTANCE, name: "work2", isDefault: false }],
+      availableProviders: [],
+    }));
+    expect(await credentialsStore.getState().create({ name: "work2", base: "openai-codex", baseUrl: "" })).toBe(true);
+    fake.on("evener/instance/remove", () => ({ instances: [], availableProviders: [] }));
+    expect(await credentialsStore.getState().remove("work")).toBe(true);
+    expect(credentialsStore.getState().instances).toEqual([]);
+  });
+
   test("remove() calls evener/instance/remove and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
@@ -530,7 +584,7 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("the originating client's own echo does not refetch the listing", async () => {
+  test("a successful save refreshes the listing through the store, and the echo does not refresh again", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     fake.on("evener/auth/apiKey/set", ({ provider }) => ({
@@ -545,13 +599,14 @@ describe("notification-triggered refetch", () => {
     fake.on("evener/instance/list", listSpy);
 
     await credentialsStore.getState().setApiKey("work", "draft");
-    // The hub BroadcastAlls the originator its own success echo, provider and
-    // all (notifyAuthUpdated). The mutation site owns the listing refresh, so
-    // this echo must not schedule one - a save/check in flight reads the
-    // echo-driven change as an unrelated invalidation.
+    // The store owns the post-mutation refresh: the component that issued the
+    // save may be canceled, hidden, or unmounted before the response lands,
+    // so a caller-scoped refresh leaves the listing stale. The hub also
+    // BroadcastAlls the originator its own success echo (notifyAuthUpdated) -
+    // that echo must not schedule a SECOND refresh on top of the store's own.
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
     await vi.advanceTimersByTimeAsync(1000);
-    expect(listSpy).not.toHaveBeenCalled();
+    expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
   test("another client's auth change still refetches after a local mutation", async () => {
@@ -606,7 +661,10 @@ describe("notification-triggered refetch", () => {
     await vi.advanceTimersByTimeAsync(2001);
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
     await vi.advanceTimersByTimeAsync(250);
-    expect(listSpy).toHaveBeenCalledTimes(1);
+    // Two refreshes: the store's own post-save refresh (inside the window) and
+    // this late echo's - past the window the marker is gone, so a same-provider
+    // notification is an unrelated client's change again.
+    expect(listSpy).toHaveBeenCalledTimes(2);
   });
 
   test("a failed save does not suppress a later same-provider notification", async () => {
@@ -639,6 +697,21 @@ describe("notification-triggered refetch", () => {
     // A pending poll broadcasts nothing; an unrelated same-provider change
     // arriving during the poll loop must still refetch.
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("an authorized device poll refreshes the listing even with no caller left to do it", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/device/poll", () => ({ provider: "work", state: "authorized" }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().devicePoll("work", "flow");
+    // The polling dialog may already be closed by the time authorization
+    // lands; the store owns the refresh, so the listing updates anyway.
     await vi.advanceTimersByTimeAsync(250);
     expect(listSpy).toHaveBeenCalledTimes(1);
   });

@@ -220,6 +220,52 @@ describe("the detail sheet", () => {
     await screen.findByText("Removed instance personal");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull());
   });
+
+  // The listing a removal answers with is only the truth if the store kept it.
+  // The guided owner clears its retained draft on the removal report, so the
+  // report must not fire against a listing a concurrent read threw away.
+  test("a superseded removal reconciles the listing before it is reported", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let signalRemoved!: () => void;
+    const removedCalled = new Promise<void>((resolve) => {
+      signalRemoved = resolve;
+    });
+    const listingsAtRemoval: InstanceEntry[][] = [];
+    const onInstanceRemoved = vi.fn(() => {
+      listingsAtRemoval.push(credentialsStore.getState().instances);
+      signalRemoved();
+    });
+    render(<CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    let resolveRemoval!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+    );
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    // A listing read issued after the removal wins the store race, so the
+    // removal's own response - the only one without the row - is discarded.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    const WITHOUT_PERSONAL: InstanceListResponse = { instances: [WORK], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_PERSONAL);
+    await act(async () => {
+      resolveRemoval(WITHOUT_PERSONAL);
+      await removedCalled;
+    });
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(listingsAtRemoval[0]).toEqual([WORK]);
+  });
 });
 
 describe("credential verification", () => {

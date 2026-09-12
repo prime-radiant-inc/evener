@@ -206,7 +206,11 @@ export function CredentialsSection({
         await credentialsStore.getState().fetch();
         toast.push("success", `${label} cleared for ${name}`);
       } else {
-        await credentialsStore.getState().remove(name);
+        const applied = await credentialsStore.getState().remove(name);
+        // A superseded removal's listing was discarded by the store's
+        // generation guard - reconcile before reporting the removal, so the
+        // guided owner's reset lands on a listing that actually lost the row.
+        if (!applied) await credentialsStore.getState().fetch();
         toast.push("success", `Removed instance ${name}`);
         onInstanceRemoved?.(name);
       }

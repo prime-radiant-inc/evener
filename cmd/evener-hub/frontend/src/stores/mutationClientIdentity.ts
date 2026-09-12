@@ -7,9 +7,15 @@
 // sessionStorage holds it: per-tab, and stable across that tab's reloads. A
 // reloaded page is the same client lineage for its own in-flight records —
 // crash/reload recovery must still count them as "mine" for tier-6 routing —
-// while a different tab never shares the value. Storage access is guarded for
-// environments without it; the fallback is held in module state so one page
-// keeps one identity either way.
+// while a tab the user opens separately never shares the value. One residual
+// is outside any application's control: the browser's own "duplicate tab"
+// copies sessionStorage into the new tab with no opener to strip, so the
+// duplicate shares this identity and the two tabs claim each other's sends -
+// the same routing behavior the field's absence had. That residual is
+// documented on the PR; the app-controlled opener-created-tab path (window.open
+// without noopener) is closed. Storage access is guarded for environments
+// without it; the fallback is held in module state so one page keeps one
+// identity either way.
 
 const STORAGE_KEY = "evener-hub.mutation-client-identity";
 

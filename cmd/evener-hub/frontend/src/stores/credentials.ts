@@ -59,18 +59,22 @@ export interface CredentialsStoreState {
   loading: boolean;
   error: string | null;
   fetch(): Promise<void>;
-  create(params: InstanceCreateParams): Promise<void>;
-  // Resolves true when the listing this edit answered with is the one the
-  // store now holds, false when a newer request superseded it. The instance
-  // sheet steers itself on the store's verdict, never on the raw response.
+  // create/edit/remove resolve true when the listing they answered with is
+  // the one the store now holds, false when a newer request superseded it.
+  // Callers that steer a flow on the strength of their own write (the sheet,
+  // the add dialog, the removal report) act on the store's verdict, never on
+  // the raw response.
+  create(params: InstanceCreateParams): Promise<boolean>;
   edit(params: InstanceEditParams): Promise<boolean>;
-  remove(name: string): Promise<void>;
+  remove(name: string): Promise<boolean>;
   setDefault(name: string): Promise<void>;
   // Auth mutations return the raw wire response and never touch
-  // instances/availableProviders themselves - the caller (CredentialsSection)
-  // re-fetches on success, matching the legacy's own "close editor +
-  // refresh()" sequencing, and surfaces failures as inline errors/toasts
-  // itself rather than this store swallowing them into an `error` field.
+  // instances/availableProviders synchronously - on success the store
+  // schedules its own listing refresh (see the wrappers below), which
+  // survives the issuing dialog unmounting before the RPC resolves;
+  // callers may still fetch for their own steering, and failures surface as
+  // inline errors/toasts in the caller rather than this store swallowing
+  // them into an `error` field.
   setApiKey(provider: string, value: string): Promise<AuthStatusResponse>;
   setCredentialJson(provider: string, value: string): Promise<AuthStatusResponse>;
   // clearStoredKey removes only the credentials.toml entry, leaving any
@@ -153,7 +157,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async create(params) {
     const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/create", params));
+    return applyMutation(() => client.request("evener/instance/create", params));
   },
 
   async edit(params) {
@@ -163,7 +167,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async remove(name) {
     const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/remove", { name }));
+    return applyMutation(() => client.request("evener/instance/remove", { name }));
   },
 
   async setDefault(name) {
@@ -175,7 +179,12 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      return await client.request("evener/auth/apiKey/set", { provider, value });
+      const result = await client.request("evener/auth/apiKey/set", { provider, value });
+      // The store owns the post-mutation listing refresh: the caller that
+      // issued the save may be canceled, hidden, or unmounted before this
+      // resolves, and its own refresh would die with it.
+      scheduleRefetch();
+      return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
@@ -186,7 +195,9 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      return await client.request("evener/auth/credentialJson/set", { provider, value });
+      const result = await client.request("evener/auth/credentialJson/set", { provider, value });
+      scheduleRefetch(); // same rationale as setApiKey
+      return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
@@ -197,7 +208,9 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      return await client.request("evener/auth/apiKey/clear", { provider });
+      const result = await client.request("evener/auth/apiKey/clear", { provider });
+      scheduleRefetch(); // same rationale as setApiKey
+      return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
@@ -208,7 +221,9 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      return await client.request("evener/auth/logout", { provider });
+      const result = await client.request("evener/auth/logout", { provider });
+      scheduleRefetch(); // same rationale as setApiKey
+      return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
@@ -224,7 +239,9 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      return await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
+      const result = await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
+      scheduleRefetch(); // same rationale as setApiKey
+      return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
       throw err;
@@ -243,8 +260,11 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
       const resp = await client.request("evener/auth/device/poll", { provider, flowId });
       // Only an authorized poll broadcasts evener/auth/updated; a routine
       // pending/expired tick must not keep the marker armed, or a poll loop
-      // would silence unrelated same-provider changes tick after tick.
-      if (resp.state !== "authorized") endUnconfirmedAuthMutation(provider);
+      // would silence unrelated same-provider changes tick after tick. An
+      // authorized poll also refreshes the listing through the store - the
+      // polling dialog may already be closed by the time authorization lands.
+      if (resp.state === "authorized") scheduleRefetch();
+      else endUnconfirmedAuthMutation(provider);
       return resp;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -283,10 +303,12 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // The originator is in that audience too, and it must keep receiving the
 // notification - other consumers (the model-list cache's epoch guard) depend
 // on the originating client's own echo to refresh after its own save. But the
-// LISTING refetch is redundant for the originator: every local mutation site
-// fetches the listing itself once its RPC resolves (ProviderConnection's
-// refreshAndCheck, CredentialValueDialog, the section's clear handlers, the
-// OAuth dialogs' completions). Worse, the echo's refetch is misread by a
+// LISTING refetch is redundant for the originator: the STORE schedules its own
+// refresh the moment a local auth mutation succeeds (see the wrappers below) -
+// a refresh owned by the store survives the issuing dialog being canceled,
+// hidden, or unmounted before the RPC resolves, which a caller-scoped refresh
+// (ProviderConnection's refreshAndCheck, CredentialValueDialog, the OAuth
+// dialogs' completions) does not. Worse, the echo's refetch is misread by a
 // save/check in flight: ProviderConnection's subscription treats the
 // echo-driven listing change as an unrelated change and invalidates the fresh
 // result ("Connection or configuration changed") or cancels the check. So the
@@ -364,7 +386,7 @@ function scheduleRefetch(): void {
 
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/auth/updated") {
-    if (consumeOwnAuthEcho(n.params.provider)) return; // own echo: the mutation site owns the listing refresh
+    if (consumeOwnAuthEcho(n.params.provider)) return; // own echo: the store's own post-mutation refresh already covers it
     scheduleRefetch();
   }
 }
