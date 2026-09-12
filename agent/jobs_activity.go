@@ -682,6 +682,13 @@ func cloneActivityVisited(visited map[string]bool) map[string]bool {
 	return clone
 }
 
+// activityFilterSnapshotToDelegate narrows base to the one delegate a
+// continuation's path goes through, keeping the ancestor as a chain to
+// re-descend rather than a subtree to re-render. base's fold-cache
+// generations come along: a continuation minted anywhere on the resumed
+// page is checked against the generations the NEXT request reads for these
+// same journals, so filtering them away mints zeros that read as a rewrite
+// that never happened.
 func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID string, child *activitySessionSnapshot) activitySessionSnapshot {
 	filtered := activitySessionSnapshot{
 		SessionID:       base.SessionID,
@@ -689,6 +696,8 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		Label:           base.Label,
 		RootID:          base.RootID,
 		Revision:        base.Revision,
+		JobsEpoch:       base.JobsEpoch,
+		DelegatesEpoch:  base.DelegatesEpoch,
 		Jobs:            []*jobstore.JobRecord{},
 		LiveJobs:        map[string]*jobstore.JobRecord{},
 		StableDelegates: make(map[string]delegateSnapshot, 1),

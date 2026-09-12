@@ -1366,3 +1366,103 @@ func (w *pastActivityWalk) record(branch appwire.JobActivityBranchState) {
 		w.continuations = append(w.continuations, branch.Continuation)
 	}
 }
+
+// TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs
+// pins that a continuation minted on a RESUMED page carries the fold-cache
+// generations the next request checks it against. A resumed page's ancestor
+// chain is a filtered snapshot, and a filter that drops the epoch fields
+// mints zeros: the next request then reads a real, nonzero generation for
+// the same journals and rejects a perfectly fresh token as stale, stranding
+// the client mid-tree. The fold caches are keyed by path and only bump a
+// generation when a journal is rewritten rather than appended to, so the
+// fixture warms them and then rewrites the delegate journal in place.
+func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "epochfilterroot"
+	childID := "epochfilterchild"
+	started := time.Unix(6000, 0).UTC()
+	const childJobCount = 40
+	description := strings.Repeat("e", 250_000)
+
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_small",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+		StartedAt: &started, Description: "small root job",
+	})
+	childEvents := make([]jobstore.Event, 0, childJobCount)
+	for i := range childJobCount {
+		ts := started.Add(time.Duration(i) * time.Second)
+		childEvents = append(childEvents, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_child_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	childJobsPath := s1cov_writeJobLog(t, stateDir, childID, childEvents...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	// The child names the root, so both sessions read the root's shared
+	// delegate journal and report the same generation for it — the value a
+	// nested continuation is checked against.
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+
+	// Warm the fold caches at these journals' current size and mtime, then
+	// move both mtimes: a same-size rewrite is what bumps a generation, so
+	// every page below reads a nonzero one.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm the fold caches: %v", err)
+	}
+	rewritten := time.Unix(1_000_000, 0)
+	for _, path := range []string{filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"), childJobsPath} {
+		if err := os.Chtimes(path, rewritten, rewritten); err != nil {
+			t.Fatalf("restamp %s: %v", path, err)
+		}
+	}
+
+	var walk pastActivityWalk
+	pending := []string{""}
+	requested := map[string]bool{"": true}
+	pages := 0
+	for len(pending) > 0 {
+		pages++
+		if pages > 8 {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %d jobs", pages, len(walk.jobs))
+		}
+		continuation := pending[0]
+		pending = pending[1:]
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v -- a continuation minted on a resumed page must carry the generations the next request checks", pages, err)
+		}
+		before := len(walk.continuations)
+		collectPastActivityPage(t, &tree.Root, &walk)
+		for _, next := range walk.continuations[before:] {
+			if next == continuation {
+				t.Fatalf("page %d re-minted the continuation it was loaded with (%q)", pages, next)
+			}
+			if requested[next] {
+				continue
+			}
+			requested[next] = true
+			pending = append(pending, next)
+		}
+	}
+	if pages < 3 {
+		t.Fatalf("got %d page(s), want at least 3 -- the fixture must force a trim on a page that is itself a resume", pages)
+	}
+	if len(walk.branchErrors) != 0 {
+		t.Fatalf("branch errors %q, want none", walk.branchErrors)
+	}
+	counts := map[string]int{}
+	for _, id := range walk.jobs {
+		counts[id]++
+	}
+	if len(walk.jobs) != childJobCount+1 || counts["job_root_small"] != 1 {
+		t.Fatalf("delivered %d jobs across %d pages, want %d exactly once each", len(walk.jobs), pages, childJobCount+1)
+	}
+	for i := range childJobCount {
+		if id := fmt.Sprintf("job_child_%02d", i); counts[id] != 1 {
+			t.Fatalf("%s delivered %d times, want exactly once", id, counts[id])
+		}
+	}
+}
