@@ -170,9 +170,10 @@ function defaultIdFactory(): string {
   return `cmid-${Date.now()}-${defaultIdCounter}`;
 }
 
-// The 13 required capability fields that must be present and boolean in
-// every ThreadCapabilities. Extra keys from future protocol versions are
-// allowed but never retained in the extracted copy.
+// The 12 legacy capability fields that must be present and boolean in every
+// ThreadCapabilities. Extra keys from future protocol versions are allowed but
+// never retained in the extracted copy; sharedNotes is one of those extras (see
+// the absent-means-unsupported handling below).
 const REQUIRED_CAPABILITY_FIELDS = [
   "send",
   "steer",
@@ -186,11 +187,10 @@ const REQUIRED_CAPABILITY_FIELDS = [
   "queue",
   "goal",
   "rename",
-  "sharedNotes",
 ] as const;
 
 // Extract and runtime-validate capabilities into a complete plain local
-// ThreadCapabilities copy. All 13 required fields must be present and
+// ThreadCapabilities copy. All 12 required fields must be present and
 // boolean; extra keys are allowed but not retained. Null, non-object,
 // wrong-type, or throwing-getter inputs throw before any state write,
 // leaving the ref+capabilities pair null/fail-closed. The returned copy
@@ -223,6 +223,19 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
       );
     }
     caps[field] = value;
+  }
+  // sharedNotes is newer than the protocol version this client still speaks, so
+  // a peer built before it omits the field entirely: absent means "not
+  // supported" and must not reject the whole payload, which would fail every
+  // capability-gated action for the session. A present value is still validated.
+  const sharedNotes = obj.sharedNotes;
+  if (sharedNotes !== undefined) {
+    if (typeof sharedNotes !== "boolean") {
+      throw new Error(
+        `ConversationService: capability "sharedNotes" is not a boolean`,
+      );
+    }
+    caps.sharedNotes = sharedNotes;
   }
   return caps;
 }

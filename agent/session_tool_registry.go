@@ -230,9 +230,6 @@ type notesGuard struct {
 	mutateRemoveURL func(id string) (removed bool, urls []schema.SessionURL, err error)
 	// snapshotAll reads human note, agent note, and URL list under s.mu.
 	snapshotAll func() (human, agent string, urls []schema.SessionURL)
-	// saveMeta persists session meta, reporting the write outcome so tool
-	// handlers refuse success for a write that never landed.
-	saveMeta func() error
 }
 
 // SnapshotAll reads human note, agent note, and URL list together.
@@ -291,7 +288,6 @@ func newToolDeps(s *Session) *toolDeps {
 			mutateAddURL:    s.mutateSessionURLAddSerialized,
 			mutateRemoveURL: s.mutateSessionURLRemoveSerialized,
 			snapshotAll:     s.notesSnapshotAll,
-			saveMeta:        s.persistNotesMeta,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,

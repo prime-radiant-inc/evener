@@ -2882,6 +2882,18 @@ describe("ConversationService", () => {
       await assertAllOpsFailClosed(service, client);
     });
 
+    it("open: a peer that predates sharedNotes keeps the session usable", async () => {
+      // The field is newer than the protocol version this client speaks, so a
+      // hub built before it omits it. Treating it as required rejected the whole
+      // payload and failed every capability-gated action for the session.
+      const { sharedNotes: _omitted, ...legacyCaps } = ALL_TRUE_CAPS;
+      const thread = makeThreadWithCaps(legacyCaps);
+      const { service } = setup({ thread });
+      await service.open("ref-1");
+      const caps = await service.refreshCapabilities("ref-1");
+      expect(caps?.sharedNotes).toBe(false);
+    });
+
     it("open: throwing getter on a capability field rejects before commit, pair stays null", async () => {
       const throwingCaps = {
         get send() {

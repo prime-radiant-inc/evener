@@ -111,28 +111,12 @@ export function unmountHumanNote(ref: string, owner: symbol): void {
   focusOwners.delete(owner);
   put(ref, { ...draft, focusOwners });
 }
+// Closing a focused panel without a blur keeps its draft and invents no save
+// (docs/web-ui/shared-notes.md: closing without leaving the field does not
+// save; the draft is retained for the same browser session). Only an actual
+// blur schedules the debounce.
 export function blurHumanNote(ref: string, owner: symbol): void {
   unmountHumanNote(ref, owner);
-  scheduleHumanNoteSave(ref);
-}
-
-// teardownHumanNote is the panel going away without a blur: a sheet close or a
-// session switch unmounts the editor while it is still focused, so no blur is
-// delivered and the debounce a blur would have scheduled never exists. It drops
-// the focus owner and schedules that save instead of dropping the edit.
-//
-// A generation that already has a submission record is left alone: a save that
-// failed keeps its draft for an explicit retry rather than retrying silently on
-// the way out, and one still in flight needs no second attempt.
-export function teardownHumanNote(ref: string, owner: symbol): void {
-  unmountHumanNote(ref, owner);
-  const draft = get(ref);
-  if (!draft) return;
-  if (draft.submitted?.generation === draft.generation) return;
-  scheduleHumanNoteSave(ref);
-}
-
-function scheduleHumanNoteSave(ref: string): void {
   const draft = get(ref);
   if (!draft?.dirty || draft.focusOwners.size || draft.timer !== undefined) return;
   if (draft.submitted?.generation === draft.generation && draft.submitted.state === "submitting") return;
@@ -149,7 +133,10 @@ function scheduleHumanNoteSave(ref: string): void {
   // teardown (flushPendingHumanNoteSaves).
   const save = async () => {
     const current = get(ref);
-    if (!current) return;
+    if (!current) {
+      release();
+      return;
+    }
     // Whoever reaches the save first retires the debounce timer: a teardown
     // flush must not leave the live handle to fire again inside the window and
     // enqueue the same note a second time.
@@ -228,7 +215,11 @@ export function resetHumanNoteDrafts(): void {
   unsubscribePersistence?.();
   unsubscribePersistence = undefined;
   persistenceRead += 1;
-  for (const draft of drafts.getState().records.values()) if (draft.timer !== undefined) clearTimeout(draft.timer);
+  for (const draft of drafts.getState().records.values()) {
+    if (draft.timer === undefined) continue;
+    clearTimeout(draft.timer);
+    draft.release?.();
+  }
   drafts.setState({ records: new Map() });
 }
 export function canWriteHumanNote(model: ThreadModel | undefined): boolean {

@@ -9,7 +9,6 @@ import {
   editHumanNote,
   focusHumanNote,
   syncHumanNote,
-  teardownHumanNote,
   unmountHumanNote,
   useHumanNoteDraft,
 } from "../../../stores/humanNoteDrafts";
@@ -152,12 +151,9 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
       unmountHumanNote(sessionRef, id);
       return;
     }
-    // Closing the sheet or switching sessions unmounts the editor without a
-    // blur, so a dirty draft would be left with no timer and no save. Teardown
-    // schedules the save instead — the same FLUSHED-not-dropped rule DockHost
-    // documents for its layout debounce — while a failed save keeps its draft
-    // for an explicit retry.
-    return () => teardownHumanNote(sessionRef, id);
+    // Close-without-blur keeps the draft and invents no save; a timer from an
+    // actual earlier blur survives this unmount and still fires.
+    return () => unmountHumanNote(sessionRef, id);
   }, [sessionRef, live, model.capabilities.sharedNotes]);
 
   async function handleRemoveURL(url: SessionURL) {
