@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"slices"
 	"strings"
 
@@ -399,12 +400,18 @@ func (s *Session) notesContextBlock() string {
 		return notesClearedBlock
 	}
 	var b strings.Builder
+	// The block is framed with literal tags and the content is user- and
+	// agent-supplied, so every dynamic field is escaped: unescaped, a note or
+	// label carrying the closing tag would terminate the block and the model
+	// would read attacker-chosen text as harness-authored context (persistent
+	// indirect prompt injection). Raw values stay raw for persistence and the
+	// wire; only this rendering escapes them, matching the goal block.
 	b.WriteString("<shared-notes>\n")
 	if human != "" {
-		b.WriteString("Human: " + human + "\n")
+		b.WriteString("Human: " + html.EscapeString(human) + "\n")
 	}
 	if agentNote != "" {
-		b.WriteString("Agent: " + agentNote + "\n")
+		b.WriteString("Agent: " + html.EscapeString(agentNote) + "\n")
 	}
 	for _, u := range urls {
 		b.WriteString(formatNotesLinkLine(u) + "\n")
@@ -429,12 +436,12 @@ const notesClearedBlock = "<shared-notes>\n(empty — all shared notes and links
 // the human-readable URL/label because the model never receives the State
 // side-channel — only Output — yet urls_remove requires the id.
 func formatNotesLinkLine(u schema.SessionURL) string {
-	base := u.URL
+	base := html.EscapeString(u.URL)
 	if u.Label != "" {
-		base = fmt.Sprintf("%s (%s)", u.Label, u.URL)
+		base = fmt.Sprintf("%s (%s)", html.EscapeString(u.Label), base)
 	}
 	if u.ID != "" {
-		return fmt.Sprintf("Link: %s [id: %s]", base, u.ID)
+		return fmt.Sprintf("Link: %s [id: %s]", base, html.EscapeString(u.ID))
 	}
 	return "Link: " + base
 }
