@@ -227,3 +227,41 @@ undercounts by two); every row is mapped above.
   driver's milestone report, so a launch failure cannot masquerade as a pass.
 - **Deterministic suites** (the default gates, the Stage 2/3 families, and the
   race runs) require neither credentials nor network.
+
+## Post-rebase provenance and rebased-head gates (2026-09-12)
+
+The branch was rebased onto `main` on 2026-09-12 to resolve the merge
+conflicts. Every SHA recorded earlier in this document is the pre-rebase
+equivalent of the same content; the rebase changed hashes, not substance.
+Two rebase-surfaced fixture commits were added on top to reconcile test
+fixtures with main's incoming changes:
+
+- `1097c0a5d9` — fix(web): complete skill fixtures in spawn catalog tests after rebase
+- `b8680d001b` — fix(native): advertise invocation controls in catalog test fixtures after rebase
+
+Rebased head: `b8680d001b69630aaa2044b3771ca092f9a681e5` (`origin/main` is an
+ancestor; working tree clean). All gates below were re-run serially on this
+head on 2026-09-12 (host under concurrent roborev load):
+
+| Command | Exit | Duration | Notes |
+| --- | --- | --- | --- |
+| `make test-api-package` | 0 | 3s | `qualified @evener/appwire-client@0.1.0` |
+| `make vet` | 0 | 4s | no diagnostics |
+| `make merge-approval-gate` (run 1) | 2 | 492s | environmental: 2 vitest tests timed out at 5000ms (`Session.test.tsx` explicit-Resume, `Spawn.test.tsx` completion-issue-ownership) with load average ~39 on 16 CPUs; both suites re-run standalone: 284/284 PASS, exit 0 |
+| `make merge-approval-gate` (run 2) | 0 | 369s | all lint phases PASS, build PASS, ROOT_FULL test waves PASS (root 135.5s, agent 8.2s, llm 9.1s, auth 1.6s, envvars 0.5s, invariant 0.4s, identifier 1.2s, web 194.3s), `test-native` and `test-api-package` PASS |
+| `TMPDIR=/tmp make test-web-browser` | 0 | 199s | 6/6 guards PASS: web-layoutguard, web-overflowguard, web-shellguard, web-spawnguard, web-transcriptscrollguard, web-skillguard |
+| `go test ./agent/internal/tool ./agent/schema -run '^Test' -count=1` | 0 | <1s | both packages ok |
+| `go test ./agent -run '^(TestSkillActivation_|TestSkillDelivery_|TestUseSkill_|TestStandaloneSkillActivation|TestRestoreFrozenSkillBodies|TestPrepareModelRequest_)' -count=1` | 0 | 2s | ok |
+| `go test -race ./agent -run '^(TestSkillDelivery_|TestFoldPublication_)' -count=1` | 0 | 4s | ok, no race reports |
+| `go test ./agent/internal/contextmgr ./agent/schema -run '^Test' -count=1` | 0 | 1s | both packages ok |
+| `go test ./agent -run '^(TestSkillActivation_|TestSkillDelivery_|TestSkillReload|TestSkillCompaction_|TestPinnedNote_|TestMaybeElicitNoteBeforeCompaction_|TestApplyPendingForceCompact_|TestSessionCompact_|TestFoldPublication_|TestPrepareModelRequest_)' -count=1` | 0 | 2s | 157/157 PASS (verified non-empty: 157 RUN / 157 PASS / 0 FAIL / 0 SKIP), matching the pre-rebase count |
+| `go test -race ./agent -run '^(TestSkillCompaction_|TestSkillDelivery_|TestSkillReload_|TestFoldPublication_)' -count=1` | 0 | 5s | ok, no race reports |
+| `go test ./agent -run '^(TestClientMutation_|TestSkillActivation_|TestSkillDelivery_)' -count=1` | 0 | 5s | ok |
+| `go test ./server -run '^TestAppWireMutation' -count=1` | 0 | 2s | ok |
+| `go test ./appwire/... ./internal/appwirets/... ./internal/appwiredoc/... -count=1` | 0 | 1s | all packages ok |
+| `npx vitest run src/panes/session/composer src/protocol/reducer.test.ts src/protocol/skillInput.test.ts` (frontend, touched suites incl. `pendingTurnsStore.test.ts`) | 0 | 23s | 30 files / 820 tests PASS |
+| `make generate` | 0 | 1s | zero-diff (`git status --porcelain` empty after) |
+
+No assertion, filter, pairing, or tolerance was weakened; the run-1 gate
+failure was diagnosed as host-load flakiness (concurrent roborev) and the
+gate was re-run in full to a zero exit.
