@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,11 +101,23 @@ func TestLoadAwareCoresReportsThisMachine(t *testing.T) {
 	}
 }
 
-// TestLoadAwareCgroupCoresClampsToQuota pins the quota parse. A container
+// writeFixtureFile writes a fixture and creates its parents, so a fake cgroup
+// hierarchy can be built a file at a time.
+func writeFixtureFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestLoadAwareQuotaCoresClampsToQuota pins the quota parse. A container
 // whose cgroup allows fewer CPUs than the host advertises must size to the
 // quota: overstating the core count leaves cores - load above the ceiling at
 // any load, which silently disables the back-off this library exists for.
-func TestLoadAwareCgroupCoresClampsToQuota(t *testing.T) {
+func TestLoadAwareQuotaCoresClampsToQuota(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name          string
@@ -123,11 +136,70 @@ func TestLoadAwareCgroupCoresClampsToQuota(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := runLoadAwareHelper(t, `load_aware_cgroup_cores "$@"`, tc.quota, tc.period)
+			got := runLoadAwareHelper(t, `load_aware_quota_cores "$@"`, tc.quota, tc.period)
 			if got != tc.want {
-				t.Errorf("load_aware_cgroup_cores %q %q = %q, want %q", tc.quota, tc.period, got, tc.want)
+				t.Errorf("load_aware_quota_cores %q %q = %q, want %q", tc.quota, tc.period, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLoadAwareCgroupHierarchyTakesMostRestrictiveQuota is the nested-cgroup
+// case: a systemd CPUQuota slice leaves the hierarchy root and the leaf
+// unlimited while the limit sits in between. Reading only the root, as the
+// first version of this library did, finds nothing and reports the host's
+// full core count, so the back-off never engages.
+func TestLoadAwareCgroupHierarchyTakesMostRestrictiveQuota(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		root  string
+		slice string
+		leaf  string
+		want  string
+	}{
+		{"limit above the leaf", "max 100000", "200000 100000", "max 100000", "2"},
+		{"limit at the leaf wins", "max 100000", "400000 100000", "100000 100000", "1"},
+		{"no finite limit anywhere", "max 100000", "max 100000", "max 100000", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			mount := filepath.Join(root, "cgroup")
+			writeFixtureFile(t, filepath.Join(mount, "cpu.max"), tc.root+"\n")
+			writeFixtureFile(t, filepath.Join(mount, "slice", "cpu.max"), tc.slice+"\n")
+			writeFixtureFile(t, filepath.Join(mount, "slice", "leaf", "cpu.max"), tc.leaf+"\n")
+			membership := filepath.Join(root, "self-cgroup")
+			writeFixtureFile(t, membership, "0::/slice/leaf\n")
+			mountinfo := filepath.Join(root, "mountinfo")
+			writeFixtureFile(t, mountinfo, fmt.Sprintf("29 23 0:26 / %s rw - cgroup2 cgroup2 rw\n", mount))
+
+			got := runLoadAwareHelper(t, `load_aware_cgroup_cores_from "$@"`, membership, mountinfo)
+			if got != tc.want {
+				t.Errorf("load_aware_cgroup_cores_from = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadAwareCgroupV1Quota covers the split-file hierarchy, whose quota and
+// period live in two files rather than one "quota period" line.
+func TestLoadAwareCgroupV1Quota(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mount := filepath.Join(root, "cgroup")
+	leaf := filepath.Join(mount, "v1leaf")
+	writeFixtureFile(t, filepath.Join(leaf, "cpu.cfs_quota_us"), "150000\n")
+	writeFixtureFile(t, filepath.Join(leaf, "cpu.cfs_period_us"), "100000\n")
+	membership := filepath.Join(root, "self-cgroup")
+	writeFixtureFile(t, membership, "5:cpu,cpuacct:/v1leaf\n")
+	mountinfo := filepath.Join(root, "mountinfo")
+	writeFixtureFile(t, mountinfo, fmt.Sprintf("31 23 0:27 / %s rw - cgroup cgroup rw,cpu,cpuacct\n", mount))
+
+	got := runLoadAwareHelper(t, `load_aware_cgroup_cores_from "$@"`, membership, mountinfo)
+	if got != "2" {
+		t.Errorf("load_aware_cgroup_cores_from = %q, want %q", got, "2")
 	}
 }
 
@@ -163,6 +235,8 @@ func TestRunModuleTestsUsesLoadAwareBudgets(t *testing.T) {
 		"ROOT_P=${ROOT_P-$(load_aware_workers 6)}",
 		"AGENT_PARALLEL=${AGENT_PARALLEL-$(load_aware_workers 6)}",
 		"AGENT_P=${AGENT_P-$(load_aware_workers 4)}",
+		"AGENT_SHARD_PARALLEL=${AGENT_SHARD_PARALLEL-$(load_aware_workers 3)}",
+		"AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(load_aware_workers 6)}",
 	} {
 		if !strings.Contains(body.String(), want) {
 			t.Errorf("run-module-tests.sh does not contain %q outside comments; its -p/-parallel budgets must be sized from spare capacity", want)

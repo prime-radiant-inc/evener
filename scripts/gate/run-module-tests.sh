@@ -118,6 +118,12 @@ export AGENT_SHARD_COUNT=${AGENT_SHARD_COUNT:-8}
 ROOT_P=${ROOT_P-$(load_aware_workers 6)}
 AGENT_PARALLEL=${AGENT_PARALLEL-$(load_aware_workers 6)}
 AGENT_P=${AGENT_P-$(load_aware_workers 4)}
+# The agent-shards runner does the agent module's real work and reads its own
+# parallelism from the environment; AGENT_PARALLEL never reaches it. Without
+# these the dominant agent workload stayed at a fixed width under load. The
+# caps are the runner's own defaults, and a set value still wins.
+export AGENT_SHARD_PARALLEL=${AGENT_SHARD_PARALLEL-$(load_aware_workers 3)}
+export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(load_aware_workers 6)}
 # Modules with no explicit -p are deliberately left alone. Go's default -p is
 # GOMAXPROCS, which is cgroup-quota aware; an explicit -p derived from the
 # host's online CPUs would oversubscribe a CPU-limited container and override a

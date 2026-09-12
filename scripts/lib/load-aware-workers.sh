@@ -24,12 +24,19 @@
 # back-off, because cores - load stays above the ceiling however loaded the
 # machine is.
 #
-# load_aware_cgroup_cores [QUOTA PERIOD] — print ceil(QUOTA/PERIOD), the
-# number of CPUs this process's cgroup allows, or an empty string when the
-# limit is absent, "max", or -1 (v1's unlimited spelling). QUOTA and PERIOD
-# default to this process's cgroup CPU-limit files (v2 keeps both on one
-# "quota period" line; v1 splits them across two files); passing them makes
-# the parse a pure function of its inputs.
+# load_aware_quota_cores QUOTA PERIOD — print ceil(QUOTA/PERIOD), the CPUs a
+# cgroup bandwidth limit allows, or an empty string when the limit is absent,
+# "max", or -1 (v1's unlimited spelling). A pure function of its inputs.
+#
+# load_aware_cgroup_cores [CGROUP_FILE MOUNTINFO_FILE] — print the most
+# restrictive finite CPU quota along this process's cgroup ancestry, or an
+# empty string when there is none. The two files default to /proc/self/cgroup
+# and /proc/self/mountinfo. Reading only the hierarchy root is not enough:
+# under a nested cgroup (a systemd CPUQuota slice, for example) the root says
+# "max" while the limit lives several levels down, so the clamp would silently
+# do nothing in exactly the environment it exists for. A private cgroup
+# namespace, by contrast, delegates a subtree whose root the mountinfo entry
+# names, and the walk stops there rather than above it.
 #
 # load_aware_load1 — print this machine's 1-minute load average, or an empty
 # string when nothing can answer. Linux reads /proc/loadavg; Darwin's
@@ -77,25 +84,16 @@ load_aware_cores() {
 	printf '%s' "$_law_cores"
 }
 
-load_aware_cgroup_cores() {
+load_aware_quota_cores() {
 	_law_quota=${1-}
 	_law_period=${2-}
-	if [ -z "$_law_quota" ] && [ -z "$_law_period" ]; then
-		if [ -r /sys/fs/cgroup/cpu.max ]; then
-			_law_quota="$(cut -d' ' -f1 /sys/fs/cgroup/cpu.max 2>/dev/null)"
-			_law_period="$(cut -d' ' -f2 /sys/fs/cgroup/cpu.max 2>/dev/null)"
-		elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
-			_law_quota="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null)"
-			_law_period="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null)"
-		fi
-	fi
 	case "$_law_quota" in
 	''|*[!0-9]*) printf ''; return 0 ;;
 	esac
 	case "$_law_period" in
 	''|*[!0-9]*) printf ''; return 0 ;;
 	esac
-	if [ "$_law_period" -lt 1 ]; then
+	if [ "$_law_period" -lt 1 ] || [ "$_law_quota" -lt 1 ]; then
 		printf ''
 		return 0
 	fi
@@ -105,6 +103,139 @@ load_aware_cgroup_cores() {
 			if (c < 1) c = 1
 			print c
 		}'
+}
+
+# load_aware_cgroup_relpath FILE VERSION — the process's path inside the
+# hierarchy: v2's "0::/path" membership, or a v1 membership whose controller
+# list contains cpu.
+load_aware_cgroup_relpath() {
+	_law_file=${1-/proc/self/cgroup}
+	_law_version=${2-v2}
+	[ -r "$_law_file" ] || { printf ''; return 0; }
+	if [ "$_law_version" = v1 ]; then
+		awk -F: '
+			{
+				n = split($2, controllers, ",")
+				for (i = 1; i <= n; i++) {
+					if (controllers[i] == "cpu") { print $3; exit }
+				}
+			}' "$_law_file" 2>/dev/null
+		return 0
+	fi
+	awk -F: '$1 == "0" && $2 == "" { print $3; exit }' "$_law_file" 2>/dev/null
+}
+
+# load_aware_cgroup_mount FILE VERSION — print "MOUNTPOINT ROOT" for the mount
+# that owns this process's CPU accounting.
+load_aware_cgroup_mount() {
+	_law_file=${1-/proc/self/mountinfo}
+	_law_version=${2-v2}
+	[ -r "$_law_file" ] || { printf ''; return 0; }
+	if [ "$_law_version" = v1 ]; then
+		awk '
+			{
+				sep = 0
+				for (i = 1; i <= NF; i++) { if ($i == "-") { sep = i; break } }
+				if (sep == 0 || $(sep + 1) != "cgroup") next
+				for (j = sep + 3; j <= NF; j++) {
+					n = split($j, controllers, ",")
+					for (k = 1; k <= n; k++) {
+						if (controllers[k] == "cpu") { print $5, $4; exit }
+					}
+				}
+			}' "$_law_file" 2>/dev/null
+		return 0
+	fi
+	awk '
+		{
+			sep = 0
+			for (i = 1; i <= NF; i++) { if ($i == "-") { sep = i; break } }
+			if (sep != 0 && $(sep + 1) == "cgroup2") { print $5, $4; exit }
+		}' "$_law_file" 2>/dev/null
+}
+
+# load_aware_cgroup_level_cores DIR VERSION — the quota one hierarchy level
+# declares, or empty when it declares none.
+load_aware_cgroup_level_cores() {
+	_law_dir=${1-}
+	_law_version=${2-v2}
+	if [ "$_law_version" = v1 ]; then
+		if [ ! -r "$_law_dir/cpu.cfs_quota_us" ] || [ ! -r "$_law_dir/cpu.cfs_period_us" ]; then
+			printf ''
+			return 0
+		fi
+		load_aware_quota_cores \
+			"$(cat "$_law_dir/cpu.cfs_quota_us" 2>/dev/null)" \
+			"$(cat "$_law_dir/cpu.cfs_period_us" 2>/dev/null)"
+		return 0
+	fi
+	[ -r "$_law_dir/cpu.max" ] || { printf ''; return 0; }
+	# v2 keeps "<quota|max> <period>" on one line.
+	set -- $(cat "$_law_dir/cpu.max" 2>/dev/null)
+	load_aware_quota_cores "${1-}" "${2-}"
+}
+
+# load_aware_join MOUNT RELPATH — join without doubling or dropping a slash.
+load_aware_join() {
+	case "$1" in
+	/) printf '/%s' "${2#/}" ;;
+	*/) printf '%s%s' "$1" "${2#/}" ;;
+	*) printf '%s/%s' "$1" "${2#/}" ;;
+	esac
+}
+
+load_aware_cgroup_cores() {
+	load_aware_cgroup_cores_from "${1-/proc/self/cgroup}" "${2-/proc/self/mountinfo}"
+}
+
+load_aware_cgroup_cores_from() {
+	_law_cg=${1-}
+	_law_mi=${2-}
+
+	_law_version=v2
+	_law_relpath="$(load_aware_cgroup_relpath "$_law_cg" v2)"
+	_law_mount="$(load_aware_cgroup_mount "$_law_mi" v2)"
+	if [ -z "$_law_relpath" ] || [ -z "$_law_mount" ]; then
+		_law_version=v1
+		_law_relpath="$(load_aware_cgroup_relpath "$_law_cg" v1)"
+		_law_mount="$(load_aware_cgroup_mount "$_law_mi" v1)"
+	fi
+	if [ -z "$_law_relpath" ] || [ -z "$_law_mount" ]; then
+		printf ''
+		return 0
+	fi
+
+	# mountinfo field 5 is the mount point; field 4 is the delegated root the
+	# walk must not ascend past.
+	set -- $_law_mount
+	_law_mpoint=${1-/}
+	_law_mroot=${2-/}
+	[ "$_law_mroot" = / ] && _law_mroot=
+
+	_law_dir="$(load_aware_join "$_law_mpoint" "$_law_relpath")"
+	_law_dir=${_law_dir%/}
+	[ -n "$_law_dir" ] || _law_dir=/
+	_law_stop="$(load_aware_join "$_law_mpoint" "$_law_mroot")"
+	_law_stop=${_law_stop%/}
+	[ -n "$_law_stop" ] || _law_stop=/
+
+	_law_best=
+	while :; do
+		_law_level="$(load_aware_cgroup_level_cores "$_law_dir" "$_law_version")"
+		if [ -n "$_law_level" ]; then
+			if [ -z "$_law_best" ] || [ "$_law_level" -lt "$_law_best" ]; then
+				_law_best="$_law_level"
+			fi
+		fi
+		[ "$_law_dir" = "$_law_stop" ] && break
+		_law_parent="$(dirname "$_law_dir")"
+		[ "$_law_parent" = "$_law_dir" ] && break
+		case "$_law_parent" in
+		"$_law_stop"|"$_law_stop"/*) _law_dir="$_law_parent" ;;
+		*) _law_dir="$_law_stop" ;;
+		esac
+	done
+	printf '%s' "$_law_best"
 }
 
 load_aware_load1() {
