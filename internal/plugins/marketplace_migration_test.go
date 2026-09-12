@@ -2141,6 +2141,76 @@ func TestMarketplaceNameMigration_ADerivedNameTheFilesystemCannotHoldFallsBack(t
 	}
 }
 
+// The numbered replacement a taken name appends has to fit as well: a derived
+// base can be legal on its own and still overflow once "-2" is added, and the
+// probe for that candidate fails the whole migration.
+func TestMarketplaceNameMigration_ADerivedNameTooLongOnceNumberedFallsBack(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := strings.Repeat("a", 252) + "-b" // 254 bytes, so base+"-2" is 256
+	if len(base) != 254 {
+		t.Fatalf("base len = %d, want 254 (the case this pins)", len(base))
+	}
+	long := strings.Repeat("a", 252) + "/b" // derives exactly base
+	if got := strings.Repeat("a", 252) + "-b"; got != base {
+		t.Fatal("derivation changed; the fixture no longer derives the taken name")
+	}
+	if err := m.saveMarketplaces(Marketplaces{
+		long: {Source: Source{Kind: SourceURL, URL: "https://example.invalid/x.git"},
+			LastUpdated: time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC)},
+		base: {Source: Source{Kind: SourceURL, URL: "https://example.invalid/y.git"},
+			LastUpdated: time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	after, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after["marketplace"]; !ok {
+		t.Fatalf("marketplaces = %v, want the refused name migrated to marketplace", after)
+	}
+	if _, ok := after[base]; !ok {
+		t.Fatalf("marketplaces = %v, want the recorded %d-byte name untouched", after, len(base))
+	}
+}
+
+// A legacy name can be long overall while every one of its components is legal,
+// and then its directories really are in the store and have to move. Judging the
+// whole name by its total length would strand them under a path nothing derives.
+func TestMarketplaceNameMigration_ALongNameOfLegalComponentsMovesItsDirectories(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	name := strings.Repeat("c", 200) + "/" + strings.Repeat("d", 200)
+	plantLegacyMarketplace(t, m, name, "widget")
+
+	if err := m.migrateStore(context.Background()); err != nil {
+		t.Fatalf("migrateStore: %v", err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := mk["marketplace"]
+	if !ok || len(mk) != 1 {
+		t.Fatalf("marketplaces = %v, want marketplace alone", mk)
+	}
+	if want := m.marketplaceDir("marketplace"); ref.InstallLocation != want {
+		t.Fatalf("InstallLocation = %q, want the clone moved to %q", ref.InstallLocation, want)
+	}
+	mustExist(t, filepath.Join(m.marketplaceDir("marketplace"), ".claude-plugin", "marketplace.json"))
+	mustNotExist(t, m.marketplaceDir(name))
+}
+
 // The marker's other half: a move that fails and cannot put back what it moved
 // leaves the store between the two names, so the marker stays and the error
 // names it, for the next lock holder to finish the rename from.

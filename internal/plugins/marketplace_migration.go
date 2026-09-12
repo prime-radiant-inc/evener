@@ -522,11 +522,12 @@ func migratedMarketplaceName(name string) string {
 }
 
 // usableMarketplaceName reports whether name can stand as one store path
-// component: the store's own rules for a name, no byte a filename cannot carry,
-// and short enough that the numbered replacement a collision appends still fits
-// one component.
+// component: a component the filesystem takes at all, no control character, the
+// store's own rules for a name, and short enough that the numbered replacement a
+// collision appends still fits. The length bound is maxMigratedNameBytes rather
+// than maxComponentBytes, because freeMarketplaceName may add "-2", "-3", …
 func usableMarketplaceName(name string) bool {
-	if !pathComponentName(name) {
+	if !pathComponentName(name) || len(name) > maxMigratedNameBytes {
 		return false
 	}
 	if strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
@@ -536,14 +537,34 @@ func usableMarketplaceName(name string) bool {
 }
 
 // pathComponentName reports whether name can stand as one filesystem component
-// at all: no byte a filename cannot carry, and no longer than a component may
-// be. A name that cannot has no directory in the store, because nothing could
-// have created one, so nothing is probed for it. Control characters are not
-// excluded here even though usableMarketplaceName excludes them from a name the
-// migration invents: a filesystem that takes them holds their directories, and
-// those have to move like any other.
+// at all: no byte a filename cannot carry, and no longer than a component may be.
 func pathComponentName(name string) bool {
 	return len(name) <= maxComponentBytes && !strings.ContainsRune(name, 0)
+}
+
+// nameCanHaveDirectories reports whether any directory the store derives from a
+// recorded name could exist: the name has to be free of NULs, and every
+// component it splits into has to stand as a filesystem component. A name that
+// cannot have them has none to move, so nothing is probed for it, and probing is
+// what fails the whole migration.
+//
+// The whole name's length is deliberately not the question: two legal 200-byte
+// components are a real clone and cache even though the name is 401 bytes, and
+// those directories have to move. Control characters are not excluded here even
+// though usableMarketplaceName excludes them from a name the migration invents:
+// a filesystem that takes them holds their directories, and those move like any
+// other.
+func nameCanHaveDirectories(name string) bool {
+	if strings.ContainsRune(name, 0) {
+		return false
+	}
+	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' })
+	for _, part := range parts {
+		if len(part) > maxComponentBytes {
+			return false
+		}
+	}
+	return true
 }
 
 // freeMarketplaceName is base, or the first of base-2, base-3, … that nothing
@@ -985,9 +1006,9 @@ func (m *Manager) marketplaceDirsAreItsOwn(mk Marketplaces, name string) (bool, 
 // a git-backed one is left unfetched with its in-store cache behind it, under a
 // name no later operation derives.
 func (m *Manager) marketplaceDirsInStore(name string) (bool, error) {
-	if !pathComponentName(name) {
-		// No filesystem takes this name as a directory, so the store cannot
-		// hold one and there is nothing to probe: answering "outside" sends the
+	if !nameCanHaveDirectories(name) {
+		// No filesystem can hold a directory under this name, so the store has
+		// none and there is nothing to probe: answering "outside" sends the
 		// entry down the re-key path, which is all a name with no directories
 		// has left to do.
 		return false, nil
