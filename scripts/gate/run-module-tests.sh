@@ -46,6 +46,10 @@
 set -uo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# The diagnostics are printed from inside a module's directory, and the runner
+# only works from the repository root (MODULES names directories relative to
+# it), so every command they suggest has to say where to run it from.
+repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 . "$script_dir/../lib/private-go-home.sh"
 . "$script_dir/../lib/scratch-lib.sh"
 
@@ -327,11 +331,11 @@ package_list_timeout_diagnostic() {
 	printf 'run-module-tests.sh: retained partial package lists: %s\n' "${kept:-<none written>}" >&2
 	printf 'run-module-tests.sh: a stalled cache volume is one cause; a host slower than the per-attempt budget is the other.\n' >&2
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
-	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
-		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
+	printf '  cd %q && GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
+		"$repo_root" "$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
 	printf 'run-module-tests.sh: or give a slow host more room per attempt:\n' >&2
-	printf '  EVENER_ROOT_PACKAGE_LIST_TIMEOUT=%s scripts/gate/run-module-tests.sh -short -count=1\n' \
-		"$((ROOT_PACKAGE_LIST_TIMEOUT * 2))" >&2
+	printf '  cd %q && EVENER_ROOT_PACKAGE_LIST_TIMEOUT=%s scripts/gate/run-module-tests.sh -short -count=1\n' \
+		"$repo_root" "$((ROOT_PACKAGE_LIST_TIMEOUT * 2))" >&2
 }
 
 # package_list_group_survivors PGID — print `pid(state)` for every live
