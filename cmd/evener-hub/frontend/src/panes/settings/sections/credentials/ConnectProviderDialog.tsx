@@ -47,6 +47,9 @@ export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
   // A rename in the full settings view must reach the guided owner, which stays
   // mounted behind that view holding the instance name and its retained draft.
   const [renamed, setRenamed] = useState<{ from: string; to: string } | null>(null);
+  // So must a removal: the owner's retained draft belongs to the removed
+  // entity and must not survive to a later same-name recreation.
+  const [removed, setRemoved] = useState<string | null>(null);
   return (
     <>
       <ProviderConnection
@@ -54,6 +57,7 @@ export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
         visible={view === "connect"}
         onManage={() => setView("manage")}
         renamedInstance={renamed}
+        removedInstance={removed}
       />
       {view === "settings" && (
         <Dialog open onClose={props.onClose} title="Full provider settings">
@@ -64,6 +68,7 @@ export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
             sectionId="credentials"
             fullEditor
             onInstanceRenamed={(from, to) => setRenamed({ from, to })}
+            onInstanceRemoved={(name) => setRemoved(name)}
           />
         </Dialog>
       )}

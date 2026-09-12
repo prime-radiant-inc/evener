@@ -97,9 +97,18 @@ export interface CredentialsSectionProps {
    * mounted behind the full settings view - can follow it instead of searching
    * for the old one. */
   onInstanceRenamed?: (from: string, to: string) => void;
+  /** Reports a successful removal from this section's own instance sheet, so a
+   * caller that holds a name for the same instance - the guided connection
+   * kept mounted behind the full settings view - can drop its retained editing
+   * state: an instance later recreated under the same name is a new entity. */
+  onInstanceRemoved?: (name: string) => void;
 }
 
-export function CredentialsSection({ fullEditor = false, onInstanceRenamed }: CredentialsSectionProps) {
+export function CredentialsSection({
+  fullEditor = false,
+  onInstanceRenamed,
+  onInstanceRemoved,
+}: CredentialsSectionProps) {
   const { instances, availableProviders, diagnostics, writesRefused, loading, error, fetch } = useCredentialsStore();
   const [connecting, setConnecting] = useState(false);
   // The connector is a dynamic-only import (see connectDialogChunk.ts): loading
@@ -199,6 +208,7 @@ export function CredentialsSection({ fullEditor = false, onInstanceRenamed }: Cr
       } else {
         await credentialsStore.getState().remove(name);
         toast.push("success", `Removed instance ${name}`);
+        onInstanceRemoved?.(name);
       }
       setPendingConfirm(null);
     } catch (err) {

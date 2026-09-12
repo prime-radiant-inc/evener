@@ -20,6 +20,11 @@ export interface ProviderConnectionProps {
    * mounted behind: the selected connection adopts the new instance name (and
    * re-baselines to it) so its retained draft can continue. */
   renamedInstance?: { from: string; to: string } | null;
+  /** A removal performed in the full settings view, which the guided owner
+   * stays mounted behind: the selected connection drops its retained editing
+   * state, because a later same-name instance is a new entity, not the one the
+   * draft was typed against. */
+  removedInstance?: string | null;
 }
 
 // Presentation only. Authentication capabilities always come from the catalogue.
@@ -156,6 +161,7 @@ function SelectedConnection({
   onManage,
   onChange,
   renamedInstance,
+  removedInstance,
 }: ProviderConnectionProps & { provider: ProviderDescriptor; onChange(): void }) {
   const store = useCredentialsStore();
   const connection = useConnectionStore((state) => state.state);
@@ -259,6 +265,30 @@ function SelectedConnection({
       unsubscribeStore();
     };
   }, [invalidate, oauth, name, baseline]);
+  // A removal in the full settings view must reach this owner the same way a
+  // rename does. The instance this flow is editing is gone: its retained
+  // draft, saved state, and baseline describe a dead entity, and an instance
+  // later recreated under the same name is a new one, not the thing the draft
+  // was typed against. Clear the editing state and re-anchor to whatever the
+  // name resolves to now, so nothing typed against the removed instance can
+  // be submitted to its replacement. (An in-flight save/check at removal time
+  // is already cancelled by the subscription above, which sees the listing
+  // change; this owns the idle-with-draft case that nothing else observes.)
+  useEffect(() => {
+    if (!removedInstance || removedInstance !== name) return;
+    operation.current += 1;
+    setDraft({ providerId: provider.id, value: "" });
+    setSaved(false);
+    setConfigured(false);
+    setHost(false);
+    setMissingCredential(false);
+    setOAuth(null);
+    setResult(null);
+    setReview(null);
+    setError("");
+    setPhase("idle");
+    setBaseline(findSetup(name));
+  }, [removedInstance, name, provider.id, setPhase]);
   useEffect(() => {
     if (visible && error) errorRef.current?.focus();
   }, [error, visible]);

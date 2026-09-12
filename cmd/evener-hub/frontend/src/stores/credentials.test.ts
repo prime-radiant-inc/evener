@@ -609,6 +609,65 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("a failed save does not suppress a later same-provider notification", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", () => {
+      throw new Error("hub refused the key");
+    });
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await expect(credentialsStore.getState().setApiKey("work", "draft")).rejects.toThrow("hub refused the key");
+    // A failed mutation broadcasts nothing, so this same-provider notification
+    // is an unrelated client's change - it must still refetch.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a routine pending device poll does not extend the suppression window", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/device/poll", () => ({ provider: "work", state: "pending" }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().devicePoll("work", "flow");
+    // A pending poll broadcasts nothing; an unrelated same-provider change
+    // arriving during the poll loop must still refetch.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("the echo correlation is consumed, not window-wide", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The own echo, consumed by the correlation.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(50);
+    // A second same-provider notification inside the old 2s window is an
+    // unrelated client's change: the marker was consumed, so it refetches.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
   test("a background refetch race with no client connected is swallowed, not an unhandled rejection", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);

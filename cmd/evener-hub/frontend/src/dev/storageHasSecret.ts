@@ -5,6 +5,9 @@
 // never see a credential that leaked into storage and silently passes. Walk the
 // keys the Storage interface actually exposes instead.
 export function storageHasSecret(storage: Storage, secret: string): boolean {
+  // includes("") is true for any string, so an empty secret would match every
+  // non-empty storage value: fail closed instead of false-positiving.
+  if (secret === "") return false;
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
     if (key === null) continue;

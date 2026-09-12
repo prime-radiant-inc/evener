@@ -56,3 +56,10 @@ test("handles empty storage and a key whose value is missing", () => {
   } as Storage;
   expect(storageHasSecret(sparse, "fixture-not-a-real-key")).toBe(false);
 });
+
+test("an empty secret matches nothing instead of every non-empty value", () => {
+  // includes("") is true for any string, so an empty secret would false-positive
+  // on any storage value at all and make the guard unfalsifiable.
+  expect(storageHasSecret(storageWith({ "evener-hub.spawn-defaults": '{"prompt":"a draft"}' }), "")).toBe(false);
+  expect(storageHasSecret(storageWith({}), "")).toBe(false);
+});

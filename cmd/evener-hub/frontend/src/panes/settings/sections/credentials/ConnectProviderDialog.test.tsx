@@ -329,6 +329,62 @@ test("a rename in full provider settings follows the guided flow back to the ren
   });
 });
 
+test("removing the instance in full provider settings clears the guided draft a recreation cannot inherit", async () => {
+  const h = guidedRepair();
+  // Environment-derived instances are not removeable, so make this one authored.
+  h.change({ implicit: false });
+  let removed = false;
+  // The post-removal listing: no instance row and no implicit setup under the
+  // name, so nothing called "openai" resolves until it is recreated.
+  const emptyListing = (): InstanceListResponse => ({
+    instances: [],
+    availableProviders: [
+      { id: "openai", name: "OpenAI", protocol: "openai-chat", auth: "bearer", implicit: true, authModes: ["apiKey"] },
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        protocol: "anthropic",
+        auth: "api-key",
+        implicit: true,
+        authModes: ["apiKey"],
+      },
+    ],
+  });
+  h.fake.on("evener/instance/remove", () => {
+    removed = true;
+    return emptyListing();
+  });
+  h.fake.on("evener/instance/list", () => (removed ? emptyListing() : h.listing()));
+  await h.select();
+  await h.leave();
+  await h.user.click(screen.getByRole("button", { name: "Full provider settings" }));
+
+  // Remove the very instance the guided flow is configuring, from the
+  // section's own sheet.
+  await h.user.click(await screen.findByRole("button", { name: /openai/ }));
+  const sheet = await screen.findByRole("dialog", { name: "openai" });
+  await h.user.click(within(sheet).getByRole("button", { name: "Remove" }));
+  const confirm = await screen.findByRole("dialog", { name: "Remove instance" });
+  await h.user.click(within(confirm).getByRole("button", { name: "Remove" }));
+  await screen.findByRole("dialog", { name: "Full provider settings" });
+
+  // Recreate an instance under the SAME name and provider while the guided
+  // owner stays mounted behind the sheet - with a new configuration, so it is
+  // provably a different entity than the one the draft was typed against.
+  removed = false;
+  h.change({ baseUrl: "https://recreated.example/v1" });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+
+  await h.back();
+  // The retained draft must be gone: the flow re-anchored to a fresh state for
+  // whatever now carries the name, and the old unsaved credential must not
+  // submit to the recreated instance.
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+  expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+});
+
 test("repair excursion cancels a pending guided OAuth start without opening a hidden flow", async () => {
   const h = guidedRepair();
   h.change({ authModes: ["apiKey", "oauth"] });

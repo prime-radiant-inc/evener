@@ -174,25 +174,45 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
   async setApiKey(provider, value) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
-    return client.request("evener/auth/apiKey/set", { provider, value });
+    try {
+      return await client.request("evener/auth/apiKey/set", { provider, value });
+    } catch (err) {
+      clearLocalAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async setCredentialJson(provider, value) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
-    return client.request("evener/auth/credentialJson/set", { provider, value });
+    try {
+      return await client.request("evener/auth/credentialJson/set", { provider, value });
+    } catch (err) {
+      clearLocalAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async clearStoredKey(provider) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
-    return client.request("evener/auth/apiKey/clear", { provider });
+    try {
+      return await client.request("evener/auth/apiKey/clear", { provider });
+    } catch (err) {
+      clearLocalAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async logout(provider) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
-    return client.request("evener/auth/logout", { provider });
+    try {
+      return await client.request("evener/auth/logout", { provider });
+    } catch (err) {
+      clearLocalAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async loginStart(provider) {
@@ -203,7 +223,12 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
   async loginComplete(provider, flowId, redirectUrl) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
-    return client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
+    try {
+      return await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
+    } catch (err) {
+      clearLocalAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async deviceStart(provider) {
@@ -214,7 +239,17 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
   async devicePoll(provider, flowId) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
-    return client.request("evener/auth/device/poll", { provider, flowId });
+    try {
+      const resp = await client.request("evener/auth/device/poll", { provider, flowId });
+      // Only an authorized poll broadcasts evener/auth/updated; a routine
+      // pending/expired tick must not keep the marker armed, or a poll loop
+      // would silence unrelated same-provider changes tick after tick.
+      if (resp.state !== "authorized") clearLocalAuthMutation(provider);
+      return resp;
+    } catch (err) {
+      clearLocalAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async testCredentials(provider) {
@@ -255,21 +290,46 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // save/check in flight: ProviderConnection's subscription treats the
 // echo-driven listing change as an unrelated change and invalidates the fresh
 // result ("Connection or configuration changed") or cancels the check. So the
-// refetch is skipped for a notification naming a provider this client just
-// mutated. Anything else still refetches - other providers, unattributed
-// notifications, or the same provider with no recent local mutation - so
-// unrelated clients' changes keep arriving.
+// refetch is skipped for the originator's own echo, correlated narrowly:
+//
+// - Marked per provider when the mutation is ISSUED (not when it resolves):
+//   the broadcast can reach this client before the RPC response does, so a
+//   resolve-time marker would miss the echo entirely.
+// - Consumed by the FIRST matching notification: one mutation broadcasts one
+//   echo, so a second same-provider notification inside the window is an
+//   unrelated client's change and still refetches.
+// - Cleared when the response proves no broadcast will follow: a failed RPC,
+//   or a device poll that comes back pending/expired rather than authorized.
+//   A failed save must not silence the next unrelated change, and a poll
+//   loop must not keep re-arming the window tick after tick.
+// - Bounded by a short age window, so a marker that is never consumed (the
+//   echo was lost, or the notification arrived pre-response and the client
+//   disconnected) cannot outlive its meaning.
+//
+// Anything unmatched still refetches - other providers, unattributed
+// notifications, the same provider with no live marker - so unrelated
+// clients' changes keep arriving.
 const REFETCH_DEBOUNCE_MS = 250;
 const SELF_ECHO_WINDOW_MS = 2000;
-let lastLocalAuthMutation: { provider: string; at: number } | null = null;
+const localAuthMutations = new Map<string, number>();
 
 function noteLocalAuthMutation(provider: string): void {
-  lastLocalAuthMutation = { provider, at: Date.now() };
+  localAuthMutations.set(provider, Date.now());
 }
 
-function isOwnAuthEcho(provider: string | undefined): boolean {
-  const marker = lastLocalAuthMutation;
-  return marker !== null && provider === marker.provider && Date.now() - marker.at <= SELF_ECHO_WINDOW_MS;
+function clearLocalAuthMutation(provider: string): void {
+  localAuthMutations.delete(provider);
+}
+
+// True exactly when this notification is this client's own echo of a
+// just-issued auth mutation; consumes the marker either way, so a stale
+// entry cannot suppress a later notification.
+function consumeOwnAuthEcho(provider: string | undefined): boolean {
+  if (provider === undefined) return false;
+  const issuedAt = localAuthMutations.get(provider);
+  if (issuedAt === undefined) return false;
+  localAuthMutations.delete(provider); // one mutation broadcasts one echo
+  return Date.now() - issuedAt <= SELF_ECHO_WINDOW_MS;
 }
 
 let wiredClient: AppwireClientLike | null = null;
@@ -293,7 +353,7 @@ function scheduleRefetch(): void {
 
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/auth/updated") {
-    if (isOwnAuthEcho(n.params.provider)) return; // own echo: the mutation site owns the listing refresh
+    if (consumeOwnAuthEcho(n.params.provider)) return; // own echo: the mutation site owns the listing refresh
     scheduleRefetch();
   }
 }
@@ -344,7 +404,7 @@ if (initialClient) attachNotifications(initialClient);
 export function resetCredentialsStoreForTests(): void {
   requestVersion += 1;
   requestedList = false;
-  lastLocalAuthMutation = null;
+  localAuthMutations.clear();
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;
