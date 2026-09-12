@@ -63,7 +63,7 @@ func regionalVertexGlobalOnlyRemedy(res registry.Resolved, status int, body []by
 	// transport that merely reads GOOGLE_VERTEX_LOCATION into its own URL is
 	// talking to something else, and rewriting its 404 would misattribute the
 	// failure.
-	loc, derived := res.Transport.VertexDerivedLocation()
+	loc, derived := registry.VertexLocationDerived(res.Transport, res.HostDerivedByRule)
 	if !derived {
 		return "", false
 	}

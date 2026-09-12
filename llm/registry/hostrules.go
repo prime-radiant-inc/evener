@@ -159,39 +159,25 @@ func vertexHost(location string) string {
 	return "https://" + location + "-aiplatform.googleapis.com"
 }
 
-// VertexDerivedLocation reports the location whose endpoint the resolved
-// transport's base URL actually addresses, and false when the request is not
-// addressed to a location-derived Vertex endpoint at all.
+// VertexLocationDerived reports the location whose endpoint the resolved
+// transport addresses, when the vertex-location host rule derived that
+// endpoint's host from it; false when the request is not addressed to a
+// location-derived Vertex endpoint at all.
 //
-// The vertex-location rule derives the host from the location, but a transport
-// can inherit the rule and still point somewhere else: a literal host in the
-// base URL (even one whose path reads {GOOGLE_VERTEX_LOCATION}), or a
-// GOOGLE_VERTEX_HOST supplied directly (even one naming the location's own
-// host, since a path of its own puts something else on the route). Those
-// requests take the route the user built, so only the endpoint the rule itself
-// derived makes the location the endpoint's business.
-func (t Transport) VertexDerivedLocation() (string, bool) {
+// The rule derives a host from the location, but a transport can inherit the
+// rule and still point elsewhere: a literal host in the base URL (even one
+// naming the location's own host, with a path of its own), or a
+// GOOGLE_VERTEX_HOST supplied directly. Those requests take the route the
+// config built, so only the endpoint the rule produced makes the location the
+// endpoint's business. hostDerived is that provenance, recorded by
+// buildTransport when the base URL template's {GOOGLE_VERTEX_HOST} resolved
+// from the location (Resolved.HostDerivedByRule).
+func VertexLocationDerived(t Transport, hostDerived bool) (string, bool) {
 	if t.HostRule != HostRuleVertexLocation {
 		return "", false
 	}
-	// buildTransport exposes a supplied host in Vars; a derived one leaves it
-	// out. A supplied host is the user's authority whichever way it is shaped.
-	if t.Vars["GOOGLE_VERTEX_HOST"] != "" {
-		return "", false
-	}
 	loc := t.Vars["GOOGLE_VERTEX_LOCATION"]
-	if loc == "" {
-		return "", false
-	}
-	got, err := url.Parse(t.BaseURL)
-	if err != nil {
-		return "", false
-	}
-	derived, err := url.Parse(vertexHost(loc))
-	if err != nil {
-		return "", false
-	}
-	if got.Scheme != derived.Scheme || got.Host != derived.Host {
+	if !hostDerived || loc == "" {
 		return "", false
 	}
 	return loc, true
