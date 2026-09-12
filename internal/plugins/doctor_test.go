@@ -612,6 +612,45 @@ func TestDoctor_MarketplaceHealthy_DirectorySource(t *testing.T) {
 	}
 }
 
+// A marketplace recorded under a name the store no longer accepts is renamed
+// the next time a plugin operation takes the store lock. Doctor is read-only,
+// so it reports the pending rename instead of making it, and says nothing
+// else about the entry: every other remediation would name a name that is
+// about to change.
+func TestDoctor_MarketplaceUnderARefusedNameIsAPendingRename(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "foo@bar", "widget")
+	before := readStoreFile(t, m.marketplacesFile())
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	var about []DoctorFinding
+	for _, f := range findings {
+		if f.Category == catMarketplace && strings.HasPrefix(f.Message, "foo@bar:") {
+			about = append(about, f)
+		}
+	}
+	if len(about) != 1 {
+		t.Fatalf("marketplace findings about foo@bar = %+v, want exactly the pending rename", about)
+	}
+	f := about[0]
+	if f.Level != LevelWarn {
+		t.Errorf("level = %s, want %s; finding=%+v", f.Level, LevelWarn, f)
+	}
+	if !strings.Contains(f.Message, "no longer accepts") {
+		t.Errorf("message = %q, want it to say the name is no longer accepted", f.Message)
+	}
+	if !strings.Contains(f.Remediation, "evener plugin marketplace list") {
+		t.Errorf("remediation = %q, want it to point at a listing, which renames", f.Remediation)
+	}
+	if got := readStoreFile(t, m.marketplacesFile()); got != before {
+		t.Fatalf("Doctor changed %s:\n%s", marketplacesFileName, got)
+	}
+}
+
 // makeMarketplaceRepoDirNoGit builds a marketplace.json without git — for
 // directory-source tests where no clone/pull semantics apply.
 func makeMarketplaceRepoDirNoGit(t *testing.T, name string) string {
@@ -819,4 +858,38 @@ func dirNames(t *testing.T, dir string) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+// Doctor's predicate is the migration's, so a name the migration will rename is
+// never one doctor calls healthy: a single component no filesystem can hold is
+// a pending rename like any other.
+func TestDoctor_ASingleNameNoFilesystemCanHoldIsAPendingRename(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	name := strings.Repeat("a", 300)
+	for _, dir := range []string{m.marketplacesDir(), m.cacheDir()} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.saveMarketplaces(Marketplaces{name: {
+		Source:      Source{Kind: SourceURL, URL: "https://example.invalid/x.git"},
+		LastUpdated: time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Category == catMarketplace && strings.Contains(f.Message, "no longer accepts") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("findings = %+v, want the pending rename for a name no filesystem can hold", findings)
+	}
 }

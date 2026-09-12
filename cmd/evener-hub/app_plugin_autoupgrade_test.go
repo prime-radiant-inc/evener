@@ -131,7 +131,7 @@ func TestRunPluginAutoUpgradeTick_UpgradesAutoUpgradeEnabledPlugin(t *testing.T)
 		t.Fatal("old sha-dir was deleted; the daemon must never delete")
 	}
 
-	items, err := mgr.List()
+	items, err := mgr.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

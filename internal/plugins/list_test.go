@@ -17,7 +17,7 @@ func TestList_FlagsBroken(t *testing.T) {
 	m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
 	entry, _ := m.Install(context.Background(), "widget", name)
 
-	items, err := m.List()
+	items, err := m.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestList_FlagsBroken(t *testing.T) {
 
 	// Corrupt the installed plugin on disk → List must flag it broken.
 	os.RemoveAll(entry.InstallPath)
-	items, _ = m.List()
+	items, _ = m.List(context.Background())
 	if !items[0].Broken {
 		t.Fatal("List did not flag a missing install dir as broken")
 	}
