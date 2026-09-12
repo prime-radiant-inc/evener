@@ -27,6 +27,10 @@ const launchCheckListTimeout = 8 * time.Second
 type launchCheckModel struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// Warnings carries the resolved row's registry notes so the hub picker can
+	// flag rows the resolver itself warns about (e.g. a global-only model under
+	// a regional Vertex location).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // supportedLaunchFlags advertises the serve/run flags this binary accepts
@@ -141,7 +145,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 			continue
 		}
 		for _, m := range listing.Models {
-			out = append(out, launchCheckModel{Provider: inst.Name, Model: m.ModelID})
+			out = append(out, launchCheckModel{Provider: inst.Name, Model: m.ModelID, Warnings: append([]string(nil), m.Warnings...)})
 		}
 	}
 	return out, diagnostics, nil

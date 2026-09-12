@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, FlatList, TextInput, View } from "react-native";
 import type { ModelDescriptor } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import { modelPickerEntries } from "./modelPickerEntries";
 import type { SessionControls } from "./sessionControls";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -37,6 +38,7 @@ export function ModelPicker({
     );
   }, [state.catalog, search, setting]);
   const disabled = !ready || state.pending !== null || state.loadingModels;
+  const entries = useMemo(() => modelPickerEntries(models), [models]);
   const available =
     selected &&
     state.catalog?.data.some(
@@ -96,9 +98,11 @@ export function ModelPicker({
       ) : null}
       <FlatList
         style={styles.fill}
-        data={models}
+        data={entries}
         keyboardShouldPersistTaps="handled"
-        keyExtractor={(model) => JSON.stringify([model.provider, model.model])}
+        keyExtractor={(entry) =>
+          JSON.stringify([entry.model.provider, entry.model.model])
+        }
         ListHeaderComponent={
           setting === "vision" ? (
             <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -153,15 +157,25 @@ export function ModelPicker({
           ) : null
         }
         renderItem={({ item }) => (
-          <Choice
-            label={`${item.displayName || item.model} · ${item.provider}`}
-            selected={
-              selected?.provider === item.provider &&
-              selected.model === item.model
-            }
-            disabled={disabled}
-            onPress={() => setSelected(item)}
-          />
+          <View>
+            <Choice
+              label={item.label}
+              selected={
+                selected?.provider === item.model.provider &&
+                selected.model === item.model.model
+              }
+              disabled={disabled}
+              onPress={() => setSelected(item.model)}
+            />
+            {item.warnings.map((warning, warningIndex) => (
+              <View
+                key={`${warning}-${warningIndex}`}
+                style={{ paddingLeft: 16, paddingRight: 8, paddingBottom: 4 }}
+              >
+                <Copy muted>{`⚠ ${warning}`}</Copy>
+              </View>
+            ))}
+          </View>
         )}
       />
       <View

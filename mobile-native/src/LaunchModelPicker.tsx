@@ -109,6 +109,12 @@ export function LaunchModelPicker({
               <Copy muted>{item.text}</Copy>
             </View>
           );
+        if (item.kind === "warning")
+          return (
+            <View style={{ paddingLeft: 16, paddingRight: 8, paddingBottom: 4 }}>
+              <Copy muted>{`⚠ ${item.text}`}</Copy>
+            </View>
+          );
         const selected = value === item.option.qualified;
         return (
           <Pressable
