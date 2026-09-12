@@ -1249,6 +1249,7 @@ export interface NavigationSessionSummary {
   omitted_descendants?: number;
   running_jobs?: NavigationJobSummary[];
   completed_jobs?: NavigationJobSummary[];
+  watches?: NavigationWatchSummary[];
   children: NavigationSessionSummary[];
 }
 
@@ -1261,6 +1262,27 @@ export interface NavigationSnapshot {
 export interface NavigationTier {
   sessions: NavigationSessionSummary[];
   remaining: number;
+}
+
+export interface NavigationWatchCadence {
+  kind: string;
+  seconds?: number;
+}
+
+export interface NavigationWatchSummary {
+  id: string;
+  source: string;
+  target?: string;
+  send_to?: string;
+  note?: string;
+  cadence?: NavigationWatchCadence[];
+  output_match?: string;
+  events?: string[];
+  wildcard_events?: boolean;
+  deliveries: number;
+  created_at: string;
+  active: boolean;
+  end_reason?: string;
 }
 
 export interface NotesHumanSetParams {

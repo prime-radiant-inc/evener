@@ -163,6 +163,37 @@ type NavigationJobSummary struct {
 	FullCommand string `json:"full_command,omitempty"`
 }
 
+// NavigationWatchCadence is one cadence component of a live watch. Kind is
+// the cadence family ("every", "after", "progress", "output", "events") and
+// Seconds carries the interval for the time-based kinds.
+type NavigationWatchCadence struct {
+	Kind    string  `json:"kind"`
+	Seconds float64 `json:"seconds,omitempty"`
+}
+
+// NavigationWatchSummary is the compact live-watch row shown beneath its
+// owning session. It is purely additive: an older daemon omits the source
+// diagnostics field entirely, so absence is an empty list, never an error.
+//
+// The rows are per session. A receiver watch is visible to two sessions in
+// the hub, but each summary carries only the rows from that session's own
+// diagnostics, so a subtree rollup can never count one watch twice.
+type NavigationWatchSummary struct {
+	ID             string                   `json:"id"`
+	Source         string                   `json:"source"`
+	Target         string                   `json:"target,omitempty"`
+	SendTo         string                   `json:"send_to,omitempty"`
+	Note           string                   `json:"note,omitempty"`
+	Cadence        []NavigationWatchCadence `json:"cadence,omitempty"`
+	OutputMatch    string                   `json:"output_match,omitempty"`
+	Events         []string                 `json:"events,omitempty"`
+	WildcardEvents bool                     `json:"wildcard_events,omitempty"`
+	Deliveries     int                      `json:"deliveries"`
+	CreatedAt      string                   `json:"created_at"`
+	Active         bool                     `json:"active"`
+	EndReason      string                   `json:"end_reason,omitempty"`
+}
+
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
 	Ref                string                                    `json:"ref"`
@@ -184,6 +215,9 @@ type NavigationSessionSummary struct {
 	OmittedDescendants int                                       `json:"omitted_descendants,omitempty"`
 	RunningJobs        NavigationArray[NavigationJobSummary]     `json:"running_jobs,omitempty"`
 	CompletedJobs      NavigationArray[NavigationJobSummary]     `json:"completed_jobs,omitempty"`
+	// Watches carries this session's own live watches. Absent on an older
+	// daemon (or a past-index entry) and therefore absent-able for consumers.
+	Watches NavigationArray[NavigationWatchSummary] `json:"watches,omitempty"`
 	Children           NavigationArray[NavigationSessionSummary] `json:"children"`
 }
 

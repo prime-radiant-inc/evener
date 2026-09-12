@@ -1107,6 +1107,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		MoreSubagents: node.MoreSubagents,
 		RunningJobs:   navigationJobs(node.RunningJobs),
 		CompletedJobs: navigationJobs(node.CompletedJobs),
+		Watches:       navigationWatches(node.Watches),
 		Children:      hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
 }
@@ -1130,6 +1131,45 @@ func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.
 			summary.FullCommand = truncateNavigationRunes(job.Command, maxNavigationFullCommandRunes)
 		}
 		out = append(out, summary)
+	}
+	return out
+}
+
+// navigationWatches projects a session's own live-watch rows onto the wire
+// summary. Rows are never merged across sessions, so a receiver watch that two
+// daemons report stays on each session's own summary and a rollup over the
+// subtree counts it once per owning row. The source list is the daemon's
+// already-bounded watch inventory (mirroring navigationJobs), so this does not
+// cap the number of rows; it only bounds each rendered string.
+func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray[hubapi.NavigationWatchSummary] {
+	out := make(hubapi.NavigationArray[hubapi.NavigationWatchSummary], 0, len(watches))
+	for _, watch := range watches {
+		cadence := make([]hubapi.NavigationWatchCadence, 0, len(watch.Cadence))
+		for _, step := range watch.Cadence {
+			cadence = append(cadence, hubapi.NavigationWatchCadence{
+				Kind:    truncateNavigationRunes(step.Kind, maxNavigationLabelRunes),
+				Seconds: step.Seconds,
+			})
+		}
+		events := make([]string, 0, len(watch.Events))
+		for _, event := range watch.Events {
+			events = append(events, truncateNavigationRunes(event, maxNavigationLabelRunes))
+		}
+		out = append(out, hubapi.NavigationWatchSummary{
+			ID:             truncateNavigationRunes(watch.ID, maxNavigationLabelRunes),
+			Source:         truncateNavigationRunes(watch.Source, maxNavigationLabelRunes),
+			Target:         truncateNavigationRunes(watch.Target, maxNavigationLabelRunes),
+			SendTo:         truncateNavigationRunes(watch.SendTo, maxNavigationLabelRunes),
+			Note:           truncateNavigationRunes(watch.Note, maxNavigationLabelRunes),
+			Cadence:        cadence,
+			OutputMatch:    truncateNavigationRunes(watch.OutputMatch, maxNavigationLabelRunes),
+			Events:         events,
+			WildcardEvents: watch.WildcardEvents,
+			Deliveries:     watch.Deliveries,
+			CreatedAt:      truncateNavigationRunes(watch.CreatedAt, maxNavigationLabelRunes),
+			Active:         watch.Active,
+			EndReason:      truncateNavigationRunes(watch.EndReason, maxNavigationLabelRunes),
+		})
 	}
 	return out
 }
@@ -1175,6 +1215,11 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 	}
 	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
 	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
+	clone.Watches = append(hubapi.NavigationArray[hubapi.NavigationWatchSummary](nil), summary.Watches...)
+	for index, watch := range summary.Watches {
+		clone.Watches[index].Cadence = append([]hubapi.NavigationWatchCadence(nil), watch.Cadence...)
+		clone.Watches[index].Events = append([]string(nil), watch.Events...)
+	}
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)

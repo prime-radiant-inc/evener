@@ -428,6 +428,25 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 			}
 		}
 	}
+	for _, watch := range value.Watches {
+		if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) ||
+			!navigationIntCount(watch.Deliveries) || utf8.RuneCountInString(watch.Target) > maxNavigationLabelRunes ||
+			utf8.RuneCountInString(watch.SendTo) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.Note) > maxNavigationLabelRunes ||
+			utf8.RuneCountInString(watch.OutputMatch) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.CreatedAt) > maxNavigationLabelRunes ||
+			utf8.RuneCountInString(watch.EndReason) > maxNavigationLabelRunes {
+			return false
+		}
+		for _, cadence := range watch.Cadence {
+			if utf8.RuneCountInString(cadence.Kind) > maxNavigationLabelRunes {
+				return false
+			}
+		}
+		for _, event := range watch.Events {
+			if utf8.RuneCountInString(event) > maxNavigationLabelRunes {
+				return false
+			}
+		}
+	}
 	return true
 }
 
