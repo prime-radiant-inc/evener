@@ -13,6 +13,7 @@ import {
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
+import itemStyles from "./toolcallitem.module.css";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
 import { ignoringTurn, itemRendererFor } from "./types";
 import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
@@ -696,6 +697,13 @@ test("an interrupted tool call is a failure, exactly as the transcript projector
   registerToolRenderer({ match: "tci_interrupted", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_interrupted", status: "interrupted" })} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
+});
+
+test("a whitespace-only error renders no error block at all", () => {
+  registerToolRenderer({ match: "tci_blank_err_body", summary: () => "s", body: () => <div>b</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_blank_err_body", error: "  \n " })} turn={turn} live={false} />);
+  const body = screen.getByTestId("tool-call-body");
+  expect(body.querySelector(`.${itemStyles.error}`)).toBeNull();
 });
 
 test("a whitespace-only error is not a failure (the shared predicate trims before it decides)", () => {

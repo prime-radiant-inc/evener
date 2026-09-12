@@ -30,11 +30,19 @@ export function hasFailureStatus(item: ItemFailureSignals): boolean {
   return item.status === "failed" || item.status === "interrupted";
 }
 
+// The item carries error text worth showing. Blank-but-present error strings
+// come off the wire (a tool that failed with nothing to say), and rendering
+// one puts an empty error block on the row, so "present" is not the question
+// — "non-blank" is.
+export function hasErrorText(item: ItemFailureSignals): boolean {
+  return item.error !== undefined && item.error.trim() !== "";
+}
+
 // A settled item is a failure when the tool result itself carried a non-blank
 // error message, OR the item's own status settled as failed/interrupted, OR
 // the process behind it exited nonzero.
 export function hasItemFailure(item: ItemFailureSignals): boolean {
-  return (item.error !== undefined && item.error.trim() !== "") || hasFailureStatus(item) || isNonZeroExit(item);
+  return hasErrorText(item) || hasFailureStatus(item) || isNonZeroExit(item);
 }
 
 // The wire sends "inProgress" for a still-executing turn or item, never

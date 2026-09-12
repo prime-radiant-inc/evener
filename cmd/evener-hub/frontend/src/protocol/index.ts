@@ -32,7 +32,7 @@ export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalRe
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 export type { ItemFailureSignals } from "./itemFailure";
-export { hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
 export type {

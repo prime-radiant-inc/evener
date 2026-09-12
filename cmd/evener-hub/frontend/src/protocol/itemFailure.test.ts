@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+import { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 import type { ItemModel } from "./model";
 import type { ThreadItem } from "./types.gen";
 
@@ -44,6 +44,22 @@ describe("hasItemFailure", () => {
   test("a projected ItemModel answers the same question as the wire item", () => {
     const model: ItemModel = { id: "item-1", turnId: "turn-1", type: "commandExecution", text: "", exitCode: 2 };
     expect(hasItemFailure(model)).toBe(true);
+  });
+});
+
+describe("hasErrorText", () => {
+  test("a non-blank error is text worth showing", () => {
+    expect(hasErrorText(wireItem({ error: "denied" }))).toBe(true);
+  });
+
+  test("absent, empty and whitespace-only errors carry nothing to show", () => {
+    expect(hasErrorText(wireItem())).toBe(false);
+    expect(hasErrorText(wireItem({ error: "" }))).toBe(false);
+    expect(hasErrorText(wireItem({ error: "  \n\t " }))).toBe(false);
+  });
+
+  test("a failed item with no error text still has no error text", () => {
+    expect(hasErrorText(wireItem({ status: "failed", exitCode: 3 }))).toBe(false);
   });
 });
 

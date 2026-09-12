@@ -77,6 +77,7 @@ async function qualify() {
     "fenceRootSession",
     "graftContinuationTree",
     "hasItemFailure",
+    "hasErrorText",
     "hasFailureStatus",
     "isNonZeroExit",
     "isInProgressStatus",
@@ -133,6 +134,7 @@ assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
 assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
 assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
 assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
+assert.equal(client.hasErrorText({ error: "  " }), false);
 assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
 assert.equal(client.isInProgressStatus("inProgress"), true);
 assert.equal(client.parseJobLogTail(null), null);
