@@ -691,6 +691,33 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("a same-provider change in the echo window after a successful save still refetches", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The store's own post-save refresh runs first.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+
+    // The real echo never arrives; another client's same-provider change does,
+    // inside the correlation window. The marker must not swallow it: the
+    // listing has to be re-read even though the notification matched.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(2);
+  });
+
   test("the echo correlation window is bounded", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
@@ -789,7 +816,7 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("a notification swallowed during a pending poll is made up when the poll is not authorized", async () => {
+  test("a same-provider change during a pending device poll is refetched without waiting for the poll", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     let resolvePoll: (value: { provider: string; state: string }) => void = () => {};
@@ -803,19 +830,20 @@ describe("notification-triggered refetch", () => {
 
     const pending = credentialsStore.getState().devicePoll("work", "flow");
     // Another client's same-provider change lands while the poll is in flight.
-    // The correlation swallows it on the assumption it is this poll's echo.
+    // The correlation may read it as this poll's echo, but the listing is still
+    // re-read: the marker must not permanently swallow a foreign change.
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
     await vi.advanceTimersByTimeAsync(250);
-    expect(listSpy).not.toHaveBeenCalled();
+    expect(listSpy).toHaveBeenCalledTimes(1);
     resolvePoll({ provider: "work", state: "pending" });
     await pending;
-    // A pending result proves no echo of ours is coming, so the swallowed
-    // notification was someone else's change: make it up with a refetch.
+    // A pending result proves no echo of ours was coming; that makeup read
+    // coalesces with the one above.
     await vi.advanceTimersByTimeAsync(250);
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("a notification swallowed during a failing save is made up when the save fails", async () => {
+  test("a same-provider change during an in-flight save is refetched without waiting for the save", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     let rejectSave: (reason: Error) => void = () => {};
@@ -830,11 +858,11 @@ describe("notification-triggered refetch", () => {
     const pending = credentialsStore.getState().setApiKey("work", "draft");
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
     await vi.advanceTimersByTimeAsync(250);
-    expect(listSpy).not.toHaveBeenCalled();
+    expect(listSpy).toHaveBeenCalledTimes(1);
     rejectSave(new Error("hub refused the key"));
     await expect(pending).rejects.toThrow("hub refused the key");
-    // The failure proves no echo of ours is coming: make up the swallowed
-    // notification with a refetch.
+    // The failure proves no echo of ours was coming; that makeup coalesces with
+    // the notification's own read.
     await vi.advanceTimersByTimeAsync(250);
     expect(listSpy).toHaveBeenCalledTimes(1);
   });

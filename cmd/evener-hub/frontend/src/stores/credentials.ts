@@ -373,14 +373,13 @@ function clearLocalAuthMutation(provider: string): void {
   localAuthMutations.delete(provider);
 }
 
-// Ends a local auth mutation whose outcome proves it will NOT broadcast
-// (a failed RPC, or a device poll that returned pending/expired rather than
-// authorized). If the marker was consumed mid-flight, a same-provider
-// notification was suppressed on the assumption it was this mutation's echo -
-// an assumption this outcome just disproved - so the swallowed change gets a
-// makeup refetch instead of going stale until the next unrelated fetch.
+// Ends a local auth mutation whose outcome proves it will NOT broadcast (a
+// failed RPC, or a device poll that returned pending/expired rather than
+// authorized). The marker only ever suppressed a notification's own refetch,
+// and a matched notification now schedules the store's own refresh itself, so
+// there is no swallowed change left to make up: clearing the marker is all
+// this owes, and the next same-provider notification is foreign again.
 function endUnconfirmedAuthMutation(provider: string): void {
-  if (!localAuthMutations.has(provider)) scheduleRefetch();
   clearLocalAuthMutation(provider);
 }
 
@@ -423,10 +422,15 @@ function scheduleRefetch(self = false): void {
 }
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "evener/auth/updated") {
-    if (consumeOwnAuthEcho(n.params.provider)) return; // own echo: the store's own post-mutation refresh already covers it
-    scheduleRefetch();
-  }
+  if (n.method !== "evener/auth/updated") return;
+  // A notification this client takes for its own echo is suppressed as a
+  // separate refresh, but it still schedules the store's own refresh: if the
+  // real echo was lost and another client's same-provider change arrived
+  // first, the marker is consumed by that change, and the store's post-save
+  // refresh has already run - without this the foreign change would stay
+  // invisible until something else refetched. The self mark keeps the guided
+  // flow from invalidating on the coalesced read while the listing moves.
+  scheduleRefetch(consumeOwnAuthEcho(n.params.provider));
 }
 
 function attachNotifications(client: AppwireClientLike | null): void {

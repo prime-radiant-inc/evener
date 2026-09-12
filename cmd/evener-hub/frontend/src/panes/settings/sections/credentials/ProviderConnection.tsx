@@ -422,21 +422,20 @@ function SelectedConnection({
 
   async function refreshAndCheck(token: number, expectedSource?: string) {
     setPhase("refreshing");
-    const previous = credentialsStore.getState();
     // The listing this refresh waits for can be superseded by the debounced
     // refetch evener/auth/updated schedules (250ms after the save), and the
-    // store drops a superseded response without applying it. One more ask
-    // tells "the listing really did not move" apart from "my response lost the
-    // race", so a coalesced refresh is not reported as a failure.
-    const listingUnchanged = () => {
-      const state = credentialsStore.getState();
-      return state.instances === previous.instances || state.availableProviders === previous.availableProviders;
-    };
+    // store drops a superseded response without applying it. The read's own
+    // applied verdict separates "the listing really did not move" from "my
+    // response lost the race": a read that did not apply gets one more ask,
+    // and the flow reports a failure only when that one did not apply either.
+    // (This replaces the old listing-identity heuristic, which called the
+    // listing unchanged when EITHER array kept its identity.)
+    let applied = false;
     try {
-      await previous.fetch();
+      applied = await credentialsStore.getState().fetch();
       if (!current(token)) return;
-      if (listingUnchanged()) {
-        await credentialsStore.getState().fetch();
+      if (!applied) {
+        applied = await credentialsStore.getState().fetch();
         if (!current(token)) return;
       }
     } catch {
@@ -450,7 +449,7 @@ function SelectedConnection({
     }
     const fresh = credentialsStore.getState();
     const target = findSetup(name);
-    if (fresh.loading || fresh.error || listingUnchanged()) {
+    if (!applied || fresh.loading || fresh.error) {
       setPhase("idle");
       setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
       return;
