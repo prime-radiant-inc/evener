@@ -56,6 +56,11 @@ type retirementResumeFixture struct {
 	accepted      atomic.Int32
 	providerCalls atomic.Int32
 
+	// wakeWG tracks the turn goroutines the replacement's wake func spawns.
+	// They call back into the session from OUTSIDE it, so sess.Close() cannot
+	// join them; the fixture must, before t.TempDir's removal runs.
+	wakeWG sync.WaitGroup
+
 	waitOnce    sync.Once
 	waitEntered chan struct{}
 	exit        chan struct{}
@@ -64,6 +69,10 @@ type retirementResumeFixture struct {
 	replacement *httptest.Server
 	sess        *agent.Session
 	adapter     *retirementAdapter
+
+	// eventsDrained closes when the replacement session's event consumer has
+	// drained the closed events channel (ConsumeEventsLossless's onDrained).
+	eventsDrained chan struct{}
 
 	providerGate    chan struct{}
 	providerEntered chan struct{}
@@ -221,12 +230,24 @@ func newRetirementResumeFixture(t *testing.T, opts retirementResumeOptions) *ret
 	})
 	t.Cleanup(f.hub.Close)
 	t.Cleanup(func() {
+		// Deterministic shutdown before the temp dirs (created above, removed
+		// last under LIFO) are reclaimed: stop the RPC surface so no new
+		// mutation can be accepted — and no new wake fired — once the session
+		// is closing; close the session so its internal writers (transcript,
+		// journal, namer) are joined; then join the wake-spawned turn
+		// goroutines and the event consumer, which call in from outside the
+		// session and are the writers sess.Close() cannot wait for. Without
+		// these joins a turn still settling meta/journal files under stateDir
+		// outlives the test body and races t.TempDir's RemoveAll
+		// ("directory not empty").
 		if f.replacement != nil {
 			f.replacement.Close()
 		}
 		if f.sess != nil {
 			f.sess.Close()
+			<-f.eventsDrained
 		}
+		f.wakeWG.Wait()
 	})
 	return f
 }
@@ -270,11 +291,16 @@ func (f *retirementResumeFixture) buildReplacement(_ context.Context, _ hubcore.
 	// SubmitClientMutationStart): an accepted start only reserves the durable
 	// intent — without this wake the runner never claims or executes it.
 	sess.SetClientMutationStartWakeFunc(func() {
-		go func() { _, _, _ = sess.ProcessClientMutationStart(context.Background(), nil) }()
+		f.wakeWG.Add(1)
+		go func() {
+			defer f.wakeWG.Done()
+			_, _, _ = sess.ProcessClientMutationStart(context.Background(), nil)
+		}()
 	})
+	f.eventsDrained = make(chan struct{})
 	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		server.BridgeEvent(srv, ev, f.observeEvent)
-	}, func() {})
+	}, func() { close(f.eventsDrained) })
 	repl := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
 	f.replacement = repl
 	f.sess = sess
@@ -421,6 +447,12 @@ func (p *retirementProcess) Wait(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
+// Close has nothing to join: the handle starts no goroutine and holds no
+// resource. Wait is driven entirely by the fixture's exit channel (closed by
+// the test's confirmExit) and the waiter's context, so no waiter outlives the
+// test through this handle. The writers that DID outlive it are the
+// wake-spawned turn goroutines, joined by the fixture's wakeWG instead.
 func (p *retirementProcess) Close() error { return nil }
 
 // retirementAdapter answers the replacement session's provider call,
