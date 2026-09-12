@@ -479,7 +479,16 @@ func TestCompactionReplay_FoldHookCompletionCarriesTheFoldsOwner(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("no PreCompact hook end reached the live stream")
 	}
-	if live.OwningTurnID != foldOwner {
-		t.Fatalf("the live PreCompact hook end is owned by %q, want %q", live.OwningTurnID, foldOwner)
+	for more := true; more; {
+		if live.OwningTurnID != foldOwner {
+			t.Fatalf("the live PreCompact hook end is owned by %q, want %q", live.OwningTurnID, foldOwner)
+		}
+		// Whatever else the stream already carried is checked too, so a second
+		// PreCompact hook cannot slip past on the strength of the first.
+		select {
+		case live = <-preCompactEnds:
+		default:
+			more = false
+		}
 	}
 }
