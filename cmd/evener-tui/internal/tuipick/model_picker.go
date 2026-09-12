@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 )
@@ -156,40 +157,10 @@ func (m ModelPicker) renderBody() string {
 		b.WriteString(tuitheme.MpDimStyle.Render(emptyText))
 		b.WriteString("\n")
 	} else {
-		start, end := visibleRange(filtered, m.cursor)
-
+		start, end := m.visibleRange(filtered)
 		for i := start; i < end; i++ {
-			item := filtered[i]
-			if item.Group != "" && (i == 0 || filtered[i-1].Group != item.Group) {
-				b.WriteString(tuitheme.MpDimStyle.Render(strings.ToUpper(item.Group)))
-				b.WriteString("\n")
-			}
-			cursor := "  "
-			style := tuitheme.MpNormalStyle
-			isActive := modelIDMatchesActive(item.ID, m.active)
-			if i == m.cursor {
-				cursor = "> "
-				style = tuitheme.MpCursorStyle
-			} else if isActive {
-				style = tuitheme.MpActiveStyle
-			}
-			line := cursor + style.Render(item.Display)
-			if item.ID != item.Display && item.Display != "" {
-				line += "  " + tuitheme.MpDimStyle.Render(item.ID)
-			}
-			if item.Meta != "" {
-				line += "  " + tuitheme.MpDimStyle.Render(item.Meta)
-			}
-			if isActive {
-				line += "  " + tuitheme.MpActiveTag.Render("(active)")
-			}
-			if item.DisabledReason != "" {
-				line += "  " + tuitheme.MpDimStyle.Render("disabled: "+item.DisabledReason)
-			}
-			b.WriteString(line)
-			b.WriteString("\n")
-			for _, warning := range item.Warnings {
-				b.WriteString("    " + tuitheme.MpDimStyle.Render("⚠ "+warning))
+			for _, line := range m.itemLines(filtered, i) {
+				b.WriteString(line)
 				b.WriteString("\n")
 			}
 		}
@@ -203,46 +174,81 @@ func (m ModelPicker) renderBody() string {
 }
 
 // maxVisibleLines is the picker body's rendered-line budget. Items are not a
-// fixed height — each warning adds a line under its row, and a group's first
-// item adds a header — so the window is measured in rendered lines rather than
-// items; counting items let a few warned rows push the footer off the overlay.
+// fixed height — each warning adds a line under its row, a group's first item
+// adds a header, and the frame wraps anything longer than it is wide — so the
+// window is measured in terminal lines rather than items.
 const maxVisibleLines = 15
 
-// renderedLines is how many body lines filtered[i] occupies: its own row, one
-// line per warning, and one for the group header when it starts a group (the
-// renderer writes a header at the first item and at every group change).
-func renderedLines(filtered []ModelPickerItem, i int) int {
-	n := 1 + len(filtered[i].Warnings)
-	if filtered[i].Group != "" && (i == 0 || filtered[i-1].Group != filtered[i].Group) {
-		n++
+// itemLines is the body an item renders: the group header when it starts a
+// group, its row, then one line per warning. The window measurer and the
+// renderer share it, so what a row costs is stated once.
+func (m ModelPicker) itemLines(filtered []ModelPickerItem, i int) []string {
+	item := filtered[i]
+	var lines []string
+	if item.Group != "" && (i == 0 || filtered[i-1].Group != item.Group) {
+		lines = append(lines, tuitheme.MpDimStyle.Render(strings.ToUpper(item.Group)))
 	}
-	return n
+	cursor := "  "
+	style := tuitheme.MpNormalStyle
+	isActive := modelIDMatchesActive(item.ID, m.active)
+	if i == m.cursor {
+		cursor = "> "
+		style = tuitheme.MpCursorStyle
+	} else if isActive {
+		style = tuitheme.MpActiveStyle
+	}
+	line := cursor + style.Render(item.Display)
+	if item.ID != item.Display && item.Display != "" {
+		line += "  " + tuitheme.MpDimStyle.Render(item.ID)
+	}
+	if item.Meta != "" {
+		line += "  " + tuitheme.MpDimStyle.Render(item.Meta)
+	}
+	if isActive {
+		line += "  " + tuitheme.MpActiveTag.Render("(active)")
+	}
+	if item.DisabledReason != "" {
+		line += "  " + tuitheme.MpDimStyle.Render("disabled: "+item.DisabledReason)
+	}
+	lines = append(lines, line)
+	for _, warning := range item.Warnings {
+		lines = append(lines, "    "+tuitheme.MpDimStyle.Render("⚠ "+warning))
+	}
+	return lines
+}
+
+// renderedLines is how many terminal lines filtered[i] takes on screen: the
+// lines it renders, wrapped the way the overlay's frame wraps the body, since
+// a row or warning longer than the frame occupies more than one.
+func (m ModelPicker) renderedLines(filtered []ModelPickerItem, i int) int {
+	block := strings.Join(m.itemLines(filtered, i), "\n")
+	return strings.Count(ansi.Wrap(block, tuiprim.OverlayContentWidth(m.overlayWidth()), ""), "\n") + 1
 }
 
 // visibleRange is the [start, end) window of filtered items to render: the
 // cursor's item plus the neighbours that fit the budget, taken from both sides
 // so the cursor stays near the middle. An item that alone exceeds the budget
 // still renders, since a row cannot be shown in part.
-func visibleRange(filtered []ModelPickerItem, cursor int) (int, int) {
+func (m ModelPicker) visibleRange(filtered []ModelPickerItem) (int, int) {
 	if len(filtered) == 0 {
 		return 0, 0
 	}
 	// A cursor can outlive the list it indexes (a filter narrowed the list, or
 	// a caller set it directly), so clamp it rather than trust it.
-	cursor = min(max(cursor, 0), len(filtered)-1)
+	cursor := min(max(m.cursor, 0), len(filtered)-1)
 	start, end := cursor, cursor+1
-	used := renderedLines(filtered, cursor)
+	used := m.renderedLines(filtered, cursor)
 	for {
 		grew := false
 		if end < len(filtered) {
-			if n := renderedLines(filtered, end); used+n <= maxVisibleLines {
+			if n := m.renderedLines(filtered, end); used+n <= maxVisibleLines {
 				used += n
 				end++
 				grew = true
 			}
 		}
 		if start > 0 {
-			if n := renderedLines(filtered, start-1); used+n <= maxVisibleLines {
+			if n := m.renderedLines(filtered, start-1); used+n <= maxVisibleLines {
 				start--
 				used += n
 				grew = true
@@ -288,13 +294,7 @@ func (m ModelPicker) View() string {
 	if title == "" {
 		title = "Select model"
 	}
-	// Match old tuiprim.RenderPopupPane width logic: popup is min(max(termWidth,44),96)
-	// so content at 90 chars won't be word-wrapped by the Overlay frame.
-	w := m.width
-	if w <= 0 {
-		w = 96
-	}
-	w = min(max(w, 44), 96)
+	w := m.overlayWidth()
 	body := m.renderBody()
 	footer := tuiprim.ActionBarForWidth(w, tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("enter", "select"), tuiprim.KbdHint("esc", "cancel"))
 	return tuiprim.Overlay(tuiprim.OverlayOpts{
@@ -303,4 +303,15 @@ func (m ModelPicker) View() string {
 		Body:   body,
 		Footer: footer,
 	})
+}
+
+// overlayWidth is the width of the frame the picker renders into: the old
+// tuiprim.RenderPopupPane logic, min(max(termWidth, 44), 96), so content at 90
+// chars is not word-wrapped by the Overlay frame.
+func (m ModelPicker) overlayWidth() int {
+	w := m.width
+	if w <= 0 {
+		w = 96
+	}
+	return min(max(w, 44), 96)
 }

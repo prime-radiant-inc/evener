@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
+
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 )
 
 func TestModelPicker_FilterAndSelect(t *testing.T) {
@@ -208,11 +211,13 @@ func TestModelPicker_WarningRendersUnderRowAndStaysSelectable(t *testing.T) {
 	}
 }
 
-// windowLines is renderBody's rendered model window: the filter line and its
-// blank separator, then every line up to the optional "N items total" trailer.
+// windowLines is renderBody's model window as the overlay frame renders it:
+// the body wrapped to the frame's content width, minus the filter line and its
+// blank separator and the optional "N items total" trailer. A warning longer
+// than the frame is wide occupies the terminal lines it really occupies.
 func windowLines(t *testing.T, m ModelPicker) (lines []string, trailer bool) {
 	t.Helper()
-	body := strings.TrimRight(m.renderBody(), "\n")
+	body := strings.TrimRight(ansi.Wrap(m.renderBody(), tuiprim.OverlayContentWidth(m.overlayWidth()), ""), "\n")
 	lines = strings.Split(body, "\n")
 	if len(lines) < 2 || !strings.HasPrefix(lines[0], "Filter:") || lines[1] != "" {
 		t.Fatalf("unexpected body preamble:\n%s", body)
@@ -264,6 +269,32 @@ func TestModelPicker_GroupHeadersCountTowardTheBodyBudget(t *testing.T) {
 	lines, _ := windowLines(t, p)
 	if len(lines) > maxVisibleLines {
 		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
+	}
+}
+
+// The warning a regional Vertex location actually emits is longer than the
+// overlay is wide, and the frame wraps it. The budget must count the terminal
+// lines an item really occupies, or a few warned rows still push the rows and
+// the footer off the screen.
+func TestModelPicker_WrappedWarningsStayWithinTheBodyBudget(t *testing.T) {
+	const note = `regional Vertex location "us-central1" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.8-flash`
+	items := make([]ModelPickerItem, 20)
+	for i := range items {
+		items[i] = ModelPickerItem{
+			ID:       fmt.Sprintf("m%d", i),
+			Display:  fmt.Sprintf("m%d", i),
+			Warnings: []string{note},
+		}
+	}
+	p := NewModelPicker(items, "", 80)
+	p.cursor = 10
+
+	lines, _ := windowLines(t, p)
+	if len(lines) > maxVisibleLines {
+		t.Fatalf("body window = %d rendered lines, want <= %d:\n%s", len(lines), maxVisibleLines, p.renderBody())
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "> m10") {
+		t.Fatalf("the cursor's row must stay in the window:\n%s", p.renderBody())
 	}
 }
 
