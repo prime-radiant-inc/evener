@@ -4135,3 +4135,40 @@ Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/flake-ci-t
 2. `git fetch origin main` on its own line, then `git merge --no-ff --no-edit origin/main` (main is at least 8fb1ff8f6) before pushing; `bash -n` both scripts; run the gate once in the bounded path.
 3. Push; extend the PR body with a "Review round 6" section naming the commit per finding and carrying the Medium 2 refutation.
 4. Append "Round 6" to your report. Reply with status, commit SHAs, pushed head, the Medium 1 verification line, concerns.
+
+## Task 72: PR #1098 round 8 (head 35b25b7) — transcript identity, RoboRev finding
+
+Worktree: /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/pr-1098 (branch codex/mobile-transcript-identity), module `agent/`.
+
+### RoboRev verdict (verbatim, 3 reviewers; two clean)
+
+## roborev: Combined Review (`35b25b7`)
+
+**Verdict: One Medium issue found — parked work can trigger repeated poisoned-transcript errors on otherwise idle wakes; otherwise the change set is solid.**
+
+---
+
+## **Medium**
+
+- `agent/session_client_mutation_queue.go:215-218` — The poisoned-transcript guard checks raw `QueueDepth()` and `hasPendingUserSteering()` without accounting for `QueueHeld` or `SteeringHeld`. After a stop parks queued work, an idle wake is treated as claimable and repeatedly returns `ErrWriterPoisoned` instead of standing down as a no-op. **Fix:** check claimable-work state before refusing the wake, excluding held queue and steering entries or using the same predicate as the claim functions.
+
+---
+
+## **Clean Areas**
+
+Two of three reviewers found no issues. The durable environment-event, transcript-failure recovery, compaction handling, restore replay, and projector/server changes were all verified as sound — including lock ordering (`attentionMu → s.mu`), `environmentTurnsRemoved` ID/count comparison, `pressureValue` round-trip semantics, and claim restore/double-restore guards.
+
+---
+*Reviewers: 3 done | Synthesis: codex, 7s | Total: 32m34s*
+
+
+### Coordinator rulings
+
+- **Medium (the idle-wake gate in `ProcessPendingUserInput` reads raw `QueueDepth()` / `hasPendingUserSteering()` and ignores held entries): verify, then fix.** After a stop parks queued work (`QueueHeld` / `SteeringHeld`), an idle wake with only held work must stand down as `("", false, nil)` exactly as an empty queue does, not refuse with `ErrWriterPoisoned` on every wake. Fix: gate on the same claimable-work predicate the claim functions use (whatever `popQueueHead`/the steering claim consult to decide there is work to take), not on the raw counts — one encoding of "is there claimable work", not two. RED-first: poisoned writer, one queued message that is held (and separately, held steering only) → the wake returns `("", false, nil)`; the existing refusal tests with unheld work stay untouched and green. If you find the held state cannot be reached through the public surface the daemon uses, say how you reached it.
+
+### Requirements
+
+1. One commit, RED-first with recorded output; no existing test weakened or re-pointed.
+2. Gates: gofmt, vet, `go test -count=1 ./...` in agent with zero non-ok lines, `-race` on the poisoned/claim sets, deadline audit, pinned golangci-lint 0 issues.
+3. Do not push. Do not merge main.
+4. Append a "Task 72" section to `.superpowers/sdd/2026-09-10-mobile-landing-queue/task-26-report.md`; reply with status, commit SHA, one-line test summary, concerns.
