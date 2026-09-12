@@ -1382,3 +1382,29 @@ func TestClosingSessionRefusesEnvironmentPublication(t *testing.T) {
 		t.Fatal("no SESSION_END was published; this test is not in the state it means to be")
 	}
 }
+
+// TestPoisonedCompactionReportsDurabilityNotARace: publishFoldTransaction
+// refuses two very different ways -- a competing fold won the publication race,
+// and the transcript has stopped accepting records -- and the fold loop
+// collapses both into "try again". A race is worth retrying and a poisoned
+// writer never will be, so the operator retyping /compact against a dead
+// transcript has to be told what actually stopped it.
+func TestPoisonedCompactionReportsDurabilityNotARace(t *testing.T) {
+	dir := t.TempDir()
+	sess := newScriptedSummaryCompactSession(t, "poisoned-compaction-message", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
+	seedNumberedSessionHistory(t, sess, 12) // > PreserveRecentTurns(6): forces a real fold
+	poisonSessionTranscript(t, sess)
+
+	err := sess.Compact(t.Context())
+	if err == nil {
+		t.Fatal("compaction against a poisoned transcript reported success")
+	}
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("compaction error = %v, want one wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if strings.Contains(err.Error(), "publication race") {
+		t.Fatalf("compaction error = %v, want a durability failure rather than a race the operator can never win", err)
+	}
+}
