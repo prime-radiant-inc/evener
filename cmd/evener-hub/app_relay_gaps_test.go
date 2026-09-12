@@ -14,7 +14,7 @@ func TestStampClosedThreadCapabilitiesNonStatusNotification(t *testing.T) {
 		Method: appwire.NotifyEvenerThreadResync,
 		Params: []byte(`{}`),
 	}
-	got := stampClosedThreadCapabilities(notification)
+	got := stampClosedThreadCapabilities(notification, true)
 	if got.Method != notification.Method || string(got.Params) != string(notification.Params) {
 		t.Fatalf("non-status notification should be passed through unchanged")
 	}
@@ -27,7 +27,7 @@ func TestStampClosedThreadCapabilitiesEmptyParams(t *testing.T) {
 		Method: appwire.NotifyThreadStatusChanged,
 		Params: nil,
 	}
-	got := stampClosedThreadCapabilities(notification)
+	got := stampClosedThreadCapabilities(notification, true)
 	if string(got.Params) != "" {
 		t.Fatalf("notification with nil params should be passed through unchanged")
 	}
@@ -40,7 +40,7 @@ func TestStampClosedThreadCapabilitiesInvalidParamsJSON(t *testing.T) {
 		Method: appwire.NotifyThreadStatusChanged,
 		Params: []byte(`{invalid json`),
 	}
-	got := stampClosedThreadCapabilities(notification)
+	got := stampClosedThreadCapabilities(notification, true)
 	if string(got.Params) != `{invalid json` {
 		t.Fatalf("notification with invalid JSON should be passed through unchanged")
 	}
@@ -53,7 +53,7 @@ func TestStampClosedThreadCapabilitiesEmptyStatusField(t *testing.T) {
 		Method: appwire.NotifyThreadStatusChanged,
 		Params: []byte(`{"threadID":"t1"}`),
 	}
-	got := stampClosedThreadCapabilities(notification)
+	got := stampClosedThreadCapabilities(notification, true)
 	// No "status" key in params, so it should pass through
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(got.Params, &params); err != nil {
@@ -71,7 +71,7 @@ func TestStampClosedThreadCapabilitiesInvalidStatusJSON(t *testing.T) {
 		Method: appwire.NotifyThreadStatusChanged,
 		Params: []byte(`{"status":"not-an-object"}`),
 	}
-	got := stampClosedThreadCapabilities(notification)
+	got := stampClosedThreadCapabilities(notification, true)
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(got.Params, &params); err != nil {
 		t.Fatalf("output should still be valid JSON: %v", err)
@@ -91,7 +91,7 @@ func TestStampClosedThreadCapabilitiesNonClosedStatus(t *testing.T) {
 			Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		}),
 	}
-	got := stampClosedThreadCapabilities(notification)
+	got := stampClosedThreadCapabilities(notification, true)
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(got.Params, &params); err != nil {
 		t.Fatalf("output should be valid JSON: %v", err)
@@ -108,7 +108,7 @@ func TestStampClosedThreadCapabilitiesZeroLengthStatusRaw(t *testing.T) {
 		Method: appwire.NotifyThreadStatusChanged,
 		Params: []byte(`{"status":null}`),
 	}
-	got := stampClosedThreadCapabilities(notification)
+	got := stampClosedThreadCapabilities(notification, true)
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(got.Params, &params); err != nil {
 		t.Fatalf("output should be valid JSON: %v", err)
