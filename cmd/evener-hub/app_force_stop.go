@@ -31,6 +31,12 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
+	// A caller-rendered daemon identity is compared against verified
+	// discovery before any admission or recovery fence, so a stale row can
+	// never signal a replacement process.
+	if err := expectedDaemonConflict(entry, params.ExpectedDaemon); err != nil {
+		return err
+	}
 	// Verify the process before interrupting RPCs. Kill verifies this retained
 	// process handle again after ownership and deletion reservations are held.
 	controller := cfg.DaemonProcesses
@@ -123,8 +129,12 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if currentTarget != recoveryTarget {
 		return appwire.Unavailable("session recovery authority changed; retry force stop")
 	}
-	if err := forceStopOwnershipUnchanged(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget); err != nil {
+	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget)
+	if err != nil {
 		return appwire.Unavailable(err.Error())
+	}
+	if err := expectedDaemonConflict(current, params.ExpectedDaemon); err != nil {
+		return err
 	}
 	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
 		return err
@@ -188,12 +198,35 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 // forceStopOwnershipUnchanged revalidates discovery after acquiring every
 // alias lock, before signaling the verified process.
 func forceStopOwnershipUnchanged(runDir, sessionID string, previous rendezvous.Entry, controller daemonprocess.Controller, recoveryTarget string) error {
+	_, err := forceStopRereadEntry(runDir, sessionID, previous, controller, recoveryTarget)
+	return err
+}
+
+// forceStopRereadEntry revalidates discovery after acquiring every alias
+// lock and returns the current verified entry for the caller's own fences.
+func forceStopRereadEntry(runDir, sessionID string, previous rendezvous.Entry, controller daemonprocess.Controller, recoveryTarget string) (rendezvous.Entry, error) {
 	current, err := forceStopEntry(runDir, sessionID, controller, &previous, recoveryTarget)
 	if err != nil {
-		return err
+		return rendezvous.Entry{}, err
 	}
 	if !sameForceStopEntry(current, previous) {
-		return errors.New("daemon ownership changed; refresh the session before force stopping")
+		return rendezvous.Entry{}, errors.New("daemon ownership changed; refresh the session before force stopping")
+	}
+	return current, nil
+}
+
+// expectedDaemonConflict compares a caller-rendered daemon identity (the
+// resident row the action was aimed at) against the verified current entry.
+// A nil expectation preserves existing ref-only callers. The identity is
+// recomputed from the current rendezvous entry on every call, so a cached
+// Generation across a daemon replacement yields a conflict — the intended
+// signal.
+func expectedDaemonConflict(entry rendezvous.Entry, expected *appwire.DaemonIdentity) error {
+	if expected == nil {
+		return nil
+	}
+	if daemonIdentity(entry) != *expected {
+		return appwire.Conflict("daemon identity changed since the resident row was rendered; refresh before acting")
 	}
 	return nil
 }

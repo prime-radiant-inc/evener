@@ -223,18 +223,18 @@ func TestLifecycleErrorDataWireShape(t *testing.T) {
 	}`, raw)
 }
 
-// TestDaemonCatalogScopes pins the Task 7 intermediate catalog: the hub-side
-// list is declared but unimplemented until its real handler lands, while
-// status and retire are daemon-scoped. Task 10 promotes retire to ScopeBoth
-// and list to ScopeHub.
+// TestDaemonCatalogScopes pins the final Task 10 catalog: the hub owns the
+// resident inventory list, retire is served by both the hub (forwarded to the
+// exact daemon under identity fences) and the daemon itself, and status stays
+// daemon-scoped.
 func TestDaemonCatalogScopes(t *testing.T) {
 	specs := map[string]MethodSpec{}
 	for _, m := range Methods {
 		specs[m.Name] = m
 	}
 	for name, want := range map[string]MethodScope{
-		MethodEvenerDaemonList:   ScopeUnimplemented,
-		MethodEvenerDaemonRetire: ScopeDaemon,
+		MethodEvenerDaemonList:   ScopeHub,
+		MethodEvenerDaemonRetire: ScopeBoth,
 		MethodEvenerDaemonStatus: ScopeDaemon,
 	} {
 		spec, ok := specs[name]
@@ -276,10 +276,15 @@ func TestDaemonCatalogScopes(t *testing.T) {
 	if daemon[MethodEvenerDaemonList] {
 		t.Error("unimplemented daemon/list must not be in the daemon catalog")
 	}
+	hub := map[string]bool{}
 	for _, name := range CatalogMethodNames(ScopeHub) {
-		if name == MethodEvenerDaemonList || name == MethodEvenerDaemonRetire || name == MethodEvenerDaemonStatus {
-			t.Errorf("method %q must not be in the hub catalog yet", name)
-		}
+		hub[name] = true
+	}
+	if !hub[MethodEvenerDaemonList] || !hub[MethodEvenerDaemonRetire] {
+		t.Errorf("hub catalog missing list/retire: %v", hub)
+	}
+	if hub[MethodEvenerDaemonStatus] {
+		t.Error("daemon-scoped daemon/status must not be in the hub catalog")
 	}
 }
 

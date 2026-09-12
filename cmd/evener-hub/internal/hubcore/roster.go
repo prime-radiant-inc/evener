@@ -873,6 +873,40 @@ func (r *Roster) UnconfirmedEntries() []rendezvous.Entry {
 	return slices.Clone(r.unconfirmed)
 }
 
+// ResidentEntry is one discovered daemon process identity: the rendezvous
+// claim plus, when established, the roster's confirmed view of that same
+// process. Confirmed is nil for claims whose process is alive but whose
+// ownership could not be verified. A Confirmed entry with Crashed set is
+// retained crash evidence, not a resident; the caller decides whether dead
+// markers belong in its view.
+type ResidentEntry struct {
+	Entry     rendezvous.Entry
+	Confirmed *LiveEntry
+}
+
+// ResidentEntries snapshots every discovered process identity under the
+// roster lock: confirmed entries (sorted by PID for determinism) followed by
+// unconfirmed claims. It performs no OS process scan and no archive
+// filtering, and it clones every slice so callers cannot mutate roster state.
+func (r *Roster) ResidentEntries() []ResidentEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]ResidentEntry, 0, len(r.byPID)+len(r.unconfirmed))
+	pids := make([]int, 0, len(r.byPID))
+	for pid := range r.byPID {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	for _, pid := range pids {
+		live := cloneLiveEntry(r.byPID[pid])
+		out = append(out, ResidentEntry{Entry: live.Entry, Confirmed: &live})
+	}
+	for _, claim := range r.unconfirmed {
+		out = append(out, ResidentEntry{Entry: claim})
+	}
+	return out
+}
+
 func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 	return LiveEntry{
 		Entry:                 e,

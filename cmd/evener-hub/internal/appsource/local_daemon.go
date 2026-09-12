@@ -314,6 +314,21 @@ func (s *LocalDaemonSource) ReadThreadAtEntry(ctx context.Context, entry rendezv
 	return out, err
 }
 
+// RetireDaemonAtEntry forwards a safe-retire request to an exact daemon
+// endpoint within the source's recovery cancellation scope. The hub has
+// already validated and locked this exact entry; the params — including the
+// rendered ownership identity — pass through verbatim, and the daemon's
+// answer (fresh blocker refusal or accepted claim) passes back untransformed.
+func (s *LocalDaemonSource) RetireDaemonAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
+	var out appwire.DaemonRetireResponse
+	err := s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		var callErr error
+		out, callErr = client.DaemonRetire(ctx, params)
+		return callErr
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) ListTurns(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 	entry, err := s.entryForReadRef(params.Ref, params.ThreadID)
 	if err != nil {
