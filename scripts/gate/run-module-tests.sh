@@ -389,7 +389,16 @@ stop_package_list_group() {
 		kill -"$signal" -- -"$pgid" 2>/dev/null || :
 		waited=0
 		while [ "$waited" -lt "$ticks" ]; do
-			alive="$(package_list_group_survivors "$pgid")" || return 2
+			if ! alive="$(package_list_group_survivors "$pgid")"; then
+				# A probe that cannot run says nothing about what survived, so
+				# escalate before giving up. Returning here straight after
+				# SIGTERM left a TERM-ignoring attempt running, holding Go's
+				# build and module cache locks for every later run on this
+				# host. Escalating is not confirming, so the caller still gets
+				# the fail-closed status.
+				kill -KILL -- -"$pgid" 2>/dev/null || :
+				return 2
+			fi
 			if [ -z "$alive" ]; then
 				return 0
 			fi
@@ -397,7 +406,12 @@ stop_package_list_group() {
 			waited=$((waited + 1))
 		done
 	done
-	alive="$(package_list_group_survivors "$pgid")" || return 2
+	if ! alive="$(package_list_group_survivors "$pgid")"; then
+		# Same escalation as above. By here SIGKILL has already been sent once,
+		# and sending it again to a group with nothing left in it is a no-op.
+		kill -KILL -- -"$pgid" 2>/dev/null || :
+		return 2
+	fi
 	if [ -z "$alive" ]; then
 		return 0
 	fi
