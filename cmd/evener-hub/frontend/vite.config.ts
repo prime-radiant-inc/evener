@@ -84,8 +84,10 @@ export default defineConfig({
     // Vitest 4 moved threads.maxThreads/minThreads to this top-level,
     // single-value option (poolOptions.threads.* is deprecated - a
     // `test.poolOptions` warning fires if used). This ceiling protects direct
-    // Vitest use on many-core hosts; the canonical npm test command tightens
-    // it to four workers so the root gate retains capacity for its Go streams.
+    // Vitest use on many-core hosts; the canonical npm test command instead
+    // sizes itself from the host's spare capacity (scripts/lib/load-aware-workers.sh),
+    // keeping four workers on an idle host so the root gate retains capacity
+    // for its Go streams.
     maxWorkers: Math.max(1, Math.min(os.availableParallelism(), 12)),
     setupFiles: ["./src/testSetup.ts"],
     // A handful of shell suites must import the real pane modules from inside
