@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -408,4 +410,65 @@ func validateSingleSuccessfulToolResult(messages []llm.Message, callID string) e
 		return fmt.Errorf("tool results for %s = %d, want exactly 1", callID, results)
 	}
 	return nil
+}
+
+// A hook completion is published twice — the durable entry and the live event
+// — and the two are not atomic, so whichever goes second can be overtaken by a
+// concurrently recorded round and the live and durable projections then order
+// the hook differently inside the same turn. The entry goes first, and this is
+// where that order is observable rather than assumed: an authoritative
+// consumer that is not draining holds the announce at the saturated event
+// channel, and the transcript is read from outside the emitter while it waits.
+func TestHookEndWritesTheEntryBeforeAnnouncingIt(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "hook-order.jsonl")
+	writer, err := transcript.NewWriterNoSync(path, transcript.Header{})
+	if err != nil {
+		t.Fatalf("NewWriterNoSync: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	s := &Session{
+		id:              "hook-order",
+		transcript:      writer,
+		transcriptReady: true,
+		events:          make(chan events.SessionEvent, 1),
+		// Nothing drains this session, so an ordinary emitter would drop the
+		// event and never park. The mark is what makes the send wait.
+		authoritativeConsumer: true,
+	}
+	s.events <- events.SessionEvent{Kind: events.EventWarning, Data: events.WarningData{Message: "fills the buffer"}}
+
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	s.testOnlyBlockedSendEntered = func() { blockedOnce.Do(func() { close(blocked) }) }
+
+	announced := make(chan struct{})
+	go func() {
+		defer close(announced)
+		s.emitHookCompleted(events.HookEndData{Event: "PreCompact", HookType: "command", PluginName: "hook-turn-plugin"})
+	}()
+
+	select {
+	case <-blocked:
+	// TRIPWIRE: the callback fires as the emitter reaches the saturated
+	// channel, which is immediate; 10s only fires if it never gets there.
+	case <-time.After(10 * time.Second):
+		t.Fatal("the hook completion's event never reached the saturated channel")
+	}
+
+	if hooks := transcriptHookTurns(t, path); len(hooks) != 1 {
+		t.Fatalf("HOOK_COMPLETED entries while the event is still held at the channel: got %d, want 1; an announce that precedes its own entry lets a concurrently recorded round land between them and order the hook differently in the live and durable projections", len(hooks))
+	}
+
+	<-s.events // releases the parked announce
+	select {
+	case <-announced:
+	// TRIPWIRE: the send completes as soon as the buffer has room; 10s only
+	// fires if the emitter stays parked after the drain.
+	case <-time.After(10 * time.Second):
+		t.Fatal("the hook completion's event stayed parked after the channel drained")
+	}
+	if got := len(s.events); got != 1 {
+		t.Fatalf("events on the channel after the release = %d, want the announced hook end", got)
+	}
 }
