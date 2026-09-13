@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
 	ThreadListParams,
 	ThreadListResponse,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { RosterEntry } from "../../mobile/src/services/roster";
 import { createRosterService } from "../../mobile/src/services/roster";

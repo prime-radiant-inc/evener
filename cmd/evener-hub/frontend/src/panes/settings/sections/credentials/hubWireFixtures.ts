@@ -13,7 +13,7 @@
 // with `make fuzz-goldens`.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InstanceEntry } from "../types.gen";
+import type { InstanceEntry } from "../../../../protocol/types.gen";
 
 interface AuthWireFixture {
   case: string;
@@ -23,7 +23,10 @@ interface AuthWireFixture {
 }
 
 // Relative to the frontend package root, which is what vitest sets the
-// working directory to.
+// working directory to. That assumption is why this module lives in the app
+// and not in the AppWire package: the package is consumed from wherever its
+// consumer runs, so a path resolved against the process's CWD is meaningless
+// there. package-test-files.mjs enforces that.
 const FIXTURE_PATH = join("..", "testdata", "authwire", "responses.json");
 
 /** hubInstanceEntries returns the instance rows the hub actually sends. */

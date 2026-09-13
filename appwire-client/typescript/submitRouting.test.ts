@@ -62,7 +62,7 @@ test("empty text, no attachments, empty queue is a no-op (focus-only, no request
 // checks statusType alone) - this one requires BOTH statusType==="active"
 // AND a non-empty activeTurnId, matching thread-state.js's legacy
 // EvenerThreadState.isBusy (the predicate interrupt/steer/model-switch share,
-// never the composer's send/queue chain - see protocol/sendQueueAvailability.ts's
+// never the composer's send/queue chain - see appwire-client/typescript/sendQueueAvailability.ts's
 // own comment on why the two must not be folded together).
 
 test("active status with a populated activeTurnId is busy", () => {

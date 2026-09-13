@@ -20,7 +20,7 @@ import { inactivePromptDependent } from "../../cmd/evener-hub/frontend/src/panes
 import type {
   LaunchConfigLayer,
   LaunchOption,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";

@@ -38,7 +38,7 @@ import { create } from "zustand";
 import type {
   AnyNotification,
   ThreadCapabilities,
-} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../../appwire-client/typescript/types.gen";
 import {
   deriveOpenTaskCount,
   projectDelegateEntry,

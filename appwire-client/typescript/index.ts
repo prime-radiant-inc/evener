@@ -119,6 +119,7 @@ export {
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+export { canReadSharedNotes } from "./sharedNotesAvailability";
 export type {
   SlashEmbedding,
   SlashMatchEvaluation,

@@ -3,7 +3,7 @@ import type {
 	AnyNotification,
 	KeybindingsOverrides,
 	TranscriptDisplayDefaults,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import { toWireConfig } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";

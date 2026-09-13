@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   SandboxEscalationRequested,
   Thread,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import { projectApproval } from "../../mobile/src/conversation/project";
 import {
   type ConversationClientLike,

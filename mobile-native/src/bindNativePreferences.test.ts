@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
 	InitializeResponse,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import {
 	bindNativePreferences,
 	type PreferencesClient,

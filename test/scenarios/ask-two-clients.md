@@ -75,7 +75,7 @@ and assert what each tab converges to.
    ```
 2. **(browser-free)** Fire **two genuinely concurrent** answers as two separate clients,
    with deliberately different choices so the transcript shows unambiguously which one won.
-   Both bodies are the exact `[answers]` form the dock composes (`cmd/evener-hub/frontend/src/protocol/askAnswers.ts:92-100`):
+   Both bodies are the exact `[answers]` form the dock composes (`appwire-client/typescript/askAnswers.ts:92-100`):
    ```bash
    out=$(mktemp -d -t evener-e2e-ask-race-XXXXX)
    answer() { jq -n --arg l "$1" '{text: ("[answers]\n1. [Deploy] → \"" + $l + "\"")}'; }
@@ -165,10 +165,10 @@ and assert what each tab converges to.
   **both** tabs — a successful durable enqueue removes the batch in the sending tab
   (`askDockStore.ts:258`), and the winner's `[answers]` reply lands as a plain
   `userMessage`, which pushes the question behind `liveAskQuestions`' last-user-message
-  boundary in the other (`cmd/evener-hub/frontend/src/protocol/deriveAskQuestions.ts:62-97`). `recap` in both tabs
+  boundary in the other (`appwire-client/typescript/deriveAskQuestions.ts:62-97`). `recap` in both tabs
   reads the identical `Asked: [Deploy] — answered: "<winner's choice>"` — the losing tab
   echoes the *winner's* answer, because the recap is computed from the shared transcript
-  (`cmd/evener-hub/frontend/src/protocol/askShared.ts:118-150`), not from local state.
+  (`appwire-client/typescript/askShared.ts:118-150`), not from local state.
 - **Step 7 (the loser's own text)**: the rejected intent lands in the durable recovery
   surface — either restored into that tab's composer as an editable draft (`composerDraft`
   starts with `[answers]`; `Composer.tsx:271-297` only does this when the composer is
