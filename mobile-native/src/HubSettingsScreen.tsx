@@ -17,7 +17,7 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { friendlyErrorMessage } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import { friendlyErrorMessage } from "../../appwire-client/typescript/errors";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { HubUpgradeSection } from "./HubUpgradeSection";

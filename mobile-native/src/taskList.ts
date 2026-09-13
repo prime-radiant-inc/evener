@@ -2,11 +2,11 @@ import {
   parseTaskListData,
   type TaskRow,
 } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/taskData";
-import { sessionActionError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import { sessionActionError } from "../../appwire-client/typescript/errors";
 import {
   isActionUnavailable,
   isThreadNotFound,
-} from "../../cmd/evener-hub/frontend/src/protocol/sessionErrors";
+} from "../../appwire-client/typescript/sessionErrors";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface TaskListState {

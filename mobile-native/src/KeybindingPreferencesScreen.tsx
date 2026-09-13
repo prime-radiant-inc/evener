@@ -10,7 +10,7 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { KeybindingsRule } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { KeybindingsRule } from "../../appwire-client/typescript/types.gen";
 import { useConnection } from "./ConnectionProvider";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";

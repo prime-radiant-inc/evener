@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import type { ScopedCommand } from "../shell/palette/commands";
+import type { ScopedCommand } from "../../cmd/evener-hub/frontend/src/shell/palette/commands";
 import {
   evaluateSlashLabel,
   filterSlashMenuItems,

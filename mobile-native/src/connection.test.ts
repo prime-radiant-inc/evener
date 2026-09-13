@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
+import type { WebSocketLike } from "../../appwire-client/typescript/transport";
 import {
 	connectionTarget,
 	createHubClient,

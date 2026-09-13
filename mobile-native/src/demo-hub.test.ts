@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
+import type { WebSocketLike } from "../../appwire-client/typescript/transport";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
 import { createActivityStore } from "../../mobile/src/state/activity";

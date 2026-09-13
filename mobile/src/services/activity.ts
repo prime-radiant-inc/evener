@@ -15,7 +15,7 @@ import type {
   EvenerJobInfo,
   TaskAggregate,
   Thread,
-} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../../appwire-client/typescript/types.gen";
 import type { MobileCapabilities, MobileUsage } from "../conversation/model";
 import { projectUsage } from "../conversation/project";
 

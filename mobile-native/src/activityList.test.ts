@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
-import { parseActivityTree } from "../../cmd/evener-hub/frontend/src/protocol/activityData";
-import { ActivityList } from "../../cmd/evener-hub/frontend/src/protocol/activityList";
-import type { AnyNotification } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import { parseActivityTree } from "../../appwire-client/typescript/activityData";
+import { ActivityList } from "../../appwire-client/typescript/activityList";
+import type { AnyNotification } from "../../appwire-client/typescript/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 function tree(revision = 1, ids = ["a"], continuation?: string) {

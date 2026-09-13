@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, FlatList, TextInput, View } from "react-native";
-import type { ModelDescriptor } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { ModelDescriptor } from "../../appwire-client/typescript/types.gen";
 import { modelPickerEntries } from "./modelPickerEntries";
 import type { SessionControls } from "./sessionControls";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";

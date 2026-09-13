@@ -8,7 +8,7 @@ import {
 	type KeybindingsPlatform,
 	validateOverrideRules,
 } from "../../cmd/evener-hub/frontend/src/keybindings/validation";
-import type { KeybindingsRule } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { KeybindingsRule } from "../../appwire-client/typescript/types.gen";
 
 const actionIds = new Set(ACTION_DISPLAY_ROWS.map((row) => row.actionId));
 

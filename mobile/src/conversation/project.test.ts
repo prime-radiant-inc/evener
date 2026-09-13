@@ -13,7 +13,7 @@ import type {
   ThreadCapabilities,
   ThreadItem,
   Turn,
-} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../../appwire-client/typescript/types.gen";
 import type {
   ActivityDetail,
   ActivityFamily,

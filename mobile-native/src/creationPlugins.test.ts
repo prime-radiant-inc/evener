@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { PluginPreviewResponse } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { PluginPreviewResponse } from "../../appwire-client/typescript/types.gen";
 import {
   type ConversationClientLike,
   createNewSessionService,

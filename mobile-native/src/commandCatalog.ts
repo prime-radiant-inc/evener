@@ -1,9 +1,9 @@
-import { visibleCatalogCommands } from "../../cmd/evener-hub/frontend/src/protocol/catalogCommands";
-import { sessionActionError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import { visibleCatalogCommands } from "../../appwire-client/typescript/catalogCommands";
+import { sessionActionError } from "../../appwire-client/typescript/errors";
 import {
   mergeSlashCommands,
   type SlashMenuItem,
-} from "../../cmd/evener-hub/frontend/src/protocol/slashCompletion";
+} from "../../appwire-client/typescript/slashCompletion";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface CatalogState {

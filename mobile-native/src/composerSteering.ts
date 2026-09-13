@@ -1,5 +1,5 @@
-import { decideSteerRoute } from "../../cmd/evener-hub/frontend/src/protocol/submitRouting";
-import type { InputItem } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import { decideSteerRoute } from "../../appwire-client/typescript/submitRouting";
+import type { InputItem } from "../../appwire-client/typescript/types.gen";
 import type { ConversationService } from "../../mobile/src/services/conversation";
 import type { createConversationStore } from "../../mobile/src/state/conversation";
 

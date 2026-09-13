@@ -19,8 +19,8 @@ import {
   withPluginSelection,
 } from "../../cmd/evener-hub/frontend/src/panes/spawn/pluginSelectionState";
 import { usePluginPreview } from "../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
-import type { AppwireClient } from "../../cmd/evener-hub/frontend/src/protocol/client";
-import type { LaunchConfigLayer } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { AppwireClient } from "../../appwire-client/typescript/client";
+import type { LaunchConfigLayer } from "../../appwire-client/typescript/types.gen";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function CreationPlugins({

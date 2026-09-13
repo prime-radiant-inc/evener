@@ -3,7 +3,7 @@
 // conflict restore, and no auto-retry.
 
 import { describe, expect, it } from "vitest";
-import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
+import { WireError } from "../../../appwire-client/typescript/errors";
 import type {
   AnyNotification,
   InputItem,
@@ -12,7 +12,7 @@ import type {
   ThreadCapabilities,
   ThreadItem,
   Turn,
-} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../../appwire-client/typescript/types.gen";
 import type {
   ActivityMember,
   MobileCapabilities,

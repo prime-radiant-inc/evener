@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import { WireError } from "../../appwire-client/typescript/errors";
 import {
   type ConversationClientLike,
   createNewSessionService,
