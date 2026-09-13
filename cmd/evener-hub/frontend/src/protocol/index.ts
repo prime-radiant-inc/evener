@@ -32,7 +32,7 @@ export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalRe
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type { DocFileContent, DocFileErrorKind } from "./docContent";
-// readDocFile is deliberately absent from the root: it needs a fetch from the
+// readDocFile is deliberately absent from the root: it needs a DocPort from the
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
