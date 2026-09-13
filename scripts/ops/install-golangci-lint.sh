@@ -75,6 +75,9 @@ bindir="$(go env GOPATH)/bin"
 attempt_scratch=""
 attempt_pid=""
 attempt_record=""
+# Set when a stop could not be shown to have worked: the scratch and the record
+# in it then stay, whatever else runs afterwards.
+attempt_unconfirmed=0
 # Seconds to wait for the attempt's group to empty after each of SIGTERM and
 # SIGKILL. Only a member that ignores or cannot take the signal reaches the end
 # of either wait, so an ordinary stop costs milliseconds.
@@ -103,7 +106,7 @@ stop_attempt() {
 			target="${recorded#p*:}"
 		else
 			printf 'install-golangci-lint.sh: an install attempt was spawned but never named itself, so it cannot be shown to have stopped.\n' >&2
-			return 0
+			return 1
 		fi
 	fi
 	[ -n "$target" ] || return 0
@@ -134,13 +137,13 @@ stop_attempt() {
 		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: the process listing that answers whether group %s is empty would not run. It has been signalled blind, and not waited on.\n' \
 			"$target" >&2
 		attempt_pid=""
-		return 0
+		return 1
 	fi
 	if [ "$stop_status" -ne 0 ]; then
 		printf 'install-golangci-lint.sh: the install attempt would not stop; process group %s still holds %s. Not waiting on it.\n' \
 			"$target" "$(pgroup_survivor_report "$target")" >&2
 		attempt_pid=""
-		return 0
+		return 1
 	fi
 	# The group is empty, so this reap cannot block: the leader is a zombie or
 	# already collected, and bash keeps a reaped job's status either way. Only a
@@ -148,16 +151,40 @@ stop_attempt() {
 	[ -n "$attempt_pid" ] && wait "$attempt_pid" 2>/dev/null || :
 	attempt_pid=""
 }
-trap 'stop_attempt; scratch_rm' EXIT
+# finish_cleanup — stop the attempt, then remove the scratch if and only if the
+# stop could be shown to have worked.
+#
+# A scratch deleted over a group that may still be running takes the record with
+# it, and that record is the only name anyone has for what is holding the Go bin
+# directory open. The same rule the gate follows with its own records: what
+# cannot be shown to have stopped keeps its name, and is said out loud.
+finish_cleanup() {
+	if [ "$attempt_unconfirmed" -eq 0 ] && stop_attempt; then
+		scratch_rm
+		return 0
+	fi
+	# Said once and remembered: a signal trap and then the EXIT trap both run
+	# this, and the second pass can only repeat a stop already given up on,
+	# including its grace — and must not mistake "nothing left to try" for
+	# "nothing was left running" and delete the scratch after all.
+	if [ "$attempt_unconfirmed" -eq 0 ]; then
+		attempt_unconfirmed=1
+		attempt_record=""
+		printf 'install-golangci-lint.sh: keeping %s: it holds the record of an install attempt that could not be shown to have stopped.\n' \
+			"$attempt_scratch" >&2
+	fi
+	return 0
+}
+trap finish_cleanup EXIT
 # A signal ends the script without running the EXIT trap, and a CI cancellation
 # lands during the fetch more often than anywhere else, so the scratch would be
 # left behind on the runner and the installer left running in it. Each of these
 # stops the attempt, cleans up and exits with the conventional 128 plus the
 # signal number; stop_attempt and scratch_rm are both safe to run twice, so the
 # EXIT trap that follows changes nothing.
-trap 'stop_attempt; scratch_rm; exit 129' HUP
-trap 'stop_attempt; scratch_rm; exit 130' INT
-trap 'stop_attempt; scratch_rm; exit 143' TERM
+trap 'finish_cleanup; exit 129' HUP
+trap 'finish_cleanup; exit 130' INT
+trap 'finish_cleanup; exit 143' TERM
 scratch_dir attempt_scratch evener-golangci-install
 attempt_log="$attempt_scratch/attempt.stderr"
 attempt_record="$attempt_scratch/attempt.pgid"
