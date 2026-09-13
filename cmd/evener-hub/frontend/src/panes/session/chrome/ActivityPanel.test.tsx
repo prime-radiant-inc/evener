@@ -1216,6 +1216,50 @@ describe("ActivityPanel", () => {
     expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
   });
 
+  test("a failed continuation does not automatically issue a root request", async () => {
+    const fake = connectFakeClient();
+    const discardedRoot = deferred<{ data: unknown }>();
+    let rootRequests = 0;
+    fake.on("evener/jobs/list", () => {
+      rootRequests += 1;
+      if (rootRequests === 2) return discardedRoot.promise;
+      return { data: activityTree() };
+    });
+
+    const { rerender } = render(<ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />);
+    await screen.findByRole("tree");
+    rerender(<ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />);
+    await waitFor(() => expect(rootRequests).toBe(2));
+
+    const nodeID = "delegate:dlg_partial";
+    let continuationRequest = 0;
+    act(() => {
+      continuationRequest = activityPanelStore.getState().beginFetch("ref_root", { nodeID });
+    });
+    await act(async () => {
+      discardedRoot.resolve({ data: activityTree(2) });
+      await discardedRoot.promise;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
+
+    act(() => {
+      activityPanelStore.getState().publishFetch("ref_root", continuationRequest, {
+        kind: "continuation-failed",
+        nodeID,
+        message: "continuation failed",
+      });
+    });
+    await act(async () => Promise.resolve());
+
+    expect(activityPanelStore.getState().entries.get("ref_root")?.continuationFailures[nodeID]).toBe(
+      "continuation failed",
+    );
+    expect(activitySummaryStore.getState().entries.get("ref_root")?.lastFetchedBump).toBeUndefined();
+    expect(rootRequests).toBe(2);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
+  });
+
   test("a refresh that drops a retained row keeps rendering the surviving tree", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

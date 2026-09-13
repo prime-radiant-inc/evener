@@ -53,6 +53,8 @@ export function useActivityRefresh(
   const discoverUnestablished = owner.kind === "background" && owner.discoverUnestablished;
   const suppressed = owner.kind === "background" && owner.suppressed;
   const reportFailure = owner.kind === "body" ? owner.onFailure : undefined;
+  const backgroundEstablished = owner.kind === "background" ? summary.established : undefined;
+  const backgroundLastFetchedBump = owner.kind === "background" ? summary.lastFetchedBump : undefined;
 
   useEffect(() => {
     currentRef.current = ref;
@@ -64,58 +66,26 @@ export function useActivityRefresh(
     };
   }, [owner.kind, ref]);
 
-  // The load and loading states are deliberately sampled, not dependencies.
-  // Request completion must not turn a retained failure into a retry loop.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: entry.load and summary.loading are completion state; owner fields below are the actual effect inputs
+  // The body samples retained load and summary freshness only when its old
+  // mount/model/hydration inputs run the effect. Request or continuation
+  // completion must not turn a retained failure into an automatic root retry.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: entry.load and summary.lastFetchedBump are completion state; body refreshes are driven only by mount/model/hydration inputs
   useEffect(() => {
-    if (owner.kind === "background") {
-      if (bodyOwnsFreshness) {
-        // A mounted body owns freshness, so a generation it sees must not be
-        // queued for the background owner after that body unmounts.
-        handledGenerationRef.current = hydrationGeneration;
-        return;
-      }
-      if (suppressed) return;
-      if (!summary.established && !discoverUnestablished) return;
-    }
-
-    const generationChanged = hydrationGeneration !== handledGenerationRef.current;
-    if (
-      owner.kind === "background" &&
-      summary.established &&
-      !generationChanged &&
-      summary.lastFetchedBump === model.jobsUpdatedAt
-    ) {
-      return;
-    }
-
+    if (owner.kind !== "body") return;
     const bumpMismatch = summary.lastFetchedBump !== model.jobsUpdatedAt;
     const retainedNonReady =
       entry.load.kind === "idle" ||
       entry.load.kind === "failed" ||
       entry.load.kind === "unsupported" ||
       entry.load.kind === "ended";
-    // A null bump cannot prove retained data is current. A body also retries
-    // retained non-ready states; an unestablished background owner uses those
-    // same complete initial-discovery conditions.
     const unprovenFreshness = model.jobsUpdatedAt === null;
-    const initialDiscovery = owner.kind === "background" && !summary.established;
-    const shouldRefresh =
-      owner.kind === "body"
-        ? bumpMismatch || retainedNonReady || unprovenFreshness
-        : initialDiscovery || generationChanged || bumpMismatch;
-    if (!shouldRefresh) return;
-
-    const force =
-      owner.kind === "body"
-        ? retainedNonReady || unprovenFreshness
-        : generationChanged || (initialDiscovery && (retainedNonReady || unprovenFreshness));
-    handledGenerationRef.current = hydrationGeneration;
+    if (!(bumpMismatch || retainedNonReady || unprovenFreshness)) return;
 
     // refreshRoot queues forced calls refused by its in-flight gate. Sampling
     // the live store immediately before dispatch prevents co-mounted owners
     // from manufacturing a duplicate forced follow-up without making request
     // completion an effect dependency.
+    const force = retainedNonReady || unprovenFreshness;
     if (force && activitySummaryStore.getState().entries.get(ref)?.loading) return;
     const requestGeneration = bodyGenerationRef.current;
     const onFailure = reportFailure
@@ -126,16 +96,50 @@ export function useActivityRefresh(
         }
       : undefined;
     refreshActivityRoot(ref, model.jobsUpdatedAt, onFailure, force);
+  }, [hydrationGeneration, model.jobsUpdatedAt, owner.kind, ref, reportFailure]);
+
+  // Background owners observe establishment and bump changes, but retained
+  // load completion remains sampled so it cannot create a retry loop.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: entry.load is sampled only to choose force during initial discovery
+  useEffect(() => {
+    if (owner.kind !== "background") return;
+    if (bodyOwnsFreshness) {
+      // A mounted body owns freshness, so a generation it sees must not be
+      // queued for the background owner after that body unmounts.
+      handledGenerationRef.current = hydrationGeneration;
+      return;
+    }
+    if (suppressed) return;
+    if (!backgroundEstablished && !discoverUnestablished) return;
+
+    const generationChanged = hydrationGeneration !== handledGenerationRef.current;
+    if (backgroundEstablished && !generationChanged && backgroundLastFetchedBump === model.jobsUpdatedAt) {
+      return;
+    }
+
+    const bumpMismatch = backgroundLastFetchedBump !== model.jobsUpdatedAt;
+    const retainedNonReady =
+      entry.load.kind === "idle" ||
+      entry.load.kind === "failed" ||
+      entry.load.kind === "unsupported" ||
+      entry.load.kind === "ended";
+    const unprovenFreshness = model.jobsUpdatedAt === null;
+    const initialDiscovery = !backgroundEstablished;
+    if (!(initialDiscovery || generationChanged || bumpMismatch)) return;
+
+    const force = generationChanged || (initialDiscovery && (retainedNonReady || unprovenFreshness));
+    handledGenerationRef.current = hydrationGeneration;
+    if (force && activitySummaryStore.getState().entries.get(ref)?.loading) return;
+    refreshActivityRoot(ref, model.jobsUpdatedAt, undefined, force);
   }, [
+    backgroundEstablished,
+    backgroundLastFetchedBump,
     bodyOwnsFreshness,
     discoverUnestablished,
     hydrationGeneration,
     model.jobsUpdatedAt,
     owner.kind,
     ref,
-    reportFailure,
-    summary.established,
-    summary.lastFetchedBump,
     suppressed,
   ]);
 }
