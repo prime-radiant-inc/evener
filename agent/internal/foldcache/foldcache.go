@@ -606,17 +606,20 @@ func (c *Cache[T]) finishFlight(flightKey string) {
 	delete(c.flights, flightKey)
 }
 
-// Stats returns a snapshot of this cache's counters.
-// Epoch reports the generation Get would attach to path's next fold, without
-// folding anything: the generation this cache recorded for the path, and 0
-// for a path it has never folded — which is exactly what a first fold
-// assigns, since there is no prior state for it to have discarded. A caller
-// that has to name a path's generation WITHOUT paying for its fold (the
-// activity tree's depth-truncated children) gets the same number the fold
-// would have produced, unless the file is found rewritten in between — in
-// which case the fold's number is higher and the mismatch is the true
-// answer, not a false one.
+// Epoch reports the generation Get would attach to path right now, without
+// folding anything, for a caller that must name a path's generation WITHOUT
+// paying for its fold (the activity tree's depth-truncated children). It
+// answers what Get answers: the generation this cache recorded for the path;
+// 0 for a path never folded, which is what a first fold assigns since there
+// is no prior state to discard; and 0 for a path that is gone, which is the
+// zero Result Get returns for a missing file rather than the tombstone kept
+// for the content that used to be there. A file found rewritten between this
+// call and the fold raises the fold's generation past this one, and that
+// mismatch is a true answer, not a false one.
 func (c *Cache[T]) Epoch(path string) uint64 {
+	if _, err := os.Stat(path); err != nil {
+		return 0
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if st := c.epochStates[path]; st != nil {
@@ -625,6 +628,7 @@ func (c *Cache[T]) Epoch(path string) uint64 {
 	return 0
 }
 
+// Stats returns a snapshot of this cache's counters.
 func (c *Cache[T]) Stats() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
