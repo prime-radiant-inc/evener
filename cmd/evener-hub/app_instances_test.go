@@ -1345,6 +1345,48 @@ func TestInstances_ApiKeySetRefusesAKeyForARemovedInstance(t *testing.T) {
 	}
 }
 
+// An endpoint's identity includes what the displayed URL leaves out: a query
+// parameter can name a different endpoint (an API version, a deployment) and
+// can carry a token, so it must not cross the wire as text but must still be
+// comparable. The fingerprint is what lets a client tell a query-only endpoint
+// change from no change at all.
+func TestInstances_ListExposesAnEndpointFingerprint(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://gateway.test/v1?api-version=2024-02-01",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first := entry(t, f.ctl.List(), "work")
+	if first.BaseURL != "https://gateway.test/v1" {
+		t.Fatalf("displayed BaseURL = %q, want the query parameter kept off the wire", first.BaseURL)
+	}
+	if len(first.EndpointFingerprint) != 64 {
+		t.Fatalf("EndpointFingerprint = %q, want a digest", first.EndpointFingerprint)
+	}
+	if again := entry(t, f.ctl.List(), "work"); again.EndpointFingerprint != first.EndpointFingerprint {
+		t.Fatalf("the fingerprint moved between listings: %q then %q", first.EndpointFingerprint, again.EndpointFingerprint)
+	}
+
+	// A change the displayed URL cannot show: the sanitized copy stays put and
+	// the fingerprint is what moves.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{
+		Name:    "work",
+		BaseURL: "https://gateway.test/v1?api-version=2025-01-01",
+	}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	second := entry(t, f.ctl.List(), "work")
+	if second.BaseURL != first.BaseURL {
+		t.Fatalf("displayed BaseURL = %q, want the sanitized copy unchanged", second.BaseURL)
+	}
+	if second.EndpointFingerprint == first.EndpointFingerprint {
+		t.Fatal("a query-parameter-only endpoint change left the fingerprint unchanged, so a client cannot see it")
+	}
+}
+
 // TestInstances_SetDefaultValidatesTheInstanceUnderTheControllerLock: a
 // default naming an instance a rename has moved away is one the next load
 // refuses while it sits on disk, so the check and the write are one step.

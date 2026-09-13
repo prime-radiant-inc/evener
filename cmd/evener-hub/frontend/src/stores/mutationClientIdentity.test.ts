@@ -40,3 +40,42 @@ test("falls back to the random and timestamp identity without crypto.randomUUID"
 
   expect(ownClientId()).toMatch(/^mutation-client-[0-9a-z]+-[0-9a-z]+$/);
 });
+
+test("a fallback identity created before storage was available is never replaced", async () => {
+  // Storage-availability seam: the toggle below stands in for the described
+  // trigger (storage denied on the first call, reachable later). In production
+  // this module is the key's only writer, so no stored value can appear that
+  // this tab did not write - see the test's own report note - but the seam is
+  // what makes the "late value becomes visible" step observable.
+  const backing = new Map<string, string>();
+  let available = false;
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => {
+      if (!available) throw new Error("storage denied");
+      return backing.get(key) ?? null;
+    },
+    setItem: (key: string, value: string) => {
+      if (!available) throw new Error("storage denied");
+      backing.set(key, value);
+    },
+    removeItem: (key: string) => {
+      if (!available) throw new Error("storage denied");
+      backing.delete(key);
+    },
+    clear: () => backing.clear(),
+  });
+  const { ownClientId } = await import("./mutationClientIdentity");
+
+  // First call with storage unavailable: the page falls back to a generated
+  // identity held in module state.
+  const first = ownClientId();
+  expect(first).toMatch(/^mutation-client-/);
+
+  // Storage becomes reachable later holding an identity this page never
+  // handed out. One page keeps one identity either way: switching now would
+  // classify records stamped with the fallback as belonging to a different
+  // client.
+  available = true;
+  backing.set("evener-hub.mutation-client-identity", "stored-identity");
+  expect(ownClientId()).toBe(first);
+});

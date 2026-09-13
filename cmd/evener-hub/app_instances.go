@@ -1,6 +1,8 @@
 package hub
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -135,26 +137,27 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 func (c *hubInstancesController) entryFor(inst registry.Instance, authored *registry.Provider) appwire.InstanceEntry {
 	status := c.auth.instanceStatus(inst)
 	entry := appwire.InstanceEntry{
-		Name:               inst.Name,
-		Base:               inst.Base,
-		ProviderID:         inst.ProviderID,
-		Protocol:           inst.Protocol,
-		Surface:            inst.Surface,
-		Auth:               inst.Auth,
-		BaseURL:            sanitizeEndpointURL(inst.BaseURL),
-		Vars:               inst.Vars,
-		Implicit:           inst.Implicit,
-		Hidden:             inst.Hidden,
-		IsDefault:          inst.Default,
-		AuthModes:          status.AuthModes,
-		ActiveSource:       status.ActiveSource,
-		HasStoredFile:      status.HasStoredFile,
-		HasStoredOAuth:     status.HasStoredOAuth,
-		EnvVar:             status.EnvVar,
-		ShadowedEnvVar:     status.ShadowedEnvVar,
-		StoredEmail:        status.StoredEmail,
-		CredentialRequired: inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
-		Warnings:           inst.Warnings,
+		Name:                inst.Name,
+		Base:                inst.Base,
+		ProviderID:          inst.ProviderID,
+		Protocol:            inst.Protocol,
+		Surface:             inst.Surface,
+		Auth:                inst.Auth,
+		BaseURL:             sanitizeEndpointURL(inst.BaseURL),
+		EndpointFingerprint: endpointFingerprint(inst.BaseURL),
+		Vars:                inst.Vars,
+		Implicit:            inst.Implicit,
+		Hidden:              inst.Hidden,
+		IsDefault:           inst.Default,
+		AuthModes:           status.AuthModes,
+		ActiveSource:        status.ActiveSource,
+		HasStoredFile:       status.HasStoredFile,
+		HasStoredOAuth:      status.HasStoredOAuth,
+		EnvVar:              status.EnvVar,
+		ShadowedEnvVar:      status.ShadowedEnvVar,
+		StoredEmail:         status.StoredEmail,
+		CredentialRequired:  inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
+		Warnings:            inst.Warnings,
 	}
 	if authored != nil {
 		// api_key_env names an environment variable, and the loader takes
@@ -213,6 +216,22 @@ func sanitizeEndpointURL(raw string) string {
 	u.Fragment = ""
 	u.RawFragment = ""
 	return u.String()
+}
+
+// endpointFingerprint identifies the complete endpoint an instance resolves,
+// including the parts sanitizeEndpointURL leaves out of the displayed copy:
+// query parameters, userinfo and fragment. A client cannot compare those
+// itself - they must not cross the appwire boundary, since a query string can
+// carry a token - so the digest is what lets it notice that the destination
+// changed under an open flow. It is over the trimmed raw URL, so two endpoints
+// that differ only in a query parameter fingerprint differently.
+func endpointFingerprint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // writeLoadable is the invariant every mutation holds: a providers.toml the

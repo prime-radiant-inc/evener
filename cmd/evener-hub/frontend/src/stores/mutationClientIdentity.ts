@@ -36,19 +36,26 @@ function newClientIdentity(): string {
  * out of the shared outbox. */
 export function ownClientId(): string {
   if (testIdentity !== undefined) return testIdentity;
+  // One page, one identity: once this page has an identity - adopted from
+  // storage or generated as a fallback - it is returned as-is and never
+  // replaced. In particular a fallback created while storage was unavailable
+  // must survive storage becoming available later; reading storage again here
+  // would switch identity mid-page and make records stamped with the fallback
+  // look like a different client's.
+  if (fallbackIdentity !== undefined) return fallbackIdentity;
   try {
     const stored = globalThis.sessionStorage?.getItem(STORAGE_KEY);
     if (stored !== null && stored !== undefined && stored !== "") {
-      // Cache the stored value too: if storage later throws (private mode, a
-      // policy change), the fallback must keep this page's identity rather
-      // than generate a new one that makes its in-flight records look foreign.
+      // Adopt the stored value as this page's identity (crash/reload recovery:
+      // a reloaded page is the same client lineage for its own in-flight
+      // records). Held in module state so a later storage failure keeps it.
       fallbackIdentity = stored;
       return stored;
     }
   } catch {
     // Best-effort: the fallback below keeps this page's identity consistent.
   }
-  fallbackIdentity ??= newClientIdentity();
+  fallbackIdentity = newClientIdentity();
   try {
     globalThis.sessionStorage?.setItem(STORAGE_KEY, fallbackIdentity);
   } catch {

@@ -71,6 +71,11 @@ function destination(row: InstanceEntry | undefined): string {
     row.name,
     row.providerId,
     row.base,
+    // The complete endpoint identity, query parameters included: baseUrl is the
+    // sanitized copy the user reads, and a query-only change (an API version, a
+    // deployment, a token) leaves it identical. Without this the flow would
+    // treat a different endpoint as the one it anchored on and skip the review.
+    row.endpointFingerprint,
     row.baseUrl,
     row.protocol,
     row.surface,
@@ -490,6 +495,19 @@ function SelectedConnection({
     setResult(null);
     setReview(null);
     if (!saved && storedMode && !host && value.trim()) {
+      // The draft was typed against the connection this flow anchored on, and a
+      // credential only ever goes to an endpoint the user was shown. If the
+      // name resolves to a different destination now - another client edited
+      // it, or removed and recreated it under the same name - saving would send
+      // this key somewhere the user never reviewed. Report the change, drop the
+      // draft, and re-anchor so a re-entered key lands on the destination now
+      // on screen; the check path's own review step covers the rest.
+      if (row && destination(row) !== destination(baseline)) {
+        changeValue("");
+        setBaseline(row);
+        setError("This connection changed to a different endpoint. Check its destination and enter the key again.");
+        return;
+      }
       setPhase("saving");
       try {
         const state = credentialsStore.getState();

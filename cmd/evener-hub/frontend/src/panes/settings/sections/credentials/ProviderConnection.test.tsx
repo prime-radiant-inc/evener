@@ -846,3 +846,62 @@ test.each([
     expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
   },
 );
+
+// The catalogue with one provider's endpoint fingerprint set: what the hub
+// reports when the endpoint moved in a part the sanitized baseUrl cannot show
+// (a query parameter naming a different API version, deployment or token).
+// activeSource is the credential source the listing reports, so a post-save
+// listing can say "store" and leave the destination comparison as the only
+// thing that can demand review.
+function fingerprintList(fingerprint: string, activeSource = "none"): InstanceListResponse {
+  return {
+    instances: [],
+    availableProviders: catalogue.map((row) =>
+      row.id === "anthropic"
+        ? provider("anthropic", "Anthropic", ["apiKey"], { endpointFingerprint: fingerprint, activeSource })
+        : row,
+    ),
+  };
+}
+
+test("a query-only endpoint change still requires review before the check", async () => {
+  const { user, client } = setup(fingerprintList("fp-2024"));
+  await choose(user, "Anthropic");
+  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  // The displayed URL does not move; the endpoint this name resolves to does.
+  // The saved listing reports the source the save produced, so the review can
+  // only come from the endpoint identity.
+  scriptSave(client, fingerprintList("fp-2025", "store"));
+
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+
+  expect(await screen.findByText("Review changed access before contacting the provider.")).toBeTruthy();
+  // Both sanitized copies are the same text, so this pins that the review came
+  // from the endpoint identity the fingerprint carries and not from what the
+  // user reads.
+  expect(screen.getByText("Previous destination: https://anthropic.example/v1")).toBeTruthy();
+  expect(screen.getByText("Current destination: https://anthropic.example/v1")).toBeTruthy();
+});
+
+test("a credential draft is not saved to a destination that changed since it was typed", async () => {
+  const { user, client } = setup(fingerprintList("fp-2024"));
+  await choose(user, "Anthropic");
+  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  // Another client points the name at a different endpoint while the flow sits
+  // idle with the draft: the draft was typed against the old destination, and
+  // a credential only ever goes to an endpoint the user was shown.
+  client.on("evener/instance/list", () => structuredClone(fingerprintList("fp-2025")));
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+  expect(
+    await screen.findByText(
+      "This connection changed to a different endpoint. Check its destination and enter the key again.",
+    ),
+  ).toBeTruthy();
+});

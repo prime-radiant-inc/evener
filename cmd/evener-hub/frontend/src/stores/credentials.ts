@@ -347,13 +347,22 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // - Marked per provider when the mutation is ISSUED (not when it resolves):
 //   the broadcast can reach this client before the RPC response does, so a
 //   resolve-time marker would miss the echo entirely.
-// - Consumed by the FIRST matching notification: one mutation broadcasts one
-//   echo, so a second same-provider notification inside the window is an
-//   unrelated client's change and still refetches.
+// - COUNTED, not a single timestamp: back-to-back same-provider mutations
+//   (two saves in the guided flow, a retry, a poll landing on top of a save)
+//   each broadcast one echo, so a lone per-provider marker would let the
+//   first echo consume the second mutation's marker and leave the second self
+//   echo to be misread as an unrelated client's change - spuriously
+//   invalidating the guided flow. The per-provider entry holds the count of
+//   outstanding mutations plus the latest issue time; each matching
+//   notification consumes exactly one, and only a notification beyond the
+//   outstanding count is foreign and still refetches.
 // - Cleared when the response proves no broadcast will follow: a failed RPC,
 //   or a device poll that comes back pending/expired rather than authorized.
-//   A failed save must not silence the next unrelated change, and a poll
-//   loop must not keep re-arming the window tick after tick.
+//   One outstanding marker is retired per such outcome (a floor, not an
+//   unconditional clear): which mutation failed does not matter, only how
+//   many echoed mutations remain outstanding. A failed save must not silence
+//   the next unrelated change, and a poll loop must not keep re-arming the
+//   window tick after tick.
 // - Bounded by a short age window, so a marker that is never consumed (the
 //   echo was lost, or the notification arrived pre-response and the client
 //   disconnected) cannot outlive its meaning.
@@ -363,10 +372,18 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // clients' changes keep arriving.
 const REFETCH_DEBOUNCE_MS = 250;
 const SELF_ECHO_WINDOW_MS = 2000;
-const localAuthMutations = new Map<string, number>();
+interface LocalAuthMutationMarker {
+  // Outstanding same-provider mutations issued but not yet consumed (by an
+  // echo) or retired (by an unconfirmed outcome).
+  count: number;
+  // When the most recent one was issued; ages the whole entry out together.
+  issuedAt: number;
+}
+const localAuthMutations = new Map<string, LocalAuthMutationMarker>();
 
 function noteLocalAuthMutation(provider: string): void {
-  localAuthMutations.set(provider, Date.now());
+  const existing = localAuthMutations.get(provider);
+  localAuthMutations.set(provider, { count: (existing?.count ?? 0) + 1, issuedAt: Date.now() });
 }
 
 function clearLocalAuthMutation(provider: string): void {
@@ -377,15 +394,23 @@ function clearLocalAuthMutation(provider: string): void {
 // failed RPC, or a device poll that returned pending/expired rather than
 // authorized). The marker only ever suppressed a notification's own refetch,
 // and a matched notification now schedules the store's own refresh itself, so
-// there is no swallowed change left to make up: clearing the marker is all
-// this owes, and the next same-provider notification is foreign again.
+// there is no swallowed change left to make up: retiring one outstanding
+// marker is all this owes, and once the count reaches zero the next
+// same-provider notification is foreign again. Which mutation ended does not
+// matter - only how many echoed mutations remain outstanding - so this
+// decrements whether or not it was the mutation that failed.
 function endUnconfirmedAuthMutation(provider: string): void {
-  clearLocalAuthMutation(provider);
+  const existing = localAuthMutations.get(provider);
+  if (existing === undefined) return;
+  if (existing.count <= 1) localAuthMutations.delete(provider);
+  else localAuthMutations.set(provider, { count: existing.count - 1, issuedAt: existing.issuedAt });
 }
 
 // True exactly when this notification is this client's own echo of a
-// just-issued auth mutation; consumes the marker either way, so a stale
-// entry cannot suppress a later notification.
+// just-issued auth mutation; consumes one outstanding marker either way, so a
+// stale entry cannot suppress a later notification. A stale entry (its latest
+// issue older than the window) counts as no marker at all and is dropped
+// whole.
 //
 // The correlation is provider + issue time, and that is as exact as the wire
 // allows: evener/auth/updated carries only {provider, activeSource}
@@ -403,10 +428,16 @@ function endUnconfirmedAuthMutation(provider: string): void {
 // landing within two seconds of this client's own mutation.
 function consumeOwnAuthEcho(provider: string | undefined): boolean {
   if (provider === undefined) return false;
-  const issuedAt = localAuthMutations.get(provider);
-  if (issuedAt === undefined) return false;
-  localAuthMutations.delete(provider); // one mutation broadcasts one echo
-  return Date.now() - issuedAt <= SELF_ECHO_WINDOW_MS;
+  const marker = localAuthMutations.get(provider);
+  if (marker === undefined) return false;
+  if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
+    localAuthMutations.delete(provider); // stale: no marker, no echo of ours left
+    return false;
+  }
+  // One mutation broadcasts one echo: consume exactly one outstanding marker.
+  if (marker.count <= 1) clearLocalAuthMutation(provider);
+  else localAuthMutations.set(provider, { count: marker.count - 1, issuedAt: marker.issuedAt });
+  return true;
 }
 
 let wiredClient: AppwireClientLike | null = null;

@@ -816,6 +816,42 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("a second same-provider mutation's own echo still carries the self mark", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    // Two same-provider mutations: each one broadcasts exactly one own echo.
+    // The second marker must not overwrite the first, or the first echo
+    // consumes the only marker and the second self echo is misread as an
+    // unrelated client's change.
+    await credentialsStore.getState().setApiKey("work", "first");
+    await credentialsStore.getState().setApiKey("work", "second");
+    await vi.advanceTimersByTimeAsync(250); // the two post-save refreshes coalesce
+
+    // First echo: consumed by the first outstanding marker.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+
+    const beforeSecondEcho = credentialsStore.getState().selfRefresh;
+    // Second echo: still this client's own echo, so its refresh keeps the
+    // self mark. With a single overwritten timestamp this notification is
+    // treated as foreign and the coalesced read drops the self mark, which
+    // spuriously invalidates the guided flow.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(beforeSecondEcho);
+  });
+
   test("a same-provider change during a pending device poll is refetched without waiting for the poll", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);

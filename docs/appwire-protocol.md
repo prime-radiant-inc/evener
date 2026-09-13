@@ -737,6 +737,7 @@ _(no fields)_
 | `surface` | `string` | yes |  |
 | `auth` | `string` |  |  |
 | `baseUrl` | `string` | yes |  |
+| `endpointFingerprint` | `string` | yes |  |
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |

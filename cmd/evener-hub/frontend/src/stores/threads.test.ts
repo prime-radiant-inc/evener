@@ -4977,6 +4977,30 @@ describe("useThreadsStore.listModels", () => {
     expect(after.data[0]?.model).toBe("after");
   });
 
+  test("a warm cache does not answer a non-refresh caller while a refresh is in flight", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+    // Warm the cache with the pre-refresh listing.
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    pending[0]?.(stale);
+    expect((await first).data[0]?.model).toBe("stale");
+
+    // A refresh is now in flight. A non-refresh caller arriving alongside it
+    // must not be handed the warm cache: the refresh was issued precisely to
+    // replace that listing, and two concurrent model pickers would otherwise
+    // receive different (one stale, one fresh) results.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+    const concurrent = threadsStore.getState().listModels();
+    await settleCallerContinuations();
+    expect(pending).toHaveLength(2); // joined the refresh, issued no third request
+
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    expect((await concurrent).data[0]?.model).toBe("fresh");
+  });
+
   test("an older in-flight request landing first still loses the cache to a later refresh", async () => {
     const fake = connectFakeClient();
     const pending = deferredModelList(fake);

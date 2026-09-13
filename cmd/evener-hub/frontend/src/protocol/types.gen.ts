@@ -558,6 +558,7 @@ export interface InstanceEntry {
   surface?: string;
   auth: string;
   baseUrl?: string;
+  endpointFingerprint?: string;
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;

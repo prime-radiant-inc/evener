@@ -911,9 +911,15 @@ export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): vo
 // same way inflightHydrates does for ensureThread, and always holds the
 // NEWEST request - a refresh supersedes whatever older non-refresh request
 // was waiting there, so a concurrent caller joins the newest request rather
-// than receiving the list the refresh was issued to replace. A rejection is
-// never written to modelsCache (so a prior good cache survives a later
-// failed refresh, and a first-ever failure leaves nothing stale to keep
+// than receiving the list the refresh was issued to replace.
+// inflightModelsListIsRefresh records whether the slot's request is a
+// refresh, so a non-refresh caller with a warm cache can tell "the slot is a
+// read I may skip in favor of the cache" from "the slot is a refresh whose
+// answer is newer than the cache I hold" - the latter must join the refresh
+// rather than hand back the listing the refresh was issued to replace (two
+// concurrent model pickers otherwise receive different listings). A
+// rejection is never written to modelsCache (so a prior good cache survives a
+// later failed refresh, and a first-ever failure leaves nothing stale to keep
 // serving), and the call that owns inflightModelsList clears it in a
 // `finally` so a failed call never poisons the next one with a repeated
 // rejection — only while the slot still holds its own request, because
@@ -935,6 +941,9 @@ let modelsEpoch = 0;
 // its own response; only the cache write is gated.
 let modelsListGeneration = 0;
 let inflightModelsList: Promise<ModelListResponse> | null = null;
+// True exactly while inflightModelsList holds a refresh:true request. Cleared
+// with the slot so the flag is never read for a request it does not describe.
+let inflightModelsListIsRefresh = false;
 
 // watchThread's own refcount/inflight bookkeeping - independent of
 // refCounts/inflightHydrates above, so a watch and a real pane on the
@@ -1673,6 +1682,7 @@ function handleNotification(n: AnyNotification): void {
     modelsEpoch += 1;
     modelsCache = null;
     inflightModelsList = null;
+    inflightModelsListIsRefresh = false;
   }
   const mutationIdentities = notificationMutationIdentities(n);
   if (mutationIdentities.length > 0) {
@@ -2797,7 +2807,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // block on a reconnect that a warm cache makes irrelevant - check them
     // BEFORE waiting for a ready client, unlike the other read-only actions
     // here (which always need the wire, so the order doesn't matter).
-    if (!refresh && modelsCache) return modelsCache;
+    if (!refresh && modelsCache && !inflightModelsListIsRefresh) return modelsCache;
     if (!refresh && inflightModelsList) return inflightModelsList;
     // The ready-wait (issue #195's RCA - read-only, so it waits out a
     // reconnect instead of failing with AppwireClient's synchronous "cannot
@@ -2823,12 +2833,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // receive the list the refresh was issued to replace. Every caller still
     // receives a response; de-dupe joins the newest one.
     inflightModelsList = request;
+    inflightModelsListIsRefresh = refresh === true;
     try {
       const resp = await request;
       if (epoch === modelsEpoch && generation === modelsListGeneration) modelsCache = resp;
       return resp;
     } finally {
-      if (inflightModelsList === request) inflightModelsList = null;
+      if (inflightModelsList === request) {
+        inflightModelsList = null;
+        inflightModelsListIsRefresh = false;
+      }
     }
   },
 
@@ -2969,6 +2983,7 @@ export function resetThreadsStoreForTests(): void {
   modelsEpoch += 1;
   modelsListGeneration += 1;
   inflightModelsList = null;
+  inflightModelsListIsRefresh = false;
   unwireNotification?.();
   unwireReady?.();
   unwireNotification = null;
