@@ -101,9 +101,9 @@ describe("watchMeta", () => {
     expect(watchMeta({ ...w, active: false })).toBe("on output · not armed");
   });
 
-  test("event watches read on event plus armed state", () => {
+  test("event watches read on events plus armed state", () => {
     const w = watch({ events: ["job.completed"], cadence: [{ kind: "events" }], active: true });
-    expect(watchMeta(w)).toBe("on event · armed");
+    expect(watchMeta(w)).toBe("on events · armed");
   });
 
   test("an event watch's throttle and filter ride along with the event condition", () => {
@@ -113,7 +113,7 @@ describe("watchMeta", () => {
       active: true,
     });
     // Without the cadence detail this reads as if it fires on every match.
-    expect(watchMeta(w)).toBe("on event every 3 where status=error · armed");
+    expect(watchMeta(w)).toBe("on events every 3 where status=error · armed");
   });
 
   test("a watch with an output match and a clock cadence names both", () => {
@@ -139,7 +139,7 @@ describe("watchMeta", () => {
       cadence: [{ kind: "output" }, { kind: "events" }],
       active: true,
     });
-    expect(watchMeta(w)).toBe("on output · on event · armed");
+    expect(watchMeta(w)).toBe("on output · on events · armed");
   });
 
   test("a clock cadence with a derived next fire renders it with a tilde", () => {
@@ -269,6 +269,14 @@ describe("watchFacts", () => {
   test("never overstates an inactive watch as armed", () => {
     const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 1, active: false });
     expect(watchFacts(w, NOW)).toBe("Fires every 10m · not armed · 1 delivery");
+  });
+
+  test("an armed watch whose age cannot be computed still reads as armed", () => {
+    // created_at can arrive unparseable; the facts sentence must never drop the
+    // one segment that reports the watch's armed state.
+    const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 0, created_at: "not-a-time" });
+    expect(watchFacts(w, NOW)).toBe("Fires every 10m · armed · no deliveries yet");
+    expect(watchFacts({ ...w, active: false }, NOW)).toBe("Fires every 10m · not armed · no deliveries yet");
   });
 });
 

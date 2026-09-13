@@ -72,6 +72,56 @@ describe("ActivityWatchDetail timeline", () => {
     expect(leftOf(newest)).toBeLessThan(leftOf(screen.getByTestId("watch-timeline-now")));
   });
 
+  test("keeps instants ahead of the browser clock distinct, with the now marker before them", () => {
+    // A browser clock behind the daemon's instants put every instant after
+    // `now` at the same clamped position: two distinct deliveries drew as one
+    // dot, and the far-right now marker claimed to sit after both of them.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 3,
+          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:55:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const positions = screen.getAllByTestId("watch-timeline-dot").map(leftOf);
+    for (const position of positions) {
+      expect(position).toBeGreaterThanOrEqual(0);
+      expect(position).toBeLessThanOrEqual(98);
+    }
+    expect(positions[0]).toBeLessThan(positions[1] as number);
+    expect(positions[1]).toBeLessThan(positions[2] as number);
+    // now (15:00:12) falls between the earliest instant and the two ahead of
+    // it, so the marker belongs between them, not pinned to the far right.
+    const marker = leftOf(screen.getByTestId("watch-timeline-now"));
+    expect(marker).toBeGreaterThan(positions[0] as number);
+    expect(marker).toBeLessThan(positions[1] as number);
+  });
+
+  test("keeps two instants apart even when both sit inside a stretched rail's headroom", () => {
+    // The two newest deliveries are within the reserved last 2% of a rail that
+    // already reaches past `now`. Clamping them into that reserve would still
+    // merge two real deliveries into one dot; the stretched rail scales
+    // instead, so the positions stay distinct and the newest still stops at the
+    // headroom.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 3,
+          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:50:01Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const positions = screen.getAllByTestId("watch-timeline-dot").map(leftOf);
+    expect(positions[0]).toBeLessThan(positions[1] as number);
+    expect(positions[1]).toBeLessThan(positions[2] as number);
+    expect(positions[2]).toBeLessThanOrEqual(98);
+  });
+
   test("renders one dot per instant when two deliveries share a millisecond", () => {
     const same = "2026-08-05T15:00:11Z";
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});

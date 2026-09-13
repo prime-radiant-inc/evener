@@ -177,7 +177,7 @@ function deliveryCountLabel(count: number): string {
 // The events cadence's own detail - the fire-every-Nth count and the event
 // filter - with the "on events" condition that watchCadenceLabel prefixes
 // stripped. watchMeta and watchFacts already name the event condition ("on
-// event" and "Waiting on ..."), so reusing only the detail tells a throttled or
+// events" and "Waiting on ..."), so reusing only the detail tells a throttled or
 // filtered watch apart from one that fires on every matching event without
 // printing the condition twice.
 function eventCadenceDetail(watch: NavigationWatchSummary): string {
@@ -201,7 +201,7 @@ export function watchMeta(watch: NavigationWatchSummary, now?: number): string {
   if ((watch.output_match ?? "").trim() !== "") conditions.push("on output");
   if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
     const detail = eventCadenceDetail(watch);
-    conditions.push(detail === "" ? "on event" : `on event ${detail}`);
+    conditions.push(detail === "" ? "on events" : `on events ${detail}`);
   }
   conditions.push(...clockCadenceLabels(watch));
   if (now !== undefined) {
@@ -238,7 +238,9 @@ export function watchFacts(watch: NavigationWatchSummary, now: number): string {
     segments.push(armedState(watch));
   } else {
     const age = armedAgeLabel(watch, now);
-    if (age !== undefined) segments.push(`armed ${age} ago`);
+    // An unparseable created_at leaves no age to show, but the sentence still
+    // has to report the armed state itself rather than dropping the segment.
+    segments.push(age === undefined ? armedState(watch) : `armed ${age} ago`);
   }
   if (watch.deliveries > 0) {
     segments.push(deliveryCountLabel(watch.deliveries));

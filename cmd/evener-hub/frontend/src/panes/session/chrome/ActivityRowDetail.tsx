@@ -61,10 +61,11 @@ export const WATCH_NO_SCHEDULE_LINE =
 // the title never duplicates.
 export const WATCH_NOTE_LEAD_BUDGET = 48;
 
-// The now marker sits at left:100% and is taller than a delivery dot, so a dot
-// in the span's final percent would land underneath it and read as the marker.
-// Clamping dots to 98% reserves the last 2% as the marker's own column: the
-// newest delivery still stops just short of "now" instead of hiding under it.
+// The now marker is taller than a delivery dot, and a dot at the rail's far end
+// would land underneath it and read as the marker. Dots therefore never pass
+// this percent: the unstretched rail clamps into the reserve, and the stretched
+// rail scales its span into it, so the newest delivery always stops just short
+// of the rail's end.
 export const WATCH_TIMELINE_DOT_MAX_PERCENT = 98;
 
 // Local HH:MM from an epoch instant, through the same clock formatter the rest
@@ -88,19 +89,32 @@ function keyedInstants(instants: number[]): Array<{ millis: number; key: string 
 }
 
 // The delivery timeline: a rail with one dot per retained instant, positioned
-// proportionally between the earliest instant and `now`. Nothing here implies
-// a drop or a future firing - the only instants drawn are the ones the wire
-// actually carried.
+// proportionally between the earliest instant and `now`. The right edge
+// stretches to the newest retained instant when a browser clock sits behind the
+// daemon's instants, so distinct deliveries stay distinct and the now marker
+// lands where now actually is. Nothing here implies a drop or a future firing -
+// the only instants drawn are the ones the wire actually carried.
 function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; now: number }): JSX.Element | null {
   const instants = watchDeliveryInstants(watch);
   if (instants.length === 0) return null;
   const dots = keyedInstants(instants);
   const earliest = instants[0] ?? 0;
-  const span = now - earliest;
+  const newest = instants.at(-1) ?? earliest;
+  const stretched = newest > now;
+  const span = (stretched ? newest : now) - earliest;
+  // A stretched rail scales its whole span into the headroom, so no two
+  // instants can land on the same position; the unstretched rail keeps the
+  // clamp, which only ever moves instants inside the reserved last 2%.
+  const scale = stretched ? WATCH_TIMELINE_DOT_MAX_PERCENT : 100;
+  const offset = (millis: number): number => (span <= 0 ? 0 : ((millis - earliest) / span) * scale);
   const position = (millis: number): number => {
-    if (span <= 0) return 0;
-    return Math.min(WATCH_TIMELINE_DOT_MAX_PERCENT, Math.max(0, ((millis - earliest) / span) * 100));
+    return Math.min(WATCH_TIMELINE_DOT_MAX_PERCENT, Math.max(0, offset(millis)));
   };
+  // The marker shares the rail's scale: at its far end when `now` is the right
+  // edge, and at its proportional spot when a delivery is still ahead of the
+  // clock, so it never claims to sit after an instant the clock has not
+  // reached.
+  const nowPosition = span <= 0 ? (stretched ? 0 : 100) : Math.max(0, offset(now));
   const startLabel = clockFromMillis(earliest);
   const endLabel = clockFromMillis(now);
   const caption =
@@ -121,7 +135,7 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
         <span
           className={CLASS.timelineNow}
           data-testid="watch-timeline-now"
-          style={{ left: "100%" }}
+          style={{ left: `${nowPosition}%` }}
           aria-hidden="true"
         />
         {dots.map(({ millis, key }) => (
