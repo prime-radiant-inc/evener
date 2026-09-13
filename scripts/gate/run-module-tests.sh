@@ -678,7 +678,10 @@ run_bounded_package_list() {
 				rename "$path.tmp", $path or die "pgid file $path: $!\n";
 			}
 			record($pgid_path, "pid:$$");
-			setpgrp(0, 0);
+			# A record that says pgid: has to mean the group exists. setpgrp
+			# answers 0 when it could not make one, and going on from there would
+			# hand the cleanup a group number to signal that nobody is in.
+			setpgrp(0, 0) or die "setpgrp: $!\n";
 			record($pgid_path, "pgid:$$");
 			exec @ARGV or die "exec: $!\n";
 		' -- "$(package_list_pgid_path "$module")" go list ./... >"$attempt_list" 2>>"$package_list_stderr" &

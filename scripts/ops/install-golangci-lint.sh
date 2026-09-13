@@ -171,7 +171,7 @@ while :; do
 	# perl's setpgrp(0, 0) does the split between fork and exec — setsid(1) would
 	# too and is not on macOS, and `set -m` would turn job control on for the
 	# whole script.
-	perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' \
+	perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; exec @ARGV or die "exec: $!\n"' \
 		-- bash -c 'set -o pipefail; curl -sSfL --connect-timeout 10 --max-time 60 "$1" | sh -s -- -b "$2" "$3"' \
 		install-golangci-lint-attempt "$installer_url" "$bindir" "v$version" 2>"$attempt_log" &
 	attempt_pid=$!
