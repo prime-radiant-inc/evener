@@ -1197,11 +1197,14 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// hold that sets running and released by the deferred rollback on every
 	// failure exit below.
 	//
-	// The claim starts here, once restoreIdleForSend has produced the child to
-	// claim, so it does not cover CommitStart through restoreIdleForSend, nor the
-	// admitReconstructed/AttachRuntime leg on the restored path: a drive landing
-	// in that earlier stretch still reads an idle child. Closing it needs a claim
-	// keyed by delegate id, taken before the child is resolved.
+	// The id-keyed childCommittedSendStart claim, taken in send immediately after
+	// CommitStart, already covers the pre-resolve stretch (CommitStart through
+	// restoreIdleForSend and the admitReconstructed/AttachRuntime leg). This
+	// per-child flag only has to cover what follows: from the point
+	// restoreIdleForSend has produced the child through the hand-off to the run.
+	// The one stretch no claim covers is the handful of instructions between
+	// CommitStart returning and the id-keyed claim being taken, which does no
+	// blocking work.
 	sub.mu.Lock()
 	blocked := sub.running || sub.driving
 	if !blocked {
