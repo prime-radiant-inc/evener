@@ -1091,11 +1091,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			stopSettledThisTurn = stopFinalized
 		}
 		processCtx = context.WithValue(processCtx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{})
-		// The self-minted name belongs to the turn that just ran; the next
-		// one mints its own.
-		s.mu.Lock()
-		s.directTurnID = ""
-		s.mu.Unlock()
 		// Follow-up turns (after the first) carry no attachments and are
 		// user-driven, not continuations.
 		nextImages = nil
@@ -1135,6 +1130,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
 					s.appendSteeringTurn(interruptMsg, events.SteeringKindInterrupted)
 				}
+				// The interrupted turn's last record is written; the name it
+				// minted for itself ends with it.
+				s.endSelfMintedTurn()
 				if emitEnd {
 					s.emit(events.EventSessionEnd, events.SessionEndData{
 						Reason:      "interrupted",
@@ -1617,7 +1615,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// the name and releasing it; the closure reads the variable at unwind
 	// time, so this one defer covers whichever branch below does the minting.
 	var runningTurnID string
-	defer func() { s.releaseRunningTurnID(runningTurnID) }()
+	defer func() {
+		s.releaseRunningTurnID(runningTurnID)
+		// The self-minted name ends with the turn, on every path out of here
+		// — including a return between the mint and the run. The one turn
+		// that keeps it past this point is an interrupted one: its marker is
+		// written by ProcessInput's loop after this returns, and it belongs to
+		// the turn it interrupted.
+		if !isTurnCancellation(ctx, err) {
+			s.endSelfMintedTurn()
+		}
+	}()
 
 	if kind == EntryNotification {
 		// Take the name first, and in ONE atomic take-or-refuse against the

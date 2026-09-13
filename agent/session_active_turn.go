@@ -203,6 +203,22 @@ func (s *Session) adoptSelfMintedTurnID(turnID string) {
 	s.mu.Unlock()
 }
 
+// endSelfMintedTurn drops the name a turn minted for itself, once that turn's
+// LAST record is written. Every record published while it stands is claimed by
+// that turn — activeTurnOwner prefers it — so a name left behind is adopted by
+// the next turn's timing, hook and compaction records, and by anything a fold
+// writes while the session sits idle, grouping them under a turn that is over.
+//
+// The turn owns its own ending: processOneInput's unwind calls this for every
+// way a turn can finish, and an INTERRUPTED turn has one record still to write
+// — the marker saying it was cut short, appended by ProcessInput's loop — so
+// that path ends the name after writing it instead. Idempotent.
+func (s *Session) endSelfMintedTurn() {
+	s.mu.Lock()
+	s.directTurnID = ""
+	s.mu.Unlock()
+}
+
 // warnStoreUnhealthyOnce reports a client-mutation-store failure at most once
 // per unhealthy episode, and clearStoreUnhealthyWarning ends the episode on the
 // next write the store accepts.
