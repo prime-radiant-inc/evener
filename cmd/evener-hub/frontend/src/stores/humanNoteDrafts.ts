@@ -157,7 +157,7 @@ export function blurHumanNote(ref: string, owner: symbol): void {
       const live = threadsStore.getState();
       const model = live.threads.get(ref) ?? live.watchedThreads.get(ref);
       const expectedInstanceId = model?.instanceId ?? model?.threadId ?? "";
-      await threadsStore.getState().setHumanNote(ref, current.text, expectedInstanceId, (record) => {
+      await live.setHumanNote(ref, current.text, expectedInstanceId, (record) => {
         const latest = get(ref);
         if (latest)
           put(ref, {
