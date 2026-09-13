@@ -148,6 +148,17 @@ func TestHasShortFlagReadsEverySpelling(t *testing.T) {
 		{flags: []string{"-short=true"}, want: true},
 		{flags: []string{"--short=true"}, want: true},
 		{flags: []string{"-short=false"}, want: false},
+		{flags: []string{"-short=f"}, want: false},
+		{flags: []string{"-short=FALSE"}, want: false},
+		{flags: []string{"-short=0"}, want: false},
+		{flags: []string{"-short=t"}, want: true},
+		{flags: []string{"-short=1"}, want: true},
+		// Last occurrence wins, as go's flag package reads them.
+		{flags: []string{"-short=false", "-short"}, want: true},
+		{flags: []string{"-short", "-short=false"}, want: false},
+		{flags: []string{"--short=false", "--short=true"}, want: true},
+		// A value go itself would refuse: read as short rather than dropped.
+		{flags: []string{"-short=yes"}, want: true},
 		{flags: []string{"-count=1", "-v"}, want: false},
 		{flags: nil, want: false},
 	} {

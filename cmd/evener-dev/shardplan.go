@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -140,14 +141,28 @@ func goFlag(f string) string {
 // hasShortFlag says whether the caller asked for short mode, in any spelling go
 // accepts: --short and -short=true are -short, and an exact string compare read
 // neither, so the survey ran the long way round on a short run.
+//
+// The last occurrence wins and the value goes through strconv.ParseBool, because
+// that is what go's flag package does with a boolean: `-short=false -short` is a
+// short run and `-short -short=false` is not. A value ParseBool refuses is one
+// `go test` would refuse too; it is read as short here rather than dropping a
+// caller's short mode over a spelling this code guessed wrong about.
+//
+// The same rule is written again in scripts/gate/run-module-tests.sh, which
+// cannot import it. #1247 is where the two become one.
 func hasShortFlag(flags []string) bool {
+	short := false
 	for _, raw := range flags {
 		f := goFlag(raw)
-		if f == "-short" || strings.HasPrefix(f, "-short=") {
-			return f != "-short=false" && f != "-short=0"
+		switch {
+		case f == "-short":
+			short = true
+		case strings.HasPrefix(f, "-short="):
+			value, err := strconv.ParseBool(strings.TrimPrefix(f, "-short="))
+			short = err != nil || value
 		}
 	}
-	return false
+	return short
 }
 
 // buildValueFlags take their value as the next argument; buildFlagPrefixes carry
