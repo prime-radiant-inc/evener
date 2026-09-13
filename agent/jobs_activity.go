@@ -1354,6 +1354,18 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 			return true
 		}
 	}
+	resumeIndex := i
+	if i == 0 {
+		// The dropped entry is the page's only rendered entry, so it cannot
+		// fit even alone. A continuation pointing back at index 0 would
+		// re-render it, re-trim it, and mint this identical token on every
+		// later page, so a client paging the tree would never advance past it.
+		// Advance the resume index past the dropped entry and name it in the
+		// branch error so the skip is reported rather than silent -- and so
+		// the next page resumes after it instead of at it.
+		resumeIndex = i + 1
+		appendActivityBranchError(&session.Branch, fmt.Sprintf("activity entry %s is too large to render and was skipped", activityEntryLabel(*entry, i)))
+	}
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
 	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
@@ -1361,12 +1373,29 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 		RootID:         rootID,
 		SessionID:      session.SessionID,
 		Path:           append([]string(nil), path...),
-		ResumeIndex:    i,
+		ResumeIndex:    resumeIndex,
 		JobsEpoch:      jobsEpochs[session.SessionID],
 		DelegatesEpoch: delegatesEpoch,
 		Revision:       revision,
 	})
 	return true
+}
+
+// activityEntryLabel names an activity entry for a branch error, preferring a
+// stable identity (the job or delegate ID) over its page-relative index.
+func activityEntryLabel(entry appwire.JobActivityEntry, index int) string {
+	if entry.Job != nil && entry.Job.JobID != "" {
+		return fmt.Sprintf("job %q", entry.Job.JobID)
+	}
+	if entry.Delegate != nil {
+		if entry.Delegate.DelegateID != "" {
+			return fmt.Sprintf("delegate %q", entry.Delegate.DelegateID)
+		}
+		if entry.Delegate.ChildSessionID != "" {
+			return fmt.Sprintf("delegate for session %q", entry.Delegate.ChildSessionID)
+		}
+	}
+	return fmt.Sprintf("at index %d", index)
 }
 
 func recomputeActivitySession(session *appwire.JobActivitySession) {

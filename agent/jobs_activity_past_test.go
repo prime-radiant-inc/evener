@@ -1042,3 +1042,50 @@ func TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOve
 		}
 	}
 }
+
+// TestLoadSessionJobActivityTree_SingleOversizedEntryResumeAdvances is the
+// single-entry sibling of
+// TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOverlap:
+// a session whose ONLY entry's own JSON encoding already exceeds
+// activityMaxEncodedBytes. Dropping that entry leaves an empty page, so a
+// continuation minted at the dropped entry's index (0) would point straight
+// back at the entry that just failed to fit: the next page would re-render it,
+// re-trim it, and mint the identical token forever, and a client paging the
+// activity tree would never advance past it. This walks the pages through the
+// real entry point (LoadSessionJobActivityTree) and asserts the first page's
+// continuation advances past the oversized entry (rather than repeating it)
+// AND names it in the branch error, and that the walk terminates instead of
+// looping with an identical token.
+func TestLoadSessionJobActivityTree_SingleOversizedEntryResumeAdvances(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "oversizedroot"
+	started := time.Unix(100, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_huge",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+		StartedAt: &started, Description: strings.Repeat("d", activityMaxEncodedBytes+64*1024),
+	})
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(first.Root.Entries) != 0 || !first.Root.Branch.Truncated {
+		t.Fatalf("page 1 entries=%d truncated=%v, want entries=0 truncated=true (the only entry cannot fit)", len(first.Root.Entries), first.Root.Branch.Truncated)
+	}
+	if first.Root.Branch.Continuation == "" {
+		t.Fatal("page 1 minted no continuation, want one that advances past the oversized entry")
+	}
+
+	second, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: first.Root.Branch.Continuation})
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	if second.Root.Branch.Continuation != "" {
+		t.Fatalf("page 2 continuation = %q (page 1 minted %q), want empty: the resume token must advance past the skipped entry and terminate pagination instead of re-minting the identical token", second.Root.Branch.Continuation, first.Root.Branch.Continuation)
+	}
+	if !strings.Contains(first.Root.Branch.Error, "job_huge") {
+		t.Fatalf("page 1 Branch.Error = %q, want it to name the skipped entry job_huge", first.Root.Branch.Error)
+	}
+}
