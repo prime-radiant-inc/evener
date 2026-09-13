@@ -315,14 +315,12 @@ package_list_diagnostic() {
 # run on this host needs.
 run_package_list() {
 	local module="$1" package_list="$2" package_list_stderr status=0
-	local -a list_cmd=(go list ./...)
-	# -C is how a module other than the one holding evener-dev gets enumerated:
-	# bounded-list runs where it was started, and that is the repo root.
-	[ "$module" = "." ] || list_cmd=(go list -C "$module" ./...)
 	package_list_stderr="${package_list}.stderr"
+	# Run where the caller is, which run_wave has already made the module's own
+	# directory; the helper inherits that, so `go list ./...` means this module.
 	"$evener_dev_bin" dev bounded-list \
 		-timeout "${PACKAGE_LIST_TIMEOUT}s" -attempts "$PACKAGE_LIST_ATTEMPTS" \
-		-- "${list_cmd[@]}" >"$package_list" 2>"$package_list_stderr" || status=$?
+		-- go list ./... >"$package_list" 2>"$package_list_stderr" || status=$?
 	if [ "$status" -ne 0 ]; then
 		cat "$package_list_stderr" >&2
 		package_list_diagnostic "$module" "$package_list_stderr"
@@ -330,31 +328,35 @@ run_package_list() {
 	return "$status"
 }
 
+# run_module MODULE EXTRA — run MODULE's suite over the packages the bounded
+# enumeration found. Every module goes through that one enumeration: `go test
+# ./...` would discover the same packages itself, under the same caches, with
+# none of the bound, so a bound on only some modules is not a bound.
 run_module() {
-	local m="$1" extra="$2" test_flags
+	local m="$1" extra="$2" test_flags package_list pkg
+	local -a packages=()
 	test_flags="$(module_test_flags "$m")"
-	# Word-split flags and extra intentionally so callers can pass multiple flags.
-	# shellcheck disable=SC2086
+	package_list="$logdir/$(printf '%s' "$m" | tr '/.' '__').packages"
+	run_package_list "$m" "$package_list" || return $?
+	while IFS= read -r pkg; do
+		# The fuzz toolkit's own commands belong to `make fuzz`, not here.
+		case "$pkg" in
+			primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
+				continue
+				;;
+		esac
+		packages+=("$pkg")
+	done <"$package_list"
+	if [ "${#packages[@]}" -eq 0 ]; then
+		printf 'run-module-tests.sh: go list ./... returned no test packages for module %s\n' "$m" >&2
+		return 1
+	fi
 	if [ "$m" = "." ]; then
-		local -a packages=()
-		local pkg package_list
-		package_list="$logdir/root.packages"
-		run_package_list . "$package_list" || return $?
-		while IFS= read -r pkg; do
-			case "$pkg" in
-				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
-					continue
-					;;
-			esac
-			packages+=("$pkg")
-		done <"$package_list"
-		if [ "${#packages[@]}" -eq 0 ]; then
-			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
-			return 1
-		fi
 		# ROOT_FULL removes short mode through module_test_flags while retaining
 		# the regular Test/Example name filter. Fuzz-owned targets and sanity
 		# functions stay under the explicit make fuzz gate.
+		# Word-split flags and extra intentionally so callers can pass multiple flags.
+		# shellcheck disable=SC2086
 		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
 		return
 	fi
@@ -370,20 +372,20 @@ run_module() {
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
+		# shellcheck disable=SC2086
 		(cd .. && "$evener_dev_bin" dev agent-shards $test_flags) || shardStatus=$?
-		local subpkgs=()
-		local pkg package_list
-		package_list="$logdir/agent.packages"
-		run_package_list agent "$package_list" || return $?
-		while IFS= read -r pkg; do
+		local -a subpkgs=()
+		for pkg in "${packages[@]}"; do
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
-		done <"$package_list"
+		done
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
+			# shellcheck disable=SC2086
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
-	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
+	# shellcheck disable=SC2086
+	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${packages[@]}"
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each
