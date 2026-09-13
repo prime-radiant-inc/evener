@@ -809,3 +809,50 @@ func TestCache_DeletedFileEpochSurvivesAcrossRecreation(t *testing.T) {
 		t.Fatalf("recreated epoch (%d) did not advance past the pre-deletion epoch (%d) -- a continuation minted before the deletion would wrongly pass its staleness check against this entirely unrelated new content", recreated.Epoch, first.Epoch)
 	}
 }
+
+// TestCache_EpochAgreesWithGetAcrossDeletionAndRecreation pins that Epoch and
+// Get answer the same question. A caller that names a path's generation
+// without folding it compares its answer against what a later fold reports,
+// so the two must agree: a deleted file is the zero Result Get returns, not
+// the tombstone kept for the content that used to live there, while a
+// recreated one carries the tombstone forward in both.
+func TestCache_EpochAgreesWithGetAcrossDeletionAndRecreation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if got := c.Epoch(path); got != folded.Epoch {
+		t.Fatalf("Epoch = %d after a fold reporting %d", got, folded.Epoch)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get on deleted file: %v", err)
+	}
+	if got := c.Epoch(path); got != missing.Epoch {
+		t.Fatalf("Epoch = %d for a deleted path while Get reports %d -- a continuation minted from one and checked against the other is refused for a file that is simply gone", got, missing.Epoch)
+	}
+
+	writeLines(t, path, []int{100, 200, 300})
+	recreated, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get on recreated file: %v", err)
+	}
+	if got := c.Epoch(path); got != recreated.Epoch {
+		t.Fatalf("Epoch = %d for a recreated path while Get reports %d", got, recreated.Epoch)
+	}
+	if recreated.Epoch <= folded.Epoch {
+		t.Fatalf("recreated epoch (%d) did not advance past the pre-deletion epoch (%d)", recreated.Epoch, folded.Epoch)
+	}
+}

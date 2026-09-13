@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1731,4 +1732,490 @@ func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *t
 			t.Fatalf("%s delivered %d times, want exactly once -- the child's entries must survive its delegate being trimmed", id, counts[id])
 		}
 	}
+}
+
+// depthChainFixture writes a delegate chain longer than the depth bound, all
+// under one root's shared delegate journal, and returns the chain's session
+// IDs. The node at the bound is the one projection truncates, and the
+// continuation it mints is what the tests below follow.
+func depthChainFixture(t *testing.T, stateDir, prefix string) []string {
+	t.Helper()
+	started := time.Unix(800, 0).UTC()
+	sessionIDs := make([]string, activityMaxNewDepth+5)
+	for i := range sessionIDs {
+		sessionIDs[i] = fmt.Sprintf("%s%d", prefix, i)
+	}
+	var descriptors []delegatestore.Descriptor
+	for i, id := range sessionIDs {
+		s1cov_writeJobLog(t, stateDir, id, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id,
+			Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started,
+		})
+		if i == 0 {
+			savePastActivityMeta(t, stateDir, id, "Root")
+		} else {
+			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
+		}
+		if i+1 < len(sessionIDs) {
+			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
+		}
+	}
+	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+	return sessionIDs
+}
+
+// depthBoundaryContinuation walks tree to the delegate the depth bound
+// truncated and returns its continuation.
+func depthBoundaryContinuation(t *testing.T, tree appwire.JobActivityTree) string {
+	t.Helper()
+	session := tree.Root
+	for {
+		var delegate *appwire.JobActivityDelegate
+		for i := range session.Entries {
+			if session.Entries[i].Delegate != nil {
+				delegate = session.Entries[i].Delegate
+			}
+		}
+		if delegate == nil {
+			t.Fatal("walked the chain without finding a truncated delegate")
+		}
+		if delegate.Child == nil {
+			if delegate.Branch.Continuation == "" {
+				t.Fatalf("depth-truncated delegate %q has no continuation: %+v", delegate.DelegateID, delegate.Branch)
+			}
+			return delegate.Branch.Continuation
+		}
+		session = *delegate.Child
+	}
+}
+
+// TestLoadSessionJobActivityTree_DepthContinuationResumesIntoAnUntouchedChild
+// pins that the depth bound stays readable. The truncated child is never
+// loaded, so the continuation minted for it has to name the generations its
+// own load will report rather than zeros: the shared delegate journal it
+// folds has a real generation as soon as anything rewrote it, and comparing
+// that against a minted zero refuses a token nobody invalidated, leaving
+// everything past the bound unreachable.
+func TestLoadSessionJobActivityTree_DepthContinuationResumesIntoAnUntouchedChild(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionIDs := depthChainFixture(t, stateDir, "depthresume")
+	rootID := sessionIDs[0]
+
+	// Warm the caches, then rewrite the shared delegate journal in place so
+	// its generation is past zero before the page below is minted.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	rewritten := time.Unix(3_000_000, 0)
+	if err := os.Chtimes(filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"), rewritten, rewritten); err != nil {
+		t.Fatalf("restamp the delegate journal: %v", err)
+	}
+
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	token := depthBoundaryContinuation(t, tree)
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err != nil {
+		t.Fatalf("depth continuation into an untouched child was rejected: %v", err)
+	}
+}
+
+// TestLoadSessionJobActivityTree_DepthContinuationRefusedAfterTheChildIsRewritten
+// is the other half: naming the generations must not become a rubber stamp.
+// A child whose own journal is rewritten between mint and resume is exactly
+// what a ResumeIndex cannot be applied across.
+func TestLoadSessionJobActivityTree_DepthContinuationRefusedAfterTheChildIsRewritten(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionIDs := depthChainFixture(t, stateDir, "depthrefuse")
+	rootID := sessionIDs[0]
+
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	token := depthBoundaryContinuation(t, tree)
+	cont, err := decodeActivityContinuation(token, rootID)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// A generation only moves for a fold that had to be discarded, so the
+	// child's journal has to have been folded once for its rewrite to be
+	// visible at all: a request rooted at the child itself does that, the
+	// same way any other reader of that session would have.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, cont.SessionID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("fold the child: %v", err)
+	}
+
+	rewritten := time.Unix(4_000_000, 0)
+	childJobs := filepath.Join(jobsDir(stateDir, cont.SessionID), "jobs.jsonl")
+	if err := os.Chtimes(childJobs, rewritten, rewritten); err != nil {
+		t.Fatalf("restamp the child journal: %v", err)
+	}
+
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+		t.Fatal("resumed into a depth-truncated child whose journal was rewritten; want the continuation refused")
+	} else if !strings.Contains(err.Error(), "underlying journal changed") {
+		t.Fatalf("error = %v, want a journal-changed staleness error", err)
+	}
+}
+
+// TestBuildActivityFullSnapshot_DepthPlaceholdersChargeTheWorkBudget pins that
+// naming a depth-truncated child's generations is paid for. That lookup reads
+// the child's metadata, so a wide boundary — one delegate per child at the
+// depth limit — would otherwise open files without limit, exactly what the
+// work budget exists to stop. A budget with nothing left leaves the child out
+// rather than minting a continuation nobody paid for.
+func TestBuildActivityFullSnapshot_DepthPlaceholdersChargeTheWorkBudget(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "budgetboundaryroot"
+	const boundaryChildren = 6
+	const affordable = 2
+	started := time.Unix(900, 0).UTC()
+
+	descriptors := make([]delegatestore.Descriptor, 0, boundaryChildren)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	for i := range boundaryChildren {
+		childID := fmt.Sprintf("budgetboundarychild%d", i)
+		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+		})
+		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, "next"))
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+
+	// The root itself sits AT the depth bound, so every one of its children is
+	// a placeholder, and the budget affords only some of them.
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	cache.budget.maxDepth = 0
+	cache.budget.maxWorkUnits = affordable
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	snapshot, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0)
+	if err != nil {
+		t.Fatalf("buildActivityFullSnapshot: %v", err)
+	}
+	if len(snapshot.Children) != affordable {
+		t.Fatalf("minted %d placeholders on a budget of %d units; naming a child's generations has to be charged like any other child visit", len(snapshot.Children), affordable)
+	}
+	if cache.budget.usedWork != affordable {
+		t.Fatalf("used %d work units for %d placeholders, want %d", cache.budget.usedWork, len(snapshot.Children), affordable)
+	}
+}
+
+// TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation pins that
+// a canceled request stops rather than going on to open files for children it
+// is only naming. The cancellation lands from inside the root's own delegate
+// scan, as late in the load as any seam allows.
+//
+// It does not isolate the placeholder loop's own ctx guard, and no test
+// through these seams can: foldcache.Get runs its fold detached and then
+// selects on the caller's ctx, so a cancellation that arrives during ANY read
+// the base load makes is reported by that read before the placeholder loop is
+// reached. Deleting the guard leaves this test green — checked by hand. The
+// guard stays as the loop's own answer for a cancellation that arrives with
+// no read left to report it; if it should go instead, that is a call to make
+// deliberately, not by leaving it untested.
+func TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "cancelboundaryroot"
+	childID := "cancelboundarychild"
+	started := time.Unix(910, 0).UTC()
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	original := scanDelegateJournal
+	scanDelegateJournal = func(scanCtx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		events, offset, diagnostics, err := original(scanCtx, path, fromOffset, limits)
+		cancel()
+		return events, offset, diagnostics, err
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	cache := newHistoricalActivityCache(ctx, rootID)
+	cache.budget.maxDepth = 0
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	if _, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled from the placeholder loop", err)
+	}
+}
+
+// TestLoadSessionJobActivityTree_DepthContinuationAfterTheChildWasAlreadyRewritten
+// pins that naming a depth-truncated child's generations names the CURRENT
+// one. The number a fold last carried is not the number the next fold will:
+// a child folded earlier and rewritten since is one generation behind in the
+// cache until something looks at the file again. Minting that stale number
+// means the first resume discovers the rewrite, moves the generation, and
+// refuses a continuation that was minted after the rewrite — the false
+// rejection this whole series exists to remove.
+func TestLoadSessionJobActivityTree_DepthContinuationAfterTheChildWasAlreadyRewritten(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionIDs := depthChainFixture(t, stateDir, "depthstale")
+	rootID := sessionIDs[0]
+
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	cont, err := decodeActivityContinuation(depthBoundaryContinuation(t, tree), rootID)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The truncated child is folded by some other reader, then its journal is
+	// rewritten — both BEFORE the page that mints its continuation.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, cont.SessionID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("fold the child: %v", err)
+	}
+	rewritten := time.Unix(5_000_000, 0)
+	if err := os.Chtimes(filepath.Join(jobsDir(stateDir, cont.SessionID), "jobs.jsonl"), rewritten, rewritten); err != nil {
+		t.Fatalf("restamp the child journal: %v", err)
+	}
+
+	minted, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("page after the rewrite: %v", err)
+	}
+	token := depthBoundaryContinuation(t, minted)
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err != nil {
+		t.Fatalf("continuation minted after the rewrite was rejected: %v", err)
+	}
+}
+
+// TestProjectStableActivityDelegate_DepthBoundarySaysWhyWhenTheBudgetRanOut
+// pins what a depth-boundary delegate reports when the load budget ran out
+// before anything could name its child's generations. There is nothing to
+// fence a continuation with, and an unfenced one is refused by every resume of
+// a child that was ever folded — a certain dead end dressed as a page. The
+// branch is truncated with a diagnostic naming the session to request instead,
+// and no branch error, because nothing failed.
+func TestProjectStableActivityDelegate_DepthBoundarySaysWhyWhenTheBudgetRanOut(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "boundarytruncroot"
+	const boundaryChildren = 4
+	const affordable = 1
+	started := time.Unix(920, 0).UTC()
+
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	descriptors := make([]delegatestore.Descriptor, 0, boundaryChildren)
+	childIDs := make([]string, 0, boundaryChildren)
+	for i := range boundaryChildren {
+		childID := fmt.Sprintf("boundarytruncchild%d", i)
+		childIDs = append(childIDs, childID)
+		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+		})
+		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, "next"))
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+
+	// Fold every child once, so an unfenced token would be refused on resume
+	// rather than passing by accident.
+	for _, childID := range childIDs {
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, childID, appwire.JobsListParams{}); err != nil {
+			t.Fatalf("fold %s: %v", childID, err)
+		}
+		path := filepath.Join(jobsDir(stateDir, childID), "jobs.jsonl")
+		rewritten := time.Unix(7_000_000, 0)
+		if err := os.Chtimes(path, rewritten, rewritten); err != nil {
+			t.Fatalf("restamp %s: %v", childID, err)
+		}
+	}
+
+	// The root sits AT the bound and the budget affords naming one child's
+	// generations, so the rest have no placeholder.
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	cache.budget.maxDepth = 0
+	cache.budget.maxWorkUnits = affordable
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	snapshot, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0)
+	if err != nil {
+		t.Fatalf("buildActivityFullSnapshot: %v", err)
+	}
+	if len(snapshot.Children) != affordable {
+		t.Fatalf("fixture left %d placeholders, want %d — the case under test is the children with none", len(snapshot.Children), affordable)
+	}
+
+	budget := newBoundedActivityBudget(rootID, time.Unix(1000, 0).UTC(), 0)
+	budget.maxDepth = 0
+	projected := projectActivitySessionAt(*snapshot, budget, 0, nil, 0)
+	unpaged := 0
+	for _, entry := range projected.Entries {
+		delegate := entry.Delegate
+		if delegate == nil {
+			continue
+		}
+		if delegate.Branch.Error != "" {
+			t.Fatalf("delegate %q reports %q; nothing failed here", delegate.DelegateID, delegate.Branch.Error)
+		}
+		if !delegate.Branch.Truncated {
+			t.Fatalf("delegate %q branch = %+v, want truncated", delegate.DelegateID, delegate.Branch)
+		}
+		if delegate.Branch.Continuation != "" {
+			continue // the one child the budget could name
+		}
+		unpaged++
+		if len(delegate.Diagnostics) == 0 {
+			t.Fatalf("delegate %q has no continuation and no diagnostic; the reader is told neither what happened nor what to ask for", delegate.DelegateID)
+		}
+		if !strings.Contains(delegate.Diagnostics[0], "load budget exhausted") || !strings.Contains(delegate.Diagnostics[0], delegate.ChildSessionID) {
+			t.Fatalf("delegate %q diagnostic = %q, want it to name the exhaustion and the session to request", delegate.DelegateID, delegate.Diagnostics[0])
+		}
+		// What the diagnostic tells the reader to do actually works.
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, delegate.ChildSessionID, appwire.JobsListParams{}); err != nil {
+			t.Fatalf("requesting %s directly, as the diagnostic says to: %v", delegate.ChildSessionID, err)
+		}
+	}
+	if unpaged != boundaryChildren-affordable {
+		t.Fatalf("%d delegates reported the exhaustion, want %d", unpaged, boundaryChildren-affordable)
+	}
+}
+
+// TestActivityPlaceholderEpochs_MatchesTheLoaderOnADegradedDelegateJournal
+// pins that naming a depth-truncated child's generations and loading that
+// child read the same number. A delegates journal with a line too long to
+// scan degrades to an empty delegate set reported at generation 0, while the
+// fold cache still holds the generation of the last good fold: naming that
+// one refuses a token for a page the loader itself degraded.
+func TestActivityPlaceholderEpochs_MatchesTheLoaderOnADegradedDelegateJournal(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "degradedroot"
+	childID := "degradedchild"
+	started := time.Unix(930, 0).UTC()
+
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
+	delegatesPath := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+
+	// One good fold, then a rewrite: the cache's own generation for this
+	// journal is now past zero.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	rewritten := time.Unix(6_000_000, 0)
+	if err := os.Chtimes(delegatesPath, rewritten, rewritten); err != nil {
+		t.Fatalf("restamp: %v", err)
+	}
+	if cached := historicalDelegateFoldCache.Epoch(delegatesPath); cached == 0 {
+		t.Fatal("fixture did not move the cache's own generation; the mismatch under test cannot occur")
+	}
+
+	// Now the journal reads as degraded, which the loader reports as
+	// generation 0 with a diagnostic rather than an error.
+	original := scanDelegateJournal
+	scanDelegateJournal = func(context.Context, string, int64, delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		return nil, 0, delegatestore.ReadDiagnostics{}, delegatestore.ErrLineTooLong
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	loaded, err := loadHistoricalActivityBase(stateDir, rootID, false, cache)
+	if err != nil {
+		t.Fatalf("load the root: %v", err)
+	}
+	loaderEpoch := loaded.snapshot.DelegatesEpoch
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	_, placeholderEpoch, err := activityPlaceholderEpochs(loc, loaded, cache, childID)
+	if err != nil {
+		t.Fatalf("name the placeholder's generations: %v", err)
+	}
+	if placeholderEpoch != loaderEpoch {
+		t.Fatalf("placeholder names generation %d while the loader reports %d -- a token minted from one and checked against the other is refused for a journal both sides read the same way", placeholderEpoch, loaderEpoch)
+	}
+}
+
+// TestBuildActivityFullSnapshot_PlaceholderLookupFailuresSurface pins that
+// naming a depth-truncated child's generations reports its failures instead of
+// answering 0. A canceled request and an unreadable journal are not a
+// generation of zero: minting a token against a number nobody read hands the
+// client a page that cannot be resumed, and hides the cancellation the caller
+// asked for.
+func TestBuildActivityFullSnapshot_PlaceholderLookupFailuresSurface(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "lookupfailroot"
+	childID := "lookupfailchild"
+	childRootID := "lookupfailchildroot"
+	started := time.Unix(940, 0).UTC()
+
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+	})
+	// The child names a DIFFERENT root, so naming its delegate generation
+	// reads a journal this traversal has not folded yet.
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", childRootID, 0)
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
+	writePastStableDelegates(t, stateDir, childRootID, pastStableDescriptor(childRootID, "unrelatedchild", "other"))
+	childRootDelegates := filepath.Join(jobsDir(stateDir, childRootID), "delegates.jsonl")
+
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	original := scanDelegateJournal
+	defer func() { scanDelegateJournal = original }()
+
+	t.Run("io error", func(t *testing.T) {
+		boom := errors.New("delegate journal unreadable")
+		scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+			if path == childRootDelegates {
+				return nil, 0, delegatestore.ReadDiagnostics{}, boom
+			}
+			return original(ctx, path, fromOffset, limits)
+		}
+		cache := newHistoricalActivityCache(context.Background(), rootID)
+		cache.budget.maxDepth = 0
+		if _, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0); !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want the journal read's own failure", err)
+		}
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		scanDelegateJournal = func(scanCtx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+			if path == childRootDelegates {
+				cancel()
+				return nil, 0, delegatestore.ReadDiagnostics{}, scanCtx.Err()
+			}
+			return original(scanCtx, path, fromOffset, limits)
+		}
+		cache := newHistoricalActivityCache(ctx, rootID)
+		cache.budget.maxDepth = 0
+		if _, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	})
 }

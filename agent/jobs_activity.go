@@ -50,14 +50,20 @@ const (
 // list from its own top with a fresh budget. JobsEpoch/
 // DelegatesEpoch are the fold-cache generations (foldcache.Result.Epoch —
 // see historicalJobFoldCache/historicalDelegateFoldCache in
-// jobs_activity_past.go) SessionID's own jobs.jsonl and RootID's shared
-// delegates.jsonl were at when this token was minted; loadActivitySnapshotForParams
-// rejects a resume whose epochs no longer match what the fold caches
-// currently report for those same paths, rather than silently applying
-// ResumeIndex to a journal that was rewritten or shrunk out from under it.
-// An ordinary append never bumps epoch (see foldcache.Result.Epoch's own
-// doc comment) — append-only growth is exactly the case a resume must
-// tolerate, not treat as staleness.
+// jobs_activity_past.go) of the two journals SESSIONID folds: its own
+// jobs.jsonl and the delegates.jsonl owned by the root its metadata names,
+// which is RootID for a well-formed tree and whatever that metadata says
+// otherwise. They belong to the session the token TARGETS, never to the root
+// of the page that minted it — a live root reads neither cache, so carrying
+// its zeros for a closed child's token would refuse a branch nobody touched.
+// A closed child under a live root is generation-fenced through these, while
+// the live root itself is revision-fenced below.
+// loadActivitySnapshotForParams rejects a resume whose generations no longer
+// match what the fold caches currently report for those same paths, rather
+// than silently applying ResumeIndex to a journal that was rewritten or
+// shrunk out from under it. An ordinary append never bumps a generation (see
+// foldcache.Result.Epoch's own doc comment) — append-only growth is exactly
+// the case a resume must tolerate, not treat as staleness.
 type activityContinuation struct {
 	Version        int      `json:"v"`
 	RootID         string   `json:"root"`
@@ -70,11 +76,13 @@ type activityContinuation struct {
 	// activityCurrentRootRevision) at mint time — appwire.JobActivityTree's
 	// own Revision field, carried into the continuation too. Only checked
 	// on resume when the root is LIVE (loadActivitySnapshotForParamsWithCache):
-	// a live session's JobsEpoch/DelegatesEpoch above are always 0 (it
-	// reads neither fold cache), so they provide no staleness protection
-	// at all for a live continuation — 0 == 0 always passes, even across a
-	// real mutation. Revision closes that gap the same way epoch closes it
-	// for historical sessions. For a historical continuation this is still
+	// a LIVE session's own JobsEpoch/DelegatesEpoch above are always 0 (it
+	// reads neither fold cache), so for a token naming a live session they
+	// provide no staleness protection at all — 0 == 0 always passes, even
+	// across a real mutation. Revision closes that gap the same way a
+	// generation closes it for a historical session. A token naming a CLOSED
+	// child under that same live root carries the child's real generations,
+	// so it is fenced by both. For a historical continuation this is still
 	// populated (mint time's
 	// activitySnapshotPersistedRevision) but not validated — the epoch
 	// fields already cover that case, and this field's value there is not
@@ -99,12 +107,13 @@ type activitySessionSnapshot struct {
 	Diagnostics     []string
 	// JobsEpoch and DelegatesEpoch are historicalJobFoldCache's and
 	// historicalDelegateFoldCache's current generation counters for this
-	// session's own jobs.jsonl and its root's shared delegates.jsonl,
+	// session's own jobs.jsonl and the delegates.jsonl it folds,
 	// respectively (0 for a LIVE session's own snapshot — loadLiveActivityBase
-	// reads neither cache, and a live root's own data is always current, never
-	// stale in the sense these caches guard against). Carried into any
-	// continuation a mid-list cutoff on THIS session mints — see
-	// activityContinuation and markActivitySessionTruncated.
+	// reads neither cache, and a live session's own data is always current,
+	// never stale in the sense these caches guard against; a live root's
+	// CLOSED children still carry their real ones). Carried into any
+	// continuation that names THIS session — see activityContinuation,
+	// markActivitySessionTruncated and collectActivitySessionEpochs.
 	JobsEpoch      uint64
 	DelegatesEpoch uint64
 	Children       map[string]*activitySessionSnapshot // child session ID
@@ -337,34 +346,29 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	if err != nil {
 		return nil, 0, 0, cache, err
 	}
-	// The target session's fold-cache generations must still match what the
-	// continuation was minted against: an ordinary append never moves
-	// either epoch (see activityContinuation's doc comment), so this only
-	// ever rejects a resume whose underlying journal was rewritten or
-	// shrunk since — exactly the case ResumeIndex is unsafe to apply to.
-	//
-	// A LIVE root is exempt, because it cannot mint these at all:
-	// loadLiveActivityBase reads neither fold cache, so a live page carries
-	// zeros no matter what the session it points at folded. Comparing them
-	// against a closed child's real generations rejects a token minted
-	// moments earlier against journals nobody touched, which is the whole
-	// branch made unreachable. Revision fences a live resume instead: the
-	// root's clock is shared with every session spawned under it and moves
-	// on every job started or finished anywhere in that tree, so a change
-	// the daemon makes between mint and resume is caught below. What the
-	// exemption gives up is noticing a child's journal rewritten out of band
-	// mid-pagination — indistinguishable here from the zeros a live mint
-	// always carries, and the price of that branch being readable at all
-	// until a live page can mint each session's own generations.
-	if root.live == nil && (cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch) {
+	// The generations here are the TARGET session's own — the session whose
+	// journals a resume folds — and a mint carries that same session's, live
+	// root or not (collectActivitySessionEpochs). An ordinary append never
+	// moves either (see activityContinuation's doc comment), so this rejects
+	// exactly the resume whose underlying journal was rewritten or shrunk
+	// since, the case ResumeIndex is unsafe to apply to — and a token minted
+	// before generations were carried names none, so it is refused once and
+	// the client restarts pagination, which is what the error asks for. A
+	// live session reads
+	// neither fold cache, so its own generations are 0 on both sides and this
+	// check is silent for it; the revision below is what fences a live
+	// target. A live root paging into a CLOSED child is fenced by both: the
+	// clock for what the daemon does under this root, these generations for a
+	// rewrite of the child's journal that the clock never sees.
+	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch {
 		return nil, 0, 0, cache, errors.New("activity continuation is stale: the underlying journal changed; restart pagination without a continuation")
 	}
-	// A live root has no fold-cache epoch at all (jobsEpoch/delegatesEpoch
-	// above are always 0 for it — activitySessionSnapshot's doc comment),
-	// so the check above provides no protection here: 0 == 0 always
-	// passes, even across a real mutation. Revision closes that gap the
-	// same way epoch closes it for historical sessions: checked against
-	// the SAME jobActivityClock
+	// A live session has no fold-cache generation at all (jobsEpoch and
+	// delegatesEpoch above are both 0 for one — activitySessionSnapshot's
+	// doc comment), so the check above cannot speak for a live target:
+	// 0 == 0 passes across a real mutation. Revision closes that gap the
+	// same way a generation closes it for a historical session: checked
+	// against the SAME jobActivityClock
 	// projectStableLiveActivityTreeAt's own before/after retry loop reads,
 	// so any mutation between mint and resume — not just one within a
 	// single request — is caught here.
@@ -426,14 +430,13 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 		// though: dropping a depth-truncated child with no marker at all
 		// would hide the truncation instead of reporting it:
 		//
-		//   - Depth: projectStableActivityDelegate dereferences
-		//     snapshot.Children[childID] BEFORE its own depth check runs, so
-		//     leaving the entry unset here surfaces as a generic "child
-		//     session unavailable" branch error instead of the honest,
-		//     continuation-bearing Truncated projection's depth-truncation
-		//     already knows how to produce (markActivityDelegateTruncated).
-		//     A placeholder child — present, but with nothing loaded under
-		//     it — lets projection's own check run and do that correctly.
+		//   - Depth: projectStableActivityDelegate decides truncation before
+		//     it reaches for snapshot.Children[childID], so a child left
+		//     unset here still reports the honest, continuation-bearing
+		//     Truncated branch (markActivityDelegateTruncated) rather than a
+		//     generic "child session unavailable". A placeholder is still
+		//     what carries that child's fold generations into the token, so
+		//     one is left here whenever the budget affords naming them.
 		//   - Work-unit exhaustion: projectActivitySessionAt's delegate loop
 		//     consumes a unit and checks it BEFORE ever dereferencing
 		//     snapshot.Children, so leaving the entry unset there already
@@ -451,11 +454,38 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			// today row.descriptor.TranscriptRef is always
 			// encodeRef("", childID) too — this keeps the placeholder
 			// correct by construction rather than by that coincidence.
+			// The generations come along even though nothing is loaded:
+			// the depth-truncation continuation minted from this placeholder
+			// names the child, and a resume checks it against what the
+			// child's OWN load reports. Minting zeros for a session that
+			// folds real ones refuses a token nobody invalidated, which is
+			// this branch made unreadable past the limit.
+			//
+			// Naming them reads the child's metadata, so it is charged the
+			// same unit a loaded child pays before it is descended into, and
+			// it stops when a canceled request stops everything else. A
+			// budget with nothing left leaves no placeholder for this child,
+			// and projection reports that branch as truncated with a
+			// diagnostic and no continuation — a token with no generations
+			// behind it would be refused by every resume, so it is not
+			// minted at all (projectStableActivityDelegate).
+			if err := cache.ctx.Err(); err != nil {
+				return nil, err
+			}
+			if !activityConsumeWorkUnit(cache.budget, 1) {
+				continue
+			}
+			placeholderJobs, placeholderDelegates, err := activityPlaceholderEpochs(loc, loaded, cache, childID)
+			if err != nil {
+				return nil, err
+			}
 			snapshot.Children[childID] = &activitySessionSnapshot{
 				SessionID:       childID,
 				Ref:             row.descriptor.TranscriptRef,
 				LiveJobs:        map[string]*jobstore.JobRecord{},
 				StableDelegates: map[string]delegateSnapshot{},
+				JobsEpoch:       placeholderJobs,
+				DelegatesEpoch:  placeholderDelegates,
 				Children:        map[string]*activitySessionSnapshot{},
 				Errors:          map[string]error{},
 			}
@@ -635,6 +665,44 @@ func liveActivitySessionLabel(s *Session) string {
 	return activitySessionLabel(schema.SessionMeta{ID: id, Name: name, OriginalPrompt: prompt})
 }
 
+// activityPlaceholderEpochs reports the fold-cache generations childID's own
+// load would report, without paying for that load. A LIVE child folds neither
+// journal and reports zeros; a historical one reports what this process last
+// recorded for its jobs journal and for the delegates journal of the root its
+// metadata names — the same two numbers its own load derives, since a
+// never-folded path's generation is 0 and that is what its first fold
+// assigns. A journal actually rewritten between this read and that fold
+// raises the fold's number, and the resulting mismatch is the true answer.
+func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoadedBase, cache *historicalActivityCache, childID string) (jobs, delegates uint64, err error) {
+	childLoc, err := resolveActivityChildByID(loc, loaded, childID)
+	if err != nil || childLoc.live != nil {
+		// An unresolvable link and a live child are answers, not failures of
+		// this lookup: the caller records the first per child
+		// (snapshot.Errors) and projection reports it from there, and the
+		// second folds nothing. Both name no generations.
+		return 0, 0, nil //nolint:nilerr // the caller records this per child; naming generations is neither possible nor needed here
+	}
+	stateDir := strings.TrimSpace(childLoc.stateDir)
+	if stateDir == "" {
+		return 0, 0, nil
+	}
+	meta, _ := schema.LoadSessionMeta(stateDir, childID)
+	// The delegates generation comes from the same index the child's own load
+	// reads (memoized per traversal), not from a second reading of the fold
+	// cache: a journal degraded by a too-long line reports generation 0 there
+	// while the cache still holds the generation of the last good fold, and
+	// naming that one would refuse a token for a page the loader itself
+	// degraded.
+	index, err := cache.rootDelegates(stateDir, activityRootIDFromMeta(childID, meta))
+	if err != nil {
+		// A canceled request or an unreadable journal is a failure of this
+		// load, not a generation of 0: swallowing it would mint a token
+		// against a number nobody read.
+		return 0, 0, err
+	}
+	return currentHistoricalJobsEpoch(stateDir, childID), index.epoch, nil
+}
+
 func resolveActivityChildByID(parent activitySessionLocator, loaded activityLoadedBase, childID string) (activitySessionLocator, error) {
 	if sub := loaded.directChildren[childID]; sub != nil && sub.sess != nil {
 		sub.mu.Lock()
@@ -741,7 +809,7 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 	// Collected from snapshot (the internal tree projection just consumed)
 	// before trimming works purely on the flattened wire shape, which
 	// carries no epoch information of its own — see
-	// collectActivityJobsEpochs and trimActivityTrailingEntry. revision is
+	// collectActivitySessionEpochs and trimActivityTrailingEntry. revision is
 	// the same value just seeded into budget.revision above, embedded the
 	// same way in whatever continuation trimming mints too.
 	// startDepth is -len(continuation.Path) (loadActivitySnapshotForParams),
@@ -749,20 +817,31 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 	// resumeIndex was applied to — the position trimming has to add back to
 	// mint in that session's own entry numbering rather than this page's.
 	resume := activityTrimResume{depth: -startDepth, index: resumeIndex}
-	return trimActivityTreeToFit(tree, rootID, snapshot.DelegatesEpoch, collectActivityJobsEpochs(snapshot), revision, resume)
+	return trimActivityTreeToFit(tree, rootID, collectActivitySessionEpochs(snapshot), revision, resume)
 }
 
-// collectActivityJobsEpochs walks snapshot's Children tree and returns
-// every visited session's own JobsEpoch, keyed by SessionID.
-// trimActivityTrailingEntry needs this because it operates AFTER
-// projection has already flattened the internal snapshot tree to its wire
-// (appwire.JobActivitySession) shape, which has no epoch fields of its
+// activitySessionEpochs is one session's own fold-cache generations: the
+// generation of its jobs.jsonl and of the delegates.jsonl it folds. A
+// continuation is checked against the generations of the session it TARGETS
+// (loadActivitySnapshotForParamsWithCache), so that is what a mint for that
+// session has to carry — the page root's own are only right for a token
+// naming the page root.
+type activitySessionEpochs struct {
+	jobs      uint64
+	delegates uint64
+}
+
+// collectActivitySessionEpochs walks snapshot's Children tree and returns
+// every visited session's own generations, keyed by SessionID.
+// trimActivityTrailingEntry needs this because it operates AFTER projection
+// has already flattened the internal snapshot tree to its wire
+// (appwire.JobActivitySession) shape, which has no generation fields of its
 // own.
-func collectActivityJobsEpochs(snapshot activitySessionSnapshot) map[string]uint64 {
-	epochs := make(map[string]uint64)
+func collectActivitySessionEpochs(snapshot activitySessionSnapshot) map[string]activitySessionEpochs {
+	epochs := make(map[string]activitySessionEpochs)
 	var walk func(s activitySessionSnapshot)
 	walk = func(s activitySessionSnapshot) {
-		epochs[s.SessionID] = s.JobsEpoch
+		epochs[s.SessionID] = activitySessionEpochs{jobs: s.JobsEpoch, delegates: s.DelegatesEpoch}
 		for _, child := range s.Children {
 			if child != nil {
 				walk(*child)
@@ -1096,6 +1175,31 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		appendActivityBranchError(&delegate.Branch, err.Error())
 		return delegate
 	}
+	childPath := appendActivityPath(path, row.id)
+	if budget != nil && budget.bounded && depth >= budget.maxDepth {
+		// Decided before the child is touched, because at the bound there may
+		// be nothing to touch: the load leaves a placeholder there rather
+		// than a session, and when its own budget ran out before it could
+		// name that child's generations it leaves nothing at all. Reaching
+		// for the child first would turn that into "child session
+		// unavailable", which says neither what happened nor what to do.
+		child := snapshot.Children[childID]
+		if child == nil {
+			// Nothing named this child's generations, so a continuation for
+			// it could carry none — and an unfenced token is refused by
+			// every resume of a child anything ever folded, which is a
+			// certain dead end dressed up as a page. Say what happened and
+			// how to read this branch instead: a request rooted at the child
+			// renders it with a budget of its own.
+			delegate.Branch.Truncated = true
+			delegate.Diagnostics = append(delegate.Diagnostics, fmt.Sprintf("load budget exhausted; request session %q directly", childID))
+			return delegate
+		}
+		// The child's OWN generations: a resume checks the token against the
+		// generations of the session it names — see markActivityDelegateTruncated.
+		markActivityDelegateTruncated(&delegate, budget, childID, childPath, child.JobsEpoch, child.DelegatesEpoch)
+		return delegate
+	}
 	child := snapshot.Children[childID]
 	if child == nil {
 		appendActivityBranchError(&delegate.Branch, fmt.Sprintf("child session %q unavailable", childID))
@@ -1108,15 +1212,6 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	if delegate.Usage == nil && child.Usage != nil {
 		usage := *child.Usage
 		delegate.Usage = &usage
-	}
-	childPath := appendActivityPath(path, row.id)
-	if budget != nil && budget.bounded && depth >= budget.maxDepth {
-		// child's own JobsEpoch (its jobs.jsonl fold generation), paired
-		// with snapshot's DelegatesEpoch (the shared root delegates.jsonl
-		// generation, uniform across every session under this root) —
-		// see markActivityDelegateTruncated.
-		markActivityDelegateTruncated(&delegate, budget, child.SessionID, childPath, child.JobsEpoch, snapshot.DelegatesEpoch)
-		return delegate
 	}
 	projectedChild := projectActivitySessionAt(*child, budget, depth+1, childPath, resumeIndex)
 	delegate.Child = &projectedChild
@@ -1215,10 +1310,10 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 }
 
 // markActivityDelegateTruncated mints a depth-truncated delegate's
-// continuation. jobsEpoch and delegatesEpoch — the truncated delegate's own
-// JobsEpoch and the shared root's DelegatesEpoch — are carried the same way
-// markActivitySessionTruncated carries them: without them, a resumed
-// continuation's staleness check could never detect a rewrite that raced
+// continuation. jobsEpoch and delegatesEpoch are the TARGET session's own
+// generations, carried the same way markActivitySessionTruncated carries
+// them: a resume checks the token against the generations of the session it
+// names, so without them that check could never detect a rewrite that raced
 // the truncation.
 func markActivityDelegateTruncated(delegate *appwire.JobActivityDelegate, budget *activityBudget, sessionID string, path []string, jobsEpoch, delegatesEpoch uint64) {
 	if delegate == nil {
@@ -1378,9 +1473,8 @@ func (r activityTrimResume) offsetAt(path []string) int {
 }
 
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
-// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs,
-// revision, and resume feed every continuation trimming mints — see
-// trimActivityTrailingEntry. Dropping an entry is also the only evidence
+// encodes within activityMaxEncodedBytes. epochs, revision and resume feed
+// every continuation trimming mints — see trimActivityTrailingEntry. Dropping an entry is also the only evidence
 // available about WHY the page was too big: an entry that leaves the page
 // within the limit is what did not fit, and is skipped when no later page
 // could carry it either; one that does not is left for a page that
@@ -1388,7 +1482,7 @@ func (r activityTrimResume) offsetAt(path []string) int {
 // nothing left to drop, the response's own fixed parts — labels,
 // diagnostics, the ancestor chain's delegate metadata — are what exceed it,
 // and no continuation can lead anywhere.
-func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) (appwire.JobActivityTree, error) {
+func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, epochs map[string]activitySessionEpochs, revision uint64, resume activityTrimResume) (appwire.JobActivityTree, error) {
 	for {
 		recomputeActivitySession(&tree.Root)
 		raw, err := json.Marshal(tree)
@@ -1398,7 +1492,7 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
-		dropped, ok := trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision, resume)
+		dropped, ok := trimActivityTrailingEntry(&tree.Root, rootID, nil, epochs, revision, resume)
 		if !ok {
 			markActivityEnvelopeTooLarge(&tree.Root, len(raw))
 			// The error is part of what makes this page incomplete, and
@@ -1423,7 +1517,7 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		// It was. Advance past it and measure the page with the token it will
 		// actually carry — advancing lengthens that token, so a page weighed
 		// with the position it is leaving behind has not been weighed at all.
-		mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
+		mintActivityTrimContinuation(dropped, rootID, dropped.index+1, epochs, revision)
 		recomputeActivitySession(&tree.Root)
 		advanced, err := json.Marshal(tree)
 		if err != nil {
@@ -1498,15 +1592,16 @@ func explainActivitySkippedEntry(tree *appwire.JobActivityTree, dropped activity
 	return nil
 }
 
-func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, resumeIndex int, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) {
+func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, resumeIndex int, epochs map[string]activitySessionEpochs, revision uint64) {
+	own := epochs[dropped.session.SessionID]
 	dropped.session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
 		Version:        activityContinuationV1,
 		RootID:         rootID,
 		SessionID:      dropped.session.SessionID,
 		Path:           append([]string(nil), dropped.path...),
 		ResumeIndex:    resumeIndex,
-		JobsEpoch:      jobsEpochs[dropped.session.SessionID],
-		DelegatesEpoch: delegatesEpoch,
+		JobsEpoch:      own.jobs,
+		DelegatesEpoch: own.delegates,
 		Revision:       revision,
 	})
 }
@@ -1514,13 +1609,12 @@ func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, r
 // trimActivityTrailingEntry drops the deepest, last entry from session's
 // tree (recursing into a delegate child before trimming session's own
 // entries) and marks whichever session actually lost an entry truncated,
-// with a continuation resuming right after it. delegatesEpoch is the
-// shared root's DelegatesEpoch (uniform across every session under one
-// root); jobsEpochs maps EACH session's own SessionID to its own JobsEpoch
-// (see collectActivityJobsEpochs) — trimming can strike any session in the
-// tree, not just the root, and each has its own jobs.jsonl fold
-// generation. revision is the root's live-clock revision at mint time (see
-// activityContinuation.Revision), likewise uniform across the tree.
+// with a continuation resuming right after it. epochs maps EACH session's
+// own SessionID to its own fold-cache generations (see
+// collectActivitySessionEpochs) — trimming can strike any session in the
+// tree, not just the root, and a resume checks the token against the
+// generations of the session it names. revision is the root's live-clock revision at mint time (see
+// activityContinuation.Revision), which is uniform across the tree.
 // Carrying all three lets a resumed continuation's staleness check
 // actually detect a rewrite — or, for a live root, a mutation — that raced
 // this trim. resume locates the page's own starting position so a mint
@@ -1528,14 +1622,14 @@ func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, r
 // The dropped entry is reported back so the caller, which owns the encoded
 // size, can decide whether that entry was what did not fit — trimming from
 // the tail cannot tell on its own.
-func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) (activityTrimmedEntry, bool) {
+func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, epochs map[string]activitySessionEpochs, revision uint64, resume activityTrimResume) (activityTrimmedEntry, bool) {
 	if session == nil || len(session.Entries) == 0 {
 		return activityTrimmedEntry{}, false
 	}
 	i := len(session.Entries) - 1
 	entry := &session.Entries[i]
 	if entry.Delegate != nil && entry.Delegate.Child != nil {
-		if dropped, ok := trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision, resume); ok {
+		if dropped, ok := trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), epochs, revision, resume); ok {
 			return dropped, true
 		}
 	}
@@ -1555,7 +1649,7 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 	}
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
-	mintActivityTrimContinuation(dropped, rootID, dropped.index, delegatesEpoch, jobsEpochs, revision)
+	mintActivityTrimContinuation(dropped, rootID, dropped.index, epochs, revision)
 	return dropped, true
 }
 

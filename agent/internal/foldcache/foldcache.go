@@ -307,16 +307,80 @@ func (c *Cache[T]) tryFastHit(path string, info os.FileInfo) (Result[T], bool, e
 	return Result[T]{}, false, nil
 }
 
+// freshness is what the cache's recorded state plus the file as it is right
+// now say about path, WITHOUT folding it: the generation the next fold will
+// carry, whether the cached prefix survived well enough to resume from it,
+// and whether the content is confirmed identical (so a resident value is a
+// true hit). Every branch below mirrors what a pure append does and does not
+// prove — see Result.Epoch's own doc comment for why mtime alone settles
+// nothing.
+type freshness struct {
+	epoch     uint64
+	resumable bool
+	unchanged bool
+}
+
+// freshnessOf is the one place that decision is made, so a caller that only
+// needs the generation (Cache.Epoch) names the number the next fold will
+// carry rather than the number the last one did. It reads at most the tail
+// probe; it never folds and never mutates cache state.
+func freshnessOf(path string, info os.FileInfo, st *epochState) (freshness, error) {
+	if st == nil {
+		return freshness{}, nil
+	}
+	epoch := st.epoch
+	switch {
+	case info.Size() < st.size:
+		// Shrunk: definitely not a pure append. Discard and bump the
+		// generation so an outstanding continuation keyed to the old content
+		// is detectably stale.
+		return freshness{epoch: epoch + 1}, nil
+	case info.Size() == st.size:
+		if !st.mod.Equal(info.ModTime()) {
+			// Same length, different mtime: a rewrite that happens to match
+			// the old size. Discard and bump, same as a shrink.
+			return freshness{epoch: epoch + 1}, nil
+		}
+		// Same length AND same mtime: mtime alone cannot resolve this (the
+		// classic jobstore.Store fileCursor residual) — the tail probe can.
+		match, err := tailProbeMatches(path, st.offset, st.tail)
+		if err != nil {
+			return freshness{}, err
+		}
+		if !match {
+			return freshness{epoch: epoch + 1}, nil
+		}
+		// Confirmed unchanged. A resident value is a true hit; an evicted one
+		// still needs a full reread, but the generation does not move.
+		return freshness{epoch: epoch, unchanged: true}, nil
+	default: // info.Size() > st.size
+		match, err := tailProbeMatches(path, st.offset, st.tail)
+		if err != nil {
+			return freshness{}, err
+		}
+		if !match {
+			// The old prefix did not survive: a rewrite, not an append.
+			return freshness{epoch: epoch + 1}, nil
+		}
+		if st.mod.Equal(info.ModTime()) {
+			// Grew with mtime giving no signal either way: the probe only
+			// decides the generation here, never an incremental resume —
+			// the deliberate choice to reread rather than trust an
+			// mtime-unresolvable growth.
+			return freshness{epoch: epoch}, nil
+		}
+		// Grew AND mtime moved forward with the old prefix intact: an
+		// ordinary append, safe to resume from.
+		return freshness{epoch: epoch, resumable: true}, nil
+	}
+}
+
 // refresh does the actual (possibly incremental) read. It runs inside the
 // singleflight-owned closure, so exactly one goroutine executes it per path
 // at a time; mu is NOT held while it runs (Extend may take a while).
 func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, extend Extend[T]) (Result[T], error) {
 	c.mu.Lock()
 	st := c.epochStates[path]
-	epoch := uint64(0)
-	if st != nil {
-		epoch = st.epoch
-	}
 	var element *list.Element
 	if el, ok := c.entries[path]; ok {
 		element = el
@@ -325,80 +389,15 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 
 	var prior T
 	fromOffset := int64(0)
-	sameSizeAmbiguous := false
-	growthAmbiguous := false
-	if st != nil {
-		switch {
-		case info.Size() < st.size:
-			// Shrunk: definitely not a pure append. Discard and bump epoch
-			// so an outstanding continuation keyed to the old content is
-			// detectably stale.
-			epoch++
-		case info.Size() == st.size:
-			if st.mod.Equal(info.ModTime()) {
-				// Same length AND same mtime: mtime alone cannot resolve
-				// this (the classic jobstore.Store fileCursor residual) —
-				// needs the tail probe below.
-				sameSizeAmbiguous = true
-			} else {
-				// Same length, different mtime: a rewrite that happens to
-				// match the old size. Discard and bump epoch, same as a
-				// shrink.
-				epoch++
-			}
-		default: // info.Size() > st.size
-			if st.mod.Equal(info.ModTime()) {
-				// Grew, but mtime gives no signal either way: could be a
-				// pure append (mtime just didn't move) or a
-				// truncate-and-rewrite-larger that coincidentally landed
-				// in the same mtime bucket. Needs the tail probe below —
-				// unlike the same-size case, SOMETHING must still be read
-				// (the file is genuinely larger), so this can never
-				// short-circuit to a cached value the way sameSizeAmbiguous
-				// can; the probe here only decides the epoch signal.
-				growthAmbiguous = true
-			} else {
-				// Grew AND mtime moved forward — looks like an ordinary
-				// append, but "mtime moved forward" is exactly what a
-				// truncate-and-rewrite-larger with different content also
-				// produces: nothing about (size, mtime) alone
-				// distinguishes them, so this cannot be trusted without
-				// verification, the same as the same-mtime sibling
-				// above. Verify the tail probe against the cached
-				// offset before trusting an incremental resume from it,
-				// mirroring sameSizeAmbiguous's own probe-then-branch
-				// shape below.
-				match, tailErr := tailProbeMatches(path, st.offset, st.tail)
-				if tailErr != nil {
-					var zero Result[T]
-					return zero, tailErr
-				}
-				if !match {
-					// The old prefix did not survive: a rewrite, not an
-					// append. Discard and bump epoch exactly like a
-					// shrink or a same-size rewrite; fromOffset stays 0
-					// so extend performs a full rescan of the new
-					// content.
-					epoch++
-				} else if element != nil {
-					if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
-						prior, fromOffset = e.value, e.offset
-					}
-				}
-			}
-		}
+	fresh, err := freshnessOf(path, info, st)
+	if err != nil {
+		var zero Result[T]
+		return zero, err
 	}
-
-	if sameSizeAmbiguous {
-		match, tailErr := tailProbeMatches(path, st.offset, st.tail)
-		if tailErr != nil {
-			var zero Result[T]
-			return zero, tailErr
-		}
-		if !match {
-			epoch++
-		} else if element != nil {
-			if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
+	epoch := fresh.epoch
+	if element != nil && (fresh.unchanged || fresh.resumable) {
+		if e := element.Value.(*entry[T]); e.valid && st != nil && e.offset == st.offset {
+			if fresh.unchanged {
 				// Confirmed unchanged, and the cached value is still
 				// resident: a true hit reached via refresh instead of
 				// Get's own fast path (e.g. a concurrent evict/replace
@@ -408,27 +407,8 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 				c.mu.Unlock()
 				return Result[T]{Value: e.value, Offset: e.offset, Epoch: epoch}, nil
 			}
+			prior, fromOffset = e.value, e.offset
 		}
-		// Confirmed unchanged but nothing resident to return (evicted): a
-		// full reread is required regardless (nothing to resume from),
-		// but epoch does not bump, since the content itself is confirmed
-		// the same. fromOffset stays 0 either way this branch exits.
-	} else if growthAmbiguous {
-		match, tailErr := tailProbeMatches(path, st.offset, st.tail)
-		if tailErr != nil {
-			var zero Result[T]
-			return zero, tailErr
-		}
-		if !match {
-			epoch++
-		}
-		// fromOffset stays 0 regardless of match: unlike the same-size
-		// case, the file is genuinely larger, so there is always new data
-		// to read via extend — the probe only decides whether the OLD
-		// prefix is trustworthy enough that epoch should stay put,
-		// matching the existing, deliberate choice to always fall back to
-		// a full reread here rather than resume incrementally off an
-		// mtime-unresolvable growth.
 	}
 
 	wasCached := st != nil
@@ -604,6 +584,40 @@ func (c *Cache[T]) finishFlight(flightKey string) {
 	// subsequent Get cannot join a call that already finished.
 	c.group.Forget(flightKey)
 	delete(c.flights, flightKey)
+}
+
+// Epoch reports the generation Get would attach to path right now, without
+// folding it, for a caller that must name a path's generation WITHOUT paying
+// for its fold (the activity tree's depth-truncated children). It runs the
+// same freshness step Get runs (freshnessOf) against the same recorded
+// state, so a file already rewritten is named at its NEW generation rather
+// than the one the last fold carried — naming the old one would refuse a
+// continuation minted after that rewrite, which is a false rejection. It
+// answers 0 for a path never folded, which is what a first fold assigns
+// since there is no prior state to discard, and 0 for a path that is gone,
+// which is the zero Result Get returns for a missing file rather than the
+// tombstone kept for the content that used to be there. A file rewritten
+// between this call and the fold raises the fold's generation past this one,
+// and that mismatch is a true answer, not a false one.
+func (c *Cache[T]) Epoch(path string) uint64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	fresh, probeErr := freshnessOf(path, info, st)
+	if probeErr != nil {
+		// The probe could not be read, so the file itself is unreadable and
+		// the fold that follows will fail on it. The recorded generation is
+		// the only answer left, and the failure surfaces there, not here.
+		if st != nil {
+			return st.epoch
+		}
+		return 0
+	}
+	return fresh.epoch
 }
 
 // Stats returns a snapshot of this cache's counters.
