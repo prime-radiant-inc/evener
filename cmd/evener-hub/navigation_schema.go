@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"unicode/utf8"
 
@@ -437,7 +438,13 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 			return false
 		}
 		for _, cadence := range watch.Cadence {
-			if utf8.RuneCountInString(cadence.Kind) > maxNavigationLabelRunes {
+			// Mirror the web codec's watchCadenceValue: a present seconds value
+			// must be finite and non-negative, every is a non-negative count, and
+			// filter is bounded like every other rendered label.
+			if utf8.RuneCountInString(cadence.Kind) > maxNavigationLabelRunes ||
+				!navigationCadenceSeconds(cadence.Seconds) ||
+				cadence.Every < 0 ||
+				utf8.RuneCountInString(cadence.Filter) > maxNavigationLabelRunes {
 				return false
 			}
 		}
@@ -446,8 +453,22 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 				return false
 			}
 		}
+		// The codec validates each delivery_times entry as strict RFC3339 and
+		// fails the whole snapshot on one bad value, so reject it here before a
+		// malformed instant can reach the client.
+		for _, at := range watch.DeliveryTimes {
+			if !validNavigationTimestamp(at) {
+				return false
+			}
+		}
 	}
 	return true
+}
+
+// navigationCadenceSeconds mirrors the web codec's cadence seconds rule: an
+// absent value is zero, and a present one must be finite and non-negative.
+func navigationCadenceSeconds(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
 }
 
 func navigationProjectSummaryValid(value hubapi.NavigationProjectSummary) bool {

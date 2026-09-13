@@ -174,6 +174,19 @@ function deliveryCountLabel(count: number): string {
   return `${count} ${count === 1 ? "delivery" : "deliveries"}`;
 }
 
+// The events cadence's own detail - the fire-every-Nth count and the event
+// filter - with the "on events" condition that watchCadenceLabel prefixes
+// stripped. watchMeta and watchFacts already name the event condition ("on
+// event" and "Waiting on ..."), so reusing only the detail tells a throttled or
+// filtered watch apart from one that fires on every matching event without
+// printing the condition twice.
+function eventCadenceDetail(watch: NavigationWatchSummary): string {
+  const events = (watch.cadence ?? []).find((cadence) => cadence.kind === "events");
+  if (events === undefined) return "";
+  const label = watchCadenceLabel(events);
+  return label.startsWith("on events ") ? label.slice("on events ".length) : "";
+}
+
 // A watch row's second line: what its condition is, then the count it has
 // earned or its armed state. Never a next-fire or countdown - the runtime
 // keeps no such instant.
@@ -185,7 +198,10 @@ export function watchMeta(watch: NavigationWatchSummary): string {
   // which collapses a multi-trigger watch to a single kind.
   const conditions: string[] = [];
   if ((watch.output_match ?? "").trim() !== "") conditions.push("on output");
-  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) conditions.push("on event");
+  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
+    const detail = eventCadenceDetail(watch);
+    conditions.push(detail === "" ? "on event" : `on event ${detail}`);
+  }
   conditions.push(...clockCadenceLabels(watch));
   const suffix = watch.deliveries > 0 ? deliveryCountLabel(watch.deliveries) : armedState(watch);
   return [...conditions, suffix].filter((part) => part !== "").join(" · ");
@@ -207,7 +223,9 @@ export function watchFacts(watch: NavigationWatchSummary, now: number): string {
     segments.push(`Fires ${clockCadence}`);
   }
   if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
-    segments.push(`Waiting on ${eventLabel(watch)}`);
+    const waiting = `Waiting on ${eventLabel(watch)}`;
+    const detail = eventCadenceDetail(watch);
+    segments.push(detail === "" ? waiting : `${waiting} ${detail}`);
   }
   if (!watch.active) {
     segments.push(armedState(watch));
