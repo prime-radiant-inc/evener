@@ -586,6 +586,12 @@ func (c *Cache[T]) finishFlight(flightKey string) {
 	delete(c.flights, flightKey)
 }
 
+// epochInterleave runs between Epoch's two readings when set. It exists for
+// the test that proves those readings cannot describe different moments: a
+// fold landing in this window must not let one be judged against the other in
+// the direction that invents a rewrite. Nil in every build but that test.
+var epochInterleave func()
+
 // Epoch reports the generation Get would attach to path right now, without
 // folding it, for a caller that must name a path's generation WITHOUT paying
 // for its fold (the activity tree's depth-truncated children). It runs the
@@ -600,13 +606,24 @@ func (c *Cache[T]) finishFlight(flightKey string) {
 // between this call and the fold raises the fold's generation past this one,
 // and that mismatch is a true answer, not a false one.
 func (c *Cache[T]) Epoch(path string) uint64 {
+	// State first, file second, and never the other way round: a fold that
+	// lands between the two steps would otherwise leave stale file
+	// information to be judged against newer state, and that comparison
+	// invents a generation — a rewrite nobody performed — which refuses a
+	// resume no fold would have refused. In this order the state can only be
+	// older than the file, which is the case this already answers for: the
+	// fold that follows raises the generation past what is reported here, and
+	// that mismatch is a true one.
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	if epochInterleave != nil {
+		epochInterleave()
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0
 	}
-	c.mu.Lock()
-	st := c.epochStates[path]
-	c.mu.Unlock()
 	fresh, probeErr := freshnessOf(path, info, st)
 	if probeErr != nil {
 		// The probe could not be read, so the file itself is unreadable and

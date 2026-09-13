@@ -856,3 +856,81 @@ func TestCache_EpochAgreesWithGetAcrossDeletionAndRecreation(t *testing.T) {
 		t.Fatalf("recreated epoch (%d) did not advance past the pre-deletion epoch (%d)", recreated.Epoch, folded.Epoch)
 	}
 }
+
+// TestCache_EpochNeverExceedsTheNextFoldsGeneration pins the ordering inside
+// Epoch. It names a generation from two readings — the cache's recorded state
+// and the file itself — and a fold landing between them must not be able to
+// make those two describe different moments in a way that invents a rewrite:
+// a generation above what the next fold reports refuses a resume no fold
+// would have refused. Run under -race, with folds and rewrites happening
+// throughout.
+func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	c := New[intsFold](8)
+	ctx := context.Background()
+	var calls []int64
+	extend := countingLineExtend(t, &calls)
+	if _, err := c.Get(ctx, path, extend); err != nil {
+		t.Fatalf("seed fold: %v", err)
+	}
+
+	// First deterministically, on a quiet file: a fold lands exactly between
+	// Epoch's two readings.
+	interleaved := 0
+	epochInterleave = func() {
+		interleaved++
+		writeLines(t, path, []int{7, 8, 9, 10})
+		if _, err := c.Get(ctx, path, extend); err != nil {
+			t.Errorf("interleaved fold: %v", err)
+		}
+	}
+	named := c.Epoch(path)
+	epochInterleave = nil
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("fold after the interleaved naming: %v", err)
+	}
+	if interleaved == 0 {
+		t.Fatal("the interleaving hook never ran")
+	}
+	if named > folded.Epoch {
+		t.Fatalf("Epoch named generation %d across an interleaved fold while the next fold carried %d", named, folded.Epoch)
+	}
+
+	// Then under concurrency, with folds and rewrites happening throughout.
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// Folds, and now and then a rewrite for them to discover.
+			if i%3 == 0 {
+				writeLines(t, path, []int{i, i + 1, i + 2})
+			}
+			if _, err := c.Get(ctx, path, extend); err != nil {
+				return
+			}
+		}
+	}()
+
+	for range 200 {
+		named := c.Epoch(path)
+		folded, err := c.Get(ctx, path, extend)
+		if err != nil {
+			t.Fatalf("fold after naming: %v", err)
+		}
+		if named > folded.Epoch {
+			t.Fatalf("Epoch named generation %d while the fold that followed carried %d -- a generation no fold produces refuses a resume nothing invalidated", named, folded.Epoch)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
