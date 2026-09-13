@@ -198,6 +198,22 @@ test("passes opensExchange and agentLabel through ItemRenderProps", () => {
   }
 });
 
+test("passes closesExchange through ItemRenderProps", () => {
+  const seen: Array<{ closesExchange?: boolean }> = [];
+  const originalAgentMessageRenderer = itemRendererFor("agentMessage");
+  try {
+    registerItemRenderer("agentMessage", (props) => {
+      seen.push({ closesExchange: props.closesExchange });
+      return null;
+    });
+    const agentItem = { id: "a9", turnId: "t1", type: "agentMessage", text: "done", status: "completed" };
+    render(<TurnBlock turn={turn([agentItem])} exchangeClosers={new Set(["a9"])} />);
+    expect(seen).toEqual([{ closesExchange: true }]);
+  } finally {
+    registerItemRenderer("agentMessage", originalAgentMessageRenderer);
+  }
+});
+
 // The exact mechanism wave-4 T5c wraps most registered item renderers with
 // (ToolCallItem, RawItemView, and every registered messages/ renderer except
 // SystemNoticeItem - see each's own registerItemRenderer call site): a

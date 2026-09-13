@@ -78,6 +78,12 @@ test("ignoringTurn re-renders when opensExchange or agentLabel changes", () => {
   expect(ignoringTurn({ ...base, opensExchange: true }, { ...base, opensExchange: true })).toBe(true);
 });
 
+test("ignoringTurn re-renders when closesExchange changes", () => {
+  const base = { item: {} as never, turn: {} as never, live: false };
+  expect(ignoringTurn(base, { ...base, closesExchange: true })).toBe(false);
+  expect(ignoringTurn({ ...base, closesExchange: true }, { ...base, closesExchange: true })).toBe(true);
+});
+
 test("ItemRenderProps no longer has a hideIntent field", () => {
   const props: ItemRenderProps = { item: itemModel(), turn: turnModel(), live: false };
   // @ts-expect-error — hideIntent is removed from ItemRenderProps

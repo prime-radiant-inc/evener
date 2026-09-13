@@ -271,6 +271,26 @@ test("mid-exchange LIVE fragments render no header either - the trigger is opens
   expect(screen.queryByTestId("speaker-avatar")).toBeNull();
 });
 
+// --- terminal (exchange-concluding) wash -----------------------------------
+// Option B: the final agent prose concluding an exchange carries the neutral
+// ink wash; every other fragment stays a flat document. Settled only: a live
+// tail never closes, so the wash cannot flicker mid-stream.
+
+test("a settled closer carries the terminal class on its bubble", () => {
+  renderMessage(<AgentMessageItem item={item({ text: "done" })} turn={turn} live={false} closesExchange />);
+  expect(screen.getByTestId("agent-bubble").className).toContain("terminal");
+});
+
+test("a settled non-closer carries no terminal class", () => {
+  renderMessage(<AgentMessageItem item={item({ text: "more work" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("agent-bubble").className).not.toContain("terminal");
+});
+
+test("a live closer carries no terminal class - the wash is settled-only", () => {
+  renderMessage(<AgentMessageItem item={item({ pendingText: ["almost"] })} turn={turn} live={true} closesExchange />);
+  expect(screen.getByTestId("agent-bubble").className).not.toContain("terminal");
+});
+
 // --- agent prose is the transcript's hero (kata 7pa0) -----------------------
 // jsdom computes no cascade (it structurally cannot see a token step up the
 // ramp), so this reads the three stylesheets' own source instead - the same
@@ -358,6 +378,18 @@ test("agent prose is a document: the bubble wrapper has no fill, no radius, and 
   expect(bubble![1]).toMatch(/width:\s*100%/);
   expect(bubble![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   expect(css).toMatch(/\.continuation\s*\{[^}]*margin-top:\s*var\(--rhythm-item\);/);
+});
+
+test("the terminal closer carries the neutral wash: token-only fill, no hardcoded hex", () => {
+  // Option B: the exchange-concluding fragment only. Fill is the
+  // chat-bubbles value (color-mix over --ink-mid), not a surface token
+  // (invisible against the pane in the light theme) and never a literal.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const terminal = /\.terminal\s*\{([^}]*)\}/.exec(css);
+  expect(terminal).not.toBeNull();
+  expect(terminal![1]).toMatch(/background:\s*color-mix\(in oklab,\s*var\(--ink-mid\)\s*6%,\s*transparent\)/);
+  expect(terminal![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
 });
 
 // The live path renders through the SAME Markdown widget as the settled

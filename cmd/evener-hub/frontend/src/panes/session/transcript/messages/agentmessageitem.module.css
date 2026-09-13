@@ -46,6 +46,21 @@
   margin-top: var(--rhythm-item);
 }
 
+/* The terminal wash (option B): the exchange-concluding fragment only - the
+ * last text-bearing settled agentMessage before the next userMessage or the
+ * transcript end (exchangeClosers.ts). The fill is the 2026-07-30
+ * chat-bubbles value (color-mix over --ink-mid), NOT a surface token: in the
+ * light theme --surface-1 and --surface-2 measure identical to the pane, so
+ * a surface token would vanish exactly where the transcript is densest.
+ * Padding is the chat-bubble measure (space-2/space-3), not the flat
+ * bubble's rhythm step: the wash needs inner space, so a terminal fragment
+ * stands slightly taller than a flat one by design. */
+.terminal {
+  background: color-mix(in oklab, var(--ink-mid) 6%, transparent);
+  border-radius: var(--radius-pane);
+  padding: var(--space-2) var(--space-3);
+}
+
 
 /* Exchange openers only: the item becomes a flex row [avatar][column]. The
  * gap with the 24px avatar makes the 34px content column TurnBlock's gutter

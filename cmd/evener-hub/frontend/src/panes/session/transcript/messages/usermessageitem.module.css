@@ -111,12 +111,13 @@
 }
 
 /* The chat bubble (2026-07-30-transcript-chat-bubbles-design.md, decisions
- * 1-3): the user's own words sit in an accent wash - --accent-bg, the
- * existing token (15% --accent on --surface-1, both themes) - hugging the
- * content rather than spanning the column (width: fit-content + max-width,
- * so a one-word message gets a one-word bubble). The 4px corner is the one
- * TOWARD the avatar (top-left): the chat "tail"; the other corners take the
- * pane radius. */
+ * 1-3, restored by option B): the user's own words sit in an accent wash -
+ * --accent-bg, the existing token (15% --accent on --surface-1, both themes)
+ * - hugging the content rather than spanning the column (width: fit-content
+ * + max-width, so a one-word message gets a one-word bubble). The 4px corner
+ * is the one TOWARD the avatar (top-left): the chat "tail"; the other
+ * corners take the pane radius. Serif prose stays; only the containment
+ * returns. */
 .body {
   display: flex;
   flex-direction: column;
@@ -125,7 +126,9 @@
   /* Bounded by the column (--session-measure on body), not a percentage of
    * the pane - see agentmessageitem.module.css's .bubble. */
   max-width: 100%;
-  padding: var(--space-1) 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-bg);
+  border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
 }
 
 .text {
