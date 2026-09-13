@@ -608,6 +608,11 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	if err := c.requiresCodex(provider); err != nil {
 		return appwire.AuthDeviceStartResponse{}, err
 	}
+	// Captured before the device-code request, which is itself a network round
+	// trip: this is the endpoint the flow starts on. One an edit arrives at
+	// during that request has to fail the completion's comparison rather than
+	// be adopted as the destination the user asked for.
+	endpoint := c.endpointFingerprintFor(provider)
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
 	if err != nil {
 		if errors.Is(err, authopenai.ErrDeviceCodeNotEnabled) {
@@ -619,10 +624,6 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	if err != nil {
 		return appwire.AuthDeviceStartResponse{}, fmt.Errorf("generate device flow id: %w", err)
 	}
-	// As LoginStart captures it: the poll below is the long step, and the
-	// endpoint the instance resolved to when the flow was created is what the
-	// record may be filed against.
-	endpoint := c.endpointFingerprintFor(provider)
 	c.mu.Lock()
 	if c.deviceFlows == nil {
 		c.deviceFlows = map[string]deviceFlow{}

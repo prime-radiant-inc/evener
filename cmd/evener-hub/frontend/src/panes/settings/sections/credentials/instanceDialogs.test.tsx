@@ -469,6 +469,132 @@ describe("AddInstanceDialog", () => {
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
+  // A curated provider the user has a credential or an environment variable
+  // for is listed as an implicit instance, so a listing holding that row by
+  // name is not evidence this create authored anything. Confirming against it
+  // would steer the guided flow to a row the create never wrote.
+  test("an implicit row with the created name does not confirm a create", async () => {
+    const fake = connectFakeClient();
+    const IMPLICIT_WORK2 = instance({ name: "work2", providerId: "anthropic", implicit: true });
+    const WITH_IMPLICIT: InstanceListResponse = { instances: [IMPLICIT_WORK2], availableProviders: [] };
+    fake.on("evener/instance/create", () => WITH_IMPLICIT);
+    const onSuccess = vi.fn();
+    const onUnconfirmedCreate = vi.fn();
+    // The toast queue is a module singleton shared across this file's tests;
+    // clear it so "no success toast" means this create pushed none.
+    resetToastStoreForTests();
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog
+          availableProviders={[ANTHROPIC]}
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+          onUnconfirmedCreate={onUnconfirmedCreate}
+        />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(onUnconfirmedCreate).toHaveBeenCalledWith("work2"));
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Created instance work2/)).toBeNull();
+  });
+
+  // Without a consumer recovery callback, the unconfirmed implicit row leaves
+  // the dialog open on its own re-confirm path rather than claiming success.
+  test("an implicit row with the created name keeps the dialog open unconfirmed", async () => {
+    const fake = connectFakeClient();
+    const IMPLICIT_WORK2 = instance({ name: "work2", providerId: "anthropic", implicit: true });
+    const WITH_IMPLICIT: InstanceListResponse = { instances: [IMPLICIT_WORK2], availableProviders: [] };
+    fake.on("evener/instance/create", () => WITH_IMPLICIT);
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  // The positive control: the entry a create actually authors (implicit:
+  // false) still confirms the create.
+  test("an authored row with the created name still confirms the create", async () => {
+    const fake = connectFakeClient();
+    const AUTHORED_WORK2 = instance({ name: "work2", providerId: "anthropic", implicit: false });
+    const WITH_AUTHORED: InstanceListResponse = { instances: [AUTHORED_WORK2], availableProviders: [] };
+    fake.on("evener/instance/create", () => WITH_AUTHORED);
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith("work2"));
+  });
+
+  // A superseded create reconciles through confirmCreate, which must apply the
+  // same authored-row rule: a listing holding only the implicit row is not
+  // confirmation either.
+  test("a reconciled listing holding only an implicit row does not confirm the create", async () => {
+    const fake = connectFakeClient();
+    const IMPLICIT_WORK2 = instance({ name: "work2", providerId: "anthropic", implicit: true });
+    const WITHOUT_WORK2: InstanceListResponse = { instances: [], availableProviders: [] };
+    const WITH_IMPLICIT: InstanceListResponse = { instances: [IMPLICIT_WORK2], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_WORK2);
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    let resolveCreate!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/create",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work2");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    // A listing read issued after the create supersedes its response; the
+    // listing it leaves holds only the implicit row.
+    fake.on("evener/instance/list", () => WITH_IMPLICIT);
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await act(async () => {
+      resolveCreate(WITH_IMPLICIT);
+    });
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("could not confirm work2"));
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
   // A resolved reconcile is only confirmation if the listing it applied
   // actually contains the created row: reporting success on a listing that
   // never showed the instance closes the editor on a connection the host may

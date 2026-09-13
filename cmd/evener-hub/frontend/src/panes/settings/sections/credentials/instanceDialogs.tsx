@@ -59,6 +59,16 @@ export interface AddInstanceDialogProps {
   onUnconfirmedCreate?: (name: string) => void;
 }
 
+// The create this dialog issues authors the row it writes, so that row is
+// explicit. An implicit row carries the name because the user has a credential
+// or an environment variable for a curated provider, not because this create
+// landed anything. Matching by name alone would confirm a create the host never
+// reflected and steer the caller to a row it never wrote, so only a non-implicit
+// row that carries the name confirms the create.
+function matchesCreatedInstance(instances: InstanceEntry[], name: string): boolean {
+  return instances.some((instance) => instance.name === name && !instance.implicit);
+}
+
 /** The global "+ Add provider instance" form (parity-m7-settings.md §7f). */
 export function AddInstanceDialog({
   availableProviders,
@@ -85,7 +95,7 @@ export function AddInstanceDialog({
   const active = useEditorLifetime();
 
   function confirmCreate(instanceName: string): Promise<boolean> {
-    return confirmListingState((instances) => instances.some((instance) => instance.name === instanceName));
+    return confirmListingState((instances) => matchesCreatedInstance(instances, instanceName));
   }
 
   const baseOptions: SelectOption[] = [
@@ -156,7 +166,7 @@ export function AddInstanceDialog({
       // reported, or the editor would close on an instance the listing never
       // showed.
       const confirmed = applied
-        ? credentialsStore.getState().instances.some((instance) => instance.name === trimmedName)
+        ? matchesCreatedInstance(credentialsStore.getState().instances, trimmedName)
         : await confirmCreate(trimmedName);
       if (!confirmed) {
         if (!active.current) return;

@@ -140,6 +140,42 @@ func TestAuth_LoginCompleteSavesForTheEndpointTheFlowStartedOn(t *testing.T) {
 	}
 }
 
+// TestAuth_DeviceFlowBindsTheEndpointItStartedOn pins where the device flow's
+// endpoint is captured: the device-code request is itself a network round trip,
+// so a capture made after it describes whatever the instance was re-pointed at
+// during the request, and the flow then holds the record it is about to file
+// under that new endpoint as though the user had asked for it. The binding is
+// only worth anything if it is the endpoint the flow started on.
+func TestAuth_DeviceFlowBindsTheEndpointItStartedOn(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, codexEndpointToml)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	ctrl.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		moveEndpointDuring(t, ctrl, tomlPath)
+		return authopenai.DeviceCode{UserCode: "U", VerificationURL: "https://x", DeviceAuthID: "d", Interval: time.Second}, nil
+	}
+	ctrl.pollDeviceOnce = func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error) {
+		return authopenai.DeviceCodeSuccess{AuthorizationCode: "ac", CodeVerifier: "cv"}, false, nil
+	}
+	ctrl.exchangeDevice = func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error) {
+		return authopenai.TokenSet{AccessToken: "at", RefreshToken: "rt", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	_, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
+	if err == nil || !strings.Contains(err.Error(), "endpoint") {
+		t.Fatalf("DevicePoll = %v, want the refusal for the endpoint the flow was started on", err)
+	}
+	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(work) err = %v, want ErrAuthNotFound: the record must not land on the endpoint that arrived during the device-code request", err)
+	}
+}
+
 // TestAuth_DevicePollRefusesARecordForAnEndpointThatMoved is the same binding
 // on the device flow, whose own exchange is the long step.
 func TestAuth_DevicePollRefusesARecordForAnEndpointThatMoved(t *testing.T) {

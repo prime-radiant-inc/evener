@@ -858,6 +858,57 @@ func TestInstances_RemoveRestoresTheStoredKeyWhenTheOAuthRecordCannotBeDeleted(t
 	}
 }
 
+// unwritableCredentialsPath puts a directory where credentials.toml belongs, so
+// the store's next persist cannot land: the shape of a credentials path that is
+// gone, read-only, or on a filesystem that has stopped taking writes.
+func unwritableCredentialsPath(t *testing.T, credsPath string) {
+	t.Helper()
+	if err := os.RemoveAll(credsPath); err != nil {
+		t.Fatalf("RemoveAll(%s): %v", credsPath, err)
+	}
+	if err := os.Mkdir(credsPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", credsPath, err)
+	}
+	if err := os.WriteFile(filepath.Join(credsPath, "obstacle"), []byte("in the way"), 0o600); err != nil {
+		t.Fatalf("WriteFile(obstacle): %v", err)
+	}
+}
+
+// A removal with no credential to clear must not depend on the credentials
+// path: Store.Clear persists the file it holds, so clearing an entry that was
+// never there is a rewrite of state the instance does not have, and on an
+// unwritable path that rewrite fails a removal for nothing. The control in the
+// same test keeps the injection honest: a removal that does have a key to clear
+// still fails, which is what the store's persist failing there means.
+func TestInstances_RemoveDoesNotNeedACredentialsPathWithNothingToClear(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	for _, name := range []string{"work", "work2"} {
+		if err := f.ctl.Create(appwire.InstanceCreateParams{Name: name, Base: "openai"}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+	// Stored while the path still works, so the control has something to clear.
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	unwritableCredentialsPath(t, f.credsPath)
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+	if err == nil || !strings.Contains(err.Error(), "clear stored credential") {
+		t.Fatalf("Remove(work) = %v, want the store's failure for the key it has to clear", err)
+	}
+	if _, still := f.ctl.reg.Get().Instance("work"); !still {
+		t.Fatal("the refused removal lost the instance it could not clean up")
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work2"}); err != nil {
+		t.Fatalf("Remove(work2) = %v, want a removal that has no credential to clear", err)
+	}
+	if _, still := f.ctl.reg.Get().Instance("work2"); still {
+		t.Fatal("the removed instance still resolves")
+	}
+}
+
 // An OAuth record the hub cannot parse is still one DeleteAuth deletes by
 // path, so a rollback that re-encoded a parsed record could not put it back.
 // The capture is the file's bytes, which is what makes this case restorable.

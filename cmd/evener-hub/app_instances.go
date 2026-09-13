@@ -1038,7 +1038,11 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		}
 	}
 	if hasOAuth {
-		if err := writeAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
+		// Through the writer the auth store uses, so the record this puts back
+		// is replaced atomically: an in-place rewrite of a credential is a
+		// file a reader can catch half written, and a crash inside it leaves
+		// truncated state where this call exists to restore the whole thing.
+		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
 			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
 		}
 	}
@@ -1046,25 +1050,6 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		return cause
 	}
 	return fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
-}
-
-// writeAuthFile puts an OAuth state file back exactly as it was: 0600 like
-// SaveAuth writes, and synced, because what it restores is a credential file
-// whose loss is the reason it exists.
-func writeAuthFile(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // removeCredentials deletes the credential layers filed under a name whose
@@ -1076,6 +1061,13 @@ func writeAuthFile(path string, data []byte) error {
 // failure: Store.Clear deletes and persists, and DeleteAuth reports not-found
 // as (false, nil).
 //
+// Only a layer that is actually there is touched. Store.Clear persists the
+// file it holds whatever it was asked to delete, so clearing an entry that was
+// never there rewrites state the instance does not have - and on a credentials
+// path that is gone or unwritable that rewrite fails the removal over a
+// credential it never had, while the deletion of a missing OAuth record is a
+// no-op by construction.
+//
 // It reports which layers it actually deleted even when it fails, because its
 // caller restores exactly those: Store.Clear puts its own entry back when the
 // persist fails (nothing deleted), while a failed DeleteAuth leaves its file
@@ -1083,10 +1075,12 @@ func writeAuthFile(path string, data []byte) error {
 // refusing writes.
 func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
 	var deleted deletedCredentials
-	if err := c.auth.clearCredential(name); err != nil {
-		return deleted, fmt.Errorf("remove %s: clear stored credential: %w", name, err)
+	if _, stored := c.auth.creds.Get(name); stored {
+		if err := c.auth.clearCredential(name); err != nil {
+			return deleted, fmt.Errorf("remove %s: clear stored credential: %w", name, err)
+		}
+		deleted.storedKey = true
 	}
-	deleted.storedKey = true
 	if _, err := c.auth.deleteAuth(c.auth.stateDir, name); err != nil {
 		return deleted, fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
 	}
