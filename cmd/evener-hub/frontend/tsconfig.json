@@ -11,7 +11,18 @@
     "incremental": true,
     "tsBuildInfoFile": "./.tsbuildinfo",
     "skipLibCheck": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    // The AppWire package sits outside this app at appwire-client/typescript.
+    // These paths mirror vite.config.ts's resolve.alias so `tsc --noEmit` and
+    // the bundler agree; they point at the package's TypeScript sources
+    // because dist/ is gitignored and never built in a dev or test flow. No
+    // baseUrl: paths are resolved relative to this file, and a baseUrl would
+    // additionally make every bare specifier resolvable from this directory.
+    "paths": {
+      "@evener/appwire-client": ["../../../appwire-client/typescript/index.ts"],
+      "@evener/appwire-client/docContent": ["../../../appwire-client/typescript/docContent.ts"],
+      "@evener/appwire-client/testing/*": ["../../../appwire-client/typescript/testing/*"]
+    }
   },
   "include": ["src"]
 }

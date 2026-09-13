@@ -13,6 +13,13 @@ const hub = process.env.EVENER_HUB_ADDR ?? "http://127.0.0.1:9180";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// The AppWire TypeScript package lives at the repo root (appwire-client/typescript),
+// outside this app's source tree. Every resolver has to be told about it
+// separately - tsconfig paths for tsc, the alias below for Vite/Vitest, and
+// server.fs.allow for the dev server and the browser guards, which serve it
+// over /@fs/ and 403 anything outside the allow list.
+const appwirePackageDir = path.join(__dirname, "..", "..", "..", "appwire-client", "typescript");
+
 // dist/PLACEHOLDER is tracked in git so a fresh checkout's dist/ directory is
 // never empty even before the frontend has been built once: cmd/evener-hub
 // embeds it via `//go:embed all:frontend/dist`, which fails outright against
@@ -38,6 +45,19 @@ function restoreDistPlaceholder(): Plugin {
 export default defineConfig({
   plugins: [react(), restoreDistPlaceholder()],
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
+  // These mirror tsconfig.json's paths - tsconfig paths are invisible to Vite,
+  // so the alias is what the bundler, the dev server, Vitest and the five
+  // browser guards all resolve through. The targets are the package's
+  // TypeScript sources, never dist/: dist/ is gitignored and never built in a
+  // dev or test flow. An alias key also matches `<key>/<subpath>`, so the two
+  // specific entries have to come first or the root entry swallows them.
+  resolve: {
+    alias: {
+      "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/testing": path.join(appwirePackageDir, "testing"),
+      "@evener/appwire-client": path.join(appwirePackageDir, "index.ts"),
+    },
+  },
   server: {
     host: "127.0.0.1",
     fs: {

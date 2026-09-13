@@ -55,7 +55,7 @@ test-native:
 ## fails-when: Build, pack, outside-checkout install, runtime import/require,
 ##   declaration checking, example protocol exchange or output validation fails.
 test-api-package:
-	@cd cmd/evener-hub/frontend/src/protocol && NODE_DISABLE_COMPILE_CACHE=1 npm run qualification
+	@cd appwire-client/typescript && NODE_DISABLE_COMPILE_CACHE=1 npm run qualification
 
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can

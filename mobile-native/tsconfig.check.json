@@ -2,6 +2,9 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "paths": {
+      "@evener/appwire-client": ["../appwire-client/typescript/index.ts"],
+      "@evener/appwire-client/docContent": ["../appwire-client/typescript/docContent.ts"],
+      "@evener/appwire-client/testing/*": ["../appwire-client/typescript/testing/*"],
       "anser": ["./node_modules/anser"],
       "react": ["./node_modules/@types/react"],
       "tinykeys": ["./node_modules/tinykeys"],
