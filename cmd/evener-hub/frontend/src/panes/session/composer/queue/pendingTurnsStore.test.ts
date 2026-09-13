@@ -327,6 +327,8 @@ test("a flush that can never settle trips instead of hanging inside act", async 
   releaseSubmit();
   await submitted;
   await flushPendingTurnsProjectionForTests();
+});
+
 test("another tab's durable send is not claimed as this client's submission", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
