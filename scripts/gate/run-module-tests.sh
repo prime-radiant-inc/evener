@@ -636,13 +636,46 @@ stop_package_list_attempt() {
 	return 1
 }
 
+# package_list_build_flags FLAG... — the subset of a module's flags that decides
+# which files build, and therefore which packages exist.
+#
+# The enumeration and the `go test` that consumes it have to agree about that or
+# the gate silently tests less than it reports: `-tags integration` selects files
+# `go list ./...` without it never sees, so those packages would be missing from
+# the list handed to a `go test` that does build them. The split is the rule —
+# build flags go to both commands, test-only flags (-run, -skip, -count,
+# -timeout, -short, -parallel, -p, -coverprofile) belong to `go test` alone and
+# `go list` rejects several of them. Today's callers pass only -short, -count,
+# -race, -p and -parallel, so nothing here is forwarded in practice; the rule is
+# what keeps the two commands agreeing when that changes.
+package_list_build_flags() {
+	local flag out="" expect_value=0
+	for flag in "$@"; do
+		if [ "$expect_value" -eq 1 ]; then
+			out="$out $flag"
+			expect_value=0
+			continue
+		fi
+		case "$flag" in
+		-tags | -mod | -modfile | -overlay | -pgo)
+			out="$out $flag"
+			expect_value=1
+			;;
+		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -trimpath)
+			out="$out $flag"
+			;;
+		esac
+	done
+	printf '%s' "${out# }"
+}
+
 # run_bounded_package_list MODULE OUTPUT — enumerate MODULE's packages into
 # OUTPUT under the bound. MODULE is the runner's name for the module (".", or a
 # directory) and is used for the retry file and the diagnostic; the enumeration
 # itself is `go list ./...` in the current directory, which the caller has
 # already changed to that module.
 run_bounded_package_list() {
-	local module="$1" package_list="$2" package_list_stderr attempt attempt_list
+	local module="$1" package_list="$2" package_list_stderr attempt attempt_list build_flags
 	local list_pid started_at list_status stop_status
 	# Every attempt below is exec'd through perl so it lands in its own process
 	# group. Named here rather than discovered at the spawn, where it would fail
@@ -655,6 +688,11 @@ run_bounded_package_list() {
 		return 2
 	fi
 	package_list_stderr="${package_list}.stderr"
+	# The module's own flags, as `go test` will be given them, filtered down to
+	# what changes which packages exist. Derived here rather than at the three
+	# call sites, so there is one answer per module and no copy to drift.
+	# shellcheck disable=SC2046
+	build_flags="$(package_list_build_flags $(module_test_flags "$module") $(module_extra "$module"))"
 	# Every attempt appends under its own heading, so the diagnostic still names
 	# one retained log and whoever reads it sees what each attempt said.
 	: >"$package_list_stderr"
@@ -695,8 +733,10 @@ run_bounded_package_list() {
 				"$(package_list_pgid_path "$module")" "$attempt" >&2
 			return 1
 		fi
+		# Word-split deliberately, as everywhere else the flags are passed on.
+		# shellcheck disable=SC2086
 		perl -e "$PGROUP_SPAWN_PERL" \
-			-- "$(package_list_pgid_path "$module")" go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
+			-- "$(package_list_pgid_path "$module")" go list $build_flags ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
