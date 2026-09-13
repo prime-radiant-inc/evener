@@ -42,6 +42,7 @@ async function qualify() {
     "activityData",
     "activityList",
     "activityMerge",
+    "activityRows",
     "itemFailure",
     "jobOutput",
     "model",
@@ -91,6 +92,10 @@ async function qualify() {
     "ActivityList",
     "fenceRootSession",
     "graftContinuationTree",
+    "foldRowID",
+    "jobIsFailed",
+    "activityDelegateState",
+    "buildActivityRows",
     "hasItemFailure",
     "hasErrorText",
     "hasFailureStatus",
@@ -126,6 +131,7 @@ async function qualify() {
     "AskAnswerItem",
     "ActivityTree",
     "ActivityState",
+    "ActivityRow",
     "ItemFailureSignals",
     "JobLogTail",
     "ThreadModel",
@@ -163,6 +169,10 @@ assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
 assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
 assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
+assert.equal(client.foldRowID("session:thread"), "session:thread:inactive-fold");
+assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
+assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
+assert.equal(client.activityDelegateState({ kind: "delegate", type: "task", child: session }).failed, false);
 assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
 assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
 assert.equal(client.hasErrorText({ error: "  " }), false);
