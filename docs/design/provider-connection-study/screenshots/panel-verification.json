@@ -1,0 +1,995 @@
+{
+  "results": [
+    {
+      "name": "1 hidden-invalid a",
+      "status": "PASS",
+      "detail": {
+        "focused": true,
+        "invalid": true,
+        "message": "Please enter a URL.",
+        "open": true
+      }
+    },
+    {
+      "name": "3 recovery draft a",
+      "status": "PASS",
+      "detail": {
+        "key": "demo-final-key",
+        "name": "Panel retained name",
+        "url": "https://panel.example/v1"
+      }
+    },
+    {
+      "name": "5 boundary contrast a",
+      "status": "PASS",
+      "detail": [
+        {
+          "name": "api-key",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "connection-name",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "advanced-url",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "key-env",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "protocol",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "credential-header",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        }
+      ]
+    },
+    {
+      "name": "cancel exit a",
+      "status": "PASS",
+      "detail": {
+        "text": "Setup closed",
+        "visible": true,
+        "focused": true,
+        "top": 227
+      }
+    },
+    {
+      "name": "1 hidden-invalid b",
+      "status": "PASS",
+      "detail": {
+        "focused": true,
+        "invalid": true,
+        "message": "Please enter a URL.",
+        "open": true
+      }
+    },
+    {
+      "name": "3 recovery draft b",
+      "status": "PASS",
+      "detail": {
+        "key": "demo-final-key",
+        "name": "Panel retained name",
+        "url": "https://panel.example/v1"
+      }
+    },
+    {
+      "name": "5 boundary contrast b",
+      "status": "PASS",
+      "detail": [
+        {
+          "name": "api-key",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "connection-name",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "advanced-url",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "key-env",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "protocol",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "credential-header",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        }
+      ]
+    },
+    {
+      "name": "cancel exit b",
+      "status": "PASS",
+      "detail": {
+        "text": "Setup closed",
+        "visible": true,
+        "focused": true,
+        "top": 227
+      }
+    },
+    {
+      "name": "1 hidden-invalid c",
+      "status": "PASS",
+      "detail": {
+        "focused": true,
+        "invalid": true,
+        "message": "Please enter a URL.",
+        "open": true
+      }
+    },
+    {
+      "name": "3 recovery draft c",
+      "status": "PASS",
+      "detail": {
+        "key": "demo-final-key",
+        "name": "Panel retained name",
+        "url": "https://panel.example/v1"
+      }
+    },
+    {
+      "name": "5 boundary contrast c",
+      "status": "PASS",
+      "detail": [
+        {
+          "name": "api-key",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "connection-name",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "advanced-url",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "key-env",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "protocol",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "credential-header",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        }
+      ]
+    },
+    {
+      "name": "cancel exit c",
+      "status": "PASS",
+      "detail": {
+        "text": "Setup closed",
+        "visible": true,
+        "focused": true,
+        "top": 227
+      }
+    },
+    {
+      "name": "1 hidden-invalid d",
+      "status": "PASS",
+      "detail": {
+        "focused": true,
+        "invalid": true,
+        "message": "Please enter a URL.",
+        "open": true
+      }
+    },
+    {
+      "name": "3 recovery draft d",
+      "status": "PASS",
+      "detail": {
+        "key": "demo-final-key",
+        "name": "Panel retained name",
+        "url": "https://panel.example/v1"
+      }
+    },
+    {
+      "name": "5 boundary contrast d",
+      "status": "PASS",
+      "detail": [
+        {
+          "name": "api-key",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "connection-name",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "advanced-url",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "key-env",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "protocol",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "credential-header",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        }
+      ]
+    },
+    {
+      "name": "cancel exit d",
+      "status": "PASS",
+      "detail": {
+        "text": "Setup closed",
+        "visible": true,
+        "focused": true,
+        "top": 227
+      }
+    },
+    {
+      "name": "1 hidden-invalid e",
+      "status": "PASS",
+      "detail": {
+        "focused": true,
+        "invalid": true,
+        "message": "Please enter a URL.",
+        "open": true
+      }
+    },
+    {
+      "name": "3 recovery draft e",
+      "status": "PASS",
+      "detail": {
+        "key": "demo-final-key",
+        "name": "Panel retained name",
+        "url": "https://panel.example/v1"
+      }
+    },
+    {
+      "name": "5 boundary contrast e",
+      "status": "PASS",
+      "detail": [
+        {
+          "name": "api-key",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "connection-name",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "advanced-url",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "key-env",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "protocol",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "credential-header",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        }
+      ]
+    },
+    {
+      "name": "cancel exit e",
+      "status": "PASS",
+      "detail": {
+        "text": "Setup closed",
+        "visible": true,
+        "focused": true,
+        "top": 227
+      }
+    },
+    {
+      "name": "1 hidden-invalid f",
+      "status": "PASS",
+      "detail": {
+        "focused": true,
+        "invalid": true,
+        "message": "Please enter a URL.",
+        "open": true
+      }
+    },
+    {
+      "name": "3 recovery draft f",
+      "status": "PASS",
+      "detail": {
+        "key": "demo-final-key",
+        "name": "Panel retained name",
+        "url": "https://panel.example/v1"
+      }
+    },
+    {
+      "name": "5 boundary contrast f",
+      "status": "PASS",
+      "detail": [
+        {
+          "name": "api-key",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "connection-name",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "advanced-url",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "key-env",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "protocol",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        },
+        {
+          "name": "credential-header",
+          "border": "rgb(133, 137, 144)",
+          "fill": "rgb(43, 44, 47)",
+          "outside": "rgb(35, 36, 39)",
+          "insideRatio": 3.9748299755017555,
+          "outsideRatio": 4.418182510448775
+        }
+      ]
+    },
+    {
+      "name": "cancel exit f",
+      "status": "PASS",
+      "detail": {
+        "text": "Setup closed",
+        "visible": true,
+        "focused": true,
+        "top": 227
+      }
+    },
+    {
+      "name": "2 B result auth",
+      "status": "PASS",
+      "detail": {
+        "text": "The provider rejected access",
+        "visible": true,
+        "focused": true,
+        "top": 457.25
+      }
+    },
+    {
+      "name": "2 B result endpoint",
+      "status": "PASS",
+      "detail": {
+        "text": "Couldn’t reach the provider",
+        "visible": true,
+        "focused": true,
+        "top": 457.25
+      }
+    },
+    {
+      "name": "2 B result unsupported",
+      "status": "PASS",
+      "detail": {
+        "text": "Saved · check unavailable",
+        "visible": true,
+        "focused": true,
+        "top": 457.25
+      }
+    },
+    {
+      "name": "2 B result success",
+      "status": "PASS",
+      "detail": {
+        "text": "Anthropic is connected",
+        "visible": true,
+        "focused": true,
+        "top": 525.25
+      }
+    },
+    {
+      "name": "2 B result saved",
+      "status": "PASS",
+      "detail": {
+        "text": "Saved, not checked",
+        "visible": true,
+        "focused": true,
+        "top": 525.25
+      }
+    },
+    {
+      "name": "2 B result missing",
+      "status": "PASS",
+      "detail": {
+        "text": "Credentials are missing",
+        "visible": true,
+        "focused": true,
+        "top": 457.25
+      }
+    },
+    {
+      "name": "2 B result configuration",
+      "status": "PASS",
+      "detail": {
+        "text": "Review the connection settings",
+        "visible": true,
+        "focused": true,
+        "top": 457.25
+      }
+    },
+    {
+      "name": "2 B result save-failure",
+      "status": "PASS",
+      "detail": {
+        "text": "Access details were not saved",
+        "visible": true,
+        "focused": true,
+        "top": 457.25
+      }
+    },
+    {
+      "name": "2 B result partial-save",
+      "status": "PASS",
+      "detail": {
+        "text": "Setup is only partly saved",
+        "visible": true,
+        "focused": true,
+        "top": 457.25
+      }
+    },
+    {
+      "name": "3 per-method drafts and E API-key intent",
+      "status": "PASS",
+      "detail": {
+        "apiKeyIntent": true,
+        "keyRetained": true,
+        "advancedRetained": true
+      }
+    },
+    {
+      "name": "6 E Change provider destination",
+      "status": "PASS",
+      "detail": {
+        "heading": {
+          "text": "Connect a provider",
+          "visible": true,
+          "focused": true,
+          "top": 227
+        },
+        "apiKeyIntentRetained": true
+      }
+    },
+    {
+      "name": "4 F filter and return focus 1440",
+      "status": "PASS",
+      "detail": {
+        "provider": "groq",
+        "top": 488.078125,
+        "bottom": 551.078125
+      }
+    },
+    {
+      "name": "4 F filter and return focus 390",
+      "status": "PASS",
+      "detail": {
+        "provider": "groq",
+        "top": 568.21875,
+        "bottom": 631.21875
+      }
+    },
+    {
+      "name": "changed Ollama destination review and no-auth check",
+      "status": "PASS",
+      "detail": {
+        "destination": "https://panel-ollama.example/v1",
+        "reviewCopy": "Destination\n\nhttps://panel-ollama.example/v1\n\nCredential source\n\nNo new credential supplied. Inspect existing host access before continuing.",
+        "reviewBeforeResult": true,
+        "draftRetained": true
+      }
+    },
+    {
+      "name": "Ollama no-key credential source is truthful",
+      "status": "PASS",
+      "detail": {
+        "accurate": true
+      }
+    },
+    {
+      "name": "simulated OAuth cancel exit and no external auth",
+      "status": "PASS",
+      "detail": {
+        "cancelClosed": true,
+        "simulatedSigninStayedLocal": true
+      }
+    },
+    {
+      "name": "network and console safety",
+      "status": "PASS",
+      "detail": {
+        "externalRequests": [],
+        "nonGETRequests": [],
+        "consoleErrors": [],
+        "totalLocalGETs": 81
+      }
+    }
+  ],
+  "external": [],
+  "errors": [],
+  "requests": [
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=a",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=a",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=c",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=c",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=d",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=d",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=e",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=e",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=f",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=f",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=b",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=e",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=f",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=f",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=a",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=e",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/concept.html?concept=e",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.css",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:43127/study.js",
+      "method": "GET"
+    }
+  ]
+}

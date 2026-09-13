@@ -1,0 +1,238 @@
+{
+  "results": [
+    {
+      "concept": "a",
+      "width": 1440,
+      "zeroProviderStart": true,
+      "unselectedChoices": true,
+      "onlyRequiredVisibleField": [
+        "api-key"
+      ],
+      "acquisitionInstructions": true,
+      "advancedCollapsedOptional": true,
+      "successVisible": true,
+      "firstSessionHandoff": true,
+      "selectedModel": "claude-opus-5",
+      "pageErrors": []
+    },
+    {
+      "concept": "b",
+      "width": 1440,
+      "zeroProviderStart": true,
+      "unselectedChoices": true,
+      "onlyRequiredVisibleField": [
+        "api-key"
+      ],
+      "acquisitionInstructions": true,
+      "advancedCollapsedOptional": true,
+      "successVisible": true,
+      "firstSessionHandoff": true,
+      "selectedModel": "claude-opus-5",
+      "pageErrors": []
+    },
+    {
+      "concept": "c",
+      "width": 1440,
+      "zeroProviderStart": true,
+      "unselectedChoices": true,
+      "onlyRequiredVisibleField": [
+        "api-key"
+      ],
+      "acquisitionInstructions": true,
+      "advancedCollapsedOptional": true,
+      "successVisible": true,
+      "firstSessionHandoff": true,
+      "selectedModel": "claude-opus-5",
+      "pageErrors": []
+    },
+    {
+      "concept": "d",
+      "width": 1440,
+      "zeroProviderStart": true,
+      "unselectedChoices": true,
+      "onlyRequiredVisibleField": [
+        "api-key"
+      ],
+      "acquisitionInstructions": true,
+      "advancedCollapsedOptional": true,
+      "successVisible": true,
+      "firstSessionHandoff": true,
+      "selectedModel": "claude-opus-5",
+      "pageErrors": []
+    },
+    {
+      "concept": "e",
+      "width": 1440,
+      "zeroProviderStart": true,
+      "unselectedChoices": true,
+      "onlyRequiredVisibleField": [
+        "api-key"
+      ],
+      "acquisitionInstructions": true,
+      "advancedCollapsedOptional": true,
+      "successVisible": true,
+      "firstSessionHandoff": true,
+      "selectedModel": "claude-opus-5",
+      "pageErrors": []
+    },
+    {
+      "concept": "f",
+      "width": 1440,
+      "zeroProviderStart": true,
+      "unselectedChoices": true,
+      "onlyRequiredVisibleField": [
+        "api-key"
+      ],
+      "acquisitionInstructions": true,
+      "advancedCollapsedOptional": true,
+      "successVisible": true,
+      "firstSessionHandoff": true,
+      "selectedModel": "claude-opus-5",
+      "pageErrors": []
+    },
+    {
+      "concept": "c",
+      "width": 390,
+      "zeroProviderStart": true,
+      "unselectedChoices": true,
+      "onlyRequiredVisibleField": [
+        "api-key"
+      ],
+      "acquisitionInstructions": true,
+      "advancedCollapsedOptional": true,
+      "successVisible": true,
+      "firstSessionHandoff": true,
+      "selectedModel": "claude-opus-5",
+      "pageErrors": []
+    }
+  ],
+  "requests": [
+    {
+      "concept": "a",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/concept.html?concept=a"
+    },
+    {
+      "concept": "a",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.css"
+    },
+    {
+      "concept": "a",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.js"
+    },
+    {
+      "concept": "b",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/concept.html?concept=b"
+    },
+    {
+      "concept": "b",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.css"
+    },
+    {
+      "concept": "b",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.js"
+    },
+    {
+      "concept": "c",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/concept.html?concept=c"
+    },
+    {
+      "concept": "c",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.css"
+    },
+    {
+      "concept": "c",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.js"
+    },
+    {
+      "concept": "d",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/concept.html?concept=d"
+    },
+    {
+      "concept": "d",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.css"
+    },
+    {
+      "concept": "d",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.js"
+    },
+    {
+      "concept": "e",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/concept.html?concept=e"
+    },
+    {
+      "concept": "e",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.css"
+    },
+    {
+      "concept": "e",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.js"
+    },
+    {
+      "concept": "f",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/concept.html?concept=f"
+    },
+    {
+      "concept": "f",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.css"
+    },
+    {
+      "concept": "f",
+      "width": 1440,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.js"
+    },
+    {
+      "concept": "c",
+      "width": 390,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/concept.html?concept=c"
+    },
+    {
+      "concept": "c",
+      "width": 390,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.css"
+    },
+    {
+      "concept": "c",
+      "width": 390,
+      "method": "GET",
+      "url": "http://127.0.0.1:43127/study.js"
+    }
+  ],
+  "blocked": []
+}
