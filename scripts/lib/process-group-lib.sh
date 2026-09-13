@@ -10,6 +10,51 @@
 # Each stop takes its grace in seconds, because how long a caller will spend
 # proving a job is gone is the caller's business.
 
+# PGROUP_SPAWN_PERL — the program to hand `perl -e` when spawning a job that has
+# to be stoppable. Its first argument is the record path, the rest is the command
+# to run:
+#
+#   perl -e "$PGROUP_SPAWN_PERL" -- "$record" cmd arg...  &
+#
+# The caller creates the record, empty, before the fork; this fills it in. The
+# order is the whole point. `pid:N` is written before the split, so a cleanup
+# that finds it knows the job is still in the caller's own group and must be
+# stopped by pid; `pgid:N` is written after, and only after setpgrp says it made
+# the group, so a record that claims a group never names one that does not exist.
+# Each write goes to a temporary file and is renamed into place, so a reader sees
+# a whole record or no file at all. A record that cannot be written fails the
+# spawn rather than leaving a job nothing can name.
+PGROUP_SPAWN_PERL='
+	my $record_path = shift @ARGV;
+	sub record {
+		my ($path, $line) = @_;
+		open my $fh, ">", "$path.tmp" or die "process group record $path: $!\n";
+		print $fh $line or die "process group record $path: $!\n";
+		close $fh or die "process group record $path: $!\n";
+		rename "$path.tmp", $path or die "process group record $path: $!\n";
+	}
+	record($record_path, "pid:$$");
+	setpgrp(0, 0) or die "setpgrp: $!\n";
+	record($record_path, "pgid:$$");
+	exec @ARGV or die "exec: $!\n";
+'
+
+# pgroup_record_value PATH GRACE — what the spawn recorded at PATH, waiting up to
+# GRACE seconds for a record that exists but has not been filled in yet. Prints
+# `pid:N` or `pgid:N`; returns 1 when it never fills in, which means the job
+# never got as far as naming itself and nothing here can aim at it.
+pgroup_record_value() {
+	local path="$1" grace="$2" value waited=0
+	value="$(cat "$path" 2>/dev/null)"
+	while [ -z "$value" ] && [ "$waited" -lt "$((grace * 10))" ]; do
+		sleep 0.1
+		value="$(cat "$path" 2>/dev/null)"
+		waited=$((waited + 1))
+	done
+	[ -n "$value" ] || return 1
+	printf '%s' "$value"
+}
+
 # pgroup_survivors PGID — print `pid(state)` for every live
 # member of PGID, zombies excluded. Exit status 0 means the printed answer is
 # trustworthy; 2 means the process listing itself failed, so nothing is known

@@ -74,6 +74,7 @@ bindir="$(go env GOPATH)/bin"
 # fills it with printf -v and exits on any failure.
 attempt_scratch=""
 attempt_pid=""
+attempt_record=""
 # Seconds to wait for the attempt's group to empty after each of SIGTERM and
 # SIGKILL. Only a member that ignores or cannot take the signal reaches the end
 # of either wait, so an ordinary stop costs milliseconds.
@@ -90,10 +91,24 @@ attempt_stop_grace=5
 # signal handler that called it, so the group is probed under a bounded grace
 # and an unstoppable one is named rather than waited on.
 stop_attempt() {
-	[ -n "$attempt_pid" ] || return 0
-	local stop_status=0 members
-	if pid_leads_pgroup "$attempt_pid"; then
-		stop_pgroup "$attempt_pid" "$attempt_stop_grace" || stop_status=$?
+	local stop_status=0 members target="$attempt_pid" recorded
+	if [ -z "$target" ] && [ -n "$attempt_record" ] && [ -e "$attempt_record" ]; then
+		# The spawn records itself, and this is why: between the fork and the
+		# shell's own `attempt_pid=$!` there is an attempt running that this
+		# variable does not know about, and a signal arriving there would find
+		# nothing to stop. The record is created before the fork and filled in by
+		# the child before it splits, so waiting on it is waiting for the pid the
+		# shell has not been given yet.
+		if recorded="$(pgroup_record_value "$attempt_record" "$attempt_stop_grace")"; then
+			target="${recorded#p*:}"
+		else
+			printf 'install-golangci-lint.sh: an install attempt was spawned but never named itself, so it cannot be shown to have stopped.\n' >&2
+			return 0
+		fi
+	fi
+	[ -n "$target" ] || return 0
+	if pid_leads_pgroup "$target"; then
+		stop_pgroup "$target" "$attempt_stop_grace" || stop_status=$?
 	else
 		# The number is not a group of this script's making: either the child
 		# has not run its setpgrp yet, or it has gone and the kernel has given
@@ -101,12 +116,12 @@ stop_attempt() {
 		# in the second case, so the child itself is what gets stopped — and
 		# then the group it may have formed in the meantime is asked about,
 		# because the split can land between the question and the signal.
-		stop_pid "$attempt_pid" "$attempt_stop_grace" || stop_status=$?
+		stop_pid "$target" "$attempt_stop_grace" || stop_status=$?
 		if [ "$stop_status" -eq 0 ]; then
-			if ! members="$(pgroup_survivors "$attempt_pid")"; then
+			if ! members="$(pgroup_survivors "$target")"; then
 				stop_status=2
 			elif [ -n "$members" ]; then
-				stop_pgroup "$attempt_pid" "$attempt_stop_grace" || stop_status=$?
+				stop_pgroup "$target" "$attempt_stop_grace" || stop_status=$?
 			fi
 		fi
 	fi
@@ -115,21 +130,22 @@ stop_attempt() {
 		# and leaving it at that leaves curl and the upstream installer running,
 		# writing into the Go bin directory after this script has gone. Signal
 		# blind and say so, which is what the gate does with the same answer.
-		escalate_blind "$attempt_pid" "$attempt_stop_grace"
+		escalate_blind "$target" "$attempt_stop_grace"
 		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: the process listing that answers whether group %s is empty would not run. It has been signalled blind, and not waited on.\n' \
-			"$attempt_pid" >&2
+			"$target" >&2
 		attempt_pid=""
 		return 0
 	fi
 	if [ "$stop_status" -ne 0 ]; then
 		printf 'install-golangci-lint.sh: the install attempt would not stop; process group %s still holds %s. Not waiting on it.\n' \
-			"$attempt_pid" "$(pgroup_survivor_report "$attempt_pid")" >&2
+			"$target" "$(pgroup_survivor_report "$target")" >&2
 		attempt_pid=""
 		return 0
 	fi
 	# The group is empty, so this reap cannot block: the leader is a zombie or
-	# already collected, and bash keeps a reaped job's status either way.
-	wait "$attempt_pid" 2>/dev/null || :
+	# already collected, and bash keeps a reaped job's status either way. Only a
+	# pid this shell was actually handed can be waited on.
+	[ -n "$attempt_pid" ] && wait "$attempt_pid" 2>/dev/null || :
 	attempt_pid=""
 }
 trap 'stop_attempt; scratch_rm' EXIT
@@ -144,6 +160,7 @@ trap 'stop_attempt; scratch_rm; exit 130' INT
 trap 'stop_attempt; scratch_rm; exit 143' TERM
 scratch_dir attempt_scratch evener-golangci-install
 attempt_log="$attempt_scratch/attempt.stderr"
+attempt_record="$attempt_scratch/attempt.pgid"
 
 # pipefail is what makes the fetch of install.sh part of the attempt: without
 # it a failed curl hands `sh` an empty script, which exits 0 and reports a
@@ -171,8 +188,16 @@ while :; do
 	# perl's setpgrp(0, 0) does the split between fork and exec — setsid(1) would
 	# too and is not on macOS, and `set -m` would turn job control on for the
 	# whole script.
-	perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; exec @ARGV or die "exec: $!\n"' \
-		-- bash -c 'set -o pipefail; curl -sSfL --connect-timeout 10 --max-time 60 "$1" | sh -s -- -b "$2" "$3"' \
+	# Created before the fork, filled in by the child before it splits: an empty
+	# record means an attempt is spawning, which is what stop_attempt waits on.
+	if ! : >"$attempt_record"; then
+		printf 'install-golangci-lint.sh: could not create the process-group record %s; not spawning an install that nothing could stop.\n' \
+			"$attempt_record" >&2
+		exit 1
+	fi
+	perl -e "$PGROUP_SPAWN_PERL" \
+		-- "$attempt_record" \
+		bash -c 'set -o pipefail; curl -sSfL --connect-timeout 10 --max-time 60 "$1" | sh -s -- -b "$2" "$3"' \
 		install-golangci-lint-attempt "$installer_url" "$bindir" "v$version" 2>"$attempt_log" &
 	attempt_pid=$!
 	attempt_status=0

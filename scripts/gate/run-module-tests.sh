@@ -305,7 +305,7 @@ stop_children() {
 # stalled `go list` was left running with ppid 1, holding the GOCACHE and
 # GOMODCACHE locks that every later run on the host needs.
 stop_recorded_package_list_groups() {
-	local pgid_file recorded members stop_status waited
+	local pgid_file recorded members stop_status
 	[ -n "$logdir" ] || return 0
 	# A record is dropped only once it has been acted on: a file removed before
 	# the probe takes the only name anyone had for a survivor with it, and a
@@ -322,14 +322,7 @@ stop_recorded_package_list_groups() {
 			# descendant walk that missed the fork will not find it either. The
 			# wait is the stop's own grace, for the same reason: it is how long
 			# this script is willing to spend proving an attempt is not running.
-			waited=0
-			while [ "$waited" -lt "$((PACKAGE_LIST_STOP_GRACE * 10))" ]; do
-				sleep 0.1
-				recorded="$(cat "$pgid_file" 2>/dev/null)"
-				[ -n "$recorded" ] && break
-				waited=$((waited + 1))
-			done
-			if [ -z "$recorded" ]; then
+			if ! recorded="$(pgroup_record_value "$pgid_file" "$PACKAGE_LIST_STOP_GRACE")"; then
 				# Still nothing, and the record cannot be dropped on the strength
 				# of a signal that may never have been sent: this cleanup also
 				# runs from the plain EXIT trap of a run that merely failed,
@@ -668,23 +661,8 @@ run_bounded_package_list() {
 				"$(package_list_pgid_path "$module")" "$attempt" >&2
 			return 1
 		fi
-		perl -e '
-			my $pgid_path = shift @ARGV;
-			sub record {
-				my ($path, $line) = @_;
-				open my $fh, ">", "$path.tmp" or die "pgid file $path: $!\n";
-				print $fh $line or die "pgid file $path: $!\n";
-				close $fh or die "pgid file $path: $!\n";
-				rename "$path.tmp", $path or die "pgid file $path: $!\n";
-			}
-			record($pgid_path, "pid:$$");
-			# A record that says pgid: has to mean the group exists. setpgrp
-			# answers 0 when it could not make one, and going on from there would
-			# hand the cleanup a group number to signal that nobody is in.
-			setpgrp(0, 0) or die "setpgrp: $!\n";
-			record($pgid_path, "pgid:$$");
-			exec @ARGV or die "exec: $!\n";
-		' -- "$(package_list_pgid_path "$module")" go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
+		perl -e "$PGROUP_SPAWN_PERL" \
+			-- "$(package_list_pgid_path "$module")" go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
