@@ -106,6 +106,21 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 // each shard is written to a file (shardN.run) and handed via
 // EVENER_SHARD_RUN_FILE, not passed on the execve argument list. A
 // failing run retains the scratch dir, so we can inspect the files.
+// TestAgentShardsBuildsAndRunsWithTheCallersFlags is the wiring: parseFlags is
+// unit-tested, but nothing proved that runShards hands the build half to
+// `go test -c` and the test half to the shard invocations. The fixture's gate
+// test answers both questions from inside the binary -- the race build tag for
+// the compile, testing.Verbose() for the invocation -- so dropping either half
+// turns this run red.
+func TestAgentShardsBuildsAndRunsWithTheCallersFlags(t *testing.T) {
+	cfg, stdout, stderr, _ := e2eConfig(t)
+	cfg.flags = []string{"-race", "-v"}
+	t.Setenv("SHARDFIXTURE_GATE", "1")
+	if code := runShards(cfg); code != 0 {
+		t.Fatalf("runShards = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestAgentShardsRunFileHoldsRegex(t *testing.T) {
 	cfg, stdout, _, tmp := e2eConfig(t)
 	cfg.noSurvey = true
