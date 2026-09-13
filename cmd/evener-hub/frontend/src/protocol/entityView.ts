@@ -159,6 +159,7 @@ export function watchFoldKey(turns: TurnModel[]): string {
       item.output ?? null,
       item.error ?? null,
       item.status ?? null,
+      item.raw === undefined ? null : JSON.stringify(item.raw),
     ]),
   );
 }

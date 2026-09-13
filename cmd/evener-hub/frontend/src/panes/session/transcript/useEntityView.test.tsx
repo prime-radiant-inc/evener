@@ -121,6 +121,30 @@ test("completed watch output enrichment rebuilds the derived map", () => {
   expect(entity.watch.deliveries).toBe(2);
 });
 
+test("raw-only watch summary enrichment rebuilds the derived map", () => {
+  const firstItem = watchItem();
+  const { result, rerender } = renderHook(({ model }) => useEntityView(SESSION_REF, model), {
+    initialProps: { model: thread([turn([firstItem])]) },
+  });
+  const firstView = result.current;
+
+  rerender({
+    model: thread([
+      turn([
+        {
+          ...firstItem,
+          raw: { watch_id: "watch_x", watching: true, deliveries: 2 },
+        },
+      ]),
+    ]),
+  });
+
+  expect(result.current).not.toBe(firstView);
+  const entity = result.current.get("watch_x");
+  if (entity?.kind !== "watch") throw new Error("expected watch entity");
+  expect(entity.watch.deliveries).toBe(2);
+});
+
 test("stale and ended load changes rebuild metadata against the retained tree", () => {
   const tree = activityTree();
   activityPanelStore.setState({

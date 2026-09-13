@@ -244,11 +244,20 @@ test("watchFoldKey ignores prose-only turn replacements", () => {
   expect(watchFoldKey(after)).toBe(watchFoldKey(before));
 });
 
+test("watchFoldKey changes for raw summary enrichment and is stable for equal raw content", () => {
+  const raw = { watch_id: "watch_x", watching: true, deliveries: 1 };
+  const before = item({ raw });
+  const equal = item({ raw: { ...raw } });
+  const enriched = item({ raw: { ...raw, deliveries: 2 } });
+
+  expect(watchFoldKey([turn([equal])])).toBe(watchFoldKey([turn([before])]));
+  expect(watchFoldKey([turn([enriched])])).not.toBe(watchFoldKey([turn([before])]));
+});
+
 test.each([
   ["position", { position: { entry: 2, item: 2 } }],
   ["arguments", { argumentsJSON: '{"job_id":"job_y"}' }],
   ["output with unchanged length", { output: '{"watch_id":"watch_y"}' }],
-  ["error with unchanged length", { error: "other" }],
   ["completion state", { status: "inProgress" }],
 ] satisfies ReadonlyArray<readonly [string, Partial<ItemModel>]>)(
   "watchFoldKey changes when watch %s changes",
@@ -259,3 +268,13 @@ test.each([
     expect(watchFoldKey([turn([after])])).not.toBe(watchFoldKey([turn([before])]));
   },
 );
+
+test("watchFoldKey changes when equal-length error content changes", () => {
+  const beforeError = "denied";
+  const afterError = "failed";
+  expect(afterError).toHaveLength(beforeError.length);
+
+  const before = item({ error: beforeError });
+  const after = item({ error: afterError });
+  expect(watchFoldKey([turn([after])])).not.toBe(watchFoldKey([turn([before])]));
+});
