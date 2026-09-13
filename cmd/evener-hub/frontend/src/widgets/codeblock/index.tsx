@@ -46,7 +46,7 @@ const CLASS = {
 // 67zh: a raw tool-output block (a pytest traceback, a shell dump) with no
 // cap fills an entire narrow viewport, forcing a reader to scroll THROUGH it
 // rather than past it. Past TAIL_VISIBLE_LINES lines, the block folds to its
-// tail by default - mirroring this file's own tools/helpers.ts's tailFold,
+// tail by default - mirroring protocol/toolCallText.ts's tailFold,
 // used project-wide for the exact same content (settled shell/read output):
 // keep the tail, elide the head, and say honestly how much was elided. The
 // tail, not the head, is kept because the informative part of a long dump

@@ -114,6 +114,19 @@ export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+export {
+  clip,
+  clipJobID,
+  formatByteCount,
+  formatToolDuration,
+  lineCount,
+  parseArgs,
+  parseJSONObject,
+  str,
+  tailFold,
+  tailSlice,
+  trailingBracketFooter,
+} from "./toolCallText";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
