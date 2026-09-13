@@ -191,6 +191,7 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
   queue: true,
   goal: true,
   rename: true,
+  sharedNotes: true,
 };
 
 function makeThread(instanceId: string, turnIds: string[]): Thread {
