@@ -146,15 +146,52 @@ pid_leads_pgroup() {
 	[ -n "$pgid" ] && [ "$pgid" = "$pid" ]
 }
 
+# pgroup_signalable PGID — 0 when PGID is a group this caller may signal, 1 when
+# it is not, with the reason on stderr.
+#
+# `kill -- -N` is the most dangerous thing in this library and the numbers it is
+# given come out of files and `ps` output. Four of them must never be signalled:
+# 0, which means "my own process group" and would take the caller and everything
+# it is running down with it; the group and the session the caller is in, for the
+# same reason by another spelling; and 1, which is not a group any job here
+# makes. A number that fails this is a bug or a stale record, and either way the
+# refusal is said out loud rather than swallowed.
+pgroup_signalable() {
+	local pgid="$1" own_pgid own_sid
+	case "$pgid" in
+	'' | *[!0-9]*)
+		printf 'process-group-lib: refusing to signal process group %q: not a number.\n' "$pgid" >&2
+		return 1
+		;;
+	0 | 1)
+		printf 'process-group-lib: refusing to signal process group %s: 0 is the caller itself, and 1 is not a group any job here makes.\n' "$pgid" >&2
+		return 1
+		;;
+	esac
+	own_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')"
+	if [ -n "$own_pgid" ] && [ "$pgid" = "$own_pgid" ]; then
+		printf 'process-group-lib: refusing to signal process group %s: it is the group this caller is in.\n' "$pgid" >&2
+		return 1
+	fi
+	own_sid="$(ps -o sess= -p $$ 2>/dev/null | tr -d '[:space:]')"
+	if [ -n "$own_sid" ] && [ "$pgid" = "$own_sid" ]; then
+		printf 'process-group-lib: refusing to signal process group %s: it is the session this caller is in.\n' "$pgid" >&2
+		return 1
+	fi
+	return 0
+}
+
 # pgroup_owned_by PGID MARKER — 0 when PGID holds a live member running MARKER,
 # 1 when it holds none, 2 when the process listing would not run.
 #
 # The question every recorded number has to answer before it is signalled. A pid
 # and the group named after it outlive the job that held them, and the kernel
 # hands both to somebody else in time, so "is anything in group N" is not the
-# same as "is the job I recorded still in group N". MARKER is the argv0 the job
-# was spawned under; a group whose live members are all somebody else's is gone
-# as far as this caller is concerned, and gets no signal.
+# same as "is the job I recorded still in group N". MARKER is a word the job
+# carries on its command line, and the whole command line is searched for it, not
+# just the program name: measured, the installer's attempt runs as `bash -c ...
+# install-golangci-lint-attempt ...`, whose program name is `bash`, so a probe
+# reading the program name alone called a live attempt somebody else's.
 pgroup_owned_by() {
 	local pgid="$1" marker="$2" listing
 	if ! listing="$(ps -axo pid=,pgid=,state=,command= 2>/dev/null)" || [ -z "$listing" ]; then
@@ -163,8 +200,10 @@ pgroup_owned_by() {
 	printf '%s\n' "$listing" |
 		awk -v pgid="$pgid" -v marker="$marker" '
 			$2 == pgid && $3 !~ /^[Zz]/ {
-				n = split($4, parts, "/")
-				if (parts[n] == marker) { found = 1 }
+				for (i = 4; i <= NF; i++) {
+					n = split($i, parts, "/")
+					if ($i == marker || parts[n] == marker) { found = 1 }
+				}
 			}
 			END { exit(found ? 0 : 1) }
 		'
@@ -175,7 +214,7 @@ pgroup_owned_by() {
 # 1 when it is not — gone, a zombie, or a number somebody else now holds — and 2
 # when the listing would not run.
 pid_owned_by() {
-	local pid="$1" marker="$2" command state
+	local pid="$1" marker="$2" command state word
 	command="$(ps -o command= -p "$pid" 2>/dev/null)"
 	if [ -z "$command" ]; then
 		kill -0 "$pid" 2>/dev/null || return 1
@@ -185,8 +224,11 @@ pid_owned_by() {
 	case "$state" in
 	[Zz]*) return 1 ;;
 	esac
-	command="${command%% *}"
-	[ "${command##*/}" = "$marker" ]
+	for word in $command; do
+		[ "$word" = "$marker" ] && return 0
+		[ "${word##*/}" = "$marker" ] && return 0
+	done
+	return 1
 }
 
 # escalate_blind PID GRACE — the last thing to do for a job nothing can see:
@@ -200,11 +242,12 @@ pid_owned_by() {
 # wait is the only thing a SIGTERM can be given. Escalating is not confirming —
 # the caller still owes its reader the fail-closed answer.
 escalate_blind() {
-	local pid="$1" grace="$2"
-	kill -TERM -- -"$pid" 2>/dev/null || :
+	local pid="$1" grace="$2" group=1
+	pgroup_signalable "$pid" || group=0
+	[ "$group" -eq 1 ] && { kill -TERM -- -"$pid" 2>/dev/null || :; }
 	kill -TERM "$pid" 2>/dev/null || :
 	sleep "$grace"
-	kill -KILL -- -"$pid" 2>/dev/null || :
+	[ "$group" -eq 1 ] && { kill -KILL -- -"$pid" 2>/dev/null || :; }
 	kill -KILL "$pid" 2>/dev/null || :
 }
 
@@ -224,6 +267,7 @@ escalate_blind() {
 # setsid(1) is the usual tool for that and is not present on macOS, which these scripts have to run on; perl is, and so is the CI image's.
 stop_pgroup() {
 	local pgid="$1" grace="$2" signal waited ticks alive
+	pgroup_signalable "$pgid" || return 1
 	ticks=$((grace * 10))
 	for signal in TERM KILL; do
 		kill -"$signal" -- -"$pgid" 2>/dev/null || :

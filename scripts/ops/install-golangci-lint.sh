@@ -97,7 +97,7 @@ attempt_stop_grace=5
 # signal handler that called it, so the group is probed under a bounded grace
 # and an unstoppable one is named rather than waited on.
 stop_attempt() {
-	local stop_status=0 members target="$attempt_pid" recorded marker
+	local stop_status=0 members target="$attempt_pid" recorded marker ownership
 	if [ -z "$target" ] && [ -n "$attempt_record" ] && [ -e "$attempt_record" ]; then
 		# The spawn records itself, and this is why: between the fork and the
 		# shell's own `attempt_pid=$!` there is an attempt running that this
@@ -110,10 +110,28 @@ stop_attempt() {
 			recorded="${recorded%:*}"
 			target="${recorded#p*:}"
 			# Only while the number still names this attempt: a pid read from
-			# a file is a number the kernel may have handed on since.
-			if ! pgroup_owned_by "$target" "$marker" && ! pid_owned_by "$target" "$marker"; then
-				return 0
+			# a file is a number the kernel may have handed on since. The
+			# probes answer in three states and all three matter — `!` would
+			# have folded "the listing would not run" into "somebody else's"
+			# and reported a clean stop over a pipeline nobody had looked at.
+			ownership=0
+			pgroup_owned_by "$target" "$marker" || ownership=$?
+			if [ "$ownership" -eq 1 ]; then
+				ownership=0
+				pid_owned_by "$target" "$marker" || ownership=$?
 			fi
+			case "$ownership" in
+			0) ;;
+			1)
+				# Positively somebody else's: nothing here to stop.
+				return 0
+				;;
+			*)
+				printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: the process listing that says whether %s is still this attempt would not run.\n' \
+					"$target" >&2
+				return 1
+				;;
+			esac
 		else
 			printf 'install-golangci-lint.sh: an install attempt was spawned but never named itself, so it cannot be shown to have stopped.\n' >&2
 			return 1
