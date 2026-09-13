@@ -137,6 +137,19 @@ func goFlag(f string) string {
 	return f
 }
 
+// hasShortFlag says whether the caller asked for short mode, in any spelling go
+// accepts: --short and -short=true are -short, and an exact string compare read
+// neither, so the survey ran the long way round on a short run.
+func hasShortFlag(flags []string) bool {
+	for _, raw := range flags {
+		f := goFlag(raw)
+		if f == "-short" || strings.HasPrefix(f, "-short=") {
+			return f != "-short=false" && f != "-short=0"
+		}
+	}
+	return false
+}
+
 // buildValueFlags take their value as the next argument; buildFlagPrefixes carry
 // it inline. Both change what gets compiled, so both belong to `go test -c`.
 var buildValueFlags = map[string]bool{
@@ -181,8 +194,19 @@ func splitFlags(flags []string) (build []string, test []string) {
 		case strings.HasPrefix(f, "-count="):
 			test = append(test, "-test.count="+strings.TrimPrefix(f, "-count="))
 		default:
-			if i := strings.IndexByte(f, '='); i > 0 && buildValueFlags[f[:i]] {
+			// `-race=true` is `-race`, and a name looked up only in the
+			// value-flag table was dropped by both halves: the shard binary
+			// was built without the race detector and nothing said so.
+			i := strings.IndexByte(f, '=')
+			if i <= 0 {
+				continue
+			}
+			name := f[:i]
+			switch {
+			case buildValueFlags[name] || buildBareFlags[name]:
 				build = append(build, f)
+			case name == "-short" || name == "-v":
+				test = append(test, "-test."+strings.TrimPrefix(name, "-")+f[i:])
 			}
 		}
 	}
