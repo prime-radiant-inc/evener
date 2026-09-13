@@ -345,7 +345,7 @@ top-level modules plus the `testing/` directory): 32 + 49 + 10 + 17 = 108.
 ## Delta since baseline
 
 What has landed since `92561dbe3`, and what it does to the frozen tables above.
-Statuses observed at `99fa1882f`; re-query before acting.
+Statuses observed at `cb211c5f8`; re-query before acting.
 
 | PR | Merged as | Effect on the baseline |
 | --- | --- | --- |
@@ -355,5 +355,8 @@ Statuses observed at `99fa1882f`; re-query before acting.
 | B1 #1189 | `27503c07d` | `files` 17 → **18**: `itemFailure.ts` added. The web and native settled-item predicates were identical and both now call it. It also closed the third, divergent predicate recorded in §3: `toolRenderers.ts:190-193` now delegates the shared half to `hasItemFailure` and keeps only the descriptor half, so issues #1190 and #1197 are closed. That was plan row B1b; it never needed its own PR |
 | B3b #1203 | `4da382482` | Native's two `projectUsage` copies collapsed to one. That DUPLICATED row is closed; the count in §7 is the baseline count and is not decremented |
 | A3b #1206 | `99fa1882f` | Exports from the root the twelve `errors` helpers the apps import, which is what makes the plan's A4 rewrite compile. `chunkViewBackingForTests` and `readDocFile` are deliberately excluded |
+| A3c #1207 | `2a8163eb0` | The qualification manifest is per specifier rather than root-only, so a published subpath can be qualified at all — the prerequisite for the plan's A3d and C1 |
+| A3d #1209 | open | Publishes `./docContent` as the package's second specifier and turns `readDocFile` into `readDocFile(session, path, fetchDoc)`, where `DocFetch` returns a `DocResponseLike` — the minimal `{ ok, status, headers.get, arrayBuffer }` a real `Response` satisfies, because a `Promise<Response>` in the `.d.ts` fails the runner's DOM-free declaration consumers. The web's adapter is `panes/doc/browserDocFetch.ts`; the root keeps the pure helpers. §3's `docContent` seam row is answered by this |
 
-A3 and A4 are unstarted and block all of phase C.
+A3, A3d and A4 are unstarted and block all of phase C. Unrelated to this lane,
+#1098 merged as `cb211c5f8`.
