@@ -215,6 +215,58 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 	}
 }
 
+// TestDelegateResourceSupervision_CommittedSendStartRefusesASecondTurn pins the
+// send-path start hand-off (issue #940): the same committed-start window #932
+// closed for attention starts also exists on the delegate send path. CommitStart
+// consumes the reservation, but sub.running stays false through the restored
+// side effects and the start-input mutation plans (BeginStartInput, preseedInput,
+// CompleteStartInput), so a wake-edge drive arriving in that gap reads an idle
+// child and driveChildIfNotStopGated falls through to
+// driveSubagentNotificationTurn, which launches a second, UNLEASED
+// EntryNotification turn on the session the generation is about to run. The two
+// turns then share one drain ladder and popFollowUp (a destructive pop with no
+// owner check) lets the unleased turn steal the run's follow-up. The send path
+// must take the drive claim atomically with its drivability check and hold it
+// across the whole window, so the child refuses the drive-down.
+func TestDelegateResourceSupervision_CommittedSendStartRefusesASecondTurn(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return finalResponse("send result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	warmStableSupervisionDelegate(t, root, fixture)
+
+	var handoffMu sync.Mutex
+	var handoffSeen, secondTurnLaunched bool
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateSendStartCommitted = func(committed *subagent) {
+			launched := root.driveSubagentNotificationTurn(committed)
+			handoffMu.Lock()
+			defer handoffMu.Unlock()
+			if handoffSeen {
+				return
+			}
+			handoffSeen, secondTurnLaunched = true, launched
+		}
+	})
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "committed send start", 0)
+	if outcome.result.Err != nil || outcome.result.Action != "started" {
+		t.Fatalf("committed send start = %+v, want started", outcome.result)
+	}
+
+	handoffMu.Lock()
+	seen, launched := handoffSeen, secondTurnLaunched
+	handoffMu.Unlock()
+	if !seen {
+		t.Fatal("the committed send start hand-off was never observed")
+	}
+	if launched {
+		t.Fatal("a committed send start left the child drivable as a plain notification turn")
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+}
+
 func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {
