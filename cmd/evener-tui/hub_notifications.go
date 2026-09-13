@@ -337,6 +337,17 @@ func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n 
 			}
 			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
 		}
+		// Owned steering confirms as an item, not as
+		// evener/steering/injected, so the optimistic steer placeholder
+		// retires on the same two matches the legacy method makes.
+		if p.Item.Type == "steering" {
+			text := p.Item.Text
+			if text == "" {
+				text = transcript.ImageItemsPlaceholder(p.Item.Images)
+			}
+			pending.TryReconcile(appwire.MethodTurnSteer, text, ref)
+			pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "", ref)
+		}
 	case appwire.NotifyTurnCompleted:
 		var p appwire.TurnCompletedParams
 		if err := json.Unmarshal(n.Params, &p); err != nil {
