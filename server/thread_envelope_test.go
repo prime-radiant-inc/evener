@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -255,6 +256,25 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			want: func(t *testing.T, thread appwire.Thread) {
 				if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Delegates) != 1 || thread.Evener.Diagnostics.Delegates[0].DelegateID != "dlg_1" {
 					t.Fatalf("diagnostics = %+v, want the stable delegate status", thread.Evener.Diagnostics)
+				}
+			},
+		},
+		{
+			// Watches ride in DetailedStatus, so the turn boundary's facetAll
+			// re-samples them. A watch that delivers enqueues a job notification
+			// (agent/session.go:848 enqueueJobNotificationAndNotify), which wakes
+			// an EntryNotification turn; its TURN_ENDED is what makes an idle
+			// watch-only session's counts/times fresh, with no watch-specific
+			// envelope event needed.
+			name: "watch diagnostics on TURN_ENDED",
+			move: func(e *stubThreadEnvelopeSource) {
+				e.detailedStatus = DetailedStatus{Watches: []agent.WatchStatusInfo{{ID: "w1", Source: "self", Deliveries: 3}}}
+			},
+			event: events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_1", Data: events.TurnEndedData{}},
+			want: func(t *testing.T, thread appwire.Thread) {
+				if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Watches) != 1 ||
+					thread.Evener.Diagnostics.Watches[0].ID != "w1" || thread.Evener.Diagnostics.Watches[0].Deliveries != 3 {
+					t.Fatalf("diagnostics = %+v, want the turn boundary to re-sample the watch rows", thread.Evener.Diagnostics)
 				}
 			},
 		},

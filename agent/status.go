@@ -63,6 +63,19 @@ type JobStatusInfo struct {
 type WatchCadenceInfo struct {
 	Kind    string  `json:"kind"`
 	Seconds float64 `json:"seconds,omitempty"`
+	// Every is the fire-every-Nth-matching-event throttle on an "events"
+	// cadence; zero (absent) means fire on every matching event. Only the
+	// events kind sets it, and only a watch with a single concrete event kind
+	// can carry one (validateWatchEventArgs), so it is zero for every other
+	// kind and for a wildcard event watch.
+	Every int `json:"every,omitempty"`
+	// Filter is the events-kind watch's event filter rendered exactly the way
+	// watchConditionSummary renders it for the model (e.g. "tool_name=Bash,
+	// status=error"); empty (absent) when the watch filters nothing or is a
+	// non-events cadence. It is a display string, not a structured filter:
+	// keeping it in the prose summary's own vocabulary means the wire and the
+	// model can never disagree about what the filter names.
+	Filter string `json:"filter,omitempty"`
 }
 
 // WatchStatusInfo describes one live watch with structured fields, so a

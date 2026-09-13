@@ -114,6 +114,46 @@ func TestLiveWatchStatuses_StructuredFields(t *testing.T) {
 	}
 }
 
+// TestWatchCadencesCarryEventEveryAndFilter pins the events cadence row's two
+// extra fields. A watch that fires every Nth matching event, or that filters
+// on tool name/status, must be distinguishable on the wire from one that
+// fires on every match - the model-facing watchConditionSummary already
+// renders both, and the panel reads the structured row. A plain event watch
+// and a wildcard watch carry neither, so their row stays exactly as before.
+func TestWatchCadencesCarryEventEveryAndFilter(t *testing.T) {
+	t.Parallel()
+
+	throttled := watchCadencesOf(&watchConfig{
+		events:       []string{"assistant.tool"},
+		triggerEvery: 3,
+		eventFilter:  &watchEventFilter{ToolName: "Bash", Status: "error"},
+	})
+	wantThrottled := []WatchCadenceInfo{{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"}}
+	if !reflect.DeepEqual(throttled, wantThrottled) {
+		t.Fatalf("throttled+filtered event cadence = %+v, want %+v", throttled, wantThrottled)
+	}
+
+	// The count and filter agree with the prose the model already sees.
+	cfg := &watchConfig{
+		events:       []string{"assistant.tool"},
+		triggerEvery: 3,
+		eventFilter:  &watchEventFilter{ToolName: "Bash", Status: "error"},
+	}
+	if summary := watchConditionSummary(cfg); summary != "events: [assistant.tool] every 3 where tool_name=Bash, status=error" {
+		t.Fatalf("watchConditionSummary = %q, want the prose the cadence mirrors", summary)
+	}
+
+	plain := watchCadencesOf(&watchConfig{events: []string{"assistant.tool"}})
+	if !reflect.DeepEqual(plain, []WatchCadenceInfo{{Kind: "events"}}) {
+		t.Fatalf("plain event cadence = %+v, want a bare events row so old labels stay byte-identical", plain)
+	}
+
+	wildcard := watchCadencesOf(&watchConfig{wildcardEvents: true, eventFilter: &watchEventFilter{ToolName: "Bash"}})
+	if !reflect.DeepEqual(wildcard, []WatchCadenceInfo{{Kind: "events"}}) {
+		t.Fatalf("wildcard event cadence = %+v, want a bare events row (prose renders no count or filter)", wildcard)
+	}
+}
+
 // TestWatchConditionSummaryAndListUnchanged proves the structured projection
 // left job_list's model-facing output alone: watchConditionSummary still
 // renders the exact same prose, and liveWatchSummaries still returns the same

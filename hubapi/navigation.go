@@ -169,6 +169,14 @@ type NavigationJobSummary struct {
 type NavigationWatchCadence struct {
 	Kind    string  `json:"kind"`
 	Seconds float64 `json:"seconds,omitempty"`
+	// Every is the fire-every-Nth-matching-event throttle on an "events"
+	// cadence; absent (zero) means fire on every matching event. Only the
+	// events kind carries it.
+	Every int `json:"every,omitempty"`
+	// Filter is the events-kind watch's event filter in the model-facing
+	// condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
+	// absent when the watch filters nothing. Only the events kind carries it.
+	Filter string `json:"filter,omitempty"`
 }
 
 // NavigationWatchSummary is the compact live-watch row shown beneath its
