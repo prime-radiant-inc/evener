@@ -3111,6 +3111,163 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
   expect(modelTrigger().textContent).toContain("(default)"); // top-level chip untouched
 });
 
+// roborev: the Advanced-options model override used to win at submit even
+// after the user touched the visible top-level Model control, so the chip
+// displayed one model while thread/start launched another. Touching the
+// top-level control is the user's newest intent and must clear the stale
+// Advanced override (and its displayed value).
+test("changing the top-level Model clears a standing Advanced-options model override (roborev)", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        { field: "model", wireField: "model", label: "Model", group: "general", kind: "modelPicker", perLaunch: true },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  // A standing Advanced-options override: openai/gpt-5.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const advancedPickers = screen.getAllByRole("button", { name: /change model/i });
+  await user.click(advancedPickers[advancedPickers.length - 1]!);
+  const advancedCombo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(advancedCombo, "gpt-5");
+  await user.click(await screen.findByText("openai/gpt-5"));
+
+  // Then the user changes the visible top-level Model control.
+  await pickModel(user, "claude-sonnet-4-5", "anthropic/claude-sonnet-4-5");
+  expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5");
+  // The Advanced panel must not keep displaying the discarded value.
+  const advancedPickersAfter = screen.getAllByRole("button", { name: /change model/i });
+  expect(advancedPickersAfter[advancedPickersAfter.length - 1]!.textContent).not.toContain("openai/gpt-5");
+
+  await user.type(promptField(), "model precedence");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  // The launched request carries what the top-level control displays, not the
+  // stale override.
+  expect(params.model).toBe("anthropic/claude-sonnet-4-5");
+  expect(params.launchOverrides?.model).toBeUndefined();
+});
+
+// The same mismatch for reasoning effort: the visible top-level Effort select
+// was inert while an Advanced-options reasoning_effort override stood.
+test("changing the top-level Effort clears a standing Advanced-options effort override (roborev)", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) =>
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "reasoning_effort",
+          wireField: "reasoningEffort",
+          label: "Reasoning effort",
+          group: "model",
+          kind: "select",
+          perLaunch: true,
+          choices: [
+            { value: "low", label: "low" },
+            { value: "high", label: "high" },
+          ],
+        },
+      ],
+    })),
+  );
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  // A standing Advanced-options override: high.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Reasoning effort"), "high");
+
+  // Then the user changes the visible top-level Effort control.
+  fireEvent.change(effortControl(), { target: { value: "low" } });
+  expect((effortControl() as HTMLSelectElement).value).toBe("low");
+  // The Advanced field is cleared too, so it cannot show the discarded value.
+  expect((screen.getByLabelText("Reasoning effort") as HTMLSelectElement).value).toBe("");
+
+  await user.type(promptField(), "effort precedence");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.reasoningEffort).toBe("low");
+  expect(params.launchOverrides?.reasoningEffort).toBeUndefined();
+});
+
+// The reverse order stays intact: an Advanced override set AFTER the
+// top-level control is the user's newest intent and still wins at submit.
+test("an Advanced-options model override set after the top-level Model still wins (roborev)", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        { field: "model", wireField: "model", label: "Model", group: "general", kind: "modelPicker", perLaunch: true },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  await pickModel(user, "claude-sonnet-4-5", "anthropic/claude-sonnet-4-5");
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const advancedPickers = screen.getAllByRole("button", { name: /change model/i });
+  await user.click(advancedPickers[advancedPickers.length - 1]!);
+  const advancedCombo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(advancedCombo, "gpt-5");
+  await user.click(await screen.findByText("openai/gpt-5"));
+
+  await user.type(promptField(), "override wins");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.model).toBe("openai/gpt-5");
+});
+
+test("an Advanced-options effort override set after the top-level Effort still wins (roborev)", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) =>
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "reasoning_effort",
+          wireField: "reasoningEffort",
+          label: "Reasoning effort",
+          group: "model",
+          kind: "select",
+          perLaunch: true,
+          choices: [
+            { value: "low", label: "low" },
+            { value: "high", label: "high" },
+          ],
+        },
+      ],
+    })),
+  );
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  fireEvent.change(effortControl(), { target: { value: "low" } });
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Reasoning effort"), "high");
+
+  await user.type(promptField(), "effort override wins");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.reasoningEffort).toBe("high");
+});
+
 // --- resolved-default labels -------------------------------------------------
 //
 // A launch-config control whose unset state reads "(default)" names the value

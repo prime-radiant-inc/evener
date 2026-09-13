@@ -437,17 +437,13 @@ function SelectedConnection({
   // A refused endpoint assertion means the name moved between this flow's check
   // and the write, so the draft was typed for an endpoint that is gone: drop
   // it, re-anchor to what the hub resolves now, and say why - rather than leave
-  // the user with a save that silently went somewhere else. The re-read is what
-  // makes the re-anchor the hub's current view, and it is deliberately allowed
-  // to reset the flow on the way: it is a caller read, so the invalidation
-  // watch reads the listing change it brings as a foreign one. These writes run
-  // after it and restate this refusal's own outcome. Nothing else can be
-  // mid-flight here - the flow is busy for the whole window - and a re-read
-  // that fails still leaves the alert below, with the next submit re-checking
-  // against the listing the store does hold.
+  // the user with a save that silently went somewhere else. The re-read is the
+  // flow's own, so it carries the flow's own marker (fetchSelf): this refusal is
+  // the outcome the user gets, not a reason for the invalidation watch to reset
+  // the flow underneath it. changeValue below settles the flow either way.
   async function recoverChangedEndpoint() {
     try {
-      await credentialsStore.getState().fetch();
+      await credentialsStore.getState().fetchSelf();
     } catch {
       // Best-effort: the alert below is the answer either way.
     }
@@ -468,10 +464,10 @@ function SelectedConnection({
     // listing unchanged when EITHER array kept its identity.)
     let applied = false;
     try {
-      applied = await credentialsStore.getState().fetch();
+      applied = await credentialsStore.getState().fetchSelf();
       if (!current(token)) return;
       if (!applied) {
-        applied = await credentialsStore.getState().fetch();
+        applied = await credentialsStore.getState().fetchSelf();
         if (!current(token)) return;
       }
     } catch {

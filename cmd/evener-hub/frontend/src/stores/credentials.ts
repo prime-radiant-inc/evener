@@ -69,6 +69,15 @@ export interface CredentialsStoreState {
   // (the failure lands in `error`) - a resolved promise alone is never
   // proof the listing moved.
   fetch(): Promise<boolean>;
+  // fetchSelf is fetch() for a read the caller is performing as its own work -
+  // today the guided flow's refresh and its endpoint-refusal recovery. The
+  // transition carries the selfRefresh marker, so a subscriber watching the
+  // listing for unrelated changes does not read the caller's own read as one,
+  // which is what keeps the flow from invalidating the operation that asked.
+  // Only a caller's own operation qualifies: a read that could be reporting
+  // someone else's change has to stay unmarked, because the marker is the only
+  // signal that tells the two apart.
+  fetchSelf(): Promise<boolean>;
   // create/edit/remove resolve true when the listing they answered with is
   // the one the store now holds, false when a newer request superseded it.
   // Callers that steer a flow on the strength of their own write (the sheet,
@@ -186,6 +195,10 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
 
   async fetch() {
     return readListing(false);
+  },
+
+  async fetchSelf() {
+    return readListing(true);
   },
 
   async create(params) {

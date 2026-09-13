@@ -1007,6 +1007,42 @@ test("adopting a created instance with no fingerprints on either side clears the
   expect(await screen.findByLabelText("API key")).toHaveProperty("value", "");
 });
 
+// The read a flow performs as its own work has to be marked as this client's,
+// or the invalidation watch reads the transition it brings as someone else's
+// change and resets the operation that asked for it. The endpoint-refusal
+// recovery is that read at its most exposed: it runs while the flow is busy, and
+// the refusal it just reported is the outcome the user is owed. An unmarked read
+// there (credentialsStore.fetch(), as the flow used before) advances nothing and
+// lets the watch reset the flow; a marked one keeps the flow's own outcome. The
+// unmarked direction is pinned by "a notification refresh invalidates a pending
+// check and a completed result", which ends with a plain fetch() clearing a
+// completed result.
+test("the flow's own recovery read carries its commitment and leaves the flow usable", async () => {
+  const { user, client } = setup(fingerprintList("fp-2024"));
+  await choose(user, "Anthropic");
+  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  client.on("evener/auth/apiKey/set", () => {
+    throw new WireError(
+      "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+      -32013,
+      { evenerErrorInfo: "conflict" },
+    );
+  });
+  client.on("evener/instance/list", () => structuredClone(fingerprintList("fp-2025")));
+  const before = credentialsStore.getState().selfRefresh;
+
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+
+  expect(
+    await screen.findByText(
+      "This connection changed to a different endpoint. Check its destination and enter the key again.",
+    ),
+  ).toBeTruthy();
+  expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
+  // Nothing is left mid-flight by the read that no longer resets the flow.
+  expect(await screen.findByRole("button", { name: "Save and check" })).toHaveProperty("disabled", false);
+});
+
 test("the hub's endpoint refusal re-anchors the flow instead of saving to the moved destination", async () => {
   const { user, client } = setup(fingerprintList("fp-2024"));
   await choose(user, "Anthropic");

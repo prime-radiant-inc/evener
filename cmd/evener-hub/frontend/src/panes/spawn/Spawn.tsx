@@ -1005,9 +1005,37 @@ function SpawnForm({
     else if (model !== "" && !model.includes("/")) setModel("");
   }
 
+  // Touching the visible top-level Model or Effort control is the user's newest
+  // intent, so a standing Advanced-options override for that SAME field must not
+  // silently win at submit (roborev: the chip would display the new value while
+  // thread/start launched the stale override). Clear only that field's raw
+  // advanced value and its collected override - the Advanced panel must not keep
+  // displaying a value that is no longer launched. The OTHER field's override is
+  // deliberately untouched, and an Advanced override set afterwards still wins.
+  function clearAdvancedOverride(wireField: "model" | "reasoningEffort"): void {
+    setAdvancedValues((prev) => {
+      if (!(wireField in prev)) return prev;
+      const next = { ...prev };
+      delete next[wireField];
+      return next;
+    });
+    setAdvancedOverrides((prev) => {
+      if (prev[wireField] === undefined) return prev;
+      const next = { ...prev };
+      delete next[wireField];
+      return next;
+    });
+  }
+
   function handleModelChange(next: string): void {
     setModel(next);
+    clearAdvancedOverride("model");
     if (next !== "") setStaleNotice(null); // any new model clears the discard notice (floor §1.10)
+  }
+
+  function handleEffortChange(next: string): void {
+    setReasoningEffort(next);
+    clearAdvancedOverride("reasoningEffort");
   }
 
   // The picker already loaded the picked entry's catalog (with
@@ -1603,7 +1631,7 @@ function SpawnForm({
                       id="spawn-reasoning-effort"
                       className={CLASS.effortSelect}
                       value={reasoningEffort}
-                      onChange={(e) => setReasoningEffort(e.target.value)}
+                      onChange={(e) => handleEffortChange(e.target.value)}
                       disabled={effortDisabled}
                     >
                       {effortOptions.map((option) => (
