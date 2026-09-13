@@ -198,6 +198,9 @@ while :; do
 	if ! pgroup_write_wrapper "$attempt_record"; then
 		printf 'install-golangci-lint.sh: could not write the spawn wrapper beside %s; not spawning an install that nothing could stop.\n' \
 			"$attempt_record" >&2
+		# Nothing was spawned, so the empty record goes too: left behind, it is
+		# a record the trap would wait out its whole grace for.
+		pgroup_record_clear "$attempt_record"
 		exit 1
 	fi
 	perl "$attempt_record.wrapper.pl" \

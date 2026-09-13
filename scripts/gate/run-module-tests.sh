@@ -724,6 +724,9 @@ run_bounded_package_list() {
 		if ! pgroup_write_wrapper "$(package_list_pgid_path "$module")"; then
 			printf 'run-module-tests.sh: could not write the spawn wrapper beside %s; not spawning a package list that nothing could stop.\n' \
 				"$(package_list_pgid_path "$module")" >&2
+			# The empty record goes with it: nothing was spawned, and a record left
+			# behind is one the cleanup would wait out its whole grace for.
+			pgroup_record_clear "$(package_list_pgid_path "$module")"
 			return 1
 		fi
 		perl "$(package_list_pgid_path "$module").wrapper.pl" \
