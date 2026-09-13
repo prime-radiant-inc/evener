@@ -124,6 +124,15 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, false
 	}
+	// A root null body decodes to a nil value, but the dispatch path treats it
+	// exactly like an empty argument object (registry.executeCall normalizes a
+	// nil args map to map[string]any{}). Canonicalize it to the same bytes as a
+	// zero-length body so both dispatch to the same effective call. Only the
+	// root value is folded: a null nested in an object or array reaches the
+	// handler as a real value and keeps its own canonical form.
+	if v == nil {
+		return []byte("{}"), true
+	}
 	encoded, err := json.Marshal(canonicalizeValue(v, true, name == "shell"))
 	if err != nil {
 		return nil, false
