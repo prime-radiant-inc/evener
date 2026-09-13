@@ -485,6 +485,17 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // fold published cannot finish later and overwrite the newer fold's name.
 func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool, publishedRevision int) {
 	s.reportCompactionTranscriptAppend(writeErr)
+	if writeErr != nil {
+		// The marker is not in the transcript, and not every failed append
+		// poisons the writer — a write that transferred no bytes leaves it
+		// usable (agent/transcript's poisonLandedBytesLocked), so nothing else
+		// stops this fold. Everything below describes that marker: the event
+		// announcing it, the name derived from it, the task-list steering the
+		// compaction justifies. Publishing them against a transcript that has
+		// no anchor is the divergence the withheld-marker rule already
+		// refuses; a failed write is the same absence, arrived at differently.
+		return
+	}
 	if isSessionNameCompactionTurn(t) {
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text(), OwningTurnID: t.OwningTurnID})
 	}

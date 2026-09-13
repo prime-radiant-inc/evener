@@ -2187,3 +2187,120 @@ func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
 		}
 	}
 }
+
+// failMarkerWriteFS fails exactly the fold's marker line, transferring no
+// bytes, which is the writer's unpoisoned failure arm: nothing landed, the file
+// and the position are as they were, and the writer stays usable
+// (agent/transcript/transcript.go's poisonLandedBytesLocked). So the fold sees
+// an error for a marker nobody can read, with no poison to stop anything.
+type failMarkerWriteFS struct {
+	afero.Fs
+	failed atomic.Bool
+}
+
+func (fs *failMarkerWriteFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &failMarkerWriteFile{File: file, fs: fs}, nil
+}
+
+func (fs *failMarkerWriteFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &failMarkerWriteFile{File: file, fs: fs}, nil
+}
+
+type failMarkerWriteFile struct {
+	afero.File
+	fs *failMarkerWriteFS
+}
+
+func (file *failMarkerWriteFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"SUMMARY"`)) || bytes.Contains(p, []byte(`"kind":"CHECKPOINT"`)) {
+		file.fs.failed.Store(true)
+		return 0, errors.New("injected marker write failure")
+	}
+	return file.File.Write(p)
+}
+
+// A marker whose own write fails leaves the transcript with no anchor, exactly
+// like one the fold withheld — and unlike a poisoned writer, nothing else stops
+// the fold, so the effects that describe that marker would run against a
+// transcript no reload can read it from.
+func TestFoldPublication_FailedMarkerWritePublishesNoCompactionEffects(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "failed-marker-write-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failMarkerWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12)
+
+	var nameMu sync.Mutex
+	var namedTexts []string
+	s.nameSessionFromTextFunc = func(_ context.Context, _, text string) error {
+		nameMu.Lock()
+		namedTexts = append(namedTexts, text)
+		nameMu.Unlock()
+		return nil
+	}
+	var eventMu sync.Mutex
+	var compactionTurns []events.CompactionTurnData
+	const flushDrained = "fold flush drained"
+	drained := make(chan struct{})
+	var drainOnce sync.Once
+	go func() {
+		for event := range s.Events() {
+			switch data := event.Data.(type) {
+			case events.WarningData:
+				if data.Message == flushDrained {
+					drainOnce.Do(func() { close(drained) })
+				}
+			case events.CompactionTurnData:
+				eventMu.Lock()
+				compactionTurns = append(compactionTurns, data)
+				eventMu.Unlock()
+			}
+		}
+	}()
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no marker write was attempted, so nothing failed")
+	}
+	if writer.Poisoned() {
+		t.Fatal("test setup: the injected failure poisoned the writer, so this is the poisoned path, not the unpoisoned one")
+	}
+
+	s.emit(events.EventWarning, events.WarningData{Message: flushDrained})
+	// TRIPWIRE: the sentinel is behind the flush's own events on one in-process
+	// channel; only a reader that stopped entirely fails to reach it.
+	awaitWithin(t, 10*time.Second, "the fold flush's events reaching the reader", func() {
+		<-drained
+	})
+	eventMu.Lock()
+	turns := append([]events.CompactionTurnData(nil), compactionTurns...)
+	eventMu.Unlock()
+	if len(turns) != 0 {
+		t.Fatalf("a fold whose marker write failed published %d compaction-turn event(s): %#v", len(turns), turns)
+	}
+	nameMu.Lock()
+	named := append([]string(nil), namedTexts...)
+	nameMu.Unlock()
+	if len(named) != 0 {
+		t.Fatalf("a fold whose marker write failed named the session from %d text(s): %#v", len(named), named)
+	}
+}
