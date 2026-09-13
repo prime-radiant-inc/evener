@@ -695,7 +695,16 @@ func (c *delegateTreeController) releaseReservationLocked(record *delegateStartR
 	return record.cancel
 }
 
+// CommitStart records the start durably and then, off this controller's lock,
+// persists any activity-clock move the append made: the save takes the root
+// session's own locks, which must never be waited on from behind this one.
 func (c *delegateTreeController) CommitStart(reservation *delegateStartReservation) (delegateStartCommit, error) {
+	commit, err := c.commitStart(reservation)
+	c.rootRuntime.persistJobTreeShapeChange()
+	return commit, err
+}
+
+func (c *delegateTreeController) commitStart(reservation *delegateStartReservation) (delegateStartCommit, error) {
 	c.mu.Lock()
 	var cancel context.CancelFunc
 	defer func() {
