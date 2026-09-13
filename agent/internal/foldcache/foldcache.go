@@ -326,6 +326,7 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 	var prior T
 	fromOffset := int64(0)
 	sameSizeAmbiguous := false
+	sameSizeMtimeAgrees := false
 	growthAmbiguous := false
 	if st != nil {
 		switch {
@@ -335,17 +336,16 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 			// detectably stale.
 			epoch++
 		case info.Size() == st.size:
-			if st.mod.Equal(info.ModTime()) {
-				// Same length AND same mtime: mtime alone cannot resolve
-				// this (the classic jobstore.Store fileCursor residual) —
-				// needs the tail probe below.
-				sameSizeAmbiguous = true
-			} else {
-				// Same length, different mtime: a rewrite that happens to
-				// match the old size. Discard and bump epoch, same as a
-				// shrink.
-				epoch++
-			}
+			// Same length, whatever the mtime says. A rewrite that happens to
+			// match the old size looks identical here to a stat taken while
+			// something appended: os.Stat reads size and mtime separately, so
+			// it can report the size from before a write with the mtime from
+			// after it. mtime settles neither case (the classic
+			// jobstore.Store fileCursor residual is the same shape) — the
+			// tail probe below does, and bumping without asking it names a
+			// generation the next fold will not carry.
+			sameSizeAmbiguous = true
+			sameSizeMtimeAgrees = st.mod.Equal(info.ModTime())
 		default: // info.Size() > st.size
 			if st.mod.Equal(info.ModTime()) {
 				// Grew, but mtime gives no signal either way: could be a
@@ -397,7 +397,7 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 		}
 		if !match {
 			epoch++
-		} else if element != nil {
+		} else if sameSizeMtimeAgrees && element != nil {
 			if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
 				// Confirmed unchanged, and the cached value is still
 				// resident: a true hit reached via refresh instead of
@@ -409,10 +409,12 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 				return Result[T]{Value: e.value, Offset: e.offset, Epoch: epoch}, nil
 			}
 		}
-		// Confirmed unchanged but nothing resident to return (evicted): a
-		// full reread is required regardless (nothing to resume from),
-		// but epoch does not bump, since the content itself is confirmed
-		// the same. fromOffset stays 0 either way this branch exits.
+		// The recorded prefix survived but there is nothing to return: the
+		// value was evicted, or the mtime disagreed and this length cannot
+		// be trusted because the file may have grown under a torn stat. A
+		// full reread is required either way, and the generation does not
+		// move, since the content this cache folded is confirmed intact.
+		// fromOffset stays 0 however this branch exits.
 	} else if growthAmbiguous {
 		match, tailErr := tailProbeMatches(path, st.offset, st.tail)
 		if tailErr != nil {

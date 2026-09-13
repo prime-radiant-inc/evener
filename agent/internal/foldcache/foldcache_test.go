@@ -809,3 +809,62 @@ func TestCache_DeletedFileEpochSurvivesAcrossRecreation(t *testing.T) {
 		t.Fatalf("recreated epoch (%d) did not advance past the pre-deletion epoch (%d) -- a continuation minted before the deletion would wrongly pass its staleness check against this entirely unrelated new content", recreated.Epoch, first.Epoch)
 	}
 }
+
+// tornStatInfo reports a file's size as it was before an append and its mtime
+// as it is after one — the observation os.Stat can return while a writer is
+// appending, since the two fields are not read atomically.
+type tornStatInfo struct {
+	os.FileInfo
+	size int64
+	mod  time.Time
+}
+
+func (i tornStatInfo) Size() int64        { return i.size }
+func (i tornStatInfo) ModTime() time.Time { return i.mod }
+
+// TestCache_TornAppendStatKeepsTheGeneration pins the rule the same-size
+// branch has to follow. os.Stat is not an atomic snapshot: during an append it
+// can report the size from before the write and the mtime from after it, which
+// looks exactly like a same-size rewrite. Bumping on that appearance alone
+// discards a fold nothing invalidated and moves a generation the file's own
+// content does not justify — and a continuation keyed to the old generation is
+// then refused for a journal that was only appended to. The tail probe tells
+// the two apart, so it decides here as it does in every other ambiguous case.
+func TestCache_TornAppendStatKeepsTheGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	if st == nil {
+		t.Fatal("no state recorded for a folded path")
+	}
+
+	appendLines(t, path, []int{3})
+	current, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := tornStatInfo{FileInfo: current, size: st.size, mod: current.ModTime().Add(time.Second)}
+
+	refreshed, err := c.refresh(ctx, path, torn, extend)
+	if err != nil {
+		t.Fatalf("refresh on a torn stat: %v", err)
+	}
+	if refreshed.Epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a torn append stat, want it to stay at %d -- the fold reads the whole append and keeps the old one, so this discards a fold nothing invalidated", refreshed.Epoch, folded.Epoch)
+	}
+	if refreshed.Value.sum != 6 {
+		t.Fatalf("value = %+v, want the appended content read in full (1+2+3)", refreshed.Value)
+	}
+}
