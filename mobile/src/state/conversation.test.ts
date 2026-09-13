@@ -110,6 +110,7 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
   shutdown: true,
   changeModel: true,
   changeVisionModel: true,
+  sharedNotes: false,
   queue: true,
   goal: true,
   rename: true,

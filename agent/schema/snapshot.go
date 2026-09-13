@@ -189,6 +189,15 @@ type SessionMeta struct {
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
 	// survives daemon restart and evener resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
+	// HumanNote is a projection of the canonical client-mutation snapshot.
+	// It is not imported as human-note authority when restoring a session.
+	HumanNote string `json:"human_note,omitempty"`
+	// AgentNote is the agent's one-paragraph session whiteboard, persisted like
+	// HumanNote. Empty means unset.
+	AgentNote string `json:"agent_note,omitempty"`
+	// SessionURLs is the agent-curated session URL list, persisted so it
+	// survives daemon restart and evener resume. Empty/nil means no links.
+	SessionURLs []SessionURL `json:"session_urls,omitempty"`
 	// EnvContext is the environment-context tracker state (last emitted
 	// snapshot), persisted so resume stays silent when nothing changed.
 	EnvContext *envctx.State `json:"env_context,omitempty"`
@@ -260,6 +269,15 @@ type GoalSnapshot struct {
 	StopReason       string    `json:"stop_reason,omitempty"`
 	CreatedAt        time.Time `json:"created_at,omitzero"`
 	UpdatedAt        time.Time `json:"updated_at,omitzero"`
+}
+
+// SessionURL is one entry in a session's shared-notes URL list.
+type SessionURL struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Label   string `json:"label,omitempty"`
+	AddedBy string `json:"added_by,omitempty"`
+	AddedAt int64  `json:"added_at,omitempty"`
 }
 
 // SessionDisplayName returns the best available human-readable title for a

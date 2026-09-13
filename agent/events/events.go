@@ -139,6 +139,10 @@ const (
 	// EventGoalUpdated reports the session's complete structured goal state after
 	// a committed goal mutation. A nil goal in its payload explicitly clears it.
 	EventGoalUpdated EventKind = "GOAL_UPDATED"
+	// EventNotesUpdated reports a change to the session's shared-notes whiteboards.
+	EventNotesUpdated EventKind = "NOTES_UPDATED"
+	// EventUrlsUpdated reports a change to the session's shared-notes URL list.
+	EventUrlsUpdated EventKind = "URLS_UPDATED"
 	// EventSandboxEscalationRequested marks a harness-raised, human-gated
 	// sandbox-exemption approval request (M7). It rides the event stream ONLY — it
 	// is never appended to the model's transcript, so the model can neither observe

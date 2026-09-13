@@ -45,6 +45,7 @@ async function setup(initialItems: ThreadItem[] = []) {
         shutdown: true,
         changeModel: true,
         changeVisionModel: true,
+        sharedNotes: false,
         queue: true,
         goal: true,
         rename: true,
