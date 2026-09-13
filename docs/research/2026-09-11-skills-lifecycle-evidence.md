@@ -724,11 +724,15 @@ text items.
 The pre-existing characterization test
 (`agent/session_client_mutation_queue_branches_test.go`, "multiple text items
 concatenated", with inputs `"hello "` and `"world"` producing `"hello world"`)
-documents this intent, and its deliberate trailing space is the signature of
-prose split into parts rather than of two distinct messages. Changing that
-assertion to match roborev would have required evidence that the check itself
-was wrong; the evidence points the other way, so the finding is declined with
-this rationale and the behavior is unchanged.
+is a behavior pin, not authored intent — it arrived in an unrelated main commit
+as part of a large coverage bundle, so it is evidence of what the code does
+rather than of what it was designed to do. The refutation therefore rests on the
+code facts above (the granularity of entries versus items, the `queuedInput`
+type's single text field, and the producer survey), with the pin as a
+consistency check rather than as the authority. Changing that assertion to match
+roborev would have required evidence that the check itself was wrong; the
+evidence points the other way, so the finding is declined on those grounds and
+the behavior is unchanged.
 
 ### Gates on the merged-plus-findings head
 
@@ -766,3 +770,26 @@ changed in this round are the two new tests added for M1 and L2, and the two
 fixture updates forced by this feature's own contract (`clientMutationInput`'s
 three-argument call in main's notes test, and the skill fixture above) — each
 preserving its original input and intent.
+
+### Fifth-round independent review
+
+Verdict READY (`task-21-round5-review.md`). The reviewer verified rather than
+trusted: it reverted each production change in place to confirm the M1, L1 and
+L2 tests fail for the intended reason and then restored them; reproduced the
+recorded `test-api-package` exit-2 and its fix; reproduced the conflict surface
+as exactly nine hunks and confirmed main's notes feature and this feature are
+both intact; and independently derived the M2 refutation (no producer in the
+repository emits more than one text item per entry, `queuedInput` has a single
+text field that cannot represent item boundaries, and nothing depends on a
+separator). It found no weakened assertions.
+
+Its non-blocking observations, accepted as-is:
+
+- `QueueStrip`'s `recordContent` dedupe has no test of its own; the shared
+  helper is pinned through the other two doors and the queue suite passes.
+- `readComposerDraft` does not canonicalize names already persisted in a draft.
+  Cosmetic: the wire path is protected by `buildInput`.
+- `go test ./agent/... -count=1` in full mode trips `agent/sandbox` bwrap
+  integration tests that need a writable mount namespace. They skip under
+  `-short`, every standard gate runs modules with `-short`, and this round never
+  touched that package — environmental, not product.
