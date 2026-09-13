@@ -18,6 +18,14 @@ import {
 import { useStore } from "zustand";
 import { slashCommandInvocation } from "../../protocol/catalogCommands";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
+import {
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  spliceSlashCommand,
+} from "../../protocol/slashCompletion";
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import { splitModelId } from "../../shell/palette/commands";
@@ -58,14 +66,6 @@ import { imageFilesFromClipboard } from "../session/composer/attachments/clipboa
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { findBuiltinArgument, matchBuiltinInvocation } from "../session/composer/builtinInvocation";
 import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
-import {
-  filterSlashMenuItems,
-  mergeSlashCommands,
-  parseSlashToken,
-  type SlashMenuItem,
-  type SlashToken,
-  spliceSlashCommand,
-} from "../session/composer/slashCompletion";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
