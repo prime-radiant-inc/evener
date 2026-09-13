@@ -137,3 +137,17 @@ test("a completed turn followed by a live continuation closes nothing", () => {
   ]);
   expect(closers.size).toBe(0);
 });
+
+test("an interrupted turn's partial prose never closes: the work was cut off, not concluded", () => {
+  const interrupted = turn("t1", [item("u1", "userMessage"), item("a1", "agentMessage")]);
+  interrupted.status = "interrupted";
+  const closers = exchangeClosersFor([interrupted, turn("t2", [item("u2", "userMessage")])]);
+  expect(closers.size).toBe(0);
+});
+
+test("a failed-status turn without an error object never closes either", () => {
+  const failed = turn("t1", [item("u1", "userMessage"), item("a1", "agentMessage")]);
+  failed.status = "failed";
+  const closers = exchangeClosersFor([failed, turn("t2", [item("u2", "userMessage")])]);
+  expect(closers.size).toBe(0);
+});

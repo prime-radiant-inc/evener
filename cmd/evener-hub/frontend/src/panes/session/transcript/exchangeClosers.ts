@@ -30,9 +30,11 @@ export function exchangeClosersFor(turns: TurnModel[]): ReadonlySet<string> {
     // the prose wash: any prose in it belongs to broken work, and the cap is
     // already the turn's visual close. Its userMessage still ends the
     // previous exchange, but its agent prose never becomes a closer. The
-    // check is deliberately broader than asTurnError's message-string narrow:
-    // any recorded turn error suppresses the wash.
-    const failed = turn.error != null;
+    // error check is deliberately broader than asTurnError's message-string
+    // narrow; the status check mirrors the projector's own isTerminalTurn
+    // (projector.ts): an interrupted turn carries no error object, but its
+    // partial prose was cut off, not concluded.
+    const failed = turn.error != null || turn.status === "failed" || turn.status === "interrupted";
     for (const item of turn.items) {
       if (item.status === "inProgress" && inExchange) exchangeLive = true;
       if (item.type === "userMessage") {
