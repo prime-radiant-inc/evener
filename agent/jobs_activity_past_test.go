@@ -2070,3 +2070,62 @@ func TestProjectStableActivityDelegate_DepthBoundaryTruncatesWithoutTheChild(t *
 		t.Fatalf("resuming a depth-boundary continuation minted without a placeholder: %v", err)
 	}
 }
+
+// TestActivityPlaceholderEpochs_MatchesTheLoaderOnADegradedDelegateJournal
+// pins that naming a depth-truncated child's generations and loading that
+// child read the same number. A delegates journal with a line too long to
+// scan degrades to an empty delegate set reported at generation 0, while the
+// fold cache still holds the generation of the last good fold: naming that
+// one refuses a token for a page the loader itself degraded.
+func TestActivityPlaceholderEpochs_MatchesTheLoaderOnADegradedDelegateJournal(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "degradedroot"
+	childID := "degradedchild"
+	started := time.Unix(930, 0).UTC()
+
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
+	delegatesPath := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+
+	// One good fold, then a rewrite: the cache's own generation for this
+	// journal is now past zero.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	rewritten := time.Unix(6_000_000, 0)
+	if err := os.Chtimes(delegatesPath, rewritten, rewritten); err != nil {
+		t.Fatalf("restamp: %v", err)
+	}
+	if cached := historicalDelegateFoldCache.Epoch(delegatesPath); cached == 0 {
+		t.Fatal("fixture did not move the cache's own generation; the mismatch under test cannot occur")
+	}
+
+	// Now the journal reads as degraded, which the loader reports as
+	// generation 0 with a diagnostic rather than an error.
+	original := scanDelegateJournal
+	scanDelegateJournal = func(context.Context, string, int64, delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		return nil, 0, delegatestore.ReadDiagnostics{}, delegatestore.ErrLineTooLong
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	loaded, err := loadHistoricalActivityBase(stateDir, rootID, false, cache)
+	if err != nil {
+		t.Fatalf("load the root: %v", err)
+	}
+	loaderEpoch := loaded.snapshot.DelegatesEpoch
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	_, placeholderEpoch := activityPlaceholderEpochs(loc, loaded, cache, childID)
+	if placeholderEpoch != loaderEpoch {
+		t.Fatalf("placeholder names generation %d while the loader reports %d -- a token minted from one and checked against the other is refused for a journal both sides read the same way", placeholderEpoch, loaderEpoch)
+	}
+}

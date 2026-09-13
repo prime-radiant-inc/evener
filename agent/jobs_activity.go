@@ -475,7 +475,7 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			if !activityConsumeWorkUnit(cache.budget, 1) {
 				continue
 			}
-			placeholderJobs, placeholderDelegates := activityPlaceholderEpochs(loc, loaded, childID)
+			placeholderJobs, placeholderDelegates := activityPlaceholderEpochs(loc, loaded, cache, childID)
 			snapshot.Children[childID] = &activitySessionSnapshot{
 				SessionID:       childID,
 				Ref:             row.descriptor.TranscriptRef,
@@ -670,7 +670,7 @@ func liveActivitySessionLabel(s *Session) string {
 // never-folded path's generation is 0 and that is what its first fold
 // assigns. A journal actually rewritten between this read and that fold
 // raises the fold's number, and the resulting mismatch is the true answer.
-func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoadedBase, childID string) (jobs, delegates uint64) {
+func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoadedBase, cache *historicalActivityCache, childID string) (jobs, delegates uint64) {
 	childLoc, err := resolveActivityChildByID(loc, loaded, childID)
 	if err != nil || childLoc.live != nil {
 		return 0, 0
@@ -680,7 +680,17 @@ func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoaded
 		return 0, 0
 	}
 	meta, _ := schema.LoadSessionMeta(stateDir, childID)
-	return currentHistoricalJobsEpoch(stateDir, childID), currentHistoricalDelegatesEpoch(stateDir, activityRootIDFromMeta(childID, meta))
+	// The delegates generation comes from the same index the child's own load
+	// reads (memoized per traversal), not from a second reading of the fold
+	// cache: a journal degraded by a too-long line reports generation 0 there
+	// while the cache still holds the generation of the last good fold, and
+	// naming that one would refuse a token for a page the loader itself
+	// degraded.
+	index, err := cache.rootDelegates(stateDir, activityRootIDFromMeta(childID, meta))
+	if err != nil {
+		return 0, 0
+	}
+	return currentHistoricalJobsEpoch(stateDir, childID), index.epoch
 }
 
 func resolveActivityChildByID(parent activitySessionLocator, loaded activityLoadedBase, childID string) (activitySessionLocator, error) {
