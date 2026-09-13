@@ -1,0 +1,154 @@
+package agent
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"primeradiant.com/evener/identifier"
+)
+
+// strictSnapshotJSON renders a mutation-snapshot document the strict
+// decodeClientMutationSnapshot accepts, carrying note as the committed human
+// note. It mirrors the fixture used by TestHumanNoteRestoreCanonicalFixtures.
+func strictSnapshotJSON(sessionID, note string) string {
+	return fmt.Sprintf(`{"version":1,"session_id":%q,"human_note":%q,"accepted_turns":0,"journal":{},"input_queue":[],"queue_revision":0,"next_turn_sequence":0,"next_queue_entry_sequence":0,"budget_reservations":{},"pending_executions":{}}`, sessionID, note)
+}
+
+func writeMutationSnapshotFile(t *testing.T, stateDir, sessionID, data string) {
+	t.Helper()
+	dir := filepath.Join(stateDir, "mutations")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, sessionID+".json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The light reader is a projection of the same persisted field the strict
+// reader returns, so on a snapshot the strict authority accepts both must
+// report the same note and present flag — including the saved-empty note,
+// where present=true distinguishes an explicit clear from no authority.
+func TestReadPersistedHumanNoteMatchesStrictOnWellFormedSnapshots(t *testing.T) {
+	for _, note := range []string{"saved-sentinel", ""} {
+		t.Run(fmt.Sprintf("note=%q", note), func(t *testing.T) {
+			sessionID := identifier.MustNewSessionID()
+			stateDir := t.TempDir()
+			writeMutationSnapshotFile(t, stateDir, sessionID, strictSnapshotJSON(sessionID, note))
+
+			wantNote, wantPresent, err := ReadCanonicalHumanNote(stateDir, sessionID)
+			if err != nil {
+				t.Fatalf("ReadCanonicalHumanNote: %v", err)
+			}
+			if wantNote != note || !wantPresent {
+				t.Fatalf("strict fixture read = (%q, %v), want (%q, true)", wantNote, wantPresent, note)
+			}
+			gotNote, gotPresent, err := ReadPersistedHumanNote(stateDir, sessionID)
+			if err != nil {
+				t.Fatalf("ReadPersistedHumanNote: %v", err)
+			}
+			if gotNote != wantNote || gotPresent != wantPresent {
+				t.Fatalf("light read = (%q, %v), want the strict read (%q, %v)", gotNote, gotPresent, wantNote, wantPresent)
+			}
+		})
+	}
+}
+
+// The roster reader must not be the strict decoder in disguise. For documents
+// the strict authority refuses, the light reader still returns the top-level
+// note: that contrast is what keeps a past-session listing from decoding and
+// validating a journal-sized snapshot once per entry. The malformed-journal
+// case additionally pins that the read stops at the value it finds, leaving
+// everything after it unread.
+func TestReadPersistedHumanNoteReadsWhatStrictAuthorityRejects(t *testing.T) {
+	sessionID := identifier.MustNewSessionID()
+	valid := func() string { return strictSnapshotJSON(sessionID, "light-note") }
+	cases := map[string]string{
+		"unknown top-level field": strings.Replace(valid(), `{"version":1`, `{"unknown_notes_state":true,"version":1`, 1),
+		"unsupported version":     strings.Replace(valid(), `"version":1`, `"version":99`, 1),
+		"session id mismatch":     strings.Replace(valid(), fmt.Sprintf("%q", sessionID), `"01OTHER000000000000000000"`, 1),
+		"refused journal shape":   strings.Replace(valid(), `"journal":{}`, `"journal":{"m1":{}}`, 1),
+		// Not even valid JSON after the note: the light read never looks.
+		"journal that does not parse": strings.Replace(valid(), `"journal":{}`, `"journal":not-json`, 1),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			writeMutationSnapshotFile(t, stateDir, sessionID, data)
+
+			if _, _, err := ReadCanonicalHumanNote(stateDir, sessionID); err == nil {
+				t.Fatal("strict reader accepted the fixture; the contrast needs a document it rejects")
+			}
+			note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+			if err != nil {
+				t.Fatalf("light reader failed on a strict-rejected document: %v", err)
+			}
+			if !present || note != "light-note" {
+				t.Fatalf("light read = (%q, %v), want (\"light-note\", true)", note, present)
+			}
+		})
+	}
+}
+
+// Absent authority and unreadable documents keep the roster's contract: no
+// file and no field are quiet absences; something that cannot yield the field
+// is an error.
+func TestReadPersistedHumanNoteAbsentAndMalformed(t *testing.T) {
+	sessionID := identifier.MustNewSessionID()
+	t.Run("absent file", func(t *testing.T) {
+		note, present, err := ReadPersistedHumanNote(t.TempDir(), sessionID)
+		if err != nil || present || note != "" {
+			t.Fatalf("absent file = (%q, %v, %v), want (\"\", false, nil)", note, present, err)
+		}
+	})
+	t.Run("absent field", func(t *testing.T) {
+		stateDir := t.TempDir()
+		data := strings.Replace(strictSnapshotJSON(sessionID, "unused"), `"human_note":"unused",`, "", 1)
+		writeMutationSnapshotFile(t, stateDir, sessionID, data)
+		note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+		if err != nil || present || note != "" {
+			t.Fatalf("absent field = (%q, %v, %v), want (\"\", false, nil)", note, present, err)
+		}
+	})
+	t.Run("null field", func(t *testing.T) {
+		stateDir := t.TempDir()
+		data := strings.Replace(strictSnapshotJSON(sessionID, "unused"), `"human_note":"unused"`, `"human_note":null`, 1)
+		writeMutationSnapshotFile(t, stateDir, sessionID, data)
+		note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+		if err != nil || present || note != "" {
+			t.Fatalf("null field = (%q, %v, %v), want (\"\", false, nil)", note, present, err)
+		}
+	})
+	t.Run("undecodable document", func(t *testing.T) {
+		stateDir := t.TempDir()
+		writeMutationSnapshotFile(t, stateDir, sessionID, "{ this is not a decodable snapshot")
+		if _, _, err := ReadPersistedHumanNote(stateDir, sessionID); err == nil {
+			t.Fatal("undecodable document read without error")
+		}
+	})
+	t.Run("non-object top level", func(t *testing.T) {
+		stateDir := t.TempDir()
+		writeMutationSnapshotFile(t, stateDir, sessionID, `[]`)
+		if _, _, err := ReadPersistedHumanNote(stateDir, sessionID); err == nil {
+			t.Fatal("non-object document read without error")
+		}
+	})
+	t.Run("truncated document", func(t *testing.T) {
+		stateDir := t.TempDir()
+		writeMutationSnapshotFile(t, stateDir, sessionID, `{"accepted_turns":1`)
+		if _, _, err := ReadPersistedHumanNote(stateDir, sessionID); err == nil {
+			t.Fatal("truncated document read without error")
+		}
+	})
+	t.Run("non-string note", func(t *testing.T) {
+		stateDir := t.TempDir()
+		data := strings.Replace(strictSnapshotJSON(sessionID, "unused"), `"human_note":"unused"`, `"human_note":5`, 1)
+		writeMutationSnapshotFile(t, stateDir, sessionID, data)
+		if _, _, err := ReadPersistedHumanNote(stateDir, sessionID); err == nil {
+			t.Fatal("non-string note read without error")
+		}
+	})
+}

@@ -675,8 +675,11 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	// whole roster. Every sibling per-entry read in this function degrades
 	// instead (pastEntryCost returns nil, ownership errors are swallowed,
 	// mergePastMetadataForList tolerates non-ctx errors), so a corrupt journal
-	// reads as "no canonical note" here too.
-	if note, _, err := agent.ReadCanonicalHumanNote(entry.StateDir, entry.Meta.ID); err == nil {
+	// reads as "no canonical note" here too. The read itself is the lightweight
+	// top-level projection, not the strict authority decode: this function runs
+	// once per past entry, only displays the note, and must not decode and
+	// validate a journal-sized snapshot for it.
+	if note, _, err := agent.ReadPersistedHumanNote(entry.StateDir, entry.Meta.ID); err == nil {
 		entry.Meta.HumanNote = note
 	} else {
 		entry.Meta.HumanNote = ""

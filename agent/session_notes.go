@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -43,6 +45,112 @@ func ReadCanonicalHumanNote(stateDir, sessionID string) (note string, present bo
 		return "", false, nil
 	}
 	return *snapshot.HumanNote, true, nil
+}
+
+// ReadPersistedHumanNote extracts the top-level human_note value from a
+// session's persisted mutation snapshot without decoding the journal or
+// validating the snapshot. It exists for the hub's read-only past-session
+// roster, which projects one note per entry and must not pay a full
+// snapshot decode and validation per entry. ReadCanonicalHumanNote remains the
+// strict authority for every caller that can act on a note; the roster only
+// displays it.
+//
+// The tolerated rejections are deliberate and bounded to display: the document
+// may carry unknown fields, a version or session_id the strict validator
+// refuses, a journal or later fields that do not decode, or trailing bytes
+// after the top-level object, and the first top-level human_note wins even if
+// the strict decoder would take a later duplicate. Nothing after the value it
+// finds is examined — that is what keeps the read cheap on journal-sized
+// documents — so a note this reader returns is a projection, never authority.
+//
+// An absent snapshot file or an absent/null human_note returns ("", false,
+// nil). A document whose syntax fails before the value is found, that is not a
+// JSON object, or whose human_note is not a string or null returns an error.
+func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bool, err error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return "", false, err
+	}
+	if stateDir == "" {
+		return "", false, nil
+	}
+	file, err := afero.NewOsFs().Open(clientMutationFilePath(stateDir, sessionID))
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read client mutation snapshot: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	decoder := json.NewDecoder(file)
+	open, err := decoder.Token()
+	if err != nil {
+		return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+	}
+	if delim, ok := open.(json.Delim); !ok || delim != '{' {
+		return "", false, errors.New("decode client mutation snapshot: top-level value is not an object")
+	}
+	// skipValue consumes one complete JSON value without materializing it. It is
+	// a closure rather than a package helper so no other caller can skip a value
+	// that needs the strict decode.
+	skipValue := func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		if delim != '{' && delim != '[' {
+			return fmt.Errorf("unexpected delimiter %v", delim)
+		}
+		depth := 1
+		for depth > 0 {
+			token, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if delim, ok := token.(json.Delim); ok {
+				switch delim {
+				case '{', '[':
+					depth++
+				case '}', ']':
+					depth--
+				}
+			}
+		}
+		return nil
+	}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+		}
+		if key, _ := keyToken.(string); key == "human_note" {
+			var value *string
+			if err := decoder.Decode(&value); err != nil {
+				return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+			}
+			if value == nil {
+				return "", false, nil
+			}
+			return *value, true, nil
+		}
+		if err := skipValue(); err != nil {
+			return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+		}
+	}
+	// Consume the closing brace: a document truncated before it must read as an
+	// error, not as an absence, and More() cannot tell the two apart.
+	closing, err := decoder.Token()
+	if err != nil {
+		return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+	}
+	if delim, ok := closing.(json.Delim); !ok || delim != '}' {
+		return "", false, errors.New("decode client mutation snapshot: top-level object does not close")
+	}
+	return "", false, nil
 }
 
 // normalizeNote collapses every run of whitespace (including newlines) to one
