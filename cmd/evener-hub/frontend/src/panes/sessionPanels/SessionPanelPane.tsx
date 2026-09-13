@@ -6,6 +6,7 @@ import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
 import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
+import { NotesPanelBody } from "../session/chrome/NotesPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
 import { NOW_TICK_MS, useNowTick } from "../session/liveness";
 import { type SessionPanelKind, type SessionPanelParams, sessionPanelTitle } from "./index";
@@ -18,9 +19,9 @@ function isSessionPanelParams(value: SessionPanelParams): value is SessionPanelP
   return typeof value?.ref === "string" && value.ref.length > 0;
 }
 
-function DetailsPaneBody({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
+function DetailsPaneBody({ model }: { sessionRef: string; model: ThreadModel }) {
   const now = useNowTick(NOW_TICK_MS);
-  return <DetailsPanelBody sessionRef={sessionRef} model={model} now={now} />;
+  return <DetailsPanelBody model={model} now={now} />;
 }
 
 export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanelPaneProps) {
@@ -63,6 +64,8 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
       <TasksPanelBody sessionRef={ref} model={model} />
     ) : kind === "activity" ? (
       <ActivityPanelBody sessionRef={ref} model={model} />
+    ) : kind === "notes" ? (
+      <NotesPanelBody sessionRef={ref} model={model} />
     ) : (
       <DetailsPaneBody sessionRef={ref} model={model} />
     );

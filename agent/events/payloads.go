@@ -360,6 +360,7 @@ const (
 	SteeringKindTaskList          = "task-list"
 	SteeringKindNotification      = "notification"
 	SteeringKindProviderFailure   = "provider-failure"
+	SteeringKindHumanNote         = "human-note"
 )
 
 // AllSteeringKinds is every kind a call site may emit. Task 3's coverage test
@@ -385,6 +386,7 @@ var AllSteeringKinds = []string{
 	SteeringKindTaskList,
 	SteeringKindNotification,
 	SteeringKindProviderFailure,
+	SteeringKindHumanNote,
 }
 
 // SteeringInjectedData is the payload for an EventSteeringInjected event.
@@ -797,6 +799,26 @@ type GoalStateData struct {
 // not omitempty: nil is an explicit clear and must serialize as "goal":null.
 type GoalUpdatedData struct {
 	Goal *GoalStateData `json:"goal"`
+}
+
+// NotesUpdatedData carries the session whiteboards after a mutation.
+type NotesUpdatedData struct {
+	HumanNote string `json:"human_note"`
+	AgentNote string `json:"agent_note"`
+}
+
+// UrlsUpdatedData carries the session URL list after a mutation.
+type UrlsUpdatedData struct {
+	URLs []SessionURLData `json:"urls"`
+}
+
+// SessionURLData is one URL list entry on the event stream.
+type SessionURLData struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Label   string `json:"label,omitempty"`
+	AddedBy string `json:"added_by,omitempty"`
+	AddedAt int64  `json:"added_at,omitempty"`
 }
 
 // EnvironmentData is the payload for an EventEnvironment event.

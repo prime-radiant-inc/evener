@@ -80,6 +80,9 @@ func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool)
 		if read.Thread.Evener.Capabilities.Send || read.Thread.Evener.Capabilities.Queue || read.Thread.Evener.Capabilities.Rename {
 			t.Error("incompatible session advertises unsupported mutations")
 		}
+		if !read.Thread.Evener.Capabilities.SharedNotes {
+			t.Error("restart-required session must keep saved shared notes readable")
+		}
 		if len(read.Thread.Turns) != 2 {
 			t.Errorf("saved turns=%d", len(read.Thread.Turns))
 		}
@@ -1157,7 +1160,7 @@ func TestHubRPCListShowsIncompatibleDaemonWithoutPastIndex(t *testing.T) {
 		t.Fatalf("threads=%+v", list.Data)
 	}
 	thread := list.Data[0]
-	if thread.ID != sessionID || thread.Status.Type != appwire.ThreadStatusRestartRequired || thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
+	if thread.ID != sessionID || thread.Status.Type != appwire.ThreadStatusRestartRequired || thread.Evener.Capabilities != readablePastCapabilities() {
 		t.Fatalf("thread=%+v", thread)
 	}
 	for _, params := range []appwire.ThreadReadParams{
@@ -1169,7 +1172,7 @@ func TestHubRPCListShowsIncompatibleDaemonWithoutPastIndex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read visible incompatible owner (%+v): %v", params, err)
 		}
-		if read.Thread.ID != sessionID || read.Thread.Evener.Ref != entry.WorkspaceRef || read.Thread.Status.Type != appwire.ThreadStatusRestartRequired || read.Thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) || len(read.Thread.Turns) != 0 {
+		if read.Thread.ID != sessionID || read.Thread.Evener.Ref != entry.WorkspaceRef || read.Thread.Status.Type != appwire.ThreadStatusRestartRequired || read.Thread.Evener.Capabilities != readablePastCapabilities() || len(read.Thread.Turns) != 0 {
 			t.Fatalf("read=%+v", read)
 		}
 	}
@@ -1628,7 +1631,7 @@ func TestHubColdReadFindsIncompatibleDaemonByStableThreadID(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if read.Thread.ID != "current" || read.Thread.Evener.Ref != "local:stable" || read.Thread.Status.Type != appwire.ThreadStatusRestartRequired || read.Thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) || len(read.Thread.Turns) != 0 {
+		if read.Thread.ID != "current" || read.Thread.Evener.Ref != "local:stable" || read.Thread.Status.Type != appwire.ThreadStatusRestartRequired || read.Thread.Evener.Capabilities != readablePastCapabilities() || len(read.Thread.Turns) != 0 {
 			t.Fatalf("stable-ID read lost the incompatible owner: %+v", read.Thread)
 		}
 	}
@@ -1679,7 +1682,7 @@ func testSavedReadsSurviveUnrelatedDiscoveryFailure(t *testing.T, incompatible b
 		if incompatible && thread.Status.Type != appwire.ThreadStatusRestartRequired {
 			t.Fatalf("confirmed incompatible daemon lost restart status: %+v", thread.Status)
 		}
-		if thread.ID != sessionID || thread.Evener.MutationStateAuthoritative || thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
+		if thread.ID != sessionID || thread.Evener.MutationStateAuthoritative || thread.Evener.Capabilities != readablePastCapabilities() {
 			t.Fatalf("saved snapshot grants authority or changes identity: %+v", thread)
 		}
 	}

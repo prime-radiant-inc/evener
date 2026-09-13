@@ -53,7 +53,6 @@ export interface DetailsPanelProps {
 }
 
 export interface DetailsPanelBodyProps {
-  sessionRef: string;
   model: ThreadModel;
   now: number;
 }
@@ -240,7 +239,7 @@ export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(fu
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Session details">
-        {open ? <DetailsPanelBody sessionRef={model.ref} model={model} now={now} /> : null}
+        {open ? <DetailsPanelBody model={model} now={now} /> : null}
       </Sheet>
     </>
   );

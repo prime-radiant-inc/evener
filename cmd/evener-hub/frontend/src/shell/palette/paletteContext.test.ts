@@ -21,7 +21,7 @@ test("buildPaletteContext reads the focused session pane's ref and page", () => 
   expect(buildPaletteContext()).toEqual({ sessionRef: "local:abc", onPage: "session" });
 });
 
-test.each(["sessionTasks", "sessionActivity", "sessionDetails"])(
+test.each(["sessionTasks", "sessionActivity", "sessionDetails", "sessionNotes"])(
   "buildPaletteContext derives session scope from focused %s pane",
   (type) => {
     focus(type, { ref: "local:panel" });

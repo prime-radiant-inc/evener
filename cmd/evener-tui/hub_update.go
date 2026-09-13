@@ -678,6 +678,26 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Goal set; starts after the current turn.")
 		}
 		return m, nil
+	case hubNotesMsg:
+		if msg.err != nil {
+			m.recordSessionError("Note failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.clearSessionError()
+		if msg.cleared {
+			m.addSessionSystem("Note cleared.")
+		} else {
+			m.addSessionSystem("Note saved.")
+		}
+		return m, nil
+	case hubURLRemoveMsg:
+		if msg.err != nil {
+			m.recordSessionError("URL removal failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.clearSessionError()
+		m.addSessionSystem("URL removed.")
+		return m, nil
 	case hubForkMsg:
 		if msg.err != nil {
 			if m.forkDraft != nil {
