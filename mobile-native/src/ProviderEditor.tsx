@@ -3,7 +3,7 @@ import { TextInput, View } from "react-native";
 import type {
   InstanceEntry,
   ProviderDescriptor,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
   createProviderParams,
   editProviderParams,

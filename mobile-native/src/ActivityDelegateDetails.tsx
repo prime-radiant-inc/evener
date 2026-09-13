@@ -10,8 +10,8 @@ import { absoluteTime } from "../../cmd/evener-hub/frontend/src/panes/session/ch
 import {
   formatElapsed,
   splitMandate,
-} from "../../appwire-client/typescript/displayFormat";
-import type { ActivityDelegate } from "../../appwire-client/typescript/activityData";
+} from "@evener/appwire-client";
+import type { ActivityDelegate } from "@evener/appwire-client";
 import {
   delegateModel,
   delegatePacket,

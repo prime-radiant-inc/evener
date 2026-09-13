@@ -1,4 +1,4 @@
-import type { KeybindingsRule } from "../../appwire-client/typescript/types.gen";
+import type { KeybindingsRule } from "@evener/appwire-client";
 
 export interface KeybindingDraftCheckpoint {
 	id: string;

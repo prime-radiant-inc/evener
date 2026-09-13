@@ -21,7 +21,7 @@ import type {
 	ArchiveParams,
 	NavigationProjectSummary,
 	NavigationSessionSummary,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
