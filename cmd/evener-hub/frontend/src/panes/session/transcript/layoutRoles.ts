@@ -10,7 +10,9 @@
 //
 // Exactly two roles exist inside a turn:
 //  - "speaker": a row that renders its own avatar header (the avatar sits in
-//    the gutter), so it spans the full width unwrapped.
+//    the gutter), so it spans the full width unwrapped - a userMessage, an
+//    exchange-opening agentMessage, and the user-sourced steer that renders
+//    through the userMessage view.
 //  - "run": everything else. One kind of row, indented with the run, no
 //    exceptions - including unknown future wire types, so a new item type can
 //    never silently fall back to full width.
@@ -26,6 +28,15 @@ export type RowRole = "speaker" | "run";
 // agentMessage is a speaker row; a mid-exchange one is part of the run.
 export function rowRoleFor(item: ItemModel, opts: { opensExchange?: boolean }): RowRole {
   if (item.type === "userMessage") return "speaker";
+  // A human's own mid-turn steer (appwire's STEERING entry with
+  // steering_source=user) renders through the SAME UserMessageView a prompt
+  // uses (SteeringItem's source === "user" branch), so it is a speaker row by
+  // the same argument: its own 24px tile + 10px gap IS the content column the
+  // run gutter reserves, and wrapping it in .runContent composes the two
+  // indents (34 + 34) - seating the steer one full gutter right of every run
+  // row it sits among, including a real prompt's own text. The role is still
+  // answered by WHERE the row's content lands, not by what the wire calls it.
+  if (item.type === "steering" && item.source === "user") return "speaker";
   if (item.type === "agentMessage" && opts.opensExchange === true) return "speaker";
   return "run";
 }
