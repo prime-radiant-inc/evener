@@ -73,6 +73,18 @@ async function qualify() {
     "ConnectionClosedError",
     "RequestTimeoutError",
     "WireError",
+    "ClientNotReadyError",
+    "GENERIC_ERROR_MESSAGE",
+    "HUB_UNREACHABLE_MESSAGE",
+    "errorKind",
+    "errorText",
+    "friendlyErrorMessage",
+    "friendlyLaunchErrorMessage",
+    "isHubLaunchError",
+    "isStaleCursorError",
+    "mutationErrorData",
+    "sessionActionError",
+    "sessionActionHeadline",
     "rpcURLFromLocation",
     "composeAskAnswers",
     "METHOD_NAMES",
@@ -141,6 +153,16 @@ async function qualify() {
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
 assert.equal(new client.WireError("nope", -32000).code, -32000);
+assert.equal(client.errorText(new Error("boom")), "boom");
+assert.equal(client.errorKind(new Error("boom")), "unknown");
+assert.equal(client.friendlyErrorMessage(new Error("boom")), client.GENERIC_ERROR_MESSAGE);
+assert.equal(client.friendlyErrorMessage(new client.ClientNotReadyError("waited")), client.HUB_UNREACHABLE_MESSAGE);
+assert.equal(client.friendlyLaunchErrorMessage(new Error("boom")), client.GENERIC_ERROR_MESSAGE);
+assert.equal(client.isHubLaunchError(new Error("boom")), false);
+assert.equal(client.isStaleCursorError(new Error("boom")), false);
+assert.equal(client.sessionActionHeadline("Couldn't rename", new Error("boom")), "Couldn't rename");
+assert.equal(client.sessionActionError("Couldn't rename", new Error("boom")), "Couldn't rename: boom");
+assert.equal(client.mutationErrorData(new Error("boom")), undefined);
 assert(client.METHOD_NAMES.length > 0);
 const session = {
   kind: "session", sessionId: "thread", ref: "ref", label: "label", aggregate: "idle",
