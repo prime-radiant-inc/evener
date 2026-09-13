@@ -1,7 +1,8 @@
 // Two shared tool-body shapes, reused across several per-tool descriptors
 // (fsTools.tsx, shellTool.tsx) rather than duplicated per file. Ground truth
-// (see helpers.ts's own header): a tool call's ItemModel carries output text,
-// input args, error text, and optional direct producer state in item.raw.
+// (see protocol/toolCallText.ts's own header): a tool call's ItemModel carries
+// output text, input args, error text, and optional direct producer state in
+// item.raw.
 // These shared bodies intentionally render item.output because read_file can
 // return text or an image, grep/list_dir/glob return plain text, and shell's
 // structured state is not a common body shape. ToolCallItem surfaces error
