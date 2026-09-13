@@ -489,20 +489,25 @@ func canonicalizeNotesAngleBracketReferences(content string) string {
 // start of s, which must begin with "&", and reports the angle bracket it resolves
 // to together with the number of bytes the reference occupied.
 //
-// A reference is "&", any number of case-insensitive "amp;" layers, then a base
-// followed by the terminating ";": the named references lt/gt (HTML named
-// references are case-insensitive, so "&LT;" and "&Lt;" count too), or a numeric
-// reference of decimal or "x"/"X" hex digits ("&#60;", "&#060;", "&#x3c;",
-// "&#X3C;"). The terminator is required, the digits have to parse and stay in
-// range, and the resolved value has to be an angle bracket: anything else is
-// ordinary text that happens to contain an "&", and rewriting it would hand the
-// model text the user never wrote.
+// A reference is "&", any number of ampersand layers, then a base followed by the
+// terminating ";": the named references lt/gt (HTML named references are
+// case-insensitive, so "&LT;" and "&Lt;" count too), or a numeric reference of
+// decimal or "x"/"X" hex digits ("&#60;", "&#060;", "&#x3c;", "&#X3C;"). A layer
+// may itself be spelled numerically, which is why notesAmpLayerWidth exists. The
+// terminator is required, the digits have to parse and stay in range, and the
+// resolved value has to be an angle bracket: anything else is ordinary text that
+// happens to contain an "&", and rewriting it would hand the model text the user
+// never wrote.
 func parseNotesAngleBracketReference(s string) (bracket rune, size int, ok bool) {
 	rest := s[1:]
 	size = 1
-	for len(rest) >= 4 && strings.EqualFold(rest[:4], "amp;") {
-		rest = rest[4:]
-		size += 4
+	for {
+		width, layer := notesAmpLayerWidth(rest)
+		if !layer {
+			break
+		}
+		rest = rest[width:]
+		size += width
 	}
 	switch {
 	case len(rest) >= 3 && strings.EqualFold(rest[:3], "lt;"):
@@ -510,15 +515,37 @@ func parseNotesAngleBracketReference(s string) (bracket rune, size int, ok bool)
 	case len(rest) >= 3 && strings.EqualFold(rest[:3], "gt;"):
 		return '>', size + 3, true
 	case strings.HasPrefix(rest, "#"):
-		return parseNumericNotesAngleBracketReference(rest[1:], size+1)
+		if value, width, valid := parseNotesNumericReference(rest[1:], size+1); valid && (value == '<' || value == '>') {
+			return value, width, true
+		}
 	}
 	return 0, 0, false
 }
 
-// parseNumericNotesAngleBracketReference parses the digits of a numeric character
-// reference, afterHash pointing just past the "#" and size counting the bytes
-// consumed before them.
-func parseNumericNotesAngleBracketReference(afterHash string, size int) (bracket rune, consumed int, ok bool) {
+// notesAmpLayerWidth reports the width of an ampersand-encoding layer at the
+// start of s: the named reference "amp;" in any case, or a complete numeric
+// reference resolving to "&" ("&#38;", "&#038;", "&#x26;", "&#X26;"). The
+// numeric spelling counts because "&#38;lt;" decodes to "&lt;" and then to "<",
+// so following only the named spelling left a whole spelling of a framing tag
+// passing through untouched (roborev's finding on the round that introduced
+// this parser).
+func notesAmpLayerWidth(s string) (int, bool) {
+	if len(s) >= 4 && strings.EqualFold(s[:4], "amp;") {
+		return 4, true
+	}
+	if strings.HasPrefix(s, "#") {
+		if value, width, ok := parseNotesNumericReference(s[1:], 1); ok && value == '&' {
+			return width, true
+		}
+	}
+	return 0, false
+}
+
+// parseNotesNumericReference parses the digits of a numeric character reference
+// and its required terminator, afterHash pointing just past the "#" and size
+// counting the bytes consumed before them. It resolves any in-range value and
+// leaves which values are in scope to the caller.
+func parseNotesNumericReference(afterHash string, size int) (value rune, consumed int, ok bool) {
 	base := 10
 	digits := afterHash
 	if len(digits) > 0 && (digits[0] == 'x' || digits[0] == 'X') {
@@ -533,14 +560,11 @@ func parseNumericNotesAngleBracketReference(afterHash string, size int) (bracket
 	if end == 0 || end >= len(digits) || digits[end] != ';' {
 		return 0, 0, false
 	}
-	value, err := strconv.ParseUint(digits[:end], base, 32)
+	parsed, err := strconv.ParseUint(digits[:end], base, 32)
 	if err != nil {
 		return 0, 0, false
 	}
-	if bracket = rune(value); bracket != '<' && bracket != '>' {
-		return 0, 0, false
-	}
-	return bracket, size + end + 1, true
+	return rune(parsed), size + end + 1, true
 }
 
 // isNotesReferenceDigit reports whether c is a digit of base 10 or 16.
