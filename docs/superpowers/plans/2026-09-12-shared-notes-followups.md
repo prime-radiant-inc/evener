@@ -1,10 +1,8 @@
 # Shared-notes follow-ups (split out of PR #1070)
 
 Deferred review findings from PR #1070's roborev rounds, cheapest first. PR #1070 carries the
-shared-notes/human-whiteboard and session-URL work itself; these are deliberately out of it.
-
-PR #1070 carries the shared-notes/human-whiteboard and session-URL work. Four findings from its
-review rounds are deliberately not in that PR; this branch picks them up, cheapest first.
+shared-notes/human-whiteboard and session-URL work itself; this branch picks up the findings that
+were deliberately left out of it.
 
 ## 1. `handleRemoveURL` in-flight guard (Low)
 
@@ -60,3 +58,19 @@ before the in-scope path fallback runs. Try `canonicalFilePath` before rejecting
 `ensureThread` resolves, so a blur on an unhydrated thread saves with `""` and trips the
 `Session instance changed` fence even though hydration succeeded. Capture the identity after
 `await retained`, or pass `undefined` to use the post-hydration one. Overlaps item 2.
+
+## 8. Tentative notes state can reach the cached envelope (Medium)
+
+`agent/session_notes_rpc.go` (`mutateHumanNote`, `mutateAgentNoteSerialized`,
+`mutateSessionURLAddSerialized`, `RemoveSessionURL`), `agent/session_state.go` (`Meta`),
+`server/thread_envelope.go` (`assign`) — the mutators write live state under `Session.mu`, then
+persist meta.json holding `metaSaveMu` but not `Session.mu`, and on a persistence failure restore
+the previous value with no emission. `Meta()` reads the live notes without `metaSaveMu`, so a
+concurrent `refreshFacets(facetGoal)` sample can install the tentative value into the cached
+envelope, where `thread/read` serves it until the next facet sample (turn end is `facetAll`).
+Durability is not affected: the save gates the success journal, so no false success is recorded and
+the RPC returns the error for retry. Fix alongside the notes-carrier authority rework (item 4) — make
+sampling read a committed notes snapshot, reorder the save seam to persist-before-publish, or emit a
+rollback repair; the last needs the client outbox semantics checked first, since a push that
+contradicts a pending optimistic mutation may be discarded. `cfg.testOnly.notesAutoSaveFault` makes
+the failure path deterministically testable.
