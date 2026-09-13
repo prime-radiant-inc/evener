@@ -243,6 +243,32 @@ func TestSplitFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.short=true", "-test.v=false", "-test.short=true"},
 		},
 		{
+			// The value of a test flag is a value, not a flag: `-run -race` is
+			// a regex, and reading it as a build flag built the wrong binary.
+			name:  "a test flag consumes its value",
+			flags: []string{"-run", "-race", "-short"},
+			build: nil,
+			test:  []string{"-test.short"},
+		},
+		{
+			name:  "a build flag's value is forwarded as the caller wrote it",
+			flags: []string{"-tags", "--foo", "-v"},
+			build: []string{"-tags", "--foo"},
+			test:  []string{"-test.v"},
+		},
+		{
+			name:  "-count in its two-argument form",
+			flags: []string{"-count", "3", "-race"},
+			build: []string{"-race"},
+			test:  []string{"-test.count=3"},
+		},
+		{
+			name:  "a value that looks like a build flag is still a value",
+			flags: []string{"-timeout", "-trimpath", "-count=1"},
+			build: nil,
+			test:  []string{"-test.count=1"},
+		},
+		{
 			name:  "nothing at all",
 			flags: nil,
 			build: nil,

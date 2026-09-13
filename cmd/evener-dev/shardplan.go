@@ -178,6 +178,20 @@ var buildBareFlags = map[string]bool{
 	"-modcacherw": true, "-a": true, "-linkshared": true,
 }
 
+// testValueFlags are the `go test` flags whose value is the next argument when
+// it is not written inline. Their values must be consumed before anything is
+// classified: `-run -race` is a regex of `-race`, and a reader that skipped the
+// value put the caller's regex into the build.
+var testValueFlags = map[string]bool{
+	"-run": true, "-skip": true, "-bench": true, "-benchtime": true,
+	"-count": true, "-timeout": true, "-cpu": true, "-parallel": true,
+	"-p": true, "-coverprofile": true, "-coverpkg": true, "-outputdir": true,
+	"-exec": true, "-o": true, "-fuzz": true, "-fuzztime": true,
+	"-fuzzminimizetime": true, "-cpuprofile": true, "-memprofile": true,
+	"-blockprofile": true, "-mutexprofile": true, "-trace": true,
+	"-gocoverdir": true, "-shuffle": true,
+}
+
 // splitFlags divides a caller's `go test` flags into the ones the build needs
 // and the ones the compiled binary needs.
 //
@@ -187,42 +201,61 @@ var buildBareFlags = map[string]bool{
 // binary with no race detector in it. Build flags go to `go test -c` now and
 // test flags to the shards, each in the spelling its side understands.
 //
+// Every value-taking flag is consumed with its value, whichever side it belongs
+// to, so a value is never read as a flag of its own. A value taken from the next
+// argument is forwarded exactly as the caller wrote it: it is data, not a flag,
+// and normalising it would rewrite a caller's regex or path.
+//
 // Flags outside both tables are dropped, the way the script's case statement
-// dropped them.
+// dropped them. The same rule is written again in
+// scripts/gate/run-module-tests.sh, which cannot import this; #1247 is where the
+// two become one.
 func splitFlags(flags []string) (build []string, test []string) {
-	wantValue := ""
-	for _, raw := range flags {
-		f := goFlag(raw)
-		if wantValue != "" {
-			build = append(build, f)
-			wantValue = ""
-			continue
+	for i := 0; i < len(flags); i++ {
+		f := goFlag(flags[i])
+		name := f
+		inline := ""
+		hasInline := false
+		if j := strings.IndexByte(f, '='); j > 0 {
+			name, inline, hasInline = f[:j], f[j+1:], true
+		}
+		nextValue := func() (string, bool) {
+			if hasInline {
+				return inline, true
+			}
+			if i+1 < len(flags) {
+				i++
+				return flags[i], true
+			}
+			return "", false
 		}
 		switch {
-		case buildValueFlags[f]:
-			build = append(build, f)
-			wantValue = f
-		case buildBareFlags[f]:
-			build = append(build, f)
-		case f == "-short" || f == "-v":
-			test = append(test, "-test."+strings.TrimPrefix(f, "-"))
-		case strings.HasPrefix(f, "-count="):
-			test = append(test, "-test.count="+strings.TrimPrefix(f, "-count="))
-		default:
-			// `-race=true` is `-race`, and a name looked up only in the
-			// value-flag table was dropped by both halves: the shard binary
-			// was built without the race detector and nothing said so.
-			i := strings.IndexByte(f, '=')
-			if i <= 0 {
+		case buildValueFlags[name]:
+			if hasInline {
+				build = append(build, f)
 				continue
 			}
-			name := f[:i]
-			switch {
-			case buildValueFlags[name] || buildBareFlags[name]:
-				build = append(build, f)
-			case name == "-short" || name == "-v":
-				test = append(test, "-test."+strings.TrimPrefix(name, "-")+f[i:])
+			value, ok := nextValue()
+			build = append(build, name)
+			if ok {
+				build = append(build, value)
 			}
+		case buildBareFlags[name]:
+			build = append(build, f)
+		case name == "-short" || name == "-v":
+			if hasInline {
+				test = append(test, "-test."+strings.TrimPrefix(name, "-")+"="+inline)
+				continue
+			}
+			test = append(test, "-test."+strings.TrimPrefix(name, "-"))
+		case name == "-count":
+			if value, ok := nextValue(); ok {
+				test = append(test, "-test.count="+value)
+			}
+		case testValueFlags[name]:
+			// Consumed with its value and dropped: the shards get their -run
+			// from the plan, not from the caller.
+			_, _ = nextValue()
 		}
 	}
 	return build, test
