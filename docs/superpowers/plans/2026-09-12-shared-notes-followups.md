@@ -19,9 +19,13 @@ Closed on `shared-notes-followups` (PR #1249) unless noted; hashes are on that b
 - **4** — fixed in `e113febe21` (merged in `0a9f86926c`): `urlsCarrierGeneration` split out of
   `notesCarrierGeneration`, so each carrier fences only the fields it wrote and neither can drop
   the other's newer sample.
-- **5** — fixed in `53d83a21da`: `normalizeNote` strips C0, DEL, and C1 after its whitespace
-  collapse, covering the human note, the agent note, and every URL label; both unknown-id error
-  echoes now quote the id. Write-path fix: text persisted before it is not re-sanitized.
+- **5** — fixed in `53d83a21da`, completed by `bb4784854` and `efba9162e`: `normalizeNote` strips
+  C0, DEL, and C1 **before** its whitespace collapse, so the human note, the agent note, and every
+  URL label lose them while whitespace controls still collapse to one space (stripping after the
+  collapse left a double space where a control sat between two spaces); raw URLs carrying any
+  control rune are refused before parsing, because `url.Parse` accepts a C1 rune and keeps it
+  verbatim in `RawQuery`; and both unknown-id error echoes quote the id. Write-path fix: text
+  persisted before it is not re-sanitized.
 - **6** — closed without a code change; see the note on the item below.
 - **8, 9** — fixed in `a30b1ab8e3` (merged in `80747e1a0`): readers take one atomic load of a
   published committed notes cut (human note, agent note, URL list, ever-projected flag), and a
