@@ -861,6 +861,7 @@ func TestPublicTranscriptEntry(t *testing.T) {
 				AttentionID:             "att_123",
 				AttentionResolution:     &schema.AttentionResolutionInfo{},
 				DelegateDeliveryCommits: []schema.DelegateDeliveryCommit{},
+				CompactionFoldID:        "fold_123",
 			},
 		}
 		out, ok := publicTranscriptEntry(entry)
@@ -875,6 +876,12 @@ func TestPublicTranscriptEntry(t *testing.T) {
 		}
 		if out.Turn.DelegateDeliveryCommits != nil {
 			t.Fatalf("delegate_delivery_commits should be stripped")
+		}
+		// The fold id names which crash-recovery run wrote the record. A
+		// reader of the public transcript has no use for it and no way to
+		// interpret it: the copies it claims are dropped from this output.
+		if out.Turn.CompactionFoldID != "" {
+			t.Fatalf("compaction_fold_id should be stripped, got %q", out.Turn.CompactionFoldID)
 		}
 	})
 	t.Run("attention resolution excluded", func(t *testing.T) {
@@ -950,8 +957,9 @@ func TestPublicTranscriptLine(t *testing.T) {
 			"kind": "entry",
 			"seq":  float64(5),
 			"turn": map[string]any{
-				"kind":    "USER_INPUT",
-				"message": map[string]any{"text": "hello"},
+				"kind":               "USER_INPUT",
+				"message":            map[string]any{"text": "hello"},
+				"compaction_fold_id": "fold_123",
 			},
 		}
 		line, _ := json.Marshal(entry)
@@ -971,6 +979,9 @@ func TestPublicTranscriptLine(t *testing.T) {
 		// attention fields should be absent
 		if _, ok := turn["attention_id"]; ok {
 			t.Fatalf("attention_id should be deleted")
+		}
+		if _, ok := turn["compaction_fold_id"]; ok {
+			t.Fatalf("compaction_fold_id should be deleted; it is crash-recovery metadata, not public transcript content")
 		}
 	})
 	t.Run("attention resolution excluded", func(t *testing.T) {
