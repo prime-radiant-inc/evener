@@ -175,6 +175,18 @@ export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(gate_budget 6
 # a stalled volume from a cold, loaded runner, and a killed attempt leaves the
 # caches warmer for the next one, so the bound is per attempt. Both must be
 # positive integers, the timeout in seconds.
+# The knobs used to be EVENER_ROOT_PACKAGE_LIST_*, from when only the root
+# module was bounded. A rename that leaves the old name alone would let an
+# operator's setting be read by nothing at all, so the old names are refused
+# rather than ignored.
+for stale_knob in EVENER_ROOT_PACKAGE_LIST_TIMEOUT EVENER_ROOT_PACKAGE_LIST_ATTEMPTS; do
+	if [ -n "${!stale_knob-}" ]; then
+		printf 'run-module-tests.sh: %s is gone; every module is bounded now, so use %s\n' \
+			"$stale_knob" "${stale_knob/_ROOT_/_}" >&2
+		exit 2
+	fi
+done
+
 PACKAGE_LIST_TIMEOUT=${EVENER_PACKAGE_LIST_TIMEOUT:-60}
 if [[ ! "$PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$PACKAGE_LIST_TIMEOUT" >&2
