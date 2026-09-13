@@ -76,9 +76,11 @@ how. Fact 4 still holds.
    zero-dependency property and use zustand.
 5. **The qualification runner hard-coded the export list four times.** It wrote
    four consumer files, each naming all eleven runtime exports literally, so a
-   new export had to be added in four places. A1 has since replaced this with
-   one shared export manifest — see the delta section. A new *subpath*
-   still needs all four write sites touched.
+   new export had to be added in four places. A1 and A3c have since replaced
+   that with one `packageExports` manifest — see the delta section. Adding a
+   subpath now costs **one `packageExports` entry and one `package.json`
+   `exports` entry**; the four consumer programs are generated from them, and
+   the two lists assert each other, so neither can be forgotten.
 
 The unexpected finding: **the native app already imports 30+ web frontend
 modules by relative path.** `mobile-native` reaches into
@@ -203,7 +205,7 @@ migration has to place.
 | `widgets/disclosure/disclosureStore.ts` (142) | Disclosure open/closed state | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | zustand |
 | `widgets/toast/store.ts` (56) | Toast queue | none | native has its own | PLATFORM-ONLY | — |
 | `auth.ts` (56) | Browser auth token handling for the socket URL | none | `mobile-native` uses expo-secure-store | PLATFORM-ONLY | — |
-| `panes/doc/{docFile,openDoc}.ts` (60) | Doc pane file loading | none (uses `protocol/docContent.ts`) | none | PACKAGE CANDIDATE | `docContent.ts` is browser-shaped in three ways, not one: `docFileRawURL:58` and `docImageURL:97` build **same-origin-relative** `/doc/file?...` and `/doc/image?...` paths (no origin at all, so a native app cannot use them), and `readDocFile:74` calls **global `fetch`** with `credentials: "same-origin"` to carry the hub auth cookie. A device has no cookie jar and no same origin; all three need injection |
+| `panes/doc/{docFile,openDoc}.ts` (60) | Doc pane file loading | none (uses `protocol/docContent.ts`) | none | PACKAGE CANDIDATE | `docContent.ts` is browser-shaped in three ways, not one: `docFileRawURL:58` and `docImageURL:97` build **same-origin-relative** `/doc/file?...` and `/doc/image?...` paths (no origin at all, so a native app cannot use them), and `readDocFile:74` calls **global `fetch`** with `credentials: "same-origin"` to carry the hub auth cookie. A device has no cookie jar and no same origin; all three need injection. Resolved by C24 (#1221): a `DocPort` carries the origin and fetch, `docImageURL` stays a pure string builder, and the native doc pane wraps its href in `transcriptImageSource(...)` (`mobile-native/src/transcriptImageSource.ts`) for the bearer header rather than gaining an image port |
 
 ## 4. `mobile/src` (9 modules, 7,615 lines; 10 rows — one covers a native-internal duplicate pair)
 
@@ -356,8 +358,9 @@ Statuses observed at `f39aa2c83`; re-query before acting.
 | B3b #1203 | `4da382482` | Native's two `projectUsage` copies collapsed to one. That DUPLICATED row is closed; the count in §7 is the baseline count and is not decremented |
 | A3b #1206 | `99fa1882f` | Exports from the root the twelve `errors` helpers the apps import, which is what makes the plan's A4 rewrite compile. `chunkViewBackingForTests` and `readDocFile` are deliberately excluded |
 | A3c #1207 | `2a8163eb0` | The qualification manifest is per specifier rather than root-only, so a published subpath can be qualified at all — the prerequisite for the plan's A3d and C1 |
+| C24 #1221 | `303053dfb` | `DocPort = { origin, fetch }`; `docFileRawURL`/`docImageURL` take the origin; adapters at `panes/doc/browserDocPort.ts` and `mobile-native/src/nativeDocPort.ts`. `docImageURL` stays a string builder — native image auth goes through the existing `transcriptImageSource` |
 | A3d #1209 | `f39aa2c83` | Publishes `./docContent` as the package's second specifier and turns `readDocFile` into `readDocFile(session, path, fetchDoc)`, where `DocFetch` returns a `DocResponseLike` — the minimal `{ ok, status, headers.get, arrayBuffer }` a real `Response` satisfies, because a `Promise<Response>` in the `.d.ts` fails the runner's DOM-free declaration consumers. The web's adapter is `panes/doc/browserDocFetch.ts`; the root keeps the pure helpers. §3's `docContent` seam row is answered by this |
 
-A3 and A4 are unstarted and block every phase-C relocation; the plan's C24
-depends only on A1 and A3d and could start now. Unrelated to this lane, #1098
+A3 and A4 are unstarted and block every phase-C relocation. The plan's C24 did
+not depend on them and has landed. Unrelated to this lane, #1098
 merged as `cb211c5f8`.
