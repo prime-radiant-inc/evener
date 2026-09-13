@@ -199,8 +199,17 @@ pgroup_signalable() {
 		return 1
 		;;
 	esac
+	# Fail closed when the caller's own group cannot be read: without it there
+	# is no way to know that -PGID is not this very runner, and a signal sent on
+	# that ignorance takes down the gate and everything it is running.
 	own_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')"
-	if [ -n "$own_pgid" ] && [ "$pgid" = "$own_pgid" ]; then
+	case "$own_pgid" in
+	'' | *[!0-9]*)
+		printf 'process-group-lib: refusing to signal process group %s: this caller own group could not be read, so there is no way to tell it apart from this one.\n' "$pgid" >&2
+		return 1
+		;;
+	esac
+	if [ "$pgid" = "$own_pgid" ]; then
 		printf 'process-group-lib: refusing to signal process group %s: it is the group this caller is in.\n' "$pgid" >&2
 		return 1
 	fi
@@ -257,7 +266,7 @@ pgroup_number_reused() {
 	local record="$1" pgid="$2" elapsed recorded_at started days rest hours minutes seconds
 	elapsed="$(ps -o etime= -p "$pgid" 2>/dev/null | tr -d '[:space:]')"
 	[ -n "$elapsed" ] || return 1
-	recorded_at="$(pgroup_file_mtime "$record")"
+	recorded_at="$(pgroup_file_mtime "$record")" || return 2
 	[ -n "$recorded_at" ] || return 2
 	case "$elapsed" in
 	*-*)
@@ -285,9 +294,23 @@ pgroup_number_reused() {
 }
 
 # pgroup_file_mtime PATH — the file's modification time in seconds since the
-# epoch, in whichever spelling of `stat` the host has.
+# epoch, in whichever spelling of `stat` the host has, or nothing when neither
+# answers with one.
+#
+# GNU first, and the two spellings cannot share one `a || b` substitution: GNU
+# stat reads -f as "filesystem status" and prints that report to stdout before
+# failing, so a BSD-first chain captures a paragraph of filesystem statistics on
+# Linux and hands it to arithmetic. scripts/ops/report-tmp-debris.sh does it in
+# this order for the same reason. Whatever comes back is checked for being one
+# whole number before it is returned, so a third platform that answers in some
+# other shape is refused rather than believed.
 pgroup_file_mtime() {
-	stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+	local mtime
+	mtime="$(stat -c %Y "$1" 2>/dev/null)" || mtime="$(stat -f %m "$1" 2>/dev/null)" || return 1
+	case "$mtime" in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	printf '%s' "$mtime"
 }
 
 # pid_owned_by PID MARKER — the same question about a single process, for a job
