@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -483,6 +484,69 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 	}
 	if len(got.Root.Entries) >= 600 {
 		t.Fatalf("expected fewer entries after trimming, got %d", len(got.Root.Entries))
+	}
+}
+
+// TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries pins that a
+// page too tight even for the advanced position is recognised as such rather
+// than assumed to fit. Advancing past the skipped entry lengthens the
+// continuation, so a page weighed with the position it is leaving behind has
+// not been weighed at all. The advance still stands — a page the client can
+// never get past is worse than one a token's length over the limit — but the
+// overrun is now a measured, logged decision instead of an unnoticed one.
+func TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries(t *testing.T) {
+	// Not parallel: this swaps the default logger to read what was reported
+	// and to keep the run's output pristine.
+	var logged bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+	shape := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root", Entries: []appwire.JobActivityEntry{},
+	}}
+	shape.Root.Branch.Truncated = true
+	shape.Root.Branch.Continuation = encodeActivityContinuation(activityContinuation{
+		Version: activityContinuationV1, RootID: "root", SessionID: "root",
+	})
+	recomputeActivitySession(&shape.Root)
+	entryless, err := json.Marshal(shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four bytes of slack: less than the advanced token itself costs.
+	label := strings.Repeat("p", activityMaxEncodedBytes-len(entryless)-4)
+	tree := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root", Label: label,
+		Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{
+			JobID: "job_huge", Description: strings.Repeat("h", activityMaxEncodedBytes),
+		})}},
+	}}
+
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont, err := decodeActivityContinuation(got.Root.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode continuation: %v", err)
+	}
+	if cont.ResumeIndex != 1 {
+		t.Fatalf("ResumeIndex = %d, want 1 -- the entry fits no page, so the position moves whatever it costs", cont.ResumeIndex)
+	}
+	if got.Root.Branch.Error != "" {
+		t.Fatalf("branch error = %q, want none -- a page with no room for the advance has none for a sentence either", got.Root.Branch.Error)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logged.String(), "job_huge") {
+		t.Fatalf("server log %q does not name the entry, so a %d-byte response over the %d-byte limit goes unreported", logged.String(), len(raw), activityMaxEncodedBytes)
+	}
+	// The logged size is the proof the page was weighed with this token
+	// rather than assumed to fit once the entry was gone.
+	if want := fmt.Sprintf("bytes=%d", len(raw)); !strings.Contains(logged.String(), want) {
+		t.Fatalf("server log %q does not carry %s -- the overrun was never measured", logged.String(), want)
 	}
 }
 

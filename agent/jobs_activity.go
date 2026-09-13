@@ -1416,9 +1416,30 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 			return appwire.JobActivityTree{}, err
 		}
 		if len(without) > activityMaxEncodedBytes {
+			// The entry was not what did not fit: keep trimming, and leave
+			// its position for the page that re-targets this session.
 			continue
 		}
-		if err := skipActivityTrimmedEntryWithinLimit(&tree, dropped, rootID, delegatesEpoch, jobsEpochs, revision); err != nil {
+		// It was. Advance past it and measure the page with the token it will
+		// actually carry — advancing lengthens that token, so a page weighed
+		// with the position it is leaving behind has not been weighed at all.
+		mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
+		recomputeActivitySession(&tree.Root)
+		advanced, err := json.Marshal(tree)
+		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		if len(advanced) > activityMaxEncodedBytes {
+			// No room even for the position to move. The advance stands
+			// anyway: a page the client can never get past is a worse
+			// response than one a token's length over the limit, and the
+			// omission goes where it costs the page nothing.
+			slog.Warn("activity page skipped an entry with no room to carry the advance",
+				"entry", dropped.ref, "session", dropped.session.SessionID,
+				"bytes", len(advanced), "limit", activityMaxEncodedBytes)
+			return tree, nil
+		}
+		if err := explainActivitySkippedEntry(&tree, dropped); err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		return tree, nil
@@ -1461,18 +1482,16 @@ func skipActivityTrimmedEntry(dropped activityTrimmedEntry, rootID string, deleg
 	appendActivityBranchError(&dropped.session.Branch, dropped.ref+activitySkippedEntrySuffix)
 }
 
-// skipActivityTrimmedEntryWithinLimit advances past an entry no page can
-// carry, keeping the most informative diagnostic the page can still encode:
-// the message and the advanced token are bytes the client receives like any
-// other, and a page that fits only without its explanation still has to
-// advance — a token that stands still is the one failure a client cannot
-// recover from, and losing the sentence costs far less than losing everything
-// behind the entry.
-func skipActivityTrimmedEntryWithinLimit(tree *appwire.JobActivityTree, dropped activityTrimmedEntry, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) error {
-	beforeSkip := dropped.session.Branch
+// explainActivitySkippedEntry names the skipped entry on a page whose advance
+// past it has already been measured, keeping the most informative message
+// that still fits: the named one, then a fixed short one. A page with room
+// for neither keeps the advance and reports the omission where it costs
+// nothing — a token that stands still is the one failure a client cannot
+// recover from, so the sentence is what gives way, never the advance.
+func explainActivitySkippedEntry(tree *appwire.JobActivityTree, dropped activityTrimmedEntry) error {
+	advanced := dropped.session.Branch
 	for _, message := range []string{dropped.ref + activitySkippedEntrySuffix, activitySkippedEntryShortMessage} {
-		dropped.session.Branch = beforeSkip
-		mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
+		dropped.session.Branch = advanced
 		appendActivityBranchError(&dropped.session.Branch, message)
 		recomputeActivitySession(&tree.Root)
 		raw, err := json.Marshal(*tree)
@@ -1483,10 +1502,7 @@ func skipActivityTrimmedEntryWithinLimit(tree *appwire.JobActivityTree, dropped 
 			return nil
 		}
 	}
-	// No room for any of it: advance anyway, and report the omission where it
-	// costs the page nothing.
-	dropped.session.Branch = beforeSkip
-	mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
+	dropped.session.Branch = advanced
 	recomputeActivitySession(&tree.Root)
 	slog.Warn("activity page skipped an entry it had no room to report",
 		"entry", dropped.ref, "session", dropped.session.SessionID)
