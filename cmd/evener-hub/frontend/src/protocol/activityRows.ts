@@ -5,7 +5,7 @@
 // Sessions never become rows — the panel header covers the root and a delegate
 // row stands in for its child session.
 
-import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchTitle } from "../shell/rail/RailRow";
+import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchTitle } from "../shell/watchText";
 import {
   type ActivityDelegate,
   type ActivityEntry,
