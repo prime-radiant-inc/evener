@@ -1006,3 +1006,67 @@ func TestCache_TornStatAppendRecordsTheSizeItActuallyFolded(t *testing.T) {
 		t.Fatalf("generation = %d after a same-size rewrite following a torn stat, want %d", after.Epoch, tornResult.Epoch+1)
 	}
 }
+
+// TestCache_RewriteInsideTheSecondStatWindowBumpsTheGeneration closes the
+// window the second stat opens. The probe runs first and the stat after it,
+// so a rewrite that also appends can land in between: the stat then reports a
+// file longer than the recorded size, which reads as the completed append
+// that a torn first stat implies, while the prefix the probe just vouched for
+// is gone. Growth alone is not evidence the fold survived, so the probe is
+// asked again once the length is known.
+func TestCache_RewriteInsideTheSecondStatWindowBumpsTheGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	original := make([]int, 0, 40)
+	for v := 10; v < 50; v++ {
+		original = append(original, v)
+	}
+	writeLines(t, path, original)
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	if st == nil {
+		t.Fatal("no state recorded for a folded path")
+	}
+
+	// Replace the file wholesale, longer than it was, at the one moment
+	// that lies between the probe and the stat.
+	replacement := make([]int, 50)
+	for i := range replacement {
+		replacement[i] = 99
+	}
+	stats := 0
+	c.stat = func(p string) (os.FileInfo, error) {
+		stats++
+		writeLines(t, p, replacement)
+		return os.Stat(p)
+	}
+
+	current, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := tornStatInfo{FileInfo: current, size: st.size, mod: current.ModTime().Add(time.Second)}
+	after, err := c.refresh(ctx, path, torn, extend)
+	if err != nil {
+		t.Fatalf("refresh across a rewrite in the stat window: %v", err)
+	}
+	if stats != 1 {
+		t.Fatalf("the second stat ran %d times, want exactly 1", stats)
+	}
+	if after.Epoch != folded.Epoch+1 {
+		t.Fatalf("generation = %d, want %d -- the file grew, but the prefix this cache folded is gone, so the fold was discarded and a continuation keyed to it must not be accepted", after.Epoch, folded.Epoch+1)
+	}
+	if after.Value.sum != 4950 {
+		t.Fatalf("value = %+v, want the replacement read in full (sum 4950)", after.Value)
+	}
+}

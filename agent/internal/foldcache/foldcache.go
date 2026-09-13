@@ -174,6 +174,12 @@ type Cache[T any] struct {
 	flights map[string]struct{}
 	group   singleflight.Group
 
+	// stat is os.Stat, indirected so a test can pin what happens to the
+	// file between the tail probe and the second stat refresh takes to
+	// settle a same-size ambiguity — an ordering no fixture can produce
+	// from the outside, because nothing else runs between them.
+	stat func(string) (os.FileInfo, error)
+
 	hits, misses, coalesced, evictions, fullRescans int
 }
 
@@ -187,6 +193,7 @@ func New[T any](maxEntries int) *Cache[T] {
 		maxEntries:  maxEntries,
 		epochStates: make(map[string]*epochState),
 		flights:     make(map[string]struct{}),
+		stat:        os.Stat,
 	}
 }
 
@@ -424,12 +431,27 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 			// changed underneath its index. Stat again: the append that tore
 			// the first stat has completed by now and reports the larger
 			// size, while a rewrite still reports the same one.
-			fresh, statErr := os.Stat(path)
+			fresh, statErr := c.stat(path)
 			if statErr != nil {
 				var zero Result[T]
 				return zero, statErr
 			}
 			if fresh.Size() <= st.size {
+				epoch++
+				break
+			}
+			// Growth, so the first stat was torn rather than a rewrite —
+			// as of that second stat. The window between the two is wide
+			// enough for a rewrite AND an append to land in it, which
+			// leaves the file longer than the recorded size while the
+			// recorded prefix is gone, so ask the probe again before
+			// keeping the generation on the strength of a length.
+			regrown, tailErr := tailProbeMatches(path, st.offset, st.tail)
+			if tailErr != nil {
+				var zero Result[T]
+				return zero, tailErr
+			}
+			if !regrown {
 				epoch++
 			}
 		}
