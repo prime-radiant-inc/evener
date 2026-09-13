@@ -114,7 +114,7 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 // turns this run red.
 func TestAgentShardsBuildsAndRunsWithTheCallersFlags(t *testing.T) {
 	cfg, stdout, stderr, _ := e2eConfig(t)
-	cfg.flags = []string{"-race", "-v"}
+	cfg.flags = []string{"-tags", "shardfixturetag", "-count=1", "-v"}
 	t.Setenv("SHARDFIXTURE_GATE", "1")
 	if code := runShards(cfg); code != 0 {
 		t.Fatalf("runShards = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())

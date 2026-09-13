@@ -138,13 +138,26 @@ func goFlag(f string) string {
 	return f
 }
 
-// The four tables below are the flags `go help build` and `go help testflag`
+// The tables below are the flags `go help build` and `go help testflag`
 // document on the pinned toolchain, split by where each one has to go and
-// whether its value is the next argument. Together they are exhaustive: a flag
-// in none of them is refused by name rather than dropped, because dropping one
-// builds or runs something the caller did not ask for -- `-cover` and
-// `-toolexec` used to vanish this way, leaving a binary that was not the one
-// requested and no line of output saying so.
+// whether its value is the next argument. Together they are exhaustive, and a
+// flag in none of them is refused by name: dropping one builds or runs
+// something the caller did not ask for.
+//
+// Three destinations, and every flag has exactly one:
+//
+//   - the build (`go test -c`): -tags, -mod, -race and the rest of the
+//     compile-affecting set, which decide what binary the shards run;
+//   - the shard invocation, as -test.*: -short, -v, -count, -timeout,
+//     -shuffle and -failfast, each of which the compiled binary honours
+//     unchanged;
+//   - refused: everything the runner cannot honour, because it builds one
+//     binary and runs it as several shards. It chooses each shard's tests, so
+//     -run and -skip are not its caller's to set (AGENT_SHARD_SKIP is);
+//     it sets -test.parallel from AGENT_SHARD_PARALLEL; it writes its own
+//     logs, so -json, the profile flags and the coverage flags would be
+//     written several times over the same paths; and a benchmark or fuzz run
+//     is not what this runner is for.
 
 // buildValueFlags take their value as the next argument when it is not written
 // inline. They change what gets compiled, so they belong to `go test -c`.
@@ -152,41 +165,63 @@ var buildValueFlags = map[string]bool{
 	// -p is the build's own parallelism, which `go help build` documents with
 	// the rest of them; it belongs to `go test -c`, not to the shards.
 	"-p": true, "-asmflags": true, "-buildmode": true, "-compiler": true,
-	"-covermode": true, "-coverpkg": true, "-gccgoflags": true,
-	"-gcflags": true, "-installsuffix": true, "-ldflags": true, "-mod": true,
-	"-modfile": true, "-overlay": true, "-pgo": true, "-pkgdir": true,
-	"-tags": true, "-toolexec": true,
+	"-gccgoflags": true, "-gcflags": true, "-installsuffix": true,
+	"-ldflags": true, "-mod": true, "-modfile": true, "-overlay": true,
+	"-pgo": true, "-pkgdir": true, "-tags": true, "-toolexec": true,
 }
 
 // buildBareFlags stand alone. The booleans among them (-race=false,
 // -buildvcs=false) carry their value inline, which is forwarded as written.
 var buildBareFlags = map[string]bool{
-	"-a": true, "-asan": true, "-buildvcs": true, "-cover": true,
-	"-linkshared": true, "-modcacherw": true, "-msan": true, "-n": true,
-	"-race": true, "-trimpath": true, "-work": true, "-x": true,
+	"-a": true, "-asan": true, "-buildvcs": true, "-linkshared": true,
+	"-modcacherw": true, "-msan": true, "-race": true, "-trimpath": true,
+	"-work": true, "-x": true,
 }
 
-// testValueFlags take their value as the next argument when it is not written
-// inline. Consuming the pair is what keeps `-run -race` from putting the
-// caller's regex into the build. Apart from -count, the runner sets these for
-// itself -- it chooses each shard's tests, its own -test.count and
-// -test.parallel -- so a caller's value is consumed and goes no further.
-var testValueFlags = map[string]bool{
+// testForwardValueFlags are handed to every shard as -test.<name>=<value>:
+// the binary honours each one as written, and one shard honouring it means
+// all of them do.
+var testForwardValueFlags = map[string]bool{
+	"-count": true, "-timeout": true, "-shuffle": true,
+}
+
+// testForwardBareFlags are the same, without a value of their own.
+var testForwardBareFlags = map[string]bool{
+	"-failfast": true, "-short": true, "-v": true,
+}
+
+// testRefusedValueFlags take a value and are refused: consuming the pair first
+// is what keeps `-run -race` from reading the caller's regex as a build flag.
+var testRefusedValueFlags = map[string]bool{
 	"-bench": true, "-benchtime": true, "-blockprofile": true,
-	"-blockprofilerate": true, "-count": true, "-coverprofile": true,
-	"-cpu": true, "-cpuprofile": true, "-exec": true, "-fuzz": true,
-	"-fuzzminimizetime": true, "-fuzztime": true, "-gocoverdir": true,
-	"-list": true, "-memprofile": true, "-memprofilerate": true,
-	"-mutexprofile": true, "-mutexprofilefraction": true, "-o": true,
-	"-outputdir": true, "-parallel": true, "-run": true, "-shuffle": true,
-	"-skip": true, "-timeout": true, "-trace": true, "-vet": true,
+	"-blockprofilerate": true, "-covermode": true, "-coverpkg": true,
+	"-coverprofile": true, "-cpu": true, "-cpuprofile": true, "-exec": true,
+	"-fuzz": true, "-fuzzminimizetime": true, "-fuzztime": true,
+	"-gocoverdir": true, "-list": true, "-memprofile": true,
+	"-memprofilerate": true, "-mutexprofile": true,
+	"-mutexprofilefraction": true, "-o": true, "-outputdir": true,
+	"-parallel": true, "-run": true, "-skip": true, "-trace": true,
+	"-vet": true,
 }
 
-// testBareFlags stand alone on the test side. -short and -v are the two the
-// shards are given; the rest are the caller's own affair and stop here.
-var testBareFlags = map[string]bool{
-	"-artifacts": true, "-benchmem": true, "-c": true, "-failfast": true,
-	"-fullpath": true, "-json": true, "-short": true, "-v": true,
+// testRefusedBareFlags stand alone and are refused for the same reasons.
+var testRefusedBareFlags = map[string]bool{
+	"-artifacts": true, "-benchmem": true, "-c": true, "-cover": true,
+	"-fullpath": true, "-json": true,
+	// -n prints the commands instead of running them, so the build it
+	// describes never produces the binary the shards are handed.
+	"-n": true,
+}
+
+// refusalReason is the sentence that goes with the flag's name, for the few
+// where the runner has a direct answer to "then how do I do this?".
+var refusalReason = map[string]string{
+	"-run":      "this runner selects each shard's tests from the survey",
+	"-skip":     "use AGENT_SHARD_SKIP, which the survey and the shards both read",
+	"-parallel": "use AGENT_SHARD_PARALLEL; the runner sets -test.parallel per shard",
+	"-c":        "this runner already compiles the binary itself",
+	"-o":        "this runner names the binary it compiles",
+	"-n":        "it prints the build instead of running it, so no binary is produced",
 }
 
 // parsedFlags is what one walk of a caller's flags says about them: which go to
@@ -236,7 +271,7 @@ func parseFlags(flags []string) (parsedFlags, error) {
 		hasValue := hasInline
 		if hasInline {
 			value = inline
-		} else if buildValueFlags[name] || testValueFlags[name] {
+		} else if buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name] {
 			if i+1 >= len(flags) {
 				return parsedFlags{}, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
 			}
@@ -254,30 +289,35 @@ func parseFlags(flags []string) (parsedFlags, error) {
 		case buildBareFlags[name]:
 			out.build = append(out.build, f)
 		case name == "-short":
-			out.short = true
-			if hasInline {
-				parsed, err := strconv.ParseBool(inline)
-				if err != nil {
-					return parsedFlags{}, fmt.Errorf("-short=%s is not a boolean, and every shard binary would refuse it after the survey had already run", inline)
-				}
-				out.short = parsed
-				out.test = append(out.test, "-test.short="+inline)
-				continue
+			parsed, err := boolFlagValue(name, inline, hasInline)
+			if err != nil {
+				return parsedFlags{}, err
 			}
-			out.test = append(out.test, "-test.short")
+			out.short = parsed
+			out.test = append(out.test, testFlag(name, inline, hasInline))
 		case name == "-v":
-			if hasInline {
-				out.test = append(out.test, "-test.v="+inline)
-				continue
+			if _, err := boolFlagValue(name, inline, hasInline); err != nil {
+				return parsedFlags{}, err
 			}
-			out.test = append(out.test, "-test.v")
+			out.test = append(out.test, testFlag(name, inline, hasInline))
 		case name == "-count":
 			if hasValue {
+				if _, err := strconv.Atoi(value); err != nil {
+					return parsedFlags{}, fmt.Errorf("-count=%s is not a number, and every shard binary would refuse it after the survey had already run", value)
+				}
 				out.test = append(out.test, "-test.count="+value)
 			}
-		case testValueFlags[name] || testBareFlags[name]:
-			// Known, and the runner's own to decide: consumed above and
-			// deliberately not passed on.
+		case testForwardBareFlags[name]:
+			out.test = append(out.test, testFlag(name, inline, hasInline))
+		case testForwardValueFlags[name]:
+			if hasValue {
+				out.test = append(out.test, "-test."+strings.TrimPrefix(name, "-")+"="+value)
+			}
+		case testRefusedValueFlags[name] || testRefusedBareFlags[name]:
+			if reason, ok := refusalReason[name]; ok {
+				return parsedFlags{}, fmt.Errorf("%s is not supported by agent-shards: %s", name, reason)
+			}
+			return parsedFlags{}, fmt.Errorf("%s is not supported by agent-shards: it builds one binary, runs it as several shards, and writes its own logs, so this flag cannot mean here what it means to `go test`", name)
 		case !strings.HasPrefix(name, "-"):
 			return parsedFlags{}, fmt.Errorf("%q is not a flag: this runner chooses the packages it builds and runs, and takes only `go test` flags", flags[i])
 		default:
@@ -285,6 +325,31 @@ func parseFlags(flags []string) (parsedFlags, error) {
 		}
 	}
 	return out, nil
+}
+
+// boolFlagValue reads a boolean flag's inline value the way go's flag package
+// does, and refuses at parse time what `go test` would refuse at the door: a
+// value read as true here would survey the whole suite and build the binary
+// before every shard died in flag parsing.
+func boolFlagValue(name, inline string, hasInline bool) (bool, error) {
+	if !hasInline {
+		return true, nil
+	}
+	parsed, err := strconv.ParseBool(inline)
+	if err != nil {
+		return false, fmt.Errorf("%s=%s is not a boolean, and every shard binary would refuse it after the survey had already run", name, inline)
+	}
+	return parsed, nil
+}
+
+// testFlag is the shard binary's spelling of a flag, with the caller's inline
+// value kept as written.
+func testFlag(name, inline string, hasInline bool) string {
+	spelled := "-test." + strings.TrimPrefix(name, "-")
+	if hasInline {
+		return spelled + "=" + inline
+	}
+	return spelled
 }
 
 // testSetKey is the survey cache key: the identity of the sorted test list
@@ -296,13 +361,17 @@ func parseFlags(flags []string) (parsedFlags, error) {
 // the build decides the costs: a -race binary is several times slower than a
 // plain one, and a survey taken from one would pack the other's shards from
 // numbers that never applied. Short mode does the same on a smaller scale, by
-// changing which tests run at all.
-func testSetKey(listOutput string, parsed parsedFlags) string {
+// changing which tests run at all. GOFLAGS is in there for the same reason one
+// step further out: it reaches the build without appearing in anyone's
+// argument list, so `GOFLAGS=-race make test` would otherwise read a survey
+// measured without it.
+func testSetKey(listOutput string, parsed parsedFlags, goflags string) string {
 	lines := strings.Split(strings.TrimRight(listOutput, "\n"), "\n")
 	sort.Strings(lines)
 	payload := strings.Join(lines, "\n") + "\n" +
 		"build\x00" + strings.Join(parsed.build, "\x00") + "\n" +
-		"short\x00" + strconv.FormatBool(parsed.short) + "\n"
+		"short\x00" + strconv.FormatBool(parsed.short) + "\n" +
+		"goflags\x00" + goflags + "\n"
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])[:16]
 }

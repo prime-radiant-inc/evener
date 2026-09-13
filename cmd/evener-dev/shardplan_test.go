@@ -153,7 +153,7 @@ func TestParseFlagsReadsShortInEverySpelling(t *testing.T) {
 		{flags: []string{"-short=false", "-short"}, want: true},
 		{flags: []string{"-short", "-short=false"}, want: false},
 		// A flag's value is a value, not a flag.
-		{flags: []string{"-run", "-short"}, want: false},
+		{flags: []string{"-timeout", "-short"}, want: false},
 		{flags: nil, want: false},
 	} {
 		parsed, err := parseFlags(tc.flags)
@@ -181,18 +181,42 @@ func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
 		{"--nonsense"},
 		// Not a flag at all: this runner picks its own packages.
 		{"./..."},
+		// A boolean the shards would refuse after the survey had run.
+		{"-v=maybe"},
+		{"-count=lots"},
+		// Documented `go test` flags this runner cannot honour, because it
+		// builds one binary, runs it as shards it selects itself, and writes
+		// its own logs.
+		{"-run", "TestFoo"},
+		{"-skip", "TestFoo"},
+		{"-parallel", "4"},
+		{"-json"},
+		{"-bench", "."},
+		{"-benchmem"},
+		{"-fuzz", "FuzzFoo"},
+		{"-fuzztime", "10s"},
+		{"-cover"},
+		{"-covermode", "atomic"},
+		{"-coverpkg", "./..."},
+		{"-coverprofile", "c.out"},
+		{"-cpuprofile", "cpu.out"},
+		{"-exec", "wrap"},
+		{"-o", "bin"},
+		{"-c"},
+		// -n prints the build instead of running it: no binary, no shards.
+		{"-n"},
 	} {
 		if _, err := parseFlags(flags); err == nil {
 			t.Fatalf("parseFlags(%v) = no error, want one", flags)
 		}
 	}
 	// A -C that is another flag's value is a value.
-	parsed, err := parseFlags([]string{"-run", "-C", "-short"})
+	parsed, err := parseFlags([]string{"-timeout", "-C", "-short"})
 	if err != nil {
-		t.Fatalf("parseFlags(-run -C -short) = %v", err)
+		t.Fatalf("parseFlags(-timeout -C -short) = %v", err)
 	}
 	if parsed.short != true || len(parsed.build) != 0 {
-		t.Fatalf("parseFlags(-run -C -short) = %+v, want short with no build flags", parsed)
+		t.Fatalf("parseFlags(-timeout -C -short) = %+v, want short with no build flags", parsed)
 	}
 }
 
@@ -202,31 +226,32 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 		flags []string
 		build []string
 		test  []string
+		// err is the substring a refusal must carry; cases that set it expect
+		// no classification at all.
+		err string
 	}{
 		{
-			name:  "the old table, with -race now a build flag",
-			flags: []string{"-short", "-count=2", "-v", "-race", "-run", "TestNope", "-timeout=30s"},
+			name:  "the build's flags to the build, the binary's to the binary",
+			flags: []string{"-short", "-count=2", "-v", "-race", "-timeout=30s"},
 			build: []string{"-race"},
-			// -run and -timeout are the runner's own to set: consumed with
-			// their values and passed to nothing.
-			test: []string{"-test.short", "-test.count=2", "-test.v"},
+			test:  []string{"-test.short", "-test.count=2", "-test.v", "-test.timeout=30s"},
 		},
 		{
-			name:  "a `go test` flag's value is a value, even spelled like a build flag",
-			flags: []string{"-exec", "-race", "-short"},
+			name:  "the three the shards can honour that used to be dropped",
+			flags: []string{"-timeout", "5m", "-shuffle", "on", "-failfast"},
 			build: nil,
-			test:  []string{"-test.short"},
+			test:  []string{"-test.timeout=5m", "-test.shuffle=on", "-test.failfast"},
 		},
 		{
-			name:  "and the same for -o and -coverpkg",
-			flags: []string{"-o", "-race", "-coverpkg", "-trimpath", "-v"},
-			build: []string{"-coverpkg", "-trimpath"},
-			test:  []string{"-test.v"},
+			name:  "a forwarded flag's value is a value, even spelled like a build flag",
+			flags: []string{"-timeout", "-race", "-short"},
+			build: nil,
+			test:  []string{"-test.timeout=-race", "-test.short"},
 		},
 		{
 			name:  "the build flags that used to be dropped without a word",
-			flags: []string{"-cover", "-covermode", "atomic", "-toolexec", "wrap", "-buildvcs=false"},
-			build: []string{"-cover", "-covermode", "atomic", "-toolexec", "wrap", "-buildvcs=false"},
+			flags: []string{"-toolexec", "wrap", "-buildvcs=false", "-pkgdir", "/tmp/pkg"},
+			build: []string{"-toolexec", "wrap", "-buildvcs=false", "-pkgdir", "/tmp/pkg"},
 			test:  nil,
 		},
 		{
@@ -287,12 +312,12 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.short=true", "-test.v=false", "-test.short=true"},
 		},
 		{
-			// The value of a test flag is a value, not a flag: `-run -race` is
-			// a regex, and reading it as a build flag built the wrong binary.
-			name:  "a test flag consumes its value",
-			flags: []string{"-run", "-race", "-short"},
-			build: nil,
-			test:  []string{"-test.short"},
+			// The value of a refused flag is still consumed with it, so it
+			// cannot be read as a flag of its own; the refusal names -skip,
+			// not the -race that follows it.
+			name:  "a refused flag consumes its value before anything is read",
+			flags: []string{"-skip", "-race", "-short"},
+			err:   "-skip is not supported",
 		},
 		{
 			name:  "a build flag's value is forwarded as the caller wrote it",
@@ -310,7 +335,7 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			name:  "a value that looks like a build flag is still a value",
 			flags: []string{"-timeout", "-trimpath", "-count=1"},
 			build: nil,
-			test:  []string{"-test.count=1"},
+			test:  []string{"-test.timeout=-trimpath", "-test.count=1"},
 		},
 		{
 			name:  "-p is the build's parallelism, in both spellings",
@@ -327,6 +352,12 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parsed, err := parseFlags(tc.flags)
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("parseFlags(%v) = %v, want a refusal naming %q", tc.flags, err, tc.err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("parseFlags(%v) = %v", tc.flags, err)
 			}
@@ -341,21 +372,26 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 }
 
 func TestTestSetKeyIsOrderInsensitiveAndStable(t *testing.T) {
-	a := testSetKey("TestB\nTestA\n", parsedFlags{})
-	b := testSetKey("TestA\nTestB\n", parsedFlags{})
+	a := testSetKey("TestB\nTestA\n", parsedFlags{}, "")
+	b := testSetKey("TestA\nTestB\n", parsedFlags{}, "")
 	if a != b {
 		t.Fatalf("testSetKey is order sensitive: %q vs %q", a, b)
 	}
-	if c := testSetKey("TestA\nTestC\n", parsedFlags{}); c == a {
+	if c := testSetKey("TestA\nTestC\n", parsedFlags{}, ""); c == a {
 		t.Fatalf("testSetKey did not change with the test set: %q", c)
 	}
 	// The survey measures costs, and the build is what the costs are of.
-	race := testSetKey("TestA\nTestB\n", parsedFlags{build: []string{"-race"}})
+	race := testSetKey("TestA\nTestB\n", parsedFlags{build: []string{"-race"}}, "")
 	if race == a {
 		t.Fatalf("a -race survey shares the plain build's key: %q", race)
 	}
-	short := testSetKey("TestA\nTestB\n", parsedFlags{short: true})
+	short := testSetKey("TestA\nTestB\n", parsedFlags{short: true}, "")
 	if short == a || short == race {
 		t.Fatalf("a short-mode survey shares another key: %q", short)
+	}
+	// GOFLAGS reaches the build without passing through any argument list.
+	goflags := testSetKey("TestA\nTestB\n", parsedFlags{}, "-race")
+	if goflags == a || goflags == race || goflags == short {
+		t.Fatalf("a survey under GOFLAGS shares another key: %q", goflags)
 	}
 }

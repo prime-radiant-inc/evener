@@ -457,6 +457,20 @@ func runShards(cfg shardsConfig) int {
 	return 0
 }
 
+// effectiveGoflags is what the toolchain will actually apply, which is the
+// environment's GOFLAGS layered over `go env -w`'s. It is part of the survey
+// cache key: a flag that arrives this way changes the binary without appearing
+// in any argument list the runner can see. An unreadable answer is an empty
+// one -- the key then covers one fewer thing, which costs a survey, never a
+// wrong one.
+func effectiveGoflags() string {
+	out, err := exec.CommandContext(context.Background(), "go", "env", "GOFLAGS").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // surveyRedLine is the excerpt grep the script used when the survey pass came
 // back red. The survey has no per-shard verdict to sort by — it is one pass
 // over the whole suite whose log is pointed at in full — so the excerpt stays
@@ -478,7 +492,7 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags) str
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed)+".log")
+	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed, effectiveGoflags())+".log")
 }
 
 // surveyCoversTestSet reports whether a cached survey accounts for every test
