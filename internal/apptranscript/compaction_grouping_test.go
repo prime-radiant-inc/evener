@@ -3,6 +3,7 @@ package apptranscript
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -16,6 +17,12 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 		turn.StableTurnID, turn.OwningTurnID = stable, owner
 		if kind == schema.TurnContextCompaction {
 			turn.ContextCompaction = &schema.ContextCompaction{Layer: "fixture", TurnsBefore: 8, TurnsAfter: 4}
+		}
+		if kind == schema.TurnRoundTimings {
+			// Without its measurements the record projects no item and its
+			// group renders as nothing, which would hide the boundary this
+			// table is about.
+			turn.RoundTimings = &schema.RoundTimings{Round: 1, TotalRound: time.Second}
 		}
 		return turn
 	}
@@ -118,6 +125,14 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 		// turn's next record. The fragment is one record of a turn that is
 		// over; the assistant belongs to the turn that is still running, so it
 		// must not join the fragment.
+		// A round's timing record is metadata about a round that is over,
+		// exactly like the compaction record below it: arriving late it names
+		// its own turn and takes nothing with it.
+		{"a late owned timing record is a fragment too", []schema.Turn{
+			record(schema.TurnUserInput, "turn_next", ""),
+			record(schema.TurnRoundTimings, "timing", "turn_active"),
+			record(schema.TurnAssistant, "assistant", ""),
+		}, []string{"turn_active", "turn_next", "turn_active", "turn_next"}},
 		{"a continuation after a late fragment belongs to the running turn", []schema.Turn{
 			record(schema.TurnUserInput, "turn_next", ""),
 			record(schema.TurnContextCompaction, "layer", "turn_active"),

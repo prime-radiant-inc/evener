@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 17
+	turnIndexVersion        = 18
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 

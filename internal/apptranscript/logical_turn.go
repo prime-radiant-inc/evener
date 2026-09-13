@@ -122,16 +122,23 @@ type logicalTurnAccumulator struct {
 	continuation int
 }
 
+// carriesTheFlow reports the one owned kind that takes the running turn with it
+// when it opens a group: steering. A delayed steering carrier is the turn's
+// next instruction, and what follows belongs to it —
+// TestItemReadersHonorSteeringOwner pins that. Every other owned kind
+// describes work rather than driving it.
+func carriesTheFlow(kind schema.TurnKind) bool {
+	return kind == schema.TurnSteering
+}
+
 // startsFragmentGroup reports that this record opens a group for a turn other
 // than the one in flight and does not take the flow with it: owned METADATA —
-// a checkpoint, a summary, a context-compaction record, a hook completion —
-// describing a turn that is already over. A kind that continues a logical turn
-// is excluded on purpose: a delayed steering carrier opens its group AND owns
-// what follows it (TestItemReadersHonorSteeringOwner pins that), while a late
-// metadata record owns only itself. The scan-side index mirrors this rule
-// (turn_index.go).
+// a checkpoint, a summary, a context-compaction record, a round's timings, a
+// hook completion — describing a turn that is already over. Such a record owns
+// only itself; the running turn's next record resumes the running turn. The
+// scan-side index mirrors this rule (turn_index.go).
 func startsFragmentGroup(kind schema.TurnKind, startsGroup bool, owningTurnID string) bool {
-	return startsGroup && owningTurnID != "" && ownedLogicalTurnKind(kind) && !continuesLogicalTurn(kind)
+	return startsGroup && owningTurnID != "" && ownedLogicalTurnKind(kind) && !carriesTheFlow(kind)
 }
 
 // newLogicalTurnAccumulator starts a scan with no continuation target: the
