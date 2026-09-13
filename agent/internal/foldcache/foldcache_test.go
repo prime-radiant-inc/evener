@@ -902,9 +902,7 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 	// Then under concurrency, with folds and rewrites happening throughout.
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := 0; ; i++ {
 			select {
 			case <-stop:
@@ -919,7 +917,7 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 				return
 			}
 		}
-	}()
+	})
 
 	for range 200 {
 		named := c.Epoch(path)
