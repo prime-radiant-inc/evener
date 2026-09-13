@@ -177,6 +177,50 @@ func TestRetirementNestedMutationsKeepIndependentLeases(t *testing.T) {
 	}
 }
 
+// TestRetirementSettledBlockerIsNotReportedAsCurrent is the regression test
+// for the cached-blocker defect: a refused claim's blockers are evidence for
+// that attempt, not controller state that outlives it. Once the obligation
+// settles, a status snapshot must not keep presenting the old refusal as
+// current evidence.
+func TestRetirementSettledBlockerIsNotReportedAsCurrent(t *testing.T) {
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	c := retirementEvidenceController(t, root)
+
+	// A queued input is an evidence obligation that is not an admission lease:
+	// it forces the full evidence path (rather than the len(c.active) early
+	// return) without any live BeginMutation blocker to mask it.
+	root.mu.Lock()
+	root.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
+	root.mu.Unlock()
+
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("queued input did not refuse the claim: claim=%v err=%v state=%+v", claim, err, state)
+	}
+	if !hasRetirementBlocker(state.Blockers, "input") {
+		t.Fatalf("refusal lost the queued-input blocker: %+v", state)
+	}
+
+	// Settle the obligation.
+	root.mu.Lock()
+	root.inputQueue = nil
+	root.mu.Unlock()
+
+	if snap := c.Snapshot(); hasRetirementBlocker(snap.Blockers, "input") {
+		t.Fatalf("settled input blocker still reported as current: %+v", snap.Blockers)
+	}
+}
+
+func hasRetirementBlocker(blockers []RetirementBlocker, category string) bool {
+	for _, blocker := range blockers {
+		if blocker.Category == category {
+			return true
+		}
+	}
+	return false
+}
+
 // A preparation belongs to one root generation, not just a preparing phase.
 // Deliberately invalidate each private identity component to exercise the exact
 // claim check independently of pointer equality (ordinary callers cannot edit it).

@@ -57,9 +57,14 @@ func (s *WebServer) navigationAfterDeletion(ctx context.Context, hint navigation
 }
 
 var (
-	removeProjectSessionFile            = os.Remove
-	removeProjectSessionDir             = os.RemoveAll
-	removeProjectSessionRendezvousEntry = rendezvous.Remove
+	removeProjectSessionFile = os.Remove
+	removeProjectSessionDir  = os.RemoveAll
+	// removeProjectSessionRendezvousEntry deletes one matched session's
+	// rendezvous file only while it still carries the exact identity that was
+	// just read. Deleting by PID alone would destroy a live replacement's entry
+	// if that PID were reused (or a respawn raced a slow exit) between the list
+	// and the unlink, permanently losing Hub discovery for the replacement.
+	removeProjectSessionRendezvousEntry = rendezvous.RemoveIfOwned
 	rebuildProjectDeletionPast          = func(past *hubcore.PastIndex) (bool, error) { return past.Rebuild() }
 	// projectSessionLive is the deletion-safety liveness predicate (kata
 	// 8at6): a retained crash marker (LiveEntry.Crashed=true, written by
@@ -565,7 +570,7 @@ func removeProjectSessionRendezvous(runDir, sessionID string) error {
 		if entry.SessionID != sessionID && entry.ThreadID != sessionID {
 			continue
 		}
-		if err := removeProjectSessionRendezvousEntry(runDir, entry.PID); err != nil {
+		if err := removeProjectSessionRendezvousEntry(runDir, entry); err != nil {
 			return err
 		}
 	}

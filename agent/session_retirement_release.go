@@ -88,9 +88,12 @@ func (s *Session) ReleaseForRetirement(ctx context.Context, prepared *Retirement
 		c.setReleaseFailure()
 		return errRetirementTeardownSpent
 	}
-	// The preparation is one-use: marking it released first makes a concurrent
-	// or repeated release refuse before it can double-close a runtime.
-	prepared.released = true
+	// The preparation is one-use: claim it with an atomic compare-and-swap so a
+	// concurrent release cannot also pass the check and enter teardown before
+	// closeOnce stops its later effects. Exactly one caller wins.
+	if !prepared.released.CompareAndSwap(false, true) {
+		return errors.New("retirement release: preparation already released")
+	}
 
 	if err := retirementReleaseFailure("before_release"); err != nil {
 		c.setReleaseFailure()
@@ -151,7 +154,7 @@ func (s *Session) validateRetirementRelease(prepared *RetirementPreparation) (*R
 	if prepared.root != s {
 		return nil, errors.New("retirement release: preparation belongs to another session")
 	}
-	if prepared.released {
+	if prepared.released.Load() {
 		return nil, errors.New("retirement release: preparation already released")
 	}
 	// A terminal Close or an earlier release has already consumed the single

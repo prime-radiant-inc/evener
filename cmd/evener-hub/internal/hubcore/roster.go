@@ -459,6 +459,13 @@ func (r *Roster) refresh() error {
 					retainUnconfirmed(e)
 					continue
 				}
+				// The exact identity still matches, so keep the last-known route
+				// and status. The probe itself failed, though, so this reused entry
+				// carries no fresh lifecycle observation: clear the capability and
+				// mark it stale. Stale lifecycle data must never present as current
+				// eligibility, and a stale row must not offer a retire action.
+				prev.Lifecycle = nil
+				prev.LifecycleFresh = false
 				byPID[e.PID] = prev
 				if prev.SessionID != "" {
 					if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
@@ -488,8 +495,11 @@ func (r *Roster) refresh() error {
 				// file on disk is pure garbage, so reclaim it instead of
 				// rescanning it on every refresh forever. Removal failure is
 				// non-fatal (same stance as the List error above): the file
-				// just survives until a later refresh.
-				_ = rendezvous.Remove(r.runDir, e.PID)
+				// just survives until a later refresh. Removal is exact-owned:
+				// if a replacement daemon has since reused this PID and
+				// rewritten the file, it is not ours to unlink, so the guard's
+				// refusal is a normal no-op rather than an error to surface.
+				_ = rendezvous.RemoveIfOwned(r.runDir, e)
 				continue
 			}
 			if time.Since(e.StartedAt) > crashedFileRetention {
@@ -497,7 +507,7 @@ func (r *Roster) refresh() error {
 				// entry and unlink the file so dead-pid rendezvous files stop
 				// accumulating forever. Fresh crashes keep the retained
 				// "errored" contract below untouched.
-				_ = rendezvous.Remove(r.runDir, e.PID)
+				_ = rendezvous.RemoveIfOwned(r.runDir, e)
 				continue
 			}
 			crashed := LiveEntry{Entry: e, SessionID: sessionID}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
@@ -34,7 +35,10 @@ type RetirementPreparation struct {
 	sessions        []*Session
 	evidenceVersion uint64
 	lanes           []retirementLaneEvidence
-	released        bool
+	// released is the one-use teardown guard. It is an atomic so concurrent
+	// ReleaseForRetirement calls race through a compare-and-swap rather than an
+	// unsynchronized read-modify-write.
+	released atomic.Bool
 }
 
 // checkRetirementReady validates this job manager's primary jobs.jsonl through

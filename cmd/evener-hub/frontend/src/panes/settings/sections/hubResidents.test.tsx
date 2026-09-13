@@ -9,7 +9,7 @@
 // directly, matching the convention established in QueueStrip.test.tsx and
 // the widget tests.
 
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -648,6 +648,63 @@ test("Accepted:true retire response displays retiring state without removing the
   // "retiring" text must appear in the row (phase cell shows "retiring")
   const updatedRow = screen.getByRole("row", { name: /Soon retiring/ });
   expect(updatedRow.textContent).toMatch(/retiring/i);
+});
+
+// ─── N-1: accepted retire survives a stale probe ─────────────────────────────
+
+test("accepted retire phase survives a later stale probe with no lifecycle", async () => {
+  const fake = connectFakeClient();
+  // Mutable server view: the daemon moves to "retiring" once the retire RPC is
+  // accepted, then its probe goes stale (lifecycle omitted) as it exits.
+  let phase: "resident" | "retiring" = "resident";
+  let probeStale = false;
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Retiring through stale",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: probeStale ? "stale" : "current",
+        ...(probeStale ? {} : { lifecycle: { phase, timeoutMillis: 3600000, blockers: [] } }),
+        canRetire: !probeStale && phase === "resident",
+        canForceStop: true,
+      },
+    ],
+  }));
+  fake.on("evener/daemon/retire", () => {
+    phase = "retiring";
+    return {
+      accepted: true,
+      lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] },
+    };
+  });
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Retiring through stale/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+
+  // The Hub accepted the retire; the phase cell shows the confirmed "retiring".
+  await waitFor(() => {
+    const acceptingRow = screen.getByRole("row", { name: /Retiring through stale/ });
+    expect(within(acceptingRow).getAllByRole("cell")[4]!.textContent).toBe("retiring");
+  });
+
+  // The daemon then exits far enough that its probe fails: the server emits no
+  // lifecycle and a stale probe state. That is not evidence the accepted retire
+  // was undone, so the row must not regress to the em-dash phase.
+  probeStale = true;
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+
+  const staleRow = screen.getByRole("row", { name: /Retiring through stale/ });
+  const phaseCell = within(staleRow).getAllByRole("cell")[4]!.textContent;
+  expect(phaseCell).toBe("retiring");
+  expect(phaseCell).not.toBe("—");
 });
 
 // ─── Retire refusal: blockers displayed, row kept ────────────────────────────

@@ -65,6 +65,55 @@ func TestDaemonIdentityChangesWithReplacement(t *testing.T) {
 	}
 }
 
+// TestListDaemonsStaleProbeOffersNoRetireAfterFailure is the end-to-end half of
+// the stale-lifecycle regression: a failed probe that still matches the
+// daemon's PID and rendezvous identity keeps the row visible, but the rendered
+// resident must report a stale probe with no lifecycle and no retire action.
+func TestListDaemonsStaleProbeOffersNoRetireAfterFailure(t *testing.T) {
+	runDir := t.TempDir()
+	entry := residentEntryForTest(t, 6001)
+	writeRendezvous(t, runDir, entry)
+
+	fail := false
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		if fail {
+			return hubcore.ProbeResult{}
+		}
+		return hubcore.ProbeResult{
+			OK: true, SessionID: e.SessionID, Status: "idle",
+			Lifecycle: residentLifecycleForTest(), LifecycleFresh: true,
+		}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+
+	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster}
+	list, err := listDaemons(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Daemons) != 1 {
+		t.Fatalf("rows=%d, want 1", len(list.Daemons))
+	}
+	if list.Daemons[0].ProbeState != "current" || list.Daemons[0].Lifecycle == nil || !list.Daemons[0].CanRetire {
+		t.Fatalf("fresh row not retirable: %+v", list.Daemons[0])
+	}
+
+	fail = true
+	roster.Refresh()
+	list, err = listDaemons(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Daemons) != 1 {
+		t.Fatalf("stale row must stay visible, rows=%d", len(list.Daemons))
+	}
+	row := list.Daemons[0]
+	if row.ProbeState != "stale" || row.Lifecycle != nil || row.CanRetire {
+		t.Fatalf("failed probe still offered a current, retirable row: %+v", row)
+	}
+}
+
 // TestDaemonActionRefusesStaleRenderedIdentity is the decisive Task 10 test:
 // an action aimed at a row rendered before the daemon was replaced must never
 // reach the replacement — no retire RPC, no signal, no recovery fence. The

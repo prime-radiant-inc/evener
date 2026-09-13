@@ -61,8 +61,13 @@ type RetirementController struct {
 	timeout       time.Duration
 	eligibleSince time.Time
 	failure       string
-	blockers      []RetirementBlocker
-	claim         *RetirementClaim
+	// blockers is the refusal evidence from the most recent TryClaim attempt.
+	// It is carried only on claim snapshots (the immediate retire response and
+	// the early returns while admission is closed). It is deliberately NOT read
+	// by Snapshot: a status request must never present an earlier refusal's
+	// evidence as the current obligation set.
+	blockers []RetirementBlocker
+	claim    *RetirementClaim
 }
 
 // RetirementClaim is an identity-bound preparing fence owned by its controller.
@@ -223,6 +228,19 @@ func (c *RetirementController) Snapshot() RetirementSnapshot {
 }
 
 func (c *RetirementController) snapshotLocked() RetirementSnapshot {
+	return c.snapshotWithBlockersLocked(nil)
+}
+
+// claimSnapshotLocked carries the last claim attempt's refusal evidence. Only
+// TryClaim's own return values use it, so a later status Snapshot can never
+// present a settled obligation's old refusal as current evidence.
+func (c *RetirementController) claimSnapshotLocked() RetirementSnapshot {
+	return c.snapshotWithBlockersLocked(c.blockers)
+}
+
+// snapshotWithBlockersLocked builds a snapshot from live controller state plus
+// any extra blockers the caller supplies.
+func (c *RetirementController) snapshotWithBlockersLocked(extra []RetirementBlocker) RetirementSnapshot {
 	state := RetirementSnapshot{Phase: c.phase, Timeout: c.timeout,
 		EligibleSince: c.eligibleSince, Failure: c.failure}
 	if c.root == nil {
@@ -231,7 +249,7 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 	if c.timeout > 0 && !c.eligibleSince.IsZero() {
 		state.Deadline = c.eligibleSince.Add(c.timeout)
 	}
-	state.Blockers = append(state.Blockers, c.blockers...)
+	state.Blockers = append(state.Blockers, extra...)
 	for _, blocker := range c.active {
 		state.Blockers = append(state.Blockers, blocker)
 	}
@@ -260,13 +278,13 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.phase != "resident" {
-		return nil, c.snapshotLocked(), ErrRetirementUnavailable
+		return nil, c.claimSnapshotLocked(), ErrRetirementUnavailable
 	}
 	if len(c.active) != 0 || c.root == nil {
-		return nil, c.snapshotLocked(), nil
+		return nil, c.claimSnapshotLocked(), nil
 	}
 	if !manual && (c.timeout == 0 || c.eligibleSince.IsZero() || now.Before(c.eligibleSince.Add(c.timeout))) {
-		return nil, c.snapshotLocked(), nil
+		return nil, c.claimSnapshotLocked(), nil
 	}
 	c.phase = "preparing"
 	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation, tree: c.root.delegateController}
@@ -291,7 +309,7 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	}
 	c.mu.Lock()
 	if !c.validClaimLocked(claim) {
-		return nil, c.snapshotLocked(), ErrRetirementUnavailable
+		return nil, c.claimSnapshotLocked(), ErrRetirementUnavailable
 	}
 	c.blockers = blockers
 	if len(blockers) != 0 || evidenceErr != nil {
@@ -299,9 +317,9 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		c.claim = nil
 		c.phase = "resident"
 		c.eligibleSince = time.Time{}
-		return nil, c.snapshotLocked(), evidenceErr
+		return nil, c.claimSnapshotLocked(), evidenceErr
 	}
-	return claim, c.snapshotLocked(), nil
+	return claim, c.claimSnapshotLocked(), nil
 }
 
 func (c *RetirementController) validClaimLocked(claim *RetirementClaim) bool {

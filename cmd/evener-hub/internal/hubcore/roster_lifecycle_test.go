@@ -232,3 +232,53 @@ func TestRosterLifecycleTransitionsBumpFingerprint(t *testing.T) {
 		t.Fatalf("blocker transition fired onChange %d times total, want 2", changes)
 	}
 }
+
+// TestFailedProbeClearsReusedEntryLifecycleFreshness is the regression test for
+// the stale-lifecycle defect: when a daemon's probe fails but its PID and exact
+// rendezvous identity still match, the roster keeps the route but must not keep
+// presenting the previous lifecycle as current eligibility. A stale row must
+// never report fresh lifecycle (and therefore never offer a retire action).
+func TestFailedProbeClearsReusedEntryLifecycleFreshness(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       1001,
+		Address:   "127.0.0.1:50001",
+		SessionID: "01LCSTALE",
+		ThreadID:  "01LCSTALE",
+	})
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID:      "01LCSTALE",
+		Status:         "idle",
+		Lifecycle:      &appwire.DaemonLifecycle{Phase: "resident", Blockers: []appwire.DaemonBlocker{}},
+		LifecycleFresh: true,
+		OK:             true,
+	}}
+	r := NewRoster(dir, prober)
+	r.procAlive = func(int) bool { return true }
+	r.Refresh()
+
+	// Control: a successful probe reports fresh lifecycle for a visible row.
+	fresh, ok := r.Find("01LCSTALE")
+	if !ok {
+		t.Fatal("row disappeared after a successful probe")
+	}
+	if !fresh.LifecycleFresh || fresh.Lifecycle == nil {
+		t.Fatalf("successful probe did not report fresh lifecycle: %+v", fresh)
+	}
+
+	// The daemon's probe now fails while its process and exact identity stay
+	// intact: the route is retained, but its lifecycle is no longer observed.
+	prober.result = ProbeResult{}
+	r.Refresh()
+
+	stale, ok := r.Find("01LCSTALE")
+	if !ok {
+		t.Fatal("transient probe failure must keep the row visible")
+	}
+	if stale.LifecycleFresh {
+		t.Error("failed probe left stale lifecycle marked fresh")
+	}
+	if stale.Lifecycle != nil {
+		t.Errorf("failed probe left stale lifecycle populated: %+v", stale.Lifecycle)
+	}
+}

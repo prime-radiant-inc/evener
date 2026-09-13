@@ -131,8 +131,14 @@ export function HubResidents() {
       const next = new Map(prev);
       for (const [gen, result] of prev) {
         const daemon = daemonMap.get(gen);
-        // Clear if the daemon left the list, or its lifecycle phase changed.
-        if (!daemon || daemon.lifecycle?.phase !== result.lifecycle.phase) {
+        // Clear if the daemon left the list, or a genuinely fresh snapshot
+        // reports a different lifecycle phase. A stale or unknown probe carries
+        // no lifecycle (the server only sets it while the probe is fresh), so
+        // its absent phase must not read as a phase change — that would discard
+        // a retire the Hub already accepted while the daemon is exiting.
+        const phaseChanged =
+          daemon !== undefined && daemon.probeState === "current" && daemon.lifecycle?.phase !== result.lifecycle.phase;
+        if (!daemon || phaseChanged) {
           next.delete(gen);
           changed = true;
         }

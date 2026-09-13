@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1640,5 +1641,76 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 	mintedOwner, _, ok := scratchBindingOwning(t, manifest, mintedDir)
 	if !ok || mintedOwner.BindingID != renv2Binding.BindingID || mintedOwner.OwnerSessionID != root.id {
 		t.Fatalf("the real mint on the restored session was not published under the reconstructed binding: owner=%+v ok=%v want %q owned by R", mintedOwner, ok, renv2Binding.BindingID)
+	}
+}
+
+// TestRetirementConcurrentReleaseOnlyOneProceeds is the regression test for the
+// unsynchronized one-use release guard. Concurrent ReleaseForRetirement calls
+// for the same committed preparation must win teardown exactly once; run under
+// -race so the detector observes the guard access.
+func TestRetirementConcurrentReleaseOnlyOneProceeds(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	claim, _, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %v %v", claim, err)
+	}
+	prepared, err := c.Prepare(context.Background(), claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Commit(claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DrainReaders(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Count every caller that actually enters the teardown path. The fault point
+	// runs after the one-use guard is claimed, so it distinguishes "proceeded"
+	// from "refused" without changing teardown behavior.
+	var entered atomic.Int32
+	retirementReleaseFault = func(point string) error {
+		if point == "before_release" {
+			entered.Add(1)
+		}
+		return nil
+	}
+	defer func() { retirementReleaseFault = nil }()
+
+	const callers = 8
+	results := make([]error, callers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i] = root.ReleaseForRetirement(context.Background(), prepared)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if got := entered.Load(); got != 1 {
+		t.Fatalf("%d callers entered teardown, want exactly 1 (release results=%v)", got, results)
+	}
+	successes := 0
+	for _, result := range results {
+		if result == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("%d callers reported release success, want exactly 1 (results=%v)", successes, results)
 	}
 }
