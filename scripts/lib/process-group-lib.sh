@@ -18,7 +18,9 @@
 # `ps -o sess=` is 0 for everything. So the rule is: anything alive under a
 # recorded number is stopped, unless the number has plainly been handed on, which
 # is the one thing that can be read — a leader whose pid is the number and which
-# started after the record was written. The residual, stated exactly: a number
+# started after the record was written. And when nothing can be read at all,
+# nothing is signalled: a signal aimed at a number nobody could verify is the
+# reuse hazard on purpose, so that row keeps its record and says so instead. The residual, stated exactly: a number
 # reused after our group emptied, whose new leader has since exited too, leaving
 # descendants; those read as ours. Everything else is kept safe structurally by
 # pgroup_signalable, which refuses 0, 1, a non-number and the group this caller is
@@ -378,6 +380,26 @@ pgroup_record_survivor() {
 	mv "$1.survivor.tmp" "$1"
 }
 
+# pgroup_abandon_spawn RECORD PID GRACE — give up on a job just spawned: stop it,
+# and drop its record only if the stop was confirmed.
+#
+# The record is the only name anyone has for a job still running, so it goes when
+# the job is shown to be gone and stays when it is not — the same invariant every
+# other path here follows. 0 when the job is gone and the record with it, 1 when
+# it could not be shown to have stopped and both remain; the sentence is left in
+# pgroup_stop_reason.
+pgroup_abandon_spawn() {
+	local record="$1" pid="$2" grace="$3" status=0
+	pgroup_stop_reason=""
+	stop_pid "$pid" "$grace" || status=$?
+	if [ "$status" -eq 0 ]; then
+		pgroup_record_clear "$record"
+		return 0
+	fi
+	pgroup_stop_reason="$(printf 'pid %s could not be shown to have stopped, so its record is kept at %s.' "$pid" "$record")"
+	return 1
+}
+
 # stop_recorded_job RECORD GRACE MARKER_PREFIX — stop whatever RECORD names, and say
 # what happened. The whole state table lives here, so no caller has to know it:
 #
@@ -453,8 +475,12 @@ stop_recorded_job() {
 	# the instant after it is forked, and a group outlives the process that made
 	# it. Survivors decide from here.
 	if ! members="$(pgroup_survivors "$number")"; then
-		escalate_blind "$number" "$grace"
-		pgroup_stop_reason="$(printf 'the process listing that says whether group %s is empty would not run; it has been signalled blind.' "$number")"
+		# Nothing is signalled on an unreadable listing. A blind signal is aimed
+		# at a number, and a number is only this job's while something can be
+		# seen to confirm it: sending one here is the reuse hazard the marker
+		# exists to prevent, done on purpose. The record is kept instead, which
+		# is what the state table promises for this row.
+		pgroup_stop_reason="$(printf 'the process listing that says whether group %s is empty would not run, so nothing was signalled.' "$number")"
 		return 2
 	fi
 	if [ -z "$members" ]; then
@@ -490,33 +516,6 @@ stop_recorded_job() {
 	esac
 	pgroup_stop_reason="$(printf 'process group %s cannot be shown to have stopped: the process listing would not run.' "$number")"
 	return 2
-}
-
-# escalate_blind PID GRACE — the last thing to do for a job nothing can see:
-# SIGTERM, GRACE seconds, then SIGKILL, to the group the pid may lead and to the
-# pid itself.
-#
-# It is sent blind, which is the point. When the process listing will not run,
-# "cannot be shown to have stopped" is an honest answer but on its own it leaves
-# the job running and holding whatever it holds, poisoning every later run on
-# the host. The grace is blind too: nothing here can watch a handler run, so the
-# wait is the only thing a SIGTERM can be given. Escalating is not confirming —
-# the caller still owes its reader the fail-closed answer.
-escalate_blind() {
-	local pid="$1" grace="$2" group=1 single=1
-	pgroup_signalable "$pid" || group=0
-	pid_signalable "$pid" || single=0
-	if [ "$group" -eq 0 ] && [ "$single" -eq 0 ]; then
-		# Neither spelling of this number may be signalled, so nothing was
-		# sent and the caller is owed the unknown it started with.
-		return 2
-	fi
-	[ "$group" -eq 1 ] && { kill -TERM -- -"$pid" 2>/dev/null || :; }
-	[ "$single" -eq 1 ] && { kill -TERM "$pid" 2>/dev/null || :; }
-	sleep "$grace"
-	[ "$group" -eq 1 ] && { kill -KILL -- -"$pid" 2>/dev/null || :; }
-	[ "$single" -eq 1 ] && { kill -KILL "$pid" 2>/dev/null || :; }
-	return 0
 }
 
 # stop_pgroup PGID GRACE — stop every member of PGID and prove

@@ -589,7 +589,6 @@ stop_package_list_attempt() {
 		# — a verdict about the package list retried to the end of the budget
 		# and then reported as a timeout.
 		if ! live="$(pgroup_survivors "$pid")"; then
-			escalate_blind "$pid" "$PACKAGE_LIST_STOP_GRACE"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
@@ -606,7 +605,6 @@ stop_package_list_attempt() {
 		# becomes `go` only at the exec after the split.
 		stop_pid "$pid" "$PACKAGE_LIST_STOP_GRACE" || status=$?
 		if [ "$status" -eq 2 ]; then
-			escalate_blind "$pid" "$PACKAGE_LIST_STOP_GRACE"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
@@ -620,7 +618,6 @@ stop_package_list_attempt() {
 		# leader and left `go list`'s children in a group of their own. The pid
 		# is that group's number too, so ask whether one formed.
 		if ! live="$(pgroup_survivors "$pid")"; then
-			escalate_blind "$pid" "$PACKAGE_LIST_STOP_GRACE"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
@@ -813,10 +810,11 @@ run_bounded_package_list() {
 		if ! pgroup_record_spawned "$(package_list_pgid_path "$module")" "$list_pid" "$attempt_marker"; then
 			printf 'run-module-tests.sh: could not record attempt %s beside %s; stopping it rather than running a package list nothing could name.\n' \
 				"$attempt" "$(package_list_pgid_path "$module")" >&2
-			stop_pid "$list_pid" "$PACKAGE_LIST_STOP_GRACE" || :
-			# Stopped, so nothing is left to name: the record goes too, or the
-			# cleanup waits out its grace for a job that is already gone.
-			pgroup_record_clear "$(package_list_pgid_path "$module")"
+			# Stopped, and the record goes with it — but only if the stop can be
+			# shown: a job still running is one the record is the only name for.
+			if ! pgroup_abandon_spawn "$(package_list_pgid_path "$module")" "$list_pid" "$PACKAGE_LIST_STOP_GRACE"; then
+				printf 'run-module-tests.sh: %s\n' "$pgroup_stop_reason" >&2
+			fi
 			return 1
 		fi
 		started_at=$SECONDS
