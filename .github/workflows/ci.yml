@@ -42,7 +42,7 @@ jobs:
       - name: Install native dependencies
         run: npm ci --prefix mobile-native
 
-      - name: Test native app and shared session core
+      - name: Bundle, test native app and shared session core
         run: make test-native
 
   api-package:

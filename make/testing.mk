@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -36,14 +36,39 @@ test-web-browser: web-preflight
 	@scripts/web/test-web-browser.sh
 
 ## The native iPhone app and its shared session core gate.
-## proves: Native and shared-session Vitest suites plus strict native TypeScript
-##   compilation pass against the checked-in Expo/React Native sources.
+## proves: Metro bundles the real iOS entry point, and the native and
+##   shared-session Vitest suites plus strict native TypeScript compilation
+##   pass against the checked-in Expo/React Native sources.
 ## trigger: Native CI; local pre-merge when native or shared mobile sources change.
 ## requires: Node 22.13+ and an already-installed mobile-native dependency tree;
 ##   does not contact a hub or provider.
-## fails-when: Native tests, shared-session tests or native typechecking fail.
-test-native:
+## fails-when: Bundling, native tests, shared-session tests or native
+##   typechecking fail.
+test-native: test-native-bundle
 	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check
+
+# test-native-bundle is the only gate that runs Metro. Vitest resolves through
+# Vite and `tsc` through TypeScript's own resolver; neither reads
+# metro.config.js, so a resolver regression there passes every other native
+# check and fails first on a device. Bundling the real entry point is the only
+# thing that reads the real resolver, which is why this runs ahead of the
+# suites rather than after them: a broken bundle is the cheaper failure to see.
+## The native app's Metro bundling gate.
+## proves: Metro resolves every specifier the real iOS entry point reaches —
+##   the app's own sources, the shared mobile/ and frontend sources its
+##   resolveRequest redirects, and the AppWire client wherever that package
+##   lives — and Hermes compiles the result.
+## trigger: Native CI (via make test-native); local pre-merge when native
+##   sources, metro.config.js, or the AppWire client package's location moves.
+## requires: Node 22.13+ and an already-installed mobile-native dependency
+##   tree; no device, simulator, packager, hub, or provider. Runs with a
+##   private process home and temporary root and passes --clear, so the
+##   verdict never comes from a warm Metro cache. ~9s on a developer Mac;
+##   EVENER_NATIVE_BUNDLE_TIMEOUT (default 600s) bounds a hung bundler.
+## fails-when: Metro cannot resolve a module, the bundle or Hermes step fails,
+##   or the run exceeds the timeout.
+test-native-bundle:
+	@scripts/native/test-native-bundle.sh
 
 ## The independently consumable AppWire package qualification gate.
 ## proves: A packed package installs outside the checkout, exposes ESM and
