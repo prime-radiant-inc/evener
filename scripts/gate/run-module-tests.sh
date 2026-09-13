@@ -632,6 +632,25 @@ stop_package_list_pid() {
 	return 1
 }
 
+# package_list_escalate PID — the last thing to do for an attempt nothing can
+# see: SIGTERM, the stop's own grace, then SIGKILL, to the group the pid may
+# lead and to the pid itself.
+#
+# It is sent blind, which is the point. When the process listing will not run,
+# the answer "cannot be shown to have stopped" is honest but on its own it
+# leaves a `go list` running with the build and module cache locks, poisoning
+# every later run on the host — the failure the escalation inside the group stop
+# was added for. The grace is blind too: nothing here can watch a handler run,
+# so the wait is the only thing a SIGTERM can be given.
+package_list_escalate() {
+	local pid="$1"
+	kill -TERM -- -"$pid" 2>/dev/null || :
+	kill -TERM "$pid" 2>/dev/null || :
+	sleep "$ROOT_PACKAGE_LIST_STOP_GRACE"
+	kill -KILL -- -"$pid" 2>/dev/null || :
+	kill -KILL "$pid" 2>/dev/null || :
+}
+
 # stop_package_list_attempt PID — stop a timed-out attempt, whatever state its
 # process group is in, and say what happened. PID is the pid the runner spawned,
 # which is also the attempt's group number once it has split into one.
@@ -673,6 +692,7 @@ stop_package_list_attempt() {
 		# — a verdict about the package list retried to the end of the budget
 		# and then reported as a timeout.
 		if ! live="$(package_list_group_survivors "$pid")"; then
+			package_list_escalate "$pid"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
@@ -689,6 +709,7 @@ stop_package_list_attempt() {
 		# becomes `go` only at the exec after the split.
 		stop_package_list_pid "$pid" || status=$?
 		if [ "$status" -eq 2 ]; then
+			package_list_escalate "$pid"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
@@ -702,6 +723,7 @@ stop_package_list_attempt() {
 		# leader and left `go list`'s children in a group of their own. The pid
 		# is that group's number too, so ask whether one formed.
 		if ! live="$(package_list_group_survivors "$pid")"; then
+			package_list_escalate "$pid"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
@@ -720,6 +742,8 @@ stop_package_list_attempt() {
 	case "$status" in
 	0) return 0 ;;
 	2)
+		# The stop escalated inside itself before answering 2; nothing more to
+		# send, and its own SIGKILL has already gone to the group.
 		package_list_stop_reason="$listing_failed"
 		return 2
 		;;
