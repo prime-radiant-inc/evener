@@ -158,3 +158,67 @@ func TestSkillActivation_AdmittedSelectionIsNotReReconciled(t *testing.T) {
 		t.Fatalf("restored carrier obligations = %d, want exactly one", carriers)
 	}
 }
+
+// TestSkillActivation_FailedPreparationIsNotReDeliveredAtRestore pins the
+// negative side of the reconcile contract: an input record whose preparation
+// FAILED carries no Prepared invocations, which means "kept for correction,
+// never re-delivered". Recovery must therefore re-drive nothing for it — a
+// restore that reconciled it would deliver a selection the operator was told
+// had failed and may have already corrected.
+func TestSkillActivation_FailedPreparationIsNotReDeliveredAtRestore(t *testing.T) {
+	root := t.TempDir()
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+
+	// No skill.md is written for this name, so preparation cannot resolve it.
+	if !s.consumeSteeringMessage(steeringMessage{Text: "steer with an unresolvable skill", SkillNames: []string{"no-such-skill"}}) {
+		t.Fatal("steering message was not durably consumed")
+	}
+	states := skillTurnStates(s)
+	if len(states) != 1 || states[0].Input == nil {
+		t.Fatalf("steering turn skill states = %+v, want exactly one typed input record", states)
+	}
+	if len(states[0].Input.Prepared) != 0 {
+		t.Fatalf("a failed preparation recorded %d prepared invocation(s), want none", len(states[0].Input.Prepared))
+	}
+	if got := lifecycleObligations(s); len(got) != 0 {
+		t.Fatalf("obligations after a failed preparation = %+v, want none", got)
+	}
+	s.Close()
+
+	// The source becomes available before the restart. A reconcile that
+	// re-drove the failed preparation would therefore SUCCEED and deliver the
+	// skill -- so this is what makes the assertion below discriminating rather
+	// than a restatement of "the name is still missing".
+	writeSkillMD(t, root, "no-such-skill", "---\nname: no-such-skill\ndescription: fixture\n---\nBODY_failed_preparation")
+
+	meta, err := schema.LoadSessionMeta(stateDir, s.Meta().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Skills == nil {
+		t.Fatal("session metadata has no skill lifecycle snapshot")
+	}
+	if len(meta.Skills.Obligations) != 0 {
+		t.Fatalf("persisted obligations %+v for a failed preparation, want none", meta.Skills.Obligations)
+	}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), meta, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+
+	if got := lifecycleObligations(restored); len(got) != 0 {
+		t.Fatalf("restored obligations = %+v, want none (a failed preparation must never be re-delivered)", got)
+	}
+	carriers := 0
+	for _, state := range skillTurnStates(restored) {
+		carriers += len(state.Obligations)
+	}
+	if carriers != 0 {
+		t.Fatalf("restored carrier obligations = %d, want none", carriers)
+	}
+}
