@@ -180,3 +180,38 @@ func TestCanonicalSessionURLRejectsControlCharacters(t *testing.T) {
 		}
 	}
 }
+
+// Stripping controls must not break the collapse's single-space invariant: a
+// control sitting between two spaces disappears, and the caller sees one space.
+// Stripping after the collapse (as this fix first did) turns "a \x1b b" into
+// "a  b", which is text the user never wrote.
+func TestNormalizeNoteKeepsSingleSpacesWhenStrippingControls(t *testing.T) {
+	cases := map[string]string{
+		"control between spaces":   "a \x1b b",
+		"controls between spaces":  "a \x1b\x07 b",
+		"C1 between spaces":        "a \u009b b",
+		"control at the end":       "a \x1b",
+		"control at the start":     "\x1b a",
+		"control between newlines": "a\n\x1b\nb",
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := normalizeNote(in)
+			for _, r := range got {
+				if unicode.IsControl(r) {
+					t.Fatalf("normalizeNote(%q) = %q carries control rune %U", in, got, r)
+				}
+			}
+			if strings.Contains(got, "  ") {
+				t.Fatalf("normalizeNote(%q) = %q left a double space", in, got)
+			}
+		})
+	}
+	if got := normalizeNote("a \x1b b"); got != "a b" {
+		t.Fatalf("normalizeNote(%q) = %q, want %q", "a \x1b b", got, "a b")
+	}
+	// The collapse still owns the whitespace controls: newlines become spaces.
+	if got := normalizeNote("a\nb"); got != "a b" {
+		t.Fatalf("normalizeNote(%q) = %q, want %q", "a\nb", got, "a b")
+	}
+}

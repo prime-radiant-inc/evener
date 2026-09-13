@@ -158,27 +158,36 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 // space, strips terminal control characters, and clamps to sessionNoteMaxRunes
 // Unicode characters.
 //
-// The strip runs after the collapse, so every control still in the text is one
-// the collapse could not consume — ESC, DEL, the C1 introducers. Those carry no
-// meaning as note content, and stored notes, labels, and URLs are printed by
-// terminals (the TUI details drawer, the transcript's human-note echo, the
-// notes tool output), so leaving them in would let note text drive the terminal
-// that displays it.
+// The strip runs before the collapse and leaves the whitespace controls for it:
+// stripping those first would join words ("a\nb" would store "ab"), and
+// stripping after the collapse would leave a double space wherever a control sat
+// between two spaces ("a \x1b b" would store "a  b"). What the strip removes is
+// what the collapse cannot consume — ESC, DEL, the C1 introducers — which carry
+// no meaning as note content while stored notes, labels, and URLs are printed by
+// terminals (the TUI details drawer, the transcript's human-note echo, the notes
+// tool output).
 func normalizeNote(text string) string {
-	collapsed := strings.Join(strings.Fields(text), " ")
-	if strings.ContainsFunc(collapsed, unicode.IsControl) {
-		collapsed = strings.Map(func(r rune) rune {
-			if unicode.IsControl(r) {
+	if strings.ContainsFunc(text, isNoteControl) {
+		text = strings.Map(func(r rune) rune {
+			if isNoteControl(r) {
 				return -1
 			}
 			return r
-		}, collapsed)
+		}, text)
 	}
+	collapsed := strings.Join(strings.Fields(text), " ")
 	runes := []rune(collapsed)
 	if len(runes) > sessionNoteMaxRunes {
 		collapsed = string(runes[:sessionNoteMaxRunes])
 	}
 	return collapsed
+}
+
+// isNoteControl reports whether r is a control character the whitespace collapse
+// cannot consume: C0 apart from the whitespace controls, DEL, and C1 apart from
+// the C1 whitespace (NEL), which strings.Fields collapses like any other space.
+func isNoteControl(r rune) bool {
+	return unicode.IsControl(r) && !unicode.IsSpace(r)
 }
 
 // setAgentNote normalizes and clamps the agent whiteboard and publishes the
