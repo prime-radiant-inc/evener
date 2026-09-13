@@ -11,7 +11,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import type { AppwireClientLike } from "../protocol/clientLike";
-import { buildComposerInput, buildInput, type InputAttachment } from "../protocol/composerInput";
+import { buildComposerInput, buildInput, canonicalSkillNames, type InputAttachment } from "../protocol/composerInput";
 import { ClientNotReadyError, isStaleCursorError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
@@ -1236,7 +1236,10 @@ function composerMutationIntent(
   // capability never receives a request carrying a selection, so no queue
   // entry, journal payload, or turn is created for it. An absent capability
   // reads exactly like a false one - an older daemon never sends it.
-  if ((skillNames?.length ?? 0) > 0 && model?.capabilities?.skillInput !== true) {
+  // The gate measures what the request will actually carry: buildComposerInput
+  // canonicalizes (trims, drops empties and duplicates), so a whitespace-only
+  // or empty-name list would send zero skill items and must not be refused.
+  if (canonicalSkillNames(skillNames).length > 0 && model?.capabilities?.skillInput !== true) {
     throw new Error("skill selections are not supported on this target");
   }
   // Translated HERE, not inside buildInput: this is the submit boundary. The

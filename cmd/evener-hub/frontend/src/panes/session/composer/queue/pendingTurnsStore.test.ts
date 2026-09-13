@@ -294,6 +294,25 @@ test("the store refuses skill selections unless the target advertises the skillI
   expect(await storage.listOutbox("ref_a")).toEqual([]);
 });
 
+test("the skillInput gate measures the names the wire would actually carry", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = await connect();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+
+  // A list that canonicalizes to nothing sends zero skill items, so a target
+  // without the capability must not refuse it: the gate has to measure the same
+  // canonical list buildComposerInput sends.
+  await act(async () => {
+    await threadsStore.getState().send("ref_a", "hello", undefined, ["   ", ""]);
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  const records = await storage.listOutbox("ref_a");
+  expect(records).toHaveLength(1);
+  expect(records[0]?.payload.input).toEqual([{ type: "text", text: "hello" }]);
+});
+
 test("a committed submission clears a stored draft only when its text and selections both match", async () => {
   writeComposerDraft("ref_a", { text: "with skills", skillNames: ["pkg:probe"] });
   const onFailure = vi.fn();

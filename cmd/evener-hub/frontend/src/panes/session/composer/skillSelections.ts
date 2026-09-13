@@ -23,7 +23,13 @@ export function addSkillSelection(names: readonly string[], canonicalName: strin
   return canonicalSkillNames([...names, canonicalName]);
 }
 
-/** Removes exactly the named selection; an absent name leaves the list as-is. */
+/**
+ * Removes exactly the named selection; an absent name leaves the list as-is.
+ * Canonicalized like addSkillSelection, for the same reason it promises to
+ * behave identically: a padded or duplicated entry that add would have
+ * collapsed must not survive the removal of its canonical name.
+ */
 export function removeSkillSelection(names: readonly string[], canonicalName: string): string[] {
-  return names.filter((name) => name !== canonicalName);
+  const target = canonicalName.trim();
+  return canonicalSkillNames(names).filter((name) => name !== target);
 }
