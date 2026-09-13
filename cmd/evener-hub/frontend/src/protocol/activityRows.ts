@@ -5,7 +5,7 @@
 // Sessions never become rows — the panel header covers the root and a delegate
 // row stands in for its child session.
 
-import { watchCadenceLabel, watchDurationLabel } from "../shell/rail/RailRow";
+import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchTitle } from "../shell/rail/RailRow";
 import {
   type ActivityDelegate,
   type ActivityEntry,
@@ -94,7 +94,7 @@ export function buildWatchRows(watches?: NavigationWatchSummary[]): ActivityWatc
 // The same name the rail's watch row shows: the note a person wrote down, with
 // the id as the fallback for a note the wire omitted or trimmed to nothing.
 export function watchName(watch: NavigationWatchSummary): string {
-  return watch.note?.trim() || watch.id;
+  return watchTitle(watch);
 }
 
 // Watch kind is decided from the condition fields themselves, never from
@@ -126,7 +126,7 @@ function cadenceLabels(watch: NavigationWatchSummary): string[] {
 }
 
 function armedState(watch: NavigationWatchSummary): string {
-  return watch.active ? "armed" : "not armed";
+  return watchArmedLabel(watch.active);
 }
 
 // The age since the watch was created, through the rail's own duration
@@ -145,15 +145,19 @@ function eventLabel(watch: NavigationWatchSummary): string {
   return events.length > 0 ? events.join(", ") : "session events";
 }
 
-// The newest supplied delivery instant as local HH:MM. Instants are oldest
-// first, so the last parseable one wins; none parseable renders nothing.
+// The newest supplied delivery instant as local HH:MM. watchDeliveryInstants
+// already parses, drops unparseable entries, and orders oldest first, so its
+// last element is the newest real instant; an empty list renders nothing.
 function lastDeliveryClock(watch: NavigationWatchSummary): string | undefined {
-  const times = watch.delivery_times ?? [];
-  for (let index = times.length - 1; index >= 0; index--) {
-    const clock = formatClockTime(times[index]);
-    if (clock !== undefined) return clock;
-  }
-  return undefined;
+  const last = watchDeliveryInstants(watch).at(-1);
+  if (last === undefined) return undefined;
+  return formatClockTime(new Date(last).toISOString());
+}
+
+// The delivery-count wording watchMeta and watchFacts both show. One helper so
+// "1 delivery" vs "N deliveries" cannot drift between the two lines.
+function deliveryCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "delivery" : "deliveries"}`;
 }
 
 // A watch row's second line: what its condition is, then the count it has
@@ -164,10 +168,7 @@ export function watchMeta(watch: NavigationWatchSummary): string {
   if (kind === "output") return `on output · ${armedState(watch)}`;
   if (kind === "event") return `on event · ${armedState(watch)}`;
   const cadence = cadenceLabels(watch).join(" · ");
-  const suffix =
-    watch.deliveries > 0
-      ? `${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`
-      : armedState(watch);
+  const suffix = watch.deliveries > 0 ? deliveryCountLabel(watch.deliveries) : armedState(watch);
   return [cadence, suffix].filter((part) => part !== "").join(" · ");
 }
 
@@ -192,7 +193,7 @@ export function watchFacts(watch: NavigationWatchSummary, now: number): string {
     if (age !== undefined) segments.push(`armed ${age} ago`);
   }
   if (watch.deliveries > 0) {
-    segments.push(`${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`);
+    segments.push(deliveryCountLabel(watch.deliveries));
     if (kind === "scheduled") {
       const last = lastDeliveryClock(watch);
       if (last !== undefined) segments.push(`last at ${last}`);

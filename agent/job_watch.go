@@ -2466,11 +2466,10 @@ func (jm *jobManager) liveWatchStatuses() []WatchStatusInfo {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	statuses := make([]WatchStatusInfo, 0, len(jm.watches))
-	for key, cfg := range jm.watches {
+	for _, cfg := range jm.watches {
 		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
 			continue
 		}
-		_ = key
 		statuses = append(statuses, watchStatusInfoFromConfig(cfg))
 	}
 	sort.SliceStable(statuses, func(i, j int) bool {

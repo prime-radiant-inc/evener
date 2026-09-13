@@ -34,6 +34,7 @@ import {
   watchName,
 } from "../../../protocol/activityRows";
 import type { NavigationWatchSummary } from "../../../protocol/types.gen";
+import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -488,24 +489,6 @@ const DenseRowView = memo(function DenseRowView({
   );
 });
 
-// The clock a watch row leads with, drawn rather than typed: the app's fonts
-// carry no clock codepoint, and the row's accessible name is the aria-label
-// prefix, so the drawn glyph stays aria-hidden.
-function WatchGlyph(): ReactNode {
-  return (
-    <svg
-      data-testid="watch-glyph"
-      className={CLASS.watchGlyph}
-      viewBox="0 0 16 16"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 interface WatchRowViewProps {
   row: ActivityWatchRow;
   detailOpen: boolean;
@@ -566,7 +549,7 @@ function WatchRowView({
         >
           <Chevron direction={detailOpen ? "down" : "right"} size={12} />
         </button>
-        <WatchGlyph />
+        <WatchGlyph className={CLASS.watchGlyph} testId="watch-glyph" />
         <span className={CLASS.srOnly}>Watch:</span>
         <span className={CLASS.denseName}>{watchName(row.watch)}</span>
         <span className={CLASS.denseMeta}>{watchMeta(row.watch)}</span>
@@ -806,7 +789,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   // The ticking clock lives in TreeTickProvider below, gated on this same
   // flag: no live rows, no interval - the old effect's contract, minus the
   // tree-wide setNow that re-rendered every row each second.
-  const hasLive = activityRows.some((row) => (row.kind === "job" || row.kind === "delegate") && row.live);
+  const hasLive = activityRows.some((row) => "live" in row && row.live);
 
   const strips = useMemo(
     () => collectContinuations(tree, rows, continuationFailures),

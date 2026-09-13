@@ -270,9 +270,16 @@ export function watchCadenceLabel(cadence: NavigationWatchCadence): string {
 // A watch row's second line: what it is waiting on, and whether it is still
 // armed. One line per watch, never a countdown - see watchDurationLabel.
 // Exported for direct testing of the join, the way activityGloss is.
+//
+// The armed wording lives in watchArmedLabel so the rail's gloss and the
+// session panel's own watch rows can never disagree about it.
+export function watchArmedLabel(active: boolean): string {
+  return active ? "armed" : "not armed";
+}
+
 export function watchGloss(watch: NavigationWatchSummary): string {
   const parts = (watch.cadence ?? []).map(watchCadenceLabel).filter((label) => label !== "");
-  parts.push(watch.active ? "armed" : "not armed");
+  parts.push(watchArmedLabel(watch.active));
   return parts.join(" · ");
 }
 
@@ -848,15 +855,12 @@ function JobRow({ node }: { node: JobRailNode }) {
 // typed glyph would be announced as a stray character rather than as "watch"
 // (see review synthesis §7). aria-hidden because the visually-hidden "Watch:"
 // beside it is the word assistive tech should read.
-function WatchGlyph() {
+//
+// Exported for the session panel's watch rows too: the geometry lives here
+// once, and each caller passes its own module's class and its own test id.
+export function WatchGlyph({ className, testId }: { className: string; testId: string }) {
   return (
-    <svg
-      data-testid="rail-row-watch-glyph"
-      className={CLASS.watchGlyph}
-      viewBox="0 0 16 16"
-      aria-hidden="true"
-      focusable="false"
-    >
+    <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
       <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
@@ -866,7 +870,7 @@ function WatchGlyph() {
 // The title a watch row shows: the note the watch was armed with - the reason
 // a person wrote down. The id is the fallback for a note the wire omitted or
 // truncated to nothing, so a row is never blank.
-function watchTitle(watch: NavigationWatchSummary): string {
+export function watchTitle(watch: NavigationWatchSummary): string {
   return watch.note?.trim() || watch.id;
 }
 
@@ -881,7 +885,7 @@ function WatchRow({ node }: { node: WatchRailNode }) {
     <span className={CLASS.railRow} data-testid="rail-row-watch" data-watch-id={watch.id}>
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          <WatchGlyph />
+          <WatchGlyph className={CLASS.watchGlyph} testId="rail-row-watch-glyph" />
           <span className={CLASS.srOnly}>Watch:</span>
           {/* The note ellipsizes, so it carries its own full text as a title
               tooltip - the same contract every other truncating line here

@@ -202,6 +202,13 @@ func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.Evener
 	return diagnostics.Watches
 }
 
+// DiagnosticsWatches is the exported form of diagnosticsWatches, shared with
+// package hub's own tree projection so the two cannot drift. It is the same
+// logic; the package-local name stays for the existing in-package callers.
+func DiagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
+	return diagnosticsWatches(diagnostics)
+}
+
 // SplitNonAgentJobs separates non-delegate jobs into active and terminal
 // groups for navigation consumers. The input is already the daemon's bounded
 // diagnostic inventory, so the function preserves its order within each group.
