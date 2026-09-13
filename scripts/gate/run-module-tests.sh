@@ -877,7 +877,23 @@ run_module() {
 		fi
 		return "$shardStatus"
 	fi
-	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
+	# Every other module. Their `go test ./...` did its own package discovery,
+	# which reads the same GOCACHE and GOMODCACHE the bound exists for and has no
+	# bound of its own — so a stalled cache volume hung the gate here exactly as
+	# it once did on the root module, just later in the run. The enumeration is a
+	# module-neutral helper now, so there is one discovery path for every module
+	# and no module outside it.
+	local pkgs=() pkg module_list
+	module_list="$(package_list_path "$m")"
+	run_bounded_package_list "$m" "$module_list" || return $?
+	while IFS= read -r pkg; do
+		pkgs+=("$pkg")
+	done <"$module_list"
+	if [ "${#pkgs[@]}" -eq 0 ]; then
+		printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
+		return 1
+	fi
+	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${pkgs[@]}"
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each
