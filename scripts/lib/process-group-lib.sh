@@ -10,14 +10,31 @@
 # Each stop takes its grace in seconds, because how long a caller will spend
 # proving a job is gone is the caller's business.
 
+# pgroup_marker PREFIX — a token for one job, unique on the host.
+#
+# A shared word like `go` is no identity at all: two waves of this gate run `go`
+# at once, and a record naming one of them matches the other. PREFIX says which
+# script the job belongs to and the rest says which job, so a record can only
+# ever match the attempt that wrote it.
+pgroup_marker() {
+	printf '%s-%s-%s%s' "$1" "$$" "$RANDOM" "$RANDOM"
+}
+
 # PGROUP_SPAWN_PERL — the program to hand `perl -e` when spawning a job that has
 # to be stoppable. Its first argument is the record path, the rest is the command
 # to run:
 #
 #   perl -e "$PGROUP_SPAWN_PERL" -- "$record" "$marker" cmd arg...  &
 #
+# The wrapper does not exec the job: it forks it, keeps its own argv — which
+# carries the marker — and waits, so the group has a member identifiable as this
+# job for as long as the job runs, and the wrapper's exit status is the job's
+# (128 plus the signal number when the job was signalled, as a shell reports it).
+# Exec-ing would have left the marker nowhere: `go list ./...` has no room for a
+# token of ours on its command line.
+#
 # The caller creates the record, empty, before the fork; this fills it in. The
-# marker is the argv0 the job will run under, and it is what makes the record
+# marker is a token unique to this job, and it is what makes the record
 # safe to act on later: a pid and the group named after it both outlive the job
 # that held them, so a reader has to ask what is in that group now, not only
 # whether something is.
@@ -50,7 +67,14 @@ PGROUP_SPAWN_PERL='
 	record($record_path, "pid:$$:$marker");
 	setpgrp(0, 0) or die "setpgrp: $!\n";
 	record($record_path, "pgid:$$:$marker");
-	exec @ARGV or die "exec: $!\n";
+	my $child = fork();
+	die "fork: $!\n" unless defined $child;
+	if ($child == 0) {
+		exec @ARGV or die "exec: $!\n";
+	}
+	waitpid($child, 0);
+	my $status = $?;
+	exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
 '
 
 # pgroup_record_spawned PATH PID MARKER — the parent's own note of what it has
@@ -97,6 +121,58 @@ pgroup_record_value() {
 	fi
 	[ -n "$value" ] || return 1
 	printf '%s' "$value"
+}
+
+# pgroup_survivors PGID — print `pid(state)` for every live
+# member of PGID, zombies excluded. Exit status 0 means the printed answer is
+# trustworthy; 2 means the process listing itself failed, so nothing is known
+# about the group and an empty answer must NOT be read as "gone".
+#
+# Zombies have to be excluded, and `kill -0 -- -PGID` cannot do it. A process
+# the kernel has finished with stays a member of its own group until its parent
+# reaps it, and a group signal is reported as delivered to it, so the leader
+# this function is asked about would read as "still running" for as long as the
+# shell had not got round to reaping it — a successful kill reported as a
+# survivor, purely on reap timing. Asking `ps` for the state instead makes the
+# answer independent of when anyone reaps.
+#
+# The status is separate from the output because the two failures look
+# identical otherwise. A `ps` that cannot run prints nothing, and a caller
+# reading that as "no live members" starts beside a job that is still running and holding whatever it holds — the
+# exact race the stop exists to prevent.
+pgroup_survivors() {
+	local pgid="$1" listing
+	if ! listing="$(ps -axo pid=,pgid=,state= 2>/dev/null)" || [ -z "$listing" ]; then
+		return 2
+	fi
+	printf '%s\n' "$listing" |
+		awk -v pgid="$pgid" '$2 == pgid && $3 !~ /^[Zz]/ { printf "%s(%s) ", $1, $3 }'
+}
+
+# pgroup_survivor_report PGID — what is left of PGID, as a phrase a
+# diagnostic can print. "Nothing was there" and "nobody could look" are
+# different answers, and collapsing the second into the first tells the reader
+# the group was confirmed empty when in fact the process listing would not run.
+pgroup_survivor_report() {
+	local report
+	if ! report="$(pgroup_survivors "$1")"; then
+		printf '<unknown: the process listing would not run>'
+		return 0
+	fi
+	printf '%s' "${report:-<none at the final probe>}"
+}
+
+# pid_leads_pgroup PID — 0 when the kernel says PID leads the group numbered
+# PID, 1 otherwise, including when that cannot be read.
+#
+# The one question that makes `kill -- -PID` safe. Before its setpgrp runs a
+# spawned child is still in its parent's group, and once it has gone the number
+# belongs to whoever the kernel hands it to next: a group signal aimed at it in
+# either state names a group the caller has no business touching.
+pid_leads_pgroup() {
+	local pid="$1" pgid
+	pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+	[ -n "$pgid" ] && [ "$pgid" = "$pid" ]
 }
 
 # pgroup_signalable PGID — 0 when PGID is a group this caller may signal, 1 when
@@ -198,7 +274,7 @@ pgroup_record_survivor() {
 	mv "$1.survivor.tmp" "$1"
 }
 
-# stop_recorded_job RECORD GRACE MARKER — stop whatever RECORD names, and say
+# stop_recorded_job RECORD GRACE MARKER_PREFIX — stop whatever RECORD names, and say
 # what happened. The whole state table lives here, so no caller has to know it:
 #
 #   (no file)        nothing to do
@@ -241,8 +317,11 @@ stop_recorded_job() {
 	number="${value#*:}"
 	number="${number%%:*}"
 	recorded_marker="${value##*:}"
-	if [ -n "$marker" ] && [ "$recorded_marker" != "$marker" ]; then
-		pgroup_stop_reason="$(printf 'the record was written for %s, not %s, so it names somebody else job.' "$recorded_marker" "$marker")"
+	# MARKER is the prefix this caller spawns under; the record carries the whole
+	# token, which is unique to one job. A record under some other prefix was not
+	# written by this caller and is none of its business.
+	if [ -n "$marker" ] && [ "${recorded_marker#"$marker"}" = "$recorded_marker" ]; then
+		pgroup_stop_reason="$(printf 'the record was written for %s, which is not this caller job.' "$recorded_marker")"
 		pgroup_record_clear "$record"
 		return 1
 	fi

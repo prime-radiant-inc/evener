@@ -273,8 +273,10 @@ keep_failed_logs=0
 runner_pgid="$(pid_pgroup $$)"
 # Set by stop_package_list_attempt: why it could not show an attempt stopped.
 package_list_stop_reason=""
-# What every bounded attempt is spawned under, and what its record says it is.
-PACKAGE_LIST_MARKER=go
+# What every bounded attempt is spawned under. Each attempt gets its own token
+# beginning with this, so two waves running `go` at once cannot be mistaken for
+# each other, and the cleanup asks only about records under this prefix.
+PACKAGE_LIST_MARKER_PREFIX=evener-package-list
 # A signal can arrive while a stream is running through /usr/bin/time and a
 # shell subshell, so the job PID alone is not enough to stop the actual test
 # process. Keep every stream job here and snapshot its descendants on exit.
@@ -344,7 +346,7 @@ stop_recorded_package_list_groups() {
 	for pgid_file in "$logdir"/*.pgid; do
 		[ -e "$pgid_file" ] || continue
 		status=0
-		stop_recorded_job "$pgid_file" "$PACKAGE_LIST_STOP_GRACE" "$PACKAGE_LIST_MARKER" || status=$?
+		stop_recorded_job "$pgid_file" "$PACKAGE_LIST_STOP_GRACE" "$PACKAGE_LIST_MARKER_PREFIX" || status=$?
 		case "$status" in
 		0) ;;
 		1)
@@ -616,7 +618,7 @@ package_list_build_flags() {
 # itself is `go list ./...` in the current directory, which the caller has
 # already changed to that module.
 run_bounded_package_list() {
-	local module="$1" package_list="$2" package_list_stderr attempt attempt_list build_flags
+	local module="$1" package_list="$2" package_list_stderr attempt attempt_list build_flags attempt_marker
 	local list_pid started_at list_status stop_status
 	# Every attempt below is exec'd through perl so it lands in its own process
 	# group. Named here rather than discovered at the spawn, where it would fail
@@ -669,6 +671,8 @@ run_bounded_package_list() {
 		# splits into its own group and runs on. So the file is created here,
 		# before the fork, and an empty one means "an attempt is spawning": the
 		# cleanup waits for the pid rather than deciding there is nothing to stop.
+		# A token of this attempt's own, so nothing else on the host answers to it.
+		attempt_marker="$(pgroup_marker "$PACKAGE_LIST_MARKER_PREFIX")"
 		if ! : >"$(package_list_pgid_path "$module")"; then
 			printf 'run-module-tests.sh: could not create the process-group record %s for attempt %s; not spawning a package list that nothing could stop.\n' \
 				"$(package_list_pgid_path "$module")" "$attempt" >&2
@@ -677,12 +681,12 @@ run_bounded_package_list() {
 		# Word-split deliberately, as everywhere else the flags are passed on.
 		# shellcheck disable=SC2086
 		perl -e "$PGROUP_SPAWN_PERL" \
-			-- "$(package_list_pgid_path "$module")" "$PACKAGE_LIST_MARKER" \
+			-- "$(package_list_pgid_path "$module")" "$attempt_marker" \
 			go list $build_flags ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
 		# Said from this side too, so no instant passes with an attempt running
 		# and a record that names nothing.
-		pgroup_record_spawned "$(package_list_pgid_path "$module")" "$list_pid" "$PACKAGE_LIST_MARKER"
+		pgroup_record_spawned "$(package_list_pgid_path "$module")" "$list_pid" "$attempt_marker"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
 			if [ $((SECONDS - started_at)) -ge "$PACKAGE_LIST_TIMEOUT" ]; then

@@ -78,8 +78,10 @@ bindir="$(go env GOPATH)/bin"
 attempt_scratch=""
 attempt_pid=""
 attempt_record=""
-# What every attempt is spawned under, and what its record says it is.
-attempt_marker=install-golangci-lint-attempt
+# What every attempt is spawned under: a token of its own beginning with this
+# prefix, which is also what the trap asks about.
+attempt_marker_prefix=install-golangci-lint-attempt
+attempt_marker=""
 # Set when a stop could not be shown to have worked: the scratch and the record
 # in it then stay, whatever else runs afterwards.
 attempt_unconfirmed=0
@@ -101,7 +103,7 @@ attempt_stop_grace=5
 stop_attempt() {
 	local status=0
 	[ -n "$attempt_record" ] || return 0
-	stop_recorded_job "$attempt_record" "$attempt_stop_grace" "$attempt_marker" || status=$?
+	stop_recorded_job "$attempt_record" "$attempt_stop_grace" "$attempt_marker_prefix" || status=$?
 	if [ "$status" -ne 0 ]; then
 		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: %s Not waiting on it.\n' \
 			"$pgroup_stop_reason" >&2
@@ -179,6 +181,7 @@ while :; do
 	# whole script.
 	# Created before the fork, filled in by the child before it splits: an empty
 	# record means an attempt is spawning, which is what stop_attempt waits on.
+	attempt_marker="$(pgroup_marker "$attempt_marker_prefix")"
 	if ! : >"$attempt_record"; then
 		printf 'install-golangci-lint.sh: could not create the process-group record %s; not spawning an install that nothing could stop.\n' \
 			"$attempt_record" >&2
