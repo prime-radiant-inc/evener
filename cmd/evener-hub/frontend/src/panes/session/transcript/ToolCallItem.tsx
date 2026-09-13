@@ -8,6 +8,7 @@ import { memo, useId, useLayoutEffect, useState } from "react";
 import { hasErrorText } from "../../../protocol/itemFailure";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
+import { parseArgs, parseJSONObject, str } from "../../../protocol/toolCallText";
 import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
@@ -31,7 +32,6 @@ import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
-import { parseArgs, parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   effectiveRowKind,
