@@ -342,6 +342,22 @@ stop_recorded_package_list_groups() {
 				continue
 			fi
 		fi
+		if [ "${recorded#pid:}" != "$recorded" ]; then
+			# A pid, not a group: the attempt had not split when it wrote this,
+			# so it is in the runner's own group and nothing here may signal that
+			# group. The deadline's own decision covers exactly this — pid stop,
+			# then the group it may have formed since — so it is asked to make it.
+			stop_status=0
+			stop_package_list_attempt "${recorded#pid:}" || stop_status=$?
+			if [ "$stop_status" -eq 0 ] || [ "$stop_status" -eq 3 ]; then
+				rm -f "$pgid_file"
+			else
+				printf 'run-module-tests.sh: the attempt recorded at %s could not be shown to have stopped: %s Its record is kept.\n' \
+					"$pgid_file" "$package_list_stop_reason" >&2
+			fi
+			continue
+		fi
+		recorded="${recorded#pgid:}"
 		# What is recorded is a group, so ask about the group rather than
 		# about its leader alone: `go list` can exit with a child of the
 		# attempt still running in it, and a leader-only check would leave
@@ -426,9 +442,14 @@ package_list_path() {
 	esac
 }
 package_list_retry_path() { printf '%s.retries' "$(package_list_path "$1")"; }
-# Where an attempt's process group is recorded: created empty by the parent
-# before the fork, filled in by the child before it splits into that group, and
-# removed when the attempt is reaped. An empty one means an attempt is spawning.
+# Where an attempt records itself: created empty by the parent before the fork,
+# written by the child as `pid:N` before it splits and rewritten as `pgid:N`
+# once it has, and removed when the attempt is reaped. The two spellings are not
+# decoration. The number is the same either way, but a pid in the runner's own
+# group and a group of the attempt's own are opposite things to a cleanup: the
+# first must be signalled by pid, and reading it as a group finds no members and
+# throws the record away while the attempt is still about to run. An empty one
+# means an attempt is spawning.
 # That group is the one thing the runner's signal cleanup cannot otherwise
 # reach: the attempt is deliberately in a group of its own, so a signal aimed at
 # the runner's group never touches it, and once the wave subshell holding it
@@ -814,11 +835,16 @@ run_bounded_package_list() {
 		fi
 		perl -e '
 			my $pgid_path = shift @ARGV;
-			open my $fh, ">", "$pgid_path.tmp" or die "pgid file $pgid_path: $!\n";
-			print $fh $$ or die "pgid file $pgid_path: $!\n";
-			close $fh or die "pgid file $pgid_path: $!\n";
-			rename "$pgid_path.tmp", $pgid_path or die "pgid file $pgid_path: $!\n";
+			sub record {
+				my ($path, $line) = @_;
+				open my $fh, ">", "$path.tmp" or die "pgid file $path: $!\n";
+				print $fh $line or die "pgid file $path: $!\n";
+				close $fh or die "pgid file $path: $!\n";
+				rename "$path.tmp", $path or die "pgid file $path: $!\n";
+			}
+			record($pgid_path, "pid:$$");
 			setpgrp(0, 0);
+			record($pgid_path, "pgid:$$");
 			exec @ARGV or die "exec: $!\n";
 		' -- "$(package_list_pgid_path "$module")" go list ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
