@@ -410,11 +410,19 @@ func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
 // reloadRegistry re-derives the instance set after a credential changed: a
 // key that has just been stored can make an implicit instance exist, and
 // clearing one can take it away (spec §5.1).
+//
+// It takes the shared side of credMu because a reload is not just a read: it
+// commits what it read, and one that read the credentials before a removal
+// deleted them can land after that removal's own reload and resurrect the
+// removed instance as an implicit one (Remove holds credMu exclusively across
+// its cleanup and reload). Sharing the lock keeps the two orders honest - this
+// reload finishes entirely before the removal's section or starts entirely
+// after it, never across it. Callers must not hold credMu themselves.
 func (c *hubAuthController) reloadRegistry() error {
 	if c.reg == nil {
 		return nil
 	}
-	return c.reg.Reload()
+	return c.credentialWrite(func() error { return c.reg.Reload() })
 }
 
 // List is what the credentials pane renders: one row per curated implicit
