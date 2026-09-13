@@ -679,11 +679,19 @@ stop_package_list_attempt() {
 # -race, -p and -parallel, so nothing here is forwarded in practice; the rule is
 # what keeps the two commands agreeing when that changes.
 package_list_build_flags() {
-	local flag normalised expect_value=0
+	local flag normalised name expect_value=0 drop_value=0
 	for flag in "$@"; do
 		if [ "$expect_value" -eq 1 ]; then
+			# A value, forwarded as the caller wrote it: it is data, and
+			# normalising it would rewrite a path or a regex.
 			printf '%s\n' "$flag"
 			expect_value=0
+			continue
+		fi
+		if [ "$drop_value" -eq 1 ]; then
+			# The value of a flag the enumeration does not want. Consumed so it
+			# cannot be read as a flag of its own: `-run -race` is a regex.
+			drop_value=0
 			continue
 		fi
 		# Forwarded in the spelling `go list` will be given, which is the
@@ -697,6 +705,17 @@ package_list_build_flags() {
 			;;
 		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -compiler=* | -trimpath | -race | -msan | -asan | -race=* | -msan=* | -asan=*)
 			printf '%s\n' "$normalised"
+			;;
+		*)
+			# The `go test` flags whose value is the next argument, consumed
+			# with it. The same list lives in cmd/evener-dev/shardplan.go,
+			# which this cannot import; #1247 is where the two become one.
+			name="${normalised%%=*}"
+			case "$name" in
+			-run | -skip | -bench | -benchtime | -count | -timeout | -cpu | -parallel | -p | -coverprofile | -coverpkg | -outputdir | -exec | -o | -fuzz | -fuzztime | -fuzzminimizetime | -cpuprofile | -memprofile | -blockprofile | -mutexprofile | -trace | -gocoverdir | -shuffle)
+				[ "$normalised" = "$name" ] && drop_value=1
+				;;
+			esac
 			;;
 		esac
 	done
