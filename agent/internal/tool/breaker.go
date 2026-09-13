@@ -116,7 +116,7 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, false
 	}
-	encoded, err := json.Marshal(canonicalizeValue(v, true, name == "shell"))
+	encoded, err := json.Marshal(canonicalizeValue(v, name == "shell"))
 	if err != nil {
 		return nil, false
 	}
@@ -126,7 +126,7 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 // canonicalizeValue recursively prunes free-text fields and neutral defaults
 // from a decoded JSON value. Maps are re-encoded by json.Marshal with sorted
 // keys, so key order and whitespace cannot change the fingerprint.
-func canonicalizeValue(v any, topLevel, dropDescription bool) any {
+func canonicalizeValue(v any, dropDescription bool) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
@@ -134,10 +134,10 @@ func canonicalizeValue(v any, topLevel, dropDescription bool) any {
 			if k == "intent" {
 				continue // free text; the registry strips it before dispatch
 			}
-			if topLevel && dropDescription && k == "description" {
+			if dropDescription && k == "description" {
 				continue // the shell tool's job label, presentation only
 			}
-			canonical := canonicalizeValue(val, false, false)
+			canonical := canonicalizeValue(val, false)
 			if isNeutralDefaultValue(canonical) {
 				continue
 			}
@@ -147,7 +147,7 @@ func canonicalizeValue(v any, topLevel, dropDescription bool) any {
 	case []any:
 		out := make([]any, 0, len(x))
 		for _, item := range x {
-			out = append(out, canonicalizeValue(item, false, false))
+			out = append(out, canonicalizeValue(item, false))
 		}
 		return out
 	case json.Number:
@@ -267,13 +267,18 @@ func (l *failureLedger) check(name string, args []byte) (failStreak int, repeatS
 	if l == nil { // a zero-value Registry has no ledger and judges nothing
 		return 0, 0, nil
 	}
+	// Both fingerprints hash the argument body, so compute them before taking
+	// the lock (as record and clearFailures already do): canonicalizing a large
+	// call under l.mu would stall every other dispatch in the batch.
+	exactKey := exactSignature(name, args)
+	semKey := failureFingerprint(name, args)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if e, ok := l.semantic[failureFingerprint(name, args)]; ok {
+	if e, ok := l.semantic[semKey]; ok {
 		failStreak = e.count
 		snippets = append([]string(nil), e.snippets...)
 	}
-	if e, ok := l.entries[exactSignature(name, args)]; ok {
+	if e, ok := l.entries[exactKey]; ok {
 		repeatStreak = e.bodyCount
 	}
 	return failStreak, repeatStreak, snippets
