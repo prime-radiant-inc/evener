@@ -40,6 +40,7 @@ export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
+export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
