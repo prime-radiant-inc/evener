@@ -26,10 +26,11 @@ async function qualify() {
     ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
     consumerDir,
   );
-  // Every module the package ships. docContent.ts is here too: only its
-  // readDocFile calls global fetch, and it does so at call time, so the module
-  // loads and its URL builders, size cap and error type run in a bare Node
-  // consumer. The runner therefore never calls readDocFile.
+  // Every module the package ships. docContent.ts is here too: it names no
+  // browser global at all - readDocFile takes the host's DocPort - so the
+  // module loads and its URL builders, size cap and error type run in a bare
+  // Node consumer. The runner never calls readDocFile: a port implies a
+  // request, and qualification makes none.
   const shippedModules = [
     "index",
     "client",
@@ -175,7 +176,7 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
-assert.equal(client.docFileRawURL("s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 `;
@@ -201,18 +202,26 @@ const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
     // import, which a root re-export cannot give it.
     "./docContent": {
       values: ["DOC_FILE_MAX_BYTES", "DocFileError", "docFileRawURL", "docImageURL", "readDocFile"],
-      types: ["DocFetch", "DocFileContent", "DocFileErrorKind", "DocResponseLike"],
-      esmTypeUses: `const read: (session: string, path: string, fetchDoc: DocFetch) => Promise<DocFileContent> = readDocFile;
+      types: ["DocFetch", "DocFileContent", "DocFileErrorKind", "DocPort", "DocResponseLike"],
+      esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
 const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
-      cjsTypeUses: `const read: client.DocFetch = async (url: string) => {
+      cjsTypeUses: `const fetchDoc: client.DocFetch = async (url: string) => {
   void url;
   throw new client.DocFileError("error", 500);
-}; void read;`,
+};
+const port: client.DocPort = { origin: "https://hub.example", fetch: fetchDoc }; void port;`,
       // The URL builders and the size cap are the whole callable surface here:
-      // readDocFile needs a fetch, and qualification makes no requests, so it
-      // is checked for presence and its behavior is covered by unit tests.
-      smoke: `assert.equal(client.docFileRawURL("s", "p"), "/doc/file?format=raw&session=s&path=p");
-assert.equal(client.docImageURL("s", "p"), "/doc/image?session=s&path=p");
+      // readDocFile needs a port, and qualification makes no requests, so it is
+      // checked for presence and its behavior is covered by unit tests. The
+      // builders are called with both bases the two adapters supply, so the
+      // same-origin web string and the native absolute URL are both qualified.
+      smoke: `assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.docImageURL("", "s", "p"), "/doc/image?session=s&path=p");
+assert.equal(
+  client.docFileRawURL("https://hub.example", "s", "p"),
+  "https://hub.example/doc/file?format=raw&session=s&path=p",
+);
+assert.equal(client.docImageURL("https://hub.example", "s", "p"), "https://hub.example/doc/image?session=s&path=p");
 assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
 `,
