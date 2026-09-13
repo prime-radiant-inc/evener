@@ -123,7 +123,6 @@ export function Tooltip({ label, children }: TooltipProps) {
     // a new interactive control needing a role; it's showing/hiding a
     // role="tooltip" description already wired to the real trigger element
     // via aria-describedby (describedChild below).
-    // Already dual mouse+keyboard triggered, see above.
     <span ref={wrapperRef} className={CLASS.wrapper} {...triggerProps}>
       {describedChild}
       {visible &&

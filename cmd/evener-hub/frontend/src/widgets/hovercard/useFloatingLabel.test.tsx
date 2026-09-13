@@ -78,7 +78,23 @@ test("shows after 300ms and hides immediately", () => {
   expect(screen.queryByTestId("observed-label")).toBeNull();
 });
 
-test("focus uses the same delay and blur cancels a pending show", () => {
+test("focus uses the same delay and blur hides immediately", () => {
+  vi.useFakeTimers();
+  render(<Harness />);
+  const trigger = screen.getByRole("button", { name: "Trigger" });
+
+  fireEvent.focus(trigger);
+  advance(299);
+  expect(screen.queryByTestId("observed-label")).toBeNull();
+
+  advance(1);
+  expect(screen.getByTestId("observed-label")).toBeTruthy();
+
+  fireEvent.blur(trigger);
+  expect(screen.queryByTestId("observed-label")).toBeNull();
+});
+
+test("blur cancels a pending focus show", () => {
   vi.useFakeTimers();
   render(<Harness />);
   const trigger = screen.getByRole("button", { name: "Trigger" });
