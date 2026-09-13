@@ -209,13 +209,29 @@ lint-generated:
 lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
+## Prove the process-group library against real processes.
+## proves: Every row of the record state table in
+##   scripts/lib/process-group-lib.sh behaves as written — a live group is
+##   stopped, a gone one is reaped, a pre-split job is stopped by pid, a record
+##   from another script is left alone, a live job that cannot be identified is
+##   kept rather than dropped, a survivor record is not signalled again, a
+##   number handed on is refused, the structural refusals hold, an unreadable
+##   listing keeps its record, and a SIGTERM-ignoring child is killed.
+## trigger: Required CI (via make lint); local pre-merge.
+## requires: perl and python3, both already required by the gate; real `sleep`
+##   processes, no faked toolchain.
+## fails-when: Any case returns a status, leaves a record, or leaves a process
+##   group other than the one written beside it.
+lint-process-group:
+	$(call run_quiet_lint,scripts/lib/process-group-lib.selfcheck.sh)
+
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-process-group secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, and secrets.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
 ##   eval compile floors; the internal-type check; golangci-lint across every
 ##   workspace module; generated-output freshness; the fuzz registry check;
-##   and the repo secret scan.
+##   the process-group library against real processes; and the repo secret scan.
 ## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.
