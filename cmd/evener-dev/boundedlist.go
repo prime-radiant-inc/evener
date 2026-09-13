@@ -47,7 +47,7 @@ type attemptResult struct {
 // runBoundedAttempt runs argv with its own process group, returning when it
 // finishes or when timeout passes, whichever comes first. On the bound it sends
 // the group SIGTERM, waits grace, and sends SIGKILL.
-func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Writer, signals <-chan os.Signal) attemptResult {
+func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Writer, latch *signalLatch) attemptResult {
 	var out bytes.Buffer
 	// The command's stderr goes where this helper's diagnostics go, and exec
 	// copies it from a goroutine of its own. Both writers are live at once --
@@ -88,17 +88,14 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.err = err
 		result.exitCode = exitCodeOf(err)
 		stopSurvivors(cmd, result.pgid, grace, guarded)
+		result.takeLateSignal(latch)
 		return result
-	case received := <-signals:
+	case received := <-latch.waiting():
 		// The command is in a process group of its own, which is what keeps a
 		// wedged compiler off this host -- and also what stops the terminal's
 		// SIGINT from reaching it, since it is no longer in the shell's
 		// foreground group. So this helper passes on what it is sent.
-		if s, ok := received.(syscall.Signal); ok {
-			result.interrupted = s
-		} else {
-			result.interrupted = syscall.SIGTERM
-		}
+		result.interrupted = latch.receive(received)
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v — stopping %s.\n", received, argv[0])
 	case <-time.After(timeout):
 		result.timedOut = true
@@ -120,7 +117,74 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	if result.interrupted != 0 {
 		result.exitCode = 128 + int(result.interrupted)
 	}
+	result.takeLateSignal(latch)
 	return result
+}
+
+// signalLatch remembers the first stop signal this helper is sent. One that
+// arrives while an attempt is being cleaned up, or in the gap between
+// attempts, has nowhere else to be noticed: the select that was watching for
+// it has already returned, and the next thing this helper would otherwise do
+// is start more work the sender asked it to stop doing.
+type signalLatch struct {
+	ch   <-chan os.Signal
+	held syscall.Signal
+}
+
+// waiting is the channel to select on, and nil -- which blocks forever -- when
+// there is no latch, which is how the unit tests run an attempt nobody signals.
+func (l *signalLatch) waiting() <-chan os.Signal {
+	if l == nil {
+		return nil
+	}
+	return l.ch
+}
+
+// receive latches a signal the caller has already taken off the channel.
+func (l *signalLatch) receive(s os.Signal) syscall.Signal {
+	if l == nil {
+		if sig, ok := s.(syscall.Signal); ok && sig != 0 {
+			return sig
+		}
+		return syscall.SIGTERM
+	}
+	if l.held == 0 {
+		if sig, ok := s.(syscall.Signal); ok && sig != 0 {
+			l.held = sig
+		} else {
+			l.held = syscall.SIGTERM
+		}
+	}
+	return l.held
+}
+
+// poll takes a signal that arrived since anyone last looked, and keeps
+// answering with it afterwards.
+func (l *signalLatch) poll() syscall.Signal {
+	if l == nil {
+		return 0
+	}
+	if l.held != 0 {
+		return l.held
+	}
+	select {
+	case s := <-l.ch:
+		return l.receive(s)
+	default:
+		return 0
+	}
+}
+
+// takeLateSignal turns a signal that arrived during the attempt's cleanup into
+// this attempt's answer, so the runner stops rather than retries.
+func (r *attemptResult) takeLateSignal(latch *signalLatch) {
+	if r.interrupted != 0 {
+		return
+	}
+	if sig := latch.poll(); sig != 0 {
+		r.interrupted = sig
+		r.exitCode = 128 + int(sig)
+	}
 }
 
 // serialWriter is one writer two goroutines can use: this helper's own
@@ -226,8 +290,13 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 		_, _ = fmt.Fprintln(stderr, "bounded-list: -attempts must be at least 1, and -timeout and -grace positive")
 		return 2
 	}
+	latch := &signalLatch{ch: signals}
 	for attempt := 1; attempt <= *attempts; attempt++ {
-		result := runBoundedAttempt(argv, *timeout, *grace, stderr, signals)
+		if sig := latch.poll(); sig != 0 {
+			_, _ = fmt.Fprintf(stderr, "bounded-list: %v — not starting attempt %d.\n", sig, attempt)
+			return 128 + int(sig)
+		}
+		result := runBoundedAttempt(argv, *timeout, *grace, stderr, latch)
 		switch {
 		case result.interrupted != 0:
 			// An interrupt is an answer about this run, not about the command:

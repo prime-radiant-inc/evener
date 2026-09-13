@@ -141,7 +141,7 @@ func TestBoundedAttemptForwardsAnInterruptToTheGroup(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		signals <- syscall.SIGTERM
 	}()
-	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 30*time.Second, 300*time.Millisecond, &stderr, signals)
+	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 30*time.Second, 300*time.Millisecond, &stderr, &signalLatch{ch: signals})
 	if result.interrupted != syscall.SIGTERM {
 		t.Fatalf("interrupted = %v, want SIGTERM; timedOut = %v", result.interrupted, result.timedOut)
 	}
@@ -184,5 +184,67 @@ func TestBoundedListPassesThroughWhatATimedOutCommandPrinted(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "on 1 attempt") {
 		t.Fatalf("stderr = %q, want it to say one attempt in the singular", got)
+	}
+}
+
+func TestBoundedAttemptTakesASignalThatArrivesDuringCleanup(t *testing.T) {
+	var stderr bytes.Buffer
+	// The bound passes, the group is sent SIGTERM and ignores it, and the
+	// attempt spends the grace waiting to escalate. A signal arriving in that
+	// window is watched for by nobody: the select that would have caught it
+	// returned when the bound did.
+	signals := make(chan os.Signal, 1)
+	latch := &signalLatch{ch: signals}
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		signals <- syscall.SIGTERM
+	}()
+	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 200*time.Millisecond, 800*time.Millisecond, &stderr, latch)
+	if result.interrupted != syscall.SIGTERM {
+		t.Fatalf("interrupted = %v, want the signal that arrived during cleanup", result.interrupted)
+	}
+	if result.exitCode != 143 {
+		t.Fatalf("exitCode = %d, want 143 rather than the timeout's own status", result.exitCode)
+	}
+	requireGroupGone(t, result.pgid)
+}
+
+func TestBoundedListStopsWhenASignalLandsBetweenAttempts(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	// The signal lands while attempt 1 is being killed off, after the select
+	// that was watching for it has returned. The run must end there rather
+	// than announce a retry and start attempt 2.
+	signals := make(chan os.Signal, 1)
+	go func() {
+		time.Sleep(350 * time.Millisecond)
+		signals <- syscall.SIGTERM
+	}()
+	code := boundedListWith([]string{"-timeout", "200ms", "-attempts", "3", "-grace", "500ms", "--",
+		"sh", "-c", termProofChild}, &stdout, &stderr, signals)
+	if code != 143 {
+		t.Fatalf("exit code = %d, want 143; stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr = %q: the run was told to stop, and announced a retry instead", stderr.String())
+	}
+}
+
+func TestSignalLatchHoldsTheFirstSignalItIsGiven(t *testing.T) {
+	signals := make(chan os.Signal, 2)
+	latch := &signalLatch{ch: signals}
+	if got := latch.poll(); got != 0 {
+		t.Fatalf("poll on an empty latch = %v, want none", got)
+	}
+	signals <- syscall.SIGHUP
+	signals <- syscall.SIGINT
+	if got := latch.poll(); got != syscall.SIGHUP {
+		t.Fatalf("poll = %v, want SIGHUP", got)
+	}
+	// The first one is the answer from then on: the run is already stopping.
+	if got := latch.poll(); got != syscall.SIGHUP {
+		t.Fatalf("second poll = %v, want SIGHUP again", got)
+	}
+	if got := latch.receive(syscall.SIGTERM); got != syscall.SIGHUP {
+		t.Fatalf("receive after latching = %v, want SIGHUP", got)
 	}
 }
