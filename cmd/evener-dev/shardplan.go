@@ -127,20 +127,66 @@ func nameRegex(names []string) string {
 	return "^(" + strings.Join(escaped, "|") + ")$"
 }
 
-// translateFlags converts the caller's `go test` flag spellings into the
-// compiled binary's -test.* spellings. Flags outside the table are dropped,
-// the way the script's case statement dropped them.
-func translateFlags(flags []string) []string {
-	var out []string
-	for _, f := range flags {
+// goFlag is a caller's flag in one spelling. Go's flag package reads --tags and
+// -tags as the same flag, so a reader that knows only one of them silently drops
+// the other; everything here compares the normalised form.
+func goFlag(f string) string {
+	if strings.HasPrefix(f, "--") && len(f) > 2 {
+		return f[1:]
+	}
+	return f
+}
+
+// buildValueFlags take their value as the next argument; buildFlagPrefixes carry
+// it inline. Both change what gets compiled, so both belong to `go test -c`.
+var buildValueFlags = map[string]bool{
+	"-tags": true, "-mod": true, "-modfile": true, "-overlay": true,
+	"-pgo": true, "-compiler": true, "-gcflags": true, "-ldflags": true,
+	"-asmflags": true, "-installsuffix": true,
+}
+
+var buildBareFlags = map[string]bool{
+	"-race": true, "-msan": true, "-asan": true, "-trimpath": true,
+	"-modcacherw": true, "-a": true, "-linkshared": true,
+}
+
+// splitFlags divides a caller's `go test` flags into the ones the build needs
+// and the ones the compiled binary needs.
+//
+// The two halves used to be one: every flag was translated towards the binary,
+// so `-race` became `-test.race`, which the binary has no such flag for, and the
+// build that produced it was a plain build — a sharded `-race` run tested a
+// binary with no race detector in it. Build flags go to `go test -c` now and
+// test flags to the shards, each in the spelling its side understands.
+//
+// Flags outside both tables are dropped, the way the script's case statement
+// dropped them.
+func splitFlags(flags []string) (build []string, test []string) {
+	wantValue := ""
+	for _, raw := range flags {
+		f := goFlag(raw)
+		if wantValue != "" {
+			build = append(build, f)
+			wantValue = ""
+			continue
+		}
 		switch {
-		case f == "-short" || f == "-race" || f == "-v":
-			out = append(out, "-test."+strings.TrimPrefix(f, "-"))
+		case buildValueFlags[f]:
+			build = append(build, f)
+			wantValue = f
+		case buildBareFlags[f]:
+			build = append(build, f)
+		case f == "-short" || f == "-v":
+			test = append(test, "-test."+strings.TrimPrefix(f, "-"))
 		case strings.HasPrefix(f, "-count="):
-			out = append(out, "-test.count="+strings.TrimPrefix(f, "-count="))
+			test = append(test, "-test.count="+strings.TrimPrefix(f, "-count="))
+		default:
+			if i := strings.IndexByte(f, '='); i > 0 && buildValueFlags[f[:i]] {
+				build = append(build, f)
+			}
 		}
 	}
-	return out
+	return build, test
 }
 
 // testSetKey is the survey cache key: the identity of the sorted test list.
