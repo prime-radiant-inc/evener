@@ -12,10 +12,10 @@
 // copies sessionStorage into the new tab with no opener to strip, so the
 // duplicate shares this identity and the two tabs claim each other's sends -
 // the same routing behavior the field's absence had. That residual is
-// documented on the PR; the app-controlled opener-created-tab path (window.open
-// without noopener) is closed. Storage access is guarded for environments
-// without it; the fallback is held in module state so one page keeps one
-// identity either way.
+// documented on the PR; the tabs the app opens itself carry rel="noopener
+// noreferrer" (shell/openInNewTab.ts), so they never share the value. Storage
+// access is guarded for environments without it; the fallback is held in module
+// state so one page keeps one identity either way.
 
 const STORAGE_KEY = "evener-hub.mutation-client-identity";
 

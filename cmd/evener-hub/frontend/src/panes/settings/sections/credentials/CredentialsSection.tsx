@@ -225,6 +225,16 @@ export function CredentialsSection({
           // host, so re-issuing the remove can only fail on a missing instance.
           setPendingConfirm(null);
           toast.push("error", `Removed on the host, but the provider list could not be confirmed for ${name}`);
+          // A superseded verdict is not a failure: the removal's RPC resolved
+          // and only its response was discarded, so the entry left the host,
+          // and the listing that still shows it is one this client read before
+          // the removal landed. The guided owner has to hear about it anyway -
+          // what it retains for this name (a typed credential draft, a saved or
+          // configured verdict) describes an instance that no longer exists,
+          // and a name recreated under it would inherit that state. The applied
+          // path is the opposite case: the hub's own response still held an
+          // authored row, so the removal did not happen and is not reported.
+          if (!applied) onInstanceRemoved?.(name);
           return;
         }
         // The authored entry is gone, but the environment can still supply

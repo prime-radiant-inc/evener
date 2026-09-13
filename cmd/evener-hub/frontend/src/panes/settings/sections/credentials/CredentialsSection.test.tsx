@@ -8,6 +8,7 @@ import type {
   InstanceEntry,
   InstanceListResponse,
 } from "../../../../protocol/types.gen";
+import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -273,9 +274,14 @@ describe("the detail sheet", () => {
   });
 
   // fetch() swallows a failed read into the store's error field instead of
-  // rejecting, so a resolved reconcile promise is no confirmation: the
-  // removal report must not fire against a listing that never lost the row.
-  test("a removal whose reconcile read fails reports the failure, not the removal", async () => {
+  // rejecting, so a resolved reconcile promise is no confirmation. The
+  // superseded removal is still reported: its RPC resolved (only its response
+  // was discarded), so the entry left providers.toml, and the row the listing
+  // still shows is one this client read before the removal landed. The owner
+  // needs that report - it is the only thing that clears what the guided flow
+  // retained for the name (see ConnectProviderDialog's removal cases) - and the
+  // toast still says the listing could not be confirmed.
+  test("a removal whose reconcile read fails reports the removal it could not confirm", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     const onInstanceRemoved = vi.fn();
@@ -317,7 +323,7 @@ describe("the detail sheet", () => {
         }
       });
     });
-    expect(onInstanceRemoved).not.toHaveBeenCalled();
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
   });
 
   // The applied path is not automatically a confirmation either: the store's
@@ -549,7 +555,7 @@ describe("OAuth start branches", () => {
       flowId: "redirect-flow",
       url: "https://auth/start",
     }));
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("personal");
     const user = userEvent.setup();
@@ -557,7 +563,11 @@ describe("OAuth start branches", () => {
     await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
     await screen.findByRole("dialog", { name: "Sign in to personal" });
     expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull();
-    expect(openSpy).toHaveBeenCalledWith("https://auth/start", "_blank", "noopener");
+    expect(openedNewTab(anchors)).toEqual({
+      url: "https://auth/start",
+      target: "_blank",
+      rel: NEW_TAB_POLICY,
+    });
     expect(screen.getByRole("link", { name: /re-open authorize url/i })).toBeTruthy();
   });
 

@@ -7,6 +7,7 @@ import type {
   AuthLoginCompleteResponse,
   InstanceListResponse,
 } from "../../../../protocol/types.gen";
+import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -31,12 +32,9 @@ afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
   vi.useRealTimers();
-  // vi.spyOn(window, "open") (DeviceCodeDialog tests below) returns the SAME
-  // spy instance - with its accumulated call history - if window.open is
-  // already spied when a later test calls spyOn again. Without restoring
-  // here, "shows the user code without auto-opening the verification URL"
-  // (which asserts NOT called) inherits the prior "Send me to OpenAI" test's
-  // one real call under any run order that puts that test first (kata ycet).
+  // Leave no spy installed between tests: each test that watches a new tab
+  // installs its own capture (openInNewTab.testSupport), and nothing should
+  // still be watching after the test that installed it.
   vi.restoreAllMocks();
 });
 
@@ -202,7 +200,7 @@ describe("OAuthRedirectDialog", () => {
 describe("DeviceCodeDialog", () => {
   test("shows the user code without auto-opening the verification URL", () => {
     connectFakeClient();
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
     render(
       <DeviceCodeDialog
         name="work"
@@ -216,7 +214,9 @@ describe("DeviceCodeDialog", () => {
       />,
     );
     expect(screen.getByText("ABCD-EFGH")).toBeTruthy();
-    expect(openSpy).not.toHaveBeenCalled();
+    // Showing the code sends the user nowhere: the button below is the only
+    // thing that opens the verification URL.
+    expect(anchors).toHaveLength(0);
   });
 
   test("'Send me to OpenAI' stays disabled until the code is copied, then opens the verification URL without an opener", async () => {
@@ -225,8 +225,7 @@ describe("DeviceCodeDialog", () => {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
       configurable: true,
     });
-    const opened = { opener: {} as unknown };
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(opened as unknown as Window);
+    const anchors = captureNewTabs();
     render(
       <DeviceCodeDialog
         name="work"
@@ -246,10 +245,7 @@ describe("DeviceCodeDialog", () => {
     await screen.findByRole("button", { name: /copied/i });
     expect(sendButton.disabled).toBe(false);
     await user.click(sendButton);
-    expect(openSpy).toHaveBeenCalledWith("https://verify", "_blank", "noopener");
-    // The features string is not honored by every browser (Safari ignores it),
-    // so the handle's opener is nulled as well.
-    expect(opened.opener).toBeNull();
+    expect(openedNewTab(anchors)).toEqual({ url: "https://verify", target: "_blank", rel: NEW_TAB_POLICY });
   });
 
   test("a dismissed device editor ignores success after its refresh completes", async () => {

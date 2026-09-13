@@ -928,6 +928,102 @@ func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
 	}
 }
 
+// The rollback write is itself a write, so it can fail too, and then there is
+// nothing left that can put the entry back while the file still refuses to
+// load. The removal stands, but the credentials the cleanup deleted belong to
+// the name the caller re-authors after being told the removal failed, so they
+// still go back - losing them would report the failure and take the secret too.
+func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	// The reload failure is arranged the way the sibling test arranges it; the
+	// rollback write is what has to fail here. It is broken through the
+	// registry's own load callback, so no stub stands in for the write: the
+	// removal's reload is the second load the replacement registry serves (the
+	// first primes it over the clean file) and it turns the writer's temp path
+	// into a directory, which is the same disk that refuses any full disk or
+	// read-only root. The first write's temp file is gone once its rename
+	// landed, so the removal's own write still succeeds and only the rollback
+	// after it cannot land.
+	var loads int
+	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		loads++
+		if loads == 2 {
+			resolved, err := filepath.EvalSymlinks(f.tomlPath)
+			if err != nil {
+				t.Errorf("EvalSymlinks(%s): %v", f.tomlPath, err)
+			}
+			if err := os.Mkdir(resolved+".tmp", 0o700); err != nil {
+				t.Errorf("Mkdir(%s): %v", resolved+".tmp", err)
+			}
+		}
+		opts := append(
+			testProbeRegistryOptions(f.stateDir, f.store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(f.tomlPath),
+		)
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, f.store, err
+	}
+	replacement := hubcore.NewProviderRegistry(loadFn)
+	f.ctl.reg = replacement
+	f.ctl.auth.reg = replacement
+	// Primed before the unresolvable entry lands, so the removal still starts
+	// from a registry that holds work.
+	if err := replacement.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+
+	// An entry that parses but cannot resolve an endpoint (#711: no base and no
+	// base_url of its own): the layer the removal writes carries it, so the
+	// reload that follows the write fails.
+	raw, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err = f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the reload failure")
+	}
+	// Failing here first is the red-first symptom: the early return skipped the
+	// restore, so the secret the cleanup deleted never came back.
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the failed rollback to have restored it", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", loadErr)
+	}
+	// The removal stands, so the error must say so and must not claim a
+	// rollback that never landed.
+	if strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the failed rollback reported as standing", err)
+	}
+	if !strings.Contains(err.Error(), "removal stands in the config") {
+		t.Fatalf("Remove = %v, want the removal named as still applied", err)
+	}
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, still := l.Providers["work"]; still {
+		t.Fatal("[providers.work] is in the config, want the failed rollback to have left the removal applied")
+	}
+}
+
 func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}); err != nil {

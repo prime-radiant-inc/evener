@@ -20,6 +20,7 @@ import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../openInNewTab.testSupport";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
@@ -158,7 +159,7 @@ test("a failed search shows 'Search failed' empty state", async () => {
 
 test("Shift+Enter on an in-session search result closes the palette without navigating", async () => {
   const user = userEvent.setup();
-  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+  const anchors = captureNewTabs();
   scriptSearch({ live: [], past: [] });
   focusSession("ref_a", { turns: [turn([item("i1", "search term found here")])] });
 
@@ -171,15 +172,14 @@ test("Shift+Enter on an in-session search result closes the palette without navi
 
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(window.location.pathname).toBe("/");
-  expect(openSpy).not.toHaveBeenCalled();
+  expect(anchors).toHaveLength(0);
 });
 
 // --- search result activation: live/past with newTab (lines 505-506) ---
 
-test("Mod+Enter on a search result opens in a new tab via window.open", async () => {
+test("Mod+Enter on a search result opens it in a new tab", async () => {
   const user = userEvent.setup();
-  const opened = { opener: {} as unknown };
-  const openSpy = vi.spyOn(window, "open").mockImplementation(() => opened as unknown as Window);
+  const anchors = captureNewTabs();
   scriptSearch({
     live: [{ id: "live1", ref: "local:live1", title: "live result", project: "p", state: "active", age: "now" }],
     past: [],
@@ -192,13 +192,14 @@ test("Mod+Enter on a search result opens in a new tab via window.open", async ()
   await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  expect(openSpy).toHaveBeenCalledTimes(1);
-  // noopener keeps the opened tab from copying this tab's sessionStorage -
-  // the per-client mutation identity lives there, and a shared identity
-  // would let both tabs claim each other's durable sends.
-  expect(openSpy).toHaveBeenCalledWith("/s/local%3Alive1", "_blank", "noopener");
-  // Safari ignores the features string, so the handle's opener is nulled too.
-  expect(opened.opener).toBeNull();
+  // The anchor's rel keeps the opened tab from copying this tab's
+  // sessionStorage - the per-client mutation identity lives there, and a
+  // shared identity would let both tabs claim each other's durable sends.
+  expect(openedNewTab(anchors)).toEqual({
+    url: "/s/local%3Alive1",
+    target: "_blank",
+    rel: NEW_TAB_POLICY,
+  });
 });
 
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---

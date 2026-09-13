@@ -769,7 +769,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 
 	removed, err := c.removeCredentials(name)
 	if err != nil {
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err)
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
 	}
 
 	delete(l.Providers, name)
@@ -779,7 +779,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		l.Default = ""
 	}
 	if err := c.writeLoadable(l); err != nil {
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err)
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
 	}
 	if err := c.reg.Reload(); err != nil {
 		// writeLoadable's dry parse only checks the layer against the registry
@@ -792,11 +792,18 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// the file and the credentials this call deleted back, the way Edit
 		// restores its file.
 		if restoreErr := c.write(before); restoreErr != nil {
-			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+			// The rollback could not land, so the entry stays gone and only the
+			// credentials can be put back - under the name the caller re-authors
+			// once this removal is reported as standing. No reload: the failure
+			// above already left the registry on the implicit-only view a load
+			// of this file produces, and writing is what is broken, not loading.
+			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
+				"the entry is gone from the config")
 		}
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-			fmt.Errorf("removing %q was rolled back: %w", name, err))
+			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
 	}
 	return nil
 }
@@ -819,14 +826,15 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
 }
 
-// restoreFailedRemoval puts back what the cleanup deleted after a failure that
-// left the instance authored, and folds whatever it could not restore into the
-// error the caller sees: the removal did not happen, so the instance must
-// still authenticate, and a caller told only that the removal failed would
-// have no way to know that it did not. Its callers pass only the layers the
-// failure actually deleted, so this never rewrites - and never reports a
-// failure to rewrite - a credential that is still where it was.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error) error {
+// restoreFailedRemoval puts back what the cleanup deleted after a failed
+// removal, and folds whatever it could not restore into the error the caller
+// sees: a caller told only that the removal failed would have no way to know
+// what state the name is in. frame names that state in the failure to restore
+// - whether the entry is still authored or the removal stood - so the message
+// reads as correct English for the failure that produced it. Its callers pass
+// only the layers the failure actually deleted, so this never rewrites - and
+// never reports a failure to rewrite - a credential that is still where it was.
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) error {
 	var problems []string
 	if hasStoredKey {
 		if err := c.auth.setCredential(name, storedKey); err != nil {
@@ -841,7 +849,7 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 	if len(problems) == 0 {
 		return cause
 	}
-	return fmt.Errorf("%w; the instance is still configured, but %s", cause, strings.Join(problems, " and "))
+	return fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
 }
 
 // writeAuthFile puts an OAuth state file back exactly as it was: 0600 like

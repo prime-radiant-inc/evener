@@ -1150,6 +1150,26 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
 
+  // A rename frees its old name for anyone to take: a removal and a recreation
+  // under it, or another instance's own rename onto it. The store's list then
+  // holds the new name without holding this save's rename, and steering the
+  // sheet onto that entry would title one instance with another's values.
+  test("a superseded rename whose new name now belongs to another instance claims nothing", async () => {
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+
+    await refreshList(fake, [{ ...OTHER, name: "work2" }]);
+    await act(async () => finish({ instances: [{ ...OTHER, name: "work2" }], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
   test("a plain save the store superseded keeps the draft and does not claim a save", async () => {
     const { fake, finish } = deferredEdit();
     renderSheet(WORK, {}, [OPENAI]);

@@ -10,6 +10,7 @@ import type {
   InstanceEntry,
   InstanceListResponse,
 } from "../../../../protocol/types.gen";
+import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
@@ -769,14 +770,18 @@ describe("ConnectProviderDialog", () => {
       };
     });
     fake.on("evener/auth/test", () => ({ provider: "personal", status: "success", message: "ignored" }));
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
     const onConnected = vi.fn();
     render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
     const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
 
     await userEvent.setup().click(within(chooser).getByRole("button", { name: "Sign in" }));
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    expect(openSpy).toHaveBeenCalledWith("https://auth.example/start", "_blank", "noopener");
+    expect(openedNewTab(anchors)).toEqual({
+      url: "https://auth.example/start",
+      target: "_blank",
+      rel: NEW_TAB_POLICY,
+    });
     await userEvent.setup().type(screen.getByLabelText("Redirect URL"), "https://localhost/callback?code=ok");
     await userEvent.setup().click(screen.getByRole("button", { name: "Finish" }));
 
@@ -1151,7 +1156,7 @@ describe("ConnectProviderDialog", () => {
       flowId: "redirect-flow",
       url: "https://auth.example/start",
     }));
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
     const onConnected = vi.fn();
     const rendered = render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
     const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
@@ -1170,7 +1175,9 @@ describe("ConnectProviderDialog", () => {
       await start.promise;
     });
 
-    expect(openSpy).not.toHaveBeenCalled();
+    // The dialog was dismissed before its device start resolved into the
+    // redirect fallback, so what it resolved with must not be acted on.
+    expect(anchors).toHaveLength(0);
     expect(onConnected).not.toHaveBeenCalled();
   });
 

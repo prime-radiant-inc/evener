@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
+import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { startOAuthFlow } from "./oauthFlow";
@@ -31,15 +32,19 @@ describe("startOAuthFlow", () => {
       flowId: "flow",
       url: "https://auth.example/start",
     }));
-    const opened = { opener: {} as unknown };
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(opened as unknown as Window);
+    const anchors = captureNewTabs();
 
     const editor = await startOAuthFlow("openai-codex");
 
-    expect(openSpy).toHaveBeenCalledWith("https://auth.example/start", "_blank", "noopener");
-    // The features string is not honored by every browser (Safari ignores it),
-    // so the handle's opener is nulled as well.
-    expect(opened.opener).toBeNull();
+    // The anchor's rel decides the new document's opener policy, and the opener
+    // is what decides whether it runs with a copy of this tab's sessionStorage.
+    // That copy is made as the document is created, so no fix-up on a returned
+    // window handle could undo it.
+    expect(openedNewTab(anchors)).toEqual({
+      url: "https://auth.example/start",
+      target: "_blank",
+      rel: NEW_TAB_POLICY,
+    });
     expect(editor).toMatchObject({ kind: "oauth-redirect", authUrl: "https://auth.example/start" });
   });
 
@@ -53,11 +58,11 @@ describe("startOAuthFlow", () => {
       verificationUrl: "https://verify",
       intervalSeconds: 5,
     }));
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
 
     const editor = await startOAuthFlow("openai-codex");
 
-    expect(openSpy).not.toHaveBeenCalled();
+    expect(anchors).toHaveLength(0);
     expect(editor).toMatchObject({ kind: "device", userCode: "CODE" });
   });
 });
