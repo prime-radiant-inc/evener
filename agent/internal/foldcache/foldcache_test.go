@@ -945,7 +945,7 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 		}
 	})
 
-	for range 200 {
+	for range 2000 {
 		named, err := c.Epoch(path)
 		if err != nil {
 			t.Fatalf("naming during the sweep: %v", err)
@@ -992,5 +992,61 @@ func TestCache_EpochSeparatesAMissingPathFromAnUnreadableOne(t *testing.T) {
 		t.Fatal("Epoch answered for a path it could not stat; a generation named there is a fold promised and not kept")
 	} else if os.IsNotExist(err) {
 		t.Fatalf("Epoch = %v, want the stat's own failure rather than a missing-path answer", err)
+	}
+}
+
+// tornStatInfo reports a file's size as it was before an append and its mtime
+// as it is after one — the observation os.Stat can return while a writer is
+// appending, since the two fields are not read atomically.
+type tornStatInfo struct {
+	os.FileInfo
+	size int64
+	mod  time.Time
+}
+
+func (i tornStatInfo) Size() int64        { return i.size }
+func (i tornStatInfo) ModTime() time.Time { return i.mod }
+
+// TestFreshnessOf_TornAppendStatKeepsTheGeneration pins the rule the same-size
+// branch has to follow. os.Stat is not an atomic snapshot: during an append it
+// can report the size from before the write and the mtime from after it, which
+// looks exactly like a same-size rewrite. Bumping on that appearance alone
+// names a generation the next fold will not carry — the fold sees the whole
+// append and keeps the old one — and the resume that follows is refused for a
+// journal that was only appended to. The tail probe is what tells the two
+// apart, so it decides here as it does everywhere else.
+func TestFreshnessOf_TornAppendStatKeepsTheGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	if st == nil {
+		t.Fatal("no state recorded for a folded path")
+	}
+
+	appendLines(t, path, []int{3})
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := tornStatInfo{FileInfo: after, size: st.size, mod: after.ModTime().Add(time.Second)}
+
+	fresh, err := freshnessOf(path, torn, st)
+	if err != nil {
+		t.Fatalf("freshnessOf on a torn stat: %v", err)
+	}
+	if fresh.epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a torn append stat, want it to stay at %d -- the fold that follows reads the whole append and keeps the old one, so this name refuses a resume nothing invalidated", fresh.epoch, folded.Epoch)
 	}
 }

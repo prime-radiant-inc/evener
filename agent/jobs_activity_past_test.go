@@ -1847,11 +1847,15 @@ func TestLoadSessionJobActivityTree_DepthContinuationRefusedAfterTheChildIsRewri
 		t.Fatalf("fold the child: %v", err)
 	}
 
-	rewritten := time.Unix(4_000_000, 0)
 	childJobs := filepath.Join(jobsDir(stateDir, cont.SessionID), "jobs.jsonl")
-	if err := os.Chtimes(childJobs, rewritten, rewritten); err != nil {
-		t.Fatalf("restamp the child journal: %v", err)
-	}
+	bumpFoldGeneration(t, childJobs, func() {
+		// Straight at the fold cache: a session load stats a jobs journal and
+		// skips it when it is missing, so only this read observes the
+		// absence that moves the generation.
+		if _, err := historicalJobFoldCache.Get(context.Background(), childJobs, extendHistoricalJobFold); err != nil {
+			t.Fatalf("observe the child journal gone: %v", err)
+		}
+	})
 
 	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
 		t.Fatal("resumed into a depth-truncated child whose journal was rewritten; want the continuation refused")
@@ -2122,10 +2126,11 @@ func TestActivityPlaceholderEpochs_MatchesTheLoaderOnADegradedDelegateJournal(t 
 	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
 		t.Fatalf("warm: %v", err)
 	}
-	rewritten := time.Unix(6_000_000, 0)
-	if err := os.Chtimes(delegatesPath, rewritten, rewritten); err != nil {
-		t.Fatalf("restamp: %v", err)
-	}
+	bumpFoldGeneration(t, delegatesPath, func() {
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+			t.Fatalf("observe the delegate journal gone: %v", err)
+		}
+	})
 	cached, err := historicalDelegateFoldCache.Epoch(delegatesPath)
 	if err != nil {
 		t.Fatalf("read the cache's generation: %v", err)
@@ -2289,4 +2294,25 @@ func TestBuildActivityFullSnapshot_UnreadableBoundaryChildJournalReportsTheError
 		return
 	}
 	t.Fatal("the delegate was not projected")
+}
+
+// bumpFoldGeneration moves the fold cache's generation for path without
+// changing a byte of what the journal says: the file is taken away, the given
+// read observes it gone — which is what moves the generation — and the same
+// content is written back. Restamping an mtime no longer does this, and
+// should not: the cache asks its tail probe whether the content changed, and
+// for identical content the honest answer is that it did not.
+func bumpFoldGeneration(t *testing.T, path string, observe func()) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove %s: %v", path, err)
+	}
+	observe()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("restore %s: %v", path, err)
+	}
 }

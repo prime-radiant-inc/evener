@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -1283,10 +1282,11 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
 		t.Fatalf("warm the fold caches: %v", err)
 	}
-	rewritten := time.Unix(1_000_000, 0)
-	if err := os.Chtimes(filepath.Join(jobsDir(stateDir, s.ID()), "delegates.jsonl"), rewritten, rewritten); err != nil {
-		t.Fatalf("restamp the delegate journal: %v", err)
-	}
+	bumpFoldGeneration(t, filepath.Join(jobsDir(stateDir, s.ID()), "delegates.jsonl"), func() {
+		if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+			t.Fatalf("observe the delegate journal gone: %v", err)
+		}
+	})
 	childBase, err := loadHistoricalActivityBase(stateDir, childID, true, newHistoricalActivityCache(context.Background(), s.ID()))
 	if err != nil {
 		t.Fatalf("load the child historically: %v", err)
@@ -1368,10 +1368,14 @@ func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritt
 
 	// The child's journal is rewritten in place — the case a ResumeIndex is
 	// unsafe to apply across, and the one the root's clock never sees.
-	rewritten := time.Unix(2_000_000, 0)
-	if err := os.Chtimes(childJobsPath, rewritten, rewritten); err != nil {
-		t.Fatalf("restamp the child journal: %v", err)
-	}
+	bumpFoldGeneration(t, childJobsPath, func() {
+		// Straight at the fold cache: a session load stats a jobs journal and
+		// skips it when it is missing, so only this read observes the
+		// absence that moves the generation.
+		if _, err := historicalJobFoldCache.Get(context.Background(), childJobsPath, extendHistoricalJobFold); err != nil {
+			t.Fatalf("observe the child journal gone: %v", err)
+		}
+	})
 
 	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err == nil {
 		t.Fatal("resumed into a closed child whose journal was rewritten; want the continuation refused")

@@ -336,13 +336,14 @@ func freshnessOf(path string, info os.FileInfo, st *epochState) (freshness, erro
 		// is detectably stale.
 		return freshness{epoch: epoch + 1}, nil
 	case info.Size() == st.size:
-		if !st.mod.Equal(info.ModTime()) {
-			// Same length, different mtime: a rewrite that happens to match
-			// the old size. Discard and bump, same as a shrink.
-			return freshness{epoch: epoch + 1}, nil
-		}
-		// Same length AND same mtime: mtime alone cannot resolve this (the
-		// classic jobstore.Store fileCursor residual) — the tail probe can.
+		// Same length, whatever the mtime says: a rewrite that happens to
+		// match the old size looks identical here to a stat taken while
+		// something appended — os.Stat reads size and mtime separately, so it
+		// can report the size from before a write and the mtime from after
+		// it. mtime cannot tell those apart (the classic jobstore.Store
+		// fileCursor residual is the same shape); the tail probe can, and
+		// bumping without asking it names a generation the next fold will not
+		// carry.
 		match, err := tailProbeMatches(path, st.offset, st.tail)
 		if err != nil {
 			return freshness{}, err
@@ -350,9 +351,11 @@ func freshnessOf(path string, info os.FileInfo, st *epochState) (freshness, erro
 		if !match {
 			return freshness{epoch: epoch + 1}, nil
 		}
-		// Confirmed unchanged. A resident value is a true hit; an evicted one
-		// still needs a full reread, but the generation does not move.
-		return freshness{epoch: epoch, unchanged: true}, nil
+		// The recorded prefix survived. A resident value is a true hit when
+		// the mtime agrees too; when it does not, the file may have grown
+		// under a torn stat, so the next fold rereads rather than trusting
+		// this length — but the generation stays where it is.
+		return freshness{epoch: epoch, unchanged: st.mod.Equal(info.ModTime())}, nil
 	default: // info.Size() > st.size
 		match, err := tailProbeMatches(path, st.offset, st.tail)
 		if err != nil {
