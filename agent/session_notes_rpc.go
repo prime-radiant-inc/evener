@@ -3,8 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -408,13 +408,6 @@ func (s *Session) notesContextBlockForModel() string {
 	return escapeNotesContextBlock(s.renderNotesContextBlock())
 }
 
-// notesAngleBracketReference matches the start of every character reference that
-// decodes to an angle bracket: a numeric reference ("&#60;", "&#060;", "&#x3c;",
-// "&#X3C;") or a named lt/gt reference. HTML named references are
-// case-insensitive, so "&LT;" and "&Lt;" have to be caught alongside "&lt;". The
-// optional "amp;" covers the same reference behind one more encoding layer.
-var notesAngleBracketReference = regexp.MustCompile(`(?i)&(?:amp;)?(?:#|lt|gt)`)
-
 // notesAngleBrackets escapes the literal spelling of the two framing characters.
 var notesAngleBrackets = strings.NewReplacer("<", "&lt;", ">", "&gt;")
 
@@ -424,14 +417,119 @@ var notesAngleBrackets = strings.NewReplacer("<", "&lt;", ">", "&gt;")
 // — html.EscapeString would also rewrite "&" and the quote characters, handing the
 // model a URL like "...?a=1&amp;b=2" that neither notes_read nor the UI would ever
 // show it.
+//
+// References are canonicalized rather than escaped one layer deeper. Escaping the
+// leading "&" only ever buys the next decode layer, so a note could always spell a
+// tag behind one layer more than the escaper had seen; canonicalizing gives the
+// copy exactly one spelling per angle bracket, whatever the input spelling and
+// however many "amp;" layers it carried, and makes the pass idempotent. A reader
+// that decodes one layer still sees what it saw before for a literal "<", which is
+// the property this escape has always had.
 func neutralizeNotesFraming(content string) string {
-	// References first: escaping their "&" leaves nothing that decodes to an angle
-	// bracket. This runs before the literal pass so its own "&lt;" output is not
-	// escaped a second time.
-	content = notesAngleBracketReference.ReplaceAllStringFunc(content, func(match string) string {
-		return "&amp;" + match[1:]
-	})
-	return notesAngleBrackets.Replace(content)
+	// References first: canonicalizing them leaves nothing that decodes to an angle
+	// bracket, and this runs before the literal pass so its own "&lt;" output is
+	// not escaped a second time.
+	return notesAngleBrackets.Replace(canonicalizeNotesAngleBracketReferences(content))
+}
+
+// canonicalizeNotesAngleBracketReferences rewrites every complete character
+// reference that resolves to an angle bracket into the canonical escaped spelling
+// of that angle bracket ("&lt;" or "&gt;"). Text that is not such a reference is
+// copied byte for byte, so an innocent "?a=1&ltd=2" in a URL reaches the model
+// exactly as it was stored.
+func canonicalizeNotesAngleBracketReferences(content string) string {
+	if !strings.Contains(content, "&") {
+		return content
+	}
+	var canonical strings.Builder
+	canonical.Grow(len(content))
+	for i := 0; i < len(content); {
+		if content[i] == '&' {
+			if bracket, size, ok := parseNotesAngleBracketReference(content[i:]); ok {
+				if bracket == '<' {
+					canonical.WriteString("&lt;")
+				} else {
+					canonical.WriteString("&gt;")
+				}
+				i += size
+				continue
+			}
+		}
+		canonical.WriteByte(content[i])
+		i++
+	}
+	return canonical.String()
+}
+
+// parseNotesAngleBracketReference parses one complete character reference at the
+// start of s, which must begin with "&", and reports the angle bracket it resolves
+// to together with the number of bytes the reference occupied.
+//
+// A reference is "&", any number of case-insensitive "amp;" layers, then a base
+// followed by the terminating ";": the named references lt/gt (HTML named
+// references are case-insensitive, so "&LT;" and "&Lt;" count too), or a numeric
+// reference of decimal or "x"/"X" hex digits ("&#60;", "&#060;", "&#x3c;",
+// "&#X3C;"). The terminator is required, the digits have to parse and stay in
+// range, and the resolved value has to be an angle bracket: anything else is
+// ordinary text that happens to contain an "&", and rewriting it would hand the
+// model text the user never wrote.
+func parseNotesAngleBracketReference(s string) (bracket rune, size int, ok bool) {
+	rest := s[1:]
+	size = 1
+	for len(rest) >= 4 && strings.EqualFold(rest[:4], "amp;") {
+		rest = rest[4:]
+		size += 4
+	}
+	switch {
+	case len(rest) >= 3 && strings.EqualFold(rest[:3], "lt;"):
+		return '<', size + 3, true
+	case len(rest) >= 3 && strings.EqualFold(rest[:3], "gt;"):
+		return '>', size + 3, true
+	case strings.HasPrefix(rest, "#"):
+		return parseNumericNotesAngleBracketReference(rest[1:], size+1)
+	}
+	return 0, 0, false
+}
+
+// parseNumericNotesAngleBracketReference parses the digits of a numeric character
+// reference, afterHash pointing just past the "#" and size counting the bytes
+// consumed before them.
+func parseNumericNotesAngleBracketReference(afterHash string, size int) (bracket rune, consumed int, ok bool) {
+	base := 10
+	digits := afterHash
+	if len(digits) > 0 && (digits[0] == 'x' || digits[0] == 'X') {
+		base = 16
+		digits = digits[1:]
+		size++
+	}
+	end := 0
+	for end < len(digits) && isNotesReferenceDigit(digits[end], base) {
+		end++
+	}
+	if end == 0 || end >= len(digits) || digits[end] != ';' {
+		return 0, 0, false
+	}
+	value, err := strconv.ParseUint(digits[:end], base, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	if bracket = rune(value); bracket != '<' && bracket != '>' {
+		return 0, 0, false
+	}
+	return bracket, size + end + 1, true
+}
+
+// isNotesReferenceDigit reports whether c is a digit of base 10 or 16.
+func isNotesReferenceDigit(c byte, base int) bool {
+	switch {
+	case c >= '0' && c <= '9':
+		return true
+	case base == 16 && c >= 'a' && c <= 'f':
+		return true
+	case base == 16 && c >= 'A' && c <= 'F':
+		return true
+	}
+	return false
 }
 
 // escapeNotesContextBlock returns the model-facing copy of a rendered
