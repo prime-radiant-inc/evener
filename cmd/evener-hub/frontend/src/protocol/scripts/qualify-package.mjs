@@ -230,14 +230,25 @@ const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
   // runtime presence check in each module form, per published specifier.
   const declarationConsumers = [];
   const runtimeConsumers = [];
+  const consumerNames = new Set();
   for (const [specifier, surface] of Object.entries(packageExports)) {
     const moduleSpecifier = `${packageManifest.name}${specifier.slice(1)}`;
-    const slug = specifier === "." ? "root" : specifier.slice(2).replaceAll("/", "-");
+    // The specifier itself, reversibly encoded: "./foo-bar" and "./foo/bar" are
+    // different specifiers and must not write over each other's programs.
+    const slug = specifier === "." ? "root" : `sub-${encodeURIComponent(specifier.slice(2))}`;
     const presenceLoop = `for (const name of ${JSON.stringify(surface.values)}) assert(name in client, \`missing export \${name} from ${moduleSpecifier}\`);\n`;
-    declarationConsumers.push(`esm-${slug}.mts`, `commonjs-${slug}.cts`);
-    runtimeConsumers.push(`runtime-${slug}.mjs`, `runtime-${slug}.cjs`);
+    const esmConsumer = `esm-${slug}.mts`;
+    const commonjsConsumer = `commonjs-${slug}.cts`;
+    const esmRuntime = `runtime-${slug}.mjs`;
+    const commonjsRuntime = `runtime-${slug}.cjs`;
+    for (const consumer of [esmConsumer, commonjsConsumer, esmRuntime, commonjsRuntime]) {
+      assert(!consumerNames.has(consumer), `two specifiers generate the same consumer program: ${consumer}`);
+      consumerNames.add(consumer);
+    }
+    declarationConsumers.push(esmConsumer, commonjsConsumer);
+    runtimeConsumers.push(esmRuntime, commonjsRuntime);
     writeFileSync(
-      join(consumerDir, `esm-${slug}.mts`),
+      join(consumerDir, esmConsumer),
       `import {
 ${surface.values.map((name) => `  ${name},`).join("\n")}
 } from "${moduleSpecifier}";
@@ -250,7 +261,7 @@ ${surface.values.map((name) => `void ${name};`).join("\n")}
 `,
     );
     writeFileSync(
-      join(consumerDir, `commonjs-${slug}.cts`),
+      join(consumerDir, commonjsConsumer),
       `import client = require("${moduleSpecifier}");
 ${surface.cjsTypeUses ?? ""}
 declare const shipped: [${surface.types.map((name) => `client.${name}`).join(", ")}]; void shipped;
@@ -258,13 +269,13 @@ ${surface.values.map((name) => `void client.${name};`).join("\n")}
 `,
     );
     writeFileSync(
-      join(consumerDir, `runtime-${slug}.mjs`),
+      join(consumerDir, esmRuntime),
       `import assert from "node:assert/strict";
 import * as client from "${moduleSpecifier}";
 ${presenceLoop}${surface.smoke ?? ""}`,
     );
     writeFileSync(
-      join(consumerDir, `runtime-${slug}.cjs`),
+      join(consumerDir, commonjsRuntime),
       `const assert = require("node:assert/strict");
 const client = require("${moduleSpecifier}");
 ${presenceLoop}${surface.smoke ?? ""}`,
