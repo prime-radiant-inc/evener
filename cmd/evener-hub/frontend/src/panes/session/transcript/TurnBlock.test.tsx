@@ -614,11 +614,17 @@ test("items no toggle governs are untouched with every toggle off", () => {
 
 // --- Layout roles (layoutRoles.ts) ----------------------------------------
 // Two roles, no exception set: "speaker" rows (userMessage, exchange-opening
-// agentMessage) render full-width outside any [data-testid="run-content"]
-// wrapper; "run" rows - EVERYTHING else, including steering, system notices,
+// agentMessage, and the user-sourced steer that renders the same view)
+// render full-width outside any [data-testid="run-content"] wrapper; "run"
+// rows - EVERYTHING else, including daemon steering, system notices,
 // warnings, and unknown future types - render inside the wrapper and take
 // the gutter indent. The steering/notification indent is the consistency fix
 // (Jesse's review call); these tests pin it.
+//
+// The ONE exception inside steering is the human's own steer (source ===
+// "user"): SteeringItem renders it through UserMessageView, whose avatar
+// column already IS the gutter arithmetic, so it takes the speaker role
+// instead. See the dedicated test below.
 
 function expectOutsideRunContent(el: HTMLElement) {
   expect(el.closest('[data-testid="run-content"]')).toBeNull();
@@ -634,7 +640,7 @@ test("speaker rows render outside any run-content wrapper: userMessage always", 
   expect(screen.queryByTestId("run-content")).toBeNull();
 });
 
-test("steering, systemMessage, and warning are run rows: they render INSIDE a run-content wrapper (the consistency fix)", () => {
+test("daemon-sourced steering, systemMessage, and warning are run rows: they render INSIDE a run-content wrapper (the consistency fix)", () => {
   const items = [
     item({ id: "st", type: "steering", text: "keep going" }),
     systemItem("s", { eventKind: "skill_activated", text: "Activated skill: x" }),
@@ -645,6 +651,34 @@ test("steering, systemMessage, and warning are run rows: they render INSIDE a ru
   expectInsideRunContent(screen.getByTestId("system-notice-line"));
   expectInsideRunContent(screen.getByTestId("warning-item"));
   expect(screen.getAllByTestId("run-content")).toHaveLength(3);
+});
+
+test("a user-typed steer is a speaker row: it renders OUTSIDE the wrapper, because its own avatar column IS the gutter", () => {
+  // appwire projects a human's mid-turn steer as a STEERING entry with
+  // steering_source=user, and SteeringItem renders that through the SAME
+  // UserMessageView a prompt uses (its source === "user" branch). That view's
+  // 24px tile + 10px gap IS the content column the run gutter reserves, so
+  // wrapping it in .runContent composes the two indents (34 + 34) and seats
+  // the steer one gutter right of every row around it. Speaker is the role
+  // whose contract is exactly "renders its own avatar header, so it spans the
+  // full width unwrapped" (layoutRoles.ts).
+  const items = [item({ id: "st-user", type: "steering", text: "work in a new worktree.", source: "user" })];
+  render(<TurnBlock turn={turn(items)} />);
+  expectOutsideRunContent(screen.getByTestId("user-message-item"));
+  expect(screen.queryByTestId("run-content")).toBeNull();
+});
+
+test("a human-note steer keeps its run row: the kind routes it to the divider, not the message view", () => {
+  // A human note rides the user-sourced steer path but the KIND routes it to
+  // SteeringDivider (SteeringItem's human-note branch) instead of
+  // UserMessageView. A divider is a run row: its rail icon pulls into the
+  // gutter with margin-left: -speaker-gutter, which only exists under
+  // .runContent - unwrapping it would pull the icon out of the column.
+  const items = [
+    item({ id: "st-note", type: "steering", text: "note to self", source: "user", steeringKind: "human-note" }),
+  ];
+  render(<TurnBlock turn={turn(items)} />);
+  expectInsideRunContent(screen.getByTestId("steering-item"));
 });
 
 test("agentMessage and reasoning render inside a run-content wrapper", () => {
