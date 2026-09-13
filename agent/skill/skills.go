@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,7 +8,6 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 var slashAddressableNamePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)?$`)
@@ -22,14 +20,16 @@ func IsSlashAddressableName(name string) bool {
 
 // SkillMeta holds discovery-time metadata for a single skill.
 type SkillMeta struct {
-	Name         string   // from frontmatter (required)
-	Description  string   // from frontmatter (required)
-	AllowedTools []string // from frontmatter (optional)
-	Dir          string   // absolute path to the skill directory
-	SkillFile    string   // absolute path to SKILL.md
+	Name         string         // from frontmatter (required)
+	Description  string         // from frontmatter (required)
+	AllowedTools []string       // from frontmatter (optional)
+	Metadata     map[string]any // preserved descriptive frontmatter
+	Dir          string         // absolute path to the skill directory
+	SkillFile    string         // absolute path to SKILL.md
 }
 
-// DiscoverSkills walks from git root to cwd looking for skills/ directories.
+// DiscoverSkills walks from git root to cwd looking for .agents/skills/ and
+// skills/ directories. Live sessions use Discover for the full diagnostic catalog.
 // Extra directories are scanned after the root→cwd walk, so they shadow
 // project skills with the same name.
 // Returns a deduplicated map[name]SkillMeta (later entries shadow earlier).
@@ -38,24 +38,12 @@ func DiscoverSkills(env execenv.ExecutionEnvironment, extraDirs ...string) map[s
 		return nil
 	}
 
-	cwd := strings.TrimSpace(env.WorkingDirectory())
-	if cwd == "" {
+	if strings.TrimSpace(env.WorkingDirectory()) == "" {
 		return nil
 	}
-	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
-		cwd = resolved
-	}
-
-	root := cwd
-	if gr := execenv.GitRootOrEmpty(env, cwd); gr != "" {
-		root = gr
-	}
-
-	dirs := execenv.DirsFromRootToCwd(root, cwd)
 	out := map[string]SkillMeta{}
-
-	for _, dir := range dirs {
-		ScanSkillsDir(filepath.Join(dir, "skills"), out)
+	for _, dir := range projectSkillDirs(env) {
+		ScanSkillsDir(dir, out)
 	}
 	for _, dir := range extraDirs {
 		if strings.TrimSpace(dir) == "" {
@@ -83,23 +71,17 @@ func ScanSkillsDir(dir string, out map[string]SkillMeta) {
 		if !ok {
 			continue
 		}
-		meta.Dir = filepath.Join(dir, entry.Name())
-		meta.SkillFile = skillFile
 		out[meta.Name] = meta
 	}
 }
 
 // LoadSkillBody reads a SKILL.md and returns the markdown body (after frontmatter).
 func LoadSkillBody(meta SkillMeta) (string, error) {
-	data, err := os.ReadFile(meta.SkillFile)
+	loaded, _, err := Load(Descriptor{CatalogName: meta.Name, Meta: meta})
 	if err != nil {
-		return "", fmt.Errorf("reading skill file: %w", err)
+		return "", err
 	}
-	doc, err := frontmatter.Parse(string(data))
-	if err != nil {
-		return "", fmt.Errorf("parsing skill frontmatter: %w", err)
-	}
-	return doc.Body, nil
+	return loaded.Body, nil
 }
 
 // CatalogEntries returns path-free skill metadata in canonical map-key order.
@@ -110,6 +92,7 @@ func CatalogEntries(skills map[string]SkillMeta) []SkillMeta {
 			Name:         key,
 			Description:  meta.Description,
 			AllowedTools: append([]string(nil), meta.AllowedTools...),
+			Metadata:     cloneMetadata(meta.Metadata),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
@@ -142,9 +125,13 @@ func ResolveSkill(skills map[string]SkillMeta, name string) (catalogName string,
 // Tries exact match first, then tries unnamespaced match (e.g., "tdd" matches "myplugin:tdd").
 // Returns ("", nil) if not found.
 func ResolveSkillContent(skills map[string]SkillMeta, name string) (string, error) {
-	_, meta, ok := ResolveSkill(skills, name)
+	catalogName, meta, ok := ResolveSkill(skills, name)
 	if ok {
-		return LoadSkillBody(meta)
+		loaded, _, err := Load(Descriptor{CatalogName: catalogName, Meta: meta})
+		if err != nil {
+			return "", err
+		}
+		return loaded.Body, nil
 	}
 	return "", nil
 }
@@ -157,34 +144,9 @@ func parseSkillFile(path string) (SkillMeta, bool) {
 	if err != nil {
 		return SkillMeta{}, false
 	}
-	doc, err := frontmatter.Parse(string(data))
-	if err != nil || doc.Meta == nil {
+	descriptor, _, err := Parse(data, path)
+	if err != nil || descriptor.Unavailable {
 		return SkillMeta{}, false
 	}
-
-	name, _ := doc.Meta["name"].(string)
-	desc, _ := doc.Meta["description"].(string)
-	if strings.TrimSpace(name) == "" || strings.TrimSpace(desc) == "" {
-		return SkillMeta{}, false
-	}
-	if !IsSlashAddressableName(name) {
-		return SkillMeta{}, false
-	}
-
-	var allowed []string
-	if tools, ok := doc.Meta["allowed-tools"]; ok {
-		if arr, ok := tools.([]any); ok {
-			for _, v := range arr {
-				if s, ok := v.(string); ok {
-					allowed = append(allowed, s)
-				}
-			}
-		}
-	}
-
-	return SkillMeta{
-		Name:         name,
-		Description:  desc,
-		AllowedTools: allowed,
-	}, true
+	return descriptor.Meta, true
 }

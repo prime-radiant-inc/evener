@@ -760,3 +760,58 @@ func TestEmitsSteeringKindCatalog(t *testing.T) {
 		}
 	}
 }
+
+// TestEmitsSkillInputContracts pins the canonical skill input additions on
+// the generated frontend protocol: the capability flag, the skill info
+// controls (both control booleans non-optional, unlike every omitempty field
+// around them), the diagnostic DTO, and the diagnostics field that carries
+// it.
+func TestEmitsSkillInputContracts(t *testing.T) {
+	out := EmitCatalog()
+
+	if body := interfaceBody(t, out, "ThreadCapabilities"); !strings.Contains(body, "\n  skillInput?: boolean;") {
+		t.Fatalf("ThreadCapabilities.skillInput is not an optional boolean:\n%s", body)
+	}
+
+	skillInfo := interfaceBody(t, out, "EvenerSkillInfo")
+	for _, want := range []string{
+		"\n  name: string;\n",
+		"\n  disableModelInvocation: boolean;\n",
+		"\n  userInvocable: boolean;\n",
+		"\n  available: boolean;\n",
+		"\n  allowedTools?: string[];",
+	} {
+		if !strings.Contains(skillInfo, want) {
+			t.Fatalf("EvenerSkillInfo missing %q:\n%s", want, skillInfo)
+		}
+	}
+
+	skillDiagnostic := interfaceBody(t, out, "EvenerSkillDiagnostic")
+	for _, want := range []string{
+		"\n  category: string;\n",
+		"\n  name?: string;\n",
+		"\n  source: string;\n",
+		"\n  otherSource?: string;\n",
+		"\n  field?: string;\n",
+		"\n  message: string;",
+	} {
+		if !strings.Contains(skillDiagnostic, want) {
+			t.Fatalf("EvenerSkillDiagnostic missing %q:\n%s", want, skillDiagnostic)
+		}
+	}
+
+	diagnostics := interfaceBody(t, out, "EvenerDiagnostics")
+	if !strings.Contains(diagnostics, "\n  skillDiagnostics?: EvenerSkillDiagnostic[];") {
+		t.Fatalf("EvenerDiagnostics.skillDiagnostics is not the generated diagnostic list:\n%s", diagnostics)
+	}
+
+	// The canonical input shape itself is unchanged: a skill selection rides
+	// the existing name field, and no skill-specific InputItem field exists.
+	inputItem := interfaceBody(t, out, "InputItem")
+	if !strings.Contains(inputItem, "\n  type: string;\n") || !strings.Contains(inputItem, "\n  name?: string;\n") {
+		t.Fatalf("InputItem lost its canonical shape:\n%s", inputItem)
+	}
+	if strings.Contains(inputItem, "skill") {
+		t.Fatalf("InputItem grew a skill-specific field:\n%s", inputItem)
+	}
+}

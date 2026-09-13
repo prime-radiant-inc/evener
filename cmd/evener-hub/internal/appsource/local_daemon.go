@@ -364,6 +364,9 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 func (s *LocalDaemonSource) StartTurnAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	var out appwire.TurnStartResponse
 	err := s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		if err := gateSkillInputOnClient(ctx, client, params.Ref, params.ThreadID, params.Input); err != nil {
+			return err
+		}
 		var callErr error
 		out, callErr = client.TurnStart(ctx, params)
 		return callErr
@@ -378,6 +381,9 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 	}
 	var out appwire.TurnSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		if err := gateSkillInputOnClient(ctx, client, params.Ref, params.ThreadID, params.Input); err != nil {
+			return err
+		}
 		return client.Request(ctx, appwire.MethodTurnSteer, params, &out)
 	})
 	return out, err
@@ -412,6 +418,9 @@ func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQu
 	}
 	var out appwire.TurnQueueResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		if err := gateSkillInputOnClient(ctx, client, params.Ref, "", params.Input); err != nil {
+			return err
+		}
 		return client.Request(ctx, appwire.MethodTurnQueue, params, &out)
 	})
 	return out, err
@@ -424,6 +433,9 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 	}
 	var out appwire.TurnDrainAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		if err := gateSkillInputOnClient(ctx, client, params.Ref, "", params.Input); err != nil {
+			return err
+		}
 		return client.Request(ctx, appwire.MethodTurnDrainAsSteer, params, &out)
 	})
 	return out, err
@@ -681,6 +693,45 @@ func (s *LocalDaemonSource) withMutationClient(
 	return s.withClientCallMapper(ctx, entry, fn, func(err error) error {
 		return localDaemonMutationCallError(clientMutationID, err)
 	})
+}
+
+// hasSkillInputItem reports whether an input carries a canonical skill
+// selection, the condition under which a forwarded mutation must first prove
+// the target advertises skill input support.
+func hasSkillInputItem(items []appwire.InputItem) bool {
+	for _, item := range items {
+		if item.Type == "skill" {
+			return true
+		}
+	}
+	return false
+}
+
+// gateSkillInputOnClient enforces the target daemon's SkillInput capability on
+// the same connection as the mutation being forwarded: the capability read and
+// the mutation cannot be split across endpoints, so a daemon restart between
+// them cannot let a selection reach a target that never advertised it. The
+// read carries no subscription and no turns — only the capability verdict.
+// A read failure is a rejection, never permission: a target whose capability
+// cannot be read is treated exactly like one that does not support skill
+// input, and an older daemon's absent capability reads false the same way.
+func gateSkillInputOnClient(ctx context.Context, client *appwire.Client, ref, threadID string, input []appwire.InputItem) error {
+	if !hasSkillInputItem(input) {
+		return nil
+	}
+	response, err := client.ThreadRead(ctx, appwire.ThreadReadParams{
+		Ref:          ref,
+		ThreadID:     threadID,
+		Subscribe:    false,
+		IncludeTurns: false,
+	})
+	if err != nil {
+		return err
+	}
+	if err := appwire.ValidateSkillInputSupport(input, response.Thread.Evener.Capabilities.SkillInput); err != nil {
+		return appwire.InvalidParams(err.Error())
+	}
+	return nil
 }
 
 func (s *LocalDaemonSource) withClientCallMapper(

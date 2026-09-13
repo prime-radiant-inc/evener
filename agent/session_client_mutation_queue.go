@@ -47,6 +47,7 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.IDs = make([]string, len(snapshot.InputQueue))
 		queue.ClientMutationIDs = make([]string, len(snapshot.InputQueue))
 		queue.Texts = make([]string, len(snapshot.InputQueue))
+		queue.SkillNames = make([][]string, len(snapshot.InputQueue))
 	}
 	pendingByID := make(map[string]appwire.PendingMutation, len(snapshot.PendingExecutions)+len(snapshot.InputQueue))
 	for id, pending := range snapshot.PendingExecutions {
@@ -64,6 +65,7 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.IDs[i] = entry.ID
 		queue.ClientMutationIDs[i] = entry.ClientMutationID
 		queue.Texts[i] = queued.Text
+		queue.SkillNames[i] = slices.Clone(queued.SkillNames)
 		if _, exists := pendingByID[entry.ClientMutationID]; exists {
 			continue
 		}
@@ -222,11 +224,15 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		}
 	}
 	queued := s.popQueueHead()
-	if strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
+	if inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
 		if onRunnable != nil && queued.StableTurnID != "" {
 			onRunnable(queued.StableTurnID)
 		}
 		ctx = withQueuedClientMutation(ctx, queued)
+		// Prepare the claimed input's skill selection at actual consumption:
+		// one atomic group tied to this input's durable identity,
+		// all-or-nothing before any dependent work dispatches.
+		ctx = s.contextWithSelectedSkills(ctx, queued)
 		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
 		// The pop above is durable and the turn loop's gate can refuse after it,
 		// when poisoning lands in between. Put the message back rather than
@@ -501,13 +507,17 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 			queued.Text += item.Text
 		case "image":
 			queued.Images = append(queued.Images, ImageAttachment{MediaType: item.MediaType, Data: append([]byte(nil), item.Data...), Name: item.Name})
+		case "skill":
+			// Canonical identities only: bodies load from the recorded sources
+			// at actual consumption, never from the input wire.
+			queued.SkillNames = append(queued.SkillNames, item.Name)
 		}
 	}
 	return queued
 }
 
-func clientMutationInput(text string, images []ImageAttachment) []appwire.InputItem {
-	input := make([]appwire.InputItem, 0, 1+len(images))
+func clientMutationInput(text string, images []ImageAttachment, skillNames []string) []appwire.InputItem {
+	input := make([]appwire.InputItem, 0, 1+len(images)+len(skillNames))
 	if text != "" {
 		input = append(input, appwire.InputItem{Type: "text", Text: text})
 	}
@@ -518,6 +528,9 @@ func clientMutationInput(text string, images []ImageAttachment) []appwire.InputI
 			Data:      append([]byte(nil), image.Data...),
 			Name:      image.Name,
 		})
+	}
+	for _, name := range skillNames {
+		input = append(input, appwire.InputItem{Type: "skill", Name: name})
 	}
 	return input
 }
@@ -740,12 +753,14 @@ func (s *Session) AcceptClientMutationDrainAsSteer(params appwire.TurnDrainAsSte
 func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []appwire.InputItem) []appwire.InputItem {
 	texts := make([]string, 0, len(entries)+1)
 	var images []ImageAttachment
+	var skillNames []string
 	for _, entry := range entries {
 		queued := queuedInputFromClientMutation(entry)
 		if strings.TrimSpace(queued.Text) != "" {
 			texts = append(texts, queued.Text)
 		}
 		images = append(images, queued.Images...)
+		skillNames = append(skillNames, queued.SkillNames...)
 	}
 	if len(extra) > 0 {
 		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: extra})
@@ -753,8 +768,9 @@ func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []app
 			texts = append(texts, queued.Text)
 		}
 		images = append(images, queued.Images...)
+		skillNames = append(skillNames, queued.SkillNames...)
 	}
-	return clientMutationInput(strings.Join(texts, "\n\n"), images)
+	return clientMutationInput(strings.Join(texts, "\n\n"), images, skillNames)
 }
 
 func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
@@ -1138,6 +1154,7 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 		client = append(client, steeringMessage{
 			Text:             queued.Text,
 			Images:           queued.Images,
+			SkillNames:       queued.SkillNames,
 			Source:           events.SteeringSourceUser,
 			ClientMutationID: id,
 			StableTurnID:     pending.TurnID,
@@ -1320,9 +1337,15 @@ func (s *Session) recordClientMutationFailure(
 		if err := s.appendEnvironmentContext(publishEnvironment); err != nil {
 			return fmt.Errorf("append environment context: %w", err)
 		}
-		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(queued.Text, queued.Images))
+		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(queued.Text, queued.Images, queued.SkillNames))
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
+		// The typed selection must ride the persisted failed input before the
+		// journal payload cleanup below clears it: the record keeps both the
+		// names and the original prose for correction and explicit retry.
+		if len(queued.SkillNames) > 0 {
+			turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(queued)}
+		}
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
 			func() error { return s.writeTranscriptDurableLocked(turn) },

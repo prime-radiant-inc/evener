@@ -443,6 +443,11 @@ type QueueChangedData struct {
 	IDs               []string `json:"ids,omitempty"`
 	ClientMutationIDs []string `json:"client_mutation_ids,omitempty"`
 	Texts             []string `json:"texts,omitempty"`
+	// SkillNames is FIFO-aligned with Preview and carries each entry's
+	// canonical skill selections (empty slice for an entry with none), so
+	// editing or returning a queued entry can restore its chips — a queued
+	// {type:"skill"} item is otherwise unrecoverable by any path.
+	SkillNames [][]string `json:"skill_names,omitempty"`
 }
 
 // TaskSummaryData is the current task summary carried by a TaskUpdatedData

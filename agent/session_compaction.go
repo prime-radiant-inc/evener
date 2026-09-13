@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -48,10 +49,12 @@ func (s *Session) Compact(ctx context.Context) error {
 	// win the publication race just the same. foldWithForceCompact retries
 	// once against the current history on conflict; report the general
 	// conflict to the caller rather than silently no-op'ing if both attempts
-	// lose. A transcript that has stopped accepting records is the other
+	// lose. An explicit /compact captures no compaction operation: it must
+	// never adopt a pending intent its caller did not request through.
+	// A transcript that has stopped accepting records is the other
 	// refusal, and it is reported as itself: telling the operator to try again
 	// would send them back to a fold that can only fail the same way.
-	if ok, refusal := s.foldWithForceCompact(ctx, ""); !ok {
+	if ok, refusal := s.foldWithForceCompact(ctx, "", nil); !ok {
 		if refusal != nil {
 			return refusal
 		}
@@ -232,6 +235,14 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
 	commit.claimNoteLocked()
 	commit.publishedRevision = s.historyRevision
+	// The compaction-operation claim runs in the same s.mu critical section
+	// as the history swap: actualCompaction comes from the staged
+	// EventContextCompaction payloads (never from the successful publication
+	// itself), and the claim is generation-matched against the operation this
+	// fold's requesting caller captured — so an unchanged publication, a
+	// losing fold, or a fold with no captured operation claims nothing.
+	commit.actualCompaction = commit.stagedCompactionCount() > 0
+	commit.claimCompactionLocked()
 	// Publication-order marker for last-write-wins effect suppression, set
 	// HERE — at publish, not at flush: an older fold whose deferred flush
 	// runs after this publish must find it and stay silent, even before
@@ -266,6 +277,10 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		hook()
 	}
 	commit.flush()
+	// After the locks release and the events flush, the winning publication's
+	// handoff completes: the claimed operation's delivery finishes, its
+	// receipt's phase advances, and the metadata save persists the result.
+	s.commitSkillCompactionPublication(commit)
 	return published, true, nil
 }
 
@@ -276,18 +291,27 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 // ForceCompact caller shares this exact shape: Compact,
 // applyPendingForceCompact, and handleModelError's content-filter retry.
 //
-// On success, applies shrinkTurnHistoryBaseline atomically with the publish
-// (using the fold's own pre/post lengths, never the merged-in result — see
+// captured is the compaction operation this fold's REQUESTING caller captured
+// (a round-tail dispatch's pending forced operation); unrelated manual folds
+// pass nil and can therefore claim nothing. On success, the winning
+// publication claims the captured generation (inside the transaction) and
+// applies shrinkTurnHistoryBaseline atomically with the publish (using the
+// fold's own pre/post lengths, never the merged-in result — see
 // publishFoldedHistory) and returns ok=true. On ok=false, both attempts lost
 // the publish race: s.history is whatever the winning competitor left it as,
 // and this fold's work — including the shrink it would have applied — is
-// entirely discarded; the caller decides what that means for it.
+// entirely discarded; the caller decides what that means for it. A captured
+// FORCED operation is then terminally retired (forced_not_published): its own
+// fold can never claim it, so leaving it pending would wedge the cycle
+// forever. The retirement's terminal loss notice lands alongside any winner's
+// handoff. A captured automatic intent (none exists today — the per-request
+// fold owns that path) would stay pending for its next actual fold.
 //
 // refusal carries publishFoldTransaction's reason when ok=false: nil for the
 // publication race this retries, and the poisoned-transcript error for the
 // refusal it does not retry, since no second fold can make that writer accept
 // the markers.
-func (s *Session) foldWithForceCompact(ctx context.Context, instructions string) (ok bool, refusal error) {
+func (s *Session) foldWithForceCompact(ctx context.Context, instructions string, captured *schema.SkillCompactionOperation) (ok bool, refusal error) {
 	const maxAttempts = 2
 	for range maxAttempts {
 		s.mu.Lock()
@@ -298,6 +322,7 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string)
 		s.mu.Unlock()
 
 		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy)
+		commit.captured = captured
 		s.contextMgr.ForceCompact(compactionCtx, &histCopy, instructions, emitFn)
 		postLen := len(histCopy)
 		injected := foldInjectedCount()
@@ -314,6 +339,13 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string)
 		// Conflict: loop retries against the now-current history. commit is
 		// deliberately NOT run — this attempt's side effects must not take
 		// effect for a fold that never published.
+	}
+	if captured != nil && captured.Origin == skillCompactionOriginForced {
+		// Retry exhaustion cancels ONLY the forced owner's generation.
+		// cancelSkillCompaction is generation-matched, emits the visible
+		// terminal loss notice, records the cancelled receipt, and warns on
+		// its own if the retirement cannot be persisted.
+		_ = s.cancelSkillCompaction(ctx, captured.Generation, skillCompactionCancelForcedNotPublished)
 	}
 	return false, nil
 }
@@ -383,12 +415,43 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // compares it against newestPublishedFoldRevision so any fold older than
 // the newest PUBLICATION skips its last-write-wins effects, whichever flush
 // runs first.
+//
+// actualCompaction reports whether this fold's layers actually compacted
+// anything (staged EventContextCompaction payloads exist) — never merely
+// that the history published: an unchanged publication sets it false.
+// captured is the explicit operation snapshot the fold's REQUESTING caller
+// captured (the round-tail dispatch's forced operation, or the per-request
+// fold's pending automatic operation); an unrelated manual fold captures
+// nothing and can therefore claim nothing. claimCompactionLocked runs the
+// generation-matched publication claim inside the winning publish's s.mu
+// critical section — minting the publication identity from the persisted
+// lifecycle revision it stamps — and stages the resulting handoff receipt;
+// the receipt is attached to the fold's compaction turns by
+// commitTranscriptsLocked and delivered (with its metadata save) by
+// commitSkillCompactionPublication after the flush.
 type foldCommit struct {
 	claimNoteLocked              func()
 	commitTranscriptsLocked      func()
 	flush                        func()
 	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
+	actualCompaction             bool
+	captured                     *schema.SkillCompactionOperation
+	stagedCompactionCount        func() int
+	claimCompactionLocked        func()
+	receipt                      *schema.SkillCompactionReceipt
+}
+
+// foldPublicationID renders the winning publication's identity from the
+// PERSISTED lifecycle revision stamped at its claim: that revision is saved
+// in every lifecycle snapshot and receipt, and each recorded publication
+// bumps it exactly once, so the identity is unique per winning publication
+// and stable across restarts. The memory-only historyRevision is never
+// seeded on restore — minting the identity from it would re-mint fold-1,
+// fold-2… onto a restored session's publications and collide with its
+// restored handoffs.
+func foldPublicationID(lifecycleRevision uint64) string {
+	return fmt.Sprintf("fold-%d", lifecycleRevision)
 }
 
 func environmentTurnIDs(history []schema.Turn) map[string]int {
@@ -550,18 +613,32 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// turn's entry can sequence between the publish and these markers
 	// (ResumeHistory anchors on the LAST compaction marker and discards
 	// everything before it, so a late marker would silently drop every turn
-	// recorded after the fold). Write errors are carried into flush, where
-	// emitting is safe again.
+	// recorded after the fold). It also attaches the publication's staged
+	// handoff receipt to each compaction turn, so the durable transcript
+	// carries the typed record a restart reconciles from. Write errors are
+	// carried into flush, where emitting is safe again.
+	commit := &foldCommit{}
 	var compactionTurnWriteErrs []error
 	var steeringWriteErrs []error
 	commitTranscriptsLocked := func() {
+		if commit.receipt != nil {
+			for i := range pendingCompactionTurns {
+				state := pendingCompactionTurns[i].SkillState.Clone()
+				if state == nil {
+					state = &schema.SkillTurnState{}
+				}
+				receipt := *commit.receipt
+				receipt.Operation.Selection.Names = slices.Clone(commit.receipt.Operation.Selection.Names)
+				state.Compaction = &receipt
+				pendingCompactionTurns[i].SkillState = state
+			}
+		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
 		for i, turn := range pendingCompactionTurns {
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 	}
-	commit := &foldCommit{}
 	commit.resetEnvContextTrackerLocked = func(removed bool) {
 		if removed && len(pendingCompactionTurns) > 0 {
 			s.resetEnvContextTrackerLocked()
@@ -619,6 +696,55 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// the first EventContextCompaction, and strategyInjected accumulates
 	// across however many times a strategy reports (ordinarily once).
 	injectedTurns := func() int { return len(pendingSteering) + strategyInjected }
+	// The generation-matched publication claim, run by the winning publish
+	// inside its s.mu critical section (see foldCommit). actualCompaction is
+	// decided by the publisher from the staged EventContextCompaction
+	// payloads; the claim itself matches the captured operation's generation
+	// AND note generation against the live pending operation, so a fold
+	// whose intent was superseded or cleared mid-flight claims nothing. The
+	// publication identity is minted from the lifecycle revision the claim
+	// stamps — persisted in every snapshot and receipt, and bumped exactly
+	// once per recorded publication, so a restored session's publications
+	// can never re-mint a prior publication's identity. A real compaction
+	// that captured no operation still records the absent-selection
+	// reminder handoff.
+	commit.stagedCompactionCount = func() int { return len(pendingCompactionEvents) }
+	commit.claimCompactionLocked = func() {
+		captured := commit.captured
+		pending := s.skillLifecycle.PendingCompaction
+		claim := commit.actualCompaction && pending != nil && captured != nil &&
+			pending.Generation == captured.Generation && pending.NoteGeneration == captured.NoteGeneration
+		var receipt *schema.SkillCompactionReceipt
+		if claim {
+			pending.Phase = skillCompactionPhasePublished
+			s.skillLifecycle.Revision++
+			pending.PublicationID = foldPublicationID(s.skillLifecycle.Revision)
+			claimed := *pending
+			claimed.Selection.Names = slices.Clone(pending.Selection.Names)
+			receipt = &schema.SkillCompactionReceipt{
+				Revision:  s.skillLifecycle.Revision,
+				SessionID: s.id,
+				Operation: claimed,
+				Phase:     skillCompactionReceiptPublished,
+			}
+		} else if commit.actualCompaction {
+			// The reminder handoff is itself a lifecycle mutation: it bumps
+			// the revision like any other receipt, so a restart reconciles
+			// it from the transcript even if the post-flush save never ran.
+			s.skillLifecycle.Revision++
+			receipt = &schema.SkillCompactionReceipt{
+				Revision:  s.skillLifecycle.Revision,
+				SessionID: s.id,
+				Operation: schema.SkillCompactionOperation{PublicationID: foldPublicationID(s.skillLifecycle.Revision)},
+				Phase:     skillCompactionReceiptPublished,
+				Reason:    skillCompactionReminderNoOperation,
+			}
+		}
+		if receipt != nil {
+			s.recordSkillCompactionHandoffLocked(*receipt)
+			commit.receipt = receipt
+		}
+	}
 	commit.claimNoteLocked = func() {
 		if noteClaimLocked != nil {
 			noteClaimLocked()

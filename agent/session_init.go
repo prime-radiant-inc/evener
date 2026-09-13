@@ -277,6 +277,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	cfg.spawn.inheritedContext = nil
 	s := &Session{
 		id:                            sessionID,
+		skillLifecycle:                schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
 		cfg:                           cfg,
 		descendantEvent:               cfg.spawn.descendantEvent,
 		client:                        client,
@@ -305,6 +306,14 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	if inheritedContext != nil {
 		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
+		// Copied history is background text only: a new or forked delegate
+		// imports no parent skill lifecycle. Typed activation records belong to
+		// the originating session, so they are stripped rather than imported;
+		// the child seeds exactly its own role preloads (seedFrozenSkillPreloads)
+		// and tracks its own future activations.
+		for i := range inheritedContext {
+			inheritedContext[i].Turn.SkillState = nil
+		}
 		s.history = ResumeHistory(inheritedContext)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
@@ -813,6 +822,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		profile = provider.WithCheapModel(profile, meta.CheapModel)
 	}
 
+	// Reconcile the typed compaction handoff receipts from ALL decoded
+	// transcript entries into the persisted lifecycle snapshot BEFORE
+	// ResumeHistory seeds the session's history: the receipts live on
+	// pre-marker entries the resume anchor would discard, and the snapshot
+	// may be staler than the transcript (a crash or failed save between a
+	// winning publication and its metadata write). A stale snapshot cannot
+	// repeat a delivered operation or attach a retired selection to another
+	// fold; nothing is inferred from old text or tool calls.
+	reconcileSkillCompactionReceipts(transcriptEntries, meta.Skills, meta.ID)
+
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	if restoreCfg.resumeHistory != nil {
@@ -877,6 +896,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.spawn.jobActivityClock = jobClock
 	s := &Session{
 		id:                       meta.ID,
+		skillLifecycle:           schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
 		cfg:                      cfg,
 		descendantEvent:          cfg.spawn.descendantEvent,
 		client:                   client,
@@ -1016,6 +1036,18 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
 	s.pinnedNote = meta.PinnedNote
+	if meta.Skills != nil {
+		s.skillLifecycle = meta.Skills.Clone()
+		s.pinnedNoteGen = meta.Skills.PinnedNoteGen
+	}
+	// Resume a persisted compaction operation: an unpublished forced operation
+	// re-arms its round-tail trigger; automatic state restores its elicitation
+	// latch through the persisted record itself; a published operation is
+	// delivery-only. Restart is not cancellation, and a legacy session without
+	// lifecycle metadata resumes with fresh state (no history backfill).
+	if err := s.resumeSkillCompaction(context.Background()); err != nil {
+		return nil, fmt.Errorf("resume skill compaction: %w", err)
+	}
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
 	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read
@@ -1183,6 +1215,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.mu.Unlock()
 	if tw != nil && clientMutationRecoveryAppended {
 		if err := refreshFromDisk("client mutation recovery"); err != nil {
+			return nil, err
+		}
+	}
+	// Re-drive user skill selections whose durable typed input record
+	// survived but whose admission did not (a metadata save failure or a
+	// crash between the input turn and the obligation persist). It runs over
+	// ALL decoded entries — after the catalog is discovered and the
+	// transcript is attached, before setRestoredTranscript publishes the
+	// final entry list — and never repeats a covered invocation.
+	if s.reconcilePendingSkillSelections(context.Background(), transcriptEntries) && tw != nil {
+		if err := refreshFromDisk("skill selection reconciliation"); err != nil {
 			return nil, err
 		}
 	}
@@ -1361,20 +1404,20 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.systemPromptOverride = string(b)
 	}
 
-	// Embedded skills form the base layer. Filesystem-discovered skills
-	// (project + extraDirs) shadow embedded ones.
-	s.skills = make(map[string]skill.SkillMeta)
+	// Select skills from manifests independently of full plugin component loading.
+	home, _ := os.UserHomeDir()
+	sources, diagnostics := plugin.SkillSources(s.cfg.PluginDirs)
+	s.skills = skill.Discover(s.currentEnv(), skill.DiscoverOptions{
+		HomeDir:       home,
+		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		ExtraDirs:     s.cfg.SkillsDirs,
+		Plugins:       sources,
+	})
+	s.skills.Diagnostics = append(diagnostics, s.skills.Diagnostics...)
+	for _, diagnostic := range s.skills.Diagnostics {
+		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{Message: fmt.Sprintf("skill %s [%s] %s: %s", diagnostic.Name, diagnostic.Category, diagnostic.Source, diagnostic.Message)})
+	}
 	s.pluginCommands = make(map[string]plugin.Command)
-	if embedded, err := skill.EmbeddedSkills(); err == nil {
-		maps.Copy(s.skills, embedded)
-	}
-	// The automatic user directory is above embedded skills but below project
-	// skills and explicitly configured directories. Discover it separately so
-	// DiscoverSkills' project walk can shadow it.
-	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
-		skill.ScanSkillsDir(userSkillsDir, s.skills)
-	}
-	maps.Copy(s.skills, skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...))
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
 	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(sessionStartKind, runSessionStartHooks) }); err != nil {
@@ -1478,6 +1521,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if warning := s.refreshSystemPromptCache(env); warning != "" {
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
 			events.WarningData{Message: warning})
+	} else {
+		// Role preloads join the skill inventory only after the permanent
+		// prompt carrying their complete instructions was admitted.
+		s.seedFrozenSkillPreloads()
 	}
 
 	return s.promptSourceLog, nil
@@ -1617,8 +1664,9 @@ func (s *Session) sandboxWrapper() *sandbox.Wrapper {
 	return nil
 }
 
-// initPlugins loads configured plugin directories, merging their skills,
-// agents, and hooks into the session. Fires SessionStart hooks after setup when requested.
+// initPlugins loads configured plugin components, merging agents and hooks into
+// the session. Skills are selected independently before full component loading.
+// Fires SessionStart hooks after setup when requested.
 func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) error {
 	if len(s.cfg.PluginDirs) == 0 {
 		return nil
@@ -1634,7 +1682,6 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	allAgents := map[string]plugin.Agent{}
 
 	for _, p := range plugins {
-		maps.Copy(s.skills, p.Skills)
 		for rawKey, agent := range p.Agents {
 			allAgents[exposedAgentCatalogKey(p, rawKey, agent)] = agent
 		}

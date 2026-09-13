@@ -10,6 +10,7 @@ import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexe
 import { holdIndexedDBEvent } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
+import { readComposerDraft, writeComposerDraft } from "../draft";
 import {
   discardRecoveryPendingTurn,
   flushPendingTurnsProjectionForTests,
@@ -68,8 +69,18 @@ async function connect(overrides: Partial<Thread> = {}): Promise<FakeClient> {
   return fake;
 }
 
+// The default thread() fixture advertises no skillInput capability (an
+// absent capability reads exactly like a false one); this variant opts the
+// target in for the skill-selection tests below.
+async function connectSkillCapable(): Promise<FakeClient> {
+  return connect({
+    evener: { ...thread().evener, capabilities: { ...thread().evener.capabilities, skillInput: true } },
+  });
+}
+
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
+  localStorage.clear();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
@@ -250,6 +261,124 @@ test("a local commit failure reports the exact error and never creates optimisti
 
   expect(onFailure).toHaveBeenCalledWith(failure);
   expect(pending.result.current).toEqual([]);
+});
+
+test("a send with skill selections carries them in the durable input after the text", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = await connectSkillCapable();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+
+  await act(async () => {
+    await threadsStore.getState().send("ref_a", "hello", undefined, ["pkg:probe"]);
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  const records = await storage.listOutbox("ref_a");
+  expect(records).toHaveLength(1);
+  expect(records[0]?.payload.input).toEqual([
+    { type: "text", text: "hello" },
+    { type: "skill", name: "pkg:probe" },
+  ]);
+});
+
+test("the store refuses skill selections unless the target advertises the skillInput capability", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+
+  await expect(threadsStore.getState().send("ref_a", "hi", undefined, ["pkg:probe"])).rejects.toThrow(
+    "skill selections are not supported on this target",
+  );
+  expect(await storage.listOutbox("ref_a")).toEqual([]);
+});
+
+test("a committed submission clears a stored draft only when its text and selections both match", async () => {
+  writeComposerDraft("ref_a", { text: "with skills", skillNames: ["pkg:probe"] });
+  const onFailure = vi.fn();
+
+  await submitWithPendingTracking(
+    { ref: "ref_a", method: "send", text: "with skills", skillNames: ["pkg:probe"], onFailure },
+    () => Promise.resolve(),
+  );
+
+  expect(onFailure).not.toHaveBeenCalled();
+  expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
+});
+
+test("a skill edit during a delayed commit keeps the stored draft", async () => {
+  writeComposerDraft("ref_a", { text: "patient", skillNames: ["pkg:probe"] });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const onFailure = vi.fn();
+  const submit = submitWithPendingTracking(
+    { ref: "ref_a", method: "send", text: "patient", skillNames: ["pkg:probe"], onFailure },
+    () => held,
+  );
+
+  writeComposerDraft("ref_a", { text: "patient", skillNames: ["pkg:other"] });
+  release();
+  await submit;
+
+  expect(readComposerDraft("ref_a")).toEqual({ text: "patient", skillNames: ["pkg:other"] });
+});
+
+test("recovery update and resend carry skill selections in their durable input", async () => {
+  let mutationId = 0;
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => `mutation-${++mutationId}` });
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "recover me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "recover me" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const fake = await connectSkillCapable();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  await refreshPendingTurnsProjection("ref_a");
+
+  expect(await updateRecoveryPendingTurn(original.clientMutationId, "ref_a", "edited", [], ["pkg:probe"])).toBe(true);
+  expect((await storage.getRecovery(original.clientMutationId))?.payload.input).toEqual([
+    { type: "text", text: "edited" },
+    { type: "skill", name: "pkg:probe" },
+  ]);
+
+  expect(await resendRecoveryPendingTurn(original.clientMutationId, "ref_a", "send", "edited", [], ["pkg:probe"])).toBe(
+    true,
+  );
+  const outbox = await storage.listOutbox("ref_a");
+  expect(outbox).toHaveLength(1);
+  expect(outbox[0]?.payload.input).toEqual([
+    { type: "text", text: "edited" },
+    { type: "skill", name: "pkg:probe" },
+  ]);
+});
+
+test("recovery resend is refused the same way when the target lacks the skillInput capability", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "retry this" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry this" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  await connect();
+  await refreshPendingTurnsProjection("ref_a");
+
+  await expect(
+    resendRecoveryPendingTurn(original.clientMutationId, "ref_a", "send", "retry this", [], ["pkg:probe"]),
+  ).rejects.toThrow("skill selections are not supported on this target");
+  expect((await storage.getRecovery(original.clientMutationId))?.payload.input).toEqual([
+    { type: "text", text: "retry this" },
+  ]);
 });
 
 // The settle helper can only await what registered with trackProjectionWork.

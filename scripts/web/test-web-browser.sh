@@ -54,5 +54,33 @@ for guard in layoutguard overflowguard shellguard spawnguard transcriptscrollgua
 	fi
 done
 
+# web-skillguard is the full-stack browser guard: cmd/evener-hub's
+# TestSkillComposerBrowser (browserguard build tag) drives the PRODUCTION web
+# app in real Chrome through a real hub (roster, past index, auth) against two
+# real `evener serve` helper daemons, with only the external LLM provider
+# scripted. Unlike the pure-frontend guards above it needs the Go toolchain
+# and the BUILT frontend (the hub serves the embedded dist), so it runs last
+# with its own prerequisites: a missing dist is built here, not skipped.
+repo_root="$(cd "$script_dir/../.." && pwd -P)"
+if [ ! -f dist/index.html ]; then
+	printf 'building the production frontend for web-skillguard…\n'
+	if NODE_DISABLE_COMPILE_CACHE=1 npm run build >"$dir/skillguard-build.log" 2>&1; then
+		:
+	else
+		build_status=$?
+		cat "$dir/skillguard-build.log"
+		printf 'FAIL  web-skillguard (frontend build, exit %s)\n' "$build_status" >&2
+		exit "$build_status"
+	fi
+fi
+if (cd "$repo_root" && go test -tags browserguard ./cmd/evener-hub -run '^TestSkillComposerBrowser$' -count=1 >"$dir/skillguard.log" 2>&1); then
+	printf 'PASS  web-skillguard\n'
+else
+	guard_status=$?
+	printf 'FAIL  web-skillguard (exit %s)\n' "$guard_status" >&2
+	cat "$dir/skillguard.log"
+	[ "$status" -ne 0 ] || status="$guard_status"
+fi
+
 complete=1
 exit "$status"

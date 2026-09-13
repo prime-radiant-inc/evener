@@ -18,7 +18,7 @@ import {
   updateRecoveryMutation,
   useThreadsStore,
 } from "../../../../stores/threads";
-import { clearDraft, readDraft, readDraftRevision } from "../draft";
+import { clearDraft, readComposerDraft, readDraftRevision } from "../draft";
 import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingReconcile";
 
 export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
@@ -264,6 +264,10 @@ export interface SubmitWithPendingTrackingOptions {
   method: PendingMethod;
   text: string;
   attachments?: InputAttachment[];
+  // The canonical skill selections submitted with this text, for the
+  // submitted snapshot: the stored draft clears only when both its text and
+  // its selections still match what was sent.
+  skillNames?: readonly string[];
   recoveryId?: string;
   onFailure: (error: unknown) => void;
 }
@@ -274,7 +278,12 @@ interface RecoverySubmissionCommit {
   attachments: InputAttachment[];
 }
 
-type SubmissionCommittedListener = (ref: string, text: string, recovery?: RecoverySubmissionCommit) => void;
+type SubmissionCommittedListener = (
+  ref: string,
+  text: string,
+  skillNames: readonly string[],
+  recovery?: RecoverySubmissionCommit,
+) => void;
 const submissionCommittedListeners = new Set<SubmissionCommittedListener>();
 
 export function subscribeComposerSubmissionCommitted(listener: SubmissionCommittedListener): () => void {
@@ -317,7 +326,11 @@ export function submitWithPendingTracking(
         // Submission ownership outlives a mounted composer. A retired mount
         // must not clear a newer draft written after a tab switch.
         const draftUnchanged = readDraftRevision(opts.ref) === draftRevision;
-        const clearStoredDraft = draftUnchanged && readDraft(opts.ref) === opts.text;
+        const draft = readComposerDraft(opts.ref);
+        const skillNames = [...(opts.skillNames ?? [])];
+        const selectionsUnchanged =
+          draft.skillNames.length === skillNames.length && draft.skillNames.every((name, i) => name === skillNames[i]);
+        const clearStoredDraft = draftUnchanged && draft.text === opts.text && selectionsUnchanged;
         if (epoch === refreshEpoch && (clearStoredDraft || opts.recoveryId)) {
           if (clearStoredDraft) clearDraft(opts.ref);
           for (const listener of submissionCommittedListeners) {
@@ -325,6 +338,7 @@ export function submitWithPendingTracking(
               listener(
                 opts.ref,
                 opts.text,
+                skillNames,
                 opts.recoveryId
                   ? {
                       clientMutationId: opts.recoveryId,
@@ -441,12 +455,13 @@ export function updateRecoveryPendingTurn(
   ref: string,
   text: string,
   attachments: InputAttachment[],
+  skillNames?: readonly string[],
 ): Promise<boolean> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
   return trackProjectionWork(
     (async () => {
-      const updated = await updateRecoveryMutation(clientMutationId, ref, text, attachments);
+      const updated = await updateRecoveryMutation(clientMutationId, ref, text, attachments, skillNames);
       void refreshPendingTurnsProjection(ref);
       return updated;
     })(),
@@ -467,12 +482,13 @@ export function resendRecoveryPendingTurn(
   route: ComposerMutationRoute,
   text: string,
   attachments: InputAttachment[],
+  skillNames?: readonly string[],
 ): Promise<boolean> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
   return trackProjectionWork(
     (async () => {
-      const record = await resendRecoveryMutation(clientMutationId, ref, route, text, attachments);
+      const record = await resendRecoveryMutation(clientMutationId, ref, route, text, attachments, skillNames);
       void refreshPendingTurnsProjection(ref);
       return record !== undefined;
     })(),

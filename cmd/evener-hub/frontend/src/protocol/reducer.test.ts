@@ -234,15 +234,43 @@ test("hydrateThread leaves diagnostics unavailable when the wire omits them", ()
 
 test("hydrateThread retains canonical skill descriptors", () => {
   const model = testHydrate({
-    evener: { diagnostics: { skills: [{ name: "plugin:simplify", description: "rewrite" }] } },
+    evener: {
+      diagnostics: {
+        skills: [
+          {
+            name: "plugin:simplify",
+            description: "rewrite",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
   });
-  expect(model.skills).toEqual([{ name: "plugin:simplify", description: "rewrite" }]);
+  expect(model.skills).toEqual([
+    {
+      name: "plugin:simplify",
+      description: "rewrite",
+      disableModelInvocation: false,
+      userInvocable: true,
+      available: true,
+    },
+  ]);
 });
 
 test("hydrateThread defaults missing skills and copies wire descriptors", () => {
   expect(testHydrate().skills).toEqual([]);
 
-  const skills = [{ name: "plugin:simplify", description: "rewrite" }];
+  const skills = [
+    {
+      name: "plugin:simplify",
+      description: "rewrite",
+      disableModelInvocation: false,
+      userInvocable: true,
+      available: true,
+    },
+  ];
   const model = testHydrate({ evener: { diagnostics: { skills } } });
   expect(model.skills).not.toBe(skills);
   expect(model.skills?.[0]).not.toBe(skills[0]);
@@ -250,7 +278,19 @@ test("hydrateThread defaults missing skills and copies wire descriptors", () => 
 
 test("applyNotification preserves skills while applying a status update", () => {
   const model = testHydrate({
-    evener: { diagnostics: { skills: [{ name: "plugin:simplify", description: "rewrite" }] } },
+    evener: {
+      diagnostics: {
+        skills: [
+          {
+            name: "plugin:simplify",
+            description: "rewrite",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
   });
   const notification: AnyNotification = {
     method: "thread/status/changed",
@@ -265,7 +305,15 @@ test("applyNotification preserves skills while applying a status update", () => 
   const next = applyNotification(model, notification, 2000);
 
   expect(next).not.toBe(model);
-  expect(next.skills).toEqual([{ name: "plugin:simplify", description: "rewrite" }]);
+  expect(next.skills).toEqual([
+    {
+      name: "plugin:simplify",
+      description: "rewrite",
+      disableModelInvocation: false,
+      userInvocable: true,
+      available: true,
+    },
+  ]);
 });
 
 function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {

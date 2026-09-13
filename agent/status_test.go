@@ -25,9 +25,9 @@ import (
 
 func TestDetailedStatusUsesNamespacedSkillCatalogKey(t *testing.T) {
 	s := newTestSession(t)
-	s.skills = map[string]skill.SkillMeta{
-		"plugin:simplify": {Name: "simplify", Description: "rewrite", SkillFile: writeSkillBodyFile(t, "body")},
-	}
+	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
+		"plugin:simplify": {CatalogName: "plugin:simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", Description: "rewrite", SkillFile: writeSkillBodyFile(t, "body")}},
+	}}
 	got := s.DetailedStatus()
 	if len(got.Skills) != 1 || got.Skills[0].Name != "plugin:simplify" {
 		t.Fatalf("skills = %+v", got.Skills)

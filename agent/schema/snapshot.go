@@ -189,6 +189,8 @@ type SessionMeta struct {
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
 	// survives daemon restart and evener resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
+	// Skills contains future-only activation metadata, never ordinary bodies.
+	Skills *SkillLifecycleSnapshot `json:"skills,omitempty"`
 	// EnvContext is the environment-context tracker state (last emitted
 	// snapshot), persisted so resume stays silent when nothing changed.
 	EnvContext *envctx.State `json:"env_context,omitempty"`

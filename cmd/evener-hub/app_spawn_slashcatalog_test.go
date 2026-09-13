@@ -110,6 +110,23 @@ func TestHubSpawnSlashCatalog_ProjectCommandAndSkill(t *testing.T) {
 	if _, ok := skills["greeter:helper"]; !ok {
 		t.Errorf("plugin skill %q missing from catalog: %v", "greeter:helper", skills)
 	}
+	// The wire flags must carry the catalog's real invocation controls and
+	// availability: mergeSlashCommands keeps only available && userInvocable
+	// rows, so a catalog serializing zero values advertises nothing.
+	byName := make(map[string]appwire.EvenerSkillInfo, len(resp.Skills))
+	for _, s := range resp.Skills {
+		byName[s.Name] = s
+	}
+	for _, name := range []string{"deployskill", "greeter:helper"} {
+		s, ok := byName[name]
+		if !ok {
+			continue // asserted missing above
+		}
+		if !s.Available || !s.UserInvocable || s.DisableModelInvocation {
+			t.Errorf("skill %q wire flags = {Available:%v UserInvocable:%v DisableModelInvocation:%v}, want available user-invocable",
+				name, s.Available, s.UserInvocable, s.DisableModelInvocation)
+		}
+	}
 }
 
 func TestHubSpawnSlashCatalog_EmptyCWDIsUserLevelOnly(t *testing.T) {

@@ -79,10 +79,15 @@ type toolDeps struct {
 	// web exposes the web tools with the profile and client hidden behind them.
 	web webDeps
 
-	// compact-tool surface: forward note mutations, force-compaction requests, and current pressure to the handler.
-	setPinnedNote       func(note string)
-	requestForceCompact func(instructions string) error
-	pressure            func() float64
+	// compact-tool surface: forward the atomic, generation-owned compaction
+	// request (note + instructions + reload selection) and current pressure to
+	// the handler.
+	requestSkillCompaction func(ctx context.Context, note, instructions string, selection schema.SkillReloadSelection) (uint64, error)
+	pressure               func() float64
+
+	// skillInventory exposes the session's successful-activation inventory so
+	// the compact tool can validate a reload selection.
+	skillInventory func() map[string]schema.SkillInventoryEntry
 
 	// setCommunicateTerminal is the terminal communicate result writer (issue
 	// #570). Live sessions get the Session-owned atomic capture
@@ -111,6 +116,12 @@ type toolDeps struct {
 
 	// skill looks up a discovered skill by name.
 	skill func(name string) (skill.SkillMeta, bool)
+
+	// skillActivate runs one use_skill invocation through the shared
+	// activation pipeline (Session.skillToolActivate): full-catalog
+	// resolution, current policy, shared loading/rendering, and the typed
+	// pending identity for the delivery pipeline.
+	skillActivate func(ctx context.Context, skillName, toolCallID string) (any, error)
 
 	// reasoningEffortLevels is captured once for the task_list tool definition.
 	reasoningEffortLevels []string
@@ -279,16 +290,17 @@ func newToolDeps(s *Session) *toolDeps {
 			fetch:  s.webFetch,
 			search: s.webSearch,
 		},
-		setPinnedNote:          s.setPinnedNote,
-		requestForceCompact:    s.requestForceCompact,
+		requestSkillCompaction: s.requestSkillCompaction,
 		pressure:               s.ContextPressure,
+		skillInventory:         s.skillInventorySnapshot,
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		skill: func(name string) (skill.SkillMeta, bool) {
-			meta, ok := s.skills[name]
-			return meta, ok
+			descriptor, ok := s.skills.Entries[name]
+			return descriptor.Meta, ok
 		},
+		skillActivate:         s.skillToolActivate,
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
 		webSearchEnabled:      s.profile.Protocol() == registry.ProtocolGoogle && s.profile.SupportsWebSearch(),
 		stateDir:              s.stateDir,

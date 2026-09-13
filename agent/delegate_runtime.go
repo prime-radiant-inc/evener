@@ -24,7 +24,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -1629,12 +1628,28 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		reasoningEffort = llm.NormalizeReasoningEffort(childConfig.ReasoningEffort)
 	}
 	var frozenSkillNames, frozenSkillBodies []string
+	var frozenSkillMetadata []schema.FrozenSkillPreload
 	if selection.agent != nil {
 		for _, name := range selection.agent.Skills {
-			body, err := skill.ResolveSkillContent(s.skills, name)
-			if err == nil && strings.TrimSpace(body) != "" {
-				frozenSkillNames = append(frozenSkillNames, name)
-				frozenSkillBodies = append(frozenSkillBodies, body)
+			// Fresh role preloads use the shared loader/renderer; the frozen
+			// descriptor keeps the complete rendered bodies plus their typed
+			// provenance for the delegate's lifetime.
+			invocationID, err := s.mintSkillOperationID()
+			if err != nil {
+				continue
+			}
+			batch, err := s.prepareSkillActivations(ctx, []skillInvocation{{
+				Name: name, Route: "role_preload",
+				InvocationID: invocationID, AtomicGroupID: invocationID,
+			}})
+			if err != nil || len(batch.Items) == 0 {
+				continue
+			}
+			item := batch.Items[0]
+			if strings.TrimSpace(item.Rendered.Content) != "" {
+				frozenSkillNames = append(frozenSkillNames, item.Loaded.Descriptor.CatalogName)
+				frozenSkillBodies = append(frozenSkillBodies, item.Rendered.Content)
+				frozenSkillMetadata = append(frozenSkillMetadata, frozenPreloadRecord(item))
 			}
 		}
 	}
@@ -1685,6 +1700,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		ToolNameCeiling:               append([]string(nil), toolNameCeiling...),
 		FrozenSkillNames:              frozenSkillNames,
 		FrozenSkillBodies:             frozenSkillBodies,
+		FrozenSkillMetadata:           frozenSkillMetadata,
 		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),
 		ResultSchema:                  resultSchema,
 		DelegationAllowance:           args.grantedAllowance(),
@@ -2029,6 +2045,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			sharedTaskStoreOwnerSessionID: descriptor.SharedTaskStoreOwnerSessionID,
 			rolePromptOverride:            descriptor.FrozenRolePrompt,
 			activatedSkillBodies:          activatedSkillBodies,
+			frozenSkillMetadata:           append([]schema.FrozenSkillPreload(nil), descriptor.FrozenSkillMetadata...),
 			toolNameCeiling:               append([]string(nil), descriptor.ToolNameCeiling...),
 			isolation:                     descriptor.Isolation,
 			communicateOutputSchema:       cloneMap(resultSchema),

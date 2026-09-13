@@ -167,7 +167,7 @@ func lcycRunDrain(t *testing.T, sess *Session, ops []lcycDrainOp) string {
 					if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
 						Ref:              sess.ID(),
 						ClientMutationID: "lcyc_" + newQueueEntryID(),
-						Input:            clientMutationInput(op.text, lcycImages(op.images)),
+						Input:            clientMutationInput(op.text, lcycImages(op.images), nil),
 					}); err != nil {
 						t.Fatalf("enqueue op %d: %v", idx, err)
 					}
@@ -598,8 +598,8 @@ func lcycRunInit(t *testing.T, dirs []string, kind plugin.SessionStartKind) stri
 	// Resume kind additionally exercises the defer branch.
 	err := sess.initPlugins(kind, false)
 
-	skillNames := make([]string, 0, len(sess.skills))
-	for name := range sess.skills {
+	skillNames := make([]string, 0, len(sess.skills.Entries))
+	for name := range sess.skills.Entries {
 		skillNames = append(skillNames, name)
 	}
 	sort.Strings(skillNames)

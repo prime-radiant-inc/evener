@@ -1517,13 +1517,24 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	if err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
+	s.mu.RLock()
+	fn := s.retrySafeTurns.Start
+	s.mu.RUnlock()
+	// Skill selections are consumed at the input's actual claim: this endpoint
+	// prepares them against the durable input identity and delivers the
+	// complete bodies at dispatch. The support verdict is this endpoint's own
+	// wiring — the very seam the dispatch below requires — so a wired endpoint
+	// keeps consuming selections at the claim while an unwired one refuses
+	// them here with the typed unsupported-input error instead of asserting
+	// support it cannot deliver. Exact catalog identity and invocation policy
+	// remain consumption-time checks in the session.
+	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+	}
 	if !input.HasContent() {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("input is required")
 	}
 	params.Input = input.Items
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Start
-	s.mu.RUnlock()
 	if fn == nil {
 		return appwire.TurnStartResponse{}, appwire.Unavailable("turn start not available")
 	}
@@ -1555,13 +1566,18 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	if err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
+	s.mu.RLock()
+	fn := s.retrySafeTurns.Steer
+	s.mu.RUnlock()
+	// Skill selections are consumed at the steering's actual delivery: the
+	// support verdict is this endpoint's own wiring. See the turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
 	if !input.HasContent() {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams("input is required")
 	}
 	params.Input = input.Items
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Steer
-	s.mu.RUnlock()
 	if fn == nil {
 		return appwire.TurnSteerResponse{}, appwire.Unavailable("steer not available")
 	}
@@ -1624,13 +1640,19 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	if err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
+	s.mu.RLock()
+	fn := s.retrySafeTurns.Queue
+	s.mu.RUnlock()
+	// Skill selections ride the queued entry and are consumed at its actual
+	// claim; the support verdict is this endpoint's own wiring. See the
+	// turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
+	}
 	if !input.HasContent() {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
 	}
 	params.Input = input.Items
-	s.mu.RLock()
-	fn := s.retrySafeTurns.Queue
-	s.mu.RUnlock()
 	if fn == nil {
 		return appwire.TurnQueueResponse{}, appwire.Unavailable("queue not available")
 	}
@@ -1651,10 +1673,16 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
-	params.Input = input.Items
 	s.mu.RLock()
 	fn := s.retrySafeTurns.Drain
 	s.mu.RUnlock()
+	// Drained entries keep their selections, consumed with the combined
+	// steering at its actual delivery; the support verdict is this endpoint's
+	// own wiring. See the turn/start gate.
+	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	params.Input = input.Items
 	if fn == nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("drain-as-steer not available")
 	}
@@ -2311,7 +2339,24 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 		out.MCP = append(out.MCP, appwire.EvenerMCPServerInfo{Name: srv.Name, Tools: append([]string(nil), srv.Tools...), Status: srv.Status, Error: srv.Error})
 	}
 	for _, skill := range ds.Skills {
-		out.Skills = append(out.Skills, appwire.EvenerSkillInfo{Name: skill.Name, Description: skill.Description})
+		out.Skills = append(out.Skills, appwire.EvenerSkillInfo{
+			Name:                   skill.Name,
+			Description:            skill.Description,
+			DisableModelInvocation: skill.DisableModelInvocation,
+			UserInvocable:          skill.UserInvocable,
+			Available:              skill.Available,
+			AllowedTools:           append([]string(nil), skill.AllowedTools...),
+		})
+	}
+	for _, d := range ds.SkillDiagnostics {
+		out.SkillDiagnostics = append(out.SkillDiagnostics, appwire.EvenerSkillDiagnostic{
+			Category:    d.Category,
+			Name:        d.Name,
+			Source:      d.Source,
+			OtherSource: d.OtherSource,
+			Field:       d.Field,
+			Message:     d.Message,
+		})
 	}
 	for _, plugin := range ds.Plugins {
 		out.Plugins = append(out.Plugins, appwire.EvenerPluginInfo{
@@ -2416,6 +2461,17 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 	return s.appCapabilitiesLocked(state, processing)
 }
 
+// skillInputSupportedLocked computes ThreadCapabilities.SkillInput's
+// advertisement: true exactly when all four input-bearing retry-safe seams are
+// wired. Each handler's own ValidateSkillInputSupport gate enforces its own
+// seam's wiring, so no endpoint ever accepts a selection it cannot consume;
+// the advertisement stays the thread-level conjunction because a selection
+// can enter through any of the four mutations. Caller holds s.mu.
+func (s *Server) skillInputSupportedLocked() bool {
+	return s.retrySafeTurns.Start != nil && s.retrySafeTurns.Steer != nil &&
+		s.retrySafeTurns.Queue != nil && s.retrySafeTurns.Drain != nil
+}
+
 func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.ThreadCapabilities {
 	// Status-dependent capabilities derive from the status this thread PUBLISHES,
 	// not assembled again from the fields behind it. Clear additionally requires
@@ -2464,6 +2520,16 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// open. It is intentionally NOT gated on !active: a goal may be set
 		// mid-turn (it arms for the next continuation), unlike Send.
 		Goal: s.goalFunc != nil && !closed,
+		// SkillInput advertises that this thread's input-bearing turn mutations
+		// (turn/start, turn/steer, turn/queue, turn/drainAsSteer) consume skill
+		// selections at the input's actual claim. It is true exactly when every
+		// one of those retry-safe seams is wired: a server that wired none or
+		// only part of them has no consumable selection surface and must not
+		// advertise one. Cold/discovered threads and older daemons keep their
+		// own answers; this is the live daemon-sourced projection only. Every
+		// handler's skill-input gate enforces its own seam's wiring, so an
+		// advertised true means every endpoint really consumes selections.
+		SkillInput: s.skillInputSupportedLocked(),
 	}
 }
 

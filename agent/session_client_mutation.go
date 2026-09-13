@@ -456,6 +456,10 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 		return "", ok, err
 	}
 	ctx = withQueuedClientMutation(ctx, claimed)
+	// Prepare the claimed input's skill selection at actual consumption: one
+	// atomic group tied to this input's durable identity, all-or-nothing
+	// before any dependent work dispatches.
+	ctx = s.contextWithSelectedSkills(ctx, claimed)
 	result, err := s.ProcessInputKind(ctx, claimed.Text, claimed.Images, EntryUserInput)
 	// The claim above spends a turn of the budget and the turn loop's gate can
 	// refuse after it, when poisoning lands in between. Give the claim back

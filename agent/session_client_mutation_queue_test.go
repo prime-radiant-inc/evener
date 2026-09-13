@@ -2,14 +2,22 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -90,6 +98,104 @@ func TestClientMutation_InputShapesMatchDaemonBoundary(t *testing.T) {
 				t.Fatalf("invalid inputs reached durable journal: %#v", snapshot.Journal)
 			}
 		})
+	}
+	// Selection-only and mixed text/image/skill input are canonical shapes the
+	// daemon boundary accepts: the selections ride the durable payload, queue,
+	// and pending execution unchanged, with the journal's normalized JSON
+	// payload hash covering them.
+	validInputs := []struct {
+		name  string
+		input []appwire.InputItem
+	}{
+		{"selection-only", []appwire.InputItem{{Type: "skill", Name: "pkg:probe"}}},
+		{"mixed text image skill", []appwire.InputItem{
+			{Type: "text", Text: "REQUEST_612"},
+			{Type: "image", MediaType: "image/png", Data: []byte("png-bytes"), Name: "proof.png"},
+			{Type: "skill", Name: "pkg:probe"},
+		}},
+	}
+	for _, valid := range validInputs {
+		t.Run(valid.name, func(t *testing.T) {
+			assertAccepted := func(t *testing.T, sess *Session, mutationID string, got []appwire.InputItem) {
+				t.Helper()
+				if !reflect.DeepEqual(got, valid.input) {
+					t.Fatalf("accepted input = %#v, want %#v", got, valid.input)
+				}
+				record := sess.clientMutations.snapshot().Journal[mutationID]
+				if len(record.Payload) == 0 {
+					t.Fatal("accepted mutation has no journal payload")
+				}
+				sum := sha256.Sum256(record.Payload)
+				if record.PayloadHash != hex.EncodeToString(sum[:]) {
+					t.Fatalf("journal payload hash = %q, want sha256 of the stored payload", record.PayloadHash)
+				}
+				var decoded struct {
+					Input []appwire.InputItem `json:"input"`
+				}
+				if err := json.Unmarshal(record.Payload, &decoded); err != nil {
+					t.Fatalf("decode journal payload: %v", err)
+				}
+				if !reflect.DeepEqual(decoded.Input, valid.input) {
+					t.Fatalf("journal payload input = %#v, want %#v", decoded.Input, valid.input)
+				}
+			}
+			t.Run("start", func(t *testing.T) {
+				sess := newQueuePersistTestSession(t, t.TempDir())
+				defer sess.Close()
+				if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "start", Input: valid.input}); err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				assertAccepted(t, sess, "start", sess.clientMutations.snapshot().PendingExecutions["start"].Input)
+			})
+			t.Run("steer", func(t *testing.T) {
+				sess := newQueuePersistTestSession(t, t.TempDir())
+				defer sess.Close()
+				setTestClientMutationActiveTurn(t, sess, "turn_1")
+				if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "steer", Input: valid.input}); err != nil {
+					t.Fatalf("AcceptClientMutationSteer: %v", err)
+				}
+				assertAccepted(t, sess, "steer", sess.clientMutations.snapshot().PendingExecutions["steer"].Input)
+			})
+			t.Run("queue", func(t *testing.T) {
+				sess := newQueuePersistTestSession(t, t.TempDir())
+				defer sess.Close()
+				setTestClientMutationActiveTurn(t, sess, "turn_1")
+				if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "queue", Input: valid.input}); err != nil {
+					t.Fatalf("AcceptClientMutationQueue: %v", err)
+				}
+				snapshot := sess.clientMutations.snapshot()
+				if len(snapshot.InputQueue) != 1 {
+					t.Fatalf("durable queue length = %d, want 1", len(snapshot.InputQueue))
+				}
+				assertAccepted(t, sess, "queue", snapshot.InputQueue[0].Input)
+			})
+			t.Run("drain", func(t *testing.T) {
+				sess := newQueuePersistTestSession(t, t.TempDir())
+				defer sess.Close()
+				setTestClientMutationActiveTurn(t, sess, "turn_1")
+				if _, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
+					ClientMutationID:      "drain",
+					ExpectedQueueRevision: 0,
+					Input:                 valid.input,
+				}); err != nil {
+					t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
+				}
+				assertAccepted(t, sess, "drain", sess.clientMutations.snapshot().PendingExecutions["drain"].Input)
+			})
+		})
+	}
+}
+
+func TestClientMutation_SkillInputRoundTrip(t *testing.T) {
+	items := []appwire.InputItem{{Type: "text", Text: "REQUEST_612"}, {Type: "skill", Name: "pkg:probe"}}
+	normalized, err := appwire.NormalizeMutationInput(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := queuedInputFromClientMutation(clientMutationQueueEntry{Input: normalized.Items})
+	got := clientMutationInput(input.Text, input.Images, input.SkillNames)
+	if !reflect.DeepEqual(got, items) {
+		t.Fatalf("round-trip=%#v", got)
 	}
 }
 
@@ -1653,4 +1759,761 @@ func assertClientMutationConflict(t *testing.T, err error) {
 	if wireErr.Code != appwire.CodeConflict {
 		t.Fatalf("error code = %d, want %d", wireErr.Code, appwire.CodeConflict)
 	}
+}
+
+// --- Task 11: durable skill selections through input consumption -----------
+
+// skillSelectionFixtureBody returns a sentinel body too large to confuse with
+// any prompt prose, so envelope assertions prove delivery of the complete
+// fixture bytes and never match incidental text.
+func skillSelectionFixtureBody(marker string) string {
+	return strings.Repeat(marker+"\n", 64)
+}
+
+// newSkillSelectionSession builds a session rooted at a real working directory
+// with the scripted provider adapter at the external LLM boundary and real
+func newSkillSelectionSession(t *testing.T, root string, adapter llm.ProviderAdapter) *Session {
+	t.Helper()
+	markGitRoot(t, root)
+	s := newSession(t, withAdapter(adapter), withDir(root),
+		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+	return s
+}
+
+// newSkillSelectionDiskSession is newQueuePersistTestSession with a scripted
+// adapter, for tests that restart the session from the real on-disk state.
+func newSkillSelectionDiskSession(t *testing.T, dir string, adapter llm.ProviderAdapter) *Session {
+	t.Helper()
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	return sess
+}
+
+// restoreSkillSelectionDiskSession reconstructs the session the way a real
+// daemon resume does, keeping the same adapter so captured requests survive.
+func restoreSkillSelectionDiskSession(t *testing.T, dir, id string, adapter llm.ProviderAdapter) *Session {
+	t.Helper()
+	meta, err := schema.LoadSessionMeta(dir, id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	restored, err := RestoreSessionFromMetaWithConfig(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	return restored
+}
+
+// findClientMutationTurn copies the first history turn carrying the mutation
+// identity and kind, or nil.
+func findClientMutationTurn(s *Session, mutationID string, kind schema.TurnKind) *schema.Turn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.history {
+		if s.history[i].ClientMutationID == mutationID && s.history[i].Kind == kind {
+			found := s.history[i]
+			return &found
+		}
+	}
+	return nil
+}
+
+// findSkillObligation returns the delivery obligation with the exact
+// invocation identity, from the typed turn state any admission recorded.
+func findSkillObligation(s *Session, invocationID string) (schema.SkillDeliveryObligation, bool) {
+	for _, state := range skillTurnStates(s) {
+		for _, obligation := range state.Obligations {
+			if obligation.InvocationID == invocationID {
+				return obligation, true
+			}
+		}
+	}
+	return schema.SkillDeliveryObligation{}, false
+}
+
+// assertSelectionObligation pins the invocation-group construction: one group
+// per durable input, tied to the input's durable identity and the causal
+// client mutation.
+func assertSelectionObligation(t *testing.T, s *Session, invocationID, inputID, mutationID string) schema.SkillDeliveryObligation {
+	t.Helper()
+	obligation, ok := findSkillObligation(s, invocationID)
+	if !ok {
+		t.Fatalf("no delivery obligation with invocation ID %q: %+v", invocationID, skillTurnStates(s))
+	}
+	if obligation.ClientMutationID != mutationID {
+		t.Fatalf("obligation %q mutation = %q, want %q", invocationID, obligation.ClientMutationID, mutationID)
+	}
+	if obligation.AtomicGroupID != inputID {
+		t.Fatalf("obligation %q atomic group = %q, want the input identity %q", invocationID, obligation.AtomicGroupID, inputID)
+	}
+	if obligation.Route != "user_selection" {
+		t.Fatalf("obligation %q route = %q, want user_selection", invocationID, obligation.Route)
+	}
+	return obligation
+}
+
+// requireEnvelopeRequest returns the unique request carrying the selected
+// skill's complete envelope. Disk-backed sessions also run the session namer
+// through the same adapter, so these tests locate the delivery request rather
+// than pinning total request counts.
+func requireEnvelopeRequest(t *testing.T, requests []llm.Request, name, body, source string) llm.Request {
+	t.Helper()
+	var found []llm.Request
+	for _, req := range requests {
+		for _, env := range requestSkillEnvelopes(t, req) {
+			if env.Doc.Name == name {
+				found = append(found, req)
+			}
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d requests carry the %q envelope, want exactly 1", len(found), name)
+	}
+	requireSingleEnvelope(t, found[0], name, body, source)
+	return found[0]
+}
+
+func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) {
+	root := t.TempDir()
+	body := skillSelectionFixtureBody("BODY_612")
+	source := writeSkillMDAndReturn(t, root, "probe", body)
+	mutationID := "skill-selection-start"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+	evs, stop := captureEvents(s)
+
+	response, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: mutationID,
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "REQUEST_612"},
+			{Type: "skill", Name: "probe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	delivered := requireSingleEnvelope(t, requests[0], "probe", body, source)
+	var originals []string
+	for _, text := range userMessageTexts(requests[0]) {
+		if text == "REQUEST_612" {
+			originals = append(originals, text)
+		}
+	}
+	if len(originals) != 1 {
+		t.Fatalf("request user messages = %q, want the original prose exactly once", userMessageTexts(requests[0]))
+	}
+	requireOrdinaryActivation(t, s, "probe", source, "user_selection", true, delivered)
+	turnID := response.Turn.ID
+	assertSelectionObligation(t, s, turnID+":probe", turnID, mutationID)
+	stop()
+
+	input := findClientMutationTurn(s, mutationID, schema.TurnUserInput)
+	if input == nil || input.SkillState == nil || input.SkillState.Input == nil {
+		t.Fatalf("no typed skill input recorded on the input turn: %+v", input)
+	}
+	if input.SkillState.Input.OriginalText != "REQUEST_612" ||
+		!slices.Equal(input.SkillState.Input.Names, []string{"probe"}) ||
+		input.SkillState.Input.AtomicGroupID != turnID {
+		t.Fatalf("typed input = %+v, want original prose, [probe], group %q", input.SkillState.Input, turnID)
+	}
+	if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "probe" {
+		t.Fatalf("activation events = %v, want [probe]", names)
+	}
+}
+
+func TestClientMutation_SkillSelectionOnlyStartIsContent(t *testing.T) {
+	root := t.TempDir()
+	body := skillSelectionFixtureBody("BODY_613")
+	source := writeSkillMDAndReturn(t, root, "probe", body)
+	mutationID := "skill-selection-only-start"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: mutationID,
+		Input:            []appwire.InputItem{{Type: "skill", Name: "probe"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	requireSingleEnvelope(t, requests[0], "probe", body, source)
+	input := findClientMutationTurn(s, mutationID, schema.TurnUserInput)
+	if input == nil || input.SkillState == nil || input.SkillState.Input == nil ||
+		!slices.Equal(input.SkillState.Input.Names, []string{"probe"}) {
+		t.Fatalf("selection-only input turn = %+v, want typed [probe] selection", input)
+	}
+}
+
+func TestClientMutation_SkillSelectionQueueConsumesCurrentDiskBytes(t *testing.T) {
+	root := t.TempDir()
+	firstBody := skillSelectionFixtureBody("BODY_ORIG")
+	source := writeSkillMDAndReturn(t, root, "probe", firstBody)
+	mutationID := "skill-selection-queue"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+
+	response, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: mutationID,
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "REQUEST_612"},
+			{Type: "skill", Name: "probe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	}
+	entryID := response.Receipt.QueueEntryIDs[0]
+	// The queued selection is consumed at claim time, so bytes changed on disk
+	// after queueing must be what the activation delivers.
+	secondBody := skillSelectionFixtureBody("BODY_NEW")
+	if err := os.WriteFile(source, []byte("---\nname: probe\ndescription: fixture\n---\n"+secondBody), 0o644); err != nil {
+		t.Fatalf("rewrite skill source: %v", err)
+	}
+	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	delivered := requireSingleEnvelope(t, requests[0], "probe", secondBody, source)
+	if strings.Contains(delivered.Raw, "BODY_ORIG") {
+		t.Fatal("delivered the pre-queue disk bytes, want the rewritten body")
+	}
+	requireOrdinaryActivation(t, s, "probe", source, "user_selection", true, delivered)
+	assertSelectionObligation(t, s, entryID+":probe", entryID, mutationID)
+}
+
+func TestClientMutation_SkillSelectionMissingSecondNameFailsVisible(t *testing.T) {
+	root := t.TempDir()
+	body := skillSelectionFixtureBody("BODY_612")
+	writeSkillMDAndReturn(t, root, "probe", body)
+	mutationID := "skill-selection-missing-second"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+	evs, stop := captureEvents(s)
+
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: mutationID,
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "REQUEST_612"},
+			{Type: "skill", Name: "probe"},
+			{Type: "skill", Name: "ghost"},
+		},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+	}
+	// All-or-nothing: zero dependent provider requests and zero activation
+	// successes for the group that named a missing skill.
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("provider requests = %d, want 0", len(requests))
+	}
+	if inventory := lifecycleInventory(s); len(inventory) != 0 {
+		t.Fatalf("failed preparation published inventory: %+v", inventory)
+	}
+	// The retained failed input keeps both names and the original prose.
+	input := findClientMutationTurn(s, mutationID, schema.TurnUserInput)
+	if input == nil || input.SkillState == nil || input.SkillState.Input == nil {
+		t.Fatalf("failed input turn lost its typed selection: %+v", input)
+	}
+	if !slices.Equal(input.SkillState.Input.Names, []string{"probe", "ghost"}) ||
+		input.SkillState.Input.OriginalText != "REQUEST_612" {
+		t.Fatalf("retained failed input = %+v, want both names and the prose", input.SkillState.Input)
+	}
+	if !strings.Contains(input.Message.Text(), "REQUEST_612") {
+		t.Fatalf("retained failed input lost its prose: %+v", input.Message)
+	}
+	var recordedFailure bool
+	for _, turn := range budgetHistory(s) {
+		if turn.Kind == schema.TurnFailure {
+			recordedFailure = true
+		}
+	}
+	if !recordedFailure {
+		t.Fatal("failed selection recorded no turn failure")
+	}
+	if _, stillPending := s.clientMutations.snapshot().PendingExecutions[mutationID]; stillPending {
+		t.Fatal("failed selection mutation is still pending execution")
+	}
+	stop()
+	if names := skillActivatedEventNames(*evs); len(names) != 0 {
+		t.Fatalf("activation events = %v, want none", names)
+	}
+	if !hasEventKind(*evs, events.EventError) {
+		t.Fatal("failed selection produced no visible error event")
+	}
+}
+
+// skillSteerMidTurnSession builds a running durable turn that pauses for one
+// tool round, so a steer accepted from inside the first model call lands
+// before the post-tool steering drain.
+func skillSteerMidTurnSession(t *testing.T, steer func() error) (*Session, *agenttest.ScriptedAdapter, string) {
+	t.Helper()
+	root := t.TempDir()
+	body := skillSelectionFixtureBody("BODY_612")
+	source := writeSkillMDAndReturn(t, root, "probe", body)
+	var steerOnce sync.Once
+	calls := 0
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		calls++
+		if calls == 1 {
+			steerOnce.Do(func() { _ = steer() })
+			return toolCallResponse(communicateCallArgs("hold-1", map[string]any{"message": "hold", "end_turn": false}))
+		}
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "skill-steer-host-start",
+		Input:            []appwire.InputItem{{Type: "text", Text: "REQUEST_612"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	return s, adapter, source
+}
+
+func TestClientMutation_SkillSelectionSteerDeliveredIntoRunningTurn(t *testing.T) {
+	const mutationID = "skill-steer-delivered"
+	var steerErr error
+	var steerTurnID string
+	var s *Session
+	s, adapter, source := skillSteerMidTurnSession(t, func() error {
+		response, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: mutationID,
+			Input: []appwire.InputItem{
+				{Type: "text", Text: "STEER_612"},
+				{Type: "skill", Name: "probe"},
+			},
+		})
+		steerErr = err
+		steerTurnID = response.Receipt.TurnID
+		return err
+	})
+	evs, stop := captureEvents(s)
+	if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+	}
+	if steerErr != nil {
+		t.Fatalf("AcceptClientMutationSteer (mid-turn): %v", steerErr)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(requests))
+	}
+	second := requests[1]
+	requireSingleEnvelope(t, second, "probe", skillSelectionFixtureBody("BODY_612"), source)
+	if !slices.Contains(userMessageTexts(second), "STEER_612") {
+		t.Fatalf("round 2 user messages = %q, want the steering prose delivered", userMessageTexts(second))
+	}
+	steering := findClientMutationTurn(s, mutationID, schema.TurnSteering)
+	if steering == nil || steering.SkillState == nil || steering.SkillState.Input == nil ||
+		!slices.Equal(steering.SkillState.Input.Names, []string{"probe"}) ||
+		steering.SkillState.Input.OriginalText != "STEER_612" {
+		t.Fatalf("steering turn = %+v, want the typed selection with original prose", steering)
+	}
+	assertSelectionObligation(t, s, steerTurnID+":probe", steerTurnID, mutationID)
+	snapshot := s.clientMutations.snapshot()
+	record := snapshot.Journal[mutationID]
+	if record.OperationState != clientMutationOperationTerminal || record.ExecutionState != "incorporated" {
+		t.Fatalf("delivered steer record = (%q,%q), want terminal/incorporated", record.OperationState, record.ExecutionState)
+	}
+	if _, stillPending := snapshot.PendingExecutions[mutationID]; stillPending {
+		t.Fatal("delivered steer is still pending execution")
+	}
+	if len(snapshot.SteeringOrder) != 0 {
+		t.Fatalf("delivered steer left steering order = %#v", snapshot.SteeringOrder)
+	}
+	stop()
+	if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "probe" {
+		t.Fatalf("activation events = %v, want [probe]", names)
+	}
+}
+
+func TestClientMutation_SkillSelectionSteerFailedPreparationKeepsTurnRunning(t *testing.T) {
+	const mutationID = "skill-steer-failed"
+	var steerErr error
+	var steerTurnID string
+	var s *Session
+	s, adapter, _ := skillSteerMidTurnSession(t, func() error {
+		response, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: mutationID,
+			Input: []appwire.InputItem{
+				{Type: "text", Text: "STEER_612"},
+				{Type: "skill", Name: "ghost"},
+			},
+		})
+		steerErr = err
+		steerTurnID = response.Receipt.TurnID
+		return err
+	})
+	evs, stop := captureEvents(s)
+	// The unrelated in-flight turn keeps running: the host turn itself ends
+	// normally even though the steering selection failed.
+	if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+	}
+	if steerErr != nil {
+		t.Fatalf("AcceptClientMutationSteer (mid-turn): %v", steerErr)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want the in-flight turn to keep running (2)", len(requests))
+	}
+	second := requests[1]
+	if envs := requestSkillEnvelopes(t, second); len(envs) != 0 {
+		t.Fatalf("failed steering delivered %d skill envelopes, want 0", len(envs))
+	}
+	for _, text := range userMessageTexts(second) {
+		if strings.Contains(text, "STEER_612") {
+			t.Fatalf("failed steering prose reached the in-flight turn: %q", text)
+		}
+	}
+	// A prominent failed-steering record persists before the pending execution
+	// clears, keeping both names and the prose for correction and retry.
+	failure := findClientMutationTurn(s, mutationID, schema.TurnFailure)
+	if failure == nil {
+		t.Fatal("failed steering recorded no turn failure")
+	}
+	if failure.StableTurnID != steerTurnID || failure.SkillState == nil || failure.SkillState.Input == nil ||
+		!slices.Equal(failure.SkillState.Input.Names, []string{"ghost"}) ||
+		failure.SkillState.Input.OriginalText != "STEER_612" {
+		t.Fatalf("failed steering record = %+v, want identity, [ghost] names and the prose", failure)
+	}
+	if steering := findClientMutationTurn(s, mutationID, schema.TurnSteering); steering != nil {
+		t.Fatalf("failed steering was downgraded to a text steering turn: %+v", steering)
+	}
+	snapshot := s.clientMutations.snapshot()
+	if _, stillPending := snapshot.PendingExecutions[mutationID]; stillPending {
+		t.Fatal("failed steering is still pending execution")
+	}
+	if len(snapshot.SteeringOrder) != 0 {
+		t.Fatalf("failed steering left steering order = %#v", snapshot.SteeringOrder)
+	}
+	record := snapshot.Journal[mutationID]
+	if record.OperationState != clientMutationOperationTerminal {
+		t.Fatalf("failed steering record operation state = %q, want terminal", record.OperationState)
+	}
+	if inventory := lifecycleInventory(s); len(inventory) != 0 {
+		t.Fatalf("failed steering published inventory: %+v", inventory)
+	}
+	stop()
+	if names := skillActivatedEventNames(*evs); len(names) != 0 {
+		t.Fatalf("activation events = %v, want none", names)
+	}
+}
+
+func TestClientMutation_SkillSelectionDrainCombinesQueueAndExtraSelections(t *testing.T) {
+	root := t.TempDir()
+	probeBody := skillSelectionFixtureBody("BODY_PROBE")
+	probe2Body := skillSelectionFixtureBody("BODY_PROBE2")
+	probeSource := writeSkillMDAndReturn(t, root, "probe", probeBody)
+	probe2Source := writeSkillMDAndReturn(t, root, "probe2", probe2Body)
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+
+	if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: "drain-source-selection",
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "queued prose"},
+			{Type: "skill", Name: "probe"},
+		},
+	}); err != nil {
+		t.Fatalf("queue drain source: %v", err)
+	}
+	const mutationID = "skill-drain-combined"
+	if _, err := s.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
+		ClientMutationID:      mutationID,
+		ExpectedQueueRevision: s.clientMutations.snapshot().QueueRevision,
+		Input:                 []appwire.InputItem{{Type: "skill", Name: "probe2"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
+	}
+	pending, ok := s.clientMutations.snapshot().PendingExecutions[mutationID]
+	if !ok {
+		t.Fatal("drain produced no pending execution")
+	}
+	want := []appwire.InputItem{
+		{Type: "text", Text: "queued prose"},
+		{Type: "skill", Name: "probe"},
+		{Type: "skill", Name: "probe2"},
+	}
+	if !reflect.DeepEqual(pending.Input, want) {
+		t.Fatalf("drained pending input = %#v, want %#v", pending.Input, want)
+	}
+	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	envs := requestSkillEnvelopes(t, requests[0])
+	if len(envs) != 2 {
+		t.Fatalf("carrier request envelopes = %d, want 2", len(envs))
+	}
+	byName := map[string]skillEnvelope{}
+	for _, env := range envs {
+		byName[env.Doc.Name] = env
+	}
+	if byName["probe"].Doc.Instructions != probeBody || byName["probe"].Doc.Source != probeSource {
+		t.Fatalf("probe envelope = %+v", byName["probe"].Doc)
+	}
+	if byName["probe2"].Doc.Instructions != probe2Body || byName["probe2"].Doc.Source != probe2Source {
+		t.Fatalf("probe2 envelope = %+v", byName["probe2"].Doc)
+	}
+	if !slices.Contains(userMessageTexts(requests[0]), "queued prose") {
+		t.Fatalf("carrier user messages = %q, want the queued prose", userMessageTexts(requests[0]))
+	}
+}
+
+func TestClientMutation_SkillSelectionCancelThenDrainUsesRemainingSelection(t *testing.T) {
+	root := t.TempDir()
+	probeBody := skillSelectionFixtureBody("BODY_PROBE")
+	probe2Body := skillSelectionFixtureBody("BODY_PROBE2")
+	writeSkillMDAndReturn(t, root, "probe", probeBody)
+	writeSkillMDAndReturn(t, root, "probe2", probe2Body)
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+
+	queueSelection := func(mutationID, text, skill string) {
+		t.Helper()
+		if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
+			ClientMutationID: mutationID,
+			Input: []appwire.InputItem{
+				{Type: "text", Text: text},
+				{Type: "skill", Name: skill},
+			},
+		}); err != nil {
+			t.Fatalf("queue %s: %v", mutationID, err)
+		}
+	}
+	queueSelection("edit-canceled-source", "first prose", "probe")
+	queueSelection("edit-kept-source", "second prose", "probe2")
+	// The edit affordance is cancel-then-recompose: removing the first entry
+	// must leave the second entry's selection to be drained.
+	cancelled, err := s.AcceptClientMutationCancelQueued(appwire.TurnCancelQueuedParams{
+		ClientMutationID: "edit-cancel",
+		Index:            0,
+		ExpectedEntryID:  s.QueueIDs()[0],
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationCancelQueued: %v", err)
+	}
+	if cancelled.RemovedText != "first prose" {
+		t.Fatalf("cancelled entry text = %q", cancelled.RemovedText)
+	}
+	const mutationID = "skill-drain-after-edit"
+	if _, err := s.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
+		ClientMutationID:      mutationID,
+		ExpectedQueueRevision: s.clientMutations.snapshot().QueueRevision,
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
+	}
+	pending, ok := s.clientMutations.snapshot().PendingExecutions[mutationID]
+	if !ok {
+		t.Fatal("drain produced no pending execution")
+	}
+	want := []appwire.InputItem{
+		{Type: "text", Text: "second prose"},
+		{Type: "skill", Name: "probe2"},
+	}
+	if !reflect.DeepEqual(pending.Input, want) {
+		t.Fatalf("drained pending input = %#v, want %#v", pending.Input, want)
+	}
+	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	envs := requestSkillEnvelopes(t, adapter.Requests()[0])
+	if len(envs) != 1 || envs[0].Doc.Name != "probe2" || envs[0].Doc.Instructions != probe2Body {
+		t.Fatalf("delivered envelopes = %+v, want only probe2", envs)
+	}
+}
+
+func TestClientMutation_SkillSelectionQueueReturnKeepsSelectionRunnable(t *testing.T) {
+	root := t.TempDir()
+	body := skillSelectionFixtureBody("BODY_612")
+	writeSkillMDAndReturn(t, root, "probe", body)
+	mutationID := "skill-selection-queue-return"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+
+	input := []appwire.InputItem{
+		{Type: "text", Text: "REQUEST_612"},
+		{Type: "skill", Name: "probe"},
+	}
+	if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: mutationID, Input: input}); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	}
+	claimed := s.popQueueHead()
+	if claimed.ClientMutationID != mutationID {
+		t.Fatalf("popQueueHead claimed = %#v", claimed)
+	}
+	s.pushQueueHead(claimed)
+	snapshot := s.clientMutations.snapshot()
+	if len(snapshot.InputQueue) != 1 {
+		t.Fatalf("returned queue length = %d, want 1", len(snapshot.InputQueue))
+	}
+	if !reflect.DeepEqual(snapshot.InputQueue[0].Input, input) {
+		t.Fatalf("returned queue input = %#v, want %#v", snapshot.InputQueue[0].Input, input)
+	}
+	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	requireSingleEnvelope(t, requests[0], "probe", body, filepath.Join(root, "skills", "probe", "SKILL.md"))
+}
+
+func TestClientMutation_SkillSelectionSameIDAlteredSelectionConflicts(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	setTestClientMutationActiveTurn(t, sess, "turn_1")
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "conflicting-skill-selection",
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "same prose"},
+			{Type: "skill", Name: "probe"},
+		},
+	}
+	if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	}
+	params.Input[1].Name = "other"
+	_, err := sess.AcceptClientMutationQueue(params)
+	if !errors.Is(err, errClientMutationMismatch) {
+		t.Fatalf("altered selection error = %v, want errClientMutationMismatch", err)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	if len(snapshot.InputQueue) != 1 || snapshot.InputQueue[0].Input[1].Name != "probe" {
+		t.Fatalf("queue after conflict = %#v, want the original selection only", snapshot.InputQueue)
+	}
+}
+
+func TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim(t *testing.T) {
+	dir := t.TempDir()
+	markGitRoot(t, dir)
+	body := skillSelectionFixtureBody("BODY_612")
+	writeSkillMDAndReturn(t, dir, "probe", body)
+	mutationID := "skill-selection-restart-before-claim"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	sess := newSkillSelectionDiskSession(t, dir, adapter)
+	response, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: mutationID,
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "REQUEST_612"},
+			{Type: "skill", Name: "probe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	}
+	entryID := response.Receipt.QueueEntryIDs[0]
+	sess.Close()
+
+	restored := restoreSkillSelectionDiskSession(t, dir, sess.ID(), adapter)
+	defer restored.Close()
+	if _, ran, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	requireEnvelopeRequest(t, adapter.Requests(), "probe", body, filepath.Join(dir, "skills", "probe", "SKILL.md"))
+	assertSelectionObligation(t, restored, entryID+":probe", entryID, mutationID)
+	// The user-facing original-input projection survives transcript replay.
+	input := findClientMutationTurn(restored, mutationID, schema.TurnUserInput)
+	if input == nil || input.SkillState == nil || input.SkillState.Input == nil ||
+		!slices.Equal(input.SkillState.Input.Names, []string{"probe"}) ||
+		input.SkillState.Input.OriginalText != "REQUEST_612" {
+		t.Fatalf("restored input turn = %+v, want the typed selection with original prose", input)
+	}
+}
+
+func TestClientMutation_SkillSelectionRestartAfterClaimRequeuesSelection(t *testing.T) {
+	dir := t.TempDir()
+	markGitRoot(t, dir)
+	body := skillSelectionFixtureBody("BODY_612")
+	writeSkillMDAndReturn(t, dir, "probe", body)
+	mutationID := "skill-selection-restart-after-claim"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	sess := newSkillSelectionDiskSession(t, dir, adapter)
+	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: mutationID,
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "REQUEST_612"},
+			{Type: "skill", Name: "probe"},
+		},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	}
+	claimed := sess.popQueueHead()
+	if claimed.ClientMutationID != mutationID {
+		t.Fatalf("popQueueHead claimed = %#v", claimed)
+	}
+	sess.Close()
+
+	restored := restoreSkillSelectionDiskSession(t, dir, sess.ID(), adapter)
+	defer restored.Close()
+	snapshot := restored.clientMutations.snapshot()
+	if len(snapshot.InputQueue) != 1 {
+		t.Fatalf("restored queue length = %d, want the requeued claim", len(snapshot.InputQueue))
+	}
+	want := []appwire.InputItem{
+		{Type: "text", Text: "REQUEST_612"},
+		{Type: "skill", Name: "probe"},
+	}
+	if !reflect.DeepEqual(snapshot.InputQueue[0].Input, want) {
+		t.Fatalf("requeued input = %#v, want %#v", snapshot.InputQueue[0].Input, want)
+	}
+	if _, ran, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+	}
+	requireEnvelopeRequest(t, adapter.Requests(), "probe", body, filepath.Join(dir, "skills", "probe", "SKILL.md"))
+}
+
+// writeSkillMDAndReturn writes a selection fixture and returns its source path.
+func writeSkillMDAndReturn(t *testing.T, root, name, body string) string {
+	t.Helper()
+	writeSkillMD(t, root, name, "---\nname: "+name+"\ndescription: fixture\n---\n"+body)
+	return filepath.Join(root, "skills", name, "SKILL.md")
 }

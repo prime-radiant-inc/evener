@@ -31,7 +31,7 @@ import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
-import { draftStorageKey, readDraft } from "./draft";
+import { draftStorageKey, readComposerDraft, readDraft } from "./draft";
 import {
   flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
@@ -808,7 +808,7 @@ test("typing persists the draft under this ref's storage key", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a");
   await user.type(textarea(), "hi");
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("hi");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "hi", skillNames: [] });
 });
 
 // --- quote-insert (SelectionQuote's "Quote in reply" seam) -----------------
@@ -855,7 +855,7 @@ test("the composer persists the quote-inserted text as this ref's draft", async 
   act(() => {
     requestQuoteInsert("ref_a", "> quoted line\n\n");
   });
-  await waitFor(() => expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("> quoted line\n\n"));
+  await waitFor(() => expect(readComposerDraft("ref_a")).toEqual({ text: "> quoted line\n\n", skillNames: [] }));
 });
 
 // SHOULD-FIX: requestQuoteInsert's own placement param (quoteInsert.ts) -
@@ -1222,13 +1222,13 @@ test("text edited while the local outbox commit is pending survives that commit"
   await storage.commitStarted;
 
   fireEvent.change(textarea(), { target: { value: "original plus more" } });
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("original plus more");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
 
   storage.release();
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
 
   expect(textarea().value).toBe("original plus more");
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("original plus more");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
 });
 
 test("a local outbox failure leaves the composer untouched and sends no RPC", async () => {
@@ -3166,13 +3166,13 @@ test("typing synchronously after a paste whose decode later fails survives - the
   // decode's rejection settles.
   fireEvent.change(textarea(), { target: { value: "[image 1]hello" } });
   expect(textarea().value).toBe("[image 1]hello");
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("[image 1]hello");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "[image 1]hello", skillNames: [] });
 
   // Now let the decode's rejection actually settle.
   await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeNull());
 
   expect(textarea().value).toBe("hello"); // typed text survives; only the failed marker is gone
-  expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBe("hello"); // draft matches, not stale
+  expect(readComposerDraft("ref_a")).toEqual({ text: "hello", skillNames: [] }); // draft matches, not stale
 });
 
 // Minor (reviewer-requested): two attachment gestures fired back-to-back
@@ -3376,14 +3376,24 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
   ]);
 });
 
-test("a focused thread skill completes inline text and submits the unchanged prose", async () => {
+test("a focused thread skill selection stages a canonical chip and submits the unchanged prose", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_slash_skill", {
     evener: {
       ref: "ref_slash_skill",
-      capabilities: FULL_CAPABILITIES,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
       queue: { revision: 0 },
-      diagnostics: { skills: [{ name: "simplify", description: "rewrite" }] },
+      diagnostics: {
+        skills: [
+          {
+            name: "simplify",
+            description: "rewrite",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
     },
   });
   fake.on("turn/start", (params) => ({
@@ -3401,17 +3411,26 @@ test("a focused thread skill completes inline text and submits the unchanged pro
   expect(slashOptions()[0]?.textContent).toContain("/simplify");
 
   await user.click(slashOptions()[0]!);
-  expect(textarea().value).toBe("Use /simplify ");
+  // The mandated selection contract: choosing a skill row removes ONLY the
+  // active completion token - no invocation prose is inserted - and stages
+  // the skill's canonical name as a chip, recorded in the structured draft.
+  expect(textarea().value).toBe("Use ");
+  expect(screen.getByTestId("composer-skill-chip").textContent).toContain("simplify");
+  expect(screen.getByRole("button", { name: /Remove skill simplify/ })).toBeTruthy();
+  expect(readComposerDraft("ref_slash_skill")).toEqual({ text: "Use ", skillNames: ["simplify"] });
 
   await user.type(textarea(), "on this");
-  expect(textarea().value).toBe("Use /simplify on this");
+  expect(textarea().value).toBe("Use on this");
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
   const call = fake.calls.find((candidate) => candidate.method === "turn/start");
   expect(call?.params).toMatchObject({
     ref: "ref_slash_skill",
-    input: [{ type: "text", text: "Use /simplify on this" }],
+    input: [
+      { type: "text", text: "Use on this" },
+      { type: "skill", name: "simplify" },
+    ],
   });
 });
 

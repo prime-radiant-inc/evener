@@ -547,10 +547,10 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 	}()
 
 	// Verify plugin loaded: skills should be in session
-	if _, ok := sess.skills["live-test:math-helper"]; !ok {
+	if _, ok := sess.skills.Entries["live-test:math-helper"]; !ok {
 		t.Error("skill live-test:math-helper not in session")
 	}
-	if _, ok := sess.skills["live-test:code-review"]; !ok {
+	if _, ok := sess.skills.Entries["live-test:code-review"]; !ok {
 		t.Error("skill live-test:code-review not in session")
 	}
 
@@ -877,7 +877,7 @@ func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
 
 	// Verify skills were loaded
 	tddKey := "superpowers:test-driven-development"
-	if _, ok := sess.skills[tddKey]; !ok {
+	if _, ok := sess.skills.Entries[tddKey]; !ok {
 		sess.Close()
 		t.Fatalf("TDD skill not loaded into session")
 	}

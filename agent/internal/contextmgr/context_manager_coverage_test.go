@@ -114,7 +114,7 @@ func TestHasClient(t *testing.T) {
 // (context_manager.go:1069).
 func TestElicitNote_RequiresClient(t *testing.T) {
 	cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil))
-	if _, err := cm.ElicitNote(context.Background(), nil); err == nil {
+	if _, err := cm.ElicitNote(context.Background(), nil, nil); err == nil {
 		t.Fatal("ElicitNote with no client: want an error")
 	}
 }
@@ -138,7 +138,7 @@ func TestElicitNote_Success(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "API key is secret-token-XYZ", false)},
 	}
-	got, err := cm.ElicitNote(context.Background(), history)
+	got, err := cm.ElicitNote(context.Background(), history, nil)
 	if err != nil {
 		t.Fatalf("ElicitNote: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestElicitNote_FallsBackAcrossModels(t *testing.T) {
 
 	got, err := cm.ElicitNote(context.Background(), []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("do the thing")},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("ElicitNote: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestElicitNoteRemembersARefusedCheapModel(t *testing.T) {
 	cm := NewManager(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/haiku"), client, cheapmodel.New(client))
 
 	for range 2 {
-		if _, err := cm.ElicitNote(context.Background(), nil); err != nil {
+		if _, err := cm.ElicitNote(context.Background(), nil, nil); err != nil {
 			t.Fatalf("ElicitNote: %v", err)
 		}
 	}
@@ -235,10 +235,10 @@ func TestElicitNoteDoesNotRepeatARouteTheCheapCallerAlreadyRan(t *testing.T) {
 	cm := NewManager(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/haiku"), client, cheapmodel.New(client))
 
 	// First call latches the cheap refusal by succeeding on the session model.
-	if _, err := cm.ElicitNote(context.Background(), nil); err != nil {
+	if _, err := cm.ElicitNote(context.Background(), nil, nil); err != nil {
 		t.Fatalf("first ElicitNote: %v", err)
 	}
-	if _, err := cm.ElicitNote(context.Background(), nil); err == nil {
+	if _, err := cm.ElicitNote(context.Background(), nil, nil); err == nil {
 		t.Fatal("second ElicitNote succeeded, want the session-model failure")
 	}
 	if activeCalls != 2 {

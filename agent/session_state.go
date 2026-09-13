@@ -137,6 +137,8 @@ func (s *Session) Meta() schema.SessionMeta {
 		}
 		jobTreeRevision = s.jobActivityClock.revision.Load()
 	}
+	skills := s.skillLifecycle.Clone()
+	skills.PinnedNoteGen = s.pinnedNoteGen
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -163,6 +165,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		Origin:                   s.origin,
 		Goal:                     s.goalSnapshotForMeta(),
 		PinnedNote:               s.pinnedNote,
+		Skills:                   &skills,
 		WorktreePath:             s.worktreeCurrentPath,
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,
@@ -172,6 +175,21 @@ func (s *Session) Meta() schema.SessionMeta {
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 	}
+}
+
+// saveMeta returns persistence failures to lifecycle-sensitive callers. Preserve
+// metaSaveMu -> Meta's mu lock order; filesystem I/O runs after Meta releases mu.
+func (s *Session) saveMeta() error {
+	if s.stateDir == "" {
+		return nil
+	}
+	s.metaSaveMu.Lock()
+	defer s.metaSaveMu.Unlock()
+	meta := s.Meta()
+	if fs := s.cfg.testOnly.metaFS; fs != nil {
+		return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+	}
+	return schema.SaveSessionMeta(s.stateDir, meta)
 }
 
 // goalSnapshotForMeta calls PersistSnapshot on the goal store and maps the

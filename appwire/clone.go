@@ -192,6 +192,9 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.Tools = append([]EvenerToolInfo(nil), d.Tools...)
 	cp.MCP = cloneMCPServers(d.MCP)
 	cp.Skills = append([]EvenerSkillInfo(nil), d.Skills...)
+	for i := range cp.Skills {
+		cp.Skills[i].AllowedTools = append([]string(nil), d.Skills[i].AllowedTools...)
+	}
 	cp.Plugins = append([]EvenerPluginInfo(nil), d.Plugins...)
 	cp.HookEvents = append([]EvenerHookEventStatus(nil), d.HookEvents...)
 	cp.Jobs = CloneEvenerJobs(d.Jobs)
@@ -201,6 +204,7 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 		cp.TurnSlots = &ts
 	}
 	cp.Agents = append([]string(nil), d.Agents...)
+	cp.SkillDiagnostics = append([]EvenerSkillDiagnostic(nil), d.SkillDiagnostics...)
 	return &cp
 }
 

@@ -93,8 +93,8 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 			for _, in := range []string{"plain", "/", "/missing x"} {
 				s.expandSlashCommand(context.Background(), in)
 			}
-			if got, ok := s.expandSlashCommand(context.Background(), "/greet world"); !ok || got != "Hi world" {
-				t.Fatalf("expand = %q,%v", got, ok)
+			if got := s.expandSlashCommand(context.Background(), "/greet world"); !got.Handled || got.Text != "Hi world" {
+				t.Fatalf("expand = %q,%v", got.Text, got.Handled)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()

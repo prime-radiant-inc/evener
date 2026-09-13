@@ -60,8 +60,11 @@ func TestScanSkillsDir_ParsesValidSkillAndSkipsInvalid(t *testing.T) {
 	if len(meta.AllowedTools) != 2 || meta.AllowedTools[0] != "read_file" {
 		t.Errorf("allowed-tools = %v, want [read_file edit_file]", meta.AllowedTools)
 	}
-	if meta.SkillFile == "" || meta.Dir == "" {
-		t.Errorf("meta paths not set: %+v", meta)
+	if meta.Metadata["name"] != "tdd" || meta.Metadata["description"] != "Test-driven development discipline" {
+		t.Errorf("frontmatter metadata not preserved: %+v", meta.Metadata)
+	}
+	if !filepath.IsAbs(meta.SkillFile) || !filepath.IsAbs(meta.Dir) || meta.Dir != filepath.Dir(meta.SkillFile) {
+		t.Errorf("meta paths not absolute and paired: %+v", meta)
 	}
 }
 
@@ -75,8 +78,14 @@ func TestScanSkillsDir_MissingDirIsNoop(t *testing.T) {
 
 func TestLoadSkillBody(t *testing.T) {
 	root := t.TempDir()
-	path := writeSkill(t, root, "tdd", validSkill)
-	body, err := LoadSkillBody(SkillMeta{SkillFile: path})
+	writeSkill(t, root, "tdd", validSkill)
+	skills := map[string]SkillMeta{}
+	ScanSkillsDir(root, skills)
+	meta, ok := skills["tdd"]
+	if !ok {
+		t.Fatal("discovery did not produce tdd metadata")
+	}
+	body, err := LoadSkillBody(meta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +100,14 @@ func TestLoadSkillBody(t *testing.T) {
 
 func TestResolveSkillContent_ExactAndUnnamespaced(t *testing.T) {
 	root := t.TempDir()
-	path := writeSkill(t, root, "tdd", validSkill)
-	skills := map[string]SkillMeta{"myplugin:tdd": {Name: "myplugin:tdd", SkillFile: path}}
+	writeSkill(t, root, "tdd", validSkill)
+	discovered := map[string]SkillMeta{}
+	ScanSkillsDir(root, discovered)
+	meta, ok := discovered["tdd"]
+	if !ok {
+		t.Fatal("discovery did not produce tdd metadata")
+	}
+	skills := map[string]SkillMeta{"myplugin:tdd": meta}
 
 	// Unnamespaced "tdd" resolves the namespaced key.
 	body, err := ResolveSkillContent(skills, "tdd")

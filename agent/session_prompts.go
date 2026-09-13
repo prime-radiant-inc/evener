@@ -159,7 +159,8 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	}
 
 	// Skills
-	for skillName, sm := range s.skills {
+	for _, descriptor := range s.skills.ModelEntries() {
+		skillName, sm := descriptor.CatalogName, descriptor.Meta
 		data.Skills = append(data.Skills, skillEntry{
 			Name: sm.Name, CatalogName: skillName, Description: sm.Description,
 			Dir: sm.Dir, SkillFile: sm.SkillFile,

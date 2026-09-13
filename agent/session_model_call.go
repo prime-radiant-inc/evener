@@ -248,7 +248,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// decaying through successive summaries.
 			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys))
 
+			// This per-request fold is the REQUESTING caller of the pending
+			// AUTOMATIC operation (the one this round's elicitation just
+			// accepted, or one an earlier round deferred): its winning
+			// publication claims exactly that generation, note generation
+			// included — even for an empty note. A FORCED operation is never
+			// captured here; only its round-tail dispatch claims it.
 			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
+			commit.captured = s.capturableAutomaticCompaction()
 			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
 				s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
 			}
@@ -363,6 +370,82 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		budget.LimitedOutput = true
 	}
 	s.warnOutputReduction(profile, budget)
+
+	// rebuildForAppendedSkillTurns re-snapshots the history the appended typed
+	// skill turns (delivery reload notifications, compaction reload carriers,
+	// inventory reminders) joined, projects them as-is past the in-flight
+	// boundary, and rebuilds and re-budgets the request. Shared by the
+	// final-dispatch delivery reload path and the compacted-skill reload path.
+	// It reports whether any turn had actually been appended.
+	rebuildForAppendedSkillTurns := func() (bool, error) {
+		s.mu.Lock()
+		var appended []schema.Turn
+		if len(s.history) > len(historyTurns) {
+			appended = append(appended, s.history[len(historyTurns):]...)
+		}
+		historyTurns = append([]schema.Turn{}, s.history...)
+		s.mu.Unlock()
+		if len(appended) == 0 {
+			return false, nil
+		}
+		// The appended turns land after the in-flight boundary and project
+		// as-is; append them rather than re-running the delegate claim.
+		for _, notification := range appended {
+			history = append(history, scope.projectTurnMessage(notification, true))
+		}
+		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
+		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
+		if budgetErr != nil {
+			return true, budgetErr
+		}
+		req, budget = budgetedReq, budgeted
+		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
+		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
+		if budgetErr != nil {
+			return true, budgetErr
+		}
+		req, budget = budgetedReq, budgeted
+		s.warnOutputReduction(profile, budget)
+		return true, nil
+	}
+
+	// Final-dispatch skill delivery: revalidate every pending obligation
+	// against the actual projected request. A carrier lost to folding or
+	// projection is reloaded from its recorded source and re-admitted through
+	// a typed causal notification appended to the real history; the request
+	// then rebuilds so the restored carrier joins this dispatch. A failed
+	// reload appends its own explanation notification, and the same rebuild
+	// carries it: the model hears why in the dispatch that finalized the
+	// obligation. The commit itself lands at callModel's final budget seam.
+	deliveryReq, deliveryCommit, deliveryErr := s.prepareSkillDelivery(ctx, profile, historyTurns, req)
+	if deliveryErr != nil {
+		return profile, sys, history, req, fullHistory, reasoningEffort, deliveryErr
+	}
+	req = deliveryReq
+	if deliveryCommit.appendedNotifications {
+		if _, err := rebuildForAppendedSkillTurns(); err != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, err
+		}
+	}
+	// Compacted-skill reloads: consume the pending compaction handoff
+	// receipts — reload the selected skills' current sources and deliver the
+	// fallback inventory reminder — then admit the prepared bodies in order
+	// against this request's remaining budget. The notification and carrier
+	// turns land in the same history the rebuild above projects, so the
+	// restored bodies and the reminder join this dispatch.
+	reloadBatch, reloadOutcomes, reloadErr := s.prepareCompactedSkillReloads(ctx)
+	if reloadErr != nil {
+		return profile, sys, history, req, fullHistory, reasoningEffort, reloadErr
+	}
+	if reloadBatch != nil {
+		if admitErr := s.admitCompactedSkillReloads(ctx, profile, &budget, reloadBatch, reloadOutcomes); admitErr != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, admitErr
+		}
+		if _, err := rebuildForAppendedSkillTurns(); err != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, err
+		}
+	}
 	// Stage the mid-turn attention this round's request presents. The guard
 	// inside is the single gate, whichever path built the history; staging
 	// follows anchor planning because credit belongs to what the request
@@ -1341,7 +1424,9 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// publish. A total loss leaves s.history as the winning competitor
 	// published it, which is a valid state for the retry this recovery
 	// precedes.
-	_, _ = s.foldWithForceCompact(ctx, "")
+	// The content-filter recovery fold captures no compaction operation —
+	// it is not any intent's requesting caller.
+	_, _ = s.foldWithForceCompact(ctx, "", nil)
 	s.maybeAutoSave()
 }
 

@@ -1754,7 +1754,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	}
 	startTurn := func(ctx context.Context, source appsource.Source, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false}
-		if _, err := prepareRelay(ctx, source, readParams); err != nil {
+		prepared, err := prepareRelay(ctx, source, readParams)
+		if err != nil {
 			if isTargetDeletedError(err) {
 				if fenceErr := deletionFenceError(cfg, params.Ref, params.ThreadID, params.ClientMutationID); fenceErr != nil {
 					return appwire.TurnStartResponse{}, fenceErr
@@ -1766,6 +1767,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 			}
 			return appwire.TurnStartResponse{}, err
+		}
+		// The relay's own read doubles as the skill-input capability check, so a
+		// selection is judged by the same read that established the live relay —
+		// including after an auto-resume, where the recheck runs against the
+		// replacement daemon this prepareRelay just read. The validator is a
+		// no-op without a skill item, so ordinary sends are unchanged.
+		if err := appwire.ValidateSkillInputSupport(params.Input, prepared.Thread.Evener.Capabilities.SkillInput); err != nil {
+			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 		}
 		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
 			return source.StartTurn(ctx, params)

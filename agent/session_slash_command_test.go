@@ -40,27 +40,29 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 	tests := []struct {
 		name       string
 		input      string
-		skills     map[string]skill.SkillMeta
+		skills     skill.Catalog
 		want       string
+		wantArgs   string
 		wantOK     bool
 		wantActive string
 	}{
 		{
 			name:  "body and context",
 			input: "/simplify this diff",
-			skills: map[string]skill.SkillMeta{
-				"simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")},
-			},
-			want:       "follow these steps\n\nUser context:\nthis diff",
+			skills: skill.Catalog{Entries: map[string]skill.Descriptor{
+				"simplify": {CatalogName: "simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")}},
+			}},
+			want:       "follow these steps",
+			wantArgs:   "this diff",
 			wantOK:     true,
 			wantActive: "simplify",
 		},
 		{
 			name:  "plugin qualified",
 			input: "/plugin:simplify",
-			skills: map[string]skill.SkillMeta{
-				"plugin:simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")},
-			},
+			skills: skill.Catalog{Entries: map[string]skill.Descriptor{
+				"plugin:simplify": {CatalogName: "plugin:simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")}},
+			}},
 			want:       "plugin steps",
 			wantOK:     true,
 			wantActive: "plugin:simplify",
@@ -68,10 +70,11 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 		{
 			name:  "tabs and newlines around context",
 			input: " \n/simplify \t this diff \n ",
-			skills: map[string]skill.SkillMeta{
-				"simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")},
-			},
-			want:       "follow these steps\n\nUser context:\nthis diff",
+			skills: skill.Catalog{Entries: map[string]skill.Descriptor{
+				"simplify": {CatalogName: "simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")}},
+			}},
+			want:       "follow these steps",
+			wantArgs:   "this diff",
 			wantOK:     true,
 			wantActive: "simplify",
 		},
@@ -83,22 +86,33 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 			s.skills = tt.skills
 			_ = drainSlashEvents(s)
 
-			got, ok := s.expandSlashCommand(context.Background(), tt.input)
-			if ok != tt.wantOK || got != tt.want {
-				t.Fatalf("expanded = %q, %v; want %q, %v", got, ok, tt.want, tt.wantOK)
+			got := s.expandSlashCommand(context.Background(), tt.input)
+			if got.Handled != tt.wantOK || got.Text != tt.input {
+				t.Fatalf("expanded = %+v; want handled=%v with the original input preserved", got, tt.wantOK)
 			}
-			var activated []string
+			if tt.wantOK {
+				// The skill route keeps the original text; the prepared batch
+				// carries the complete loaded body, and the typed selection
+				// records the canonical name. The activation event itself
+				// belongs to final dispatch admission, not expansion.
+				if got.Activations == nil || len(got.Activations.Items) != 1 {
+					t.Fatalf("activations = %+v, want one prepared item", got.Activations)
+				}
+				item := got.Activations.Items[0]
+				if item.Invocation.Name != tt.wantActive || item.Loaded.Body != tt.want {
+					t.Fatalf("prepared = %q/%q, want %q with body %q", item.Invocation.Name, item.Loaded.Body, tt.wantActive, tt.want)
+				}
+				if got.Selection == nil || len(got.Selection.Names) != 1 || got.Selection.Names[0] != tt.wantActive {
+					t.Fatalf("selection = %+v, want [%q]", got.Selection, tt.wantActive)
+				}
+				if got.Selection.Arguments != tt.wantArgs {
+					t.Fatalf("selection arguments = %q, want %q", got.Selection.Arguments, tt.wantArgs)
+				}
+			}
 			for _, ev := range drainSlashEvents(s) {
-				if ev.Kind != events.EventSkillActivated {
-					continue
+				if ev.Kind == events.EventSkillActivated {
+					t.Fatal("expansion emitted a premature skill activation")
 				}
-				data, ok := ev.Data.(events.SkillActivatedData)
-				if ok {
-					activated = append(activated, data.Name)
-				}
-			}
-			if len(activated) != 1 || activated[0] != tt.wantActive {
-				t.Fatalf("activation names = %v, want [%q]", activated, tt.wantActive)
 			}
 		})
 	}
@@ -106,17 +120,20 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 
 func TestExpandSlashCommandStandalonePreservesCommandPrecedence(t *testing.T) {
 	s := newTestSession(t)
-	s.skills = map[string]skill.SkillMeta{
-		"review": {Name: "review", SkillFile: writeSkillBodyFile(t, "skill body")},
-	}
+	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
+		"review": {CatalogName: "review", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "review", SkillFile: writeSkillBodyFile(t, "skill body")}},
+	}}
 	s.pluginCommands = map[string]plugin.Command{
 		"review": {Name: "review", Body: "command $ARGUMENTS", Source: "project"},
 	}
 	_ = drainSlashEvents(s)
 
-	got, ok := s.expandSlashCommand(context.Background(), "/review diff")
-	if !ok || got != "command diff" {
-		t.Fatalf("expanded = %q, %v; want command expansion", got, ok)
+	got := s.expandSlashCommand(context.Background(), "/review diff")
+	if !got.Handled || got.Text != "command diff" {
+		t.Fatalf("expanded = %q, %v; want command expansion", got.Text, got.Handled)
+	}
+	if got.Selection != nil || got.Activations != nil {
+		t.Fatal("command precedence produced skill route state")
 	}
 	for _, ev := range drainSlashEvents(s) {
 		if ev.Kind == events.EventSkillActivated {
@@ -127,18 +144,20 @@ func TestExpandSlashCommandStandalonePreservesCommandPrecedence(t *testing.T) {
 
 func TestExpandSlashCommandStandaloneUnknownAndAmbiguousFallThrough(t *testing.T) {
 	tests := []struct {
-		name   string
-		skills map[string]skill.SkillMeta
-		input  string
+		name      string
+		skills    skill.Catalog
+		input     string
+		ambiguous bool
 	}{
-		{name: "unknown", skills: nil, input: "/missing context"},
+		{name: "unknown", skills: skill.Catalog{}, input: "/missing context"},
 		{
 			name: "ambiguous suffix",
-			skills: map[string]skill.SkillMeta{
-				"one:review": {Name: "review", SkillFile: writeSkillBodyFile(t, "one")},
-				"two:review": {Name: "review", SkillFile: writeSkillBodyFile(t, "two")},
-			},
-			input: "/review context",
+			skills: skill.Catalog{Entries: map[string]skill.Descriptor{
+				"one:review": {CatalogName: "one:review", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "review", SkillFile: writeSkillBodyFile(t, "one")}},
+				"two:review": {CatalogName: "two:review", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "review", SkillFile: writeSkillBodyFile(t, "two")}},
+			}},
+			input:     "/review context",
+			ambiguous: true,
 		},
 	}
 	for _, tt := range tests {
@@ -146,9 +165,15 @@ func TestExpandSlashCommandStandaloneUnknownAndAmbiguousFallThrough(t *testing.T
 			s := newTestSession(t)
 			s.skills = tt.skills
 			_ = drainSlashEvents(s)
-			got, ok := s.expandSlashCommand(context.Background(), tt.input)
-			if ok || got != tt.input {
-				t.Fatalf("expanded = %q, %v; want unchanged input", got, ok)
+			got := s.expandSlashCommand(context.Background(), tt.input)
+			if tt.ambiguous {
+				// A known but ambiguous suffix is a visible failure reporting
+				// candidates, never a chosen winner or silent ordinary chat.
+				if !got.Handled || got.Err == nil || got.Text != tt.input {
+					t.Fatalf("expanded = %+v; want a handled failure preserving input", got)
+				}
+			} else if got.Handled || got.Text != tt.input {
+				t.Fatalf("expanded = %+v; want unchanged unhandled input", got)
 			}
 			for _, ev := range drainSlashEvents(s) {
 				if ev.Kind == events.EventSkillActivated {
@@ -161,28 +186,24 @@ func TestExpandSlashCommandStandaloneUnknownAndAmbiguousFallThrough(t *testing.T
 
 func TestExpandSlashCommandStandaloneBodyLoadFailureWarnsWithoutActivation(t *testing.T) {
 	s := newTestSession(t)
-	s.skills = map[string]skill.SkillMeta{
-		"simplify": {Name: "simplify", SkillFile: filepath.Join(t.TempDir(), "missing", "SKILL.md")},
-	}
+	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
+		"simplify": {CatalogName: "simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: filepath.Join(t.TempDir(), "missing", "SKILL.md")}},
+	}}
 	_ = drainSlashEvents(s)
 
-	got, ok := s.expandSlashCommand(context.Background(), "/simplify context")
-	if ok || got != "/simplify context" {
-		t.Fatalf("expanded = %q, %v; want unchanged input", got, ok)
+	got := s.expandSlashCommand(context.Background(), "/simplify context")
+	// A known but unreadable skill is a visible activation failure that keeps
+	// the original input, never an ordinary-chat fall-through.
+	if !got.Handled || got.Err == nil || got.Text != "/simplify context" {
+		t.Fatalf("expanded = %+v; want a handled failure preserving input", got)
 	}
-	var warned bool
+	if got.Selection == nil || got.Selection.OriginalText != "/simplify context" || got.Selection.Arguments != "context" {
+		t.Fatalf("failed selection lost the original input: %+v", got.Selection)
+	}
 	for _, ev := range drainSlashEvents(s) {
 		if ev.Kind == events.EventSkillActivated {
 			t.Fatal("failed skill load emitted an activation")
 		}
-		if ev.Kind == events.EventWarning {
-			if data, ok := ev.Data.(events.WarningData); ok && strings.Contains(data.Message, "loading slash skill /simplify failed") {
-				warned = true
-			}
-		}
-	}
-	if !warned {
-		t.Fatal("failed skill load did not emit a warning")
 	}
 }
 
@@ -312,12 +333,12 @@ func newTestSessionWithPlugins(t *testing.T, pluginDirs ...string) (*Session, *f
 func TestExpandSlashCommand_PlainTextUnchanged(t *testing.T) {
 	t.Parallel()
 	sess, _ := newTestSessionWithPlugins(t)
-	got, ok := sess.expandSlashCommand(context.Background(), "just chatting, not a command")
-	if ok {
-		t.Fatalf("expected ok=false for plain text, got expanded %q", got)
+	got := sess.expandSlashCommand(context.Background(), "just chatting, not a command")
+	if got.Handled {
+		t.Fatalf("expected unhandled for plain text, got %+v", got)
 	}
-	if got != "just chatting, not a command" {
-		t.Errorf("got %q, want input unchanged", got)
+	if got.Text != "just chatting, not a command" {
+		t.Errorf("got %q, want input unchanged", got.Text)
 	}
 }
 
@@ -325,24 +346,24 @@ func TestExpandSlashCommand_UnknownCommandUnchanged(t *testing.T) {
 	t.Parallel()
 	dir := writePluginCommand(t, "greeter", "greet", "---\nname: greet\ndescription: greet\n---\nHi $ARGUMENTS")
 	sess, _ := newTestSessionWithPlugins(t, dir)
-	got, ok := sess.expandSlashCommand(context.Background(), "/nonexistent some args")
-	if ok {
-		t.Fatalf("expected ok=false for an unrecognized command, got expanded %q", got)
+	got := sess.expandSlashCommand(context.Background(), "/nonexistent some args")
+	if got.Handled {
+		t.Fatalf("expected unhandled for an unrecognized command, got %+v", got)
 	}
-	if got != "/nonexistent some args" {
-		t.Errorf("got %q, want input unchanged", got)
+	if got.Text != "/nonexistent some args" {
+		t.Errorf("got %q, want input unchanged", got.Text)
 	}
 }
 
 func TestExpandSlashCommand_BareSlashUnchanged(t *testing.T) {
 	t.Parallel()
 	sess, _ := newTestSessionWithPlugins(t)
-	got, ok := sess.expandSlashCommand(context.Background(), "/")
-	if ok {
-		t.Fatalf("expected ok=false for a bare slash, got expanded %q", got)
+	got := sess.expandSlashCommand(context.Background(), "/")
+	if got.Handled {
+		t.Fatalf("expected unhandled for a bare slash, got %+v", got)
 	}
-	if got != "/" {
-		t.Errorf("got %q, want input unchanged", got)
+	if got.Text != "/" {
+		t.Errorf("got %q, want input unchanged", got.Text)
 	}
 }
 
@@ -350,12 +371,12 @@ func TestExpandSlashCommand_ExpandsKnownCommand(t *testing.T) {
 	t.Parallel()
 	dir := writePluginCommand(t, "greeter", "greet", "---\nname: greet\ndescription: greet\n---\nHi $ARGUMENTS")
 	sess, _ := newTestSessionWithPlugins(t, dir)
-	got, ok := sess.expandSlashCommand(context.Background(), "/greet world")
-	if !ok {
-		t.Fatal("expected ok=true for a recognized command")
+	got := sess.expandSlashCommand(context.Background(), "/greet world")
+	if !got.Handled {
+		t.Fatal("expected handled for a recognized command")
 	}
-	if got != "Hi world" {
-		t.Errorf("got %q, want %q", got, "Hi world")
+	if got.Text != "Hi world" {
+		t.Errorf("got %q, want %q", got.Text, "Hi world")
 	}
 }
 
@@ -392,15 +413,15 @@ func TestExpandSlashCommand_EvenerwideDoesNotExecute(t *testing.T) {
 	// made while expanding the slash command are relevant to this assertion.
 	env.calls.Store(0)
 
-	got, ok := sess.expandSlashCommand(context.Background(), "/deploy v2")
-	if !ok {
-		t.Fatal("expected ok=true for a evener-wide command")
+	got := sess.expandSlashCommand(context.Background(), "/deploy v2")
+	if !got.Handled {
+		t.Fatal("expected handled for a evener-wide command")
 	}
 	if calls := env.calls.Load(); calls != 0 {
 		t.Errorf("ExecCommand called %d times; evener-wide expansion must never execute", calls)
 	}
-	if !strings.Contains(got, "!`touch SHOULD_NOT_EXIST`") || !strings.Contains(got, "for v2") {
-		t.Errorf("expanded %q, want the !` span kept as text with $1 substituted", got)
+	if !strings.Contains(got.Text, "!`touch SHOULD_NOT_EXIST`") || !strings.Contains(got.Text, "for v2") {
+		t.Errorf("expanded %q, want the !` span kept as text with $1 substituted", got.Text)
 	}
 	if _, statErr := os.Stat(filepath.Join(workDir, "SHOULD_NOT_EXIST")); !os.IsNotExist(statErr) {
 		t.Error("the !` span executed: SHOULD_NOT_EXIST exists")
@@ -423,12 +444,12 @@ func TestExpandSlashCommand_ExpandErrorEmitsWarning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	got, ok := sess.expandSlashCommand(ctx, "/greet world")
-	if ok {
-		t.Fatalf("expected ok=false when Expand errors, got expanded %q", got)
+	got := sess.expandSlashCommand(ctx, "/greet world")
+	if got.Handled {
+		t.Fatalf("expected unhandled when Expand errors, got %+v", got)
 	}
-	if got != "/greet world" {
-		t.Errorf("got %q, want the literal input preserved as fallback", got)
+	if got.Text != "/greet world" {
+		t.Errorf("got %q, want the literal input preserved as fallback", got.Text)
 	}
 
 	sess.Close()
@@ -447,12 +468,12 @@ func TestExpandSlashCommand_QualifiedNameExpands(t *testing.T) {
 	t.Parallel()
 	dir := writePluginCommand(t, "greeter", "greet", "---\nname: greet\ndescription: greet\n---\nHi $ARGUMENTS")
 	sess, _ := newTestSessionWithPlugins(t, dir)
-	got, ok := sess.expandSlashCommand(context.Background(), "/greeter:greet world")
-	if !ok {
-		t.Fatal("expected ok=true for a fully-qualified command name")
+	got := sess.expandSlashCommand(context.Background(), "/greeter:greet world")
+	if !got.Handled {
+		t.Fatal("expected handled for a fully-qualified command name")
 	}
-	if got != "Hi world" {
-		t.Errorf("got %q, want %q", got, "Hi world")
+	if got.Text != "Hi world" {
+		t.Errorf("got %q, want %q", got.Text, "Hi world")
 	}
 }
 
@@ -581,8 +602,8 @@ func TestInitPlugins_BrokenPluginDoesNotBlockHealthyPlugins(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if _, ok := sess.skills["healthy-plugin:my-skill"]; !ok {
-		t.Errorf("expected healthy-plugin's skill to load despite the broken dir, got skills: %v", keys(sess.skills))
+	if _, ok := sess.skills.Entries["healthy-plugin:my-skill"]; !ok {
+		t.Errorf("expected healthy-plugin's skill to load despite the broken dir, got skills: %v", keys(sess.skills.Entries))
 	}
 }
 

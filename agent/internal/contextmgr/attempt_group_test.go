@@ -73,7 +73,7 @@ func TestElicitNoteOwnsOneLogicalAttemptGroupAcrossRouteFallback(t *testing.T) {
 
 	got, err := cm.ElicitNote(context.Background(), []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("preserve this")},
-	})
+	}, nil)
 	if err != nil || got != "- survived" {
 		t.Fatalf("ElicitNote = (%q, %v), want fallback success", got, err)
 	}

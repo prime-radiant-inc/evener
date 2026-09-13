@@ -135,11 +135,12 @@ func TestPastThreadReadResponseCarriesSkillCatalog(t *testing.T) {
 }
 
 func TestPastThreadSkillCatalogLayerPrecedence(t *testing.T) {
+	isolateThreadSkillHome(t)
 	t.Run("project overrides embedded", func(t *testing.T) {
 		workingDir := t.TempDir()
 		writeSkillFixture(t, filepath.Join(workingDir, "skills"), "doctoring-evener", "project wins")
 		got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir}}})
-		if description := skillDescription(got, "doctoring-evener"); description != "project wins" {
+		if description := skillDescription(got.Skills, "doctoring-evener"); description != "project wins" {
 			t.Fatalf("project-over-embedded description = %q", description)
 		}
 	})
@@ -151,7 +152,7 @@ func TestPastThreadSkillCatalogLayerPrecedence(t *testing.T) {
 		got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir}, Config: schema.ConfigSnapshot{SkillsDirs: []string{extraDir}},
 		}})
-		if description := skillDescription(got, "layered-skill"); description != "extra value" {
+		if description := skillDescription(got.Skills, "layered-skill"); description != "extra value" {
 			t.Fatalf("SkillsDirs-over-project description = %q", description)
 		}
 	})
@@ -159,13 +160,14 @@ func TestPastThreadSkillCatalogLayerPrecedence(t *testing.T) {
 	t.Run("plugin metadata is canonical", func(t *testing.T) {
 		pluginDir := writeThreadSkillPlugin(t, t.TempDir(), "metadata-plugin", "plugin-skill", "plugin value")
 		got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{pluginDir}}}})
-		if description := skillDescription(got, "metadata-plugin:plugin-skill"); description != "plugin value" {
+		if description := skillDescription(got.Skills, "metadata-plugin:plugin-skill"); description != "plugin value" {
 			t.Fatalf("plugin description = %q", description)
 		}
 	})
 }
 
 func TestPastThreadSkillCatalogIncludesAutomaticUserSkills(t *testing.T) {
+	isolateThreadSkillHome(t)
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	workingDir := t.TempDir()
@@ -175,25 +177,27 @@ func TestPastThreadSkillCatalogIncludesAutomaticUserSkills(t *testing.T) {
 	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
 	}})
-	if description := skillDescription(got, "cold-user-skill"); description != "user description" {
+	if description := skillDescription(got.Skills, "cold-user-skill"); description != "user description" {
 		t.Fatalf("automatic user skill description = %q, want %q", description, "user description")
 	}
-	if description := skillDescription(got, "doctoring-evener"); description != "user override" {
+	if description := skillDescription(got.Skills, "doctoring-evener"); description != "user override" {
 		t.Fatalf("automatic user override description = %q, want %q", description, "user override")
 	}
 }
 
 func TestPastThreadSkillCatalogUsesFirstDuplicatePlugin(t *testing.T) {
+	isolateThreadSkillHome(t)
 	root := t.TempDir()
 	first := writeThreadSkillPlugin(t, root, "duplicate-plugin", "same-skill", "first value")
 	second := writeThreadSkillPlugin(t, root, "duplicate-plugin", "same-skill", "second value")
 	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{first, second}}}})
-	if description := skillDescription(got, "duplicate-plugin:same-skill"); description != "first value" {
+	if description := skillDescription(got.Skills, "duplicate-plugin:same-skill"); description != "first value" {
 		t.Fatalf("duplicate plugin description = %q, want first plugin value", description)
 	}
 }
 
 func TestPastThreadSkillCatalogUsesFirstManifestDuplicatePlugin(t *testing.T) {
+	isolateThreadSkillHome(t)
 	root := t.TempDir()
 	first := writeThreadSkillPlugin(t, root, "successful-duplicate", "same-skill", "broken first")
 	writeSkillFile(t, filepath.Join(first, "commands", "broken.md"), "---\ndescription: [\n---\nbody")
@@ -214,12 +218,13 @@ func TestPastThreadSkillCatalogUsesFirstManifestDuplicatePlugin(t *testing.T) {
 	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{
 		PluginDirs: []string{first, second},
 	}}})
-	if description := skillDescription(got, "successful-duplicate:same-skill"); description != "broken first" {
+	if description := skillDescription(got.Skills, "successful-duplicate:same-skill"); description != "broken first" {
 		t.Fatalf("first-manifest duplicate description = %q, want broken first", description)
 	}
 }
 
 func TestPastThreadSkillLoaderIgnoresMalformedPluginComponents(t *testing.T) {
+	isolateThreadSkillHome(t)
 	for _, tc := range []struct {
 		name  string
 		setup func(t *testing.T, dir string)
@@ -241,7 +246,7 @@ func TestPastThreadSkillLoaderIgnoresMalformedPluginComponents(t *testing.T) {
 				t.Fatal("full plugin loader unexpectedly accepted malformed component")
 			}
 			got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{dir}}}})
-			if description := skillDescription(got, "malformed-plugin:valid-skill"); description != "valid value" {
+			if description := skillDescription(got.Skills, "malformed-plugin:valid-skill"); description != "valid value" {
 				t.Fatalf("skill-only loader lost valid skill: description=%q catalog=%+v", description, got)
 			}
 		})
@@ -350,6 +355,7 @@ func hasSkill(skills []appwire.EvenerSkillInfo, name string) bool {
 
 func seedPastSessionWithSkillFixtures(t *testing.T) (hubcore.WebConfig, hubcore.PastEntry) {
 	t.Helper()
+	isolateThreadSkillHome(t)
 	root := t.TempDir()
 	workingDir := filepath.Join(root, "project")
 	extraDir := filepath.Join(root, "extra-skills")
@@ -1579,5 +1585,53 @@ func TestStampThreadImageURLsFallsBackToThreadID(t *testing.T) {
 	})
 	if url := thread.Turns[0].Items[0].OutputImages[0].URL; url != "/s/02wMz5Txv733WHFsVy66SR/images/"+sha {
 		t.Fatalf("URL=%q, want the sha route built from the thread id", url)
+	}
+}
+
+func TestPastThreadSkillPortableFilteredWithoutCWD(t *testing.T) {
+	home, extra := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	writeSkillFixture(t, filepath.Join(home, ".agents", "skills"), "portable-cold", "PORTABLE_COLD_1")
+	writeSkillFixture(t, extra, "configured-cold", "CONFIGURED_COLD_1")
+	writeSkillFile(t, filepath.Join(extra, "hidden", "SKILL.md"), "---\nname: hidden\ndescription: fixture\nuser-invocable: false\n---\nHIDDEN_1\n")
+	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{SkillsDirs: []string{extra}}}})
+	if !hasSkill(got.Skills, "portable-cold") || !hasSkill(got.Skills, "configured-cold") || hasSkill(got.Skills, "hidden") {
+		t.Fatalf("cold catalog=%+v", got)
+	}
+}
+
+func isolateThreadSkillHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+}
+
+// TestDiscoverPastThreadSkillsCarriesDiagnostics: the past-thread discovery
+// view must surface the Stage 1 source-detail diagnostics (the fixture
+// overrides the embedded doctoring-evener skill from two directories, which
+// is a recorded collision) so thread/read can carry them on
+// EvenerDiagnostics.SkillDiagnostics instead of discarding them.
+func TestDiscoverPastThreadSkillsCarriesDiagnostics(t *testing.T) {
+	_, entry := seedPastSessionWithSkillFixtures(t)
+	catalog := discoverPastThreadSkillCatalog(entry)
+	if len(catalog.Skills) == 0 {
+		t.Fatal("expected the fixture's user-advertised skills")
+	}
+	found := false
+	for _, d := range catalog.Diagnostics {
+		if d.Category == "collision" && d.Name == "doctoring-evener" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("discovery diagnostics missing the doctoring-evener collision: %+v", catalog.Diagnostics)
+	}
+
+	thread := attachPastThreadSkillCatalog(entry, appwire.Thread{ID: entry.Meta.ID})
+	if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.SkillDiagnostics) == 0 {
+		t.Fatalf("attach dropped the discovery diagnostics: %+v", thread.Evener.Diagnostics)
 	}
 }

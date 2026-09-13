@@ -21,7 +21,7 @@ func TestProviderIdleCompactionFallbackUsesSessionPolicy(t *testing.T) {
 	}
 	sess := newSession(t, withAdapter(adapter), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")), withConfig(SessionConfig{ProviderIdleTimeout: "45s"}))
 	drainSessionEvents(sess)
-	if _, err := sess.contextMgr.ElicitNote(context.Background(), nil); err != nil {
+	if _, err := sess.contextMgr.ElicitNote(context.Background(), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	requests := adapter.Requests()
@@ -57,7 +57,7 @@ func TestProviderIdleAuxiliarySessionRequests(t *testing.T) {
 				case "web search":
 					_, err = sess.webSearch(ctx, "question")
 				case "compaction":
-					_, err = sess.contextMgr.ElicitNote(ctx, nil)
+					_, err = sess.contextMgr.ElicitNote(ctx, nil, nil)
 				case "cheap caller":
 					_, err = sess.cheap.Complete(ctx, sess.currentProfile(), llm.Request{Messages: []llm.Message{llm.User("summarize")}})
 				case "prompt hook":

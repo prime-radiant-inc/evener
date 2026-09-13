@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent"
@@ -79,6 +80,101 @@ func TestAppWireMutationResponseLossRetriesOnce(t *testing.T) {
 	}
 	if got := sess.QueueTexts(); len(got) != 1 || got[0] != "queued exactly once" {
 		t.Fatalf("queue texts after response loss retry = %#v, want one queued effect", got)
+	}
+}
+
+// TestAppWireMutationSkillInputResponseLossRetriesOnce is the skill-selection
+// counterpart of TestAppWireMutationResponseLossRetriesOnce: a queue payload
+// carrying a canonical skill selection executes exactly once across a lost
+// response and its replay, and the durable queued entry keeps the selection
+// for consumption.
+func TestAppWireMutationSkillInputResponseLossRetriesOnce(t *testing.T) {
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(&blockingServerAdapter{
+		name:    "openai",
+		started: make(chan struct{}),
+		done:    make(chan error, 1),
+	})
+	sess, err := agent.NewSession(
+		client,
+		provider.NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(stateDir),
+		agent.SessionConfig{StateDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Started for its side effect: several cases below need the session to be
+	// processing, and this is what makes it so.
+	_, err = sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID:   "start-active-turn-skill",
+		ExpectedInstanceID: sess.ID(),
+		Input:              []appwire.InputItem{{Type: "text", Text: "keep the turn active"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	input := []appwire.InputItem{
+		{Type: "text", Text: "queued exactly once"},
+		{Type: "skill", Name: "pkg:probe"},
+	}
+	params := appwire.TurnQueueParams{
+		Ref:                "local:" + sess.ID(),
+		ClientMutationID:   "queue-skill-after-response-loss",
+		ExpectedInstanceID: sess.ID(),
+		Input:              input,
+	}
+
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", sess.ID())
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Queue: sess.AcceptClientMutationQueue,
+	})
+
+	firstConn := srv.AppServer().NewConnection("first-skill")
+	initializeMutationRecoveryConnection(t, firstConn)
+	_ = firstConn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, params),
+	) // The response is lost after the daemon handles the request.
+
+	retryConn := srv.AppServer().NewConnection("retry-skill")
+	initializeMutationRecoveryConnection(t, retryConn)
+	retry := retryConn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, params),
+	)
+	if retry.Kind() != appwire.MessageResponse {
+		t.Fatalf("retry response kind = %v, error = %#v", retry.Kind(), retry.Error)
+	}
+	response, ok := retry.Response.Result.(appwire.TurnQueueResponse)
+	if !ok {
+		t.Fatalf("retry response result = %T, want appwire.TurnQueueResponse", retry.Response.Result)
+	}
+	if response.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("retry disposition = %q, want %q", response.Receipt.Disposition, appwire.MutationDispositionReplayed)
+	}
+	if got := sess.QueueTexts(); len(got) != 1 || got[0] != "queued exactly once" {
+		t.Fatalf("queue texts after response loss retry = %#v, want one queued effect", got)
+	}
+	// The retried queue effect keeps the canonical selection for consumption.
+	_, pending := sess.ClientMutationProjection()
+	var selected []appwire.InputItem
+	for _, mutation := range pending {
+		if mutation.ClientMutationID == params.ClientMutationID {
+			selected = mutation.Input
+		}
+	}
+	if len(selected) == 0 {
+		t.Fatalf("retried queue mutation %q is absent from the pending projection", params.ClientMutationID)
+	}
+	if !slices.EqualFunc(selected, input, func(a, b appwire.InputItem) bool {
+		return a.Type == b.Type && a.Text == b.Text && a.Name == b.Name
+	}) {
+		t.Fatalf("retried queue input = %#v, want %#v", selected, input)
 	}
 }
 

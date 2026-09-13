@@ -28,12 +28,19 @@ export type SteerRoute = "steer" | "drain" | "none";
 //   - a non-empty queue, OR any staged attachments, ALWAYS routes to
 //     turn/drainAsSteer - regardless of the textarea's own text content (an
 //     empty textarea with a non-empty queue still drains).
-//   - otherwise (empty queue, no attachments): text routes to classic
-//     turn/steer; no text is a no-op (focus the textarea, no request).
-export function decideSteerRoute(opts: { hasText: boolean; hasAttachments: boolean; queueDepth: number }): SteerRoute {
+//   - otherwise (empty queue, no attachments): text OR staged skill
+//     selections route to classic turn/steer (a selection-only input is
+//     content, the same as it is for Send and draft persistence); nothing
+//     staged at all is a no-op (focus the textarea, no request).
+export function decideSteerRoute(opts: {
+  hasText: boolean;
+  hasAttachments: boolean;
+  hasSkills?: boolean;
+  queueDepth: number;
+}): SteerRoute {
   const queueEmpty = opts.queueDepth <= 0;
   if (!queueEmpty || opts.hasAttachments) return "drain";
-  if (opts.hasText) return "steer";
+  if (opts.hasText || opts.hasSkills) return "steer";
   return "none";
 }
 

@@ -122,10 +122,12 @@ type HookEventStatus struct {
 
 // DetailedStatus captures the full session configuration for typed diagnostics.
 type DetailedStatus struct {
-	Tools   []ToolInfo             `json:"tools,omitempty"`   // every registered tool and its source
-	MCP     []mcpconfig.ServerInfo `json:"mcp,omitempty"`     // connected MCP servers
-	Skills  []skill.SkillMeta      `json:"skills,omitempty"`  // discovered skills, sorted by name
-	Plugins []PluginInfo           `json:"plugins,omitempty"` // loaded plugins
+	SkillCatalog     []skill.Descriptor     `json:"skill_catalog,omitempty"`
+	SkillDiagnostics []skill.Diagnostic     `json:"skill_diagnostics,omitempty"`
+	Tools            []ToolInfo             `json:"tools,omitempty"`   // every registered tool and its source
+	MCP              []mcpconfig.ServerInfo `json:"mcp,omitempty"`     // connected MCP servers
+	Skills           []skill.SkillMeta      `json:"skills,omitempty"`  // discovered skills, sorted by name
+	Plugins          []PluginInfo           `json:"plugins,omitempty"` // loaded plugins
 	// HookEvents lists all registered hook events (supported) plus any
 	// recognized-but-unsupported events declared by loaded plugins.
 	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
@@ -168,8 +170,17 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		ds.Tools = append(ds.Tools, ToolInfo{Name: name, Source: source})
 	}
 
-	// Skills are projected through the canonical, path-free catalog helper.
-	ds.Skills = skill.CatalogEntries(s.skills)
+	// Inspection retains every winner; completion uses only the user view.
+	ds.SkillCatalog = s.skills.InspectionEntries()
+	for _, descriptor := range ds.SkillCatalog {
+		if descriptor.Unavailable || !descriptor.Controls.UserInvocable {
+			continue
+		}
+		meta := descriptor.Meta
+		meta.Name, meta.Dir, meta.SkillFile = descriptor.CatalogName, "", ""
+		ds.Skills = append(ds.Skills, meta)
+	}
+	ds.SkillDiagnostics = append([]skill.Diagnostic(nil), s.skills.Diagnostics...)
 
 	// Plugins.
 	for _, p := range s.plugins {

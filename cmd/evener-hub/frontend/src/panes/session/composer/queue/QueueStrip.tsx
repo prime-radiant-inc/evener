@@ -57,7 +57,12 @@ export interface QueueStripProps {
   // processing" toast the composer's own submit paths already use, so a
   // drain can no longer silently omit a not-yet-encoded image from the
   // drained payload (w5-integration-wiring-report.md Concern #3).
-  getComposerText(): { text: string; attachments?: InputAttachment[]; hasPending: boolean };
+  getComposerText(): {
+    text: string;
+    attachments?: InputAttachment[];
+    hasPending: boolean;
+    skillNames?: readonly string[];
+  };
   // Restores a queued entry's full text into the composer - called BEFORE
   // cancelQueued on an edit (loser-safe order: a contract row - the text
   // must land even if the cancel that follows fails). `attachments` is
@@ -68,7 +73,10 @@ export interface QueueStripProps {
   // dropped images are surfaced as their own warning toast below). The
   // parameter is kept for signature symmetry with a general "restore to
   // composer" seam the integration may reuse for other callers.
-  onRestoreToComposer(text: string, attachments?: InputAttachment[]): void;
+  // `skillNames` carries the entry's canonical skill selections from the
+  // queue projection (QueueState.skillNames) so an edit restores its chips
+  // too - a queued {type:"skill"} item is otherwise unrecoverable.
+  onRestoreToComposer(text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): void;
   activeRecoveryId?: string;
   onEditRecovery?(record: MutationRecoveryRecord): void;
   // Called once a drain-as-steer intent commits to IndexedDB, so the
@@ -104,18 +112,33 @@ function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?:
 
 const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
 
-function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number } {
+function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
   const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
   const text = input
     .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
     .join("\n");
-  return { text, imageCount: input.filter((item) => item.type === "image").length };
+  const skillNames = input
+    .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
+    .map((item) => item.name.trim())
+    .filter((name) => name !== "");
+  return { text, imageCount: input.filter((item) => item.type === "image").length, skillNames };
+}
+
+// skillMarkers renders a record's canonical skill selections for display and
+// copy: the name is the selection's whole user-visible identity - the part of
+// a queued entry that is distinct from its typed text. Without it a
+// skill-only record previews blank and copies as an empty string.
+function skillMarkers(names: readonly string[]): string {
+  return names.map((name) => `[skill: ${name}]`).join(" ");
 }
 
 function recordPreview(record: MutationOutboxRecord): string {
-  const { text, imageCount } = recordContent(record);
-  return truncateForDisplay(queueEntryPreviewText(text, imageCount));
+  const { text, imageCount, skillNames } = recordContent(record);
+  const preview = [queueEntryPreviewText(text, imageCount), skillMarkers(skillNames)]
+    .filter((part) => part !== "")
+    .join(" ");
+  return truncateForDisplay(preview);
 }
 
 function editDisabledReason(opts: {
@@ -209,7 +232,12 @@ export function QueueStrip({
     }
   }
 
-  async function handleEdit(index: number, entryId: string, fullText: string): Promise<void> {
+  async function handleEdit(
+    index: number,
+    entryId: string,
+    fullText: string,
+    skillNames?: readonly string[],
+  ): Promise<void> {
     setRowBusy(entryId, true);
     try {
       // FIRST - loser-safe: the user's text is safely in the composer
@@ -218,7 +246,7 @@ export function QueueStrip({
       // must not borrow the cancel's message below, and must leave the queued
       // entry alone rather than removing a message with nowhere to go.
       try {
-        onRestoreToComposer(fullText);
+        onRestoreToComposer(fullText, undefined, skillNames);
       } catch (err) {
         toasts.push("error", `Couldn't move this message to the composer: ${errorText(err)}`);
         return;
@@ -232,9 +260,17 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
-    const { text, attachments, hasPending } = getComposerText();
+    const { text, attachments, hasPending, skillNames } = getComposerText();
     if (hasPending) {
       toasts.push("error", "Image attachment is still processing");
+      return;
+    }
+    // The UI-side half of the skillInput gate, mirroring Composer's own
+    // submitAction: a target that does not advertise the capability keeps
+    // the draft and hears why instead of enqueueing a drain the store (and
+    // the hub) would refuse.
+    if ((skillNames?.length ?? 0) > 0 && model?.capabilities.skillInput !== true) {
+      toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
       return;
     }
     let wonRecoveryResend = true;
@@ -247,6 +283,7 @@ export function QueueStrip({
           recoveryId: activeRecoveryId,
           text,
           attachments,
+          skillNames,
           onFailure: (err) => {
             toasts.push("error", sessionActionError("Drain failed", err));
           },
@@ -259,10 +296,11 @@ export function QueueStrip({
               "drain",
               text,
               attachments ?? [],
+              skillNames,
             );
             return;
           }
-          return threadsStore.getState().drainAsSteer(sessionRef, text, attachments);
+          return threadsStore.getState().drainAsSteer(sessionRef, text, attachments, skillNames);
         },
       );
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
@@ -304,7 +342,9 @@ export function QueueStrip({
   async function handleCopy(record: MutationRecoveryRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
     try {
-      await copyToClipboard(recordContent(record).text);
+      const { text, skillNames } = recordContent(record);
+      const content = [text, skillMarkers(skillNames)].filter((part) => part !== "").join("\n");
+      await copyToClipboard(content);
       toasts.push("success", "Copied message");
     } catch (error) {
       toasts.push("error", `Couldn't copy message: ${errorText(error)}`);
@@ -329,10 +369,13 @@ export function QueueStrip({
         {Array.from({ length: rowCount }, (_, index) => {
           const entryId = ids?.[index];
           const fullText = texts?.[index];
+          const entrySkillNames = queue?.skillNames?.[index];
           const displayText = truncateForDisplay(preview?.[index] ?? fullText ?? "");
           const busy = entryId !== undefined && busyEntryIds.has(entryId);
           const actionsAvailable = hasIds && entryId !== undefined;
-          const imageOnly = hasTexts && (fullText ?? "").trim() === "";
+          // A blank-text entry is uneditable only when it carries nothing
+          // else restorable - a skill-only entry's chips ARE the content.
+          const imageOnly = hasTexts && (fullText ?? "").trim() === "" && (entrySkillNames?.length ?? 0) === 0;
           const editAvailable = actionsAvailable && hasTexts && !imageOnly;
 
           return (
@@ -360,7 +403,9 @@ export function QueueStrip({
                   disabled={!editAvailable || busy}
                   disabledReason={editDisabledReason({ actionsAvailable, hasTexts, imageOnly })}
                   onClick={() => {
-                    if (entryId !== undefined && fullText !== undefined) void handleEdit(index, entryId, fullText);
+                    if (entryId !== undefined && fullText !== undefined) {
+                      void handleEdit(index, entryId, fullText, entrySkillNames);
+                    }
                   }}
                 />
                 <ActionButton
