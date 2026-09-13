@@ -515,8 +515,8 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
 // --- O(1) per-delta accumulation (perf fix, PR3) ----------------------------
 // Rationale and machinery: reducer.ts's chunk-view section header.
 
-// The shared streaming-agentMessage scaffold (src/protocol/testing/
-// tokenFlood.ts) on this suite's thr_t/ref_t/turn_1/item_1 identity.
+// The shared streaming-agentMessage scaffold (appwire-client/typescript/
+// testing/tokenFlood.ts) on this suite's thr_t/ref_t/turn_1/item_1 identity.
 function streamingItem(): ThreadModel {
   return hydrateStreamingAgentMessage("ref_t", { threadId: "thr_t" });
 }

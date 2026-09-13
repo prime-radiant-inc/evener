@@ -82,7 +82,7 @@ const WORD_BANK = [
 ];
 
 // Builds `count` chunks whose lengths are uniform-random in [2,40] - the
-// live-proof fixtures' own observed range (src/protocol/fixtures/*.jsonl:
+// live-proof fixtures' own observed range (appwire-client/typescript/fixtures/*.jsonl:
 // basic-turn 3-5 chars, streaming-with-reset 1-23 chars). The source text is
 // generated long enough (count*40, the worst case if every chunk hit the
 // max) that slicing never runs out, so `chunks.join("")` is guaranteed to
