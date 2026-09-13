@@ -158,7 +158,7 @@ consumers share into a place both can name, not about discovering new sharing.
 | `stores/testing/stalledIndexedDB.ts` (33) | A deliberately stalled IDB double | none | none | PLATFORM-ONLY | — |
 | `stores/transcriptDisplay.ts` (707) | Hub + local transcript-display config, viewport-aware | `evener/settings/transcriptDisplay/{get,patch,changed}` | `mobile-native/src/nativePreferences.ts` (839) | DUPLICATED | depends on `shell/useIsMobile` and localStorage; the hub half is portable, the local half is not |
 
-## 3. Web state/projection/logic outside `stores/` (49 rows)
+## 3. Web state/projection/logic outside `stores/` (50 rows)
 
 The web has 497 non-test TS/TSX files and 87,278 lines outside `protocol/`.
 Most are React components and CSS modules and are out of scope. These are the
@@ -178,6 +178,7 @@ migration has to place.
 | `panes/session/chrome/activityRows.ts` (208) | `ActivityTree` → flat display rows | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/chrome/{activityFormat,statusFormat,detailsAccounting}.ts` (243) | Activity/status labels; token and cost accounting | none | **none.** `detailsAccounting.ts:69-89` `sessionTokens` takes a `ThreadModel` and returns `{inputTokens, outputTokens, scope} \| null`, *deriving* a session figure by summing loaded turns when no cumulative exists — pinned by `detailsAccounting.test.ts:26-29,41-44`. `services/activity.ts:437-451` `projectUsage` takes raw `Thread["evener"]` and copies ten optional fields with no arithmetic. Native does not merely lack the derivation, it **forbids** it: `state/activity.ts:23-27,337-344` returns `"rehydrate"` on `turn/completed` rather than fold per-turn usage into the aggregate. `projectUsage`'s real analog is `protocol/reducer.ts:797-805`, already in the package | PACKAGE CANDIDATE | single consumer, and the reducer analog makes this a D-phase reducer question, not a B-phase dedup — see decision 4 in the plan |
 | `panes/session/composer/slashCompletion.ts` (334) | Inline `/`-completion parser | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | imports `slashCommandInvocation` from `shell/palette/catalogCommands.ts:13`; that helper must cross the boundary first or with it |
+| `panes/session/composer/builtinInvocation.ts` (43) | Matching a typed `/builtin` invocation and pulling its argument out of composer text | none | `mobile-native/src/composerCommand.ts:1-4` imports `findBuiltinArgument` and `matchBuiltinInvocation` as **values**, so this is a genuine runtime two-consumer module; four web importers (`Composer.tsx:73`, `builtinCommand.ts:19`, `spawn/Spawn.tsx:67`, `spawn/spawnSlashMenu.ts:12`) | PACKAGE CANDIDATE (2 consumers) | none — the file has no imports of its own. Missed by this inventory until round 30 |
 | `panes/session/composer/submitRouting.ts` (50) | send/queue/steer/drain routing decision | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | reads `protocol/sendQueueAvailability` (also unpacked) |
 | `panes/session/composer/attachments/limits.ts` (29) | 8 files / 8 MiB attachment caps | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/composer/attachments/textareaMarkers.ts` (60) | `[image N]` marker splicing | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
@@ -344,15 +345,15 @@ later PR a place to land. Both have since been written — see "Delta since base
 | --- | --- |
 | SHARED ALREADY | 6 |
 | DUPLICATED | 33 |
-| PACKAGE CANDIDATE | 55 (of which **32** have two consumers by direct import; `sendQueueAvailability.ts` left that set in round 23 and `deriveAskQuestions.ts` in round 26, both under the counting rule in §1) |
+| PACKAGE CANDIDATE | 56 (of which **33** have two consumers by direct import: `sendQueueAvailability.ts` left that set in round 23 and `deriveAskQuestions.ts` in round 26 under the counting rule in §1, and `builtinInvocation.ts` joined it in round 30, having been missing from this document entirely) |
 | PLATFORM-ONLY | 13 |
 | dead code | 1 |
-| **Total rows** | **108** |
+| **Total rows** | **109** |
 
-Rows cover 32 web `stores/` modules, 49 rows for web modules outside `stores/`
+Rows cover 32 web `stores/` modules, 50 rows for web modules outside `stores/`
 (several rows group a directory), 10 `mobile/src` rows (9 modules — one row
 covers a duplicate pair), and 17 rows for `protocol/` (its 16 baseline
-top-level modules plus the `testing/` directory): 32 + 49 + 10 + 17 = 108.
+top-level modules plus the `testing/` directory): 32 + 50 + 10 + 17 = 109.
 
 ## Delta since baseline
 
