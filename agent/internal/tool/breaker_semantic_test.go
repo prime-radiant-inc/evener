@@ -343,6 +343,36 @@ func TestFailureFingerprint_HugeIntegersStayDistinct(t *testing.T) {
 			t.Errorf("distinct integers beyond int64 collapsed to one fingerprint: %s and %s", p[0], p[1])
 		}
 	}
+
+	// Suffixed spellings that denote the same huge integer are still
+	// integer-valued: they must fold to the bare form by value rather than round
+	// through float64, and a rounding must not let them collide with a distinct
+	// integer.
+	base := fp("read_file", `{"offset_bytes":9223372036854775808}`)
+	for _, args := range []string{
+		`{"offset_bytes":9223372036854775808.0}`,
+		`{"offset_bytes":9223372036854775808e0}`,
+		`{"offset_bytes":92.23372036854775808e17}`,
+	} {
+		if got := fp("read_file", args); got != base {
+			t.Errorf("integer-valued spelling %s = %q, want the bare form's fingerprint %q", args, got, base)
+		}
+	}
+	for _, suffix := range []string{".0", "e0"} {
+		if fp("read_file", `{"offset_bytes":9223372036854775808`+suffix+`}`) == fp("read_file", `{"offset_bytes":9223372036854775809}`) {
+			t.Errorf("suffixed integer 9223372036854775808%s collided with the distinct integer 9223372036854775809", suffix)
+		}
+	}
+	// The residual rounding collision is between two suffixed spellings, since
+	// the bare forms are now kept exact: 9223372036854775808<suffix> and
+	// 9223372036854775809<suffix> must not round to the same float.
+	for _, suffix := range []string{".0", "e0"} {
+		left := `{"offset_bytes":9223372036854775808` + suffix + `}`
+		right := `{"offset_bytes":9223372036854775809` + suffix + `}`
+		if fp("read_file", left) == fp("read_file", right) {
+			t.Errorf("suffixed integers %s and %s collided", left, right)
+		}
+	}
 }
 
 // The fix must leave the int64 and float paths exactly as they were: values that
@@ -364,6 +394,12 @@ func TestFailureFingerprint_Int64AndFloatPathsUnchanged(t *testing.T) {
 	}
 	if fp("read_file", `{"offset_bytes":42}`) != fp("read_file", `{"offset_bytes":4.2e1}`) {
 		t.Errorf("42 and 4.2e1 must fingerprint the same")
+	}
+	// Boundary consistency: a value that fits int64 and its suffixed
+	// integer-valued spelling must fold, which requires the int64 path and the
+	// big-number path to emit identical canonical bytes for the same value.
+	if fp("read_file", `{"offset_bytes":9223372036854775807}`) != fp("read_file", `{"offset_bytes":9223372036854775807.0}`) {
+		t.Errorf("max int64 and its .0 spelling must fingerprint the same")
 	}
 	// Genuine floats are unaffected: equivalent literals fold, distinct values
 	// stay distinct.
