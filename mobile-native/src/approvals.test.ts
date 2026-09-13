@@ -52,6 +52,7 @@ function boundary() {
         shutdown: true,
         changeModel: true,
         changeVisionModel: false,
+        sharedNotes: false,
         queue: true,
         goal: true,
         rename: true,

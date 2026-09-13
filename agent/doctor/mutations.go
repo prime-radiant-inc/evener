@@ -153,6 +153,7 @@ func Mutations(stateBase, selector string) (MutationReport, error) {
 // added to the runtime snapshot must break this decode loudly instead of being
 // silently dropped from a diagnosis.
 type clientMutationStoreFile struct {
+	HumanNote              *string                               `json:"human_note"`
 	Version                int                                   `json:"version"`
 	SessionID              string                                `json:"session_id"`
 	ActiveTurnID           string                                `json:"active_turn_id"`
@@ -185,6 +186,7 @@ type clientMutationStoreRecord struct {
 	Rejection           *clientMutationStoreRejection `json:"rejection"`
 	Failure             json.RawMessage               `json:"failure"`
 	AttemptGeneration   uint64                        `json:"attempt_generation"`
+	SteeringKind        string                        `json:"steering_kind"`
 }
 
 type clientMutationStoreRejection struct {

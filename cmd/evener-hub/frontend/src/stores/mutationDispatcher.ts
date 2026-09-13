@@ -1,7 +1,7 @@
 import type { AppwireClientLike } from "../protocol/clientLike";
 import { mutationErrorData, WireError } from "../protocol/errors";
-import type { MethodName, MutationReceipt, ThreadClearResponse } from "../protocol/types.gen";
-import type { MutationOutboxRecord } from "./mutationOutbox";
+import type { MethodName, MutationReceipt, NotesHumanSetResponse, ThreadClearResponse } from "../protocol/types.gen";
+import type { MutationOutboxRecord, MutationRecord } from "./mutationOutbox";
 import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
 export interface MutationDispatcherOptions {
@@ -9,6 +9,11 @@ export interface MutationDispatcherOptions {
   onStorageChange?: (targetRefs: string[]) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   onClearResponse?: (targetRef: string, response: ThreadClearResponse) => void;
+  onHumanNoteResponse?: (record: MutationOutboxRecord, response: NotesHumanSetResponse) => void;
+  // Capture response authority immediately before each transport attempt,
+  // after any reconnect hydration, rather than once at durable enqueue.
+  prepareHumanNoteResponse?: (record: MutationOutboxRecord) => (response: NotesHumanSetResponse) => void;
+  onHumanNoteReconciled?: (record: MutationRecord) => void;
 }
 
 export class MutationDispatcher {
@@ -17,6 +22,8 @@ export class MutationDispatcher {
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions["onStorageChange"]>;
   readonly #onBlockedMutation: NonNullable<MutationDispatcherOptions["onBlockedMutation"]>;
   readonly #onClearResponse: NonNullable<MutationDispatcherOptions["onClearResponse"]>;
+  readonly #prepareHumanNoteResponse: NonNullable<MutationDispatcherOptions["prepareHumanNoteResponse"]>;
+  readonly #onHumanNoteReconciled: NonNullable<MutationDispatcherOptions["onHumanNoteReconciled"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
 
@@ -26,6 +33,9 @@ export class MutationDispatcher {
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
     this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
     this.#onClearResponse = options.onClearResponse ?? (() => undefined);
+    this.#prepareHumanNoteResponse =
+      options.prepareHumanNoteResponse ?? ((record) => (response) => options.onHumanNoteResponse?.(record, response));
+    this.#onHumanNoteReconciled = options.onHumanNoteReconciled ?? (() => undefined);
   }
 
   async dispatchTargets(targetRefs: Iterable<string>): Promise<void> {
@@ -48,6 +58,7 @@ export class MutationDispatcher {
           (await this.#storage.getOutbox(clientMutationId)) ??
           (await this.#storage.getOptimistic(clientMutationId)) ??
           (await this.#storage.getRecovery(clientMutationId));
+        if (record?.method === "notes/human/set") this.#onHumanNoteReconciled(record);
         if (await this.#storage.settleApplied(clientMutationId)) {
           if (record) targetRefs.add(record.targetRef);
         }
@@ -107,6 +118,7 @@ export class MutationDispatcher {
         requestMethod: MethodName,
         params: Record<string, unknown>,
       ) => Promise<unknown>;
+      const applyHumanNoteResponse = method === "notes/human/set" ? this.#prepareHumanNoteResponse(record) : undefined;
       const result = await request.call(client, method, record.payload);
       const receipt = mutationReceipt(result);
       if (
@@ -120,6 +132,11 @@ export class MutationDispatcher {
         const response = clearResponse(result, record.targetRef);
         if (!response) return "stop";
         this.#onClearResponse(record.targetRef, response);
+      }
+      if (method === "notes/human/set") {
+        if (!result || typeof result !== "object" || !("note" in result) || typeof result.note !== "string")
+          return "stop";
+        applyHumanNoteResponse?.({ note: result.note, receipt });
       }
       await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
       this.#onStorageChange([record.targetRef]);
@@ -193,6 +210,7 @@ const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "turn/promoteQueuedAsSteer",
   "turn/cancelQueued",
   "thread/clear",
+  "notes/human/set",
 ]);
 
 // rejectionReason extracts what to show a user whose control was refused.

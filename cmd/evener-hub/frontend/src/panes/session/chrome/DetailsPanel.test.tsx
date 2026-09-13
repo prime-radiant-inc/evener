@@ -23,6 +23,7 @@ const CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -45,6 +46,9 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     lastFrameAt: 0,
     capabilities: CAPABILITIES,
     goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
     contextUsed: 42_000,
     contextWindow: 100_000,
     contextPressure: 0.42,

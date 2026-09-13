@@ -97,3 +97,41 @@ func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 		return source.GoalSet(ctx, params)
 	})
 }
+
+// setNotesHumanWithResume relays notes/human/set to the owning source,
+// resuming an exited session first like goal/set. The hub pre-flight gates on
+// the shared-notes capability so an old daemon with a new hub fails closed
+// instead of dropping writes.
+func setNotesHumanWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	return relayWithResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, "shared-notes",
+		func(source appsource.Source) (appwire.NotesHumanSetResponse, error) {
+			return source.NotesHumanSet(ctx, params)
+		})
+}
+
+// removeURLWithResume relays urls/remove to the owning source, resuming an
+// exited session first like goal/set, gated on the shared-notes capability.
+func removeURLWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	return relayWithResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, "shared-notes",
+		func(source appsource.Source) (appwire.UrlsRemoveResponse, error) {
+			return source.UrlsRemove(ctx, params)
+		})
+}
+
+// relayWithResume resolves the owning source for ref, gates on the named
+// thread action, and runs call — the shared shape behind the notes/urls
+// resume relays above.
+func relayWithResume[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
+	return withSessionResume(ctx, cfg, sources, ref, clientMutationID, func() (R, error) {
+		source, err := sourceForThread(sources, ref, "")
+		if err != nil {
+			var zero R
+			return zero, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, ref, "", action); err != nil {
+			var zero R
+			return zero, err
+		}
+		return call(source)
+	})
+}

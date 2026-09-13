@@ -81,6 +81,7 @@ describe("native composer steering wire routing", () => {
             shutdown: false,
             changeModel: false,
             changeVisionModel: false,
+            sharedNotes: false,
             goal: false,
             rename: false,
           },

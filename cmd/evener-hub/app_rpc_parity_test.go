@@ -222,6 +222,104 @@ func TestHubRPCGoalSetResumesPastThread(t *testing.T) {
 	}
 }
 
+// TestHubRPCNotesHumanSetResumesPastThread proves setting a human note on an
+// exited session resumes the daemon and retries, mirroring
+// TestHubRPCGoalSetResumesPastThread (notes/human/set shares the same
+// withSessionResume path as goal/set).
+func TestHubRPCNotesHumanSetResumesPastThread(t *testing.T) {
+	var sessionID string
+	noteText := ""
+	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:        sessionID,
+				SessionID: sessionID,
+				Source:    "local",
+				Evener: appwire.EvenerThread{
+					Ref:          params.Ref,
+					Capabilities: appwire.ThreadCapabilities{SharedNotes: true},
+				},
+			}}, nil
+		})
+		appserver.HandleTyped(daemon.Router(), appwire.MethodNotesHumanSet, func(_ context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+			if params.Ref != "local:"+sessionID {
+				t.Fatalf("notes ref=%q", params.Ref)
+			}
+			noteText = params.Note
+			return appwire.NotesHumanSetResponse{Note: params.Note}, nil
+		})
+	})
+	sessionID = sid
+
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.NotesHumanSet(context.Background(), appwire.NotesHumanSetParams{Ref: "local:" + sessionID, ClientMutationID: "note-past", ExpectedInstanceID: sessionID, Note: "whiteboard note"})
+	if err != nil {
+		t.Fatalf("NotesHumanSet: %v", err)
+	}
+	if resp.Note != "whiteboard note" {
+		t.Fatalf("NotesHumanSet note=%q, want %q", resp.Note, "whiteboard note")
+	}
+	if *resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+	}
+	if noteText != "whiteboard note" {
+		t.Fatalf("noteText=%q, want %q", noteText, "whiteboard note")
+	}
+}
+
+// TestHubRPCUrlsRemoveResumesPastThread proves removing a URL on an exited
+// session resumes the daemon and retries, mirroring
+// TestHubRPCGoalSetResumesPastThread (urls/remove shares the same
+// withSessionResume path as goal/set).
+func TestHubRPCUrlsRemoveResumesPastThread(t *testing.T) {
+	var sessionID string
+	removedID := ""
+	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:        sessionID,
+				SessionID: sessionID,
+				Source:    "local",
+				Evener: appwire.EvenerThread{
+					Ref:          params.Ref,
+					Capabilities: appwire.ThreadCapabilities{SharedNotes: true},
+				},
+			}}, nil
+		})
+		appserver.HandleTyped(daemon.Router(), appwire.MethodUrlsRemove, func(_ context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+			if params.Ref != "local:"+sessionID {
+				t.Fatalf("urls ref=%q", params.Ref)
+			}
+			removedID = params.ID
+			return appwire.UrlsRemoveResponse{}, nil
+		})
+	})
+	sessionID = sid
+
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.UrlsRemove(context.Background(), appwire.UrlsRemoveParams{Ref: "local:" + sessionID, ClientMutationID: "url-rm-past", ExpectedInstanceID: sessionID, ID: "u1"}); err != nil {
+		t.Fatalf("UrlsRemove: %v", err)
+	}
+	if *resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+	}
+	if removedID != "u1" {
+		t.Fatalf("removedID=%q, want %q", removedID, "u1")
+	}
+}
+
 // TestHubRPCThreadShutdownExitedSessionIsNoOpSuccess proves that shutting down
 // an already-exited session succeeds as a no-op WITHOUT resuming it — we must
 // never resurrect a daemon just to kill it (kata qp94 carve-out).

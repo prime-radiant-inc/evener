@@ -2207,6 +2207,10 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	preseedTurnID, preseeded := delegatePreseededTurnID(ctx, s.id, input)
 	preseededInput := preseeded && len(images) == 0 && queuedIdentity.ClientMutationID == ""
+	// Shared-notes context rides beside the goal continuation-prompt rendering
+	// at turn start: the current notes plus URL list enter the model context
+	// as a fresh projection of the persisted source of truth. Empty state
+	// appends nothing, so a fresh session's history is byte-identical.
 	if !preseededInput {
 		if err := s.maybeAppendEnvironmentContext(); err != nil {
 			if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
@@ -2214,6 +2218,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			}
 			return fmt.Errorf("append environment context: %w", err)
 		}
+		s.maybeAppendNotesContext()
 	}
 
 	if drainResumeSessionStart {
@@ -2360,6 +2365,10 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
 	turn.StableTurnID = stableTurnID
 	s.recordTurn(turn, turn)
+
+	// On resume the agent re-reads the current notes beside the continuation
+	// prompt, so a human edit that landed while the goal loop ran is visible.
+	s.maybeAppendNotesContext()
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
@@ -2512,6 +2521,10 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 	if s.servedByDaemon() {
 		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
 	}
+	// The carrier turn runs on resume semantics too: the drained human-note
+	// steer it carries is already in the store, and this projection puts the
+	// full current notes beside it.
+	s.maybeAppendNotesContext()
 	s.injectDrainedSteering()
 	return true
 }

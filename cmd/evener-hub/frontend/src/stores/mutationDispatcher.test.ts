@@ -70,6 +70,98 @@ function queueCalls(client: FakeClient): MutationOutboxRecord["payload"][] {
 }
 
 describe("MutationDispatcher", () => {
+  test.each(["receipt", "snapshot"])(
+    "%s note settlement retires only older same-session note recovery",
+    async (mode) => {
+      const outbox = storage(new IDBFactory(), `notes-supersession-${mode}`, [
+        "old-note",
+        "chat",
+        "other-note",
+        "accepted-note",
+        "newer-note",
+      ]);
+      const noteIntent = (targetRef: string): MutationIntent => ({
+        targetRef,
+        method: "notes/human/set",
+        payload: { ref: targetRef, note: "sentinel" },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      const old = await outbox.enqueueIntent(noteIntent("ref-a"));
+      const chat = await outbox.enqueueIntent(queueIntent());
+      const other = await outbox.enqueueIntent(noteIntent("ref-b"));
+      const accepted = await outbox.enqueueIntent(noteIntent("ref-a"));
+      const newer = await outbox.enqueueIntent(noteIntent("ref-a"));
+      for (const record of [old, chat, other, newer])
+        await outbox.transferToRecovery(record.clientMutationId, "rejected");
+      if (mode === "receipt") await outbox.settleReceipt(accepted.clientMutationId, "notProjected");
+      else await outbox.settleApplied(accepted.clientMutationId);
+      expect((await outbox.listRecovery()).map((record) => record.clientMutationId).sort()).toEqual([
+        "chat",
+        "newer-note",
+        "other-note",
+      ]);
+      outbox.close();
+    },
+  );
+
+  test("notes retry the persisted raw intent and acknowledge only a matching typed receipt", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "notes-retry", ["note-id"]);
+    const raw = " \talpha\n\u00a0e\u0301🙂  ";
+    const record = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "notes/human/set",
+      payload: { ref: "ref-a", expectedInstanceId: "instance-a", note: raw },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const client = new FakeClient();
+    const onHumanNoteResponse = vi.fn();
+    client.on("notes/human/set", () => {
+      throw new Error("connection lost");
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client, onHumanNoteResponse });
+    await dispatcher.dispatchTargets(["ref-a"]);
+    const independent = storage(indexedDB, "notes-retry", []);
+    expect((await independent.getOutbox(record.clientMutationId))?.payload).toEqual(record.payload);
+    expect(await independent.listOptimistic()).toEqual([]);
+    client.on("notes/human/set", () => ({ note: raw, receipt: receipt("wrong-id") }));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    expect(onHumanNoteResponse).not.toHaveBeenCalled();
+    expect(await independent.getOutbox(record.clientMutationId)).toBeDefined();
+    client.on("notes/human/set", () => ({ note: raw, receipt: receipt(record.clientMutationId, "replayed") }));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    expect(client.calls.map((call) => call.params)).toEqual([record.payload, record.payload, record.payload]);
+    expect(onHumanNoteResponse).toHaveBeenCalledWith(expect.objectContaining({ clientMutationId: "note-id" }), {
+      note: raw,
+      receipt: receipt("note-id", "replayed"),
+    });
+    expect(await independent.getOutbox("note-id")).toBeUndefined();
+    await independent.close();
+    await outbox.close();
+  });
+
+  test("snapshot identities notify notes before removing their durable identity", async () => {
+    const outbox = storage(new IDBFactory(), "notes-rejoin", ["note-id"]);
+    const record = await outbox.enqueueIntent({
+      targetRef: "ref-a",
+      method: "notes/human/set",
+      payload: { ref: "ref-a", note: "raw draft" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const onHumanNoteReconciled = vi.fn();
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => null, onHumanNoteReconciled });
+    await dispatcher.reconcileIdentities([record.clientMutationId]);
+    expect(onHumanNoteReconciled).toHaveBeenCalledWith(
+      expect.objectContaining({ clientMutationId: record.clientMutationId, method: "notes/human/set" }),
+    );
+    expect(await outbox.listOutbox()).toEqual([]);
+    expect(await outbox.listOptimistic()).toEqual([]);
+    await outbox.close();
+  });
+
   test("dispatches thread/clear with its instance fence and publishes the replacement response", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "clear-response", ["mutation-a"]);

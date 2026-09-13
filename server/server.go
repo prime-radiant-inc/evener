@@ -377,24 +377,33 @@ type Server struct {
 	queueFunc                       func(string) error
 	queueWithImagesFunc             func(string, []ImageAttachment) error
 	goalFunc                        func(objective string) (bool, error)
-	drainSteerFunc                  func() error
-	drainSteerInputFunc             func(string, []ImageAttachment) error
-	promoteSteerFunc                func(int, string) error
-	cancelQueuedFunc                func(int, string) (string, int, error)
-	compactFunc                     func(context.Context) error
-	clearFunc                       func(context.Context, appwire.ThreadClearParams) error
-	clearJournalPath                string
-	clearRecords                    map[string]threadClearRecord
-	clearJournalErr                 error
-	modelFunc                       func(string) error
-	visionModelFunc                 func(string) error
-	nameFunc                        func(string)
-	reasoningEffortFunc             func(string)
-	listModelsFunc                  func(context.Context) ([]appwire.ModelDescriptor, error)
-	tasksFn                         func() any
-	jobsFn                          func(appwire.JobsListParams) (any, error)
-	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
-	shutdownFunc                    func()
+	// notesHumanSetFunc is called by the appwire notes/human/set method. The
+	// callback returns the full atomic acceptance result, including its receipt.
+	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)
+	// urlsRemoveFunc is called by the appwire urls/remove method. The callback
+	// removes one URL list entry by id, reporting whether one was found. The
+	// outer clientMutationId travels with it so the session can journal the
+	// outer mutation (success replays after the entry is gone; a reused ID
+	// with a different entry id conflicts without mutating).
+	urlsRemoveFunc      func(outerID, id string) (bool, error)
+	drainSteerFunc      func() error
+	drainSteerInputFunc func(string, []ImageAttachment) error
+	promoteSteerFunc    func(int, string) error
+	cancelQueuedFunc    func(int, string) (string, int, error)
+	compactFunc         func(context.Context) error
+	clearFunc           func(context.Context, appwire.ThreadClearParams) error
+	clearJournalPath    string
+	clearRecords        map[string]threadClearRecord
+	clearJournalErr     error
+	modelFunc           func(string) error
+	visionModelFunc     func(string) error
+	nameFunc            func(string)
+	reasoningEffortFunc func(string)
+	listModelsFunc      func(context.Context) ([]appwire.ModelDescriptor, error)
+	tasksFn             func() any
+	jobsFn              func(appwire.JobsListParams) (any, error)
+	jobOutputFn         func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
+	shutdownFunc        func()
 
 	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
 	// projector calls the lookup from inside Project, which RecordAppEvent
@@ -626,6 +635,27 @@ func (s *Server) SetQueueFunc(fn func(string) error) {
 func (s *Server) SetGoalFunc(fn func(objective string) (bool, error)) {
 	s.mu.Lock()
 	s.goalFunc = fn
+	s.mu.Unlock()
+}
+
+// SetNotesHumanSetFunc sets the function called by the appwire notes/human/set
+// method. The callback stores the human's session whiteboard and returns the
+// stored (post-clamp) value and receipt; the session emits EventNotesUpdated after its
+// successful store mutation for the projector to derive the push from.
+func (s *Server) SetNotesHumanSetFunc(fn func(outerID, note string) (appwire.NotesHumanSetResponse, error)) {
+	s.mu.Lock()
+	s.notesHumanSetFunc = fn
+	s.mu.Unlock()
+}
+
+// SetUrlsRemoveFunc sets the function called by the appwire urls/remove
+// method. The callback removes one URL list entry by id for the given outer
+// clientMutationId, reporting whether one was found; the session emits
+// EventUrlsUpdated after a successful removal for the projector to derive
+// the push from.
+func (s *Server) SetUrlsRemoveFunc(fn func(outerID, id string) (bool, error)) {
+	s.mu.Lock()
+	s.urlsRemoveFunc = fn
 	s.mu.Unlock()
 }
 
