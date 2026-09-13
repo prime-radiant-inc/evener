@@ -698,7 +698,9 @@ func TestClientMutation_QueueHeadReclaimAfterReturnStaysPending(t *testing.T) {
 	// ActiveTurnID (never touched by pushQueueHead) still names that same
 	// turn, so claimClientMutationStart's third loop -- not its first two --
 	// is what reclaims this entry.
-	sess.pushQueueHead(claimed)
+	if err := sess.pushQueueHead(claimed); err != nil {
+		t.Fatal(err)
+	}
 
 	reclaimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok || reclaimed.ClientMutationID != params.ClientMutationID {
