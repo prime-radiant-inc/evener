@@ -384,6 +384,22 @@ stop_recorded_package_list_groups() {
 			# so it is in the runner's own group and nothing here may signal that
 			# group. The deadline's own decision covers exactly this — pid stop,
 			# then the group it may have formed since — so it is asked to make it.
+			#
+			# Here the marker does answer, and it is the one place it can: a pid
+			# names one process, and one process either carries the marker or is
+			# somebody the kernel has since given the number to. Unknown is not a
+			# licence to signal, so it keeps the record and says so.
+			ownership=0
+			pid_owned_by "${recorded#pid:}" "$marker" || ownership=$?
+			if [ "$ownership" -eq 1 ]; then
+				rm -f "$pgid_file"
+				continue
+			fi
+			if [ "$ownership" -ne 0 ]; then
+				printf 'run-module-tests.sh: the attempt recorded at %s could not be shown to have stopped: the process listing that says whether pid %s is still this attempt would not run. Its record is kept.\n' \
+					"$pgid_file" "${recorded#pid:}" >&2
+				continue
+			fi
 			stop_status=0
 			stop_package_list_attempt "${recorded#pid:}" || stop_status=$?
 			if [ "$stop_status" -eq 0 ] || [ "$stop_status" -eq 3 ]; then
@@ -395,17 +411,14 @@ stop_recorded_package_list_groups() {
 			continue
 		fi
 		recorded="${recorded#pgid:}"
-		# The number is only worth signalling while it still names this attempt.
-		# A group that has gone takes its number with it, and the kernel gives
-		# that number to somebody else in time: a cleanup that skipped this would
-		# be sending SIGTERM and SIGKILL to a stranger's group on the strength of
-		# a file this run wrote minutes earlier.
-		ownership=0
-		pgroup_owned_by "$recorded" "$marker" || ownership=$?
-		if [ "$ownership" -eq 1 ]; then
-			rm -f "$pgid_file"
-			continue
-		fi
+		# Survivors are asked about first, and they decide. The marker cannot
+		# speak for a whole group: `go list` spawns compilers and a child outlives
+		# its parent, so a group whose marked process has exited still holds
+		# children with the cache locks — and asking the marker first read that as
+		# somebody else's group and dropped the record without stopping them.
+		# Anything alive under this number gets stopped; the number is refused
+		# outright by the library if it is 0, this runner's own group, or its
+		# session, which is what keeps "stop whatever is there" safe.
 		# What is recorded is a group, so ask about the group rather than
 		# about its leader alone: `go list` can exit with a child of the
 		# attempt still running in it, and a leader-only check would leave
