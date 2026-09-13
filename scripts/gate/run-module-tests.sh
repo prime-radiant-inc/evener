@@ -279,13 +279,59 @@ done
 # One per line because a flag can carry a value with spaces or glob characters in
 # it, and every consumer here reads them back into an array. ROOT_FULL drops
 # -short for the root module and nothing else is filtered.
+# go_bool_value TOKEN — "true", "false" or nothing, for a boolean flag written
+# as `-name`, `--name`, `-name=value` or `--name=value`.
+#
+# The accepted values are strconv.ParseBool's, because that is what Go's flag
+# package uses: 1 t T TRUE true True and 0 f F FALSE false False, and nothing
+# else. A bare flag is true. A value outside the set is what `go test` would
+# refuse outright, and is read as true here so short mode is not dropped on a
+# spelling this script guessed wrong about.
+#
+# The same rule lives in Go, in cmd/evener-dev/shardplan.go, because the shell
+# cannot import it. #1247 is where the two become one.
+go_bool_value() {
+	local token name value
+	token="$(go_flag "$1")"
+	case "$token" in
+	*=*)
+		name="${token%%=*}"
+		value="${token#*=}"
+		;;
+	*)
+		printf 'true'
+		return 0
+		;;
+	esac
+	[ -n "$name" ] || return 0
+	case "$value" in
+	0 | f | F | FALSE | false | False) printf 'false' ;;
+	*) printf 'true' ;;
+	esac
+}
+
+# module_test_flags MODULE — the flags `go test` gets for MODULE, one per line.
+#
+# One per line because a flag can carry a value with spaces or glob characters in
+# it, and every consumer here reads them back into an array. ROOT_FULL drops
+# -short for the root module — in every spelling that means true, and by the last
+# occurrence, which is the value go itself would use — and nothing else is
+# filtered.
 module_test_flags() {
-	local m="$1" flag
+	local m="$1" flag name effective="" full=0
+	if [ "$m" = "." ] && [ "$ROOT_FULL" -ne 0 ]; then
+		full=1
+		for flag in ${flag_args[@]+"${flag_args[@]}"}; do
+			name="$(go_flag "$flag")"
+			name="${name%%=*}"
+			[ "$name" = "-short" ] && effective="$(go_bool_value "$flag")"
+		done
+	fi
 	for flag in ${flag_args[@]+"${flag_args[@]}"}; do
-		# Through go_flag, because `--short` and `-short` are the same flag to
-		# go and ROOT_FULL means to drop it however the caller spelled it.
-		if [ "$m" = "." ] && [ "$ROOT_FULL" -ne 0 ] && [ "$(go_flag "$flag")" = "-short" ]; then
-			continue
+		if [ "$full" -eq 1 ] && [ "$effective" = "true" ]; then
+			name="$(go_flag "$flag")"
+			name="${name%%=*}"
+			[ "$name" = "-short" ] && continue
 		fi
 		printf '%s\n' "$flag"
 	done
@@ -331,6 +377,11 @@ process_descendants() {
 stop_children() {
 	local pid descendant
 	local -a descendants=()
+	# The recorded enumeration groups go first. They are what holds Go's build
+	# and module cache locks, and they used to wait behind every stream: a
+	# `go test` that would not answer a signal kept them alive for as long as it
+	# lived, which on a cancelled CI run is until the runner is killed outright.
+	stop_recorded_package_list_groups
 	if [ "${#active_pids[@]}" -gt 0 ]; then
 		for pid in "${active_pids[@]}"; do
 			[ -n "$pid" ] || continue
@@ -345,15 +396,20 @@ stop_children() {
 		done
 	fi
 	if [ "${#active_pids[@]}" -gt 0 ]; then
+		# Bounded, and escalating, the way an attempt's own stop is: a bare
+		# `wait` on a stream that ignores SIGTERM never returns, and a
+		# cancellation that never returns is the hang this bound exists for.
 		for pid in "${active_pids[@]}"; do
-			[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || :
-		done
-		for pid in "${active_pids[@]}"; do
-			[ -n "$pid" ] && wait "$pid" 2>/dev/null || :
+			[ -n "$pid" ] || continue
+			if stop_pid "$pid" "$PACKAGE_LIST_STOP_GRACE"; then
+				wait "$pid" 2>/dev/null || :
+			else
+				printf 'run-module-tests.sh: stream %s could not be shown to have stopped; not waiting on it.\n' \
+					"$pid" >&2
+			fi
 		done
 	fi
 	active_pids=()
-	stop_recorded_package_list_groups
 }
 
 # stop_recorded_package_list_groups — stop any package-list attempt that was
