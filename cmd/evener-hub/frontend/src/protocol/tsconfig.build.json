@@ -21,6 +21,7 @@
     "askAnswers.ts",
     "askShared.ts",
     "deriveAskQuestions.ts",
+    "reconcileBatches.ts",
     "attachmentMarkers.ts",
     "composerInput.ts",
     "activityData.ts",
