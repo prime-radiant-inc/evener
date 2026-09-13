@@ -54,8 +54,8 @@ const CLASS = {
 
 type OpenEditor =
   | { kind: "add" }
-  | { kind: "apiKey"; name: string }
-  | { kind: "credentialJson"; name: string }
+  | { kind: "apiKey"; name: string; expectedEndpointFingerprint?: string }
+  | { kind: "credentialJson"; name: string; expectedEndpointFingerprint?: string }
   | OAuthEditor
   | null;
 
@@ -373,8 +373,27 @@ export function CredentialsSection({
         name={selectedInstance}
         writesRefused={writesRefused}
         onClose={() => setSelectedInstance(null)}
-        onSetApiKey={() => openEditorFromSheet((name) => setOpenEditor({ kind: "apiKey", name }))}
-        onSetCredentialJson={() => openEditorFromSheet((name) => setOpenEditor({ kind: "credentialJson", name }))}
+        onSetApiKey={() =>
+          openEditorFromSheet((name) =>
+            // Capture the row's endpoint identity now, beside the name: the
+            // dialog submits this value, so a concurrent change cannot update
+            // its destination out from under the already-entered secret.
+            setOpenEditor({
+              kind: "apiKey",
+              name,
+              expectedEndpointFingerprint: findInstance(name)?.endpointFingerprint,
+            }),
+          )
+        }
+        onSetCredentialJson={() =>
+          openEditorFromSheet((name) =>
+            setOpenEditor({
+              kind: "credentialJson",
+              name,
+              expectedEndpointFingerprint: findInstance(name)?.endpointFingerprint,
+            }),
+          )
+        }
         onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
         onRenamed={(next) => {
           const previous = selectedInstance;
@@ -432,13 +451,25 @@ export function CredentialsSection({
       {openEditor?.kind === "apiKey" &&
         (() => {
           const target = findInstance(openEditor.name);
-          return target ? <ApiKeyDialog instance={target} onCancel={closeEditor} onSuccess={closeEditor} /> : null;
+          return target ? (
+            <ApiKeyDialog
+              instance={target}
+              expectedEndpointFingerprint={openEditor.expectedEndpointFingerprint}
+              onCancel={closeEditor}
+              onSuccess={closeEditor}
+            />
+          ) : null;
         })()}
       {openEditor?.kind === "credentialJson" &&
         (() => {
           const target = findInstance(openEditor.name);
           return target ? (
-            <CredentialJsonDialog instance={target} onCancel={closeEditor} onSuccess={closeEditor} />
+            <CredentialJsonDialog
+              instance={target}
+              expectedEndpointFingerprint={openEditor.expectedEndpointFingerprint}
+              onCancel={closeEditor}
+              onSuccess={closeEditor}
+            />
           ) : null;
         })()}
       {openEditor?.kind === "oauth-redirect" && (

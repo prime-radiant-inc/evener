@@ -808,12 +808,18 @@ test("review regression: discarded cross-provider create clears the old credenti
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
 });
 
+// Adoption clears the draft unless the adopted connection's destination is the
+// one the value was typed against. The same provider can host two endpoints, so
+// matching providerId alone let a key typed for the first be submitted to the
+// second without re-review (roborev round 36); a recovered row that carries the
+// same destination still keeps the value, which is what keeps the recovery from
+// demanding a retype.
 test.each([
   { base: "anthropic", label: "Anthropic", via: "reload", expected: "anthropic-private-draft" },
   { base: "anthropic", label: "Anthropic", via: "listing", expected: "anthropic-private-draft" },
   { base: "openai", label: "OpenAI", via: "listing", expected: "" },
 ])(
-  "review regression: deferred $base recovery via $via preserves only same-provider drafts",
+  "review regression: deferred $base recovery via $via preserves only same-destination drafts",
   async ({ base, label, via, expected }) => {
     const { user, client } = setup();
     await choose(user, "Anthropic");
@@ -905,6 +911,47 @@ test("a credential draft is not saved to a destination that changed since it was
       "This connection changed to a different endpoint. Check its destination and enter the key again.",
     ),
   ).toBeTruthy();
+});
+
+// The adopted instance is a different connection. The draft typed for the
+// previous destination must not survive the adoption, or a key meant for the
+// endpoint the user was shown could be saved to the newly created one.
+test("adopting a created instance clears a credential draft typed for the previous endpoint", async () => {
+  const { user, client } = setup(fingerprintList("fp-original"));
+  await choose(user, "Anthropic");
+  await user.type(screen.getByLabelText("API key"), "old-endpoint-key");
+
+  const created: InstanceEntry = {
+    name: "anthropic-team",
+    providerId: "anthropic",
+    base: "anthropic",
+    baseUrl: "https://moved.example/v1",
+    protocol: "openai-chat",
+    auth: "bearer",
+    authModes: ["apiKey"],
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+    endpointFingerprint: "fp-created",
+  };
+  client.on("evener/auth/apiKey/set", () => saved);
+  client.on("evener/instance/create", () => {
+    const listing: InstanceListResponse = { instances: [created], availableProviders: catalogue };
+    client.on("evener/instance/list", () => structuredClone(listing));
+    return structuredClone(listing);
+  });
+
+  await user.click(screen.getByText("Advanced settings"));
+  await user.click(screen.getByRole("button", { name: "Configure another instance" }));
+  await user.type(screen.getByLabelText("Name"), "anthropic-team");
+  await user.type(screen.getByLabelText(/base url/i), "https://moved.example/v1");
+  await user.click(screen.getByRole("button", { name: "Create" }));
+
+  expect(await screen.findByLabelText("API key")).toHaveProperty("value", "");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
 });
 
 test("the hub's endpoint refusal re-anchors the flow instead of saving to the moved destination", async () => {

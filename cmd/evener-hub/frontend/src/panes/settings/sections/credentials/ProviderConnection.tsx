@@ -610,6 +610,17 @@ function SelectedConnection({
     setConfigured(true);
     setConfigure(false);
     setSaved(false);
+    // A value typed for a different destination must not be submitted to the
+    // adopted connection, the reason the removal effect makes this same reset.
+    // Keying that on providerId alone is not enough: one provider can host two
+    // endpoints, and a recovered row can carry the provider's own setup entry
+    // while the flow was on another. The listing's digest is what says whether
+    // the destination is the one the value was typed against, including the
+    // parts the displayed URL cannot show; an unresolved setup entry compares
+    // unequal and clears.
+    if (created?.endpointFingerprint !== baseline?.endpointFingerprint) {
+      setDraft({ providerId: provider.id, value: "" });
+    }
     // The adopted instance is a different connection: a host-access choice
     // made for the previous one does not describe it, and inheriting it would
     // skip this instance's credential submission entirely.

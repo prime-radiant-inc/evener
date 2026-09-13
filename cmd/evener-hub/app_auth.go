@@ -789,9 +789,10 @@ func (c *hubAuthController) nameIsConnectable(name string) bool {
 	return ok
 }
 
-// endpointFingerprintFor is the endpoint fingerprint a client was shown for
-// name, asked of the same registry the write lands against. Empty when the name
-// resolves to no endpoint here, or when the hub has no key to digest with -
+// endpointFingerprintFor is the destination fingerprint a client was shown for
+// name, asked of the same registry the write lands against and over the same
+// identity a listing row serves (destinationFingerprint). Empty when the name
+// resolves to no destination here, or when the hub has no key to digest with -
 // which is also what a client that asserts nothing sends.
 func (c *hubAuthController) endpointFingerprintFor(name string) string {
 	r := c.registry()
@@ -799,7 +800,7 @@ func (c *hubAuthController) endpointFingerprintFor(name string) string {
 		return ""
 	}
 	if inst, ok := r.Instance(name); ok {
-		return endpointFingerprint(c.stateDir, inst.BaseURL)
+		return destinationFingerprint(c.stateDir, r, inst)
 	}
 	// A curated provider with no instance yet - no credential - is still listed,
 	// with a setup entry whose fingerprint is built by resolving the provider.
@@ -814,7 +815,7 @@ func (c *hubAuthController) endpointFingerprintFor(name string) string {
 	if !ok {
 		return ""
 	}
-	return endpointFingerprint(c.stateDir, inst.BaseURL)
+	return destinationFingerprint(c.stateDir, r, inst)
 }
 
 // verifyEndpointFingerprint refuses a credential write whose client asserted an

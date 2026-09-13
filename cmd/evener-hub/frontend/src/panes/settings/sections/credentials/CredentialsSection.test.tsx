@@ -1067,6 +1067,67 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   });
 });
 
+describe("credential dialogs against a moving endpoint", () => {
+  // The section captures the row's endpoint fingerprint when a credential
+  // editor opens and passes it to the dialog, which submits that captured
+  // value. A concurrent change that puts a different endpoint under the same
+  // name updates the dialog's live row but not the captured fingerprint, so
+  // the already-entered secret cannot be re-targeted to it.
+  test("a name that resolves to a different endpoint refuses the save, clears the value, and shows an error", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-original" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
+    const setKey = vi.fn();
+    fake.on("evener/auth/apiKey/set", setKey);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Replace key" }));
+    const dialog = screen.getByRole("dialog", { name: "Set API key for work" });
+    await user.type(within(dialog).getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    // A concurrent client puts a different endpoint under the same name.
+    const MOVED = { ...WORK, endpointFingerprint: "fp-changed" };
+    fake.on("evener/instance/list", () => ({ instances: [MOVED], availableProviders: [] }));
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toContain("different endpoint"));
+    expect(setKey).not.toHaveBeenCalled();
+    expect((within(dialog).getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+  });
+
+  test("an unchanged destination submits the captured fingerprint", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-original" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/set", (params) => {
+      expect(params).toEqual({ provider: "work", value: "sk-secret", expectedEndpointFingerprint: "fp-original" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Replace key" }));
+    const dialog = screen.getByRole("dialog", { name: "Set API key for work" });
+    await user.type(within(dialog).getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(fake.calls.some((c) => c.method === "evener/auth/apiKey/set")).toBe(true));
+  });
+});
+
 // The registry reports what it could not load (diagnostics) and whether the
 // user layer can be written at all (writesRefused) on every instance list -
 // spec §11.3.

@@ -824,6 +824,69 @@ describe("ApiKeyDialog", () => {
     expect(screen.getAllByText("API key saved for work").length).toBeGreaterThan(0);
   });
 
+  // The dialog is opened against one row's endpoint, and the value typed into
+  // it belongs to that endpoint. A concurrent change can put a different
+  // instance under the same name while the field holds the secret; submitting
+  // then would send it to a destination the user never reviewed. The captured
+  // fingerprint is what the write asserts, and a mismatch refuses the save
+  // before any RPC, clears the field, and says why.
+  test("a name that resolves to a different endpoint refuses the save, clears the value, and shows an error", async () => {
+    const fake = connectFakeClient();
+    const setKey = vi.fn();
+    fake.on("evener/auth/apiKey/set", setKey);
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ApiKeyDialog
+        instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-original" })}
+        expectedEndpointFingerprint="fp-original"
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    // The listing for this name now carries a different endpoint.
+    rerender(
+      <ApiKeyDialog
+        instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-changed" })}
+        expectedEndpointFingerprint="fp-original"
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    expect(setKey).not.toHaveBeenCalled();
+    expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+  });
+
+  // The positive control: while the name still resolves to the endpoint the
+  // dialog opened against, the captured fingerprint is what the write asserts,
+  // not a live value read at submit time.
+  test("an unchanged destination submits the captured fingerprint", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/apiKey/set", (params) => {
+      expect(params).toEqual({ provider: "work", value: "sk-secret", expectedEndpointFingerprint: "fp-original" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <ApiKeyDialog
+          instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-original" })}
+          expectedEndpointFingerprint="fp-original"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+  });
+
   test("a saved key whose listing read is lost is still reported as saved", async () => {
     const fake = connectFakeClient();
     let save!: (value: AuthStatusResponse) => void;

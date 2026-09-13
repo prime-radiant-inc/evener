@@ -161,7 +161,7 @@ func (c *hubInstancesController) entryFor(inst registry.Instance, authored *regi
 		Surface:             inst.Surface,
 		Auth:                inst.Auth,
 		BaseURL:             sanitizeEndpointURL(inst.BaseURL),
-		EndpointFingerprint: endpointFingerprint(c.authStateDir(), inst.BaseURL),
+		EndpointFingerprint: destinationFingerprint(c.authStateDir(), c.reg.Get(), inst),
 		Vars:                inst.Vars,
 		Implicit:            inst.Implicit,
 		Hidden:              inst.Hidden,
@@ -246,13 +246,13 @@ func sanitizeEndpointURL(raw string) string {
 	return u.String()
 }
 
-// endpointFingerprint identifies the complete endpoint an instance resolves,
-// including the parts sanitizeEndpointURL leaves out of the displayed copy:
-// query parameters, userinfo and fragment. A client cannot compare those
-// itself - they must not cross the appwire boundary, since a query string can
-// carry a token - so the digest is what lets it notice that the destination
-// changed under an open flow. It is over the trimmed raw URL, so two endpoints
-// that differ only in a query parameter fingerprint differently.
+// endpointFingerprint digests one destination identity, including the parts
+// sanitizeEndpointURL leaves out of the displayed copy: query parameters,
+// userinfo and fragment. A client cannot compare those itself - they must not
+// cross the appwire boundary, since a query string can carry a token - so the
+// digest is what lets it notice that the destination changed under an open
+// form. It is over the identity's exact bytes, so two that differ only in a
+// query parameter fingerprint differently.
 //
 // The digest is keyed with the hub's own secret, not a bare hash: the stripped
 // parts can be low-entropy (a password in userinfo, a short query token), and
@@ -260,9 +260,8 @@ func sanitizeEndpointURL(raw string) string {
 // client holding the listing could recover the secret by brute force, which is
 // exactly what the sanitized copy exists to prevent. A state root the hub
 // cannot key under omits the fingerprint rather than serving that digest.
-func endpointFingerprint(stateDir, raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+func endpointFingerprint(stateDir, identity string) string {
+	if strings.TrimSpace(identity) == "" {
 		return ""
 	}
 	key := endpointFingerprintKey(stateDir)
@@ -270,8 +269,44 @@ func endpointFingerprint(stateDir, raw string) string {
 		return ""
 	}
 	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte(raw))
+	_, _ = mac.Write([]byte(identity))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// destinationIdentity is what destinationFingerprint digests: the base URL an
+// instance resolves, the protocol that selects its request templates, and every
+// request path those templates contribute. A credential-bearing request is
+// built from exactly these, so a change to any of them moves where the secret
+// is sent - and a change to the protocol or a path template can leave the
+// sanitized URL the listing displays byte-identical, which is why the digest
+// cannot be of that URL alone. Nothing secret-bearing is here: not the
+// credential, not either header map, not vars.
+func destinationIdentity(resolved registry.Resolved) string {
+	t := resolved.Transport
+	return strings.Join([]string{
+		strings.TrimSpace(t.BaseURL),
+		resolved.Protocol,
+		strings.TrimSpace(t.Endpoint),
+		strings.TrimSpace(t.StreamEndpoint),
+		strings.TrimSpace(t.ModelsEndpoint),
+		strings.TrimSpace(t.CountTokensEndpoint),
+	}, "\x00")
+}
+
+// destinationFingerprint is the value a listing row serves and a credential
+// write is checked against: the digest of where name resolves now. Empty when
+// it resolves no destination here - a hidden provider keeps its destination out
+// of the listing, and an unresolvable one has nothing to describe - or when the
+// hub has no key to digest with.
+func destinationFingerprint(stateDir string, r *registry.Registry, inst registry.Instance) string {
+	if inst.Hidden || r == nil {
+		return ""
+	}
+	resolved, err := r.ResolveInstance(inst.Name)
+	if err != nil || strings.TrimSpace(resolved.Transport.BaseURL) == "" {
+		return ""
+	}
+	return endpointFingerprint(stateDir, destinationIdentity(resolved))
 }
 
 // endpointFingerprintKeyFile is the key's name under the auth state root, the

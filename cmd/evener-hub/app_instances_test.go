@@ -1577,6 +1577,64 @@ func TestInstances_ListExposesAnEndpointFingerprint(t *testing.T) {
 	}
 }
 
+// The digest covers the whole destination a credential-bearing request is built
+// from, not only the URL the listing displays: a protocol switch or a change to
+// a request path template sends the secret somewhere else while every visible
+// field of the row stays byte-identical, so a form comparing only what it can
+// see would carry a key to a destination nobody reviewed.
+func TestInstances_EndpointFingerprintCoversTheResolvedTransport(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://gateway.test/v1",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first := entry(t, f.ctl.List(), "work")
+	if first.EndpointFingerprint == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+
+	// The protocol selects which request templates apply. Both are supported for
+	// this provider, and the displayed URL is the same either way.
+	next := "openai-responses"
+	if first.Protocol == next {
+		next = "openai-chat"
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: next}); err != nil {
+		t.Fatalf("Edit(protocol=%s): %v", next, err)
+	}
+	second := entry(t, f.ctl.List(), "work")
+	if second.BaseURL != first.BaseURL {
+		t.Fatalf("displayed BaseURL = %q, want the sanitized copy unchanged", second.BaseURL)
+	}
+	if second.EndpointFingerprint == first.EndpointFingerprint {
+		t.Fatal("a protocol change left the fingerprint unchanged, so a client cannot see where the request now goes")
+	}
+
+	// And a request path template authored by hand, which the edit form cannot
+	// reach: the same visible row, a different path.
+	if err := os.WriteFile(f.tomlPath, []byte(`[providers.work]
+base = "openai"
+base_url = "https://gateway.test/v1"
+protocol = "`+next+`"
+endpoint = "/somewhere-else"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", f.tomlPath, err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	third := entry(t, f.ctl.List(), "work")
+	if third.BaseURL != first.BaseURL {
+		t.Fatalf("displayed BaseURL = %q, want the sanitized copy unchanged", third.BaseURL)
+	}
+	if third.EndpointFingerprint == second.EndpointFingerprint {
+		t.Fatal("a request-path change left the fingerprint unchanged, so a client cannot see where the request now goes")
+	}
+}
+
 // The fingerprint stands in for parts of the endpoint that can be low-entropy
 // (a password in userinfo, a short query token), so it is keyed with the hub's
 // own secret: an unkeyed digest of a guessable secret is a guessable function

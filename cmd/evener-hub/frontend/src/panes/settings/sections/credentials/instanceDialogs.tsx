@@ -35,6 +35,17 @@ const CLASS = {
   textarea: requireClass(styles.textarea, "instanceDialogs.module.css", "textarea"),
 };
 
+// The endpoint a credential dialog was opened against is the one the typed
+// value belongs to. A concurrent change can put a different instance under the
+// same name while the field holds the secret - re-resolving the name at submit
+// time and asserting whatever it now points at would send that value to an
+// endpoint the user never reviewed. The dialog compares the row's current
+// fingerprint against the one captured when it opened, refuses the write, and
+// clears the field; the same refusal the guided flow and the instance sheet
+// make when their destination moves.
+const ENDPOINT_CHANGED_ERROR =
+  "This connection changed to a different endpoint. Check its destination and enter the value again.";
+
 // nonEmptyVars trims and drops blank entries before they reach the wire -
 // InstanceCreateParams.Vars only carries variables the user actually set
 // (spec §11.3); a blank templated field means "leave it to the
@@ -327,12 +338,18 @@ export function AddInstanceDialog({
 
 export interface ApiKeyDialogProps {
   instance: InstanceEntry;
+  /** The endpoint fingerprint the dialog was opened against, captured from the
+   * row the user acted on. A submit asserts this value, so a concurrent
+   * endpoint change cannot re-target the already-entered secret. Undefined when
+   * the row showed no endpoint, which asserts nothing. */
+  expectedEndpointFingerprint?: string;
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 interface CredentialValueDialogProps {
   instance: InstanceEntry;
+  expectedEndpointFingerprint?: string;
   onCancel: () => void;
   onSuccess: () => void;
   title: string;
@@ -355,6 +372,7 @@ interface CredentialValueDialogProps {
 // store method `submit` calls - never a second copy of this flow.
 function CredentialValueDialog({
   instance,
+  expectedEndpointFingerprint,
   onCancel,
   onSuccess,
   title,
@@ -376,6 +394,15 @@ function CredentialValueDialog({
     const trimmed = value.trim();
     if (!trimmed) {
       onCancel(); // empty submit silently cancels, no RPC
+      return;
+    }
+    // The typed value belongs to the endpoint this dialog opened against. If
+    // the name now resolves to a different one, refuse before any RPC, drop
+    // the value, and say why: a save here would assert an endpoint the user
+    // never reviewed and could write the secret somewhere they did not choose.
+    if (instance.endpointFingerprint !== expectedEndpointFingerprint) {
+      setValue("");
+      setError(ENDPOINT_CHANGED_ERROR);
       return;
     }
     setError(null);
@@ -444,10 +471,11 @@ function CredentialValueDialog({
 /** Set/Replace API key (parity-m7-settings.md §7d) - never echoes any
  * stored value; the field is write-only. Unaffected by the registry
  * cut-over: it only ever reads instance.name. */
-export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProps) {
+export function ApiKeyDialog({ instance, expectedEndpointFingerprint, onCancel, onSuccess }: ApiKeyDialogProps) {
   return (
     <CredentialValueDialog
       instance={instance}
+      expectedEndpointFingerprint={expectedEndpointFingerprint}
       onCancel={onCancel}
       onSuccess={onSuccess}
       title={`Set API key for ${instance.name}`}
@@ -456,7 +484,7 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
       placeholder="paste key"
       successText={`API key saved for ${instance.name}`}
       input="password"
-      submit={(name, value) => credentialsStore.getState().setApiKey(name, value, instance.endpointFingerprint)}
+      submit={(name, value) => credentialsStore.getState().setApiKey(name, value, expectedEndpointFingerprint)}
     />
   );
 }
@@ -467,10 +495,16 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
  * evener/auth/credentialJson/set. The hub validates the paste before it is
  * stored, so a server error here is the parse failure, shown inline.
  */
-export function CredentialJsonDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProps) {
+export function CredentialJsonDialog({
+  instance,
+  expectedEndpointFingerprint,
+  onCancel,
+  onSuccess,
+}: ApiKeyDialogProps) {
   return (
     <CredentialValueDialog
       instance={instance}
+      expectedEndpointFingerprint={expectedEndpointFingerprint}
       onCancel={onCancel}
       onSuccess={onSuccess}
       title={`Set Google credential JSON for ${instance.name}`}
@@ -479,7 +513,7 @@ export function CredentialJsonDialog({ instance, onCancel, onSuccess }: ApiKeyDi
       placeholder="paste a service-account key or application_default_credentials.json"
       successText={`Credential JSON saved for ${instance.name}`}
       input="textarea"
-      submit={(name, value) => credentialsStore.getState().setCredentialJson(name, value, instance.endpointFingerprint)}
+      submit={(name, value) => credentialsStore.getState().setCredentialJson(name, value, expectedEndpointFingerprint)}
     />
   );
 }
