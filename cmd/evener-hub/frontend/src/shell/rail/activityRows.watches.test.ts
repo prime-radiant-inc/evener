@@ -2,11 +2,18 @@
 // These pin the exact facts/meta shapes the brief specifies, built only from
 // real wire fields (never a fabricated instant, name, or count).
 import { describe, expect, test } from "vitest";
-import { watchCadenceLabel, watchDurationLabel } from "../../cmd/evener-hub/frontend/src/shell/rail/RailRow";
-import { armedWatchCount } from "../../cmd/evener-hub/frontend/src/shell/rail/railNodes";
-import { buildWatchRows, watchFacts, watchIsScheduled, watchMeta, watchName, watchRowID } from "./activityRows";
-import { formatClockTime } from "./displayFormat";
-import type { NavigationWatchSummary } from "./types.gen";
+import {
+  buildWatchRows,
+  watchFacts,
+  watchIsScheduled,
+  watchMeta,
+  watchName,
+  watchRowID,
+} from "../../protocol/activityRows";
+import { formatClockTime } from "../../protocol/displayFormat";
+import type { NavigationWatchSummary } from "../../protocol/types.gen";
+import { watchCadenceLabel, watchDurationLabel } from "./RailRow";
+import { armedWatchCount } from "./railNodes";
 
 // Pinned clock: every duration assertion measures against this instant.
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");

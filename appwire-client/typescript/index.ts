@@ -186,3 +186,11 @@ export {
   strField,
   watchDisplayState,
 } from "./watchRows";
+export {
+  watchArmedLabel,
+  watchCadenceLabel,
+  watchDurationLabel,
+  watchGloss,
+  watchNextFireLabel,
+  watchTitle,
+} from "./watchText";
