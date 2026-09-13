@@ -44,12 +44,16 @@ const APP_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'][^"']*cmd\/evener-
 
 // A package module that reads from disk has to resolve the path against its own
 // location, because the package is consumed from wherever the consumer happens
-// to run and the process's working directory is not its own. The rule: a file
-// that imports node:fs and builds a `..` or `testdata` path must say
-// `import.meta.url` somewhere. testing/hubWireFixtures.ts read
-// `join("..", "testdata", "authwire", "responses.json")` against the
-// frontend's CWD; it lives in the app now, which is the other way to satisfy
-// this.
+// to run and the process's working directory is not its own. The rule is scoped
+// to lines that actually build a filesystem path - an ordinary `../sibling`
+// import is not one - and a file that says `import.meta.url` has already
+// answered the question. testing/hubWireFixtures.ts read
+// `join("..", "testdata", "authwire", "responses.json")` against the frontend's
+// CWD; it lives in the app now, which is the other way to satisfy this.
+const FS_PATH_CALL = /\b(?:join|resolve|readFileSync|readFile|readdirSync|readdir|existsSync|createReadStream|statSync|stat|openSync|open)\s*\(/;
+const MODULE_SPECIFIER = /^\s*(?:import\b|export\b[^=]*\bfrom\b|.*\brequire\s*\()/;
+const RELATIVE_PATH_LITERAL = /["'](?:\.\.["'/]|[^"']*\btestdata\b)/;
+
 export function describeCwdRelativeReads(files, read, dir) {
   const offenders = [];
   for (const file of files) {
@@ -57,8 +61,10 @@ export function describeCwdRelativeReads(files, read, dir) {
     if (!/from\s+["']node:fs(?:\/promises)?["']/.test(source)) continue;
     if (source.includes("import.meta.url")) continue;
     source.split("\n").forEach((line, index) => {
-      if (/["'](?:\.\.[/"']|testdata)/.test(line))
-        offenders.push(`${path.relative(dir, file)}:${index + 1}: ${line.trim()}`);
+      if (MODULE_SPECIFIER.test(line)) return;
+      if (!FS_PATH_CALL.test(line)) return;
+      if (!RELATIVE_PATH_LITERAL.test(line)) return;
+      offenders.push(`${path.relative(dir, file)}:${index + 1}: ${line.trim()}`);
     });
   }
   if (offenders.length === 0) return "";

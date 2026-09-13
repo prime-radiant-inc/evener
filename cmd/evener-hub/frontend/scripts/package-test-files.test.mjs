@@ -211,6 +211,23 @@ test("describeCwdRelativeReads accepts a read resolved against the module's own 
   );
 });
 
+test("describeCwdRelativeReads ignores ordinary relative imports beside an absolute read", () => {
+  const file = path.join(dir, "a.ts");
+  const source = [
+    'import { readFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    'import type { ThreadModel } from "../model";',
+    'export * from "../testdata/shim";',
+    'const legacy = require("../fixtures/old");',
+    'const text = readFileSync("/absolute/path/x.json", "utf8");',
+    "",
+  ].join("\n");
+  assert.equal(
+    describeCwdRelativeReads([file], () => source, dir),
+    "",
+  );
+});
+
 test("describeCwdRelativeReads ignores a module that never touches the filesystem", () => {
   const file = path.join(dir, "a.ts");
   const source = 'const rel = "../testdata/x.json";\n';
@@ -222,9 +239,19 @@ test("describeCwdRelativeReads ignores a module that never touches the filesyste
 
 test("describeCwdRelativeReads covers node:fs/promises too", () => {
   const file = path.join(dir, "a.ts");
-  const source = 'import { readFile } from "node:fs/promises";\nconst p = "../testdata/x.json";\n';
+  const source =
+    'import { readFile } from "node:fs/promises";\nconst text = await readFile("../testdata/x.json", "utf8");\n';
   assert.match(
     describeCwdRelativeReads([file], () => source, dir),
     /a\.ts:2/,
+  );
+});
+
+test("describeCwdRelativeReads ignores a path literal that no filesystem call reads", () => {
+  const file = path.join(dir, "a.ts");
+  const source = 'import { readFileSync } from "node:fs";\nconst label = "../testdata/x.json";\n';
+  assert.equal(
+    describeCwdRelativeReads([file], () => source, dir),
+    "",
   );
 });
