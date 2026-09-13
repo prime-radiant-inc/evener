@@ -581,7 +581,11 @@ stop_package_list_attempt() {
 #
 # The list is the build flags `go help build` documents on the pinned toolchain
 # that can change which packages exist: -tags, -mod, -modfile, -overlay, -pgo,
-# -trimpath. `-workfile` is not among them — go1.27.0 has no such flag, and
+# -trimpath, and the three sanitiser flags. -race, -msan and -asan belong there
+# because each sets a build tag of its own — `race`, `msan`, `asan` — so a file
+# behind `//go:build race` exists for `go test -race` and not for a `go list`
+# without it, and the gate would hand `go test` a list missing those packages.
+# `make test-race` passes -race on every run, so this is not hypothetical. `-workfile` is not among them — go1.27.0 has no such flag, and
 # forwarding it would have made every enumeration fail on a caller who passed it.
 #
 # `-C` is not on the list and is refused at startup instead: it changes directory
@@ -604,7 +608,7 @@ package_list_build_flags() {
 			out="$out $flag"
 			expect_value=1
 			;;
-		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -trimpath)
+		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -trimpath | -race | -msan | -asan)
 			out="$out $flag"
 			;;
 		esac
