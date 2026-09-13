@@ -19,6 +19,7 @@
     "transport.ts",
     "types.gen.ts",
     "askAnswers.ts",
+    "attachmentMarkers.ts",
     "activityData.ts",
     "activityRows.ts",
     "activityList.ts",
