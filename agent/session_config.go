@@ -312,6 +312,11 @@ type testConfig struct {
 	// delegateSendBeforePositiveWaitAdmission observes the boundary immediately
 	// before a positive-wait send reserves its start. Nil preserves production.
 	delegateSendBeforePositiveWaitAdmission func()
+	// delegateSendStartCommitted observes the send start hand-off: the send
+	// generation is committed and its run goroutine does not exist yet, while
+	// the drive claim is held. Tests use it to drive the child at exactly that
+	// point and assert the committed start refuses a second turn.
+	delegateSendStartCommitted func(*subagent)
 	// delegateDeliveryCommitsTaken observes the tool-result boundary after inline
 	// delivery commits leave the pending map and before any transcript write.
 	delegateDeliveryCommitsTaken func()
