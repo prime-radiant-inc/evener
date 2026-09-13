@@ -12,7 +12,7 @@ import {
   tailFold,
   tailSlice,
   trailingBracketFooter,
-} from "./helpers";
+} from "./toolCallText";
 
 // --- clip ---------------------------------------------------------------
 

@@ -5,6 +5,7 @@
 import { useEffect } from "react";
 import { formatElapsed, plainQuoteLine } from "../../../../protocol/displayFormat";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
+import { parseJSONObject, str } from "../../../../protocol/toolCallText";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
@@ -16,7 +17,6 @@ import { useSessionNow } from "../../liveness";
 import { statedIntentOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { parseJSONObject, str } from "./helpers";
 import {
   effectiveRowKind,
   resolveRowKey,

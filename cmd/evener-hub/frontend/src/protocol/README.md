@@ -12,7 +12,8 @@ thread view model and its notification reducer, the activity tree parser,
 merge and disclosure rules, the job log tail parser, the send/queue
 availability table, the send/steer/queue/drain routing decisions a composer
 makes off it, the stable delegate status rule, the display formatters both
-apps render counts, durations and clock times with, and the doc-pane URL
+apps render counts, durations and clock times with, the text and argument
+helpers a tool call's rendering is built from, and the doc-pane URL
 builders, which hang their hrefs off a base origin the host supplies (empty
 for a same-origin web page). The doc-pane data layer is published at the
 `./docContent` subpath as well, where `readDocFile` takes the host's

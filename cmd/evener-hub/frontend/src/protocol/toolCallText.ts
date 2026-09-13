@@ -1,11 +1,12 @@
-// Shared formatting/parsing helpers for the per-tool descriptors in this
-// directory. Ground-truth note: the model carries the tool call's own output
-// TEXT (item.output), input arguments (item.argumentsJSON), error/denial
-// message (item.error), typed shell exit code (item.exitCode), and optional
-// direct producer state (item.raw), all mapped by protocol/reducer.ts's
-// wireItemToModel. These helpers work from text and JSON arguments because
-// their current callers do not share a stable structured state shape; a body
-// that has a useful producer state parses item.raw at its own domain boundary.
+// Text and argument helpers for rendering a tool call: truncation, duration and
+// byte counts, and the defensive JSON readers a per-tool descriptor uses.
+// Ground-truth note: the model carries the tool call's own output TEXT
+// (item.output), input arguments (item.argumentsJSON), error/denial message
+// (item.error), typed shell exit code (item.exitCode), and optional direct
+// producer state (item.raw), all mapped by reducer.ts's wireItemToModel. These
+// helpers work from text and JSON arguments because their current callers do
+// not share a stable structured state shape; a body that has a useful producer
+// state parses item.raw at its own domain boundary.
 
 // clip is a head-truncation: text at or under `max` passes through
 // unchanged; over budget, keeps the first `max` chars and appends a single
