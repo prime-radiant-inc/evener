@@ -195,8 +195,13 @@ while :; do
 			"$attempt_record" >&2
 		exit 1
 	fi
-	perl -e "$PGROUP_SPAWN_PERL" \
-		-- "$attempt_record" "$attempt_marker" \
+	if ! pgroup_write_wrapper "$attempt_record"; then
+		printf 'install-golangci-lint.sh: could not write the spawn wrapper beside %s; not spawning an install that nothing could stop.\n' \
+			"$attempt_record" >&2
+		exit 1
+	fi
+	perl "$attempt_record.wrapper.pl" \
+		"$attempt_record" "$attempt_marker" \
 		bash -c 'set -o pipefail; curl -sSfL --connect-timeout 10 --max-time 60 "$1" | sh -s -- -b "$2" "$3"' \
 		install-golangci-lint-attempt "$installer_url" "$bindir" "v$version" 2>"$attempt_log" &
 	attempt_pid=$!

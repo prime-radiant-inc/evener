@@ -719,8 +719,13 @@ run_bounded_package_list() {
 		fi
 		# Word-split deliberately, as everywhere else the flags are passed on.
 		# shellcheck disable=SC2086
-		perl -e "$PGROUP_SPAWN_PERL" \
-			-- "$(package_list_pgid_path "$module")" "$attempt_marker" \
+		if ! pgroup_write_wrapper "$(package_list_pgid_path "$module")"; then
+			printf 'run-module-tests.sh: could not write the spawn wrapper beside %s; not spawning a package list that nothing could stop.\n' \
+				"$(package_list_pgid_path "$module")" >&2
+			return 1
+		fi
+		perl "$(package_list_pgid_path "$module").wrapper.pl" \
+			"$(package_list_pgid_path "$module")" "$attempt_marker" \
 			go list ${build_flags[@]+"${build_flags[@]}"} ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
 		# Said from this side too, so no instant passes with an attempt running

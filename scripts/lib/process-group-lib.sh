@@ -39,7 +39,11 @@ pgroup_marker() {
 # to be stoppable. Its first argument is the record path, the rest is the command
 # to run:
 #
-#   perl -e "$PGROUP_SPAWN_PERL" -- "$record" "$marker" cmd arg...  &
+#   pgroup_write_wrapper "$record" || fail
+#   perl "$record.wrapper.pl" "$record" "$marker" cmd arg...  &
+#
+# A file rather than `perl -e`, so the marker is near the front of the command
+# line instead of behind a kilobyte of program text that `ps` may cut off.
 #
 # The wrapper does not exec the job: it forks it, keeps its own argv — which
 # carries the marker — and waits, so the group has a member identifiable as this
@@ -92,6 +96,15 @@ PGROUP_SPAWN_PERL='
 	exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
 '
 
+# pgroup_write_wrapper RECORD — put the spawn program in a file beside RECORD, so
+# a job's command line starts with something short and the marker is near its
+# front. Returns non-zero when it cannot be written, which must fail the spawn.
+pgroup_write_wrapper() {
+	printf '%s' "$PGROUP_SPAWN_PERL" >"$1.wrapper.tmp" || return 1
+	mv "$1.wrapper.tmp" "$1.wrapper.pl" || return 1
+	return 0
+}
+
 # pgroup_record_spawned PATH PID MARKER — the parent's own note of what it has
 # just forked, written the moment `$!` is known.
 #
@@ -117,7 +130,7 @@ pgroup_record_spawned() {
 
 # pgroup_record_clear PATH — drop a record and everything written beside it.
 pgroup_record_clear() {
-	rm -f "$1" "$1.spawned" "$1.spawned.tmp" "$1.survivor.tmp" "$1.tmp"
+	rm -f "$1" "$1.spawned" "$1.spawned.tmp" "$1.survivor.tmp" "$1.tmp" "$1.wrapper.pl" "$1.wrapper.tmp"
 }
 
 # pgroup_record_value PATH GRACE — what the spawn recorded at PATH, waiting up to
@@ -321,8 +334,12 @@ pgroup_file_mtime() {
 # 1 when it is not — gone, a zombie, or a number somebody else now holds — and 2
 # when the listing would not run.
 pid_owned_by() {
-	local pid="$1" marker="$2" command state word
-	command="$(ps -o command= -p "$pid" 2>/dev/null)"
+	local pid="$1" marker="$2" command state answer
+	# -ww, because `ps` truncates to the terminal width by default and the
+	# marker is not the first thing on the line: at COLUMNS=40 the command came
+	# back cut off, no marker was found, and a live job was reported as somebody
+	# else's and dropped.
+	command="$(ps -ww -o command= -p "$pid" 2>/dev/null)"
 	if [ -z "$command" ]; then
 		kill -0 "$pid" 2>/dev/null || return 1
 		return 2
@@ -331,11 +348,20 @@ pid_owned_by() {
 	case "$state" in
 	[Zz]*) return 1 ;;
 	esac
-	for word in $command; do
-		[ "$word" = "$marker" ] && return 0
-		[ "${word##*/}" = "$marker" ] && return 0
-	done
-	return 1
+	# Matched as a whole word against the whole line, with globbing off: the
+	# words of a command line are a caller's data, and `for word in $command`
+	# expanded any `*` in them against the working directory.
+	set -f
+	answer=1
+	case " $command " in
+	*" $marker "*) answer=0 ;;
+	*"/$marker "*) answer=0 ;;
+	esac
+	set +f
+	[ "$answer" -eq 0 ] && return 0
+	# Alive, and not identifiable: that is unknown, not somebody else's. A live
+	# process this library cannot name is exactly what must not be dropped.
+	return 2
 }
 
 # pid_pgroup PID — print the process group PID is in, or nothing when that
