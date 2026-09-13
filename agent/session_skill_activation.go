@@ -492,7 +492,12 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 		if adm.duplicate {
 			continue
 		}
-		s.recordTurn(adm.carrier, adm.carrier)
+		// The batch's obligations are durable above, so a failed carrier write
+		// returns instead of advancing: the next dispatch seam re-delivers the
+		// complete body from its recorded source.
+		if err := s.recordSkillCarrierDurably(adm.carrier, adm.carrier); err != nil {
+			return err
+		}
 	}
 	return nil
 }

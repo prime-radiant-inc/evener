@@ -241,9 +241,11 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 						Status:       "failed",
 						ErrorCode:    skillActivationErrorCode(err),
 					}
-					s.recordSkillReloadNotification(
+					if err := s.recordSkillReloadNotification(
 						systemNotificationf("Skill %q could not be reloaded after compaction: %v", name, err),
-						outcome, nil)
+						outcome, nil); err != nil {
+						return nil, nil, err
+					}
 					outcomes = append(outcomes, outcome)
 					continue
 				}
@@ -405,9 +407,11 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 			// stands until final admission.
 			if outcome != nil {
 				outcome.Status = "already_present"
-				s.recordSkillReloadNotification(
+				if err := s.recordSkillReloadNotification(
 					systemNotificationf("Skill %q's complete current instructions are already present in this conversation; its reload reuses them.", identity.Name),
-					*outcome, nil)
+					*outcome, nil); err != nil {
+					return err
+				}
 			}
 			obligations = append(obligations, obligation)
 			continue
@@ -421,9 +425,11 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 			if outcome != nil {
 				outcome.Status = "failed"
 				outcome.ErrorCode = "context_budget"
-				s.recordSkillReloadNotification(
+				if err := s.recordSkillReloadNotification(
 					systemNotificationf("Skill %q's complete instructions do not fit the remaining context window and were not reloaded after compaction.", identity.Name),
-					*outcome, nil)
+					*outcome, nil); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -472,7 +478,12 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 		}
 	}
 	for _, carrier := range carriers {
-		s.recordTurn(carrier, carrier)
+		// A failed write returns: the obligations are durable, so the body is
+		// recoverable from its recorded source at the next dispatch seam, and
+		// the caller must not treat the reload as delivered.
+		if err := s.recordSkillCarrierDurably(carrier, carrier); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -532,15 +543,17 @@ func (s *Session) skillContentInLiveHistory(identity schema.SkillContentIdentity
 //
 // A non-nil obligation makes this turn a carrier, so the caller must have
 // persisted that obligation before calling — every current call site passes
-// nil and relies on the body-carrying admission below instead.
-func (s *Session) recordSkillReloadNotification(message string, outcome schema.SkillActivationOutcome, obligation *schema.SkillDeliveryObligation) {
+// nil and relies on the body-carrying admission below instead. The turn goes
+// through the durable transcript door and its write failure is returned, so a
+// caller never consumes a receipt whose explanation the model never received.
+func (s *Session) recordSkillReloadNotification(message string, outcome schema.SkillActivationOutcome, obligation *schema.SkillDeliveryObligation) error {
 	turn := schema.NewTurn(schema.TurnSystem, llm.User(message))
 	state := &schema.SkillTurnState{Outcomes: []schema.SkillActivationOutcome{outcome}}
 	if obligation != nil {
 		state.Obligations = []schema.SkillDeliveryObligation{*obligation}
 	}
 	turn.SkillState = state
-	s.recordTurn(turn, turn)
+	return s.recordSkillCarrierDurably(turn, turn)
 }
 
 // renderSkillReloadReminder renders the complete typed inventory as a

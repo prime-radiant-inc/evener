@@ -1326,3 +1326,60 @@ func TestSkillDelivery_CommitSaveFailureKeepsObligationsPending(t *testing.T) {
 		t.Fatalf("revision after the rollback = %d, want the pre-commit %d", after, revision)
 	}
 }
+
+// TestSkillToolRound_CarrierWriteFailureIsVisible pins the durability door for
+// the tool round's skill carrier. The use_skill result and its carrier are the
+// model's copy of the skill's complete instructions, so a failed transcript
+// write must fail the round instead of appending the turn to live history and
+// reporting success.
+func TestSkillToolRound_CarrierWriteFailureIsVisible(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+
+	const callID = "call-tool-round-write-fail"
+	obligation := schema.SkillDeliveryObligation{
+		InvocationID: "inv-tool-round-write-fail",
+		ToolCallID:   callID,
+		Identity: schema.SkillContentIdentity{
+			Name:         "opaque",
+			DeclaredName: "opaque",
+			Source:       filepath.Join(t.TempDir(), "opaque", "SKILL.md"),
+			FileDigest:   "opaque-file-digest",
+		},
+		Route: "model_tool",
+	}
+	toolState, err := json.Marshal(skillToolState{
+		Outcome: schema.SkillActivationOutcome{
+			SessionID:    s.id,
+			InvocationID: obligation.InvocationID,
+			ToolCallID:   callID,
+			Identity:     obligation.Identity,
+			Status:       "pending",
+		},
+		Obligation: &obligation,
+	})
+	if err != nil {
+		t.Fatalf("marshal use_skill tool state: %v", err)
+	}
+	calls := []llm.ToolCallData{{ID: callID, Name: "use_skill", Type: "function"}}
+	results := []tool.ExecResult{{CallID: callID, ToolName: "use_skill", Output: "use_skill opaque", ToolState: toolState}}
+	parts := []llm.ContentPart{{
+		Kind:       llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "use_skill", Content: "use_skill opaque"},
+	}}
+	failSessionTranscript(t, s)
+
+	if err := s.appendToolResults(context.Background(), calls, results, parts); err == nil {
+		t.Fatal("a failed carrier write must surface an error, not report a recorded round")
+	}
+	for _, state := range skillTurnStates(s) {
+		if len(state.Obligations) != 0 {
+			t.Fatalf("a failed carrier write published a carrier turn carrying %+v", state.Obligations)
+		}
+	}
+	// The obligation was persisted first, so the body is still recoverable from
+	// its recorded source at the next dispatch seam.
+	if got := lifecycleObligations(s); len(got) != 1 {
+		t.Fatalf("obligations after the failed carrier write = %+v, want the durable pending obligation", got)
+	}
+}

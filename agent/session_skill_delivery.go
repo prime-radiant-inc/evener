@@ -231,17 +231,40 @@ func (s *Session) persistSkillToolObligations(state *schema.SkillTurnState) erro
 	return nil
 }
 
+// recordSkillCarrierDurably records one skill carrier turn — the turn whose
+// SkillState carries the complete instructions a delivery obligation protects,
+// or the typed explanation the model is owed — through the durable transcript
+// door. The write is fsynced BEFORE the turn joins the live history, and a
+// failed write leaves the history untouched and returns the error, so callers
+// keep their obligations and receipts pending instead of advancing as if the
+// body had been recorded. recordTurn's non-durable, error-swallowing append is
+// the wrong door here: this turn may be the only copy of a skill's complete
+// instructions.
+func (s *Session) recordSkillCarrierDurably(live, persisted schema.Turn) error {
+	live.SkillState = live.SkillState.Clone()
+	persisted.SkillState = persisted.SkillState.Clone()
+	err := s.appendTurnAfterTranscriptWrite(
+		persisted,
+		func() error { return s.writeTranscriptDurableLocked(persisted) },
+		func() { s.history = append(s.history, live) },
+	)
+	if err != nil {
+		s.emit(events.EventWarning, warningDataFromError("recording a skill carrier turn failed", err))
+	}
+	return err
+}
+
 // recordSkillDeliveryNotification appends one typed activation notification to
 // the real history: the model-facing carrier content plus the causal outcome
 // and obligation, linked to the original invocation. Continuation
 // re-expansion sees it because it is an ordinary recorded turn.
-func (s *Session) recordSkillDeliveryNotification(message llm.Message, outcome schema.SkillActivationOutcome, obligation schema.SkillDeliveryObligation) {
+func (s *Session) recordSkillDeliveryNotification(message llm.Message, outcome schema.SkillActivationOutcome, obligation schema.SkillDeliveryObligation) error {
 	turn := schema.NewTurn(schema.TurnSystem, message)
 	turn.SkillState = &schema.SkillTurnState{
 		Outcomes:    []schema.SkillActivationOutcome{outcome},
 		Obligations: []schema.SkillDeliveryObligation{obligation},
 	}
-	s.recordTurn(turn, turn)
+	return s.recordSkillCarrierDurably(turn, turn)
 }
 
 // finalizeSkillDeliveryFailure drops the obligation for an invocation whose
@@ -321,9 +344,11 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 				Status:           "failed",
 				ErrorCode:        skillActivationErrorCode(err),
 			}
-			s.recordSkillDeliveryNotification(
+			if err := s.recordSkillDeliveryNotification(
 				llm.User(systemNotificationf("Skill %q is no longer available from %s: %v", obligation.Identity.Name, obligation.Identity.Source, err)),
-				outcome, obligation)
+				outcome, obligation); err != nil {
+				return req, commit, err
+			}
 			failed = append(failed, obligation.InvocationID)
 			commit.appendedNotifications = true
 			continue
@@ -351,7 +376,12 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		}
 		corrected := obligation
 		corrected.Identity = newIdentity
-		s.recordSkillDeliveryNotification(llm.User(content), outcome, corrected)
+		if err := s.recordSkillDeliveryNotification(llm.User(content), outcome, corrected); err != nil {
+			// The body was not durably recorded, so the obligation must keep the
+			// identity the dispatch still has to satisfy; the next attempt
+			// re-prepares and re-records it.
+			return req, commit, err
+		}
 		// Carry the corrected identity forward so the final admission checks
 		// the bytes this dispatch actually delivers.
 		s.mu.Lock()

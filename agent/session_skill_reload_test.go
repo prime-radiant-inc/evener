@@ -1297,3 +1297,104 @@ func TestSkillReload_AdmittedCarrierWaitsForItsDurableObligation(t *testing.T) {
 		t.Fatalf("a failed admission save left live obligations: %+v", got)
 	}
 }
+
+// failSessionTranscript installs a transcript writer whose writes fail, wired
+// the way this package's other transcript-failure tests wire one (a
+// transcriptWriteFailFS over a mem filesystem), and marks the session's
+// transcript ready so appends reach it. Used to pin that a lost carrier write
+// is never mistaken for a recorded body.
+func failSessionTranscript(t *testing.T, s *Session) {
+	t.Helper()
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create failing transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	fs.fail = true
+	s.mu.Lock()
+	if s.transcript != nil {
+		t.Cleanup(func() { _ = s.transcript.Close() })
+	}
+	s.transcript = writer
+	s.transcriptReady = true
+	s.mu.Unlock()
+}
+
+// TestSkillReload_CarrierWriteFailureIsVisible pins the durability door for a
+// reload carrier. The carrier embeds the COMPLETE reloaded body, so a failed
+// transcript write must surface as an error and leave the carrier out of the
+// live history; recordTurn's non-durable, error-swallowing append recorded the
+// turn anyway and reported success, so a crash before the next sync interval
+// lost the only copy of the body while the lifecycle advanced as if it were
+// delivered. The already-persisted obligation keeps the body recoverable.
+func TestSkillReload_CarrierWriteFailureIsVisible(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_write_fail")
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_write_fail", nil))
+	plantOrdinaryRecord(t, s, root, "opaque", true)
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+			PublicationID: "pub-reload-write-fail",
+		},
+	}}
+	s.mu.Unlock()
+
+	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if batch == nil || len(batch.Items) != 1 {
+		t.Fatalf("test setup: prepared batch = %+v, want the one selected reload", batch)
+	}
+	failSessionTranscript(t, s)
+
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, batch, outcomes); err == nil {
+		t.Fatal("a failed carrier write must surface an error, not report a recorded body")
+	}
+	for _, state := range skillTurnStates(s) {
+		if len(state.Obligations) != 0 {
+			t.Fatalf("a failed carrier write published a carrier turn carrying %+v", state.Obligations)
+		}
+	}
+}
+
+// TestSkillReload_FailedReloadNotificationWriteFailureIsVisible pins the same
+// door for the typed failure notification: when the selected source cannot be
+// reloaded, the explanation the model is owed must be durably recorded, and a
+// failed write must fail the preparation instead of consuming the receipt
+// without ever telling the model why the reload did not happen.
+func TestSkillReload_FailedReloadNotificationWriteFailureIsVisible(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	source := writeSkillMDRel(t, root, "skills", "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_notify_fail")
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_notify_fail", nil))
+	plantOrdinaryRecord(t, s, root, "opaque", true)
+	if err := os.Remove(source); err != nil {
+		t.Fatalf("remove the planted source: %v", err)
+	}
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+			PublicationID: "pub-reload-notify-fail",
+		},
+	}}
+	s.mu.Unlock()
+	failSessionTranscript(t, s)
+
+	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+		t.Fatal("a failed reload-failure notification write must fail the preparation visibly")
+	}
+}

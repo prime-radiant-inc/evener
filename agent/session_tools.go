@@ -1050,10 +1050,12 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 			persistErr = s.appendToolResultsDurably(live, persisted, skillState)
 		} else if skillState != nil {
 			liveTurn := schema.NewTurn(schema.TurnToolResults, live)
-			liveTurn.SkillState = skillState.Clone()
+			liveTurn.SkillState = skillState
 			persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
-			persistedTurn.SkillState = skillState.Clone()
-			s.recordTurn(liveTurn, persistedTurn)
+			persistedTurn.SkillState = skillState
+			// The obligation is already durable above, so a failed carrier write
+			// returns rather than reporting a recorded round.
+			persistErr = s.recordSkillCarrierDurably(liveTurn, persistedTurn)
 		} else {
 			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
 		}
