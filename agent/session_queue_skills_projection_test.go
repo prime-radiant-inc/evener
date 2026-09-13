@@ -5,6 +5,7 @@ package agent
 
 import (
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,8 +28,20 @@ func TestClientMutationProjection_QueueEntrySkillNames(t *testing.T) {
 		return toolCallResponse(communicateCall("done-1", "ok"))
 	}}
 	s := newSkillSelectionSession(t, root, adapter)
-	evs, stop := captureEvents(s)
-	defer stop()
+	// The captureEvents helper's slice is only safe to read after its drain,
+	// but this test must poll WHILE events land, so collect behind a mutex.
+	var mu sync.Mutex
+	var captured []events.SessionEvent
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for ev := range s.Events() {
+			mu.Lock()
+			captured = append(captured, ev)
+			mu.Unlock()
+		}
+	}()
+	defer func() { s.Close(); <-drained }()
 
 	if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "skill-only-queue-entry",
@@ -64,14 +77,16 @@ func TestClientMutationProjection_QueueEntrySkillNames(t *testing.T) {
 	var latest *events.QueueChangedData
 	deadline := time.Now().Add(5 * time.Second)
 	for latest == nil {
-		for i := range *evs {
-			if (*evs)[i].Kind == events.EventQueueChanged {
-				if data, ok := (*evs)[i].Data.(events.QueueChangedData); ok && data.Depth == 2 {
+		mu.Lock()
+		for i := range captured {
+			if captured[i].Kind == events.EventQueueChanged {
+				if data, ok := captured[i].Data.(events.QueueChangedData); ok && data.Depth == 2 {
 					snapshot := data
 					latest = &snapshot
 				}
 			}
 		}
+		mu.Unlock()
 		if latest == nil {
 			if time.Now().After(deadline) {
 				break
