@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { translateAttachmentMarkers } from "../../../protocol/attachmentMarkers";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
-import { translateAttachmentMarkers } from "../../../stores/attachmentMarkers";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";

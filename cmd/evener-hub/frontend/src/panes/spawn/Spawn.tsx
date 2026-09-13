@@ -16,10 +16,10 @@ import {
   useState,
 } from "react";
 import { useStore } from "zustand";
+import { slashCommandInvocation } from "../../protocol/catalogCommands";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
-import { slashCommandInvocation } from "../../shell/palette/catalogCommands";
 import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { effortLabel } from "../../shell/reasoningEffort";

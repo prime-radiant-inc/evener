@@ -19,6 +19,7 @@
     "transport.ts",
     "types.gen.ts",
     "askAnswers.ts",
+    "attachmentMarkers.ts",
     "activityData.ts",
     "activityRows.ts",
     "activityList.ts",
@@ -32,6 +33,8 @@
     "stableDelegate.ts",
     "docContent.ts",
     "submitRouting.ts",
-    "displayFormat.ts"
+    "displayFormat.ts",
+    "toolCallText.ts",
+    "catalogCommands.ts"
   ]
 }

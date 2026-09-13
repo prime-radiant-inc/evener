@@ -17,10 +17,10 @@
 // button is withheld (see .superpowers/sdd/w8-t3-report.md).
 
 import { useMemo, useState } from "react";
+import { translateAttachmentMarkers } from "../../../protocol/attachmentMarkers";
 import { sessionActionError } from "../../../protocol/errors";
 import type { ItemImage, ItemModel, TurnModel } from "../../../protocol/model";
 import type { TurnError } from "../../../protocol/types.gen";
-import { translateAttachmentMarkers } from "../../../stores/attachmentMarkers";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

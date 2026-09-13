@@ -38,6 +38,9 @@ export type {
 export { activityDelegateState, buildActivityRows, foldRowID, jobIsFailed } from "./activityRows";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
+export type { MarkerAttachment } from "./attachmentMarkers";
+export { translateAttachmentMarkers } from "./attachmentMarkers";
+export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
@@ -112,6 +115,19 @@ export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+export {
+  clip,
+  clipJobID,
+  formatByteCount,
+  formatToolDuration,
+  lineCount,
+  parseArgs,
+  parseJSONObject,
+  str,
+  tailFold,
+  tailSlice,
+  trailingBracketFooter,
+} from "./toolCallText";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
