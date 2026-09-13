@@ -119,6 +119,31 @@ test("a session entity carrying watches decodes and materializes the watch list"
   expect(rows.map((row) => row.watch.note)).toEqual(["Poll the queue depth", "Hourly sweep"]);
 });
 
+// The projector caps a session's watch rows and reports the exact number it
+// dropped as omitted_watches. The codec must accept the count (it is a session
+// field, like omitted_descendants), and the rail must be able to read it, or a
+// watch-heavy session silently undercounts.
+test("a session entity carrying omitted_watches decodes the count", () => {
+  const snapshot = liveSnapshot(key, LIVE_WATCHES);
+  const sessionKey = entityKey(key, "1");
+  snapshot.entities = snapshot.entities.map((entity) =>
+    entity.key === sessionKey
+      ? { ...entity, value: { ...(entity.value as Record<string, unknown>), omitted_watches: 5 } }
+      : entity,
+  );
+  const decoded = decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot));
+  expect(decoded.status).toBe("snapshot");
+  if (decoded.status !== "snapshot") throw new Error("fixture is incomplete");
+  const normalized = {
+    key,
+    graph: normalizedGraphFromSnapshot(decoded.snapshot),
+    version: decoded.version,
+    presence: "present" as const,
+  };
+  const railSession = [...selectRailModel(normalized).sessions.values()][0];
+  expect(railSession?.omitted_watches).toBe(5);
+});
+
 test("an events cadence carrying its throttle and filter decodes and survives", () => {
   const eventsWatch: NavigationWatchSummary = {
     id: "watch_events",
@@ -145,6 +170,33 @@ test("an events cadence carrying its throttle and filter decodes and survives", 
   };
   expect(materialized.sessions[0]?.watches?.[0]?.cadence).toEqual([
     { kind: "events", every: 3, filter: "tool_name=Bash, status=error" },
+  ]);
+});
+
+test("a clock cadence's derived next-fire instant decodes and survives", () => {
+  const clockWatch: NavigationWatchSummary = {
+    id: "watch_clock",
+    source: "self",
+    note: "Hourly sweep",
+    cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-09-13T00:37:19.402124579Z" }],
+    deliveries: 0,
+    created_at: "2026-09-12T23:37:19.402124579Z",
+    active: true,
+  };
+  const decoded = decodeNavigationResponse(key, undefined, snapshotResponse(key, liveSnapshot(key, [clockWatch])));
+  expect(decoded.status).toBe("snapshot");
+  if (decoded.status !== "snapshot") throw new Error("fixture is incomplete");
+  const normalized = {
+    key,
+    graph: normalizedGraphFromSnapshot(decoded.snapshot),
+    version: decoded.version,
+    presence: "present" as const,
+  };
+  const materialized = materializeNavigationResource(normalized) as {
+    sessions: Array<{ watches?: NavigationWatchSummary[] }>;
+  };
+  expect(materialized.sessions[0]?.watches?.[0]?.cadence).toEqual([
+    { kind: "every", seconds: 600, derived_next_fire_at: "2026-09-13T00:37:19.402124579Z" },
   ]);
 });
 

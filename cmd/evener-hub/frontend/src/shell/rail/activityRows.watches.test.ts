@@ -141,6 +141,43 @@ describe("watchMeta", () => {
     });
     expect(watchMeta(w)).toBe("on output · on event · armed");
   });
+
+  test("a clock cadence with a derived next fire renders it with a tilde", () => {
+    const w = watch({
+      cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      deliveries: 0,
+    });
+    // 15:04:12 minus the pinned NOW (15:00:12) is four minutes, worded with "~".
+    expect(watchMeta(w, NOW)).toBe("every 10m · next ~4m · armed");
+  });
+
+  test("an output or event watch renders no next fire even when the field is present", () => {
+    const output = watch({
+      output_match: "/x/",
+      cadence: [{ kind: "output", derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+    });
+    const event = watch({
+      events: ["a"],
+      cadence: [{ kind: "events", derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+    });
+    for (const label of [watchMeta(output, NOW), watchMeta(event, NOW)]) {
+      expect(label).not.toMatch(/\bnext\b/i);
+      expect(label).not.toContain("~");
+    }
+  });
+
+  test("a clock cadence with no derivable instant renders nothing misleading", () => {
+    const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 });
+    expect(watchMeta(w, NOW)).toBe("every 10m · armed");
+  });
+
+  test("a derived instant already in the past renders no next fire", () => {
+    const w = watch({
+      cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T14:00:00Z" }],
+      deliveries: 0,
+    });
+    expect(watchMeta(w, NOW)).toBe("every 10m · armed");
+  });
 });
 
 describe("watchFacts", () => {
@@ -257,16 +294,20 @@ describe("watchIsScheduled", () => {
 });
 
 describe("forbidden vocabulary", () => {
-  test("no rendered watch string mentions drops, delivery completeness, next fire, or a countdown", () => {
+  test("no rendered watch string hedges with 'about', claims a countdown, or mentions drops", () => {
     const strings = [
       watchMeta(watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3 })),
+      watchMeta(
+        watch({ cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T15:04:12Z" }] }),
+        NOW,
+      ),
       watchFacts(watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3 }), NOW),
       watchFacts(watch({ output_match: "/x/", target: "j", cadence: [{ kind: "output" }], deliveries: 0 }), NOW),
       watchFacts(watch({ events: ["a"], cadence: [{ kind: "events" }], deliveries: 0 }), NOW),
     ].join("\n");
     expect(strings).not.toMatch(/dropped/i);
     expect(strings).not.toMatch(/all delivered/i);
-    expect(strings).not.toMatch(/\bnext\b/i);
     expect(strings).not.toMatch(/countdown/i);
+    expect(strings).not.toMatch(/\babout\b/i);
   });
 });

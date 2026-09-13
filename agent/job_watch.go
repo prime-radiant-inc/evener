@@ -2593,11 +2593,11 @@ func watchCadencesOf(cfg *watchConfig) []WatchCadenceInfo {
 	}
 	switch {
 	case cfg.timer && cfg.oneShot:
-		cadences = append(cadences, WatchCadenceInfo{Kind: "after", Seconds: float64(cfg.timerSeconds)})
+		cadences = append(cadences, WatchCadenceInfo{Kind: "after", Seconds: float64(cfg.timerSeconds), DerivedNextFireAt: watchDerivedNextFireAt(cfg, time.Duration(cfg.timerSeconds)*time.Second)})
 	case cfg.timer:
-		cadences = append(cadences, WatchCadenceInfo{Kind: "every", Seconds: float64(cfg.timerSeconds)})
+		cadences = append(cadences, WatchCadenceInfo{Kind: "every", Seconds: float64(cfg.timerSeconds), DerivedNextFireAt: watchDerivedNextFireAt(cfg, time.Duration(cfg.timerSeconds)*time.Second)})
 	case cfg.progressIntervalMS > 0:
-		cadences = append(cadences, WatchCadenceInfo{Kind: "progress", Seconds: float64(cfg.progressIntervalMS) / 1000})
+		cadences = append(cadences, WatchCadenceInfo{Kind: "progress", Seconds: float64(cfg.progressIntervalMS) / 1000, DerivedNextFireAt: watchDerivedNextFireAt(cfg, time.Duration(cfg.progressIntervalMS)*time.Millisecond)})
 	}
 	if cfg.wildcardEvents || len(cfg.events) > 0 {
 		// Mirror watchConditionSummary exactly: only a concrete (non-wildcard)
@@ -2611,6 +2611,33 @@ func watchCadencesOf(cfg *watchConfig) []WatchCadenceInfo {
 		cadences = append(cadences, events)
 	}
 	return cadences
+}
+
+// watchDerivedNextFireAt is the best honest next-fire instant for one
+// clock-driven watch, from data the config already holds. A repeating ticker
+// (every/progress) advances from its newest delivery instant, or from the
+// install instant when it has not delivered yet; a one-shot advances from the
+// install instant. A one-shot that already fired has no next fire. The value is
+// approximate - the runtime keeps a Go ticker, whose callback the scheduler can
+// delay and whose missed ticks coalesce - which is why every surface that shows
+// it words it with a "~". Returns "" when no instant can be derived.
+func watchDerivedNextFireAt(cfg *watchConfig, interval time.Duration) string {
+	if cfg == nil || interval <= 0 {
+		return ""
+	}
+	// An already-fired one-shot is done; its durable teardown is the only thing
+	// still pending, and that is not a fire.
+	if cfg.oneShot && (cfg.firedPendingEnd || len(cfg.deliveryTimes) > 0) {
+		return ""
+	}
+	base := cfg.createdAt
+	if len(cfg.deliveryTimes) > 0 {
+		base = cfg.deliveryTimes[len(cfg.deliveryTimes)-1]
+	}
+	if base.IsZero() {
+		return ""
+	}
+	return base.Add(interval).Format(time.RFC3339Nano)
 }
 
 // watchListEntryLess orders watch rows by (Source, ID) — the shared ordering

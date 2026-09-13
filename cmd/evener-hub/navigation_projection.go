@@ -39,6 +39,14 @@ const (
 	maxNavigationFullCommandRunes = 4_096
 	maxNavigationIdentityBytes    = 1_024
 	maxNavigationWorkingDirBytes  = 4_096
+	// maxNavigationWatches caps the live-watch rows a single session summary
+	// carries. It mirrors the daemon's watchDeliveryTimeCap of 32: the per-watch
+	// delivery ring is already bounded to 32 instants, so capping the row list to
+	// the same number keeps a watch-heavy session's payload bounded without
+	// needing a second, larger bound. Rows dropped here are counted in
+	// OmittedWatches, and the projector keeps armed rows ahead of inert ones so
+	// the rail's armed count survives the cut.
+	maxNavigationWatches = 32
 )
 
 type navigationResourceKind string
@@ -699,6 +707,10 @@ func trimNavigationWatchPayloads(rows []hubapi.NavigationSessionSummary, trim na
 				rows[i].Watches[j].DeliveryTimes = nil
 			}
 		case navigationWatchPayloadNoWatches:
+			// Shedding a whole row is still an omission the UI must be able to
+			// report, so the count moves before the rows go. A later trim level
+			// that drops no row (NoDeliveryTimes) must leave it alone.
+			rows[i].OmittedWatches += len(rows[i].Watches)
 			rows[i].Watches = nil
 		}
 		trimNavigationWatchPayloads(rows[i].Children, trim)
@@ -1163,27 +1175,29 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		updatedAt = &updated
 	}
 	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
+	watches, omittedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
-		Ref:           ref.String(),
-		HostID:        ref.HostID,
-		SessionID:     ref.SessionID,
-		Title:         truncateNavigationRunes(node.Title, maxNavigationTitleRunes),
-		Project:       truncateNavigationRunes(node.Project, maxNavigationLabelRunes),
-		State:         node.State,
-		Kind:          node.Kind,
-		Branch:        truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
-		ClusterCount:  node.ClusterCount,
-		Favorite:      !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
-		Rename:        p.projection.renameable(node.ID, ref.String()),
-		Live:          p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
-		AskPending:    node.AskPending,
-		Dormant:       node.Dormant,
-		UpdatedAt:     updatedAt,
-		MoreSubagents: node.MoreSubagents,
-		RunningJobs:   navigationJobs(node.RunningJobs),
-		CompletedJobs: navigationJobs(node.CompletedJobs),
-		Watches:       navigationWatches(node.Watches),
-		Children:      hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+		Ref:            ref.String(),
+		HostID:         ref.HostID,
+		SessionID:      ref.SessionID,
+		Title:          truncateNavigationRunes(node.Title, maxNavigationTitleRunes),
+		Project:        truncateNavigationRunes(node.Project, maxNavigationLabelRunes),
+		State:          node.State,
+		Kind:           node.Kind,
+		Branch:         truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
+		ClusterCount:   node.ClusterCount,
+		Favorite:       !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
+		Rename:         p.projection.renameable(node.ID, ref.String()),
+		Live:           p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
+		AskPending:     node.AskPending,
+		Dormant:        node.Dormant,
+		UpdatedAt:      updatedAt,
+		MoreSubagents:  node.MoreSubagents,
+		RunningJobs:    navigationJobs(node.RunningJobs),
+		CompletedJobs:  navigationJobs(node.CompletedJobs),
+		Watches:        watches,
+		OmittedWatches: omittedWatches,
+		Children:       hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
 }
 
@@ -1213,28 +1227,48 @@ func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.
 // navigationWatches projects a session's own live-watch rows onto the wire
 // summary. Rows are never merged across sessions, so a receiver watch that two
 // daemons report stays on each session's own summary and a rollup over the
-// subtree counts it once per owning row. The source list is the daemon's
-// already-bounded watch inventory (mirroring navigationJobs), so this does not
-// cap the number of rows; it only bounds each rendered string.
-func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray[hubapi.NavigationWatchSummary] {
-	out := make(hubapi.NavigationArray[hubapi.NavigationWatchSummary], 0, len(watches))
-	for _, watch := range watches {
+// subtree counts it once per owning row.
+//
+// The list is capped at maxNavigationWatches. Armed (active) rows are ordered
+// ahead of inert ones before the cut, so a session with a lot of stale rows
+// still reports every armed watch it has and the rail's armed count cannot
+// silently drop. The second return is the exact number of rows the caller did
+// NOT receive: rows past the cap plus any row dropped because its created_at is
+// not a representable instant. No row leaves this function uncounted.
+func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArray[hubapi.NavigationWatchSummary], int) {
+	ordered := append([]appwire.EvenerWatchInfo(nil), watches...)
+	// Stable: armed rows keep their wire order ahead of inert ones, and rows
+	// within each class keep theirs.
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Active && !ordered[j].Active })
+	out := make(hubapi.NavigationArray[hubapi.NavigationWatchSummary], 0, min(len(ordered), maxNavigationWatches))
+	for _, watch := range ordered {
+		if len(out) == maxNavigationWatches {
+			break
+		}
 		// created_at is a REQUIRED watch field and the web codec validates it as
 		// strict RFC3339. Truncating a malformed or oversized value (the generic
 		// label cap) produced an ellipsized string the codec rejects, which
 		// silently failed the whole watch-carrying navigation snapshot. A watch
 		// whose created_at cannot be represented is dropped rather than poisoning
-		// every other row in the resource.
+		// every other row in the resource; the omitted count below accounts for it.
 		if !validNavigationTimestamp(watch.CreatedAt) {
 			continue
 		}
 		cadence := make([]hubapi.NavigationWatchCadence, 0, len(watch.Cadence))
 		for _, step := range watch.Cadence {
+			// A derived instant the codec cannot decode is dropped (absent), the
+			// same way an unrepresentable delivery instant is: one missing dot is
+			// honest, a rejected snapshot is not.
+			nextFireAt := ""
+			if validNavigationTimestamp(step.DerivedNextFireAt) {
+				nextFireAt = step.DerivedNextFireAt
+			}
 			cadence = append(cadence, hubapi.NavigationWatchCadence{
-				Kind:    truncateNavigationRunes(step.Kind, maxNavigationLabelRunes),
-				Seconds: step.Seconds,
-				Every:   step.Every,
-				Filter:  truncateNavigationRunes(step.Filter, maxNavigationLabelRunes),
+				Kind:              truncateNavigationRunes(step.Kind, maxNavigationLabelRunes),
+				Seconds:           step.Seconds,
+				DerivedNextFireAt: nextFireAt,
+				Every:             step.Every,
+				Filter:            truncateNavigationRunes(step.Filter, maxNavigationLabelRunes),
 			})
 		}
 		events := make([]string, 0, len(watch.Events))
@@ -1271,7 +1305,7 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray
 			EndReason:      truncateNavigationRunes(watch.EndReason, maxNavigationLabelRunes),
 		})
 	}
-	return out
+	return out, len(watches) - len(out)
 }
 
 // navigationTimestampPattern matches exactly the grammar the web codec's

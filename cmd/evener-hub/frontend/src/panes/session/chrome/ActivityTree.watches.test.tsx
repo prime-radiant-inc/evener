@@ -46,8 +46,17 @@ const EMPTY_TREE: ActivityTreeData = {
   },
 };
 
-function renderTree(watches?: NavigationWatchSummary[], tree: ActivityTreeData = EMPTY_TREE) {
-  return render(<ActivityTree tree={tree} watches={watches} now={NOW} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+function renderTree(watches?: NavigationWatchSummary[], tree: ActivityTreeData = EMPTY_TREE, omittedWatches?: number) {
+  return render(
+    <ActivityTree
+      tree={tree}
+      watches={watches}
+      omittedWatches={omittedWatches}
+      now={NOW}
+      expandedFoldIDs={[]}
+      onToggleFold={vi.fn()}
+    />,
+  );
 }
 
 afterEach(() => {
@@ -81,6 +90,36 @@ describe("ActivityTree watch rows", () => {
     expect(screen.getByTestId("watch-group")).toBeTruthy();
     expect(screen.getByText("Watches")).toBeTruthy();
     expect(screen.getByText("2 armed")).toBeTruthy();
+  });
+
+  test("the Watches group header surfaces the rows the projector omitted", () => {
+    renderTree([watch({ note: "Still armed" })], EMPTY_TREE, 4);
+    expect(screen.getByText("1 armed · +4 more")).toBeTruthy();
+  });
+
+  test("a clock watch row renders its next fire with a tilde and never the word about", () => {
+    renderTree([
+      watch({
+        note: "Poll the queue depth",
+        cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      }),
+    ]);
+    const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
+    expect(row.textContent).toContain("next ~4m");
+    expect(row.textContent).not.toMatch(/about/i);
+  });
+
+  test("an output watch row renders no next fire even when the field is present", () => {
+    renderTree([
+      watch({
+        note: "Deploy gate",
+        output_match: "/DONE/",
+        cadence: [{ kind: "output", derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      }),
+    ]);
+    const row = screen.getByRole("treeitem", { name: "Watch: Deploy gate" });
+    expect(row.textContent).not.toContain("~");
+    expect(row.textContent).not.toMatch(/\bnext\b/i);
   });
 
   test("a watch with no note falls back to its id, exactly like the rail", () => {

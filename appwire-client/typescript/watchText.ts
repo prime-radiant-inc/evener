@@ -9,9 +9,9 @@
 import type { NavigationWatchCadence, NavigationWatchSummary } from "./types.gen";
 
 // A watch's cadence in the rail's compact shorthand: seconds in, "10m" out.
-// Deliberately coarse (no "in 4m", no countdown): the runtime keeps a ticker,
-// not a next-fire instant, so there is no honest instant to show - but the
-// PERIOD is real, and that is what these labels carry.
+// Deliberately coarse: the PERIOD is real, and that is what this label carries.
+// A clock watch's derived next-fire instant is a separate, explicitly
+// approximate label (watchNextFireLabel), never folded in here.
 export function watchDurationLabel(seconds: number | undefined): string {
   if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return "";
   // Round ONCE to the nearest second, then floor each unit from that total.
@@ -35,6 +35,27 @@ export function watchDurationLabel(seconds: number | undefined): string {
   const days = Math.floor(total / 86400);
   const hours = Math.floor((total % 86400) / 3600);
   return hours > 0 ? `${days}d${hours}h` : `${days}d`;
+}
+
+// The clock-driven cadence kinds. Output and event cadences have no schedule,
+// so they must never render a next fire even if a stray instant is present.
+const CLOCK_CADENCE_KINDS = new Set(["after", "every", "progress"]);
+
+// A clock watch's next fire, worded as an approximation: "next ~4m". The
+// instant is the daemon's derived one, which can slide later (the runtime keeps
+// a Go ticker the scheduler can delay), so it is deliberately NOT an exact
+// clock time and never the word "about". Returns "" when the cadence is not
+// clock-driven, carries no derived instant, or that instant cannot be parsed.
+// A derived instant already in the past also returns "": there is no honest
+// future fire to promise from it.
+export function watchNextFireLabel(cadence: NavigationWatchCadence, now: number): string {
+  if (!CLOCK_CADENCE_KINDS.has(cadence.kind)) return "";
+  const instant = cadence.derived_next_fire_at === undefined ? Number.NaN : Date.parse(cadence.derived_next_fire_at);
+  if (!Number.isFinite(instant)) return "";
+  const remaining = (instant - now) / 1000;
+  if (remaining <= 0) return "";
+  const duration = watchDurationLabel(remaining);
+  return duration === "" ? "" : `next ~${duration}`;
 }
 
 // One wire cadence row as a phrase a person reads. "after"/"every"/"progress"

@@ -358,6 +358,15 @@ export function armedWatchCount(watches: readonly NavigationWatchSummary[] | und
   return (watches ?? []).filter((watch) => watch.active).length;
 }
 
+/** The session's summary-line watch count. It adds the exact number of rows the
+ * projector omitted (a session above its per-session cap, or rows its byte
+ * fitter shed) as "+N more", so a row never quietly undercounts the watches the
+ * session holds. The retained armed rows are still counted by armedWatchCount. */
+export function watchCountLabel(armed: number, omitted: number): string {
+  const base = `${armed} watch${armed === 1 ? "" : "es"}`;
+  return omitted > 0 ? `${base} · +${omitted} more` : base;
+}
+
 function subagentIsCurrent(child: RailSession): boolean {
   const activity = activeWorkSummary(child);
   return CURRENT_SUBAGENT_STATES.has(child.state) || activity.workingSubagents > 0 || activity.runningJobs > 0;

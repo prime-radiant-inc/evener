@@ -27,6 +27,8 @@ export interface ActivityPanelProps {
   now: number;
   // The session's live watches, absent-able: an old daemon omits the list.
   watches?: NavigationWatchSummary[];
+  // Rows the hub omitted from `watches`; the Watches header reports "+N more".
+  omittedWatches?: number;
   hideTrigger?: boolean;
   // SessionChrome's desktop replacement button hides this panel's own
   // trigger, but still needs the trigger-owned background summary refresh.
@@ -42,6 +44,7 @@ export interface ActivityPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
   watches?: NavigationWatchSummary[];
+  omittedWatches?: number;
   // The panel's ticking clock, used by the watch durations and timeline.
   now?: number;
 }
@@ -83,7 +86,7 @@ function triggerLabel(counts: ActivityCounts | undefined): string {
 }
 
 /** Shared activity reader body used by the mobile Sheet and desktop pane. */
-export function ActivityPanelBody({ sessionRef, model, watches, now }: ActivityPanelBodyProps) {
+export function ActivityPanelBody({ sessionRef, model, watches, omittedWatches, now }: ActivityPanelBodyProps) {
   const toasts = useToasts();
   const treeRef = useRef<ActivityTreeHandle>(null);
   const mountedRef = useRef(false);
@@ -262,6 +265,7 @@ export function ActivityPanelBody({ sessionRef, model, watches, now }: ActivityP
               ref={treeRef}
               tree={currentTree}
               watches={watches}
+              omittedWatches={omittedWatches}
               now={now}
               expandedFoldIDs={entry.expandedFoldIDs}
               onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
@@ -285,6 +289,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     model,
     now,
     watches,
+    omittedWatches,
     hideTrigger = false,
     refreshWhenHidden = false,
     discoverWhenHidden = refreshWhenHidden,
@@ -318,7 +323,15 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">
-        {open ? <ActivityPanelBody sessionRef={sessionRef} model={model} now={now} watches={watches} /> : null}
+        {open ? (
+          <ActivityPanelBody
+            sessionRef={sessionRef}
+            model={model}
+            now={now}
+            watches={watches}
+            omittedWatches={omittedWatches}
+          />
+        ) : null}
       </Sheet>
     </>
   );

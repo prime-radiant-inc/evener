@@ -5,6 +5,7 @@ import {
   relativeAge,
   resetSessionWatchesCacheForTests,
   selectRailModel,
+  selectSessionOmittedWatches,
   selectSessionWatches,
   sessionWatchesCacheSizeForTests,
 } from "./selectors";
@@ -235,7 +236,11 @@ test("a settled gone tombstone counts, a stale retained one does not", () => {
   expect(isSettledGone(null)).toBe(false);
 });
 
-function watchesState(title: string, watches: NavigationWatchSummary[]): ReturnType<typeof navigationStore.getState> {
+function watchesState(
+  title: string,
+  watches: NavigationWatchSummary[],
+  omittedWatches = 0,
+): ReturnType<typeof navigationStore.getState> {
   const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
   const summary = {
     ref: "local:s",
@@ -247,6 +252,7 @@ function watchesState(title: string, watches: NavigationWatchSummary[]): ReturnT
     kind: "session",
     live: true,
     watches,
+    omitted_watches: omittedWatches,
     children: [],
   } as unknown as NavigationSessionSummary;
   const resource: ResourceState = {
@@ -319,6 +325,19 @@ function refWatchesState(ref: string, watches: NavigationWatchSummary[]): Return
 // A ref that drops out of the session list must not keep a cache entry for the
 // life of the page. Deleting the entry also drops its old array, so the next
 // read recomputes instead of serving a stale identity.
+test("selectSessionOmittedWatches reads the count off the summary and is zero when absent", () => {
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  expect(selectSessionOmittedWatches("local:s", watchesState("t", [watchRow], 5))).toBe(5);
+  expect(selectSessionOmittedWatches("local:s", watchesState("t", [watchRow]))).toBe(0);
+  expect(selectSessionOmittedWatches("local:absent", watchesState("t", [watchRow], 5))).toBe(0);
+});
+
 test("selectSessionWatches drops the entry when the session summary vanishes", () => {
   const ref = "local:cache-vanished";
   const watchRow: NavigationWatchSummary = {

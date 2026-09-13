@@ -28,10 +28,13 @@ func TestLiveWatchStatuses_StructuredFields(t *testing.T) {
 					t.Fatalf("configure one-shot timer: %v", err)
 				}
 				return res.WatchID, WatchStatusInfo{
-					Source:     "self",
-					Target:     runtimeMessageAliasCaller,
-					Note:       "wake me",
-					Cadence:    []WatchCadenceInfo{{Kind: "after", Seconds: 600}},
+					Source: "self",
+					Target: runtimeMessageAliasCaller,
+					Note:   "wake me",
+					Cadence: []WatchCadenceInfo{{
+						Kind: "after", Seconds: 600,
+						DerivedNextFireAt: frozenTestTime.Add(600 * time.Second).UTC().Format(time.RFC3339Nano),
+					}},
 					Active:     true,
 					Deliveries: 0,
 				}
@@ -48,10 +51,13 @@ func TestLiveWatchStatuses_StructuredFields(t *testing.T) {
 					t.Fatalf("configure repeating timer: %v", err)
 				}
 				return res.WatchID, WatchStatusInfo{
-					Source:  "self",
-					Target:  runtimeMessageAliasCaller,
-					Cadence: []WatchCadenceInfo{{Kind: "every", Seconds: 300}},
-					Active:  true,
+					Source: "self",
+					Target: runtimeMessageAliasCaller,
+					Cadence: []WatchCadenceInfo{{
+						Kind: "every", Seconds: 300,
+						DerivedNextFireAt: frozenTestTime.Add(300 * time.Second).UTC().Format(time.RFC3339Nano),
+					}},
+					Active: true,
 				}
 			},
 		},
@@ -232,7 +238,12 @@ func TestSessionDetailedStatusProjectsWatches(t *testing.T) {
 	if !ok {
 		t.Fatalf("timer watch missing from %+v", ds.Watches)
 	}
-	if timer.Note != "wake me" || !reflect.DeepEqual(timer.Cadence, []WatchCadenceInfo{{Kind: "after", Seconds: 600}}) || !timer.Active {
+	// A clock cadence now also carries its derived next-fire instant, so this
+	// checks the interval fields and that the instant is present rather than a
+	// DeepEqual against the pre-derivation shape.
+	timerCadence := timer.Cadence
+	if timer.Note != "wake me" || len(timerCadence) != 1 || timerCadence[0].Kind != "after" ||
+		timerCadence[0].Seconds != 600 || timerCadence[0].DerivedNextFireAt == "" || !timer.Active {
 		t.Fatalf("timer watch = %+v, want note/cadence/active", timer)
 	}
 	output, ok := bySource[rec.JobID]

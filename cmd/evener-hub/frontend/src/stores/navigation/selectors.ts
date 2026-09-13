@@ -289,6 +289,18 @@ export function selectSessionWatches(
   return watches;
 }
 
+/** The exact number of live-watch rows the hub omitted from `ref`'s summary
+ * (over the per-session cap, unrepresentable, or shed by the byte fitter). Zero
+ * when the session is not materialized or carries no count. The Activity panel
+ * header reads this so it never silently undercounts. */
+export function selectSessionOmittedWatches(
+  ref: string,
+  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
+): number {
+  const summary = selectSessionSummary(ref, state);
+  return summary?.omitted_watches ?? 0;
+}
+
 import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
 import type { NormalizedResource } from "./codec";
 

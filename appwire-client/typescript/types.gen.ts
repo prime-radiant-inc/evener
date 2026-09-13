@@ -441,6 +441,7 @@ export interface EvenerUsage {
 export interface EvenerWatchCadence {
   kind: string;
   seconds?: number;
+  derivedNextFireAt?: string;
   every?: number;
   filter?: string;
 }
@@ -1250,6 +1251,7 @@ export interface NavigationSessionSummary {
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
+  omitted_watches?: number;
   running_jobs?: NavigationJobSummary[];
   completed_jobs?: NavigationJobSummary[];
   watches?: NavigationWatchSummary[];
@@ -1270,6 +1272,7 @@ export interface NavigationTier {
 export interface NavigationWatchCadence {
   kind: string;
   seconds?: number;
+  derived_next_fire_at?: string;
   every?: number;
   filter?: string;
 }

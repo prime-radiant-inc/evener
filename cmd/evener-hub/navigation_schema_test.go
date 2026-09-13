@@ -360,6 +360,7 @@ func TestNavigationSessionValueValidatesWatchCadenceAndDeliveryTimes(t *testing.
 		"negative event every count":    watch([]hubapi.NavigationWatchCadence{{Kind: "events", Every: -1}}, nil),
 		"event every beyond safe range": watch([]hubapi.NavigationWatchCadence{{Kind: "events", Every: int(maxNavigationSafeInteger) + 1}}, nil),
 		"over-long event filter":        watch([]hubapi.NavigationWatchCadence{{Kind: "events", Filter: strings.Repeat("f", maxNavigationLabelRunes+1)}}, nil),
+		"non-RFC3339 derived next fire": watch([]hubapi.NavigationWatchCadence{{Kind: "every", DerivedNextFireAt: "2026-09-12 10:00:00"}}, nil),
 	}
 	for name, session := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -370,13 +371,28 @@ func TestNavigationSessionValueValidatesWatchCadenceAndDeliveryTimes(t *testing.
 	}
 	acceptedBoundary := watch(
 		[]hubapi.NavigationWatchCadence{{
-			Kind:  strings.Repeat("k", maxNavigationIdentityBytes),
-			Every: int(maxNavigationSafeInteger),
+			Kind:              strings.Repeat("k", maxNavigationIdentityBytes),
+			Every:             int(maxNavigationSafeInteger),
+			DerivedNextFireAt: "2026-09-12T10:10:00Z",
 		}},
 		nil,
 	)
 	if !navigationSessionValueValid(acceptedBoundary) {
 		t.Fatal("cadence values exactly on the codec bounds must be accepted")
+	}
+}
+
+// OmittedWatches is a count on the wire, so the hub schema must reject a
+// negative or out-of-range value exactly like every other session count.
+func TestNavigationSessionValueValidatesOmittedWatches(t *testing.T) {
+	session := navigationSchemaSession("local:schema-session", "schema-session")
+	session.OmittedWatches = 3
+	if !navigationSessionValueValid(session) {
+		t.Fatal("a non-negative omitted watch count must be accepted")
+	}
+	session.OmittedWatches = -1
+	if navigationSessionValueValid(session) {
+		t.Fatal("a negative omitted watch count must be rejected")
 	}
 }
 

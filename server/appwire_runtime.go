@@ -2548,10 +2548,11 @@ func appWatchFromDetailedStatus(watch agent.WatchStatusInfo) appwire.EvenerWatch
 		out.Cadence = make([]appwire.EvenerWatchCadence, 0, len(watch.Cadence))
 		for _, cadence := range watch.Cadence {
 			out.Cadence = append(out.Cadence, appwire.EvenerWatchCadence{
-				Kind:    cadence.Kind,
-				Seconds: cadence.Seconds,
-				Every:   cadence.Every,
-				Filter:  cadence.Filter,
+				Kind:              cadence.Kind,
+				Seconds:           cadence.Seconds,
+				DerivedNextFireAt: cadence.DerivedNextFireAt,
+				Every:             cadence.Every,
+				Filter:            cadence.Filter,
 			})
 		}
 	}

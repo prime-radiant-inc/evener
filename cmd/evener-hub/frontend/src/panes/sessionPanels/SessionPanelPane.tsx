@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
-import { selectSessionWatches } from "../../stores/navigation/selectors";
+import { selectSessionOmittedWatches, selectSessionWatches } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
@@ -44,6 +44,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
   // this session's watch content is unchanged, so the pane no longer re-renders
   // on every navigation update for any session.
   const watches = useNavigationStore((state) => selectSessionWatches(ref, state));
+  const omittedWatches = useNavigationStore((state) => selectSessionOmittedWatches(ref, state));
 
   useEffect(() => {
     let started = false;
@@ -77,7 +78,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
     kind === "tasks" ? (
       <TasksPanelBody sessionRef={ref} model={model} />
     ) : kind === "activity" ? (
-      <ActivityPanelBody sessionRef={ref} model={model} watches={watches} />
+      <ActivityPanelBody sessionRef={ref} model={model} watches={watches} omittedWatches={omittedWatches} />
     ) : kind === "notes" ? (
       <NotesPanelBody sessionRef={ref} model={model} />
     ) : (

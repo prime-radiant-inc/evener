@@ -52,6 +52,10 @@ export interface ActivityTreeProps {
   // The session's live watches, absent-able: an old daemon omits the list, and
   // undefined renders exactly as an empty list does.
   watches?: NavigationWatchSummary[];
+  // Rows the hub projected away (over the per-session cap, or shed by the byte
+  // fitter). The Watches group header reports them as "+N more" so the panel
+  // never silently undercounts what the session holds.
+  omittedWatches?: number;
   // The panel's ticking clock, used only by watch durations and the timeline.
   now?: number;
   continuationFailures?: Record<string, string | undefined>;
@@ -555,7 +559,7 @@ function WatchRowView({
         <WatchGlyph className={CLASS.watchGlyph} testId="watch-glyph" />
         <span className={CLASS.srOnly}>Watch:</span>
         <span className={CLASS.denseName}>{watchName(row.watch)}</span>
-        <span className={CLASS.denseMeta}>{watchMeta(row.watch)}</span>
+        <span className={CLASS.denseMeta}>{watchMeta(row.watch, now)}</span>
       </div>
       {detailOpen && <ActivityWatchDetail row={row} now={now} />}
     </Fragment>
@@ -565,11 +569,12 @@ function WatchRowView({
 // The Watches group title that leads the panel body, with the count of armed
 // watches on its right. No "needs a look" count: the projection tracks no
 // drops, so there is no abnormal count to report.
-function WatchGroupHeader({ armed }: { armed: number }): ReactNode {
+function WatchGroupHeader({ armed, omitted }: { armed: number; omitted: number }): ReactNode {
+  const count = omitted > 0 ? `${armed} armed · +${omitted} more` : `${armed} armed`;
   return (
     <div className={CLASS.watchGroup} data-testid="watch-group">
       <span className={CLASS.watchGroupTitle}>Watches</span>
-      <span className={CLASS.watchGroupCount}>{`${armed} armed`}</span>
+      <span className={CLASS.watchGroupCount}>{count}</span>
     </div>
   );
 }
@@ -769,6 +774,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     expandedFoldIDs,
     onToggleFold,
     watches,
+    omittedWatches = 0,
     now,
     continuationFailures = {},
     onContinue,
@@ -949,7 +955,9 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     // the "now" label and the timeline's end marker are all derived from it, and
     // the standalone Activity pane has no clock of its own to pass in.
     <TreeTickProvider live={hasLive || watchRows.length > 0}>
-      {watchRows.length > 0 && <WatchGroupHeader armed={armedWatches} />}
+      {(watchRows.length > 0 || omittedWatches > 0) && (
+        <WatchGroupHeader armed={armedWatches} omitted={omittedWatches} />
+      )}
       <div ref={treeRef} role="tree" className={CLASS.tree}>
         <RowBlock
           slice={rows}

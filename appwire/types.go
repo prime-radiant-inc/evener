@@ -1122,6 +1122,13 @@ type EvenerJobInfo struct {
 type EvenerWatchCadence struct {
 	Kind    string  `json:"kind"`
 	Seconds float64 `json:"seconds,omitempty"`
+	// DerivedNextFireAt is the next instant this clock-driven cadence is
+	// expected to fire, derived at the daemon from the install instant, the
+	// interval, and the newest delivery instant. It is approximate (the runtime
+	// keeps a ticker the scheduler can delay) and can slide later, so consumers
+	// word it with a "~". Absent for output and event cadences, which have no
+	// schedule.
+	DerivedNextFireAt string `json:"derivedNextFireAt,omitempty"`
 	// Every is the fire-every-Nth-matching-event throttle on an "events"
 	// cadence; absent (zero) means fire on every matching event. Only the
 	// events kind carries it.

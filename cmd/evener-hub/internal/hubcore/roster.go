@@ -354,6 +354,11 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 				_, _ = h.Write([]byte{0})
 				_, _ = h.Write([]byte(strconv.FormatFloat(cadence.Seconds, 'g', -1, 64)))
 				_, _ = h.Write([]byte{0})
+				// The derived next-fire instant changes only when the ring or the
+				// interval changes (both already hashed above), but hashing it here
+				// keeps the field explicitly covered if its derivation ever moves.
+				_, _ = h.Write([]byte(cadence.DerivedNextFireAt))
+				_, _ = h.Write([]byte{0})
 				// Every throttles an event watch and Filter narrows what it
 				// matches, so either changing must move the fingerprint or the
 				// sidebar keeps a row whose cadence no longer matches. Null

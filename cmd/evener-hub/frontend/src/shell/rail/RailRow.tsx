@@ -75,6 +75,7 @@ import {
   type RailSession,
   type SessionRailNode,
   type WatchRailNode,
+  watchCountLabel,
 } from "./railNodes";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
@@ -536,7 +537,10 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // watch on its receiver's summary, so this is every watch the fold-out below
   // this row will show - see railNodes' activeWatchCount.
   const watchCount = activeWatchCount(session);
-  const hasWatches = watchCount > 0;
+  const omittedWatchCount = session.omitted_watches ?? 0;
+  // Omitted rows alone still mean the session holds watches the row does not
+  // list, so the line must appear (and say "+N more") even with none retained.
+  const hasWatches = watchCount > 0 || omittedWatchCount > 0;
   // A watch is pending work, and it is the one kind that can be the ONLY thing
   // a session has left to do - so it earns the second line on its own. That is
   // a deliberate amendment to "a quiet row is one line" (the rule at the top of
@@ -597,7 +601,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
                 {/* The gloss shares the line's separator convention: the count
                     carries it only when something follows, so a watch-only
                     line ends with the word, not a dangling "·". */}
-                {`${watchCount} watch${watchCount === 1 ? "" : "es"}${gloss !== "" ? " ·" : ""}`}
+                {`${watchCountLabel(watchCount, omittedWatchCount)}${gloss !== "" ? " ·" : ""}`}
               </span>
             )}
             {gloss !== "" && (

@@ -416,7 +416,7 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		!utf8.ValidString(value.Project) || utf8.RuneCountInString(value.Title) > maxNavigationTitleRunes ||
 		utf8.RuneCountInString(value.Branch) > maxNavigationLabelRunes || len(value.Children) != 0 ||
 		!navigationIntCount(value.ClusterCount) || !navigationIntCount(value.MoreSubagents) ||
-		!navigationIntCount(value.OmittedDescendants) {
+		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) {
 		return false
 	}
 	for _, jobs := range []hubapi.NavigationArray[hubapi.NavigationJobSummary]{value.RunningJobs, value.CompletedJobs} {
@@ -446,7 +446,8 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 			if !navigationSchemaIdentity(cadence.Kind, false) ||
 				!navigationCadenceSeconds(cadence.Seconds) ||
 				!navigationIntCount(cadence.Every) ||
-				utf8.RuneCountInString(cadence.Filter) > maxNavigationLabelRunes {
+				utf8.RuneCountInString(cadence.Filter) > maxNavigationLabelRunes ||
+				(cadence.DerivedNextFireAt != "" && !validNavigationTimestamp(cadence.DerivedNextFireAt)) {
 				return false
 			}
 		}

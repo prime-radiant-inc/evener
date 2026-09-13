@@ -21,7 +21,7 @@ import {
 import { formatClockTime } from "./displayFormat";
 import { stableDelegateDisplayStatus } from "./stableDelegate";
 import type { NavigationWatchSummary } from "./types.gen";
-import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchTitle } from "./watchText";
+import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchNextFireLabel, watchTitle } from "./watchText";
 
 export interface ActivityRowBase {
   id: string;
@@ -187,10 +187,11 @@ function eventCadenceDetail(watch: NavigationWatchSummary): string {
   return label.startsWith("on events ") ? label.slice("on events ".length) : "";
 }
 
-// A watch row's second line: what its condition is, then the count it has
-// earned or its armed state. Never a next-fire or countdown - the runtime
-// keeps no such instant.
-export function watchMeta(watch: NavigationWatchSummary): string {
+// A watch row's second line: what its condition is, an approximate next fire
+// for a clock watch when the daemon derived one, then the count it has earned
+// or its armed state. The next fire is worded "next ~4m" (never "about", never
+// an exact clock time) and omitted entirely for output/event watches.
+export function watchMeta(watch: NavigationWatchSummary, now?: number): string {
   // Every configured trigger source is named, not just the one watchKind
   // happens to pick: a watch can carry an output match, an event trigger, and a
   // clock cadence at once, and naming only the first would hide the rest.
@@ -203,6 +204,12 @@ export function watchMeta(watch: NavigationWatchSummary): string {
     conditions.push(detail === "" ? "on event" : `on event ${detail}`);
   }
   conditions.push(...clockCadenceLabels(watch));
+  if (now !== undefined) {
+    const nextFire = (watch.cadence ?? [])
+      .map((cadence) => watchNextFireLabel(cadence, now))
+      .find((label) => label !== "");
+    if (nextFire !== undefined) conditions.push(nextFire);
+  }
   const suffix = watch.deliveries > 0 ? deliveryCountLabel(watch.deliveries) : armedState(watch);
   return [...conditions, suffix].filter((part) => part !== "").join(" · ");
 }

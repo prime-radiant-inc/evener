@@ -103,6 +103,7 @@ const SESSION_OPTIONAL = [
   "updated_at",
   "more_subagents",
   "omitted_descendants",
+  "omitted_watches",
   "running_jobs",
   "completed_jobs",
   "watches",
@@ -151,9 +152,10 @@ function jobValue(value: unknown): boolean {
 }
 
 const watchCadenceValue = (value: unknown): boolean =>
-  exactKeys(value, ["kind"], ["seconds", "every", "filter"]) &&
+  exactKeys(value, ["kind"], ["seconds", "derived_next_fire_at", "every", "filter"]) &&
   identity(value.kind) &&
   optional(value.seconds, (item) => typeof item === "number" && Number.isFinite(item) && item >= 0) &&
+  optional(value.derived_next_fire_at, rfc3339Timestamp) &&
   optional(value.every, count) &&
   optional(value.filter, (item) => boundedString(item, 512));
 
@@ -202,6 +204,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.updated_at, rfc3339Timestamp) &&
     optional(value.more_subagents, count) &&
     optional(value.omitted_descendants, count) &&
+    optional(value.omitted_watches, count) &&
     optional(value.running_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
     optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
     optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue))

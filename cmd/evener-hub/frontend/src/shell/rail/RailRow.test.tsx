@@ -768,6 +768,17 @@ describe("watch count on the summary line", () => {
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches");
   });
 
+  test("surfaces omitted watches so the row never silently undercounts", () => {
+    const session = apiNode({
+      state: "idle",
+      age: "2m",
+      watches: [watchSummary()],
+      omitted_watches: 2,
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch · +2 more");
+  });
+
   test("precedes the branch on the visible line", () => {
     const session = apiNode({ state: "active", branch: "feature/x", watches: [watchSummary()] });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);

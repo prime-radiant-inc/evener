@@ -169,6 +169,11 @@ type NavigationJobSummary struct {
 type NavigationWatchCadence struct {
 	Kind    string  `json:"kind"`
 	Seconds float64 `json:"seconds,omitempty"`
+	// DerivedNextFireAt is the next instant this clock-driven cadence is
+	// expected to fire, derived at the daemon (see appwire.EvenerWatchCadence).
+	// Approximate and able to slide later; consumers word it with a "~". Absent
+	// for output and event cadences, which have no schedule.
+	DerivedNextFireAt string `json:"derived_next_fire_at,omitempty"`
 	// Every is the fire-every-Nth-matching-event throttle on an "events"
 	// cadence; absent (zero) means fire on every matching event. Only the
 	// events kind carries it.
@@ -208,25 +213,31 @@ type NavigationWatchSummary struct {
 
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
-	Ref                string                                `json:"ref"`
-	HostID             string                                `json:"host_id"`
-	SessionID          string                                `json:"session_id"`
-	Title              string                                `json:"title"`
-	Project            string                                `json:"project"`
-	State              string                                `json:"state"`
-	Kind               string                                `json:"kind"`
-	Branch             string                                `json:"branch,omitempty"`
-	ClusterCount       int                                   `json:"cluster_count,omitempty"`
-	Favorite           bool                                  `json:"favorite,omitempty"`
-	Rename             bool                                  `json:"rename,omitempty"`
-	Live               bool                                  `json:"live"`
-	AskPending         bool                                  `json:"ask_pending,omitempty"`
-	Dormant            bool                                  `json:"dormant,omitempty"`
-	UpdatedAt          *time.Time                            `json:"updated_at,omitempty"`
-	MoreSubagents      int                                   `json:"more_subagents,omitempty"`
-	OmittedDescendants int                                   `json:"omitted_descendants,omitempty"`
-	RunningJobs        NavigationArray[NavigationJobSummary] `json:"running_jobs,omitempty"`
-	CompletedJobs      NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
+	Ref                string     `json:"ref"`
+	HostID             string     `json:"host_id"`
+	SessionID          string     `json:"session_id"`
+	Title              string     `json:"title"`
+	Project            string     `json:"project"`
+	State              string     `json:"state"`
+	Kind               string     `json:"kind"`
+	Branch             string     `json:"branch,omitempty"`
+	ClusterCount       int        `json:"cluster_count,omitempty"`
+	Favorite           bool       `json:"favorite,omitempty"`
+	Rename             bool       `json:"rename,omitempty"`
+	Live               bool       `json:"live"`
+	AskPending         bool       `json:"ask_pending,omitempty"`
+	Dormant            bool       `json:"dormant,omitempty"`
+	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
+	MoreSubagents      int        `json:"more_subagents,omitempty"`
+	OmittedDescendants int        `json:"omitted_descendants,omitempty"`
+	// OmittedWatches counts live-watch rows this session's summary does not
+	// carry: rows beyond the projector's per-session cap, rows it could not
+	// represent, and rows the byte-budget fitter shed. It mirrors
+	// OmittedDescendants so the rail and the activity panel can say "+N more"
+	// instead of silently undercounting a session's watches.
+	OmittedWatches int                                   `json:"omitted_watches,omitempty"`
+	RunningJobs    NavigationArray[NavigationJobSummary] `json:"running_jobs,omitempty"`
+	CompletedJobs  NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
 	// Watches carries this session's own live watches. Absent on an older
 	// daemon (or a past-index entry) and therefore absent-able for consumers.
 	Watches  NavigationArray[NavigationWatchSummary]   `json:"watches,omitempty"`
