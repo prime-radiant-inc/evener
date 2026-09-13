@@ -828,7 +828,13 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	if !lastChildEntry.unrepresentable {
 		t.Fatal("the child is the page's target and kept nothing back, so its drop must be offered for a skip")
 	}
-	skipActivityTrimmedEntry(lastChildEntry, "root", 0, nil, 0)
+	// The production skip: advance to the entry's own position + 1, then name
+	// it if the page can carry the sentence — which this tiny tree can.
+	mintActivityTrimContinuation(lastChildEntry, "root", lastChildEntry.index+1, 0, nil, 0)
+	skipTree := appwire.JobActivityTree{Root: *session}
+	if err := explainActivitySkippedEntry(&skipTree, lastChildEntry); err != nil {
+		t.Fatalf("explain the skipped entry: %v", err)
+	}
 	skipped, err := decodeActivityContinuation(child.Branch.Continuation, "root")
 	if err != nil {
 		t.Fatalf("decode child continuation after the skip: %v", err)

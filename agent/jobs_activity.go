@@ -38,7 +38,7 @@ const (
 	activityMaxContinuationPathLength = activityMaxNewDepth + 1
 	// activitySkippedEntrySuffix completes a named skip diagnostic;
 	// activitySkippedEntryShortMessage is what a page falls back to when it
-	// cannot fit the name — see skipActivityTrimmedEntryWithinLimit.
+	// cannot fit the name — see explainActivitySkippedEntry.
 	activitySkippedEntrySuffix       = " is too large to render in one response and was skipped"
 	activitySkippedEntryShortMessage = "one entry was too large to render and was skipped"
 )
@@ -1469,17 +1469,6 @@ type activityTrimmedEntry struct {
 	ref             string
 	index           int
 	unrepresentable bool
-}
-
-// skipActivityTrimmedEntry advances the dropped entry's session past it and
-// names it: no page can carry this entry, so a continuation pointing back at
-// it would render the same page and mint the same token forever.
-func skipActivityTrimmedEntry(dropped activityTrimmedEntry, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) {
-	if dropped.session == nil {
-		return
-	}
-	mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
-	appendActivityBranchError(&dropped.session.Branch, dropped.ref+activitySkippedEntrySuffix)
 }
 
 // explainActivitySkippedEntry names the skipped entry on a page whose advance
