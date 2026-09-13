@@ -1,7 +1,13 @@
 import { expect, test } from "vitest";
 import type { NavigationSessionSummary, NavigationWatchSummary } from "../../protocol/types.gen";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "./codec";
-import { relativeAge, selectRailModel, selectSessionWatches } from "./selectors";
+import {
+  relativeAge,
+  resetSessionWatchesCacheForTests,
+  selectRailModel,
+  selectSessionWatches,
+  sessionWatchesCacheSizeForTests,
+} from "./selectors";
 import { navigationStore } from "./store";
 import {
   isSettledGone,
@@ -279,4 +285,76 @@ test("selectSessionWatches keeps identity across unrelated navigation churn", ()
   const changed = selectSessionWatches("local:s", watchesState("two", [{ ...watchRow, deliveries: 2 }]));
   expect(changed).not.toBe(first);
   expect(changed?.[0]?.deliveries).toBe(2);
+});
+
+function refWatchesState(ref: string, watches: NavigationWatchSummary[]): ReturnType<typeof navigationStore.getState> {
+  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  const summary = {
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "p",
+    state: "idle",
+    kind: "session",
+    live: true,
+    watches,
+    children: [],
+  } as unknown as NavigationSessionSummary;
+  const resource: ResourceState = {
+    key: sectionKey,
+    data: { sessions: [summary] },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "tag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  return { ...navigationStore.getState(), resources: new Map([[keyID(sectionKey), resource]]) };
+}
+
+// A ref that drops out of the session list must not keep a cache entry for the
+// life of the page. Deleting the entry also drops its old array, so the next
+// read recomputes instead of serving a stale identity.
+test("selectSessionWatches drops the entry when the session summary vanishes", () => {
+  const ref = "local:cache-vanished";
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  resetSessionWatchesCacheForTests();
+  expect(selectSessionWatches(ref, refWatchesState(ref, [watchRow]))).toEqual([watchRow]);
+  expect(sessionWatchesCacheSizeForTests()).toBe(1);
+
+  expect(selectSessionWatches(ref, refWatchesState("local:cache-elsewhere", [watchRow]))).toBeUndefined();
+  expect(sessionWatchesCacheSizeForTests()).toBe(0);
+});
+
+// The cache is bounded, and Map preserves insertion order, so exceeding the cap
+// evicts the oldest insertion. That only costs a recomputation, never
+// correctness.
+test("selectSessionWatches bounds its cache by evicting the oldest insertion", () => {
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  resetSessionWatchesCacheForTests();
+  const oldestRef = "local:cache-oldest";
+  const first = selectSessionWatches(oldestRef, refWatchesState(oldestRef, [watchRow]));
+  for (let i = 0; i <= 256; i++) {
+    const ref = `local:cache-cap-${i}`;
+    selectSessionWatches(ref, refWatchesState(ref, [watchRow]));
+  }
+  expect(sessionWatchesCacheSizeForTests()).toBeLessThanOrEqual(256);
+  const reread = selectSessionWatches(oldestRef, refWatchesState(oldestRef, [watchRow]));
+  expect(reread).not.toBe(first);
 });
