@@ -26,6 +26,7 @@ grace=1
 failures=0
 work=""
 spawned_groups=""
+spawned=""
 # Whatever this check spawned is stopped from here, by its own group id, before
 # the scratch goes: a failed assertion must not leave a group running.
 selfcheck_cleanup() {
@@ -52,18 +53,20 @@ check() {
 }
 
 # spawn RECORD MARKER COMMAND... — a real job in a group of its own, recorded the
-# way the gate and the installer record theirs. Prints the pid.
+# way the gate and the installer record theirs. The pid comes back in $spawned,
+# not on stdout: `pid="$(spawn …)"` would run this in a subshell, where the list
+# the EXIT trap stops is written and then thrown away with the subshell.
 spawn() {
-	local record="$1" spawn_marker="$2" pid
+	local record="$1" spawn_marker="$2"
 	shift 2
+	spawned=""
 	: >"$record"
 	pgroup_write_wrapper "$record" || return 1
 	perl "$record.wrapper.pl" "$record" "$spawn_marker" "$@" >/dev/null 2>&1 &
-	pid=$!
-	pgroup_record_spawned "$record" "$pid" "$spawn_marker" || return 1
+	spawned=$!
+	spawned_groups="$spawned_groups $spawned"
+	pgroup_record_spawned "$record" "$spawned" "$spawn_marker" || return 1
 	pgroup_record_value "$record" "$grace" >/dev/null || return 1
-	spawned_groups="$spawned_groups $pid"
-	printf '%s' "$pid"
 }
 
 record_state() { [ -e "$1" ] && printf 'kept' || printf 'removed'; }
@@ -79,7 +82,8 @@ run_case() {
 
 # 1. a live group of the job's own: stopped, record removed, group empty.
 rec="$work/1.pgid"
-pid="$(spawn "$rec" "$marker" sleep 30)"
+spawn "$rec" "$marker" sleep 30
+pid="$spawned"
 if [ "$(pid_pgroup "$pid")" = "$own_pgid" ]; then
 	printf 'process-group-lib.selfcheck.sh: refusing to run: the job landed in this shell own group\n' >&2
 	exit 1
@@ -89,7 +93,8 @@ check "live group stopped" "0 removed empty" "$status $(record_state "$rec") $(g
 
 # 2. the same record after the group has gone on its own.
 rec="$work/2.pgid"
-pid="$(spawn "$rec" "$marker" sleep 0)"
+spawn "$rec" "$marker" sleep 0
+pid="$spawned"
 sleep 1
 run_case "$rec"
 check "group already gone" "0 removed empty" "$status $(record_state "$rec") $(group_state "$pid")"
@@ -109,7 +114,8 @@ check "pre-split pid stopped" "0 removed 1" "$status $(record_state "$rec") $run
 
 # 4. a record written by somebody else's script: not this caller's job at all.
 rec="$work/4.pgid"
-pid="$(spawn "$rec" "$marker" sleep 30)"
+spawn "$rec" "$marker" sleep 30
+pid="$spawned"
 printf 'pid:%s:some-other-script-77' "$pid" >"$rec"
 run_case "$rec"
 check "record of another script" "1 removed alive" "$status $(record_state "$rec") $(group_state "$pid")"
@@ -119,7 +125,8 @@ stop_pgroup "$pid" "$grace" >/dev/null 2>&1 || :
 # unknown, not "somebody else's" — a live process that cannot be identified is
 # exactly what must not be dropped.
 rec="$work/4b.pgid"
-pid="$(spawn "$rec" "$marker" sleep 30)"
+spawn "$rec" "$marker" sleep 30
+pid="$spawned"
 printf 'pid:%s:%s-stranger' "$pid" "$marker_prefix" >"$rec"
 run_case "$rec"
 check "pid record, unidentifiable" "2 kept alive" "$status $(record_state "$rec") $(group_state "$pid")"
@@ -127,7 +134,8 @@ stop_pgroup "$pid" "$grace" >/dev/null 2>&1 || :
 
 # 5. a survivor: record: kept, and nothing signalled.
 rec="$work/5.pgid"
-pid="$(spawn "$rec" "$marker" sleep 30)"
+spawn "$rec" "$marker" sleep 30
+pid="$spawned"
 pgroup_record_survivor "$rec" "$pid"
 run_case "$rec"
 check "survivor record kept" "3 kept alive" "$status $(record_state "$rec") $(group_state "$pid")"
@@ -166,17 +174,21 @@ check "refusals" " refused refused refused refused" "$refusals"
 
 # 9. a listing that will not run: unknown, record kept.
 rec="$work/9.pgid"
-pid="$(spawn "$rec" "$marker" sleep 30)"
+spawn "$rec" "$marker" sleep 30
+pid="$spawned"
 mkdir -p "$work/psbin"
 printf '#!/usr/bin/env bash\nexit 1\n' >"$work/psbin/ps"
 chmod +x "$work/psbin/ps"
 PATH="$work/psbin:$PATH" run_case "$rec"
-check "unreadable listing kept" "2 kept" "$status $(record_state "$rec")"
+# Nothing may be signalled when nothing can be read, so the job is still there.
+pid_is_running "$pid"
+check "unreadable listing kept, nothing signalled" "2 kept 0" "$status $(record_state "$rec") $?"
 stop_pgroup "$pid" "$grace" >/dev/null 2>&1 || :
 
 # 10. a child that ignores SIGTERM: the escalation reaches it inside the grace.
 rec="$work/10.pgid"
-pid="$(spawn "$rec" "$marker" bash -c 'trap "" TERM; sleep 30')"
+spawn "$rec" "$marker" bash -c 'trap "" TERM; sleep 30'
+pid="$spawned"
 run_case "$rec"
 check "TERM-ignoring child killed" "0 removed empty" "$status $(record_state "$rec") $(group_state "$pid")"
 
