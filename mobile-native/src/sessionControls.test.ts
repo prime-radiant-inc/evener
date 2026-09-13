@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import { WireError } from "../../appwire-client/typescript/errors";
 import type {
 	ModelListResponse,
 	Thread,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import {
 	type ConversationClientLike,
 	createConversationService,

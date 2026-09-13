@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
-import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
+import type { WebSocketLike } from "../../appwire-client/typescript/transport";
 import { createHubClient } from "../src/connection";
 
 // The owned hub B proxy is the only target; never use ambient hub credentials.

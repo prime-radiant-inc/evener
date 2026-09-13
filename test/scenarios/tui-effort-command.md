@@ -89,7 +89,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   notification that hasn't arrived yet.
 - Step 5 (web live convergence): `selectValue` equals the level set from the
   TUI in step 3, with **no web reload** — driven by
-  `thread/reasoning-effort/changed` (`protocol/reducer.ts:702-705`).
+  `thread/reasoning-effort/changed` (`appwire-client/typescript/reducer.ts:702-705`).
   `readout` shows the same word, and `options` is `[""]` followed by the
   model's own ladder minus `"none"` (`StatusRow.tsx:129`). An unset effort —
   and evener's `"none"`, which clears to the provider default — both render as
@@ -144,7 +144,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   absence against. Check `supportsReasoning` on the wire before calling a
   missing control a regression.
 - `supportsReasoning` is a plain boolean in the web model (coerced from the
-  wire's optional field, `protocol/reducer.ts`), so the old "undefined vs
+  wire's optional field, `appwire-client/typescript/reducer.ts`), so the old "undefined vs
   false" distinction the TUI half warned about does not exist on the web
   side any more. Step 7's known-empty case is a TUI assertion.
 - `/effort` gates on the `ChangeModel` capability (same gate as `/model` —

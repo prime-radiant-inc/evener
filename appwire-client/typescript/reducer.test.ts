@@ -92,7 +92,7 @@ function parseFixture(name: string, text: string): Fixture {
     if (!KNOWN_NOTIFICATIONS.has(method)) {
       throw new Error(
         `fixture ${name} line ${record.line}: unknown notification "${method}" — not in the hub's generated ` +
-          `notification catalog (NOTIFICATION_NAMES in protocol/types.gen.ts). Either the notification was ` +
+          `notification catalog (NOTIFICATION_NAMES in appwire-client/typescript/types.gen.ts). Either the notification was ` +
           `renamed or removed on the wire and this recorded replay is stale, or the name is a typo; either way ` +
           `the reducer would ignore this line via its default: case and the snapshot would record nothing.`,
       );
@@ -516,8 +516,8 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
 // --- O(1) per-delta accumulation (perf fix, PR3) ----------------------------
 // Rationale and machinery: reducer.ts's chunk-view section header.
 
-// The shared streaming-agentMessage scaffold (src/protocol/testing/
-// tokenFlood.ts) on this suite's thr_t/ref_t/turn_1/item_1 identity.
+// The shared streaming-agentMessage scaffold (appwire-client/typescript/
+// testing/tokenFlood.ts) on this suite's thr_t/ref_t/turn_1/item_1 identity.
 function streamingItem(): ThreadModel {
   return hydrateStreamingAgentMessage("ref_t", { threadId: "thr_t" });
 }

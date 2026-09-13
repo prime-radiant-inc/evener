@@ -90,7 +90,7 @@ head and runs it as a fresh user turn.
      into the textarea inside `[data-testid="composer-input-card"]` and click
      `[data-testid="composer-submit"]` — **Send** routes to `turn/queue`
      while a turn is running and `turn/start` otherwise
-     (`protocol/submitRouting.ts:19-23`), one label with two
+     (`appwire-client/typescript/submitRouting.ts:19-23`), one label with two
      timings. The queue then shows up as the heading
      `Queued messages (N)` (`composer/queue/QueueStrip.tsx:278`) and as
      `[data-testid="status-row-queue"]` reading `N queued` on the status

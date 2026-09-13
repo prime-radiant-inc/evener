@@ -3,14 +3,14 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import { WireError } from "../../appwire-client/typescript/errors";
 import type {
 	InitializeResponse,
 	MutationReceipt,
 	Thread,
 	Turn,
 	TurnStartParams,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 
 export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
