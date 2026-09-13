@@ -165,10 +165,10 @@ and assert what each tab converges to.
   **both** tabs — a successful durable enqueue removes the batch in the sending tab
   (`askDockStore.ts:258`), and the winner's `[answers]` reply lands as a plain
   `userMessage`, which pushes the question behind `liveAskQuestions`' last-user-message
-  boundary in the other (`askDock/deriveAskQuestions.ts:60-90`). `recap` in both tabs
+  boundary in the other (`cmd/evener-hub/frontend/src/protocol/deriveAskQuestions.ts:62-97`). `recap` in both tabs
   reads the identical `Asked: [Deploy] — answered: "<winner's choice>"` — the losing tab
   echoes the *winner's* answer, because the recap is computed from the shared transcript
-  (`panes/session/askShared.ts:118-150`), not from local state.
+  (`cmd/evener-hub/frontend/src/protocol/askShared.ts:118-150`), not from local state.
 - **Step 7 (the loser's own text)**: the rejected intent lands in the durable recovery
   surface — either restored into that tab's composer as an editable draft (`composerDraft`
   starts with `[answers]`; `Composer.tsx:271-297` only does this when the composer is

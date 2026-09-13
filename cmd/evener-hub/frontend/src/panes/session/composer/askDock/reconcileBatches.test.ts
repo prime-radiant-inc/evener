@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test, vi } from "vitest";
-import type { AskQuestionRef } from "./deriveAskQuestions";
+import type { AskQuestionRef } from "../../../../protocol/deriveAskQuestions";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";
 
 function ref(key: string): AskQuestionRef {
