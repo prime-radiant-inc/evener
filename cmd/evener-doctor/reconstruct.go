@@ -40,7 +40,12 @@ type reconstructionReport struct {
 	ToolResults                int       `json:"tool_results"`
 	MissingToolOutputs         int       `json:"missing_tool_outputs"`
 	HistoricalAttentionRecords int       `json:"historical_attention_records"`
-	Limitations                []string  `json:"limitations"`
+	// HistoricalPresentationalRecords counts the archived records that
+	// describe the session's presentation rather than its conversation —
+	// round timings and compaction-layer measurements — which the archive
+	// keeps only as prose.
+	HistoricalPresentationalRecords int      `json:"historical_presentational_records"`
+	Limitations                     []string `json:"limitations"`
 }
 
 type archivedMessage struct {
@@ -123,6 +128,7 @@ func reconstructSession(ctx context.Context, sid, dbPath, metaPath, mutationsPat
 		"Tool outputs omitted by the archive are replaced with explicit unavailable-content notices. Those notices do not prove the tool succeeded or failed.",
 		"Process, job, delegate, attention, queue, and task state are not reconstructed. Verify current files and process state before continuing work.",
 		"Attention-resolution records are preserved only in source-snapshot.json and counted as historical_attention_records. Their missing originating delivery IDs make them unsuitable for runtime replay, and they must not enter model history.",
+		"Round-timing and context-compaction records are preserved only in source-snapshot.json and counted as historical_presentational_records. The archive keeps their prose without the measurements they describe, so a rebuilt record would announce numbers the reconstruction does not have.",
 	}}
 	header, entries, err := reconstructEntries(source, meta, mutationIDs, &report)
 	if err != nil {
@@ -514,6 +520,16 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			// originating delivery IDs that the archive omits; converting them to
 			// another turn kind would expose private bookkeeping to the model.
 			report.HistoricalAttentionRecords++
+			continue
+		case schema.TurnRoundTimings, schema.TurnContextCompaction:
+			// Same rule, same reason. These describe the session's
+			// presentation — how long a round took, what a compaction layer
+			// measured — and the archive keeps only their prose. Rebuilt
+			// without their structured payload they would announce
+			// measurements the reconstruction does not have, and a compaction
+			// record would claim a shrink this transcript never performed. The
+			// source snapshot keeps them; the count says so.
+			report.HistoricalPresentationalRecords++
 			continue
 		case schema.TurnSystem, schema.TurnModelSwitch, schema.TurnFailure, schema.TurnHookCompleted:
 			turn.Message.Role = llm.RoleSystem

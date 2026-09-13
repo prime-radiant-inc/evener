@@ -1009,3 +1009,67 @@ func TestReconstructRetainsAggregateCacheUsageWithoutBreakdown(t *testing.T) {
 		})
 	}
 }
+
+// The daemon persists a round's timing record and each compaction layer's
+// measurements as their own entries now, so an archive of any recent session
+// contains them. They are presentational: the archive keeps their prose and
+// none of their structured payload, so a reconstruction can only carry hollow
+// records that claim measurements it does not have. They follow the
+// attention-resolution rule instead — left in the source snapshot, counted, and
+// kept out of model history — rather than failing the whole reconstruction.
+func TestReconstructSkipsPresentationalRecordsInsteadOfFailing(t *testing.T) {
+	dbPath, meta, output := reconstructionFixture(t)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// The fixture session declares its message count; the archive check
+	// compares them, so the two new records are announced there too.
+	if _, err := db.Exec(`UPDATE sessions SET message_count=7 WHERE id='evener:02wLIRxqmq3AUo6vl2OW37'`); err != nil {
+		t.Fatal(err)
+	}
+	const timings = "Round timings: 1 round"
+	if _, err := db.Exec(`INSERT INTO messages VALUES (6,'evener:02wLIRxqmq3AUo6vl2OW37',5,?,'2026-09-09T01:04:30Z','entry','ROUND_TIMINGS','','','','','')`, timings); err != nil {
+		t.Fatal(err)
+	}
+	const compaction = "Layer: checkpoint\nTurns: 12 -> 7"
+	if _, err := db.Exec(`INSERT INTO messages VALUES (7,'evener:02wLIRxqmq3AUo6vl2OW37',6,?,'2026-09-09T01:04:40Z','entry','CONTEXT_COMPACTION','','','','','')`, compaction); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"reconstruct", "02wLIRxqmq3AUo6vl2OW37", "--agentsview-db", dbPath, "--meta", meta, "--output-dir", output}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, &errOut)
+	}
+	reportBytes, err := os.ReadFile(filepath.Join(output, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report reconstructionReport
+	if err := json.Unmarshal(reportBytes, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.HistoricalPresentationalRecords != 2 {
+		t.Fatalf("report counted %d omitted presentational records, want the timing and the compaction record", report.HistoricalPresentationalRecords)
+	}
+	data, err := os.ReadFile(filepath.Join(output, "sessions", "02wLIRxqmq3AUo6vl2OW37.transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{string(schema.TurnRoundTimings), string(schema.TurnContextCompaction)} {
+		if bytes.Contains(data, []byte(`"kind":"`+kind+`"`)) {
+			t.Fatalf("%s entered the reconstructed transcript; a record whose payload the archive dropped cannot be replayed", kind)
+		}
+	}
+	snapshot, err := os.ReadFile(filepath.Join(output, "source-snapshot.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source reconstructionSource
+	if err := json.Unmarshal(snapshot, &source); err != nil {
+		t.Fatal(err)
+	}
+	if source.Messages[5].Content != timings || source.Messages[6].Content != compaction {
+		t.Fatal("the source snapshot lost the presentational evidence it is supposed to preserve")
+	}
+}
