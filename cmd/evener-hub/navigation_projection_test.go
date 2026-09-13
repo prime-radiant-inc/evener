@@ -3,6 +3,9 @@ package hub
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +122,273 @@ func TestNavigationProjectionCarriesActiveAndCompletedJobs(t *testing.T) {
 	}
 	if len(row.CompletedJobs) != 1 || row.CompletedJobs[0].JobID != "job-completed" || row.CompletedJobs[0].Status != "completed" {
 		t.Fatalf("completed jobs = %+v", row.CompletedJobs)
+	}
+}
+
+// An old daemon (or a past-index entry) carries no watch rows. The summary
+// must still build, with an empty watch list and no error.
+func TestNavigationWatchProjectionAbsentWatchesYieldsEmptyList(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-parent", Title: "parent", Kind: "session", State: "idle",
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatalf("projection with absent watches failed: %v", err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	row := resource.Current.Sessions[0]
+	if len(row.Watches) != 0 {
+		t.Fatalf("row.Watches = %+v, want empty when the tree node carries none", row.Watches)
+	}
+}
+
+// A receiver watch is visible to two sessions, but each summary carries only
+// its own daemon's rows. Carrying one session's rows onto another here would
+// double count the watch in a subtree rollup.
+func TestNavigationSummaryDoesNotAggregateWatchesAcrossSessions(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{
+			{
+				ID: "session-a", Title: "a", Kind: "session", State: "idle",
+				Watches: []appwire.EvenerWatchInfo{{
+					ID: "watch-a", Source: "timer", Target: "session-b", SendTo: "session-b",
+					Note: "owner watch", Cadence: []appwire.EvenerWatchCadence{{Kind: "every", Seconds: 600}},
+					Deliveries: 2, CreatedAt: "2026-09-12T10:00:00Z", Active: true,
+					DeliveryTimes: []string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"},
+				}},
+			},
+			{
+				ID: "session-b", Title: "b", Kind: "session", State: "idle",
+				Watches: []appwire.EvenerWatchInfo{{ID: "watch-b", Source: "output", Note: "receiver watch", CreatedAt: "2026-09-12T10:00:00Z"}},
+			},
+		},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	rows := make(map[string]hubapi.NavigationSessionSummary, len(resource.Current.Sessions))
+	for _, row := range resource.Current.Sessions {
+		rows[row.SessionID] = row
+	}
+	rowA, okA := rows["session-a"]
+	rowB, okB := rows["session-b"]
+	if !okA || !okB {
+		t.Fatalf("sessions = %+v, want session-a and session-b", rows)
+	}
+	if len(rowA.Watches) != 1 || rowA.Watches[0].ID != "watch-a" {
+		t.Fatalf("session-a watches = %+v, want only watch-a", rowA.Watches)
+	}
+	watch := rowA.Watches[0]
+	if watch.Source != "timer" || watch.Note != "owner watch" || watch.SendTo != "session-b" ||
+		len(watch.Cadence) != 1 || watch.Cadence[0].Kind != "every" || watch.Cadence[0].Seconds != 600 ||
+		watch.Deliveries != 2 || !watch.Active {
+		t.Fatalf("session-a projected watch = %+v, want the carried fields", watch)
+	}
+	wantDeliveryTimes := []string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"}
+	if !reflect.DeepEqual(watch.DeliveryTimes, wantDeliveryTimes) {
+		t.Fatalf("session-a DeliveryTimes = %+v, want %+v", watch.DeliveryTimes, wantDeliveryTimes)
+	}
+	if len(rowB.Watches) != 1 || rowB.Watches[0].ID != "watch-b" {
+		t.Fatalf("session-b watches = %+v, want only watch-b", rowB.Watches)
+	}
+	if rowB.Watches[0].DeliveryTimes == nil || len(rowB.Watches[0].DeliveryTimes) != 0 {
+		t.Fatalf("session-b DeliveryTimes = %#v, want an empty non-nil list when the source row carries none", rowB.Watches[0].DeliveryTimes)
+	}
+	for _, carried := range rowB.Watches {
+		if carried.ID == "watch-a" {
+			t.Fatalf("session-b aggregates session-a's watch: %+v", rowB.Watches)
+		}
+	}
+}
+
+// TestNavigationWatchDeliveryTimesDropsUnrepresentableInstants pins the fix for
+// the codec-break found in review: the web codec validates every delivery_times
+// entry as strict RFC3339, so TRUNCATING an over-long value with an ellipsis made
+// the whole watch-carrying snapshot fail to decode. An instant the codec cannot
+// represent is dropped instead; a normal RFC3339 instant passes through unchanged.
+func TestNavigationWatchDeliveryTimesDropsUnrepresentableInstants(t *testing.T) {
+	long := strings.Repeat("a", maxNavigationLabelRunes+64)
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{{
+				ID: "watch-a", Source: "output", CreatedAt: "2026-09-12T10:00:00Z",
+				DeliveryTimes: []string{"2026-09-12T10:00:00Z", long},
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	if len(resource.Current.Sessions) != 1 || len(resource.Current.Sessions[0].Watches) != 1 {
+		t.Fatalf("projected rows = %+v, want one session with one watch", resource.Current.Sessions)
+	}
+	got := resource.Current.Sessions[0].Watches[0].DeliveryTimes
+	if !reflect.DeepEqual(got, []string{"2026-09-12T10:00:00Z"}) {
+		t.Fatalf("DeliveryTimes = %+v, want only the representable instant", got)
+	}
+}
+
+// A watch whose required created_at cannot be represented is dropped entirely:
+// created_at has no absent form in the codec, so carrying an ellipsized value
+// would reject the whole resource, and carrying a fabricated one would lie.
+func TestNavigationWatchProjectionDropsWatchWithUnrepresentableCreatedAt(t *testing.T) {
+	long := strings.Repeat("x", maxNavigationLabelRunes+64)
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{
+				{ID: "watch-ok", Source: "output", CreatedAt: "2026-09-12T10:00:00Z"},
+				{ID: "watch-bad", Source: "output", CreatedAt: long},
+			},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	rows := resource.Current.Sessions
+	if len(rows) != 1 {
+		t.Fatalf("sessions = %+v, want one", rows)
+	}
+	if len(rows[0].Watches) != 1 || rows[0].Watches[0].ID != "watch-ok" {
+		t.Fatalf("watches = %+v, want only watch-ok", rows[0].Watches)
+	}
+	if rows[0].Watches[0].CreatedAt != "2026-09-12T10:00:00Z" {
+		t.Fatalf("CreatedAt = %q, want the valid instant unchanged", rows[0].Watches[0].CreatedAt)
+	}
+}
+
+// TestNavigationWatchCadenceCarriesEventEveryAndFilter proves the events
+// cadence's every-Nth count and filter summary reach the hub's wire summary,
+// so the rail and session panel can distinguish a throttled or filtered event
+// watch. The filter is a caller-supplied string, so it is bounded like every
+// other rendered watch label.
+func TestNavigationWatchCadenceCarriesEventEveryAndFilter(t *testing.T) {
+	longFilter := strings.Repeat("f", maxNavigationLabelRunes+64)
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{{
+				ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z",
+				Cadence: []appwire.EvenerWatchCadence{
+					{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"},
+					{Kind: "events", Filter: longFilter},
+				},
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	if len(resource.Current.Sessions) != 1 || len(resource.Current.Sessions[0].Watches) != 1 {
+		t.Fatalf("projected rows = %+v, want one session with one watch", resource.Current.Sessions)
+	}
+	got := resource.Current.Sessions[0].Watches[0].Cadence
+	want := []hubapi.NavigationWatchCadence{
+		{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"},
+		{Kind: "events", Filter: truncateNavigationRunes(longFilter, maxNavigationLabelRunes)},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Cadence = %+v, want %+v", got, want)
+	}
+}
+
+// A watch's id and source are identity, not display text: the rail and the
+// panel derive row keys from watch.id. Truncating either with an ellipsis let
+// two distinct long ids collapse to the same label and collide, so both pass
+// through untouched while the display fields keep their label bound.
+func TestNavigationWatchProjectionKeepsIdentityUntruncated(t *testing.T) {
+	longID := "watch-" + strings.Repeat("a", maxNavigationLabelRunes) + "-alpha"
+	siblingID := "watch-" + strings.Repeat("a", maxNavigationLabelRunes) + "-bravo"
+	longSource := "source-" + strings.Repeat("s", maxNavigationLabelRunes) + "-end"
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{
+				{ID: longID, Source: longSource, CreatedAt: "2026-09-12T10:00:00Z"},
+				{ID: siblingID, Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
+			},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	watches := resource.Current.Sessions[0].Watches
+	if len(watches) != 2 {
+		t.Fatalf("watches = %+v, want two rows", watches)
+	}
+	if watches[0].ID != longID || watches[1].ID != siblingID {
+		t.Fatalf("watch ids = %q, %q, want both untruncated and distinct", watches[0].ID, watches[1].ID)
+	}
+	if watches[0].Source != longSource {
+		t.Fatalf("watch source = %q, want the untruncated source", watches[0].Source)
+	}
+}
+
+// validNavigationTimestamp must accept exactly what the web codec accepts. Both
+// read the same shared fixture list so the Go check cannot drift from the
+// codec's rfc3339Timestamp grammar.
+func TestValidNavigationTimestampMatchesCodecFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "navigation", "timestamps.json"))
+	if err != nil {
+		t.Fatalf("read codec fixture: %v", err)
+	}
+	var fixtures []struct {
+		Value string `json:"value"`
+		Valid bool   `json:"valid"`
+	}
+	if err := json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatalf("decode codec fixture: %v", err)
+	}
+	if len(fixtures) == 0 {
+		t.Fatal("codec fixture is empty")
+	}
+	for _, fixture := range fixtures {
+		if got := validNavigationTimestamp(fixture.Value); got != fixture.Valid {
+			t.Errorf("validNavigationTimestamp(%q) = %v, want the codec's %v", fixture.Value, got, fixture.Valid)
+		}
 	}
 }
 
@@ -692,4 +962,41 @@ func navigationDepth(rows []hubapi.NavigationSessionSummary) int {
 	}
 	visit(rows, 1)
 	return maxDepth
+}
+
+// TestCloneNavigationLiveEntriesOwnsWatches proves the navigation-input clone
+// deep-copies each live entry's watch list. Without the Watches line the clone
+// shares the roster's backing slices, so mutating the original's delivery
+// instants (or appending a watch) would reach the cloned projection.
+func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
+	original := []hubcore.LiveEntry{{
+		Watches: []appwire.EvenerWatchInfo{{
+			ID:            "w1",
+			Source:        "self",
+			Cadence:       []appwire.EvenerWatchCadence{{Kind: "every", Seconds: 10}},
+			Events:        []string{"assistant.tool"},
+			DeliveryTimes: []string{"1970-01-01T00:16:40Z"},
+			Active:        true,
+		}},
+	}}
+	clone := cloneNavigationLiveEntries(original)
+
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, original)
+	}
+	original[0].Watches[0].DeliveryTimes[0] = "mutated"
+	original[0].Watches[0].Cadence[0].Kind = "mutated"
+	original[0].Watches[0].Events[0] = "mutated"
+	if clone[0].Watches[0].DeliveryTimes[0] != "1970-01-01T00:16:40Z" ||
+		clone[0].Watches[0].Cadence[0].Kind != "every" ||
+		clone[0].Watches[0].Events[0] != "assistant.tool" {
+		t.Fatalf("clone watch changed through the original: %+v", clone[0].Watches[0])
+	}
+	original[0].Watches = append(original[0].Watches, appwire.EvenerWatchInfo{ID: "w2"})
+	if len(clone[0].Watches) != 1 {
+		t.Fatalf("appending to the original's watches changed the clone: %d rows", len(clone[0].Watches))
+	}
+	if cloneNavigationLiveEntries(nil) != nil {
+		t.Fatal("cloneNavigationLiveEntries(nil) must stay nil")
+	}
 }

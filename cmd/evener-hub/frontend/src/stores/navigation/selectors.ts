@@ -235,6 +235,60 @@ export function selectSessionSummary(ref: string, state = navigationStore.getSta
 }
 export const findSessionNode = selectSessionSummary;
 
+type SessionWatchesCacheEntry = Readonly<{ key: string; watches: NavigationSessionSummary["watches"] }>;
+// One entry per session ref, holding the LAST result's content key and the
+// exact array reference returned for it. A selector consumer comparing with
+// Object.is (zustand's default) therefore re-renders only when the rendered
+// content actually changes; a navigation update that rebuilds an unrelated
+// session's summary leaves this session's array reference intact.
+//
+// The cache is bounded so a long-lived page cannot accumulate one entry per
+// distinct session ref it has ever seen. The limit is well above a session
+// list, and Map preserves insertion order, so exceeding it evicts the oldest
+// insertion. Eviction only costs a recomputation (the next read misses and
+// stores a fresh array); it never changes correctness, because the content key
+// still decides what is returned.
+const sessionWatchesCache = new Map<string, SessionWatchesCacheEntry>();
+const sessionWatchesCacheLimit = 256;
+
+/** Test-only: the number of cached session-watch entries. App code never calls
+ * this. */
+export function sessionWatchesCacheSizeForTests(): number {
+  return sessionWatchesCache.size;
+}
+
+/** Test-only: drop every cached session-watch entry. App code never calls
+ * this. */
+export function resetSessionWatchesCacheForTests(): void {
+  sessionWatchesCache.clear();
+}
+
+/** The watches on `ref`'s session summary, or undefined when the session is not
+ * currently materialized. The returned array keeps its identity while its JSON
+ * content is unchanged, so a narrow subscription does not fire on unrelated
+ * navigation churn. */
+export function selectSessionWatches(
+  ref: string,
+  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
+): NavigationSessionSummary["watches"] {
+  const summary = selectSessionSummary(ref, state);
+  if (summary === null) {
+    sessionWatchesCache.delete(ref);
+    return undefined;
+  }
+  const watches = summary.watches;
+  const key = watches === undefined ? "" : JSON.stringify(watches);
+  const cached = sessionWatchesCache.get(ref);
+  if (cached && cached.key === key) return cached.watches;
+  sessionWatchesCache.set(ref, { key, watches });
+  while (sessionWatchesCache.size > sessionWatchesCacheLimit) {
+    const oldest = sessionWatchesCache.keys().next().value;
+    if (oldest === undefined) break;
+    sessionWatchesCache.delete(oldest);
+  }
+  return watches;
+}
+
 import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
 import type { NormalizedResource } from "./codec";
 

@@ -285,6 +285,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
             sessionRef={sessionRef}
             model={model}
             now={now}
+            watches={fallbackSession?.watches}
             hideTrigger
             refreshWhenHidden
           />

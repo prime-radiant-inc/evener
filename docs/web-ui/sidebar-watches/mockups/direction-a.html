@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Direction A — Inline glint</title>
+    <link rel="stylesheet" href="mockup.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <p class="eyebrow">Sidebar watches · design direction A</p>
+        <h1>Inline glint</h1>
+        <p class="thesis">
+          Watches are supporting cast. The rail keeps its triage job: a count joins
+          the existing summary line, and a watch appears in the fold-out as one
+          quiet line — a clock in the leading gutter, the note as the title, when
+          it fires on the right. The Activity panel gets a slim Watches group
+          above retained activity, and each row opens a field list.
+        </p>
+        <button class="theme-toggle" type="button" onclick="toggleTheme()">Toggle light / dark</button>
+      </header>
+
+      <div class="stage">
+        <!-- ------------------------------------------------------- sidebar -->
+        <div class="rail">
+          <div class="rail-head"><span>Evener</span><span>⌕ ⋯</span></div>
+
+          <div class="rail-section">
+            <div class="rail-section-title">Live</div>
+
+            <div class="rail-row is-selected">
+              <span class="textcol">
+                <span class="titleline">
+                  <span class="signal signal--alive"></span>
+                  <span class="rail-title">Fix flaky sidebar tests</span>
+                  <span class="chev">▾</span>
+                </span>
+                <!-- the session row's summary line gains one segment -->
+                <span class="rail-gloss rail-gloss--alive">
+                  2 subagents working · 1 job running · <b style="font-weight: 500">2 watches</b>
+                </span>
+              </span>
+              <span class="right">2m</span>
+            </div>
+
+            <div class="children">
+
+              <!-- subagent (a session row: title + gloss) -->
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="signal signal--alive"></span>
+                    <span class="rail-title">Audit row memo boundary</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--alive">1 subagent working · 4m</span>
+                </span>
+                <span class="right">4m</span>
+              </div>
+
+              <!-- running job -->
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="signal signal--alive"></span>
+                    <span class="rail-title">go test ./cmd/evener-hub/...</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--alive">running</span>
+                </span>
+              </div>
+
+              <!-- a second, idle subagent -->
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="rail-title">Prune stale fixtures</span>
+                  </span>
+                </span>
+                <span class="right">13m</span>
+              </div>
+
+              <!-- WATCH ROW: one line, clock in the leading gutter -->
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="wglyph" style="margin-left: -10px; width: 16px">◷</span>
+                    <span class="rail-title">Deploy rollback check</span>
+                  </span>
+                </span>
+                <span class="watch-when watch-when--soon">in 4m</span>
+              </div>
+
+              <!-- WATCH ROW: a standing condition has no countdown -->
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="wglyph" style="margin-left: -10px; width: 16px">◷</span>
+                    <span class="rail-title">Migration prints DONE</span>
+                  </span>
+                </span>
+                <span class="watch-when right--low">armed</span>
+              </div>
+
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Inactive subagents (3)</span></span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Completed jobs (7)</span></span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rail-section">
+            <div class="rail-section-title">Projects</div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline"><span class="chev">▸</span><span class="rail-title">evener</span></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ------------------------------------------------------ activity -->
+        <div class="panel">
+          <div class="panel-head">
+            <span>▤</span>
+            <span>Activity</span>
+            <span class="spacer"></span>
+            <span class="count">2 watches · 3 active</span>
+          </div>
+
+          <div class="panel-body">
+            <!-- WATCHES GROUP: above retained activity, because a watch is
+                 something that has not happened yet. -->
+            <div class="group">
+              <div class="group-title"><span>Watches</span><span>2 active</span></div>
+
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <span class="aglyph aglyph--watch">◷</span>
+                <span class="aname aname--live">Deploy rollback check</span>
+                <span class="ameta ameta--soon">next in 4m · 3 fires</span>
+              </div>
+
+              <div class="detail">
+                <p class="detail-why">Check the deploy log for the rollback, and wake me if it happened.</p>
+                <dl class="kv">
+                  <dt>every</dt><dd class="hi">15m</dd>
+                  <dt>next</dt><dd><span class="hi">4m 12s</span> · 19:14:02</dd>
+                  <dt>target</dt><dd>this session (self)</dd>
+                  <dt>fires</dt><dd>3 distinct · 3 delivered · 0 dropped · 0 evicted</dd>
+                </dl>
+                <span class="detail-line">· d_01 delivered · trigger timer
+· d_02 delivered · trigger timer
+· d_03 delivered · trigger timer</span>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--watch">◷</span>
+                <span class="aname">Migration prints DONE</span>
+                <span class="ameta">armed · 0 fires</span>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--watch">◷</span>
+                <span class="aname">Nightly soak: every 30m for 6h</span>
+                <span class="ameta">next in 11m · 1 fire</span>
+              </div>
+            </div>
+
+            <!-- retained activity, unchanged -->
+            <div class="group">
+              <div class="group-title"><span>Activity</span><span>3 active · 2 inactive</span></div>
+
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <span class="aglyph aglyph--alive">$</span>
+                <span class="aname aname--live">go test ./cmd/evener-hub/...</span>
+                <span class="ameta">12s</span>
+              </div>
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--alive">⌘</span>
+                <span class="aname aname--live">Audit row memo boundary</span>
+                <span class="ameta">↑41k ↓6k · 4s</span>
+              </div>
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph">⌘</span>
+                <span class="aname">Prune stale fixtures</span>
+                <span class="ameta">↑12k ↓2k · 13m</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="legend">
+        <h2>What this direction commits to</h2>
+        <ul>
+          <li>
+            <b>Count on the summary line.</b> One more neutral segment after the
+            job count: <span class="mono">2 subagents working · 1 job running · 2 watches</span>.
+            No new hue, no badge, no third line.
+          </li>
+          <li>
+            <b>Watch rows are one line</b> — clock glyph in the outdented leading
+            gutter (where a session's state dot lives), note as the title, and the
+            next-fire countdown right-aligned where a session shows its age. A
+            standing condition with no predictable fire shows
+            <span class="mono">armed</span> instead.
+          </li>
+          <li>
+            <b>Watches precede activity in the panel</b>, in their own small group.
+            Retained activity is what already happened; a watch is what has not.
+          </li>
+          <li>
+            <b>Detail is a field list.</b> The note as a sentence, then
+            <span class="mono">every / next / target / fires</span>, then the
+            delivery log. Runaway drops would render as a danger chip.
+          </li>
+        </ul>
+        <h2>Data it needs</h2>
+        <ul>
+          <li>Per session: active watch count (rollup, like <span class="mono">activeWorkSummary</span>).</li>
+          <li>Per watch: id, note, target, cadence (every / after / condition), next-fire instant or “armed”, fire count.</li>
+          <li>Per watch detail: delivery accounting and, when nonzero, runaway drops.</li>
+        </ul>
+      </div>
+    </div>
+
+    <script>
+      function toggleTheme() {
+        const root = document.documentElement;
+        root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      }
+    </script>
+  </body>
+</html>

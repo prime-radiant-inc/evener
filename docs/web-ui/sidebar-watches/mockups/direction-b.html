@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Direction B — Scheduled work</title>
+    <link rel="stylesheet" href="mockup.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <p class="eyebrow">Sidebar watches · design direction B</p>
+        <h1>Scheduled work</h1>
+        <p class="thesis">
+          A watch is a peer of a job, not a separate species. Everything a session
+          has running or armed is one list, ordered by when it will next do
+          something, with a single right-hand column answering one question:
+          <em>when</em>. Subagents show their age, jobs show their quiet time,
+          watches show their countdown. The Activity panel puts watch rows in the
+          same tree as everything else.
+        </p>
+        <button class="theme-toggle" type="button" onclick="toggleTheme()">Toggle light / dark</button>
+      </header>
+
+      <div class="stage">
+        <!-- ------------------------------------------------------- sidebar -->
+        <div class="rail">
+          <div class="rail-head"><span>Evener</span><span>⌕ ⋯</span></div>
+
+          <div class="rail-section">
+            <div class="rail-section-title">Live</div>
+
+            <div class="rail-row is-selected">
+              <span class="textcol">
+                <span class="titleline">
+                  <span class="signal signal--alive"></span>
+                  <span class="rail-title">Fix flaky sidebar tests</span>
+                  <span class="chev">▾</span>
+                </span>
+                <span class="rail-gloss rail-gloss--alive">
+                  2 subagents working · 1 job running · 2 watches armed
+                </span>
+              </span>
+              <span class="right">2m</span>
+            </div>
+
+            <div class="children">
+
+              <!-- one "when" column: soonest first, whatever the row kind -->
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="wglyph" style="margin-left: -10px; width: 16px">◷</span>
+                    <span class="rail-title">Deploy rollback check</span>
+                    <span class="mono" style="color: var(--ink-low); font-size: 11px">↻15m</span>
+                  </span>
+                </span>
+                <span class="watch-when watch-when--soon">in 4m</span>
+              </div>
+
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="wglyph" style="margin-left: -10px; width: 16px">◷</span>
+                    <span class="rail-title">Nightly soak</span>
+                    <span class="mono" style="color: var(--ink-low); font-size: 11px">↻30m ×6h</span>
+                  </span>
+                </span>
+                <span class="watch-when">in 11m</span>
+              </div>
+
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="signal signal--alive"></span>
+                    <span class="rail-title">go test ./cmd/evener-hub/...</span>
+                  </span>
+                </span>
+                <span class="watch-when">12s quiet</span>
+              </div>
+
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="signal signal--alive"></span>
+                    <span class="rail-title">Audit row memo boundary</span>
+                  </span>
+                </span>
+                <span class="watch-when">4s quiet</span>
+              </div>
+
+              <!-- a standing condition: no countdown exists, so the when cell
+                   says so instead of inventing one -->
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="wglyph" style="margin-left: -10px; width: 16px">◷</span>
+                    <span class="rail-title">Migration prints DONE</span>
+                    <span class="mono" style="color: var(--ink-low); font-size: 11px">on output</span>
+                  </span>
+                </span>
+                <span class="watch-when right--low">armed</span>
+              </div>
+
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Inactive subagents (3)</span></span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Completed jobs (7)</span></span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Ended watches (4)</span></span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rail-section">
+            <div class="rail-section-title">Projects</div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline"><span class="chev">▸</span><span class="rail-title">evener</span></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ------------------------------------------------------ activity -->
+        <div class="panel">
+          <div class="panel-head">
+            <span>▤</span>
+            <span>Activity</span>
+            <span class="spacer"></span>
+            <span class="count">3 active</span>
+          </div>
+
+          <div class="panel-body">
+            <!-- One tree. Watches are rows in it, sorted by next event at the
+                 top of their session's live block. -->
+            <div class="group">
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <span class="aglyph aglyph--watch">◷</span>
+                <span class="aname aname--live">Deploy rollback check</span>
+                <span class="ameta ameta--soon">in 4m · ↻15m</span>
+              </div>
+
+              <div class="detail">
+                <p class="detail-why">Check the deploy log for the rollback, and wake me if it happened.</p>
+                <dl class="kv">
+                  <dt>schedule</dt><dd class="hi">every 15m</dd>
+                  <dt>next</dt><dd><span class="hi">4m 12s</span> · 19:14:02</dd>
+                  <dt>target</dt><dd>this session (self)</dd>
+                  <dt>send to</dt><dd>caller</dd>
+                  <dt>fires</dt><dd>3 distinct · 3 delivered · 0 dropped</dd>
+                </dl>
+                <span class="detail-line">· d_03 delivered · timer · 19:10:02
+· d_02 delivered · timer · 18:55:02
+· d_01 delivered · timer · 18:40:02</span>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <span class="aglyph aglyph--watch">◷</span>
+                <span class="aname aname--live">Nightly soak</span>
+                <span class="ameta ameta--soon">in 11m · ↻30m</span>
+              </div>
+              <div class="detail">
+                <p class="detail-why">Watch the soak run and report if it goes quiet for more than five minutes.</p>
+                <dl class="kv">
+                  <dt>schedule</dt><dd>every 30m, ends after 6h</dd>
+                  <dt>fires</dt><dd>1 distinct · 1 delivered</dd>
+                </dl>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--watch">◷</span>
+                <span class="aname">Migration prints DONE</span>
+                <span class="ameta">armed · 0 fires</span>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--alive">$</span>
+                <span class="aname aname--live">go test ./cmd/evener-hub/...</span>
+                <span class="ameta">12s</span>
+              </div>
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--alive">⌘</span>
+                <span class="aname aname--live">Audit row memo boundary</span>
+                <span class="ameta">↑41k ↓6k · 4s</span>
+              </div>
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph">⌘</span>
+                <span class="aname">Prune stale fixtures</span>
+                <span class="ameta">↑12k ↓2k · 13m</span>
+              </div>
+              <div class="arow" style="color: var(--ink-mid)">
+                <span class="arow-toggle">▸</span>
+                <span class="aname" style="color: var(--ink-mid)">4 inactive</span>
+              </div>
+            </div>
+
+            <!-- failure state: the one thing that earns a hue -->
+            <div class="group">
+              <div class="group-title"><span>Needs a look</span></div>
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <span class="aglyph aglyph--danger">◷</span>
+                <span class="aname aname--live">Poll the queue depth</span>
+                <span class="ameta ameta--danger">runaway drops · 8</span>
+              </div>
+              <div class="detail">
+                <p class="detail-why">Ping me if the queue depth crosses 500.</p>
+                <span class="warn">⚠ runaway fuse fired — 8 drops · max self-influence depth 4</span>
+                <dl class="kv">
+                  <dt>schedule</dt><dd class="hi">every 10s</dd>
+                  <dt>fires</dt><dd>214 distinct · 206 delivered · 8 dropped</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="legend">
+        <h2>What this direction commits to</h2>
+        <ul>
+          <li>
+            <b>One list, one ordering:</b> everything running or armed in the
+            fold-out, sorted by when it will next do something. Watches are not
+            quarantined into their own group.
+          </li>
+          <li>
+            <b>One “when” column with one meaning</b> — a job shows its quiet
+            time, a subagent its age, a watch its countdown. A standing condition
+            shows <span class="mono">armed</span>, because a countdown would be a
+            fabrication.
+          </li>
+          <li>
+            <b>A schedule chip beside the title</b>
+            (<span class="mono">↻15m</span>, <span class="mono">↻30m ×6h</span>,
+            <span class="mono">on output</span>) so cadence is readable without
+            opening anything.
+          </li>
+          <li>
+            <b>Ended watches fold away</b> like inactive subagents and completed
+            jobs — the rail stays about what is still live.
+          </li>
+          <li>
+            <b>Danger only for real failure.</b> A healthy watch is neutral ink.
+            Runaway drops is the one state that turns red.
+          </li>
+        </ul>
+        <h2>Data it needs</h2>
+        <ul>
+          <li>Everything A needs, plus a next-fire instant the server can compute for repeating timers.</li>
+          <li>An ended-watch count and rows for the fold.</li>
+          <li>A sort key: soonest next event, conditioned on the watch having a schedule.</li>
+        </ul>
+      </div>
+    </div>
+
+    <script>
+      function toggleTheme() {
+        const root = document.documentElement;
+        root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      }
+    </script>
+  </body>
+</html>

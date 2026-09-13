@@ -2354,12 +2354,45 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 	for _, delegate := range ds.Delegates {
 		out.Delegates = append(out.Delegates, appDelegateFromDetailedStatus(delegate))
 	}
+	for _, watch := range ds.Watches {
+		out.Watches = append(out.Watches, appWatchFromDetailedStatus(watch))
+	}
 	if ds.TurnSlots != nil {
 		out.TurnSlots = &appwire.EvenerTurnSlots{
 			InUse: ds.TurnSlots.InUse, Cap: ds.TurnSlots.Cap, Jobs: ds.TurnSlots.Jobs, Drives: ds.TurnSlots.Drives,
 		}
 	}
 	out.Agents = append(out.Agents, ds.Agents...)
+	return out
+}
+
+func appWatchFromDetailedStatus(watch agent.WatchStatusInfo) appwire.EvenerWatchInfo {
+	out := appwire.EvenerWatchInfo{
+		ID:             watch.ID,
+		Source:         watch.Source,
+		Target:         watch.Target,
+		SendTo:         watch.SendTo,
+		Note:           watch.Note,
+		OutputMatch:    watch.OutputMatch,
+		Events:         append([]string(nil), watch.Events...),
+		WildcardEvents: watch.WildcardEvents,
+		Deliveries:     watch.Deliveries,
+		DeliveryTimes:  append([]string(nil), watch.DeliveryTimes...),
+		CreatedAt:      watch.CreatedAt,
+		Active:         watch.Active,
+		EndReason:      watch.EndReason,
+	}
+	if watch.Cadence != nil {
+		out.Cadence = make([]appwire.EvenerWatchCadence, 0, len(watch.Cadence))
+		for _, cadence := range watch.Cadence {
+			out.Cadence = append(out.Cadence, appwire.EvenerWatchCadence{
+				Kind:    cadence.Kind,
+				Seconds: cadence.Seconds,
+				Every:   cadence.Every,
+				Filter:  cadence.Filter,
+			})
+		}
+	}
 	return out
 }
 

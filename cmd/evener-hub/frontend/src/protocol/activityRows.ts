@@ -18,7 +18,10 @@ import {
   isFailedJobOutcome,
   isTurnContainer,
 } from "./activityData";
+import { formatClockTime } from "./displayFormat";
 import { stableDelegateDisplayStatus } from "./stableDelegate";
+import type { NavigationWatchSummary } from "./types.gen";
+import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchTitle } from "./watchText";
 
 export interface ActivityRowBase {
   id: string;
@@ -54,10 +57,194 @@ export interface ActivityFoldRow extends ActivityRowBase {
   failedCount: number;
 }
 
-export type ActivityRow = ActivityJobRow | ActivityDelegateRow | ActivityFoldRow;
+// A watch is pending work the session is waiting on, carried on the session
+// summary rather than the retained-activity tree, so it is its own row kind.
+export interface ActivityWatchRow extends ActivityRowBase {
+  kind: "watch";
+  watch: NavigationWatchSummary;
+  // Top-level watches default open, exactly like a top-level job row: the
+  // note and facts are the reason a person expanded the utility at all.
+  defaultDetailOpen: boolean;
+}
+
+export type ActivityRow = ActivityJobRow | ActivityDelegateRow | ActivityFoldRow | ActivityWatchRow;
 
 export function foldRowID(sessionNodeID: string): string {
   return `${sessionNodeID}:inactive-fold`;
+}
+
+// Watch rows share the expansion-state map with tree rows, so their ids carry
+// a distinct namespace and can never collide with a tree node id.
+export function watchRowID(watchID: string): string {
+  return `watch:${watchID}`;
+}
+
+// One top-level row per watch, in wire order. An absent list (an old daemon)
+// is exactly an empty list.
+export function buildWatchRows(watches?: NavigationWatchSummary[]): ActivityWatchRow[] {
+  return (watches ?? []).map((watch) => ({
+    kind: "watch",
+    id: watchRowID(watch.id),
+    level: 1,
+    watch,
+    defaultDetailOpen: true,
+  }));
+}
+
+// The same name the rail's watch row shows: the note a person wrote down, with
+// the id as the fallback for a note the wire omitted or trimmed to nothing.
+export function watchName(watch: NavigationWatchSummary): string {
+  return watchTitle(watch);
+}
+
+// Watch kind is decided from the condition fields themselves, never from
+// parsing prose: a watch can carry several cadence rows at once, and an
+// output/event condition is what makes it a condition watch.
+type WatchKind = "output" | "event" | "scheduled";
+
+function watchKind(watch: NavigationWatchSummary): WatchKind {
+  if ((watch.output_match ?? "").trim() !== "") return "output";
+  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) return "event";
+  return "scheduled";
+}
+
+// The cadence kinds that fire on a clock rather than on a condition. A watch
+// can carry these alongside an output/event condition, so the rail and the
+// detail must read them independently of watchKind's single condition label.
+const CLOCK_CADENCE_KINDS: ReadonlySet<string> = new Set(["after", "every", "progress"]);
+
+function clockCadenceLabels(watch: NavigationWatchSummary): string[] {
+  return (watch.cadence ?? [])
+    .filter((cadence) => CLOCK_CADENCE_KINDS.has(cadence.kind))
+    .map(watchCadenceLabel)
+    .filter((label) => label !== "");
+}
+
+// A watch is "scheduled" when it has ANY clock cadence, even when it also has
+// an output/event condition. A pure condition watch (no clock cadence at all)
+// is the only kind with no schedule to draw - which is exactly the statement
+// the no-schedule line makes, so collapsing a multi-trigger watch to its
+// condition kind would make that line false for it.
+export function watchIsScheduled(watch: NavigationWatchSummary): boolean {
+  if (clockCadenceLabels(watch).length > 0) return true;
+  return watchKind(watch) === "scheduled";
+}
+
+// The supplied delivery instants as epoch millis, oldest first. Unparseable
+// entries drop out; the ring is bounded (32) upstream, so this stays cheap.
+export function watchDeliveryInstants(watch: NavigationWatchSummary): number[] {
+  return (watch.delivery_times ?? [])
+    .map((iso) => Date.parse(iso))
+    .filter((millis) => !Number.isNaN(millis))
+    .sort((a, b) => a - b);
+}
+
+function armedState(watch: NavigationWatchSummary): string {
+  return watchArmedLabel(watch.active);
+}
+
+// The age since the watch was created, through the rail's own duration
+// vocabulary. An unparseable or non-positive span renders nothing rather than
+// a fabricated duration.
+function armedAgeLabel(watch: NavigationWatchSummary, now: number): string | undefined {
+  const created = Date.parse(watch.created_at);
+  if (Number.isNaN(created)) return undefined;
+  const label = watchDurationLabel(Math.max(0, (now - created) / 1000));
+  return label === "" ? undefined : label;
+}
+
+function eventLabel(watch: NavigationWatchSummary): string {
+  if (watch.wildcard_events === true) return "session events";
+  const events = (watch.events ?? []).map((event) => event.trim()).filter((event) => event !== "");
+  return events.length > 0 ? events.join(", ") : "session events";
+}
+
+// The newest supplied delivery instant as local HH:MM. watchDeliveryInstants
+// already parses, drops unparseable entries, and orders oldest first, so its
+// last element is the newest real instant; an empty list renders nothing.
+function lastDeliveryClock(watch: NavigationWatchSummary): string | undefined {
+  const last = watchDeliveryInstants(watch).at(-1);
+  if (last === undefined) return undefined;
+  return formatClockTime(new Date(last).toISOString());
+}
+
+// The delivery-count wording watchMeta and watchFacts both show. One helper so
+// "1 delivery" vs "N deliveries" cannot drift between the two lines.
+function deliveryCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "delivery" : "deliveries"}`;
+}
+
+// The events cadence's own detail - the fire-every-Nth count and the event
+// filter - with the "on events" condition that watchCadenceLabel prefixes
+// stripped. watchMeta and watchFacts already name the event condition ("on
+// event" and "Waiting on ..."), so reusing only the detail tells a throttled or
+// filtered watch apart from one that fires on every matching event without
+// printing the condition twice.
+function eventCadenceDetail(watch: NavigationWatchSummary): string {
+  const events = (watch.cadence ?? []).find((cadence) => cadence.kind === "events");
+  if (events === undefined) return "";
+  const label = watchCadenceLabel(events);
+  return label.startsWith("on events ") ? label.slice("on events ".length) : "";
+}
+
+// A watch row's second line: what its condition is, then the count it has
+// earned or its armed state. Never a next-fire or countdown - the runtime
+// keeps no such instant.
+export function watchMeta(watch: NavigationWatchSummary): string {
+  // Every configured trigger source is named, not just the one watchKind
+  // happens to pick: a watch can carry an output match, an event trigger, and a
+  // clock cadence at once, and naming only the first would hide the rest.
+  // Derive each condition from its own wire field rather than from watchKind,
+  // which collapses a multi-trigger watch to a single kind.
+  const conditions: string[] = [];
+  if ((watch.output_match ?? "").trim() !== "") conditions.push("on output");
+  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
+    const detail = eventCadenceDetail(watch);
+    conditions.push(detail === "" ? "on event" : `on event ${detail}`);
+  }
+  conditions.push(...clockCadenceLabels(watch));
+  const suffix = watch.deliveries > 0 ? deliveryCountLabel(watch.deliveries) : armedState(watch);
+  return [...conditions, suffix].filter((part) => part !== "").join(" · ");
+}
+
+// A watch's one facts sentence, built only from real fields. The armed segment
+// reports the watch's real armed state: an inactive watch is never called armed.
+export function watchFacts(watch: NavigationWatchSummary, now: number): string {
+  const segments: string[] = [];
+  // Each condition the watch actually carries gets its own segment, so a
+  // multi-trigger watch reads as all of what it waits on rather than only the
+  // first kind watchKind classifies.
+  if ((watch.output_match ?? "").trim() !== "") {
+    const target = watch.target?.trim() || watch.source;
+    segments.push(`Waiting on ${target}, matching ${watch.output_match ?? ""}`);
+  }
+  const clockCadence = clockCadenceLabels(watch).join(" · ");
+  if (clockCadence !== "") {
+    segments.push(`Fires ${clockCadence}`);
+  }
+  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
+    const waiting = `Waiting on ${eventLabel(watch)}`;
+    const detail = eventCadenceDetail(watch);
+    segments.push(detail === "" ? waiting : `${waiting} ${detail}`);
+  }
+  if (!watch.active) {
+    segments.push(armedState(watch));
+  } else {
+    const age = armedAgeLabel(watch, now);
+    if (age !== undefined) segments.push(`armed ${age} ago`);
+  }
+  if (watch.deliveries > 0) {
+    segments.push(deliveryCountLabel(watch.deliveries));
+    // Only a watch with a clock cadence has a drawable timeline, so only it
+    // reports the newest instant that timeline plots.
+    if (clockCadence !== "") {
+      const last = lastDeliveryClock(watch);
+      if (last !== undefined) segments.push(`last at ${last}`);
+    }
+  } else {
+    segments.push("no deliveries yet");
+  }
+  return segments.join(" · ");
 }
 
 export interface ActivityDelegateState {

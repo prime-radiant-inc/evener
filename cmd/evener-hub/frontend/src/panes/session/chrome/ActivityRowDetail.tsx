@@ -5,8 +5,17 @@
 // except the one output-tail fetch; ActivityTree owns the detailID state and
 // passes the row plus its ticking `now` straight through.
 import { Fragment, type JSX, useEffect, useState } from "react";
-import { type ActivityDelegateRow, type ActivityJobRow, activityDelegateState } from "../../../protocol/activityRows";
+import {
+  type ActivityDelegateRow,
+  type ActivityJobRow,
+  type ActivityWatchRow,
+  activityDelegateState,
+  watchDeliveryInstants,
+  watchFacts,
+  watchIsScheduled,
+} from "../../../protocol/activityRows";
 import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
+import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
@@ -22,7 +31,116 @@ const CLASS = {
   detailCommand: requireClass(styles.detailCommand, "activitypanel.module.css", "detailCommand"),
   detailMeta: requireClass(styles.detailMeta, "activitypanel.module.css", "detailMeta"),
   detailOutput: requireClass(styles.detailOutput, "activitypanel.module.css", "detailOutput"),
+  watchNote: requireClass(styles.watchNote, "activitypanel.module.css", "watchNote"),
+  watchFacts: requireClass(styles.watchFacts, "activitypanel.module.css", "watchFacts"),
+  watchNoSchedule: requireClass(styles.watchNoSchedule, "activitypanel.module.css", "watchNoSchedule"),
+  watchTimeline: requireClass(styles.watchTimeline, "activitypanel.module.css", "watchTimeline"),
+  timelineRail: requireClass(styles.timelineRail, "activitypanel.module.css", "timelineRail"),
+  timelineLine: requireClass(styles.timelineLine, "activitypanel.module.css", "timelineLine"),
+  timelineDot: requireClass(styles.timelineDot, "activitypanel.module.css", "timelineDot"),
+  timelineNow: requireClass(styles.timelineNow, "activitypanel.module.css", "timelineNow"),
+  timelineLabels: requireClass(styles.timelineLabels, "activitypanel.module.css", "timelineLabels"),
+  timelineCaption: requireClass(styles.timelineCaption, "activitypanel.module.css", "timelineCaption"),
 };
+
+// The one line a condition watch shows where a timeline would go: there is no
+// period to draw, because the firing is decided by a job's output or an event,
+// not by a clock.
+export const WATCH_NO_SCHEDULE_LINE =
+  "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
+
+// The row header already prints a watch's note as the row's own name, in a
+// sidebar name column that fits roughly 40 characters at its narrow width.
+// Repeating the note as the detail's lead paragraph would therefore print every
+// row's title twice within a few pixels. The lead paragraph exists only to show
+// what that column truncated, so it renders only for notes longer than this
+// budget - 48, a little above the ~40-character column so a note that just fits
+// the title never duplicates.
+export const WATCH_NOTE_LEAD_BUDGET = 48;
+
+// The now marker sits at left:100% and is taller than a delivery dot, so a dot
+// in the span's final percent would land underneath it and read as the marker.
+// Clamping dots to 98% reserves the last 2% as the marker's own column: the
+// newest delivery still stops just short of "now" instead of hiding under it.
+export const WATCH_TIMELINE_DOT_MAX_PERCENT = 98;
+
+// Local HH:MM from an epoch instant, through the same clock formatter the rest
+// of the detail uses.
+function clockFromMillis(millis: number): string {
+  return formatClockTime(new Date(millis).toISOString()) ?? "";
+}
+
+// Two deliveries can land in the same millisecond and the timeline draws one
+// dot per retained instant, so the instant alone is not a unique React key.
+// The occurrence number disambiguates duplicates without dropping a real
+// delivery; the array index would also work but trips the lint rule for
+// order-dependent keys.
+function keyedInstants(instants: number[]): Array<{ millis: number; key: string }> {
+  const occurrences = new Map<number, number>();
+  return instants.map((millis) => {
+    const occurrence = (occurrences.get(millis) ?? 0) + 1;
+    occurrences.set(millis, occurrence);
+    return { millis, key: `${millis}:${occurrence}` };
+  });
+}
+
+// The delivery timeline: a rail with one dot per retained instant, positioned
+// proportionally between the earliest instant and `now`. Nothing here implies
+// a drop or a future firing - the only instants drawn are the ones the wire
+// actually carried.
+function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; now: number }): JSX.Element | null {
+  const instants = watchDeliveryInstants(watch);
+  if (instants.length === 0) return null;
+  const dots = keyedInstants(instants);
+  const earliest = instants[0] ?? 0;
+  const span = now - earliest;
+  const position = (millis: number): number => {
+    if (span <= 0) return 0;
+    return Math.min(WATCH_TIMELINE_DOT_MAX_PERCENT, Math.max(0, ((millis - earliest) / span) * 100));
+  };
+  const startLabel = clockFromMillis(earliest);
+  const endLabel = clockFromMillis(now);
+  const caption =
+    watch.deliveries <= instants.length
+      ? "Delivered to this session"
+      : `Last ${instants.length} of ${watch.deliveries} deliveries`;
+  return (
+    <div className={CLASS.watchTimeline} data-testid="watch-timeline">
+      <div
+        className={CLASS.timelineRail}
+        data-testid="watch-timeline-rail"
+        role="img"
+        aria-label={`${caption}, ${startLabel} to now ${endLabel}`}
+      >
+        <span className={CLASS.timelineLine} aria-hidden="true" />
+        {/* The marker precedes the dots in DOM order so a dot can never be
+            painted over it when positions coincide. */}
+        <span
+          className={CLASS.timelineNow}
+          data-testid="watch-timeline-now"
+          style={{ left: "100%" }}
+          aria-hidden="true"
+        />
+        {dots.map(({ millis, key }) => (
+          <span
+            key={key}
+            className={CLASS.timelineDot}
+            data-testid="watch-timeline-dot"
+            style={{ left: `${position(millis)}%` }}
+            aria-hidden="true"
+          />
+        ))}
+      </div>
+      <div className={CLASS.timelineLabels}>
+        <span data-testid="watch-timeline-start">{startLabel}</span>
+        <span data-testid="watch-timeline-end">{`now ${endLabel}`}</span>
+      </div>
+      <p className={CLASS.timelineCaption} data-testid="watch-timeline-caption">
+        {caption}
+      </p>
+    </div>
+  );
+}
 
 // detailSubject projects both row kinds onto one shape so the meta line has a
 // single code path. A delegate's clock span runs from its first turn's start
@@ -221,6 +339,36 @@ export function ActivityRowDetail({
         </span>
       ))}
       {row.kind === "job" && row.job.hasOutput && <JobOutputPreview ownerRef={row.parentRef} jobId={row.job.jobId} />}
+    </div>
+  );
+}
+
+// ActivityWatchDetail is a watch row's expanded block: the note once more only
+// when the row title's name column could not show it in full, one facts
+// sentence, and - for a clock-driven watch with retained instants - the
+// delivery timeline. A condition watch gets the explanatory line instead:
+// there is no period to draw, and the block must not pretend there is.
+export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now: number }): JSX.Element {
+  const { watch } = row;
+  const note = watch.note?.trim();
+  const leadNote = note !== undefined && note.length > WATCH_NOTE_LEAD_BUDGET ? note : undefined;
+  return (
+    <div className={CLASS.detailStrip}>
+      {leadNote ? (
+        <p className={CLASS.watchNote} data-testid="watch-note">
+          {leadNote}
+        </p>
+      ) : null}
+      <p className={CLASS.watchFacts} data-testid="watch-facts">
+        {watchFacts(watch, now)}
+      </p>
+      {watchIsScheduled(watch) ? (
+        <ActivityWatchTimeline watch={watch} now={now} />
+      ) : (
+        <p className={CLASS.watchNoSchedule} data-testid="watch-no-schedule">
+          {WATCH_NO_SCHEDULE_LINE}
+        </p>
+      )}
     </div>
   );
 }

@@ -196,6 +196,7 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.HookEvents = append([]EvenerHookEventStatus(nil), d.HookEvents...)
 	cp.Jobs = CloneEvenerJobs(d.Jobs)
 	cp.Delegates = cloneDelegateInfos(d.Delegates)
+	cp.Watches = CloneEvenerWatches(d.Watches)
 	if d.TurnSlots != nil {
 		ts := *d.TurnSlots
 		cp.TurnSlots = &ts
@@ -214,6 +215,23 @@ func CloneEvenerJobs(jobs []EvenerJobInfo) []EvenerJobInfo {
 		out[i] = jobs[i]
 		out[i].Resumable = cloneBool(jobs[i].Resumable)
 		out[i].ExitCode = cloneInt(jobs[i].ExitCode)
+	}
+	return out
+}
+
+// CloneEvenerWatches returns a defensive copy of typed watch diagnostics.
+// Cadence, event, and delivery-time slices are copied so a consumer mutating
+// its copy cannot reach the shared wire value.
+func CloneEvenerWatches(watches []EvenerWatchInfo) []EvenerWatchInfo {
+	if watches == nil {
+		return nil
+	}
+	out := make([]EvenerWatchInfo, len(watches))
+	for i := range watches {
+		out[i] = watches[i]
+		out[i].Cadence = append([]EvenerWatchCadence(nil), watches[i].Cadence...)
+		out[i].Events = append([]string(nil), watches[i].Events...)
+		out[i].DeliveryTimes = append([]string(nil), watches[i].DeliveryTimes...)
 	}
 	return out
 }

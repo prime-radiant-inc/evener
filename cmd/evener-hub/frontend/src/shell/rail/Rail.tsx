@@ -190,7 +190,7 @@ function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: stri
   );
 }
 function isPassiveRailNode(node: RailNode): boolean {
-  return node.kind === "loading" || node.kind === "job";
+  return node.kind === "loading" || node.kind === "job" || (node.kind === "overflow" && node.passive === true);
 }
 
 // One shared Tree wrapper for the rail's sections: the rail renders on

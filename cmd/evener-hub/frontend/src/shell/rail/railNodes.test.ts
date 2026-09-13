@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, expect, test } from "vitest";
+import type { NavigationWatchSummary } from "../../protocol/types.gen";
 import type { RailPinSection, RailProject, RailSession } from "./railNodes";
 import {
+  activeWatchCount,
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
@@ -33,6 +35,16 @@ function session(overrides: Partial<RailSession> = {}): RailSession {
 }
 function project(overrides: Partial<RailProject> = {}): RailProject {
   return { key: "p1", name: "Proj", sessions: [], ...overrides };
+}
+function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
+  return {
+    id: "w1",
+    source: "self",
+    deliveries: 0,
+    created_at: "2026-09-12T19:00:00Z",
+    active: true,
+    ...overrides,
+  };
 }
 const closed = () => false;
 
@@ -130,6 +142,69 @@ describe("resource projection semantics", () => {
     expect(node?.children.map((entry) => entry.kind)).toEqual(["session"]);
     expect(node?.children[0]).toMatchObject({ children: [{ kind: "job", job: { job_id: "job-child" } }] });
   });
+
+  test("keeps a session's own watch rows inline, after its running jobs", () => {
+    const root = session({ ref: "root", row_id: "root", state: "idle" });
+    Object.assign(root, {
+      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+      watches: [watch({ id: "w1" }), watch({ id: "w2" })],
+    });
+    const [node] = sessionNodes([root], closed);
+    expect(node?.children.map((child) => child.kind)).toEqual(["job", "watch", "watch"]);
+    // The row id is namespaced off the parent, the way job rows are, so two
+    // sessions carrying a same-id watch (each its own receiver) get distinct
+    // tree ids.
+    expect(node?.children[1]).toMatchObject({ id: "watch:root:w1", kind: "watch", watch: { id: "w1" } });
+  });
+
+  test("renders no watch rows for a session whose wire list is absent or empty", () => {
+    const [node] = sessionNodes([session({ ref: "root", row_id: "root" })], closed);
+    expect(node?.children).toEqual([]);
+  });
+
+  test("caps the inline watch rows and notes the remainder in the overflow grammar", () => {
+    const root = session({
+      ref: "root",
+      row_id: "root",
+      watches: ["w1", "w2", "w3", "w4", "w5"].map((id) => watch({ id })),
+    });
+    const [node] = sessionNodes([root], closed);
+    expect(node?.children.map((child) => child.kind)).toEqual(["watch", "watch", "watch", "overflow"]);
+    expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", count: 2, suffix: "more watches", pages: [] });
+  });
+
+  test("marks the watch overflow row passive: it can reveal nothing by activating", () => {
+    // The inline cap is local to the rail and the wire already carried every
+    // watch, so there is no page behind "+N more watches". The row must be an
+    // honest count, not a control that looks actionable and no-ops.
+    const root = session({
+      ref: "root",
+      row_id: "root",
+      watches: ["w1", "w2", "w3", "w4", "w5"].map((id) => watch({ id })),
+    });
+    const [node] = sessionNodes([root], closed);
+    expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", suffix: "more watches", pages: [], passive: true });
+  });
+
+  test("counts a session's own armed watches once, never a descendant's", () => {
+    const child = session({
+      ref: "child",
+      row_id: "child",
+      watches: [watch({ id: "c1" }), watch({ id: "c2" })],
+    });
+    const parent = session({
+      ref: "parent",
+      row_id: "parent",
+      children: [child],
+      watches: [watch({ id: "p1" }), watch({ id: "p2", active: false })],
+    });
+    // The parent counts only what its own summary carries - a receiver watch
+    // belongs to the session whose summary carries it - and only while armed.
+    expect(activeWatchCount(parent)).toBe(1);
+    expect(activeWatchCount(child)).toBe(2);
+    expect(activeWatchCount(session({ ref: "none", row_id: "none" }))).toBe(0);
+  });
+
   test("handles cluster disclosure without a second inactive fold", () => {
     const cluster = session({
       kind: "cluster",

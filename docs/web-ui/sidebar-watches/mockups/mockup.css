@@ -1,0 +1,839 @@
+/* Shared styles for the sidebar-watches mockups.
+ *
+ * Token values are copied verbatim from src/styles/tokens.css so these
+ * throwaway mockups read like the real app. Never import this into src/.
+ */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #191918;
+  --surface-canvas: #1d1d1b;
+  --surface-1: #232320;
+  --surface-2: #232320;
+  --surface-inset: #20201e;
+  --hover-1: #2b2b28;
+  --hover-2: #33332f;
+  --field: #292926;
+  --edge: #34342f;
+  --edge-strong: #51514a;
+  --ink-hi: #f2f1eb;
+  --ink-mid: #b0afa6;
+  --ink-low: #99998f;
+  --attention: #f68f3c;
+  --alive: #3dbb72;
+  --danger: #ee5c61;
+  --accent: #3d9aff;
+  --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
+  --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
+  --alive-bg: color-mix(in oklab, var(--alive) 15%, var(--surface-1));
+  --alive-edge: color-mix(in oklab, var(--alive) 40%, var(--edge));
+  --danger-bg: color-mix(in oklab, var(--danger) 15%, var(--surface-1));
+  --danger-edge: color-mix(in oklab, var(--danger) 40%, var(--edge));
+  --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
+  --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
+  --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000057;
+}
+
+:root[data-theme="light"],
+[data-theme="light"] {
+  color-scheme: light;
+  --surface-0: #faf9f6;
+  --surface-canvas: #f1f0eb;
+  --surface-1: #fcfbf8;
+  --surface-2: #fcfbf8;
+  --surface-inset: #f4f3ee;
+  --hover-1: #f0efe9;
+  --hover-2: #e5e4dd;
+  --field: #f4f3ef;
+  --edge: #dddcd4;
+  --edge-strong: #b7b6ac;
+  --ink-hi: #252521;
+  --ink-mid: #5f5f57;
+  --ink-low: #6d6d64;
+  --attention: #f59e0b;
+  --alive: #189a4d;
+  --danger: #e3474c;
+  --accent: #0285ff;
+  --shadow-overlay: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000011;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--ink-hi);
+  font-family: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.mono {
+  font-family: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 32px 24px 96px;
+}
+
+.masthead {
+  border-bottom: 1px solid var(--edge);
+  padding-bottom: 20px;
+  margin-bottom: 28px;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 12px;
+  color: var(--ink-low);
+  margin: 0 0 8px;
+}
+
+.masthead h1 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+
+.thesis {
+  color: var(--ink-mid);
+  max-width: 70ch;
+  margin: 0;
+}
+
+.theme-toggle {
+  margin-top: 14px;
+  background: var(--field);
+  color: var(--ink-mid);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.stage {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.caption {
+  font-size: 12px;
+  color: var(--ink-low);
+  margin: 0 0 8px;
+  min-height: 17px;
+}
+
+/* ---------------------------------------------------------------- sidebar */
+
+.rail {
+  /* The real rail defaults to 280px and is resizable. Mocked at 340px so the
+   * full summary line is legible in a screenshot; width pressure at the 280px
+   * default is a first-class review question. */
+  width: 340px;
+  flex: none;
+  background: var(--surface-canvas);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 8px 0 12px;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px 10px;
+  color: var(--ink-low);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.rail-section {
+  padding: 8px 0 2px;
+}
+
+.rail-section-title {
+  padding: 0 12px 6px;
+  color: var(--ink-low);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.rail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding-left: 14px;
+  padding-right: 8px;
+}
+
+.rail-row + .rail-row {
+  margin-top: 2px;
+}
+
+.rail-row.is-hover {
+  background: var(--hover-1);
+}
+
+.rail-row.is-selected {
+  background: var(--hover-1);
+}
+
+.signal {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: -10px;
+}
+
+.signal--alive {
+  background: var(--alive);
+}
+
+.signal--attention {
+  background: var(--attention);
+}
+
+.signal--danger {
+  background: var(--danger);
+}
+
+.textcol {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 3px 0;
+}
+
+.titleline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rail-title {
+  color: var(--ink-hi);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.rail-gloss {
+  color: var(--ink-mid);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-gloss--alive {
+  color: var(--alive);
+}
+
+.rail-gloss--attention {
+  color: var(--attention);
+}
+
+.rail-gloss--danger {
+  color: var(--danger);
+}
+
+.chev {
+  flex: none;
+  color: var(--ink-low);
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+}
+
+.right {
+  flex: none;
+  margin-left: auto;
+  color: var(--ink-mid);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-right: 2px;
+}
+
+.right--low {
+  color: var(--ink-low);
+}
+
+/* Indented children of an expanded session row. */
+.children {
+  border-left: 1px solid var(--edge);
+  margin-left: 12px;
+  padding-left: 6px;
+}
+
+/* A watch: pending work. Neutral by design - never an attention hue. */
+.wglyph {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--ink-mid);
+}
+
+.wglyph--danger {
+  color: var(--danger);
+}
+
+.watch-when {
+  flex: none;
+  margin-left: auto;
+  color: var(--ink-mid);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.watch-when--soon {
+  color: var(--ink-hi);
+}
+
+/* --------------------------------------------------------------- activity */
+
+.panel {
+  width: 560px;
+  flex: none;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--edge);
+  color: var(--ink-hi);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.panel-head .spacer {
+  flex: 1;
+}
+
+.panel-head .count {
+  color: var(--ink-low);
+  font-weight: 400;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-body {
+  padding: 8px 0 12px;
+}
+
+.group {
+  padding: 4px 0 2px;
+}
+
+.group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 12px 6px;
+  color: var(--ink-low);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.arow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 12px;
+  min-width: 0;
+}
+
+.arow.is-hover {
+  background: var(--hover-1);
+}
+
+.arow.is-focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.arow-toggle {
+  flex: none;
+  width: 12px;
+  color: var(--ink-mid);
+  font-size: 10px;
+  text-align: center;
+}
+
+.aglyph {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--ink-low);
+}
+
+.aglyph--alive {
+  color: var(--alive);
+}
+
+.aglyph--danger {
+  color: var(--danger);
+}
+
+.aglyph--watch {
+  color: var(--ink-mid);
+}
+
+.aname {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--ink-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aname--live {
+  font-weight: 500;
+}
+
+.ameta {
+  flex: none;
+  margin-left: auto;
+  color: var(--ink-low);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ameta--soon {
+  color: var(--ink-mid);
+}
+
+.ameta--danger {
+  color: var(--danger);
+}
+
+.detail {
+  margin: 2px 12px 6px 32px;
+  padding: 8px 12px;
+  background: var(--surface-0);
+  border-left: 1px solid var(--edge);
+  font-size: 12px;
+  color: var(--ink-mid);
+}
+
+.detail-why {
+  color: var(--ink-hi);
+  font-family: "Source Serif 4 Variable", Georgia, serif;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+
+.detail-line {
+  display: block;
+  margin-top: 4px;
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--ink-low);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin-top: 6px;
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.kv dt {
+  color: var(--ink-low);
+}
+
+.kv dd {
+  margin: 0;
+  color: var(--ink-mid);
+}
+
+.kv dd .hi {
+  color: var(--ink-hi);
+}
+
+.deliv {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--ink-low);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.dot--delivered {
+  background: var(--alive);
+}
+
+.dot--dropped {
+  background: var(--danger);
+}
+
+.dot--evicted {
+  background: var(--ink-low);
+}
+
+.warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-edge);
+  color: var(--danger);
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+/* --------------------------------------------------------- cadence visuals */
+
+.cadence {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
+.tick {
+  width: 3px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--edge-strong);
+}
+
+.tick--done {
+  background: var(--ink-low);
+}
+
+.tick--next {
+  background: var(--ink-hi);
+}
+
+.track {
+  position: relative;
+  width: 64px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--edge);
+  flex: none;
+  overflow: hidden;
+}
+
+.track-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--ink-mid);
+}
+
+/* ------------------------------------------------------------- annotations */
+
+.anno {
+  font-size: 12px;
+  color: var(--ink-low);
+  border-left: 2px solid var(--edge-strong);
+  padding-left: 10px;
+  margin: 10px 0 0;
+  max-width: 46ch;
+}
+
+.anno b {
+  color: var(--ink-mid);
+  font-weight: 500;
+}
+
+.legend {
+  margin-top: 40px;
+  border-top: 1px solid var(--edge);
+  padding-top: 16px;
+  color: var(--ink-mid);
+  font-size: 12px;
+  max-width: 82ch;
+}
+
+.legend h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-hi);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.legend ul {
+  margin: 0 0 16px;
+  padding-left: 18px;
+}
+
+.legend li {
+  margin: 4px 0;
+}
+
+.band {
+  margin: 4px 12px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  background: var(--surface-inset);
+}
+
+.band-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--ink-low);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+
+.cardgrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.card {
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  background: var(--surface-1);
+  padding: 8px 10px;
+}
+
+.card-why {
+  color: var(--ink-hi);
+  margin: 0 0 6px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-meta {
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--ink-low);
+}
+
+/* ------------------------------------------------- round-2 additions ---- */
+
+/* The watch mark, drawn (not typed): no code point in the app's font ranges
+ * covers a clock glyph, and a drawn SVG keeps the row's accessible name free of
+ * a stray character. Colour is neutral by design. */
+.wsvg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--ink-mid);
+}
+
+.wsvg--danger {
+  color: var(--danger);
+}
+
+/* A label for a watch's state, used in the detail strip. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--edge);
+  background: var(--surface-inset);
+  color: var(--ink-mid);
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chip--danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-edge);
+  color: var(--danger);
+}
+
+/* "Needs a look" is the one promoted watch state. Its title takes the danger
+ * ink; nothing else about the row does. */
+.group-title--look {
+  color: var(--danger);
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --------------------------------------------- round 3: fluent activity ---- */
+
+/* An expanded row reads as a composed block, not a record dump: a hairline
+ * rule and an indent, then a sentence, then a sentence of facts. No nested
+ * box, per design-system.md ("whitespace, aligned columns and fine rules"). */
+.wblock {
+  margin: 2px 12px 12px 32px;
+  padding-left: 12px;
+  border-left: 1px solid var(--edge);
+}
+
+/* The watch's own note, or the job's intent: prose, set as prose. */
+.lead {
+  font-family: "Source Serif 4 Variable", Georgia, "Times New Roman", serif;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink-hi);
+  margin: 0 0 5px;
+  max-width: 62ch;
+}
+
+/* Facts as a sentence, not a definition list. */
+.facts {
+  color: var(--ink-mid);
+  font-size: 13px;
+  margin: 0 0 10px;
+  max-width: 70ch;
+}
+
+.facts b {
+  color: var(--ink-hi);
+  font-weight: 500;
+}
+
+.facts .sep {
+  color: var(--edge-strong);
+  padding: 0 7px;
+}
+
+/* Delivery history drawn on a real time axis: every mark is an event that
+ * actually happened, with the clock time it happened at. Nothing here implies
+ * a future fire. */
+.timeline {
+  margin: 0 0 4px;
+  max-width: 460px;
+}
+
+.timeline-rail {
+  position: relative;
+  height: 16px;
+  margin: 0 6px;
+}
+
+.timeline-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 7px;
+  height: 1px;
+  background: var(--edge-strong);
+}
+
+.timeline-dot {
+  position: absolute;
+  top: 4px;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: var(--ink-mid);
+}
+
+.timeline-dot--delivered {
+  background: var(--ink-mid);
+}
+
+.timeline-dot--dropped {
+  background: var(--danger);
+}
+
+.timeline-now {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 1px;
+  background: var(--accent);
+}
+
+.timeline-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-low);
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-caption {
+  color: var(--ink-low);
+  font-size: 12px;
+  margin: 2px 0 0;
+}
+
+/* An opt-in block: shows a variant the reader must decide on, and says so. */
+.opt {
+  border: 1px dashed var(--edge-strong);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+
+.opt-head {
+  color: var(--ink-low);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 8px;
+}

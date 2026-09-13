@@ -154,6 +154,10 @@ export function ActivitySheet({
   } | null>(null);
   const rows = state.tree ? buildActivityRows(state.tree, folds) : [];
   function renderRow(row: ActivityRow) {
+    // Mobile does not surface watches yet. buildActivityRows never emits one,
+    // but the shared row union widened to include them, so narrow the case away
+    // here and keep the rest of this renderer the job/delegate shape it was.
+    if (row.kind === "watch") return null;
     const indent = Math.min(row.level - 1, 4) * 12;
     if (row.kind === "fold")
       return (

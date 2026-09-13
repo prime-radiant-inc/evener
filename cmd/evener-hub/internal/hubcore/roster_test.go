@@ -684,6 +684,65 @@ func TestRosterFingerprintIncludesRunningJobIdentityAndStatus(t *testing.T) {
 	}
 }
 
+// DeliveryTimes feeds the activity panel's timeline. A delivery can change the
+// ring without changing the count (the daemon-restore case rebuilds it empty),
+// so it must move the fingerprint on its own or navigation never invalidates.
+func TestRosterFingerprintIncludesWatchDeliveryTimes(t *testing.T) {
+	watch := func(times []string) map[string]LiveEntry {
+		return map[string]LiveEntry{"parent": {Watches: []appwire.EvenerWatchInfo{{
+			ID: "watch-1", Source: "self", Deliveries: 2, DeliveryTimes: times,
+			CreatedAt: "2026-09-12T10:00:00Z", Active: true,
+		}}}}
+	}
+	base := watch([]string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"})
+	same := watch([]string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"})
+	changed := watch([]string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:03Z"})
+	emptied := watch(nil)
+	if rosterFingerprint(base) != rosterFingerprint(same) {
+		t.Fatal("roster fingerprint must not change when the delivery instants are identical")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(changed) {
+		t.Fatal("roster fingerprint must change when a delivery instant changes")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(emptied) {
+		t.Fatal("roster fingerprint must change when the delivery ring is rebuilt empty")
+	}
+}
+
+// An event watch's every-Nth throttle and its filter change how often it fires,
+// so changing either must move the fingerprint or the sidebar keeps a row whose
+// cadence no longer matches the daemon. A daemon that reports the same watches
+// in another order has not changed anything.
+func TestRosterFingerprintIncludesEventCadenceEveryAndFilter(t *testing.T) {
+	watch := func(cadence appwire.EvenerWatchCadence) map[string]LiveEntry {
+		return map[string]LiveEntry{"parent": {Watches: []appwire.EvenerWatchInfo{{
+			ID: "watch-1", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true,
+			Cadence: []appwire.EvenerWatchCadence{cadence},
+		}}}}
+	}
+	base := watch(appwire.EvenerWatchCadence{Kind: "events"})
+	same := watch(appwire.EvenerWatchCadence{Kind: "events"})
+	throttled := watch(appwire.EvenerWatchCadence{Kind: "events", Every: 3})
+	filtered := watch(appwire.EvenerWatchCadence{Kind: "events", Filter: "status=error"})
+	if rosterFingerprint(base) != rosterFingerprint(same) {
+		t.Fatal("roster fingerprint must not change when the same cadence is reported")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(throttled) {
+		t.Fatal("roster fingerprint must change when only the event cadence every count changes")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(filtered) {
+		t.Fatal("roster fingerprint must change when only the event cadence filter changes")
+	}
+
+	a := appwire.EvenerWatchInfo{ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}
+	b := appwire.EvenerWatchInfo{ID: "watch-b", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}
+	forward := map[string]LiveEntry{"parent": {Watches: []appwire.EvenerWatchInfo{a, b}}}
+	reverse := map[string]LiveEntry{"parent": {Watches: []appwire.EvenerWatchInfo{b, a}}}
+	if rosterFingerprint(forward) != rosterFingerprint(reverse) {
+		t.Fatal("roster fingerprint must not change when a daemon lists the same watches in another order")
+	}
+}
+
 type overlappingRefreshProber struct {
 	calls         atomic.Int32
 	firstStarted  chan struct{}

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
+import type { NavigationWatchSummary } from "../../protocol/types.gen";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -20,7 +21,15 @@ import {
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
+import {
+  activityGloss,
+  cadenceStateFor,
+  RailRow,
+  type RailRowActions,
+  watchCadenceLabel,
+  watchDurationLabel,
+  watchGloss,
+} from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
   CompletedJobsFoldRailNode,
@@ -32,6 +41,7 @@ import type {
   RailProject,
   RailSession,
   SessionRailNode,
+  WatchRailNode,
 } from "./railNodes";
 import { RailRenderObserver } from "./railRenderObserver";
 
@@ -177,6 +187,22 @@ function jobRailNode(overrides: Partial<JobRailNode["job"]> = {}): JobRailNode {
 
 function completedJobsFoldRailNode(count: number): CompletedJobsFoldRailNode {
   return { id: "completed-jobs:parent", kind: "completedJobsFold", count, expanded: false, children: [] };
+}
+
+function watchSummary(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
+  return {
+    id: "watch-1",
+    source: "self",
+    deliveries: 0,
+    created_at: "2026-09-12T19:00:00Z",
+    active: true,
+    ...overrides,
+  };
+}
+
+function watchRailNode(overrides: Partial<NavigationWatchSummary> = {}): WatchRailNode {
+  const watch = watchSummary(overrides);
+  return { id: `watch:parent:${watch.id}`, kind: "watch", watch, children: [] };
 }
 
 function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
@@ -437,6 +463,81 @@ describe("activityGloss", () => {
   });
 });
 
+// A watch row's own second line. It carries what the runtime really knows -
+// the cadence it repeats on and whether it is still armed - and never a
+// countdown, because no next-fire instant exists to count down to (the runtime
+// holds a ticker per watch). "armed" is the state word for every kind.
+describe("watchGloss", () => {
+  test.each([
+    ["every", 600, "every 10m · armed"],
+    ["after", 90, "after 1m30s · armed"],
+    ["progress", 30, "every 30s · armed"],
+  ] as const)("renders a %s cadence as %s", (kind, seconds, expected) => {
+    expect(watchGloss(watchSummary({ cadence: [{ kind, seconds }] }))).toBe(expected);
+  });
+
+  test("an output watch reads 'on output', not 'every'", () => {
+    expect(watchGloss(watchSummary({ cadence: [{ kind: "output" }] }))).toBe("on output · armed");
+  });
+
+  test("an event watch reads 'on events'", () => {
+    expect(watchGloss(watchSummary({ cadence: [{ kind: "events" }], events: ["turn_complete"] }))).toBe(
+      "on events · armed",
+    );
+  });
+
+  // The events cadence carries the fire-every-Nth count and the filter in the
+  // model-facing prose summary's vocabulary, so a throttled or filtered event
+  // watch no longer reads identically to one that fires on every match.
+  test("an event watch names its count and filter", () => {
+    expect(watchCadenceLabel({ kind: "events", every: 3, filter: "tool_name=Bash, status=error" })).toBe(
+      "on events every 3 where tool_name=Bash, status=error",
+    );
+    expect(watchCadenceLabel({ kind: "events", every: 3 })).toBe("on events every 3");
+    expect(watchCadenceLabel({ kind: "events", filter: "tool_name=Bash" })).toBe("on events where tool_name=Bash");
+  });
+
+  // An absent count or filter - the old-server case and most watches - must
+  // leave the label byte-identical to before the fields existed.
+  test("an event watch with no count or filter stays byte-identical", () => {
+    expect(watchCadenceLabel({ kind: "events" })).toBe("on events");
+    expect(watchCadenceLabel({ kind: "events", every: 0, filter: "" })).toBe("on events");
+    expect(watchCadenceLabel({ kind: "events", every: 0, filter: "   " })).toBe("on events");
+  });
+
+  test("combines every trigger source the wire sent, in order", () => {
+    expect(
+      watchGloss(
+        watchSummary({
+          cadence: [{ kind: "output" }, { kind: "every", seconds: 600 }, { kind: "events" }],
+          events: ["turn_complete"],
+        }),
+      ),
+    ).toBe("on output · every 10m · on events · armed");
+  });
+
+  // A one-shot that already fired but is still registered until its durable
+  // teardown lands (firedPendingEnd) is in the list but no longer armed.
+  test.each([
+    ["after", 90],
+    ["output", undefined],
+  ] as const)("a watch that is no longer active reads as not armed (%s)", (kind, seconds) => {
+    const watch = watchSummary({ active: false, cadence: [{ kind, seconds }] });
+    expect(watchGloss(watch)).toMatch(/not armed$/);
+    expect(watchGloss(watch)).not.toMatch(/· armed$/);
+  });
+
+  test("a watch with no cadence at all still says whether it is armed", () => {
+    expect(watchGloss(watchSummary({ cadence: [] }))).toBe("armed");
+  });
+
+  test("a periodless cadence still names its kind instead of rendering nothing", () => {
+    expect(watchCadenceLabel({ kind: "every" })).toBe("every");
+    expect(watchDurationLabel(undefined)).toBe("");
+    expect(watchGloss(watchSummary({ cadence: [{ kind: "every" }] }))).toBe("every · armed");
+  });
+});
+
 describe("loading row", () => {
   test("renders a non-interactive loading indicator", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
@@ -456,11 +557,175 @@ describe("overflow row", () => {
     expect(screen.getByText("+12 older")).toBeTruthy();
   });
 
+  // A capped watch list reuses this row shape with its own wording, so the
+  // rail keeps ONE overflow grammar ("+N ...") rather than inventing a second.
+  test("names a capped watch list in the same grammar", () => {
+    render(
+      <RailRow
+        node={{ id: "watches:parent:overflow", kind: "overflow", count: 4, pages: [], suffix: "more watches" }}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("+4 more watches")).toBeTruthy();
+  });
+
   // Nothing to open and nothing to act on: the rows it counts were never sent
   // to the client, so a chevron or a menu would both be lies.
   test("offers nothing to click", () => {
     render(<RailRow node={overflowRailNode(3)} info={info({ hasChildren: false })} actions={actions()} />);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+// A live watch inside its receiver session's fold-out: the drawn clock, the
+// note, and the cadence + state line. Quieter than a job row on purpose -
+// pending work is inventory, not attention, and it must not spend one of the
+// rail's four attention hues.
+describe("watch row", () => {
+  test("leads with a drawn clock and a visually-hidden 'Watch:' before the note", () => {
+    render(
+      <RailRow
+        node={watchRailNode({ note: "Check the deploy log", cadence: [{ kind: "every", seconds: 600 }] })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-watch-glyph").getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("Watch:")).toBeTruthy();
+    expect(screen.getByText("Check the deploy log")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-watch-status").textContent).toBe("every 10m · armed");
+  });
+
+  // No typed glyph: the app's fonts stop at U+2215, so a "◷" would fall back
+  // to a system font, and name-from-content would announce the character.
+  test("never renders a text glyph for the watch mark", () => {
+    render(<RailRow node={watchRailNode({ note: "Check" })} info={info()} actions={actions()} />);
+    expect(screen.queryByText("◷")).toBeNull();
+    expect(screen.getByTestId("rail-row-watch-glyph").tagName.toLowerCase()).toBe("svg");
+  });
+
+  test("the note is the title, with its full text as a tooltip since it ellipsizes", () => {
+    const note = "Ping me if the queue depth crosses 500, and keep pinging until I answer.";
+    render(<RailRow node={watchRailNode({ note })} info={info()} actions={actions()} />);
+    expect(screen.getByText(note).getAttribute("title")).toBe(note);
+  });
+
+  test("falls back to the watch id when the wire sent no note, so the row is never blank", () => {
+    render(<RailRow node={watchRailNode({ id: "watch-9", note: "" })} info={info()} actions={actions()} />);
+    expect(screen.getByText("watch-9")).toBeTruthy();
+  });
+
+  test("a fired-but-still-registered watch reads as not armed", () => {
+    render(
+      <RailRow
+        node={watchRailNode({ note: "One shot", active: false, cadence: [{ kind: "after", seconds: 600 }] })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-watch-status").textContent).toBe("after 10m · not armed");
+  });
+
+  test("carries no signal dot and nothing to act on", () => {
+    render(<RailRow node={watchRailNode({ note: "Check" })} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+// The count on the session's summary line. It is its own element beside the
+// gloss (never text inside it) so it keeps neutral ink: the gloss is tinted by
+// the row's signal family, and a watch is not a call for a human, a failure, or
+// a success. It leads the line so it precedes the branch - the deliberate
+// ellipsis sacrifice - and ellipsis can therefore never eat it.
+describe("watch count on the summary line", () => {
+  test("shows on an otherwise-quiet watch-bearing row", () => {
+    const session = apiNode({ state: "idle", age: "2m", watches: [watchSummary()] });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
+    // The watch-only line is just the count: the state word "idle" beside it
+    // would be noise, not a gloss.
+    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
+    expect(screen.queryByTestId("cadence-dot")).toBeNull();
+  });
+
+  test("counts its own watches, never a subagent's", () => {
+    const child = apiNode({ row_id: "child", ref: "child", state: "idle", watches: [watchSummary({ id: "c1" })] });
+    const parent = apiNode({
+      state: "idle",
+      age: "1m",
+      watches: [watchSummary({ id: "p1" })],
+      children: [child],
+    });
+    render(<RailRow node={sessionRailNode(parent)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
+  });
+
+  test("counts only armed watches, so a fired one does not inflate it", () => {
+    const session = apiNode({
+      state: "idle",
+      age: "2m",
+      watches: [watchSummary({ id: "armed" }), watchSummary({ id: "fired", active: false })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
+  });
+
+  test("pluralizes the count", () => {
+    const session = apiNode({
+      state: "idle",
+      age: "2m",
+      watches: [watchSummary({ id: "w1" }), watchSummary({ id: "w2" }), watchSummary({ id: "w3" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches");
+  });
+
+  test("precedes the branch on the visible line", () => {
+    const session = apiNode({ state: "active", branch: "feature/x", watches: [watchSummary()] });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    const count = screen.getByTestId("rail-row-watches");
+    const activity = screen.getByTestId("rail-row-activity");
+    expect(activity.textContent).toBe("working · feature/x");
+    expect(count.textContent).toBe("1 watch ·");
+    expect(count.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("keeps neutral ink on a signal row instead of inheriting the gloss's tint", () => {
+    const session = apiNode({ state: "errored", watches: [watchSummary()] });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    const count = screen.getByTestId("rail-row-watches");
+    expect(count.className.split(" ")).toContain(railStyles.watchCount);
+    for (const tint of [railStyles.activityAlive, railStyles.activityAttention, railStyles.activityDanger]) {
+      expect(count.className.split(" ")).not.toContain(tint);
+    }
+    const activity = screen.getByTestId("rail-row-activity");
+    expect(activity.className.split(" ")).toContain(railStyles.activityDanger);
+  });
+
+  test("renders nothing for a session with no watches", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", age: "2m" }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("rail-row-watches")).toBeNull();
+  });
+
+  // jsdom applies no stylesheet, so the neutral ink is only checkable against
+  // the (comment-stripped) stylesheet text - the same discipline the shared
+  // right-slot describe below uses.
+  test("the count's stylesheet rule is neutral ink, never one of the four hues", () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      " ",
+    );
+    const rule = /\.watchCount\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toMatch(/color:\s*var\(--ink-mid\)/);
+    expect(rule).not.toMatch(/var\(--(alive|attention|danger|accent)\)/);
   });
 });
 

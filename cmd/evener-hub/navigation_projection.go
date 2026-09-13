@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -271,6 +272,7 @@ func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 		out[i].RunningSubagentIDs = append([]string(nil), entry.RunningSubagentIDs...)
 		out[i].RunningJobs = appwire.CloneEvenerJobs(entry.RunningJobs)
 		out[i].CompletedJobs = appwire.CloneEvenerJobs(entry.CompletedJobs)
+		out[i].Watches = appwire.CloneEvenerWatches(entry.Watches)
 		if entry.RunningSubagentStates != nil {
 			out[i].RunningSubagentStates = make(map[string]string, len(entry.RunningSubagentStates))
 			maps.Copy(out[i].RunningSubagentStates, entry.RunningSubagentStates)
@@ -592,8 +594,9 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	budget := navigationFittingBudget(navigationSummaryNodes(original), func(budget int) bool {
+	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), func(trim navigationWatchPayloadTrim, budget int) bool {
 		rows, dropped := limitNavigationSummaries(original, budget)
+		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
@@ -601,6 +604,7 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 		return navigationJSONFits(candidate, maxNavigationResponseBytes)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
+	trimNavigationWatchPayloads(resource.Sessions, trim)
 	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
 	resource.Truncated = true
 }
@@ -611,8 +615,9 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	budget := navigationFittingBudget(navigationSummaryNodes(original), func(budget int) bool {
+	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), func(trim navigationWatchPayloadTrim, budget int) bool {
 		rows, dropped := limitNavigationSummaries(original, budget)
+		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
@@ -620,6 +625,7 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 		return navigationJSONFits(candidate, maxNavigationResponseBytes)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
+	trimNavigationWatchPayloads(resource.Sessions, trim)
 	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
 	resource.Truncated = true
 }
@@ -629,11 +635,80 @@ func fitNavigationProject(resource *hubapi.NavigationProjectResource) {
 		return
 	}
 	original := cloneNavigationProjectResource(*resource)
-	budget := navigationFittingBudget(navigationSummaryNodes(original.Current.Sessions)+navigationSummaryNodes(original.Recent.Sessions)+navigationSummaryNodes(original.Archived.Sessions), func(budget int) bool {
+	nodes := navigationSummaryNodes(original.Current.Sessions) + navigationSummaryNodes(original.Recent.Sessions) + navigationSummaryNodes(original.Archived.Sessions)
+	trim, budget := navigationFittingChoice(nodes, func(trim navigationWatchPayloadTrim, budget int) bool {
 		candidate := limitNavigationProject(original, budget)
+		trimNavigationProjectWatchPayloads(&candidate, trim)
 		return navigationJSONFits(candidate, maxNavigationResponseBytes)
 	})
-	*resource = limitNavigationProject(original, budget)
+	limited := limitNavigationProject(original, budget)
+	trimNavigationProjectWatchPayloads(&limited, trim)
+	*resource = limited
+}
+
+// navigationFittingChoice finds the largest session-row budget that fits. It
+// tries the full payload first, preserving the pre-existing answer and probe
+// count. Only when even one untrimmed row cannot fit does it degrade optional
+// watch payloads - delivery instants first, then whole watch rows - so a
+// session whose watches are what overflowed the response is still listed with
+// as much of its payload as fits, instead of being dropped and leaving the
+// page with no rows while data remains (which validateNavigationPageProgress
+// rejects outright). It returns the trim level and budget actually used.
+func navigationFittingChoice(nodes int, fits func(navigationWatchPayloadTrim, int) bool) (navigationWatchPayloadTrim, int) {
+	full := navigationFittingBudget(nodes, func(budget int) bool {
+		return fits(navigationWatchPayloadFull, budget)
+	})
+	if full > 0 || nodes == 0 {
+		return navigationWatchPayloadFull, full
+	}
+	for _, trim := range []navigationWatchPayloadTrim{navigationWatchPayloadNoDeliveryTimes, navigationWatchPayloadNoWatches} {
+		budget := navigationFittingBudget(nodes, func(budget int) bool {
+			return fits(trim, budget)
+		})
+		if budget > 0 {
+			return trim, budget
+		}
+	}
+	// No trim level retains a row: the overflow is not in the watch payload
+	// (a job-heavy single row, for example). Report the untrimmed zero-budget
+	// result so the caller keeps its existing irreducible-overflow behavior.
+	return navigationWatchPayloadFull, 0
+}
+
+// navigationWatchPayloadTrim is a degradation level for the optional watch
+// payload on session rows. The zero value leaves rows untouched.
+type navigationWatchPayloadTrim int
+
+const (
+	navigationWatchPayloadFull navigationWatchPayloadTrim = iota
+	navigationWatchPayloadNoDeliveryTimes
+	navigationWatchPayloadNoWatches
+)
+
+// trimNavigationWatchPayloads strips optional watch payload from rows in place.
+// The rows are always fitters' clones (limitNavigationSummaries clones every
+// included row), so trimming never reaches the projector's original.
+func trimNavigationWatchPayloads(rows []hubapi.NavigationSessionSummary, trim navigationWatchPayloadTrim) {
+	if trim == navigationWatchPayloadFull {
+		return
+	}
+	for i := range rows {
+		switch trim {
+		case navigationWatchPayloadNoDeliveryTimes:
+			for j := range rows[i].Watches {
+				rows[i].Watches[j].DeliveryTimes = nil
+			}
+		case navigationWatchPayloadNoWatches:
+			rows[i].Watches = nil
+		}
+		trimNavigationWatchPayloads(rows[i].Children, trim)
+	}
+}
+
+func trimNavigationProjectWatchPayloads(resource *hubapi.NavigationProjectResource, trim navigationWatchPayloadTrim) {
+	trimNavigationWatchPayloads(resource.Current.Sessions, trim)
+	trimNavigationWatchPayloads(resource.Recent.Sessions, trim)
+	trimNavigationWatchPayloads(resource.Archived.Sessions, trim)
 }
 
 func navigationFittingBudget(nodes int, fits func(int) bool) int {
@@ -1107,6 +1182,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		MoreSubagents: node.MoreSubagents,
 		RunningJobs:   navigationJobs(node.RunningJobs),
 		CompletedJobs: navigationJobs(node.CompletedJobs),
+		Watches:       navigationWatches(node.Watches),
 		Children:      hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
 }
@@ -1132,6 +1208,100 @@ func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.
 		out = append(out, summary)
 	}
 	return out
+}
+
+// navigationWatches projects a session's own live-watch rows onto the wire
+// summary. Rows are never merged across sessions, so a receiver watch that two
+// daemons report stays on each session's own summary and a rollup over the
+// subtree counts it once per owning row. The source list is the daemon's
+// already-bounded watch inventory (mirroring navigationJobs), so this does not
+// cap the number of rows; it only bounds each rendered string.
+func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray[hubapi.NavigationWatchSummary] {
+	out := make(hubapi.NavigationArray[hubapi.NavigationWatchSummary], 0, len(watches))
+	for _, watch := range watches {
+		// created_at is a REQUIRED watch field and the web codec validates it as
+		// strict RFC3339. Truncating a malformed or oversized value (the generic
+		// label cap) produced an ellipsized string the codec rejects, which
+		// silently failed the whole watch-carrying navigation snapshot. A watch
+		// whose created_at cannot be represented is dropped rather than poisoning
+		// every other row in the resource.
+		if !validNavigationTimestamp(watch.CreatedAt) {
+			continue
+		}
+		cadence := make([]hubapi.NavigationWatchCadence, 0, len(watch.Cadence))
+		for _, step := range watch.Cadence {
+			cadence = append(cadence, hubapi.NavigationWatchCadence{
+				Kind:    truncateNavigationRunes(step.Kind, maxNavigationLabelRunes),
+				Seconds: step.Seconds,
+				Every:   step.Every,
+				Filter:  truncateNavigationRunes(step.Filter, maxNavigationLabelRunes),
+			})
+		}
+		events := make([]string, 0, len(watch.Events))
+		for _, event := range watch.Events {
+			events = append(events, truncateNavigationRunes(event, maxNavigationLabelRunes))
+		}
+		deliveryTimes := make([]string, 0, len(watch.DeliveryTimes))
+		for _, at := range watch.DeliveryTimes {
+			// An instant the codec cannot decode is dropped: one missing dot is
+			// honest, a rejected snapshot is not.
+			if validNavigationTimestamp(at) {
+				deliveryTimes = append(deliveryTimes, at)
+			}
+		}
+		out = append(out, hubapi.NavigationWatchSummary{
+			// ID and Source are identity, not display text: the rail and the
+			// panel derive row keys from watch.id, and truncateNavigationRunes
+			// appends an ellipsis that can collapse two distinct long ids into
+			// the same label. navigationJobs leaves JobID/JobType/Status
+			// untruncated for the same reason; only display fields are bounded.
+			ID:             watch.ID,
+			Source:         watch.Source,
+			Target:         truncateNavigationRunes(watch.Target, maxNavigationLabelRunes),
+			SendTo:         truncateNavigationRunes(watch.SendTo, maxNavigationLabelRunes),
+			Note:           truncateNavigationRunes(watch.Note, maxNavigationLabelRunes),
+			Cadence:        cadence,
+			OutputMatch:    truncateNavigationRunes(watch.OutputMatch, maxNavigationLabelRunes),
+			Events:         events,
+			WildcardEvents: watch.WildcardEvents,
+			Deliveries:     watch.Deliveries,
+			DeliveryTimes:  deliveryTimes,
+			CreatedAt:      watch.CreatedAt,
+			Active:         watch.Active,
+			EndReason:      truncateNavigationRunes(watch.EndReason, maxNavigationLabelRunes),
+		})
+	}
+	return out
+}
+
+// navigationTimestampPattern matches exactly the grammar the web codec's
+// rfc3339Timestamp accepts: a four-digit year, capital T, seconds, an optional
+// 1-9 digit fraction, and Z or a numeric offset. The offset's hour and minute
+// are captured so validNavigationTimestamp can bound them like the codec does.
+// Go's time.Parse additionally enforces the calendar/clock ranges, so together
+// they reject the truncated "…"-suffixed strings the label cap used to produce.
+var navigationTimestampPattern = regexp.MustCompile(
+	`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$`,
+)
+
+func validNavigationTimestamp(value string) bool {
+	match := navigationTimestampPattern.FindStringSubmatch(value)
+	if match == nil {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+		return false
+	}
+	// The codec rejects an offset whose hour exceeds 23 or minute exceeds 59;
+	// Go's time.Parse accepts e.g. +24:00, so parity needs this explicit bound.
+	if match[1] != "" {
+		hour := int(match[1][0]-'0')*10 + int(match[1][1]-'0')
+		minute := int(match[2][0]-'0')*10 + int(match[2][1]-'0')
+		if hour > 23 || minute > 59 {
+			return false
+		}
+	}
+	return true
 }
 
 func (p navigationProjection) isLive(id, ref string) bool {
@@ -1175,6 +1345,12 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 	}
 	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
 	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
+	clone.Watches = append(hubapi.NavigationArray[hubapi.NavigationWatchSummary](nil), summary.Watches...)
+	for index, watch := range summary.Watches {
+		clone.Watches[index].Cadence = append([]hubapi.NavigationWatchCadence(nil), watch.Cadence...)
+		clone.Watches[index].Events = append([]string(nil), watch.Events...)
+		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
+	}
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)
