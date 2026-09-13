@@ -102,6 +102,17 @@ func TestAliasTarget_ResolvesSameProviderPassthroughAndDangling(t *testing.T) {
 	}
 }
 
+func TestAliasTarget_ResolvesDisabledTargetForReEnable(t *testing.T) {
+	// Write-through must work in both directions: re-enabling through the
+	// alias resolves the target even though the target currently fails
+	// Resolve with ErrModelDisabled.
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
+	got, err := r.AliasTarget("anthropic", "house-model")
+	if err != nil || got != (Ref{Instance: "anthropic", Model: "claude-opus-4-6"}) {
+		t.Fatalf("AliasTarget(alias of disabled) = %+v, %v; want the target ref", got, err)
+	}
+}
+
 func TestFindModel_SkipsDisabled(t *testing.T) {
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n")
 	for _, ref := range r.FindModel("claude-opus-4-6") {

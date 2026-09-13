@@ -97,16 +97,16 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // instance's listing at startup and every few minutes after, so the
   // Models toggles read cached inventory. The Refresh button below
   // re-fetches on demand; failures toast and keep the cached rows.
-  const [modelsRefreshing, setModelsRefreshing] = useState<string | null>(null);
+  const [modelsRefreshing, setModelsRefreshing] = useState(false);
 
   async function handleRefreshModels(name: string): Promise<void> {
-    setModelsRefreshing(name);
+    setModelsRefreshing(true);
     try {
       await credentialsStore.getState().refreshModels(name);
     } catch (err) {
       toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`);
     } finally {
-      setModelsRefreshing((current) => (current === name ? null : current));
+      setModelsRefreshing(false);
     }
   }
   const previousInstances = useRef(instances);
@@ -306,7 +306,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         onRefreshModels={() => {
           if (selectedInstance !== null) void handleRefreshModels(selectedInstance);
         }}
-        modelsRefreshing={selectedInstance !== null && modelsRefreshing === selectedInstance}
+        modelsRefreshing={modelsRefreshing}
         onTestCredentials={() => {
           if (selectedInstance !== null) void handleTestCredentials(selectedInstance);
         }}

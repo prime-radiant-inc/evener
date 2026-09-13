@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
@@ -554,25 +553,10 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	} else {
 		l.Providers[name] = p
 	}
-	if err := c.writeLoadable(l); err != nil {
+	// writeAndReload restores before when the reload fails (see #711
+	// on its comment); a rename continues below on success.
+	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
 		return err
-	}
-	if err := c.reg.Reload(); err != nil {
-		// writeLoadable's dry parse only checks TOML syntax against the
-		// registry schema; it does not resolve the config the way Reload
-		// does. A standalone instance (no base, and its own name is not a
-		// registry id either) that just lost its only base_url is a config
-		// that parses fine but cannot resolve an endpoint (llm/registry:
-		// "no base URL: set base_url = … or base = <registry id>"), and one
-		// bad instance record fails the whole reload, not just this one
-		// (#711). Restore the file this call just overwrote instead of
-		// leaving every instance operation refused by a config only this
-		// edit produced.
-		if restoreErr := c.write(before); restoreErr != nil {
-			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
-		}
-		_ = c.reg.Reload() // best-effort: put the last-good registry view back
-		return appwire.InvalidParams(fmt.Sprintf("this edit would leave %q unable to load: %v", name, err))
 	}
 	if renaming {
 		moveErr := c.moveCredentials(name, newName)
@@ -759,10 +743,6 @@ func instanceModels(r *registry.Registry, name string) []appwire.InstanceModelEn
 	return out
 }
 
-// instanceLiveListTimeout bounds one instance's live /models fetch, the
-// same per-instance budget launch-check and the model picker use.
-const instanceLiveListTimeout = 8 * time.Second
-
 // RefreshModels fetches one instance's live listing into the held registry,
 // then answers with the updated list. It is a read: no file is written, so
 // it stays available while writes are refused. A failed fetch is an error,
@@ -781,6 +761,31 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 		return appwire.InstanceListResponse{}, err
 	}
 	return c.List(), nil
+}
+
+// writeAndReload persists a mutated layer and reloads the registry: the
+// tail Edit and SetModelDisabled share. writeLoadable's dry parse only
+// checks TOML syntax against the registry schema; it does not resolve the
+// config the way Reload does. A standalone instance (no base, and its own
+// name is not a registry id either) that just lost its only base_url is a
+// config that parses fine but cannot resolve an endpoint (llm/registry:
+// "no base URL: set base_url = … or base = <registry id>"), and one bad
+// instance record fails the whole reload, not just this one (#711).
+// Restore the file this call just overwrote instead of leaving every
+// instance operation refused by a config only this write produced. verb
+// names the write in the refusal ("edit", "toggle").
+func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name, verb string) error {
+	if err := c.writeLoadable(l); err != nil {
+		return err
+	}
+	if err := c.reg.Reload(); err != nil {
+		if restoreErr := c.write(before); restoreErr != nil {
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+		}
+		_ = c.reg.Reload() // best-effort: put the last-good registry view back
+		return appwire.InvalidParams(fmt.Sprintf("this %s would leave %q unable to load: %v", verb, name, err))
+	}
+	return nil
 }
 
 // SetModelDisabled flips one model row's disabled flag, writing through
@@ -837,20 +842,7 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	row.Disabled = &disabled
 	p.Models[target.Model] = row
 	l.Providers[name] = p
-	if err := c.writeLoadable(l); err != nil {
-		return err
-	}
-	if err := c.reg.Reload(); err != nil {
-		// A models-only shadow parses fine but, like any edit, could fail
-		// to load: restore the file instead of locking the pane behind
-		// refuseWhenBroken on a config only this toggle produced.
-		if restoreErr := c.write(before); restoreErr != nil {
-			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
-		}
-		_ = c.reg.Reload() // best-effort: put the last-good registry view back
-		return appwire.InvalidParams(fmt.Sprintf("this toggle would leave %q unable to load: %v", name, err))
-	}
-	return nil
+	return c.writeAndReload(before, l, name, "toggle")
 }
 
 // SetDefault records which instance a bare model reference resolves on. A

@@ -561,20 +561,33 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 
 // resolveAliasTarget resolves an alias target through the same machinery:
 // a same-provider row on rec, else "provider-id/id" on the curated record.
-func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bool, error) {
+// aliasTargetRow applies the alias-target acceptance rules both resolve
+// paths share: an exact non-alias row on the record, else a
+// provider-id/id reference against the curated registry. A glob pattern
+// never names a target, on either side of the slash.
+func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string, bool) {
 	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
-		res, err := r.resolveOn(rec, Ref{Instance: rec.name, Model: aliasOf}, nil)
-		return res, true, err
+		return rec, aliasOf, true
 	}
 	if i := strings.Index(aliasOf, "/"); i > 0 {
 		if prov, ok := r.curated[aliasOf[:i]]; ok {
-			if m, ok := prov.head.Models[aliasOf[i+1:]]; ok && !isGlob(aliasOf[i+1:]) && m.AliasOf == "" {
-				res, err := r.resolveOn(prov, Ref{Instance: prov.name, Model: aliasOf[i+1:]}, nil)
-				return res, false, err
+			if id := aliasOf[i+1:]; !isGlob(id) {
+				if m, ok := prov.head.Models[id]; ok && m.AliasOf == "" {
+					return prov, id, true
+				}
 			}
 		}
 	}
-	return Resolved{}, false, fmt.Errorf("alias_of %q does not name an existing non-alias row", aliasOf)
+	return nil, "", false
+}
+
+func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bool, error) {
+	target, id, ok := r.aliasTargetRow(rec, aliasOf)
+	if !ok {
+		return Resolved{}, false, fmt.Errorf("alias_of %q does not name an existing non-alias row", aliasOf)
+	}
+	res, err := r.resolveOn(target, Ref{Instance: target.name, Model: id}, nil)
+	return res, target == rec, err
 }
 
 // seedFromAlias copies the target's facts, surface, and family in as the
@@ -827,7 +840,7 @@ func (r *Registry) FindModel(id string) []Ref {
 	var out []Ref
 	for _, inst := range r.rankedInstances() {
 		if hit := r.lookupRow(inst.rec, id); !hit.synthesized {
-			if recordMayDisable(inst.rec, r.topGlobs) && r.modelDisabled(inst.rec, Ref{Instance: inst.name, Model: id}, hit) {
+			if r.recordMayDisable(inst.rec) && r.modelDisabled(inst.rec, Ref{Instance: inst.name, Model: id}, hit) {
 				continue
 			}
 			out = append(out, Ref{Instance: inst.name, Model: id})
@@ -886,19 +899,11 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 // matches resolveAliasTarget (an exact non-alias row, same provider or
 // provider-id/id) but without paying for a full resolve.
 func (r *Registry) aliasEffectiveDisabled(rec *record, aliasOf string) (disabled, ok bool) {
-	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
-		return r.modelDisabled(rec, Ref{Instance: rec.name, Model: aliasOf}, lookupHit{rowID: aliasOf, wireID: aliasOf, step: "row"}), true
+	target, id, ok := r.aliasTargetRow(rec, aliasOf)
+	if !ok {
+		return false, false
 	}
-	if i := strings.Index(aliasOf, "/"); i > 0 {
-		if prov, ok := r.curated[aliasOf[:i]]; ok {
-			if id := aliasOf[i+1:]; !isGlob(id) {
-				if m, ok := prov.head.Models[id]; ok && m.AliasOf == "" {
-					return r.modelDisabled(prov, Ref{Instance: prov.name, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"}), true
-				}
-			}
-		}
-	}
-	return false, false
+	return r.modelDisabled(target, Ref{Instance: target.name, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"}), true
 }
 
 // AliasTarget resolves a model id to the row a toggle writes: the id
@@ -916,14 +921,14 @@ func (r *Registry) AliasTarget(instance, model string) (Ref, error) {
 		return Ref{}, fmt.Errorf("model %q is a glob: the sheet toggles exact rows only", model)
 	}
 	if m, ok := rec.head.Models[model]; ok && m.AliasOf != "" {
-		target, same, err := r.resolveAliasTarget(rec, m.AliasOf)
-		if err != nil {
-			return Ref{}, err
+		target, id, ok := r.aliasTargetRow(rec, m.AliasOf)
+		if !ok {
+			return Ref{}, fmt.Errorf("alias_of %q does not name an existing non-alias row", m.AliasOf)
 		}
-		if !same {
+		if target != rec {
 			return Ref{}, fmt.Errorf("model %q is an alias of %q on another provider, which this instance cannot toggle", model, m.AliasOf)
 		}
-		return Ref{Instance: rec.name, Model: target.Model.ID}, nil
+		return Ref{Instance: rec.name, Model: id}, nil
 	}
 	if hit := r.lookupRow(rec, model); hit.synthesized {
 		return Ref{}, fmt.Errorf("model %q is not a known model of instance %q", model, instance)
@@ -934,7 +939,7 @@ func (r *Registry) AliasTarget(instance, model string) (Ref, error) {
 // recordMayDisable reports whether any layer of rec or the top-level glob
 // rows set Disabled at all. Browse paths check this once before replaying
 // per row: with no flag anywhere every answer is false.
-func recordMayDisable(rec *record, topGlobs map[string]map[string]Model) bool {
+func (r *Registry) recordMayDisable(rec *record) bool {
 	for _, layer := range rec.layers {
 		for _, m := range layer.rows {
 			if m.Disabled != nil {
@@ -942,7 +947,7 @@ func recordMayDisable(rec *record, topGlobs map[string]map[string]Model) bool {
 			}
 		}
 	}
-	for _, rows := range topGlobs {
+	for _, rows := range r.topGlobs {
 		for _, m := range rows {
 			if m.Disabled != nil {
 				return true
@@ -959,13 +964,12 @@ func recordMayDisable(rec *record, topGlobs map[string]map[string]Model) bool {
 // row is directly writable. A toggle on a live-only id authors an exact
 // config row, which precedes live lookup, so the exception takes effect.
 func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
-	rec, ok := r.recordFor(instance)
-	if !ok {
-		return nil, fmt.Errorf("unknown instance %q", instance)
+	rec, ids, err := r.instanceRecordIDs(instance)
+	if err != nil {
+		return nil, err
 	}
-	ids := modelIDs(rec, r.LiveModels(instance))
 	out := make([]InstanceModel, 0, len(ids))
-	mayDisable := recordMayDisable(rec, r.topGlobs)
+	mayDisable := r.recordMayDisable(rec)
 	for _, id := range ids {
 		hit := r.lookupRow(rec, id)
 		if hit.rowID != "" && rec.head.Models[hit.rowID].AliasOf != "" {
@@ -980,14 +984,22 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	return out, nil
 }
 
+// instanceRecordIDs resolves an instance to its record plus its known
+// model ids (exact catalog rows plus cached live ids, sorted) — the
+// prologue InstanceModels and ModelIDs share.
+func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error) {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return nil, nil, fmt.Errorf("unknown instance %q", instance)
+	}
+	return rec, modelIDs(rec, r.LiveModels(instance)), nil
+}
+
 // ModelIDs lists an instance's exact catalog rows plus its cached live ids,
 // sorted (for `evener models list`).
 func (r *Registry) ModelIDs(instance string) ([]string, error) {
-	rec, ok := r.recordFor(instance)
-	if !ok {
-		return nil, fmt.Errorf("unknown instance %q", instance)
-	}
-	return modelIDs(rec, r.LiveModels(instance)), nil
+	_, ids, err := r.instanceRecordIDs(instance)
+	return ids, err
 }
 
 // CatalogModelIDs lists a curated provider's exact catalog rows plus its

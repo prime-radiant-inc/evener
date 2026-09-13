@@ -7,21 +7,31 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
 // livePrefetchInterval is how often the background loop refreshes every
-// instance's cached live listing — the same 5 minutes the model picker's
-// own live cache uses.
-const livePrefetchInterval = 5 * time.Minute
+// instance's cached live listing: the model picker's own live cache TTL.
+const livePrefetchInterval = liveModelsTTL
+
+// instanceLiveListTimeout bounds one instance's live /models fetch, the
+// same per-instance budget launch-check and the model picker use.
+const instanceLiveListTimeout = 8 * time.Second
 
 // fetchInstanceLive fetches one instance's live listing into reg, so later
 // InstanceModels calls include the live ids. It is the shared core behind
 // the manual refresh RPC and the background prefetch below.
 func fetchInstanceLive(ctx context.Context, reg *registry.Registry, name string) error {
+	return fetchInstanceLiveWith(ctx, cmdutil.NewRegistryClient(reg, ""), name)
+}
+
+// fetchInstanceLiveWith is fetchInstanceLive against a caller-supplied
+// client, so one prefetch pass shares a single client instead of building
+// one per instance.
+func fetchInstanceLiveWith(ctx context.Context, client *llm.Client, name string) error {
 	fetchCtx, cancel := context.WithTimeout(ctx, instanceLiveListTimeout)
 	defer cancel()
-	client := cmdutil.NewRegistryClient(reg, "")
 	_, err := client.Models(fetchCtx, name)
 	return err
 }
@@ -35,13 +45,14 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 	if reg == nil {
 		return
 	}
+	client := cmdutil.NewRegistryClient(reg, "")
 	var wg sync.WaitGroup
 	for _, inst := range reg.Instances() {
 		if inst.Hidden {
 			continue
 		}
 		wg.Go(func() {
-			_ = fetchInstanceLive(ctx, reg, inst.Name)
+			_ = fetchInstanceLiveWith(ctx, client, inst.Name)
 		})
 	}
 	wg.Wait()

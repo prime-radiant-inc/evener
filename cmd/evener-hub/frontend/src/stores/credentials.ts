@@ -71,9 +71,8 @@ export interface CredentialsStoreState {
   // returned list, like setDefault: the sheet steers on the store's list.
   setModelDisabled(params: InstanceSetModelDisabledParams): Promise<void>;
   // refreshModels fetches one instance's live listing, then applies the
-  // returned list (exact catalog rows plus cached live ids). Resolves true
-  // when the listing this call answered with is the one the store holds.
-  refreshModels(name: string): Promise<boolean>;
+  // returned list (exact catalog rows plus cached live ids).
+  refreshModels(name: string): Promise<void>;
   // Auth mutations return the raw wire response and never touch
   // instances/availableProviders themselves - the caller (CredentialsSection)
   // re-fetches on success, matching the legacy's own "close editor +
@@ -186,7 +185,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async refreshModels(name) {
     const client = requireClient();
-    return applyMutation(() => client.request("evener/instance/refreshModels", { name }));
+    await applyMutation(() => client.request("evener/instance/refreshModels", { name }));
   },
 
   async setApiKey(provider, value) {
