@@ -46,10 +46,46 @@ describe("ActivityWatchDetail timeline", () => {
     const positions = dots.map((dot) => leftOf(dot));
     for (const position of positions) {
       expect(position).toBeGreaterThanOrEqual(0);
-      expect(position).toBeLessThanOrEqual(100);
+      // The last 2% is reserved for the now marker's own column, so even the
+      // newest dot stays strictly inside the rail.
+      expect(position).toBeLessThanOrEqual(98);
     }
     expect(positions[0]).toBeLessThan(positions[1] as number);
     expect(positions[1]).toBeLessThan(positions[2] as number);
+  });
+
+  test("clamps a newest delivery in the span's final percent below the now marker", () => {
+    // now=15:00:12 with earliest=13:00 puts a delivery one second before now at
+    // ~99.99% of the span, which would sit under the now marker without a clamp.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 2,
+          delivery_times: ["2026-08-05T13:00:00Z", "2026-08-05T15:00:11Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const newest = screen.getAllByTestId("watch-timeline-dot")[1] as HTMLElement;
+    expect(leftOf(newest)).toBe(98);
+    expect(leftOf(newest)).toBeLessThan(leftOf(screen.getByTestId("watch-timeline-now")));
+  });
+
+  test("orders the now marker before the dots so a dot can never be painted over it", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        now={NOW}
+      />,
+    );
+    const rail = screen.getByTestId("watch-timeline-rail");
+    const order = Array.from(rail.children);
+    const markerIndex = order.indexOf(screen.getByTestId("watch-timeline-now"));
+    expect(markerIndex).toBeGreaterThanOrEqual(0);
+    for (const dot of screen.getAllByTestId("watch-timeline-dot")) {
+      expect(order.indexOf(dot)).toBeGreaterThan(markerIndex);
+    }
   });
 
   test("draws a now marker at the right end and hides the marks from assistive tech", () => {
@@ -144,5 +180,48 @@ describe("ActivityWatchDetail timeline", () => {
     expect(text).not.toMatch(/dropped/i);
     expect(text).not.toMatch(/\bnext\b/i);
     expect(text).not.toMatch(/countdown/i);
+  });
+});
+
+describe("ActivityWatchDetail note", () => {
+  // The row header already prints the note as the row's own name, so the
+  // detail's lead paragraph exists only to show what the header's narrow name
+  // column truncated. 48 is the documented budget in the component.
+  test("renders no lead paragraph for a short note the row title can show in full", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByTestId("watch-note")).toBeNull();
+    expect(screen.getByTestId("watch-facts")).toBeTruthy();
+  });
+
+  test("renders the full note once when it exceeds the row title's character budget", () => {
+    const note = "Check the deploy log every morning before the daily standup meeting starts";
+    render(
+      <ActivityWatchDetail row={row({ note, cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })} now={NOW} />,
+    );
+    const lead = screen.getByTestId("watch-note");
+    expect(lead.textContent).toBe(note);
+    expect(screen.getAllByTestId("watch-note")).toHaveLength(1);
+  });
+
+  test("holds the lead paragraph at the 48-character budget boundary", () => {
+    const { rerender } = render(
+      <ActivityWatchDetail
+        row={row({ note: "x".repeat(48), cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByTestId("watch-note")).toBeNull();
+    rerender(
+      <ActivityWatchDetail
+        row={row({ note: "x".repeat(49), cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-note").textContent).toBe("x".repeat(49));
   });
 });

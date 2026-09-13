@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 describe("ActivityTree watch rows", () => {
-  test("a scheduled watch renders a named row with its cadence and fire count, under a Watches group", () => {
+  test("a scheduled watch renders a named row with its cadence and delivery count, under a Watches group", () => {
     renderTree([
       watch({
         id: "watch_poll",
@@ -74,7 +74,7 @@ describe("ActivityTree watch rows", () => {
 
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
     expect(row.textContent).toContain("every 10m");
-    expect(row.textContent).toContain("3 fires");
+    expect(row.textContent).toContain("3 deliveries");
     expect(within(row).getByText("Watch:")).toBeTruthy();
     expect(row.querySelector('[data-testid="watch-glyph"]')).not.toBeNull();
 
@@ -95,7 +95,9 @@ describe("ActivityTree watch rows", () => {
 
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
     expect(row.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByTestId("watch-note").textContent).toBe("Poll the queue depth");
+    // The row's own name already shows this short note in full; the detail must
+    // not repeat it as a lead paragraph.
+    expect(screen.queryByTestId("watch-note")).toBeNull();
     expect(screen.getByTestId("watch-facts").textContent).toBe(
       `Fires every 10m · armed ${armedLabel()} ago · no deliveries yet`,
     );

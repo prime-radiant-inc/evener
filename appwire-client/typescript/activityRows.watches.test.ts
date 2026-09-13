@@ -72,9 +72,9 @@ describe("watchName", () => {
 });
 
 describe("watchMeta", () => {
-  test("scheduled with deliveries carries the cadence and fire count", () => {
+  test("scheduled with deliveries carries the cadence and delivery count", () => {
     const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3 });
-    expect(watchMeta(w)).toBe("every 10m · 3 fires");
+    expect(watchMeta(w)).toBe("every 10m · 3 deliveries");
   });
 
   test("scheduled with no deliveries carries the armed state", () => {
@@ -83,9 +83,9 @@ describe("watchMeta", () => {
     expect(watchMeta({ ...w, active: false })).toBe("every 10m · not armed");
   });
 
-  test("a single fire is singular", () => {
+  test("a single delivery is singular", () => {
     const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 1 });
-    expect(watchMeta(w)).toBe("every 10m · 1 fire");
+    expect(watchMeta(w)).toBe("every 10m · 1 delivery");
   });
 
   test("output watches read on output plus armed state", () => {

@@ -165,7 +165,9 @@ export function watchMeta(watch: NavigationWatchSummary): string {
   if (kind === "event") return `on event · ${armedState(watch)}`;
   const cadence = cadenceLabels(watch).join(" · ");
   const suffix =
-    watch.deliveries > 0 ? `${watch.deliveries} fire${watch.deliveries === 1 ? "" : "s"}` : armedState(watch);
+    watch.deliveries > 0
+      ? `${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`
+      : armedState(watch);
   return [cadence, suffix].filter((part) => part !== "").join(" · ");
 }
 
