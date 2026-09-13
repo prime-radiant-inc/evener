@@ -359,7 +359,7 @@ top-level modules plus the `testing/` directory): 32 + 50 + 10 + 17 = 109.
 ## Delta since baseline
 
 What has landed since `92561dbe3`, and what it does to the frozen tables above.
-Statuses observed at `8eb1a94c8` on 2026-09-13. **PR heads are cited as of this
+Statuses observed at `57509ffd5` on 2026-09-14. **PR heads are cited as of this
 commit and go stale immediately** — merge SHAs are the stable reference.
 
 | PR | Merged as | Effect on the baseline |
@@ -371,6 +371,7 @@ commit and go stale immediately** — merge SHAs are the stable reference.
 | B3b #1203 | `4da382482` | Native's two `projectUsage` copies collapsed to one. That DUPLICATED row is closed; the count in §7 is the baseline count and is not decremented |
 | A3b #1206 | `99fa1882f` | Exports from the root the twelve `errors` helpers the apps import, which is what makes the plan's A4 rewrite compile. `chunkViewBackingForTests` and `readDocFile` are deliberately excluded |
 | A3c #1207 | `2a8163eb0` | The qualification manifest is per specifier rather than root-only, so a published subpath can be qualified at all — the prerequisite for the plan's A3d and C1 |
+| A3 #1241 | `57509ffd5` | The `git mv` to `appwire-client/typescript/`, its resolvers, gates, CI, generator, cards and docs, plus the three risk fixes. Left 31 web re-export stubs and the `testing/` stubs at the old path for A4 to delete. Closed #1224 by deriving `shippedModules` from `tsconfig.build.json`, and #1242/#1243 |
 | — #1182 | `8eb1a94c8` | This plan and this inventory, merged after 34 review rounds |
 | C9 #1234 | `d7ff88653` | `composer/slashCompletion.ts` → `protocol/slashCompletion.ts` |
 | C12 #1233 | `a0e594122` | `askDock/reconcileBatches.ts` → `protocol/reconcileBatches.ts` |
@@ -385,13 +386,13 @@ commit and go stale immediately** — merge SHAs are the stable reference.
 | C24 #1221 | `303053dfb` | `DocPort = { origin, fetch }`; `docFileRawURL`/`docImageURL` take the origin; adapters at `panes/doc/browserDocPort.ts` and `mobile-native/src/nativeDocPort.ts`. `docImageURL` stays a string builder, and native doc-image auth is `nativeDocImageSource` (`nativeDocPort.ts:26`) — shipped with no importer, because native has no doc pane; plan row D29 wires it |
 | A3d #1209 | `f39aa2c83` | Publishes `./docContent` as the package's second specifier and turns `readDocFile` into `readDocFile(session, path, fetchDoc)`, where `DocFetch` returns a `DocResponseLike` — the minimal `{ ok, status, headers.get, arrayBuffer }` a real `Response` satisfies. That is a deliberate host-independent API, not a runner constraint: `qualify-package.mjs:444-456` runs tsc with no `--lib`, so its declaration consumers default to `lib.es2022.full.d.ts` and do have DOM (an earlier draft of this row said otherwise). The web's adapter was `panes/doc/browserDocFetch.ts`; the root keeps the pure helpers. C24 (#1221) then renamed that adapter `panes/doc/browserDocPort.ts` and widened `DocFetch` into `DocPort = { origin, fetch }`, so today's signature is `readDocFile(session, path, port: DocPort)`. §3's `docContent` seam row is answered by the pair |
 
-A3 is **open as #1241** (head at the time of this commit `c7918bdff`): round 3
-is done and closed #1242, and the branch has since merged #1070 — five conflicts
-at the old path, `sharedNotesAvailability.ts` and `reducer.notes.test.ts` moved
-into the package with stubs, `types.gen.ts` regenerated, package test files back
-to 27. Residuals #1243 and #1244 outstanding;
-A4 is unstarted. What they block is narrower than an earlier draft
-of this document claimed: the package-name import rewrite and the directory
+A3 **merged as `57509ffd5`** after 8 review rounds: the package now lives at
+`appwire-client/typescript/`, 31 web re-export stubs and the `testing/` stubs
+remain at the old path pending A4, the package's 27 test files are
+self-contained, and `shippedModules` is derived from `tsconfig.build.json`,
+closing #1224. #1242 and #1243 closed with it; #1244 is outstanding and is
+A4's dependency. A4 was dispatched today off that commit. What they block is
+narrower than an earlier draft of this document claimed: the package-name import rewrite and the directory
 move. Relocations into `protocol/` land without them, with consumers still on
 deep relative paths — C10 (#1222, `ba4164649`), C13 (#1223, `e2c77cc72`),
 C24 (#1221, `303053dfb`), C26 (#1226, `b9a98151c`), C6 (#1227, `2b1e02939`) and
