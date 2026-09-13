@@ -53,6 +53,7 @@ async function qualify() {
     "stableDelegate",
     "docContent",
     "submitRouting",
+    "displayFormat",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -127,6 +128,15 @@ async function qualify() {
     "decideSubmitRoute",
     "decideSteerRoute",
     "isTurnActive",
+    "formatTokenCount",
+    "formatDurationMs",
+    "formatCharCount",
+    "formatClockTime",
+    "formatClockTimeSeconds",
+    "formatElapsed",
+    "firstLine",
+    "splitMandate",
+    "plainQuoteLine",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -201,6 +211,15 @@ assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
 assert.equal(client.isTurnActive("active", "turn_1"), true);
+assert.equal(client.formatTokenCount(41200), "41k");
+assert.equal(client.formatDurationMs(1500), "1.5s");
+assert.equal(client.formatCharCount(2500), "2.5k chars");
+assert.equal(client.formatClockTime(undefined), undefined);
+assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
+assert.equal(client.formatElapsed(65000), "1m05s");
+assert.equal(client.firstLine("\\n  hello  \\n", 20), "hello");
+assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest: "rest" });
+assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 `;

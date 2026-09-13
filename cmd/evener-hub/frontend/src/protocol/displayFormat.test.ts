@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { firstLine, formatClockTime, formatDurationMs, formatTokenCount } from "./format";
+import { firstLine, formatClockTime, formatDurationMs, formatTokenCount } from "./displayFormat";
 
 // --- formatTokenCount -----------------------------------------------------
 // Parity: renderer-format.js:582-587. Below 1000 is a plain rounded

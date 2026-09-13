@@ -43,6 +43,17 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
+export {
+  firstLine,
+  formatCharCount,
+  formatClockTime,
+  formatClockTimeSeconds,
+  formatDurationMs,
+  formatElapsed,
+  formatTokenCount,
+  plainQuoteLine,
+  splitMandate,
+} from "./displayFormat";
 export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // readDocFile is deliberately absent from the root: it needs a DocPort from the
 // host, and a consumer that supplies one (or spies on the module) wants the

@@ -32,6 +32,7 @@
     "sessionErrors.ts",
     "stableDelegate.ts",
     "docContent.ts",
-    "submitRouting.ts"
+    "submitRouting.ts",
+    "displayFormat.ts"
   ]
 }
