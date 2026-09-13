@@ -2177,7 +2177,9 @@ func (runtime delegateRuntime) adopt(prepared *preparedSubagentRun) error {
 }
 
 func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPath string) error {
-	child.maybeAppendEnvironmentContext()
+	if err := child.maybeAppendEnvironmentContext(); err != nil {
+		return fmt.Errorf("append environment context: %w", err)
+	}
 	message := buildUserInputMessage(input, nil)
 	if observer := child.cfg.testOnly.delegateInitialInputAppend; observer != nil {
 		observer(child)
