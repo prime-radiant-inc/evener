@@ -237,6 +237,7 @@ function makeThread(instanceId: string, turnIds: string[]): Thread {
 interface RetirementClientFixture {
   draft(): string;
   turnIDs(): string[];
+  instanceId(): string;
   retire(): Promise<void>;
   send(text: string, mutationId: string): Promise<void>;
   close(): Promise<void>;
@@ -406,8 +407,18 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
       );
     },
 
+    instanceId(): string {
+      return threadsStore.getState().threads.get(REF)?.instanceId ?? "";
+    },
+
     async retire(): Promise<void> {
       const beforeHydrations = threadsStore.getState().hydrations.get(REF) ?? 0;
+      // Bind the replacement generation BEFORE emitting the resync. The resync
+      // is what triggers the re-read, so the read must observe the replacement
+      // already bound; binding it afterwards would answer the resync-triggered
+      // read from the retired generation and the model would never carry
+      // INSTANCE_V2, contradicting this fixture's own contract.
+      replacementBound = true;
       // The daemon-side source closes and the Hub re-acquires the replacement,
       // broadcasting evener/thread/resync to the already-connected client.
       // This is the same-socket recovery path: the browser never reconnects.
@@ -418,7 +429,6 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
         } as AnyNotification);
         await awaitHydrationBump(REF, beforeHydrations);
       });
-      replacementBound = true;
     },
 
     async send(text: string, mutationId: string): Promise<void> {
@@ -500,6 +510,8 @@ test("selected transcript and unsent draft survive source retirement", async () 
   try {
     const before = f.turnIDs();
     const draft = f.draft();
+    // The pre-retirement read is answered from the retired generation...
+    expect(f.instanceId()).toBe(INSTANCE_V1);
     await f.retire();
     expect(f.turnIDs()).toEqual(before);
     expect(f.draft()).toBe(draft);
@@ -508,6 +520,9 @@ test("selected transcript and unsent draft survive source retirement", async () 
     expect(new Set(after).size).toBe(after.length);
     expect(after.length).toBe(before.length + 1);
     expect(f.draft()).toBe("");
+    // ...and the resync-triggered read genuinely rebound to the replacement
+    // generation, so the turn above was accepted on INSTANCE_V2.
+    expect(f.instanceId()).toBe(INSTANCE_V2);
   } finally {
     await f.close();
   }
