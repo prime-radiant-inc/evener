@@ -1042,3 +1042,693 @@ func TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOve
 		}
 	}
 }
+
+// TestLoadSessionJobActivityTree_SizeTrimAdvancesPastEntryLargerThanAPage
+// pins paging progress across an entry whose own encoding exceeds
+// activityMaxEncodedBytes: no page can ever carry it, so the size trim must
+// advance past it — reporting the omission through Branch.Error — instead of
+// re-minting a continuation that points back at the same entry and hands the
+// client an identical page forever. The fixture is one oversized shell job
+// followed by an ordinary one; walking every minted continuation must reach
+// the ordinary job exactly once and terminate.
+func TestLoadSessionJobActivityTree_SizeTrimAdvancesPastEntryLargerThanAPage(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "oversizedentryroot"
+	oversizedStarted := time.Unix(3000, 0).UTC()
+	normalStarted := oversizedStarted.Add(time.Second)
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: oversizedStarted, JobID: "job_oversized",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &oversizedStarted, Description: strings.Repeat("x", activityMaxEncodedBytes+(256<<10)),
+		},
+		jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: normalStarted, JobID: "job_normal",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &normalStarted, Description: "reachable after the oversized job",
+		},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	var branchErrors []string
+	continuation := ""
+	pages := 0
+	for {
+		pages++
+		if pages > 4 {
+			t.Fatalf("walked %d pages without terminating -- resume is looping instead of advancing past the oversized entry", pages)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		if tree.Root.Branch.Error != "" {
+			branchErrors = append(branchErrors, tree.Root.Branch.Error)
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		if next == continuation {
+			t.Fatalf("page %d re-minted page %d's continuation %q -- the client can never advance past the oversized entry", pages, pages-1, next)
+		}
+		continuation = next
+	}
+	if len(delivered) != 1 || delivered[0] != "job_normal" {
+		t.Fatalf("delivered %v across %d pages, want exactly [job_normal] -- the oversized entry is unrepresentable and everything after it must still arrive once", delivered, pages)
+	}
+	if len(branchErrors) == 0 {
+		t.Fatal("no page reported a branch error -- skipping an entry must be visible to the client")
+	}
+	named := false
+	for _, branchError := range branchErrors {
+		if strings.Contains(branchError, "job_oversized") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("branch errors %q name no skipped entry, want one naming job_oversized", branchErrors)
+	}
+}
+
+// TestLoadSessionJobActivityTree_SizeTrimResumesAtAbsoluteIndexOnLaterPages
+// pins that a size trim on a RESUMED page mints a position in the session's
+// own entry numbering, not in the numbering of the page it just rendered.
+// A resumed page's entries start at the continuation's ResumeIndex, so a
+// trim that reports the index it trimmed within that page points back into
+// the page it just returned — the client re-requests it, gets the identical
+// page and the identical token, and never reaches the tail. The fixture is
+// sized so a size trim lands on a page that is itself a resume, which a
+// two-page walk never reaches.
+func TestLoadSessionJobActivityTree_SizeTrimResumesAtAbsoluteIndexOnLaterPages(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "absoluteresumeroot"
+	const jobCount = 60
+	description := strings.Repeat("d", 250_000)
+	var events []jobstore.Event
+	for i := range jobCount {
+		ts := time.Unix(int64(100+i), 0).UTC()
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	seen := map[string]int{}
+	continuation := ""
+	pages := 0
+	for {
+		pages++
+		if pages > jobCount {
+			t.Fatalf("walked %d pages without reaching job_%02d -- resume is not advancing", pages, jobCount-1)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		if earlier, repeat := seen[next]; repeat {
+			t.Fatalf("page %d minted page %d's continuation again (%q) -- a size trim on a resumed page reported its position within that page instead of the session's own entry numbering", pages, earlier, next)
+		}
+		seen[next] = pages
+		continuation = next
+	}
+	if pages < 3 {
+		t.Fatalf("got %d page(s), want at least 3 -- the fixture must be large enough to force a size trim on a resumed page", pages)
+	}
+	if len(delivered) != jobCount {
+		t.Fatalf("delivered %d entries across %d pages, want exactly %d (zero overlap, zero gap): %v", len(delivered), pages, jobCount, delivered)
+	}
+	for i, id := range delivered {
+		want := fmt.Sprintf("job_%02d", i)
+		if id != want {
+			t.Fatalf("delivered[%d] = %q, want %q -- every page must resume where the previous one stopped: %v", i, id, want, delivered)
+		}
+	}
+}
+
+// TestLoadSessionJobActivityTree_SizeTrimKeepsNestedEntryOverflowedByASibling
+// pins that a page's overage is charged to the page, not to whichever entry
+// the trim happens to reach last. A trim that empties a DEEPER session's
+// rendered list says nothing about that entry's own size: the continuation
+// it mints re-targets that session, and the next page is filtered to it, so
+// the sibling that actually blew the budget is gone and the entry fits.
+// Skipping it there loses it permanently, under a false "too large" error.
+// The fixture is a root shell job just under the limit followed by a
+// delegate whose child holds one small job.
+func TestLoadSessionJobActivityTree_SizeTrimKeepsNestedEntryOverflowedByASibling(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "siblingoverageroot"
+	childID := "siblingoveragechild"
+	started := time.Unix(4000, 0).UTC()
+
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_big",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+		StartedAt: &started, Description: strings.Repeat("r", 3_900_000),
+	})
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+		StartedAt: &started, Description: strings.Repeat("c", 400_000),
+	})
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMeta(t, stateDir, childID, "Child")
+
+	// A client follows every continuation the tree hands it, wherever in the
+	// tree it was minted: this page's own is on the CHILD's branch, not the
+	// root's.
+	var walk pastActivityWalk
+	pending := []string{""}
+	requested := map[string]bool{"": true}
+	pages := 0
+	for len(pending) > 0 {
+		pages++
+		if pages > 6 {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %v", pages, walk.jobs)
+		}
+		continuation := pending[0]
+		pending = pending[1:]
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		before := len(walk.continuations)
+		collectPastActivityPage(t, &tree.Root, &walk)
+		for _, next := range walk.continuations[before:] {
+			if next == continuation {
+				t.Fatalf("page %d re-minted the continuation it was loaded with (%q)", pages, next)
+			}
+			if requested[next] {
+				continue
+			}
+			requested[next] = true
+			pending = append(pending, next)
+		}
+	}
+	if len(walk.branchErrors) != 0 {
+		t.Fatalf("branch errors %q across %d pages, want none -- the child's job is renderable on a page filtered to it; the root's sibling is what did not fit", walk.branchErrors, pages)
+	}
+	counts := map[string]int{}
+	for _, id := range walk.jobs {
+		counts[id]++
+	}
+	if len(walk.jobs) != 2 || counts["job_root_big"] != 1 || counts["job_child"] != 1 {
+		t.Fatalf("delivered %v across %d pages, want job_root_big and job_child exactly once each", walk.jobs, pages)
+	}
+}
+
+// TestLoadSessionJobActivityTree_SizeTrimSkipsNestedEntryLargerThanAPage is
+// the other half of the sibling-overage case above: an entry too large for
+// any page, nested one hop down, still has to be skipped so paging
+// terminates — one page later than a root-level one, because the first trim
+// only re-targets the child. The page that re-targets it carries nothing but
+// that entry, which is where "too large" becomes a fact rather than a guess.
+func TestLoadSessionJobActivityTree_SizeTrimSkipsNestedEntryLargerThanAPage(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "nestedoversizedroot"
+	childID := "nestedoversizedchild"
+	started := time.Unix(5000, 0).UTC()
+
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_small",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+		StartedAt: &started, Description: "small root job",
+	})
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child_huge",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+		StartedAt: &started, Description: strings.Repeat("h", activityMaxEncodedBytes+(256<<10)),
+	})
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMeta(t, stateDir, childID, "Child")
+
+	var walk pastActivityWalk
+	pending := []string{""}
+	requested := map[string]bool{"": true}
+	pages := 0
+	for len(pending) > 0 {
+		pages++
+		if pages > 6 {
+			t.Fatalf("walked %d pages without exhausting the tree -- the nested oversized entry is not being skipped", pages)
+		}
+		continuation := pending[0]
+		pending = pending[1:]
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		before := len(walk.continuations)
+		collectPastActivityPage(t, &tree.Root, &walk)
+		for _, next := range walk.continuations[before:] {
+			if next == continuation {
+				t.Fatalf("page %d re-minted the continuation it was loaded with (%q)", pages, next)
+			}
+			if requested[next] {
+				continue
+			}
+			requested[next] = true
+			pending = append(pending, next)
+		}
+	}
+	if len(walk.jobs) != 1 || walk.jobs[0] != "job_root_small" {
+		t.Fatalf("delivered %v across %d pages, want only job_root_small (the child's entry fits no page)", walk.jobs, pages)
+	}
+	named := false
+	for _, branchError := range walk.branchErrors {
+		if strings.Contains(branchError, "job_child_huge") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("branch errors %q name no skipped entry, want one naming job_child_huge", walk.branchErrors)
+	}
+}
+
+// pastActivityWalk accumulates what a paging client sees across pages: every
+// job it was handed, every branch error, and every continuation any branch in
+// the tree minted.
+type pastActivityWalk struct {
+	jobs          []string
+	branchErrors  []string
+	continuations []string
+}
+
+// collectPastActivityPage records session's whole subtree into walk, so a
+// paging test can assert on a nested session's entries and follow a
+// continuation minted below the root without knowing which page carried it.
+func collectPastActivityPage(t *testing.T, session *appwire.JobActivitySession, walk *pastActivityWalk) {
+	t.Helper()
+	if session == nil {
+		return
+	}
+	walk.record(session.Branch)
+	for i := range session.Entries {
+		entry := &session.Entries[i]
+		if entry.Job != nil {
+			walk.jobs = append(walk.jobs, entry.Job.JobID)
+		}
+		if entry.Delegate == nil {
+			continue
+		}
+		walk.record(entry.Delegate.Branch)
+		collectPastActivityPage(t, entry.Delegate.Child, walk)
+	}
+}
+
+func (w *pastActivityWalk) record(branch appwire.JobActivityBranchState) {
+	if branch.Error != "" {
+		w.branchErrors = append(w.branchErrors, branch.Error)
+	}
+	if branch.Continuation != "" {
+		w.continuations = append(w.continuations, branch.Continuation)
+	}
+}
+
+// TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs
+// pins that a continuation minted on a RESUMED page carries the fold-cache
+// generations the next request checks it against. A resumed page's ancestor
+// chain is a filtered snapshot, and a filter that drops the epoch fields
+// mints zeros: the next request then reads a real, nonzero generation for
+// the same journals and rejects a perfectly fresh token as stale, stranding
+// the client mid-tree. The fold caches are keyed by path and only bump a
+// generation when a journal is rewritten rather than appended to, so the
+// fixture warms them and then rewrites the delegate journal in place.
+func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "epochfilterroot"
+	childID := "epochfilterchild"
+	started := time.Unix(6000, 0).UTC()
+	const childJobCount = 40
+	description := strings.Repeat("e", 250_000)
+
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_small",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+		StartedAt: &started, Description: "small root job",
+	})
+	childEvents := make([]jobstore.Event, 0, childJobCount)
+	for i := range childJobCount {
+		ts := started.Add(time.Duration(i) * time.Second)
+		childEvents = append(childEvents, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_child_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	childJobsPath := s1cov_writeJobLog(t, stateDir, childID, childEvents...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	// The child names the root, so both sessions read the root's shared
+	// delegate journal and report the same generation for it — the value a
+	// nested continuation is checked against.
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+
+	// Warm the fold caches at these journals' current size and mtime, then
+	// move both mtimes: a same-size rewrite is what bumps a generation, so
+	// every page below reads a nonzero one.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm the fold caches: %v", err)
+	}
+	rewritten := time.Unix(1_000_000, 0)
+	for _, path := range []string{filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"), childJobsPath} {
+		if err := os.Chtimes(path, rewritten, rewritten); err != nil {
+			t.Fatalf("restamp %s: %v", path, err)
+		}
+	}
+
+	var walk pastActivityWalk
+	pending := []string{""}
+	requested := map[string]bool{"": true}
+	pages := 0
+	for len(pending) > 0 {
+		pages++
+		if pages > 8 {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %d jobs", pages, len(walk.jobs))
+		}
+		continuation := pending[0]
+		pending = pending[1:]
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v -- a continuation minted on a resumed page must carry the generations the next request checks", pages, err)
+		}
+		before := len(walk.continuations)
+		collectPastActivityPage(t, &tree.Root, &walk)
+		for _, next := range walk.continuations[before:] {
+			if next == continuation {
+				t.Fatalf("page %d re-minted the continuation it was loaded with (%q)", pages, next)
+			}
+			if requested[next] {
+				continue
+			}
+			requested[next] = true
+			pending = append(pending, next)
+		}
+	}
+	if pages < 3 {
+		t.Fatalf("got %d page(s), want at least 3 -- the fixture must force a trim on a page that is itself a resume", pages)
+	}
+	if len(walk.branchErrors) != 0 {
+		t.Fatalf("branch errors %q, want none", walk.branchErrors)
+	}
+	counts := map[string]int{}
+	for _, id := range walk.jobs {
+		counts[id]++
+	}
+	if len(walk.jobs) != childJobCount+1 || counts["job_root_small"] != 1 {
+		t.Fatalf("delivered %d jobs across %d pages, want %d exactly once each", len(walk.jobs), pages, childJobCount+1)
+	}
+	for i := range childJobCount {
+		if id := fmt.Sprintf("job_child_%02d", i); counts[id] != 1 {
+			t.Fatalf("%s delivered %d times, want exactly once", id, counts[id])
+		}
+	}
+}
+
+// TestLoadSessionJobActivityTree_SizeTrimSkipsOversizedEntryOnAResumedPage
+// puts the skip on a page that is itself a resume, where the position it
+// advances to has to be the entry's own rather than this page's index 0.
+// Skipping to 1 there rewinds the walk to the second entry of the whole
+// session, re-delivering a page already seen and arriving back at the same
+// oversized entry forever. The fixture fills one page with ordinary jobs so
+// the oversized one lands on page 2, with a tail job behind it that only a
+// correctly advanced position can reach.
+func TestLoadSessionJobActivityTree_SizeTrimSkipsOversizedEntryOnAResumedPage(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "resumedskiproot"
+	const fillerCount = 20
+	filler := strings.Repeat("f", 250_000)
+	var events []jobstore.Event
+	for i := range fillerCount {
+		ts := time.Unix(int64(8000+i), 0).UTC()
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: filler,
+		})
+	}
+	oversizedAt := time.Unix(9000, 0).UTC()
+	tailAt := oversizedAt.Add(time.Second)
+	events = append(events,
+		jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: oversizedAt, JobID: "job_oversized",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &oversizedAt, Description: strings.Repeat("x", activityMaxEncodedBytes+(256<<10)),
+		},
+		jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: tailAt, JobID: "job_tail",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &tailAt, Description: "reachable only past the oversized job",
+		},
+	)
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	var branchErrors []string
+	seen := map[string]int{}
+	continuation := ""
+	pages := 0
+	for {
+		pages++
+		if pages > fillerCount {
+			t.Fatalf("walked %d pages without reaching job_tail; delivered %v", pages, delivered)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		if tree.Root.Branch.Error != "" {
+			branchErrors = append(branchErrors, tree.Root.Branch.Error)
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		if earlier, repeat := seen[next]; repeat {
+			t.Fatalf("page %d minted page %d's continuation again (%q) -- the skip rewound to this page's own index instead of the entry's", pages, earlier, next)
+		}
+		seen[next] = pages
+		continuation = next
+	}
+	if pages < 3 {
+		t.Fatalf("got %d page(s), want at least 3 -- the oversized entry must land on a page that is itself a resume", pages)
+	}
+	want := make([]string, 0, fillerCount+1)
+	for i := range fillerCount {
+		want = append(want, fmt.Sprintf("job_%02d", i))
+	}
+	want = append(want, "job_tail")
+	if len(delivered) != len(want) {
+		t.Fatalf("delivered %d entries across %d pages, want %d (every job but the oversized one, exactly once): %v", len(delivered), pages, len(want), delivered)
+	}
+	for i, id := range delivered {
+		if id != want[i] {
+			t.Fatalf("delivered[%d] = %q, want %q: %v", i, id, want[i], delivered)
+		}
+	}
+	named := false
+	for _, branchError := range branchErrors {
+		if strings.Contains(branchError, "job_oversized") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("branch errors %q name no skipped entry, want one naming job_oversized", branchErrors)
+	}
+}
+
+// TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry pins
+// what a page reports when its own fixed parts — here a session label, which
+// is the user's opening prompt when a session has no name — already exceed
+// the response limit. Dropping the last entry is what a size trim does when
+// the page is too big, but an entry alone on the page is not thereby the
+// reason the page is too big: reporting a small job as too large to render
+// is a false diagnosis, and re-pointing the continuation past it drops a
+// renderable entry for good. Nothing can be rendered here at all, so the
+// page has to say that and stop rather than hand out a token that produces
+// this same page forever.
+func TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "oversizedenveloperoot"
+	started := time.Unix(11000, 0).UTC()
+	events := make([]jobstore.Event, 0, 2)
+	for i := range 2 {
+		ts := started.Add(time.Duration(i) * time.Second)
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: "small job",
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: rootID, ProfileID: "openai", Model: "gpt-5.2",
+		OriginalPrompt: strings.Repeat("p", activityMaxEncodedBytes+(256<<10)),
+		CreatedAt:      time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	continuation := ""
+	pages := 0
+	var branchErrors []string
+	for {
+		pages++
+		if pages > 4 {
+			t.Fatalf("walked %d pages without terminating -- a page that can render nothing must not hand out a continuation", pages)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if len(tree.Root.Entries) != 0 {
+			t.Fatalf("page %d rendered %d entries, want none -- the label alone is over the limit", pages, len(tree.Root.Entries))
+		}
+		if tree.Root.Branch.Error != "" {
+			branchErrors = append(branchErrors, tree.Root.Branch.Error)
+			if tree.Root.Counts.Complete {
+				t.Fatalf("page %d reports %q and still calls itself complete: %+v", pages, tree.Root.Branch.Error, tree.Root.Counts)
+			}
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		continuation = next
+	}
+	if len(branchErrors) == 0 {
+		t.Fatal("no page reported why it rendered nothing")
+	}
+	for _, branchError := range branchErrors {
+		if strings.Contains(branchError, "job_0") {
+			t.Fatalf("branch error %q blames a small job for an oversized response envelope", branchError)
+		}
+		if !strings.Contains(branchError, "no entries rendered") {
+			t.Fatalf("branch error %q does not report the response's own size", branchError)
+		}
+	}
+	if pages != 1 {
+		t.Fatalf("walked %d pages, want 1 -- nothing can be rendered, so there is nothing to continue to", pages)
+	}
+}
+
+// TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable pins
+// that dropping a delegate whose child was already trimmed to a continuation
+// does not strand the child's remaining entries. The delegate's branch — and
+// the continuation minted inside it — goes with the entry, so what has to
+// carry the child forward is the owner's own position: it resumes AT the
+// delegate, whose subtree is then rendered again from its own top with the
+// room the dropped siblings freed. The fixture forces exactly that order: the
+// child is trimmed to empty, the delegate is dropped next, and the owner's
+// remaining entries are trimmed after it.
+func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "strandroot"
+	childID := "strandchild"
+	const rootJobCount = 20
+	const childJobCount = 10
+	description := strings.Repeat("s", 250_000)
+	started := time.Unix(12000, 0).UTC()
+
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	rootEvents := make([]jobstore.Event, 0, rootJobCount)
+	for i := range rootJobCount {
+		ts := started.Add(time.Duration(i) * time.Second)
+		rootEvents = append(rootEvents, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, rootEvents...)
+	childEvents := make([]jobstore.Event, 0, childJobCount)
+	for i := range childJobCount {
+		ts := started.Add(time.Duration(100+i) * time.Second)
+		childEvents = append(childEvents, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("child_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, childID, childEvents...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+
+	var walk pastActivityWalk
+	pending := []string{""}
+	requested := map[string]bool{"": true}
+	pages := 0
+	for len(pending) > 0 {
+		pages++
+		if pages > rootJobCount {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %d jobs", pages, len(walk.jobs))
+		}
+		continuation := pending[0]
+		pending = pending[1:]
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		before := len(walk.continuations)
+		collectPastActivityPage(t, &tree.Root, &walk)
+		for _, next := range walk.continuations[before:] {
+			if next == continuation {
+				t.Fatalf("page %d re-minted the continuation it was loaded with (%q)", pages, next)
+			}
+			if requested[next] {
+				continue
+			}
+			requested[next] = true
+			pending = append(pending, next)
+		}
+	}
+	if len(walk.branchErrors) != 0 {
+		t.Fatalf("branch errors %q, want none -- every entry here is renderable on some page", walk.branchErrors)
+	}
+	counts := map[string]int{}
+	for _, id := range walk.jobs {
+		counts[id]++
+	}
+	if len(walk.jobs) != rootJobCount+childJobCount {
+		t.Fatalf("delivered %d jobs across %d pages, want %d exactly once each: %v", len(walk.jobs), pages, rootJobCount+childJobCount, counts)
+	}
+	for i := range rootJobCount {
+		if id := fmt.Sprintf("job_%02d", i); counts[id] != 1 {
+			t.Fatalf("%s delivered %d times, want exactly once", id, counts[id])
+		}
+	}
+	for i := range childJobCount {
+		if id := fmt.Sprintf("child_%02d", i); counts[id] != 1 {
+			t.Fatalf("%s delivered %d times, want exactly once -- the child's entries must survive its delegate being trimmed", id, counts[id])
+		}
+	}
+}

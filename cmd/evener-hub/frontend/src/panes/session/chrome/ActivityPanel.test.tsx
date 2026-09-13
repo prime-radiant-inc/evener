@@ -291,6 +291,80 @@ function emptyTree() {
   };
 }
 
+// A page whose only entry was too large to render: the agent skipped it,
+// said so on the root branch, and handed back a token for what follows.
+function skippedEntryTree() {
+  return {
+    revision: 1,
+    root: {
+      sessionId: "sess_root",
+      ref: "ref_root",
+      label: "Root session",
+      aggregate: "running",
+      counts: { active: 0, failed: 0, completed: 0, complete: false },
+      entries: [],
+      branch: {
+        truncated: true,
+        error: 'job "job_huge" is too large to render in one response and was skipped',
+        continuation: "tok_after_skip",
+      },
+    },
+  };
+}
+
+// The other shape an empty page takes: the agent explains why it could render
+// nothing, and has no token to offer — the whole page is the explanation.
+function emptyExplainedTree() {
+  return {
+    revision: 1,
+    root: {
+      sessionId: "sess_root",
+      ref: "ref_root",
+      label: "Root session",
+      aggregate: "running",
+      counts: { active: 0, failed: 0, completed: 0, complete: false },
+      entries: [],
+      branch: {
+        truncated: true,
+        error: "activity response is 4210867 bytes with no entries rendered, over the 4194304-byte limit",
+      },
+    },
+  };
+}
+
+function afterSkipTree() {
+  return {
+    revision: 2,
+    root: {
+      sessionId: "sess_root",
+      ref: "ref_root",
+      label: "Root session",
+      aggregate: "running",
+      counts: { active: 1, failed: 0, completed: 0, complete: true },
+      entries: [
+        {
+          kind: "shell",
+          job: {
+            jobId: "job_tail_shell",
+            ownerSessionId: "sess_root",
+            ownerRef: "ref_root",
+            type: "shell",
+            status: "running",
+            terminal: false,
+            background: false,
+            hasOutput: false,
+            description: "tail shell",
+            command: "npm run tail",
+            startedAt: "2026-08-03T00:20:00Z",
+            outputBytes: 0,
+          },
+        },
+      ],
+      branch: {},
+    },
+  };
+}
+
 function installMatchMediaStub(initialMatches: boolean) {
   class FakeMediaQueryList {
     matches: boolean;
@@ -577,6 +651,44 @@ describe("ActivityPanel", () => {
 
     expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Activity · 3" })).toBeNull();
+  });
+
+  test("an empty page that carries a continuation stays readable and loadable", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("evener/jobs/list", ({ continuation }) =>
+      continuation === "tok_after_skip" ? { data: afterSkipTree() } : { data: skippedEntryTree() },
+    );
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: /Activity/ }));
+
+    // The page rendered nothing, but it said why and handed back a token:
+    // treating it as "no activity yet" hides both, and the reader can never
+    // reach what follows the entry the agent had to skip.
+    expect(await screen.findByText(/too large to render in one response/i)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+
+    expect(await screen.findByText("tail shell")).toBeTruthy();
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").at(-1)?.params).toEqual({
+      ref: "ref_root",
+      continuation: "tok_after_skip",
+    });
+  });
+
+  test("an empty page with an error and no continuation shows the error and offers no page to load", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("evener/jobs/list", () => ({ data: emptyExplainedTree() }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: /Activity/ }));
+
+    expect(await screen.findByText(/with no entries rendered/i)).toBeTruthy();
+    expect(screen.queryByText("No retained activity yet")).toBeNull();
+    // Nothing to continue to: offering a control here would send the reader
+    // back for the same page.
+    expect(screen.queryByRole("button", { name: /load more/i })).toBeNull();
   });
 
   test("renders empty, unsupported, and exited states", async () => {

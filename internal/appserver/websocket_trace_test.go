@@ -370,6 +370,17 @@ func (w *shutdownBeforeReceiveTransport) Recv(ctx context.Context) (appwire.Mess
 	return appwire.Message{}, ctx.Err()
 }
 
+// tracedWebSocketShutdownTripwire bounds the traced-shutdown tests' wait for
+// the connection to drain. It is a tripwire, never the synchronisation
+// mechanism: server.Shutdown already awaits the real completion -- it blocks
+// on webSocketDrained, which the connection handler closes only after writing
+// the traced close record and unregistering. The ceiling exists only so a
+// genuine hang fails the test instead of blocking forever, and it sits far
+// above the expected drain time so scheduler contention under -race cannot
+// turn a slow drain into a false failure (#907). Do not tune it toward the
+// real drain time; the wait itself is the real completion.
+const tracedWebSocketShutdownTripwire = 90 * time.Second
+
 func testServerShutdownDrainsOpenTracedWebSocket(t *testing.T, beforeReceive bool) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
@@ -401,13 +412,30 @@ func testServerShutdownDrainsOpenTracedWebSocket(t *testing.T, beforeReceive boo
 	if _, _, err := conn.Read(ctx); err != nil {
 		t.Fatalf("read initialize response: %v", err)
 	}
+	// The traced connection must be registered before shutdown, or Shutdown
+	// returns immediately and the test exercises nothing but its own setup.
+	registeredConnection(t, server)
 
-	shutdownCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
+	// Await the real completion instead of a wall-clock budget: server.Shutdown
+	// returns as soon as the connection handler finishes draining, and that
+	// handler writes the traced close record before it does, so both conditions
+	// this test covers -- the traced socket reported closed and Shutdown
+	// returned -- are awaited, not timed. A deadline tuned near the drain's
+	// real time flaked under -race on a loaded runner (#907); the tripwire
+	// below only bounds a genuine hang.
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- server.Shutdown(context.Background()) }()
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(tracedWebSocketShutdownTripwire):
+		t.Fatalf("Shutdown did not drain the traced connection within %s", tracedWebSocketShutdownTripwire)
 	}
-	if _, _, err := conn.Read(shutdownCtx); err == nil || errors.Is(err, context.DeadlineExceeded) {
+	readCtx, cancelRead := context.WithTimeout(ctx, tracedWebSocketShutdownTripwire)
+	defer cancelRead()
+	if _, _, err := conn.Read(readCtx); err == nil || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("peer read after shutdown = %v, want closed socket", err)
 	}
 	conn.CloseNow()

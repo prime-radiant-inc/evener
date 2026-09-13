@@ -312,6 +312,14 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 		if event.RunStarted != nil {
 			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
 		}
+		if event.Created != nil {
+			// A new delegate inserts into its owner's sorted delegate list
+			// and moves every activity entry after it — the mutation a
+			// resumed ResumeIndex must never be applied across. For a live
+			// tree the activity clock is that fence, so a shape change moves
+			// it exactly as a job starting or finishing does.
+			c.rootRuntime.noteJobTreeShapeChange()
+		}
 	}
 	return appended, nil
 }

@@ -14,11 +14,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { ActivityList } from "../../cmd/evener-hub/frontend/src/protocol/activityList";
 import {
   type ActivityRow,
   buildActivityRows,
-} from "../../cmd/evener-hub/frontend/src/panes/session/chrome/activityRows";
-import { ActivityList } from "../../cmd/evener-hub/frontend/src/protocol/activityList";
+} from "../../cmd/evener-hub/frontend/src/protocol/activityRows";
 import { stableDelegateDisplayStatus } from "../../cmd/evener-hub/frontend/src/protocol/stableDelegate";
 import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";

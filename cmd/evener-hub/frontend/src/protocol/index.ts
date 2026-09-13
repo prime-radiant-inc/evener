@@ -6,6 +6,7 @@ export type {
   ActivityDisclosureState,
   ActivityEntry,
   ActivityJob,
+  ActivityNodeLike,
   ActivitySessionNode,
   ActivityShellEntry,
   ActivityTree,
@@ -26,6 +27,15 @@ export {
 export type { ActivityBranch, ActivityClient, ActivityState } from "./activityList";
 export { ActivityList } from "./activityList";
 export { fenceRootSession, graftContinuationTree } from "./activityMerge";
+export type {
+  ActivityDelegateRow,
+  ActivityDelegateState,
+  ActivityFoldRow,
+  ActivityJobRow,
+  ActivityRow,
+  ActivityRowBase,
+} from "./activityRows";
+export { activityDelegateState, buildActivityRows, foldRowID, jobIsFailed } from "./activityRows";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
@@ -89,6 +99,8 @@ export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
+export type { SteerRoute, SubmitRoute } from "./submitRouting";
+export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 export {
   clip,
   clipJobID,

@@ -20,6 +20,7 @@
     "types.gen.ts",
     "askAnswers.ts",
     "activityData.ts",
+    "activityRows.ts",
     "activityList.ts",
     "activityMerge.ts",
     "itemFailure.ts",
@@ -30,6 +31,7 @@
     "sessionErrors.ts",
     "stableDelegate.ts",
     "docContent.ts",
+    "submitRouting.ts",
     "toolCallText.ts"
   ]
 }
