@@ -323,9 +323,9 @@ through D21–D24 and the directory is deleted at the end of D24.
 every row above, so the headline and the phases cannot drift apart again. The
 tables carry 73 rows, six of them withdrawn phase-B rows that contribute
 nothing — so **67 rows of work**, and **66 real PRs**, because B1b landed inside
-B1 rather than on its own. **Fourteen have landed** (A1, A2, A3b, A3c, A3d, A5,
-B1 carrying B1b, B3b, C6, C10, C11a, C13, C24, C26), so **52 remain**, three of
-them in flight (C5 #1229, C11b #1232, C15 #1230).
+B1 rather than on its own. **Fifteen have landed** (A1, A2, A3b, A3c, A3d, A5,
+B1 carrying B1b, B3b, C6, C10, C11a, C13, C15, C24, C26), so **51 remain**, two
+of them in flight (C5 #1229, C11b #1232).
 
 Phase A 8 PRs / 2,820 lines. Phase B 210, the sum of its three live rows of 9
 (all three landed). Phase C 27 / 8,590. Phase D 29 / 18,610. Each subtotal is its own rows added up, not an estimate.
@@ -352,7 +352,7 @@ no phase-D PR deletes it, and on the evidence none should.
 
 ## Status as of 2026-09-12
 
-Observed at `c867646c4`, not assumed; re-query before acting.
+Observed at `0acebbb0d`, not assumed; re-query before acting.
 
 | Plan PR | GitHub | State |
 | --- | --- | --- |
@@ -369,7 +369,7 @@ Observed at `c867646c4`, not assumed; re-query before acting.
 | C11b | #1232 | open at `91ce8dd37` on `c867646c4` — `askShared.ts` and `deriveAskQuestions.ts` |
 | C6 | #1227 | **merged** as `2b1e02939` — `stores/attachmentMarkers.ts` → `protocol/attachmentMarkers.ts` |
 | C5 | #1229 | open at `2a7a09c4c` on `c867646c4` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
-| C15 | #1230 | open at `d6f2e2fa0` on `c867646c4` — `shell/palette/catalogCommands.ts` → the package |
+| C15 | #1230 | **merged** as `0acebbb0d` — `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
 | — | #1224 | open issue — `shippedModules` arms the reachability assertion, so a `dist/` module missing from it passes silently |
 | — | #1228 | open issue — `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` now sit together at the package root with different rules; naming pass after C11b |
