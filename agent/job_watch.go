@@ -4908,7 +4908,7 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 		// live work, so driving it here would have the drain kicking a child it
 		// has already told the operator it abandoned — and abandoning a queued
 		// notification the drive loop was mid-way through delivering.
-		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) || s.childCommittedSendStart(child.id) {
+		if s.childDriveGated(child.id) {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
@@ -4923,27 +4923,38 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 	s.renderUnreachableChildPendings(live)
 }
 
-// driveChildrenWithPendingDelegateAttention re-drives the stable delegate
-// attention a held committed-send-start claim refused (#940). Stable attention
-// wakes do not travel the notification path driveChildrenWithUndeliveredAttention
-// sweeps: they are stored on the child's transcript/controller and driven by
-// driveStableDelegateAttention, reached through the child's notify
-// (driveChildIfNotStopGated), which the claim makes return early. So attention
-// armed while the claim was held is DROPPED exactly like a queued notification
-// and, on a send that does not hand a run over, must be re-driven by the
-// rollback. The gates match driveChildrenWithUndeliveredAttention, including
-// childCommittedSendStart so a child whose own send still holds the claim is not
-// raced: the rollback releases its claim before calling this.
-func (s *Session) driveChildrenWithPendingDelegateAttention() {
-	if s == nil || s.delegateController == nil {
+// redriveChildAfterSendStartRollback re-drives the ONE child a committed-send-
+// start claim was taken for, after a non-handoff rollback released it (#940).
+// While the claim was held the wake edge (driveChildIfNotStopGated) and the
+// attention primitive (driveStableDelegateAttention) refused every drive for
+// that child, so a child notification, pending watch send or armed stable
+// attention that landed in the window was DROPPED. The run about to launch
+// would have drained the child's queue, but this exit handed no run over, so
+// the rollback must re-drive it. The claim only gated that child, so this is
+// scoped to childSessionID: a whole-tree sweep would re-drive unrelated
+// children and read every child's transcript fold on every failed send. The two
+// halves keep the broad sweeps' order -- notification attention first (and only
+// when the child has something queued), then stable delegate attention, which
+// checks its own pending inside the primitive.
+func (s *Session) redriveChildAfterSendStartRollback(childSessionID string) {
+	if s == nil || childSessionID == "" {
 		return
 	}
 	for _, sub := range s.liveDirectSubagents() {
 		child := sub.sess
-		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) || s.childCommittedSendStart(child.id) {
+		if child.id != childSessionID {
 			continue
 		}
+		if s.childDriveGated(child.id) {
+			return
+		}
+		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
+			if s.driveSubagentNotificationTurn(sub) {
+				s.settleDrivenChildForwardedPendings(child.id)
+			}
+		}
 		s.driveStableDelegateAttention(sub)
+		return
 	}
 }
 
@@ -4956,7 +4967,7 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if sub == nil || sub.sess == nil {
 		return
 	}
-	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) || s.childDrainAbandoned(sub.sess.id) || s.childDrainGracePending(sub.sess.id) || s.childCommittedSendStart(sub.sess.id) {
+	if s.childDriveGated(sub.sess.id) {
 		return
 	}
 	if s.driveStableDelegateAttention(sub) {
@@ -5089,6 +5100,19 @@ func (s *Session) childCommittedSendStart(childSessionID string) bool {
 	defer s.childCommittedSendMu.Unlock()
 	_, held := s.childCommittedSendChildren[childSessionID]
 	return held
+}
+
+// childDriveGated is the drive-gate conjunction every child-attention drive
+// consults: a deliberately stopped child, a fatal-run-gated child, a child the
+// one-shot drain has abandoned, a child with a drain grace window pending, and a
+// child holding a committed-send-start claim are each refused a drive. It lives
+// in one place so a new gate cannot be added to some call sites and not others.
+func (s *Session) childDriveGated(childSessionID string) bool {
+	return s.childStopGated(childSessionID) ||
+		s.childFatalRunGated(childSessionID) ||
+		s.childDrainAbandoned(childSessionID) ||
+		s.childDrainGracePending(childSessionID) ||
+		s.childCommittedSendStart(childSessionID)
 }
 
 // claimChildCommittedSendStart takes the id-keyed committed-send-start claim.

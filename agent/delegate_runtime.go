@@ -592,7 +592,12 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// is the drive flag every other guard already reads, and it is handed over
 	// under the same sub.mu hold that sets running.
 	sub.mu.Lock()
-	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing
+	// childCommittedSendStart is consulted here, at the decision point, so every
+	// path into the attention drive is gated at the depth the decision is made
+	// rather than relying on each caller to remember (#940).
+	// drivePendingStableDelegateAttention reaches this primitive directly with no
+	// caller-side gate.
+	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id)
 	if !blocked {
 		sub.driving = true
 	}
@@ -1122,24 +1127,24 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	defer func() {
 		if committedClaimHeld {
 			s.releaseChildCommittedSendStart(committedChildID)
-			// The claim refused every wake-edge drive that landed while it was
-			// held -- a child notification arriving mid-window runs the child's
-			// notify, driveChildIfNotStopGated, which returns early on the claim,
-			// so that wake is DROPPED. The run about to launch would have drained
-			// the child's queue, but this exit did not hand a run over (the claim
-			// is still held here), so re-drive the child's queued notifications and
-			// watch sends or the dropped wake can sit undriven forever. Stable
-			// delegate attention is refused the same way and re-driven separately.
-			// The hand-off
+			// The claim refused every drive for the claimed child that landed
+			// while it was held -- a child notification arriving mid-window runs
+			// the child's notify, driveChildIfNotStopGated, which returns early on
+			// the claim, and driveStableDelegateAttention refuses the stable
+			// attention the same way -- so that wake is DROPPED. The run about to
+			// launch would have drained the child's queue, but this exit did not
+			// hand a run over (the claim is still held here), so re-drive the
+			// claimed child's queued notifications, watch sends and armed stable
+			// attention or the dropped wake can sit undriven forever. The re-drive
+			// is scoped to committedChildID because the claim only gated that
+			// child, so only that child can hold a wake it swallowed. The hand-off
 			// path clears committedClaimHeld before this defer runs, so it never
 			// re-drives: the handed-over run drains the queue itself, and
 			// re-driving there would launch the second turn this claim prevents.
 			// This runs from the deferred rollback after every failure exit
 			// (aborted reservation, failed commit, failed restore, blocked
-			// hand-off, start-input failure), and send holds no lock here, so the
-			// sweep cannot re-enter one it already holds.
-			s.driveChildrenWithUndeliveredAttention()
-			s.driveChildrenWithPendingDelegateAttention()
+			// hand-off, start-input failure), and send holds no lock here.
+			s.redriveChildAfterSendStartRollback(committedChildID)
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
