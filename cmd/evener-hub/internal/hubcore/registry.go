@@ -26,13 +26,20 @@ type ProviderRegistry struct {
 	// generation orders holder swaps and live fetches: every Reload
 	// that installs a new current and every BeginLiveFetch bumps it.
 	// A fetch mints its token at request start, so a slower fetch that
-	// returns after a newer one (or after a Reload, whose carryLive
-	// only knows the before snapshot) applies only while its token is
-	// still current. Tokens are claimed, never spent: only a fetch
-	// that actually has a listing calls ReapplyLive, so a failed fetch
-	// never supersedes a successful concurrent one.
+	// returns after a newer one began holds a lower token. ReapplyLive
+	// applies only above lastApplied, so stale responses are discarded
+	// while a failed newer fetch — which applies nothing — never blocks
+	// an older in-flight success.
 	generation uint64
-	liveTokens map[string]uint64
+	// liveTokens holds each instance's latest fetch token: minted by
+	// BeginLiveFetch at request start, so overlapping fetches stay
+	// ordered. lastApplied holds the highest token actually applied by
+	// ReapplyLive. The split is what keeps a failed newer fetch from
+	// invalidating an older in-flight success: the failure applies
+	// nothing and leaves lastApplied untouched, while a
+	// later-started success still wins by applying a higher token.
+	liveTokens  map[string]uint64
+	lastApplied map[string]uint64
 }
 
 // NewProviderRegistry returns a holder that loads through load. Nothing is
@@ -115,23 +122,30 @@ func (h *ProviderRegistry) BeginLiveFetch(instance string) uint64 {
 // ReapplyLive applies rows fetched under token tok to the current
 // registry. Rows are the fetch's raw live snapshot, so advertised
 // capability facts survive the round trip the way the direct ApplyLive
-// inside the fetch did. The apply is skipped when the token is stale: a
-// newer fetch for the same instance began after this one (or a Reload
-// swapped the registry, whose carryLive kept the before snapshot).
-// Only successful fetches with a listing reach here, so a failed fetch
-// never mints nor spends anything. An unsupported listing (Live ==
-// false) must not reach here either: its rows are catalog data, not a
-// live listing, and applying them would plant an empty snapshot over a
-// real one.
+// inside the fetch did. The apply lands only above lastApplied: a
+// slower fetch that returns after a newer success began holds a lower
+// token and is discarded, while a failed newer fetch — which never
+// reaches here — leaves lastApplied untouched so the older success it
+// overtook still lands. A Reload swaps the registry (whose carryLive
+// kept the before snapshot); a fetch that began before the swap holds
+// a token from an older generation and still applies its listing
+// forward, which is the carry-forward the refresh path needs. An
+// unsupported listing (Live == false) must not reach here either: its
+// rows are catalog data, not a live listing, and applying them would
+// plant an empty snapshot over a real one.
 func (h *ProviderRegistry) ReapplyLive(tok uint64, instance string, rows []registry.Model) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.current == nil {
 		return
 	}
-	if cur, ok := h.liveTokens[instance]; !ok || cur != tok {
+	if tok <= h.lastApplied[instance] {
 		return
 	}
+	if h.lastApplied == nil {
+		h.lastApplied = map[string]uint64{}
+	}
+	h.lastApplied[instance] = tok
 	h.current.ApplyLive(instance, rows)
 }
 

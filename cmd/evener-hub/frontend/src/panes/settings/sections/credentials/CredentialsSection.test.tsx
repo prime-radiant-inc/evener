@@ -646,6 +646,36 @@ describe("model live refresh", () => {
     await within(inspector).findByRole("switch", { name: "claude-live-new" });
   });
 
+  test("a refresh in flight for another instance does not disable this sheet's button", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const gate = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => gate.promise);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    // Start a refresh on personal's sheet, then open work's sheet while it
+    // is still in flight: work's button must stay enabled.
+    const personalInspector = await openSheet(user, "personal");
+    await user.click(within(personalInspector).getByRole("button", { name: "Refresh live models" }));
+    await user.click(within(personalInspector).getByRole("button", { name: "Close" }));
+    const workInspector = await openSheet(user, "work");
+    expect(
+      (within(workInspector).getByRole("button", { name: "Refresh live models" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    gate.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
+    await waitFor(() =>
+      expect(
+        (within(workInspector).getByRole("button", { name: "Refresh live models" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
   test("a refresh failure toasts and keeps the cached rows", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);

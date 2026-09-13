@@ -65,6 +65,30 @@ func TestProviderRegistryDegradesOnOldSchema(t *testing.T) {
 // a Reload) must not overwrite the newer listing. Tokens are claimed
 // once a fetch has a listing to publish, so a failed fetch never mints
 // one at all.
+func TestReapplyLiveFailedNewerDoesNotBlockOlderSuccess(t *testing.T) {
+	// Fetch A starts first and succeeds; fetch B starts after but fails
+	// and so never applies. B's failure must not invalidate A's success:
+	// the older listing still lands.
+	h := NewProviderRegistry(hermeticLoader)
+	if err := h.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if h.Get() == nil {
+		t.Fatal("holder has no registry after Reload")
+	}
+	older := h.BeginLiveFetch("gw")
+	_ = h.BeginLiveFetch("gw") // newer fetch, fails: applies nothing
+	h.ReapplyLive(older, "gw", []registry.Model{{ID: "gpt-live"}})
+	got := h.Get().LiveModels("gw")
+	ids := make([]string, 0, len(got))
+	for _, m := range got {
+		ids = append(ids, m.ID)
+	}
+	if len(ids) == 0 {
+		t.Fatal("live ids empty, want the older success to land despite the failed newer fetch")
+	}
+}
+
 func TestReapplyLiveDiscardsOutOfOrderFetch(t *testing.T) {
 	// Fetch A starts first but finishes last: its token was minted at
 	// request start, so the faster fetch B's apply supersedes it and A's

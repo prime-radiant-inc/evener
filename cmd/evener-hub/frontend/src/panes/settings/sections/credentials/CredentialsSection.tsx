@@ -96,17 +96,19 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // Live-model refresh for the sheet is manual: the hub prefetches every
   // instance's listing at startup and every few minutes after, so the
   // Models toggles read cached inventory. The Refresh button below
-  // re-fetches on demand; failures toast and keep the cached rows.
-  const [modelsRefreshing, setModelsRefreshing] = useState(false);
+  // re-fetches on demand; failures toast and keep the cached rows. The
+  // pending flag is keyed to the in-flight instance, so a refresh for A
+  // never disables B's sheet while the user has it open.
+  const [refreshingInstance, setRefreshingInstance] = useState<string | null>(null);
 
   async function handleRefreshModels(name: string): Promise<void> {
-    setModelsRefreshing(true);
+    setRefreshingInstance(name);
     try {
       await credentialsStore.getState().refreshModels(name);
     } catch (err) {
       toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`);
     } finally {
-      setModelsRefreshing(false);
+      setRefreshingInstance((current) => (current === name ? null : current));
     }
   }
   const previousInstances = useRef(instances);
@@ -306,7 +308,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         onRefreshModels={() => {
           if (selectedInstance !== null) void handleRefreshModels(selectedInstance);
         }}
-        modelsRefreshing={modelsRefreshing}
+        modelsRefreshing={refreshingInstance === selectedInstance}
         onTestCredentials={() => {
           if (selectedInstance !== null) void handleTestCredentials(selectedInstance);
         }}
