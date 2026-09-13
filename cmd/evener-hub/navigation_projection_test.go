@@ -286,6 +286,48 @@ func TestNavigationWatchProjectionDropsWatchWithUnrepresentableCreatedAt(t *test
 	}
 }
 
+// TestNavigationWatchCadenceCarriesEventEveryAndFilter proves the events
+// cadence's every-Nth count and filter summary reach the hub's wire summary,
+// so the rail and session panel can distinguish a throttled or filtered event
+// watch. The filter is a caller-supplied string, so it is bounded like every
+// other rendered watch label.
+func TestNavigationWatchCadenceCarriesEventEveryAndFilter(t *testing.T) {
+	longFilter := strings.Repeat("f", maxNavigationLabelRunes+64)
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{{
+				ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z",
+				Cadence: []appwire.EvenerWatchCadence{
+					{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"},
+					{Kind: "events", Filter: longFilter},
+				},
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	if len(resource.Current.Sessions) != 1 || len(resource.Current.Sessions[0].Watches) != 1 {
+		t.Fatalf("projected rows = %+v, want one session with one watch", resource.Current.Sessions)
+	}
+	got := resource.Current.Sessions[0].Watches[0].Cadence
+	want := []hubapi.NavigationWatchCadence{
+		{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"},
+		{Kind: "events", Filter: truncateNavigationRunes(longFilter, maxNavigationLabelRunes)},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Cadence = %+v, want %+v", got, want)
+	}
+}
+
 // validNavigationTimestamp must accept exactly what the web codec accepts. Both
 // read the same shared fixture list so the Go check cannot drift from the
 // codec's rfc3339Timestamp grammar.

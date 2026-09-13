@@ -594,8 +594,9 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	budget := navigationFittingBudget(navigationSummaryNodes(original), func(budget int) bool {
+	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), func(trim navigationWatchPayloadTrim, budget int) bool {
 		rows, dropped := limitNavigationSummaries(original, budget)
+		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
@@ -603,6 +604,7 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 		return navigationJSONFits(candidate, maxNavigationResponseBytes)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
+	trimNavigationWatchPayloads(resource.Sessions, trim)
 	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
 	resource.Truncated = true
 }
@@ -613,8 +615,9 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	budget := navigationFittingBudget(navigationSummaryNodes(original), func(budget int) bool {
+	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), func(trim navigationWatchPayloadTrim, budget int) bool {
 		rows, dropped := limitNavigationSummaries(original, budget)
+		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
@@ -622,6 +625,7 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 		return navigationJSONFits(candidate, maxNavigationResponseBytes)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
+	trimNavigationWatchPayloads(resource.Sessions, trim)
 	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
 	resource.Truncated = true
 }
@@ -631,11 +635,80 @@ func fitNavigationProject(resource *hubapi.NavigationProjectResource) {
 		return
 	}
 	original := cloneNavigationProjectResource(*resource)
-	budget := navigationFittingBudget(navigationSummaryNodes(original.Current.Sessions)+navigationSummaryNodes(original.Recent.Sessions)+navigationSummaryNodes(original.Archived.Sessions), func(budget int) bool {
+	nodes := navigationSummaryNodes(original.Current.Sessions) + navigationSummaryNodes(original.Recent.Sessions) + navigationSummaryNodes(original.Archived.Sessions)
+	trim, budget := navigationFittingChoice(nodes, func(trim navigationWatchPayloadTrim, budget int) bool {
 		candidate := limitNavigationProject(original, budget)
+		trimNavigationProjectWatchPayloads(&candidate, trim)
 		return navigationJSONFits(candidate, maxNavigationResponseBytes)
 	})
-	*resource = limitNavigationProject(original, budget)
+	limited := limitNavigationProject(original, budget)
+	trimNavigationProjectWatchPayloads(&limited, trim)
+	*resource = limited
+}
+
+// navigationFittingChoice finds the largest session-row budget that fits. It
+// tries the full payload first, preserving the pre-existing answer and probe
+// count. Only when even one untrimmed row cannot fit does it degrade optional
+// watch payloads - delivery instants first, then whole watch rows - so a
+// session whose watches are what overflowed the response is still listed with
+// as much of its payload as fits, instead of being dropped and leaving the
+// page with no rows while data remains (which validateNavigationPageProgress
+// rejects outright). It returns the trim level and budget actually used.
+func navigationFittingChoice(nodes int, fits func(navigationWatchPayloadTrim, int) bool) (navigationWatchPayloadTrim, int) {
+	full := navigationFittingBudget(nodes, func(budget int) bool {
+		return fits(navigationWatchPayloadFull, budget)
+	})
+	if full > 0 || nodes == 0 {
+		return navigationWatchPayloadFull, full
+	}
+	for _, trim := range []navigationWatchPayloadTrim{navigationWatchPayloadNoDeliveryTimes, navigationWatchPayloadNoWatches} {
+		budget := navigationFittingBudget(nodes, func(budget int) bool {
+			return fits(trim, budget)
+		})
+		if budget > 0 {
+			return trim, budget
+		}
+	}
+	// No trim level retains a row: the overflow is not in the watch payload
+	// (a job-heavy single row, for example). Report the untrimmed zero-budget
+	// result so the caller keeps its existing irreducible-overflow behavior.
+	return navigationWatchPayloadFull, 0
+}
+
+// navigationWatchPayloadTrim is a degradation level for the optional watch
+// payload on session rows. The zero value leaves rows untouched.
+type navigationWatchPayloadTrim int
+
+const (
+	navigationWatchPayloadFull navigationWatchPayloadTrim = iota
+	navigationWatchPayloadNoDeliveryTimes
+	navigationWatchPayloadNoWatches
+)
+
+// trimNavigationWatchPayloads strips optional watch payload from rows in place.
+// The rows are always fitters' clones (limitNavigationSummaries clones every
+// included row), so trimming never reaches the projector's original.
+func trimNavigationWatchPayloads(rows []hubapi.NavigationSessionSummary, trim navigationWatchPayloadTrim) {
+	if trim == navigationWatchPayloadFull {
+		return
+	}
+	for i := range rows {
+		switch trim {
+		case navigationWatchPayloadNoDeliveryTimes:
+			for j := range rows[i].Watches {
+				rows[i].Watches[j].DeliveryTimes = nil
+			}
+		case navigationWatchPayloadNoWatches:
+			rows[i].Watches = nil
+		}
+		trimNavigationWatchPayloads(rows[i].Children, trim)
+	}
+}
+
+func trimNavigationProjectWatchPayloads(resource *hubapi.NavigationProjectResource, trim navigationWatchPayloadTrim) {
+	trimNavigationWatchPayloads(resource.Current.Sessions, trim)
+	trimNavigationWatchPayloads(resource.Recent.Sessions, trim)
+	trimNavigationWatchPayloads(resource.Archived.Sessions, trim)
 }
 
 func navigationFittingBudget(nodes int, fits func(int) bool) int {
@@ -1160,6 +1233,8 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray
 			cadence = append(cadence, hubapi.NavigationWatchCadence{
 				Kind:    truncateNavigationRunes(step.Kind, maxNavigationLabelRunes),
 				Seconds: step.Seconds,
+				Every:   step.Every,
+				Filter:  truncateNavigationRunes(step.Filter, maxNavigationLabelRunes),
 			})
 		}
 		events := make([]string, 0, len(watch.Events))

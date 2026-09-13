@@ -440,6 +440,71 @@ func TestNavigationJobHeavyPageRejectsZeroProgress(t *testing.T) {
 	}
 }
 
+// TestNavigationOversizedWatchRowStaysListed pins the graceful degradation of
+// an oversized watch payload. One session row whose live watch carries enough
+// delivery instants to blow the response budget used to be dropped whole,
+// leaving the page with zero rows while Remaining stayed nonzero - a state the
+// page-progress invariant rejects, which took navigation for the whole
+// resource offline. The row must instead stay listed with its bulkiest
+// optional payload (the delivery instants) trimmed.
+func TestNavigationOversizedWatchRowStaysListed(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	// Roughly 3 MiB of delivery instants, past the 2 MiB response budget, on
+	// the only session row in the page.
+	deliveryTimes := make([]string, 100_000)
+	for i := range deliveryTimes {
+		deliveryTimes[i] = now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+	}
+	node := hubcore.TreeNode{
+		ID: navigationTestSessionID, Title: "watch-heavy", Project: "p1", State: "active", Kind: "session", UpdatedAt: now,
+		Watches: []appwire.EvenerWatchInfo{{
+			ID: "watch-heavy", Source: "self", Note: "delivery storm",
+			Cadence:   []appwire.EvenerWatchCadence{{Kind: "progress", Seconds: 1}},
+			CreatedAt: now.Format(time.RFC3339Nano), Active: true, DeliveryTimes: deliveryTimes,
+		}},
+	}
+	source.mu.Lock()
+	source.inputs.Tree.Live = []hubcore.TreeNode{node}
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+
+	result, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatalf("readV2 with an oversized watch row = %v, want the session listed with its payload trimmed", err)
+	}
+	data, err := json.Marshal(result.Response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > maxNavigationResponseBytes {
+		t.Fatalf("trimmed response is %d bytes, want at or below %d", len(data), maxNavigationResponseBytes)
+	}
+
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+		t.Fatalf("decode trimmed snapshot: %v", err)
+	}
+	var session *hubapi.NavigationSessionSummary
+	for _, entity := range snapshot.Entities {
+		if entity.Kind != "session" {
+			continue
+		}
+		var row hubapi.NavigationSessionSummary
+		if err := json.Unmarshal(entity.Value, &row); err != nil {
+			t.Fatalf("decode session entity: %v", err)
+		}
+		session = &row
+	}
+	if session == nil || session.SessionID != navigationTestSessionID {
+		t.Fatalf("snapshot entities = %+v, want the watch-heavy session still listed", snapshot.Entities)
+	}
+	if len(session.Watches) != 0 && len(session.Watches[0].DeliveryTimes) != 0 {
+		t.Fatalf("session watches = %+v, want the oversized delivery-time payload trimmed", session.Watches)
+	}
+}
+
 func navigationMaxFieldSectionNodes(now time.Time) []hubcore.TreeNode {
 	const roots = 40
 	rows := make([]hubcore.TreeNode, roots)

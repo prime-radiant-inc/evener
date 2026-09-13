@@ -49,8 +49,21 @@ export function watchCadenceLabel(cadence: NavigationWatchCadence): string {
       return `every ${watchDurationLabel(cadence.seconds)}`.trim();
     case "output":
       return "on output";
-    case "events":
-      return "on events";
+    case "events": {
+      // A count and a filter are optional and additive: a plain event watch
+      // (or an older server that omits both) still reads exactly "on events".
+      // The wire carries the filter in the model-facing prose summary's own
+      // vocabulary, so this only prefixes "where ".
+      let label = "on events";
+      if (cadence.every !== undefined && cadence.every > 0) {
+        label += ` every ${cadence.every}`;
+      }
+      const filter = cadence.filter?.trim();
+      if (filter) {
+        label += ` where ${filter}`;
+      }
+      return label;
+    }
     default:
       // An unrecognized future cadence kind still says SOMETHING honest rather
       // than rendering an empty second line.

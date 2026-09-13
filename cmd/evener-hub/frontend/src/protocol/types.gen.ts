@@ -424,6 +424,8 @@ export interface EvenerUsage {
 export interface EvenerWatchCadence {
   kind: string;
   seconds?: number;
+  every?: number;
+  filter?: string;
 }
 
 export interface EvenerWatchInfo {
@@ -1249,6 +1251,8 @@ export interface NavigationTier {
 export interface NavigationWatchCadence {
   kind: string;
   seconds?: number;
+  every?: number;
+  filter?: string;
 }
 
 export interface NavigationWatchSummary {

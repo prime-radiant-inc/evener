@@ -2600,7 +2600,15 @@ func watchCadencesOf(cfg *watchConfig) []WatchCadenceInfo {
 		cadences = append(cadences, WatchCadenceInfo{Kind: "progress", Seconds: float64(cfg.progressIntervalMS) / 1000})
 	}
 	if cfg.wildcardEvents || len(cfg.events) > 0 {
-		cadences = append(cadences, WatchCadenceInfo{Kind: "events"})
+		// Mirror watchConditionSummary exactly: only a concrete (non-wildcard)
+		// event watch renders its every-Nth throttle and its filter, so only it
+		// carries them on the wire. A wildcard watch has neither.
+		events := WatchCadenceInfo{Kind: "events"}
+		if !cfg.wildcardEvents {
+			events.Every = cfg.triggerEvery
+			events.Filter = watchEventFilterSummary(cfg.eventFilter)
+		}
+		cadences = append(cadences, events)
 	}
 	return cadences
 }

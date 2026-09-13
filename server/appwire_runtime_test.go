@@ -307,6 +307,29 @@ func TestAppDiagnosticsFromDetailedStatus_ProjectsWatches(t *testing.T) {
 	}
 }
 
+// TestAppDiagnosticsFromDetailedStatus_ProjectsEventEveryAndFilter proves the
+// events cadence's every-Nth count and filter summary survive the wire
+// projection: without the carry a throttled or filtered event watch would be
+// indistinguishable from one that fires on every matching event.
+func TestAppDiagnosticsFromDetailedStatus_ProjectsEventEveryAndFilter(t *testing.T) {
+	ds := DetailedStatus{Watches: []agent.WatchStatusInfo{{
+		ID:        "w2",
+		Source:    "self",
+		Cadence:   []agent.WatchCadenceInfo{{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"}},
+		Events:    []string{"assistant.tool"},
+		CreatedAt: "1970-01-01T00:16:40Z",
+		Active:    true,
+	}}}
+	got := appDiagnosticsFromDetailedStatus(ds)
+	if len(got.Watches) != 1 {
+		t.Fatalf("Watches = %+v, want 1 row", got.Watches)
+	}
+	wantCadence := []appwire.EvenerWatchCadence{{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"}}
+	if !reflect.DeepEqual(got.Watches[0].Cadence, wantCadence) {
+		t.Fatalf("Cadence = %+v, want %+v", got.Watches[0].Cadence, wantCadence)
+	}
+}
+
 func TestAppDiagnosticsFromDetailedStatus_Exhaustion(t *testing.T) {
 	resumable := true
 	got := appDiagnosticsFromDetailedStatus(DetailedStatus{Jobs: []JobStatusInfo{{

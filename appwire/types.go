@@ -1000,6 +1000,14 @@ type EvenerJobInfo struct {
 type EvenerWatchCadence struct {
 	Kind    string  `json:"kind"`
 	Seconds float64 `json:"seconds,omitempty"`
+	// Every is the fire-every-Nth-matching-event throttle on an "events"
+	// cadence; absent (zero) means fire on every matching event. Only the
+	// events kind carries it.
+	Every int `json:"every,omitempty"`
+	// Filter is the events-kind watch's event filter in the model-facing
+	// condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
+	// absent when the watch filters nothing. Only the events kind carries it.
+	Filter string `json:"filter,omitempty"`
 }
 
 // EvenerWatchInfo is the structured projection of one live watch, so the web

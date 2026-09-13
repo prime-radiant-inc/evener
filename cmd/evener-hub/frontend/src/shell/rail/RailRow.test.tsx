@@ -486,6 +486,25 @@ describe("watchGloss", () => {
     );
   });
 
+  // The events cadence carries the fire-every-Nth count and the filter in the
+  // model-facing prose summary's vocabulary, so a throttled or filtered event
+  // watch no longer reads identically to one that fires on every match.
+  test("an event watch names its count and filter", () => {
+    expect(watchCadenceLabel({ kind: "events", every: 3, filter: "tool_name=Bash, status=error" })).toBe(
+      "on events every 3 where tool_name=Bash, status=error",
+    );
+    expect(watchCadenceLabel({ kind: "events", every: 3 })).toBe("on events every 3");
+    expect(watchCadenceLabel({ kind: "events", filter: "tool_name=Bash" })).toBe("on events where tool_name=Bash");
+  });
+
+  // An absent count or filter - the old-server case and most watches - must
+  // leave the label byte-identical to before the fields existed.
+  test("an event watch with no count or filter stays byte-identical", () => {
+    expect(watchCadenceLabel({ kind: "events" })).toBe("on events");
+    expect(watchCadenceLabel({ kind: "events", every: 0, filter: "" })).toBe("on events");
+    expect(watchCadenceLabel({ kind: "events", every: 0, filter: "   " })).toBe("on events");
+  });
+
   test("combines every trigger source the wire sent, in order", () => {
     expect(
       watchGloss(
