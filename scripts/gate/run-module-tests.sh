@@ -565,7 +565,7 @@ stop_package_list_group() {
 # already changed to that module.
 run_bounded_package_list() {
 	local module="$1" package_list="$2" package_list_stderr attempt attempt_list
-	local list_pid list_pgid started_at list_status survivors stop_status
+	local list_pid list_pgid started_at list_status survivors stop_status live_members
 	# Every attempt below is exec'd through perl so it lands in its own process
 	# group. Named here rather than discovered at the spawn, where it would fail
 	# as an exec error buried in a package-list log that says nothing about what
@@ -667,8 +667,22 @@ run_bounded_package_list() {
 						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" "$(package_list_pgid_path "$module")" >&2
 					return 1
 				fi
+				# Ask who is actually running before stopping anything. `kill -0`
+				# above answers for a zombie too, so an attempt that has already
+				# exited would otherwise be "stopped", reaped, and its own status
+				# read as the stop's — a verdict about the package list retried to
+				# the end of the budget and then reported as a timeout. Nothing
+				# running means it finished on its own and the completion path below
+				# reports what it decided; a listing that will not run is the same
+				# unknown as everywhere else here and takes the fail-closed branch.
 				stop_status=0
-				stop_package_list_group "$list_pid" || stop_status=$?
+				if ! live_members="$(package_list_group_survivors "$list_pid")"; then
+					stop_status=2
+				elif [ -z "$live_members" ]; then
+					break
+				else
+					stop_package_list_group "$list_pid" || stop_status=$?
+				fi
 				if [ "$stop_status" -ne 0 ]; then
 					# Deliberately no wait: SIGKILL does not land on a
 					# process in uninterruptible sleep, which is exactly the
@@ -714,15 +728,16 @@ run_bounded_package_list() {
 					# closes, $? is the compound's own status, not the reap's.
 					list_status=$?
 				fi
-				# Only an attempt this script killed is a timeout. `kill -0` above
-				# answers for a zombie too, so an attempt that exited on its own —
-				# just before the deadline, or between the deadline and the stop —
-				# reaches here with a status of its own: a verdict about the package
-				# list, which retrying only repeats and a timeout diagnostic buries.
-				# The stop sends SIGTERM and then SIGKILL, and bash reports a
-				# signalled child as 128 plus the signal number, so those two numbers
-				# are what a stopped attempt looks like and everything else is the
-				# attempt speaking for itself.
+				# Only an attempt this script killed is a timeout. The probe above
+				# is what establishes that: reaching here means members of the group
+				# were running and the stop then signalled them. What is left for
+				# the status to catch is the sliver between the two — an attempt that
+				# exited in it reaches the reap with a status of its own, a verdict
+				# about the package list that retrying repeats and a timeout
+				# diagnostic buries. The stop sends SIGTERM and then SIGKILL, and
+				# bash reports a signalled child as 128 plus the signal number, so
+				# those two numbers are what a stopped attempt looks like and
+				# anything else is the attempt speaking for itself.
 				case "$list_status" in
 					143 | 137) ;;
 					*)
