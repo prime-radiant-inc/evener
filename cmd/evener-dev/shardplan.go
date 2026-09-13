@@ -188,12 +188,8 @@ type parsedFlags struct {
 // `go test` would refuse too, and is read as short rather than dropping a
 // caller's short mode over a spelling this code guessed wrong about.
 //
-// -C is refused rather than forwarded, with the same sentence the gate's script
-// prints: it changes directory before the command runs, and everything here is
-// built and tested from the module's own directory.
-//
-// The same rule is written again in scripts/gate/run-module-tests.sh, which
-// cannot import this; #1247 is where the two become one.
+// -C is refused rather than forwarded: it changes directory before the command
+// runs, and everything here is built and tested from the module's own directory.
 func parseFlags(flags []string) (parsedFlags, error) {
 	var out parsedFlags
 	for i := 0; i < len(flags); i++ {

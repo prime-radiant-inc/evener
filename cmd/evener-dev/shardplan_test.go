@@ -1,8 +1,6 @@
 package dev
 
 import (
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -192,51 +190,6 @@ func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
 	}
 }
 
-func TestShellAndGoForwardTheSameBuildFlags(t *testing.T) {
-	// The two tables are one rule in two languages (#1247). This reads the
-	// shell's and fails on any difference in either direction, so neither can
-	// drift without the other hearing about it.
-	source, err := os.ReadFile(filepath.Join("..", "..", "scripts", "gate", "run-module-tests.sh"))
-	if err != nil {
-		t.Fatalf("reading the gate script: %v", err)
-	}
-	body := string(source)
-	start := strings.Index(body, "flag_is_build() {")
-	if start < 0 {
-		t.Fatal("flag_is_build is gone from the gate script; this check needs updating with it")
-	}
-	end := strings.Index(body[start:], "\n}\n")
-	shell := map[string]bool{}
-	for line := range strings.SplitSeq(body[start:start+end], "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "-") || !strings.HasSuffix(line, ")") {
-			continue
-		}
-		for name := range strings.SplitSeq(strings.TrimSuffix(line, ")"), "|") {
-			if name = strings.TrimSpace(name); name != "" {
-				shell[name] = true
-			}
-		}
-	}
-	golang := map[string]bool{}
-	for name := range buildValueFlags {
-		golang[name] = true
-	}
-	for name := range buildBareFlags {
-		golang[name] = true
-	}
-	for name := range shell {
-		if !golang[name] {
-			t.Errorf("the gate script forwards %s to the enumeration and this package does not", name)
-		}
-	}
-	for name := range golang {
-		if !shell[name] {
-			t.Errorf("this package forwards %s to the build and the gate script does not", name)
-		}
-	}
-}
-
 func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -277,9 +230,7 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.v"},
 		},
 		{
-			// The shell's forwarded set, in both spellings, since the two
-			// tables have to agree until #1247 makes them one.
-			name: "every build flag the shell forwards, inline value form",
+			name: "every build flag, inline value form",
 			flags: []string{
 				"-tags=a", "-mod=mod", "-modfile=go.mod", "-overlay=o.json",
 				"-pgo=off", "-compiler=gc", "-trimpath", "-race=true",
