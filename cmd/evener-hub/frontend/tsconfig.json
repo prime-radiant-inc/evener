@@ -21,8 +21,23 @@
     "paths": {
       "@evener/appwire-client": ["../../../appwire-client/typescript/index.ts"],
       "@evener/appwire-client/docContent": ["../../../appwire-client/typescript/docContent.ts"],
-      "@evener/appwire-client/testing/*": ["../../../appwire-client/typescript/testing/*"]
+      "@evener/appwire-client/testing/*": ["../../../appwire-client/typescript/testing/*"],
+      // The package's own test files import these bare, and node resolution
+      // from appwire-client/typescript walks up to a repo root with no
+      // node_modules, so it finds nothing. Naming them here points at the
+      // same declarations the files under src/ already resolve to, which is
+      // the same shape mobile-native/tsconfig.check.json uses for the shared
+      // sources it typechecks from outside its own tree. A bare specifier the
+      // package starts importing and this list does not name fails loudly in
+      // `npm run typecheck` rather than silently leaving the program.
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"],
+      "vitest": ["./node_modules/vitest"],
+      "@testing-library/react": ["./node_modules/@testing-library/react"]
     }
   },
-  "include": ["src"]
+  // The package is in this program in its own right, not only through the app
+  // imports that reach it: its own test files are imported by nothing, so
+  // without this entry a type error in one of them is invisible to every gate.
+  "include": ["src", "../../../appwire-client/typescript"]
 }
