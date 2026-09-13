@@ -342,6 +342,24 @@ func TestFailureFingerprint_MeaningfulChangesAreDistinct(t *testing.T) {
 	}
 }
 
+// A root null body dispatches as an empty argument object: registry.executeCall
+// unmarshals it to a nil map and normalizes that to map[string]any{}, the same
+// effective call as a zero-length body. Its fingerprint must therefore match
+// "{}" rather than the literal null. A null nested inside an object or array
+// reaches the handler as a real value and stays distinct from the key being
+// absent.
+func TestFailureFingerprint_RootNullIsAnEmptyArgumentObject(t *testing.T) {
+	if got, want := fp("read_transcript", "null"), fp("read_transcript", "{}"); got != want {
+		t.Errorf("root null fingerprint = %q, want the empty-object fingerprint %q", got, want)
+	}
+	if fp("read_transcript", "null") != fp("read_transcript", "") {
+		t.Errorf("root null must fingerprint the same as the empty body")
+	}
+	if nested := fp("task_list", `{"update":[{"id":1,"value":null}]}`); nested == fp("task_list", `{"update":[{"id":1}]}`) {
+		t.Errorf("a nested null must stay distinct from the key being absent")
+	}
+}
+
 func TestFailureFingerprint_UnparseableArgumentsFallBackToExact(t *testing.T) {
 	for _, args := range []string{
 		`{"transcript_ref":`,
