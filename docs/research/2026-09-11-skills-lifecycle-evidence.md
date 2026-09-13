@@ -793,3 +793,182 @@ Its non-blocking observations, accepted as-is:
   integration tests that need a writable mount namespace. They skip under
   `-short`, every standard gate runs modules with `-short`, and this round never
   touched that package — environmental, not product.
+
+### Sixth and seventh rounds: roborev jobs 9791 and 9814
+
+Two roborev verdicts landed on the post-PR heads and are recorded together here.
+Job 9791 reviewed the fifth-round head (`42d27f9..b15d086`) and reported three
+Medium and two Low findings; job 9814 reviewed the accumulated range
+(`42d27f9..247ac1f`) and reported three Medium and one Low, two of which restate
+9791's M1' and M2' at the same sites. All seven distinct findings are addressed.
+Both rounds were written red-first, and every new test failed for the intended
+reason before its change.
+
+#### Round six (job 9791)
+
+**M1' — a carrier turn could outlive its obligation.** The finding named the
+tool round (`agent/session_tools.go`): the carrier was recorded, then the
+obligation was persisted, so a crash or failed save in between left a durable
+carrier whose obligation the snapshot had lost, and a later fold dropped the
+body with nothing left to reload it. Enumerating every producer of
+obligation-carrying turns found the same defect in a second place the finding
+did not name — `admitCompactedSkillReloads` recorded body-carrying reload
+carriers inside its budget loop and persisted their obligations afterwards,
+under a comment claiming the opposite. Both now persist the obligations first
+and record the carrier only after the save succeeds, matching the order
+`admitSkillActivationBatch` already documents. The reverse window (an obligation
+whose carrier never landed) is deliberately kept: it re-delivers the complete
+body from its recorded source at the next dispatch seam, so it is the safe
+direction. The rollback that makes the tool-round ordering possible is shared
+(`withoutObligationsByInvocationID`), replacing three copies of the same
+drop-by-invocation-ID loop.
+
+**M2' — `commitSkillDelivery` had no rollback.** A failed save left the live
+snapshot clean while the durable one still held the satisfied obligations, so a
+same-process retry saw no pending delivery and skipped the revalidation those
+obligations exist to force. It now snapshots the obligations, inventory and
+revision before mutating and restores them when the save fails, guarded by an
+unchanged revision so a concurrent writer's work is never clobbered.
+
+**M3' — post-compaction reminders could be duplicated.** Two windows, both
+closed. (a) The reminder turn is a durable write that precedes the receipt
+consumption, so a crash in between left a handoff that re-appended the reminder
+after a restart; `reconcileSkillCompactionReceipts` now treats a durable
+`ReloadReminder` turn as the admission it is and retires the handoff it names.
+(b) When a later receipt's reminder failed the fit check, the function returned
+without consuming the reminders it had already appended, so each retry
+re-appended them and spent more of the very window the check measures; the
+already-admitted reminders are now consumed before the error returns.
+
+**L1' — a comment claiming an ordering the code did not hold.** The tool-round
+comment went away with the reordering; the equivalent false comment in
+`admitCompactedSkillReloads` is corrected by its fix above.
+
+**L2' — the sticky-draft path bypassed `canonicalSkillNames`.** The fifth-round
+review had already logged this as a cosmetic gap: "`readComposerDraft`
+(`draft.ts:57-71`) validates but does not canonicalize a persisted draft", where
+"a hand-edited or pre-fix persisted draft could still render a padded chip in
+composer state". Roborev rated it Low and named the concrete symptom — a
+corrupted v2 draft renders blank/duplicate chips with colliding React keys.
+`readComposerDraft` now canonicalizes the stored names, and `addSkillSelection`
+routes the whole resulting list through the one canonical definition instead of
+deduping by exact string.
+
+#### Round seven (job 9814)
+
+**Medium — skill carriers and reload/delivery notifications used the
+non-durable `recordTurn` door.** `recordTurn` appends the turn to live history
+first, writes through `Append` (no fsync — `AppendDurable`, which calls `Sync`,
+is the durable door), and swallows the write error into a warning. For a turn
+whose `SkillState` carries a skill's complete instructions that is the wrong
+door: a crash before the writer's next sync could lose the only copy of the body
+while the lifecycle advanced as if it had been delivered, and a failed write was
+reported as success. Every skill carrier and notification now goes through
+`recordSkillCarrierDurably`: fsync before the turn joins history, with the write
+failure returned so callers keep their obligations and receipts pending, from
+which the next dispatch seam recovers the body.
+
+Applying it also corrected an enumeration error in the sixth-round record above,
+which counted three producers of obligation-carrying turns. There are five
+recording sites, and `recordSkillDeliveryNotification` is a carrier producer the
+earlier note missed — it attaches a `SkillDeliveryObligation` and was recording
+through the non-durable, error-swallowing door. Its failed write now returns
+before the obligation's identity is corrected, since the bytes that correction
+describes were never recorded.
+
+**Low — skill-only pending queue rows rendered blank.** Optimistic and outbox
+pending entries discarded `skillNames`, and the pending row rendered only text
+and image counts, so a queued submission carrying only skills showed an empty
+row until the daemon's own queue record arrived. `PendingTurnEntry` now carries
+canonical `skillNames` (collected through the same `canonicalSkillNames` the
+durable path uses), and pending rows render the same `skillMarkers` a durable
+row does. This unit was delegated; its production diff is `+25/-3` across
+`pendingReconcile.ts` and `QueueStrip.tsx`, and its added tests are a
+`reconcilePendingEntries` unit test (a padded, duplicated skill item collapses
+to `["pkg:probe"]`) and a `QueueStrip` render test asserting a skill-only
+pending row shows its `[skill: pkg:probe]` marker. The parent inspected the diff
+and the tests before committing them.
+
+#### Red-first evidence
+
+```
+--- FAIL: TestSkillToolRound_CarrierNeverPrecedesItsDurableObligation
+    a failed obligation save published a carrier turn carrying [{InvocationID:inv-tool-round ...}]
+--- FAIL: TestSkillDelivery_CommitSaveFailureKeepsObligationsPending
+    obligations after the failed save = [], want the pending obligation restored
+--- FAIL: TestSkillReloadReminder_DurableReminderConsumedAtRestore
+    the durable reminder left its handoff pending: [... PublicationID:pub-durable-reminder ...]
+--- FAIL: TestSkillReloadReminder_FitFailureConsumesEarlierReminders
+    handoffs after the fit failure = [... pub-fit-1 ... pub-fit-2 ...], want only the undelivered pub-fit-2
+--- FAIL: TestSkillReload_AdmittedCarrierWaitsForItsDurableObligation
+    a failed admission save published a carrier turn carrying [{InvocationID:pub-reload-carrier:opaque ...}]
+--- FAIL: TestSkillReload_CarrierWriteFailureIsVisible
+    a failed carrier write must surface an error, not report a recorded body
+--- FAIL: TestSkillReload_FailedReloadNotificationWriteFailureIsVisible
+    a failed reload-failure notification write must fail the preparation visibly
+--- FAIL: TestSkillToolRound_CarrierWriteFailureIsVisible
+    a failed carrier write must surface an error, not report a recorded round
+```
+
+The frontend suites first failed on the uncanonicalized `readComposerDraft`
+round-trip, on `expected [ '   ' ] to deeply equal []` for
+`addSkillSelection([], "   ")`, on the missing pending `skillNames` field, and
+on the blank pending row. No assertion, filter, pairing, or tolerance was
+weakened, and no test was deleted, in either round.
+
+#### Gates
+
+Both rounds ran the full set on their final heads. Round six at `f51554964`:
+`make generate` (zero generated diff), `make vet`, `make test-api-package`,
+`make test-web` (web-typecheck, web-test, web-lint), `make merge-approval-gate`
+(every lint phase PASS, every module test wave PASS), the six-guard browser gate
+(6/6), and `make fuzz`. Round seven at `cc5965941`: the same seven, all exit 0.
+
+The first `merge-approval-gate` run of round six failed at `lint-golangci` on the
+round's own new code — `mapsloop` flagged the `priorInventory` copy loop in
+`commitSkillDelivery`, now a `maps.Copy` call. That is recorded rather than
+quietly fixed: the lint gate caught real new code, and every other phase of that
+run passed.
+
+#### Independent review
+
+Round six: a fresh reviewer, given the committed range and told not to trust the
+author's account, returned READY with all five findings RESOLVED and no new
+defects. It reproduced load-bearingness itself by reverting each production
+change in place and capturing its own failure output (7/7 — five Go tests plus
+both frontend tests), then confirmed every reverted file was restored
+byte-identical. It also ran its own completeness sweep over obligation-carrying
+turns and answered two adversarial questions: the accepted reverse window really
+does re-deliver through the dispatch seam rather than wedge, and the ignored
+consumption error in the fit-failure branch is defensible because the durable
+reminder turn lets a restart reconcile it. It flagged one inaccuracy in the
+review brief rather than the code: the brief said six new Go tests where the
+diff adds five.
+
+Round seven's review returned READY with both findings RESOLVED. It reproduced
+load-bearingness itself, 5/5 — reverting each production change in place and
+capturing its own failure output for all three new Go tests and both new
+frontend tests — then confirmed every reverted file restored byte-identically
+and the worktree clean. It traced all five durable-carrier call sites and all
+remaining `recordTurn` uses, confirming no skill carrier or notification still
+takes the non-durable door, and found no blocking defect. Two narrow
+duplicate-on-retry behaviours were noted, both in the safe direction: a retried
+batch can re-append an outcome-only notice, and a retried admission can
+re-record a carrier; neither loses a body. It also falsified a premise in the
+review brief rather than in the code — the brief claimed the pending and durable
+previews join with different separators; both join with a single space, so the
+new row matches the durable one exactly.
+
+#### Disclosed residuals
+
+- `recordTurn` remains the non-durable door for the rest of the session
+  machinery (queue turns, event turns, lifecycle markers). That is the
+  deliberate default for turns whose loss is not a body-guarantee violation, and
+  both findings scoped themselves to skill carriers and reload/delivery
+  notifications, which is what changed.
+- `admitCompactedSkillReloads` appends its outcome-only notices before the
+  admission save, so a failed save followed by a retry can append the same
+  notice twice. It cannot lose a body.
+- `recordSkillReloadNotification` still accepts an obligation pointer, which
+  would make its turn a carrier; no call site passes one, and the ordering
+  requirement is documented on the function.
