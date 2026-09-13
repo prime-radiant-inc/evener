@@ -217,16 +217,22 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 }
 
 // thinkingReplayChars counts the characters a thinking part contributes to the
-// outgoing request. A part is billed only when the active adapter will actually
-// re-send it, and reasoning reaches the wire solely through provider-scoped
-// replay metadata: an encrypted_content blob (the OpenAI Responses opaque blob,
-// or OpenAI-compat encrypted reasoning_details) or a signature (Anthropic's
-// cryptographic signature, or the OpenAI-compat wire field the part arrived
-// on). A part carrying only raw display text — neither encrypted content nor
-// signature — is never replayed: toResponsesInput emits a reasoning item only
-// when encrypted_content is set, so raw reasoning_text kept for display
-// (gateway-fronted GLM) must not be billed. Redacted thinking replays its
-// payload verbatim and stays billable.
+// outgoing request. The estimator is provider-blind — the compaction path calls
+// EstimateMessagesInputTokens, which carries no provider or model — so one rule
+// stands in for every adapter: a thinking part is billed only when it carries
+// provider-scoped replay metadata, an encrypted_content blob (the OpenAI
+// Responses opaque blob, or OpenAI-compat encrypted reasoning_details) or a
+// signature. The Responses adapter is the reference case: toResponsesInput emits
+// a reasoning item only when encrypted_content is set, so raw reasoning_text
+// kept for display (gateway-fronted GLM) is not billed. Redacted thinking
+// replays its payload verbatim and stays billable.
+//
+// Known limitation: an OpenAI-compatible chat adapter replays raw reasoning text
+// through its reasoning field, and also replays an OpenAI-compat
+// encrypted_content array the Responses adapter rejects. This rule therefore
+// under-counts the first and over-counts the second for those adapters. Deciding
+// per adapter needs the provider threaded into the compaction estimate, which it
+// currently is not.
 func thinkingReplayChars(p ContentPart) int {
 	if p.Thinking == nil {
 		return 0
