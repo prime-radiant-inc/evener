@@ -242,6 +242,16 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 root_skip="$fuzz_test_skip"
 
 flags="$*"
+# Refused rather than forwarded: -C changes directory before the command runs,
+# and every module here is enumerated and tested from its own directory.
+for flag in $flags; do
+	case "$flag" in
+	-C | -C=*)
+		printf 'run-module-tests.sh: -C is not supported here. Each module is enumerated and tested from its own directory, and a -C would move both commands somewhere this runner does not expect. Run the gate from the repository root instead.\n' >&2
+		exit 2
+		;;
+	esac
+done
 module_test_flags() {
 	local m="$1" flag selected=""
 	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
@@ -658,7 +668,13 @@ stop_package_list_attempt() {
 # the list handed to a `go test` that does build them. The split is the rule —
 # build flags go to both commands, test-only flags (-run, -skip, -count,
 # -timeout, -short, -parallel, -p, -coverprofile) belong to `go test` alone and
-# `go list` rejects several of them. Today's callers pass only -short, -count,
+# `go list` rejects several of them.
+#
+# `-C` is not on the list and is refused at startup instead: it changes directory
+# before the command runs, and this runner has already changed into the module's
+# own directory to enumerate and test it, so honouring a caller's `-C` would move
+# both commands somewhere the rest of the script does not expect. Refusing says
+# that; forwarding it would not. Today's callers pass only -short, -count,
 # -race, -p and -parallel, so nothing here is forwarded in practice; the rule is
 # what keeps the two commands agreeing when that changes.
 package_list_build_flags() {
@@ -670,11 +686,11 @@ package_list_build_flags() {
 			continue
 		fi
 		case "$flag" in
-		-tags | -mod | -modfile | -overlay | -pgo)
+		-tags | -mod | -modfile | -overlay | -pgo | -workfile)
 			out="$out $flag"
 			expect_value=1
 			;;
-		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -trimpath)
+		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -workfile=* | -trimpath)
 			out="$out $flag"
 			;;
 		esac
