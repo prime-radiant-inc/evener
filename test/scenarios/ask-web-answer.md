@@ -216,13 +216,13 @@ gesture.
   transcript's collapsed `ask_user` row grows its answered recap: the row
   `[data-testid="tool-call-item"][data-tool-name="ask_user"]` reads
   `Asked: [DB choice] — answered: "SQLite"` (`askUser.tsx:113-127` +
-  `cmd/evener-hub/frontend/src/protocol/askShared.ts:118-150`; the note is deliberately stripped from the recap,
+  `appwire-client/typescript/askShared.ts:118-150`; the note is deliberately stripped from the recap,
   `askShared.ts:88-95`). Falsify: the dock is still up after a successful send, or the row
   still reads a bare `Asked: [DB choice]` long after the reply landed.
 - **Step 8 (exact)**: the outline shows the `ask_user` tool result carrying the ack text
   `questions posted; answers arrive in the user's reply after your turn ends`
   (`agent/session_tools_ask.go:23`), followed by a user turn whose text is exactly the
-  §4.3 form (`composeAskAnswers`, `cmd/evener-hub/frontend/src/protocol/askAnswers.ts:92-100` — byte-exact,
+  §4.3 form (`composeAskAnswers`, `appwire-client/typescript/askAnswers.ts:92-100` — byte-exact,
   golden-string tested):
   ```
   [answers]

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
+import type { WebSocketLike } from "../../appwire-client/typescript/transport";
 import type {
 	AnyNotification,
 	Thread,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import {
 	createConversationStore,

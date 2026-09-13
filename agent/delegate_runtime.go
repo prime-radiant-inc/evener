@@ -598,7 +598,12 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	// is the drive flag every other guard already reads, and it is handed over
 	// under the same sub.mu hold that sets running.
 	sub.mu.Lock()
-	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing
+	// childCommittedSendStart is consulted here, at the decision point, so every
+	// path into the attention drive is gated at the depth the decision is made
+	// rather than relying on each caller to remember (#940).
+	// drivePendingStableDelegateAttention reaches this primitive directly with no
+	// caller-side gate.
+	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id)
 	if !blocked {
 		sub.driving = true
 	}
@@ -1129,6 +1134,50 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err != nil {
 		return failed(err)
 	}
+	// Claim the send-start window by CHILD SESSION ID, here, BEFORE the durable
+	// commit rather than after it (#940). Claiming after CommitStart returned
+	// left a window in which a wake-edge drive read the child as idle and could
+	// launch a second, unleased turn on the session the commit was about to run;
+	// the reservation already carries the child session id, so the claim can
+	// precede the commit and that window does not exist. The claim is handed to
+	// the run at the point `running` is set and released by the deferred rollback
+	// on every exit that does not hand ownership over, including a failed
+	// CommitStart below.
+	committedChildID := strings.TrimSpace(reservation.descriptor.ChildSessionID)
+	committedClaimHeld := false
+	if committedChildID != "" {
+		if !s.claimChildCommittedSendStart(committedChildID) {
+			_ = s.delegateController.AbortStart(reservation)
+			return failed(errDelegateTargetBusy)
+		}
+		committedClaimHeld = true
+	}
+	defer func() {
+		if committedClaimHeld {
+			s.releaseChildCommittedSendStart(committedChildID)
+			// The claim refused every drive for the claimed child that landed
+			// while it was held -- a child notification arriving mid-window runs
+			// the child's notify, driveChildIfNotStopGated, which returns early on
+			// the claim, and driveStableDelegateAttention refuses the stable
+			// attention the same way -- so that wake is DROPPED. The run about to
+			// launch would have drained the child's queue, but this exit did not
+			// hand a run over (the claim is still held here), so re-drive the
+			// claimed child's queued notifications, watch sends and armed stable
+			// attention or the dropped wake can sit undriven forever. The re-drive
+			// is scoped to committedChildID because the claim only gated that
+			// child, so only that child can hold a wake it swallowed. The hand-off
+			// path clears committedClaimHeld before this defer runs, so it never
+			// re-drives: the handed-over run drains the queue itself, and
+			// re-driving there would launch the second turn this claim prevents.
+			// This runs from the deferred rollback after every failure exit
+			// (aborted reservation, failed commit, failed restore, blocked
+			// hand-off, start-input failure), and send holds no lock here.
+			s.redriveChildAfterSendStartRollback(committedChildID)
+		}
+	}()
+	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
+		observer(committedChildID)
+	}
 	var waiter *delegateInlineWaiter
 	if maxWaitMS > 0 {
 		waiter, err = s.delegateController.RegisterInlineWaiter(reservation)
@@ -1180,6 +1229,57 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			})
 		}
 	}
+	// Take the drive claim for the committed-start window, exactly as
+	// driveStableDelegateAttention does (#932/#940). CommitStart has already
+	// consumed the reservation, but sub.running stays false through the restored
+	// side effects and the start-input mutation plans (BeginStartInput,
+	// preseedInput, CompleteStartInput); the run goroutine only sets running at
+	// the far end of it. A wake-edge drive landing in that gap reads an idle
+	// child, and driveChildIfNotStopGated falls through to
+	// driveSubagentNotificationTurn, which launches a second, UNLEASED
+	// EntryNotification turn on the session this generation is about to run. The
+	// two turns then share one drain ladder and popFollowUp (a destructive pop
+	// with no owner check) lets the unleased turn steal the run's follow-up.
+	// sub.driving is the flag every other guard already reads as "a turn is in
+	// flight on this idle child"; it is handed to the run under the same sub.mu
+	// hold that sets running and released by the deferred rollback on every
+	// failure exit below.
+	//
+	// The id-keyed childCommittedSendStart claim, taken in send immediately after
+	// ReserveStart and before CommitStart, already covers the pre-resolve stretch
+	// (the commit itself, restoreIdleForSend, and the
+	// admitReconstructed/AttachRuntime leg). This per-child flag only has to cover
+	// what follows: from the point restoreIdleForSend has produced the child
+	// through the hand-off to the run.
+	sub.mu.Lock()
+	// The sibling drive guard in driveStableDelegateAttention also refuses a
+	// child whose finalizer is still running or whose worktree disposal holds
+	// the dispose gate. `running` goes false at the top of the run's finalize
+	// block, before FinishGeneration moves the aggregate back to idle and
+	// before finalizing is cleared, so a send landing in that window would
+	// otherwise pass this guard, set driving, and start a run concurrently with
+	// the in-flight finalizer (or the disposer that owns disposeGated). Read
+	// both under the same sub.mu hold as running/driving.
+	blocked := sub.running || sub.driving || sub.finalizing || sub.disposeGated
+	if !blocked {
+		sub.driving = true
+	}
+	sub.mu.Unlock()
+	if blocked {
+		cause := errDelegateTargetBusy
+		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
+			finishRestore(sub, nil)
+		})
+	}
+	launched := false
+	defer func() {
+		if launched {
+			return
+		}
+		sub.mu.Lock()
+		sub.driving = false
+		sub.mu.Unlock()
+	}()
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
@@ -1197,6 +1297,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	finishRestore(sub, nil)
+	if observer := s.cfg.testOnly.delegateSendStartCommitted; observer != nil {
+		observer(sub)
+	}
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
 		s.sendersWG.Done()
@@ -1226,7 +1329,18 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	sub.mu.Lock()
 	sub.fatalRunGated = false
 	resetSubagentForRunLocked(sub, runCancel, started.startedAt)
+	// Hand the start claim over to the run under one hold, so the child never
+	// reads idle between the committed start and the run that owns it.
+	sub.driving = false
 	sub.mu.Unlock()
+	// running is now true under the same hold, so every drivability read refuses
+	// on the run itself; the id-keyed claim has done its job and is released. The
+	// deferred release sees committedClaimHeld false and does nothing.
+	if committedClaimHeld {
+		s.releaseChildCommittedSendStart(committedChildID)
+		committedClaimHeld = false
+	}
+	launched = true
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	result := sendMessageResult{

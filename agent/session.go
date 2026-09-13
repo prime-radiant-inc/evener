@@ -360,7 +360,21 @@ type Session struct {
 	// whose second continuous-stall window is in progress. It is transient to one
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
-	drainGraceChildren            map[string]drainGraceChild
+	drainGraceChildren map[string]drainGraceChild
+	// childCommittedSendMu guards childCommittedSendChildren. It is a leaf lock of
+	// its own — nothing is acquired under it — and is deliberately separate from
+	// drainAbandonedMu so the send-start claim never couples to drain state.
+	// LOCK ORDER: leaf.
+	childCommittedSendMu sync.Mutex
+	// childCommittedSendChildren holds the child SESSION ids with a committed send
+	// start whose owning run has not yet taken the generation over. The claim is
+	// keyed by id, not by the child object, so it covers the stretch from
+	// CommitStart through restoreIdleForSend and
+	// admitReconstructed/AttachRuntime, before the child is drivable (#940). It is
+	// held together with (never instead of) the per-subagent `driving` claim: the
+	// id-keyed claim covers the pre-resolve stretch, `driving` covers the
+	// post-resolve stretch and the handoff to the run.
+	childCommittedSendChildren    map[string]struct{}
 	toolEventsWG                  sync.WaitGroup                       // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup                       // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	disposeWG                     sync.WaitGroup                       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)

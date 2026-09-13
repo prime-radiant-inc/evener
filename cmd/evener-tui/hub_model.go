@@ -212,7 +212,7 @@ type hubModel struct {
 
 	// modelRetryReceivedAt is the client-stamped instant modelRetry was set —
 	// the TUI-side equivalent of the web client's ModelRetryState.receivedAt
-	// (cmd/evener-hub/frontend/src/protocol/model.ts). Not part of the wire
+	// (appwire-client/typescript/model.ts). Not part of the wire
 	// params; applyModelRetryTick compares it against modelRetry.DelayMS to
 	// decide whether the reported wait has elapsed even without a delta
 	// (the timer half of modelRetryInProgress's OR — see that field's own

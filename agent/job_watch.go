@@ -4920,7 +4920,7 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 		// live work, so driving it here would have the drain kicking a child it
 		// has already told the operator it abandoned — and abandoning a queued
 		// notification the drive loop was mid-way through delivering.
-		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) {
+		if s.childDriveGated(child.id) {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
@@ -4935,6 +4935,39 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 	s.renderUnreachableChildPendings(live)
 }
 
+// redriveChildAfterSendStartRollback re-drives the ONE child a committed-send-
+// start claim was taken for, after a non-handoff rollback released it (#940).
+// While the claim was held the wake edge (driveChildIfNotStopGated) and the
+// attention primitive (driveStableDelegateAttention) refused every drive for
+// that child, so a child notification, pending watch send or armed stable
+// attention that landed in the window was DROPPED. The run about to launch
+// would have drained the child's queue, but this exit handed no run over, so
+// the rollback must re-drive it. The claim only gated that child, so this is
+// scoped to childSessionID: a whole-tree sweep would re-drive unrelated
+// children and read every child's transcript fold on every failed send.
+//
+// It delegates to the shared wake-edge driver driveChildIfNotStopGated so the
+// rollback order cannot drift from the wake edge: stable delegate attention
+// FIRST (its run drains the child's notification queue itself), and only the
+// notification turn when no attention is owed. The previous inline order drove
+// the notification turn first; when both were pending the notification drive
+// set sub.driving synchronously, the attention drive then refused on that flag,
+// and nothing retried it -- the armed attention stayed stranded. The claim is
+// released before this call, so driveChildIfNotStopGated's own childDriveGated
+// check is the same stop/fatal/drain gate every other drive reads.
+func (s *Session) redriveChildAfterSendStartRollback(childSessionID string) {
+	if s == nil || childSessionID == "" {
+		return
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		if sub == nil || sub.sess == nil || sub.sess.id != childSessionID {
+			continue
+		}
+		s.driveChildIfNotStopGated(sub)
+		return
+	}
+}
+
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
 // (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
@@ -4944,7 +4977,7 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if sub == nil || sub.sess == nil {
 		return
 	}
-	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) || s.childDrainAbandoned(sub.sess.id) || s.childDrainGracePending(sub.sess.id) {
+	if s.childDriveGated(sub.sess.id) {
 		return
 	}
 	if s.driveStableDelegateAttention(sub) {
@@ -5060,6 +5093,66 @@ func (s *Session) directStableDelegateForChildSession(childSessionID string) (de
 func (s *Session) childStopGated(childSessionID string) bool {
 	row, ok := s.directStableDelegateForChildSession(childSessionID)
 	return ok && delegateRowStopGated(row)
+}
+
+// childCommittedSendStart reports whether childSessionID has a committed send
+// start whose owning run has not yet taken the generation over (#940). The
+// claim is keyed by child session id, not by the child object, so it covers the
+// stretch CommitStart -> restoreIdleForSend -> admitReconstructed/AttachRuntime
+// where the child does not exist yet or is still idle and drivable. Every
+// wake-edge drivability check reads it, and driveSubagentNotificationTurn reads
+// it too, so the drive refuses without needing a resolved child object.
+func (s *Session) childCommittedSendStart(childSessionID string) bool {
+	if s == nil || childSessionID == "" {
+		return false
+	}
+	s.childCommittedSendMu.Lock()
+	defer s.childCommittedSendMu.Unlock()
+	_, held := s.childCommittedSendChildren[childSessionID]
+	return held
+}
+
+// childDriveGated is the drive-gate conjunction every child-attention drive
+// consults: a deliberately stopped child, a fatal-run-gated child, a child the
+// one-shot drain has abandoned, a child with a drain grace window pending, and a
+// child holding a committed-send-start claim are each refused a drive. It lives
+// in one place so a new gate cannot be added to some call sites and not others.
+func (s *Session) childDriveGated(childSessionID string) bool {
+	return s.childStopGated(childSessionID) ||
+		s.childFatalRunGated(childSessionID) ||
+		s.childDrainAbandoned(childSessionID) ||
+		s.childDrainGracePending(childSessionID) ||
+		s.childCommittedSendStart(childSessionID)
+}
+
+// claimChildCommittedSendStart takes the id-keyed committed-send-start claim.
+// It returns false when the claim is already held — a second committed start
+// racing on the same delegate — so the caller refuses as busy rather than
+// launching a second turn on the session the first start is about to run.
+func (s *Session) claimChildCommittedSendStart(childSessionID string) bool {
+	if s == nil || childSessionID == "" {
+		return false
+	}
+	s.childCommittedSendMu.Lock()
+	defer s.childCommittedSendMu.Unlock()
+	if _, held := s.childCommittedSendChildren[childSessionID]; held {
+		return false
+	}
+	if s.childCommittedSendChildren == nil {
+		s.childCommittedSendChildren = make(map[string]struct{})
+	}
+	s.childCommittedSendChildren[childSessionID] = struct{}{}
+	return true
+}
+
+// releaseChildCommittedSendStart drops the id-keyed committed-send-start claim.
+func (s *Session) releaseChildCommittedSendStart(childSessionID string) {
+	if s == nil || childSessionID == "" {
+		return
+	}
+	s.childCommittedSendMu.Lock()
+	delete(s.childCommittedSendChildren, childSessionID)
+	s.childCommittedSendMu.Unlock()
 }
 
 // delegateRowStopGated is childStopGated's verdict on a row the caller already

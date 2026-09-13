@@ -1483,7 +1483,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		}
 	}()
 	sub.mu.Lock()
-	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing {
+	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id) {
 		sub.mu.Unlock()
 		return false
 	}

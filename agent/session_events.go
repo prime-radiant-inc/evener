@@ -117,7 +117,7 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // response to SESSION_START's projection (see internal/appprojector's
 // EventSessionStart case and cmd/evener-hub/frontend's thread/started handling),
 // and a warning is never persisted to the transcript for a later snapshot to
-// recover (cmd/evener-hub/frontend/src/protocol/reducer.ts's "warning" case
+// recover (appwire-client/typescript/reducer.ts's "warning" case
 // comment: "warnings are not transcript-persisted at all ... the next
 // snapshot would not carry it either"). A diagnostic that reaches the stream
 // before SESSION_START therefore has no tracked thread to land on and is lost

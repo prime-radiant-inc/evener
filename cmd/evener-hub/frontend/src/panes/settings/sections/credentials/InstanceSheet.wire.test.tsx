@@ -7,9 +7,9 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import { hubInstance, hubInstanceEntries } from "../../../../protocol/testing/hubWireFixtures";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { hubInstance, hubInstanceEntries } from "./hubWireFixtures";
 import { InstanceSheet } from "./InstanceSheet";
 
 function renderHubInstance(name: string) {

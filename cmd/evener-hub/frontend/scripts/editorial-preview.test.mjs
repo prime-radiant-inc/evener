@@ -10,6 +10,7 @@ import { findAvailablePort, parseViteReadyAnnouncement } from "./browserGuardPro
 import { isSharedNodeModules } from "./editorial-preview-install.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
+const appwirePackage = fileURLToPath(new URL("../../../../appwire-client/typescript/", import.meta.url));
 const configFile = fileURLToPath(new URL("./editorial-preview.vite.config.mjs", import.meta.url));
 // A fleet worktree shares node_modules through a symlink; the preview's
 // isolation contract (fs.allow pinned to the checkout, private dep cache)
@@ -30,7 +31,9 @@ test("editorial preview removes RESOLVED inherited proxy and restricts filesyste
   assert(config.server.allowedHosts.includes("m5"));
   // Vite getAdditionalAllowedHosts appends the bind host during resolution.
   assert(config.server.allowedHosts.every((host) => host === "m5" || host === "0.0.0.0"));
-  assert.deepEqual(config.server.fs.allow, [frontend]);
+  // The AppWire package is the one path outside the checkout the preview has
+  // to serve; everything else stays denied, which the sentinel test below proves.
+  assert.deepEqual(config.server.fs.allow, [frontend, appwirePackage]);
   assert.equal(config.server.fs.strict, true);
 });
 

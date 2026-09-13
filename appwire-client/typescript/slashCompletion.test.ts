@@ -1,5 +1,4 @@
 import { expect, test } from "vitest";
-import type { ScopedCommand } from "../shell/palette/commands";
 import {
   evaluateSlashLabel,
   filterSlashMenuItems,
@@ -89,6 +88,20 @@ const CATALOG: CommandDescriptor[] = [
   { name: "release", description: "cut a release" },
   { name: "standup", description: "post standup" },
 ];
+
+// The web palette's ScopedCommand, restated as the fields these fixtures set.
+// Declared here rather than imported from shell/palette/commands: nothing in
+// this package may depend on the app, and mergeSlashCommands itself reads only
+// id, hint and unavailableReason - see slashCompletion.ts's own structural
+// declaration of exactly those three.
+type ScopedCommand = {
+  id: string;
+  title: string;
+  hint: string;
+  keywords: string[];
+  scope: "global" | "session";
+  unavailableReason?: string;
+};
 
 function builtin(id: string, hint: string, overrides: Partial<ScopedCommand> = {}): ScopedCommand {
   return { id, title: id, hint, keywords: [], scope: "session", ...overrides };
