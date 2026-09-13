@@ -32,6 +32,7 @@
     "stableDelegate.ts",
     "docContent.ts",
     "submitRouting.ts",
+    "displayFormat.ts",
     "toolCallText.ts"
   ]
 }
