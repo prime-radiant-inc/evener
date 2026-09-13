@@ -24,11 +24,12 @@
 #     scripts/gate/run-module-tests.sh -race -short -count=1
 #     WEB=0 scripts/gate/run-module-tests.sh -short -count=1   # Go modules only
 #
-# Every `go list ./...` this script runs to enumerate a module's packages — the
-# root module's, and the agent module's subpackage list — is bounded:
-# EVENER_PACKAGE_LIST_TIMEOUT
-# seconds per attempt (default 60) over EVENER_PACKAGE_LIST_ATTEMPTS
-# attempts (default 3), a timed-out attempt being the only one retried. Raise
+# Every module's packages are enumerated with a bounded `go list ./...` and the
+# result handed to `go test`, so discovery happens in one place for every module
+# scheduled and never inside `go test ./...`, which has no bound of its own. The
+# bound is EVENER_PACKAGE_LIST_TIMEOUT seconds per attempt (default 60) over
+# EVENER_PACKAGE_LIST_ATTEMPTS attempts (default 3), a timed-out attempt being
+# the only one retried. Raise
 # the per-attempt budget on a host slower than that; the failure diagnostic
 # names both knobs. A timed-out attempt is stopped by process group, SIGTERM
 # then SIGKILL, and reaped before the next one starts; an attempt that will not
@@ -37,8 +38,9 @@
 # completed one is used.
 #
 # Each of those attempts is exec'd through perl so it lands in its own process
-# group and can be stopped as one, so perl has to be on PATH. It is on macOS
-# and on the CI image; setsid(1), the usual tool for this, is not on macOS.
+# group and can be stopped as one, so perl has to be on PATH for any run that
+# schedules a module at all. It is on macOS and on the CI image; setsid(1), the
+# usual tool for this, is not on macOS.
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any

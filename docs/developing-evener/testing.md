@@ -312,13 +312,12 @@ the evidence that produced the failure remains available. Standard reusable
 caches outside the owned roots are audited separately rather than claimed as
 temporary cleanup.
 
-Before the root wave runs anything, the runner enumerates the root module's
-packages with `go list ./...`, and that step is bounded because it can block
-forever when the configured Go caches sit on a stalled volume. The agent
-module's subpackage enumeration goes through the same bound, for the same
-reason: it reads the same caches, and it runs after the root bound has already
-been reported, where an unbounded hang is exactly what that bound cannot help
-with. The bound is a
+Every module's packages are enumerated with `go list ./...` before its tests
+run, and that step is bounded because it can block forever when the configured
+Go caches sit on a stalled volume. Each module goes through the same bound and
+is handed the resulting list, so no module discovers its own packages inside
+`go test ./...`, where the same caches are read with no bound at all — an
+unbounded hang there is exactly what the bound cannot help with. The bound is a
 tripwire on a stall, not a budget for the work: `EVENER_PACKAGE_LIST_TIMEOUT`
 seconds per attempt (default 60) over `EVENER_PACKAGE_LIST_ATTEMPTS`
 attempts (default 3, one second apart), so a run that never lists its packages
@@ -355,9 +354,8 @@ would do it too, but only by turning bash job control on for the whole
 runner, where `run_wave`'s background jobs, the `active_pids` bookkeeping and
 the cleanup traps all depend on the current semantics — so it is not used, and
 no `set -m` appears in the script. The runner therefore needs `perl` on `PATH`
-whenever a bounded enumeration runs — the root and agent modules — and says so,
-naming what is missing, before that module's first attempt spawns. A run that
-schedules neither never asks for it.
+for any run that schedules a module, since every module's enumeration goes
+through it, and says so by name before that module's first attempt spawns.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
