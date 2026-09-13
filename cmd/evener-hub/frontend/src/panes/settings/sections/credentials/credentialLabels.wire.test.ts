@@ -8,8 +8,8 @@
 // TestAuthWireFixturesMatchTheHubHandler), so an activeSource the registry
 // starts sending that this pane has no words for fails here.
 import { describe, expect, test } from "vitest";
-import { hubInstanceEntries } from "../../../../protocol/testing/hubWireFixtures";
 import { activeSourceLabel, credentialLayers, keylessByDesign, unconfiguredLabel } from "./credentialLabels";
+import { hubInstanceEntries } from "./hubWireFixtures";
 
 function hubInstances() {
   return hubInstanceEntries();

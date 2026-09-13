@@ -42,6 +42,33 @@ export function sourceFilesOnDisk(dir) {
 // import from a comment that happens to mention an app path.
 const APP_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'][^"']*cmd\/evener-hub\//;
 
+// A package module that reads from disk has to resolve the path against its own
+// location, because the package is consumed from wherever the consumer happens
+// to run and the process's working directory is not its own. The rule: a file
+// that imports node:fs and builds a `..` or `testdata` path must say
+// `import.meta.url` somewhere. testing/hubWireFixtures.ts read
+// `join("..", "testdata", "authwire", "responses.json")` against the
+// frontend's CWD; it lives in the app now, which is the other way to satisfy
+// this.
+export function describeCwdRelativeReads(files, read, dir) {
+  const offenders = [];
+  for (const file of files) {
+    const source = read(file);
+    if (!/from\s+["']node:fs(?:\/promises)?["']/.test(source)) continue;
+    if (source.includes("import.meta.url")) continue;
+    source.split("\n").forEach((line, index) => {
+      if (/["'](?:\.\.[/"']|testdata)/.test(line))
+        offenders.push(`${path.relative(dir, file)}:${index + 1}: ${line.trim()}`);
+    });
+  }
+  if (offenders.length === 0) return "";
+  return [
+    "the AppWire package must not read a path resolved against the working directory:",
+    ...offenders.map((line) => `  ${line}`),
+    "Resolve it with fileURLToPath(new URL(..., import.meta.url)), or move the file into the app.",
+  ].join("\n");
+}
+
 // The package is a standalone library: nothing in it may reach back into the
 // app. Two test files did, and moving them out is only half the fix - this is
 // the half that keeps it fixed.
@@ -141,10 +168,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
   const readFile = (file) => readFileSync(file, "utf8");
-  const reaching = describeAppImports(sourceFilesOnDisk(packageDir), readFile, packageDir);
-  if (reaching) {
-    console.error(reaching);
-    process.exit(1);
+  const packageSources = sourceFilesOnDisk(packageDir);
+  for (const problem of [
+    describeAppImports(packageSources, readFile, packageDir),
+    describeCwdRelativeReads(packageSources, readFile, packageDir),
+  ]) {
+    if (problem) {
+      console.error(problem);
+      process.exit(1);
+    }
   }
 
   const onDisk = testFilesOnDisk(packageDir);
@@ -178,6 +210,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
   console.log(
-    `the AppWire package imports nothing from the app; vitest collects all ${onDisk.length} of its test files, and ${path.relative(packageDir, proof)} executes and passes`,
+    `the AppWire package imports nothing from the app and reads nothing through the working directory; vitest collects all ${onDisk.length} of its test files, and ${path.relative(packageDir, proof)} executes and passes`,
   );
 }

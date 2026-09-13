@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   collectedUnder,
   describeAppImports,
+  describeCwdRelativeReads,
   describeDifference,
   describeProofRun,
   pickProofFile,
@@ -16,7 +17,12 @@ const root = path.resolve("/repo/cmd/evener-hub/frontend");
 const dir = path.resolve("/repo/appwire-client/typescript");
 
 test("collectedUnder keeps only the package's files and resolves them against the vitest root", () => {
-  const output = ["src/App.test.tsx", "../../../appwire-client/typescript/errors.test.ts", "", "  scripts/x.test.mjs  "].join("\n");
+  const output = [
+    "src/App.test.tsx",
+    "../../../appwire-client/typescript/errors.test.ts",
+    "",
+    "  scripts/x.test.mjs  ",
+  ].join("\n");
   assert.deepEqual(collectedUnder(output, root, dir), [path.join(dir, "errors.test.ts")]);
 });
 
@@ -38,7 +44,11 @@ test("describeDifference names each file vitest failed to collect", () => {
 });
 
 test("describeDifference reports a collected file that is not on disk", () => {
-  const message = describeDifference([path.join(dir, "a.test.ts")], [path.join(dir, "a.test.ts"), path.join(dir, "gone.test.ts")], dir);
+  const message = describeDifference(
+    [path.join(dir, "a.test.ts")],
+    [path.join(dir, "a.test.ts"), path.join(dir, "gone.test.ts")],
+    dir,
+  );
   assert.match(message, /collected but not on disk: gone\.test\.ts/);
 });
 
@@ -64,11 +74,17 @@ test("pickProofFile takes the first test that imports vitest", () => {
     [files[1]]: 'import { expect, test } from "vitest";\n',
     [files[2]]: 'import { test } from "vitest";\n',
   };
-  assert.equal(pickProofFile(files, (file) => sources[file]), files[1]);
+  assert.equal(
+    pickProofFile(files, (file) => sources[file]),
+    files[1],
+  );
 });
 
 test("pickProofFile returns nothing when no test imports vitest", () => {
-  assert.equal(pickProofFile([path.join(dir, "a.test.ts")], () => "export const x = 1;\n"), "");
+  assert.equal(
+    pickProofFile([path.join(dir, "a.test.ts")], () => "export const x = 1;\n"),
+    "",
+  );
 });
 
 test("describeProofRun is silent on a passing run of the named file", () => {
@@ -85,24 +101,36 @@ test("describeProofRun rejects a report that never ran the file", () => {
 
 test("describeProofRun rejects a collected file that executed no tests", () => {
   const file = path.join(dir, "a.test.ts");
-  assert.match(describeProofRun({ numTotalTests: 0, numFailedTests: 0, testResults: [{ name: file }] }, file, dir), /ran no tests/);
+  assert.match(
+    describeProofRun({ numTotalTests: 0, numFailedTests: 0, testResults: [{ name: file }] }, file, dir),
+    /ran no tests/,
+  );
 });
 
 test("describeProofRun reports failing tests", () => {
   const file = path.join(dir, "a.test.ts");
-  assert.match(describeProofRun({ numTotalTests: 3, numFailedTests: 2, testResults: [{ name: file }] }, file, dir), /2 failing test/);
+  assert.match(
+    describeProofRun({ numTotalTests: 3, numFailedTests: 2, testResults: [{ name: file }] }, file, dir),
+    /2 failing test/,
+  );
 });
 
 test("describeProofRun matches a file the reporter named through a different prefix", () => {
   const file = path.join(dir, "a.test.ts");
   const viaSymlink = path.join(dir, "sub", "..", "a.test.ts");
-  assert.equal(describeProofRun({ numTotalTests: 1, numFailedTests: 0, testResults: [{ name: viaSymlink }] }, file, dir), "");
+  assert.equal(
+    describeProofRun({ numTotalTests: 1, numFailedTests: 0, testResults: [{ name: viaSymlink }] }, file, dir),
+    "",
+  );
 });
 
 test("describeAppImports is silent when the package keeps to itself", () => {
   const files = [path.join(dir, "reducer.ts")];
   const sources = { [files[0]]: 'import { x } from "./model";\n' };
-  assert.equal(describeAppImports(files, (file) => sources[file], dir), "");
+  assert.equal(
+    describeAppImports(files, (file) => sources[file], dir),
+    "",
+  );
 });
 
 test("describeAppImports names every line that reaches into the app", () => {
@@ -142,7 +170,10 @@ test("describeAppImports does not fire on a comment that merely names the app pa
       "",
     ].join("\n"),
   };
-  assert.equal(describeAppImports(files, (file) => sources[file], dir), "");
+  assert.equal(
+    describeAppImports(files, (file) => sources[file], dir),
+    "",
+  );
 });
 
 test("sourceFilesOnDisk sees the package's non-test sources, not only its tests", () => {
@@ -151,4 +182,49 @@ test("sourceFilesOnDisk sees the package's non-test sources, not only its tests"
   assert(found.some((file) => file.endsWith("reducer.ts")));
   assert(found.some((file) => file.endsWith("reducer.test.ts")));
   assert(!found.some((file) => file.includes(`${path.sep}node_modules${path.sep}`)));
+});
+
+test("describeCwdRelativeReads names the working-directory read hubWireFixtures.ts used to carry", () => {
+  const file = path.join(dir, "testing", "hubWireFixtures.ts");
+  const source = [
+    'import { readFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    'const FIXTURE_PATH = join("..", "testdata", "authwire", "responses.json");',
+    "",
+  ].join("\n");
+  const message = describeCwdRelativeReads([file], () => source, dir);
+  assert.match(message, /must not read a path resolved against the working directory/);
+  assert.match(message, /hubWireFixtures\.ts:3: const FIXTURE_PATH/);
+});
+
+test("describeCwdRelativeReads accepts a read resolved against the module's own URL", () => {
+  const file = path.join(dir, "a.ts");
+  const source = [
+    'import { readFileSync } from "node:fs";',
+    'import { fileURLToPath } from "node:url";',
+    'const p = fileURLToPath(new URL("../testdata/x.json", import.meta.url));',
+    "",
+  ].join("\n");
+  assert.equal(
+    describeCwdRelativeReads([file], () => source, dir),
+    "",
+  );
+});
+
+test("describeCwdRelativeReads ignores a module that never touches the filesystem", () => {
+  const file = path.join(dir, "a.ts");
+  const source = 'const rel = "../testdata/x.json";\n';
+  assert.equal(
+    describeCwdRelativeReads([file], () => source, dir),
+    "",
+  );
+});
+
+test("describeCwdRelativeReads covers node:fs/promises too", () => {
+  const file = path.join(dir, "a.ts");
+  const source = 'import { readFile } from "node:fs/promises";\nconst p = "../testdata/x.json";\n';
+  assert.match(
+    describeCwdRelativeReads([file], () => source, dir),
+    /a\.ts:2/,
+  );
 });
