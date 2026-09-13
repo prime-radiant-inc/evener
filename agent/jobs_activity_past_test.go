@@ -1344,18 +1344,24 @@ func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(
 	// nested continuation is checked against.
 	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
 
-	// Warm the fold caches at these journals' current size and mtime, then
-	// move both mtimes: a same-size rewrite is what bumps a generation, so
-	// every page below reads a nonzero one.
-	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
-		t.Fatalf("warm the fold caches: %v", err)
-	}
-	rewritten := time.Unix(1_000_000, 0)
-	for _, path := range []string{filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"), childJobsPath} {
-		if err := os.Chtimes(path, rewritten, rewritten); err != nil {
-			t.Fatalf("restamp %s: %v", path, err)
+	// Warm the fold caches at these journals, then move both generations by
+	// letting each cache observe the journal gone and restoring it, so every
+	// page below is checked against a nonzero generation rather than the
+	// zeros a never-rewritten journal reports.
+	warm := func() {
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+			t.Fatalf("warm the fold caches: %v", err)
 		}
 	}
+	warm()
+	bumpFoldGeneration(t, filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"), warm)
+	// A session load stats a missing jobs.jsonl and skips it without asking
+	// the fold cache, so that cache has to observe the absence itself.
+	bumpFoldGeneration(t, childJobsPath, func() {
+		if _, err := historicalJobFoldCache.Get(context.Background(), childJobsPath, extendHistoricalJobFold); err != nil {
+			t.Fatalf("observe the child jobs journal gone: %v", err)
+		}
+	})
 
 	var walk pastActivityWalk
 	pending := []string{""}
@@ -1387,6 +1393,18 @@ func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(
 	}
 	if pages < 3 {
 		t.Fatalf("got %d page(s), want at least 3 -- the fixture must force a trim on a page that is itself a resume", pages)
+	}
+	sawJobsGeneration, sawDelegatesGeneration := false, false
+	for _, token := range walk.continuations {
+		cont, decodeErr := decodeActivityContinuation(token, rootID)
+		if decodeErr != nil {
+			t.Fatalf("decode a minted continuation: %v", decodeErr)
+		}
+		sawJobsGeneration = sawJobsGeneration || cont.JobsEpoch != 0
+		sawDelegatesGeneration = sawDelegatesGeneration || cont.DelegatesEpoch != 0
+	}
+	if !sawJobsGeneration || !sawDelegatesGeneration {
+		t.Fatalf("minted continuations carried a nonzero jobs generation: %t, delegates generation: %t -- both must be nonzero or the fixture stopped moving a generation and this walk proves nothing about nonzero ones", sawJobsGeneration, sawDelegatesGeneration)
 	}
 	if len(walk.branchErrors) != 0 {
 		t.Fatalf("branch errors %q, want none", walk.branchErrors)
