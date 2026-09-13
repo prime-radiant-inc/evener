@@ -502,10 +502,7 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 	// stat's own number wherever it is the bigger one, which is what makes
 	// a file that grew after the stat (rather than during it) still read as
 	// growth on the next look instead of as an unchanged length.
-	recordedSize := info.Size()
-	if offset > recordedSize {
-		recordedSize = offset
-	}
+	recordedSize := max(info.Size(), offset)
 
 	c.mu.Lock()
 	c.epochStates[path] = &epochState{size: recordedSize, mod: info.ModTime(), offset: offset, tail: tail, epoch: epoch}
