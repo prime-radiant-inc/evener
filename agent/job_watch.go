@@ -526,6 +526,46 @@ func (jm *jobManager) watchSendDeliveredLocked(deliveryID string) bool {
 	return ok
 }
 
+// watchSendDelivered reports whether a watch-send with deliveryID has settled
+// delivered, taking jm.mu for callers outside a locked section.
+func (jm *jobManager) watchSendDelivered(deliveryID string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.watchSendDeliveredLocked(deliveryID)
+}
+
+// claimWatchSendDelivery takes process-local ownership of one watch-send
+// delivery id. It returns false when another executor already owns it, so the
+// second caller stands down instead of racing the same store write. Mirrors
+// claimStableWatchSettlementRetries. Guarded by jm.mu.
+func (jm *jobManager) claimWatchSendDelivery(deliveryID string) bool {
+	if deliveryID == "" {
+		return true
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if _, held := jm.deliveringWatchSends[deliveryID]; held {
+		return false
+	}
+	if jm.deliveringWatchSends == nil {
+		jm.deliveringWatchSends = make(map[string]struct{})
+	}
+	jm.deliveringWatchSends[deliveryID] = struct{}{}
+	return true
+}
+
+// releaseWatchSendDeliveryClaim releases a claim taken by
+// claimWatchSendDelivery. It is safe to call on a delivery id that was never
+// claimed.
+func (jm *jobManager) releaseWatchSendDeliveryClaim(deliveryID string) {
+	if deliveryID == "" {
+		return
+	}
+	jm.mu.Lock()
+	delete(jm.deliveringWatchSends, deliveryID)
+	jm.mu.Unlock()
+}
+
 // validateWatchConfig runs the target-independent validation a watch install must
 // pass — condition presence, send target, and config build — and returns the built
 // config. configureWatch routes install validation through it.
@@ -3730,6 +3770,10 @@ func jobFinishedEventData(data events.EventData) (events.JobFinishedData, bool) 
 }
 
 func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) (bool, error) {
+	if !jm.claimWatchSendDelivery(state.DeliveryID) {
+		return false, nil
+	}
+	defer jm.releaseWatchSendDeliveryClaim(state.DeliveryID)
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		return false, nil
 	}
@@ -3777,6 +3821,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		return false, errors.New("stable watch controller is unavailable")
 	}
 	receipt := jm.stableWatchReceipt(state.DeliveryID)
+	acquiredReceipt := false
 	if receipt == nil {
 		var err error
 		receipt, err = controller.AcquireWatchDelivery(
@@ -3791,6 +3836,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			return false, err
 		}
 		jm.rememberStableWatchReceipt(receipt)
+		acquiredReceipt = true
 	}
 	folded, err := jm.store.LoadWatchSends()
 	if err != nil {
@@ -3798,6 +3844,17 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 	}
 	pending := folded.Pending[state.Key]
 	if pending == nil || pending.DeliveryID != state.DeliveryID || pending.UpdateSeq != state.UpdateSeq {
+		// A concurrent deliverer may have already settled this exact delivery
+		// (its Delivered marker folds the old pending away). Stand down rather
+		// than mistake a completed handoff for stale state, which the drain
+		// path would escalate to exit 1 (#327). Reserve the hard error for
+		// genuine staleness.
+		if jm.watchSendDelivered(state.DeliveryID) {
+			if acquiredReceipt {
+				jm.releaseStableWatchReceipt(state.DeliveryID)
+			}
+			return false, nil
+		}
 		return false, errors.New("stable watch delivery is not the durable pending head")
 	}
 	receiver, err := controller.stableWatchReceiver(state.ReceiverSessionID, state.ReceiverDelegateID)
