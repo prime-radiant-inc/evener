@@ -398,3 +398,44 @@ func TestHubNotesDispatchRefusesUnderRecoveryFence(t *testing.T) {
 		t.Fatal("runHubURLRemove under the recovery fence returned a command, want refusal")
 	}
 }
+
+// TestSharedNotesDispatchRequiresCapability pins the Run-handler capability
+// gate: a live session from a source that does not advertise SharedNotes must
+// refuse synchronously through the same predicate that gates availability,
+// instead of issuing the RPC and surfacing the daemon's async Unavailable.
+// A session that merely cannot change notes keeps its existing refusal.
+func TestSharedNotesDispatchRequiresCapability(t *testing.T) {
+	lastSystemText := func(m hubModel) string {
+		return m.session.messages[len(m.session.messages)-1].Text
+	}
+
+	m := newSessionHubModel(nil)
+	m.detail.Live = true
+	if cmd := m.runHubNotes("hello"); cmd != nil {
+		t.Fatal("runHubNotes without the SharedNotes capability returned a command, want refusal")
+	}
+	if got := lastSystemText(m); got != "This source does not advertise shared notes." {
+		t.Fatalf("runHubNotes refusal = %q, want the missing-capability message", got)
+	}
+	if cmd := m.runHubURLRemove("u1"); cmd != nil {
+		t.Fatal("runHubURLRemove without the SharedNotes capability returned a command, want refusal")
+	}
+	if got := lastSystemText(m); got != "This source does not advertise shared notes." {
+		t.Fatalf("runHubURLRemove refusal = %q, want the missing-capability message", got)
+	}
+
+	ended := newSessionHubModel(nil)
+	ended.detail.Capabilities.SharedNotes = true
+	if cmd := ended.runHubNotes("hello"); cmd != nil {
+		t.Fatal("runHubNotes on an ended session returned a command, want refusal")
+	}
+	if got := lastSystemText(ended); got != "Note editing is not available for this session." {
+		t.Fatalf("ended-session /notes refusal = %q, want the existing session message", got)
+	}
+	if cmd := ended.runHubURLRemove("u1"); cmd != nil {
+		t.Fatal("runHubURLRemove on an ended session returned a command, want refusal")
+	}
+	if got := lastSystemText(ended); got != "URL removal is not available for this session." {
+		t.Fatalf("ended-session /url-remove refusal = %q, want the existing session message", got)
+	}
+}

@@ -35,6 +35,7 @@ func TestHubNotesUsageWarnsOnIdleLiveSession(t *testing.T) {
 func TestRunHubNotesEmptyArgsShowsIdleWarning(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Live = true
+	m.detail.Capabilities.SharedNotes = true
 	m.detail.State = appwire.ThreadStatusIdle
 	if cmd := m.runHubNotes(""); cmd != nil {
 		t.Fatal("empty args should produce no cmd")
@@ -46,6 +47,7 @@ func TestRunHubNotesEmptyArgsShowsIdleWarning(t *testing.T) {
 
 	m = newSessionHubModel(nil)
 	m.detail.Live = true
+	m.detail.Capabilities.SharedNotes = true
 	m.detail.State = appwire.ThreadStatusActive
 	if cmd := m.runHubNotes(""); cmd != nil {
 		t.Fatal("empty args should produce no cmd")

@@ -22,6 +22,7 @@ func TestRunHubNotesEmptyArgsShowsUsage(t *testing.T) {
 	defer cleanup()
 	m := newSessionHubModel(client)
 	m.detail.Live = true
+	m.detail.Capabilities.SharedNotes = true
 	// Busy session: the usage line carries no idle-wake warning (covered
 	// separately in hub_notes_l2_test.go's idle/busy pair), so the exact
 	// usage text pins here.
@@ -61,6 +62,7 @@ func TestRunHubNotesQuotedClearSetsLiteral(t *testing.T) {
 	defer cleanup()
 	m := newSessionHubModel(client)
 	m.detail.Live = true
+	m.detail.Capabilities.SharedNotes = true
 	m.detail.HumanNote = "existing note"
 
 	for _, quoted := range []string{`"clear"`, `'clear'`, `  "clear"  `, `"CLEAR"`, `'Clear'`} {
@@ -111,6 +113,7 @@ func TestRunHubNotesClearClears(t *testing.T) {
 	defer cleanup()
 	m := newSessionHubModel(client)
 	m.detail.Live = true
+	m.detail.Capabilities.SharedNotes = true
 	m.detail.HumanNote = "existing note"
 
 	cmd := m.runHubNotes("clear")

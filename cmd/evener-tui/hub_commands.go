@@ -1159,6 +1159,23 @@ func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expected
 	}
 }
 
+// sharedNotesDispatchRefusal returns the immediate refusal message for a
+// mutating shared-notes command on the cached session, or "" when dispatch may
+// proceed. It consults sharedNotesLiveAvailable — the predicate behind the
+// registry's Available hooks — so dispatch and availability cannot drift. A
+// source that does not advertise the capability says so; a session that only
+// cannot change notes keeps the command's existing session-level message.
+func (m *hubModel) sharedNotesDispatchRefusal(sessionMessage string) string {
+	ctx := hubCommandContext{mode: hubModeSession, caps: m.detail.Capabilities, live: m.detail.Live, state: m.detail.State}
+	if available, _ := sharedNotesLiveAvailable(ctx); available {
+		return ""
+	}
+	if !m.detail.Capabilities.SharedNotes {
+		return "This source does not advertise shared notes."
+	}
+	return sessionMessage
+}
+
 // runHubNotes dispatches the /notes command: a bare `clear` (any case)
 // clears the human note and anything else sets it as the note text —
 // including the literal word "clear" in any case, which needs an explicit
@@ -1167,8 +1184,8 @@ func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expected
 // never wipe the note (nor wake the agent with a steer for a clear nobody
 // asked for).
 func (m *hubModel) runHubNotes(args string) tea.Cmd {
-	if !sharedNotesWritable(m.detail.Live, m.detail.State, m.detail.Capabilities.ResumeRequired) {
-		m.addSessionSystem("Note editing is not available for this session.")
+	if refusal := m.sharedNotesDispatchRefusal("Note editing is not available for this session."); refusal != "" {
+		m.addSessionSystem(refusal)
 		return nil
 	}
 	arg := strings.TrimSpace(args)
@@ -1257,8 +1274,8 @@ func sendHubURLRemove(client *appwire.Client, ref appwire.Ref, id string, expect
 // runHubURLRemove dispatches the /url-remove command, which takes the URL
 // entry id to remove.
 func (m *hubModel) runHubURLRemove(args string) tea.Cmd {
-	if !sharedNotesWritable(m.detail.Live, m.detail.State, m.detail.Capabilities.ResumeRequired) {
-		m.addSessionSystem("URL removal is not available for this session.")
+	if refusal := m.sharedNotesDispatchRefusal("URL removal is not available for this session."); refusal != "" {
+		m.addSessionSystem(refusal)
 		return nil
 	}
 	id := strings.TrimSpace(args)
