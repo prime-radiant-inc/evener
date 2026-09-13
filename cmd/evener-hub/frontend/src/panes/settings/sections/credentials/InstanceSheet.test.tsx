@@ -34,6 +34,7 @@ function noopHandlers() {
     onRemove: vi.fn(),
     onSetDefault: vi.fn(),
     onToggleModel: vi.fn(),
+    onRefreshModels: vi.fn(),
   };
 }
 

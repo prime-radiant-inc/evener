@@ -92,6 +92,9 @@ export interface InstanceSheetProps {
   /** Flips one model row's disabled flag; owned by the section like every
    * other non-edit action. */
   onToggleModel: (model: string, disabled: boolean) => void;
+  /** Re-fetches this instance's live listing; owned by the section like
+   * every other non-edit action. */
+  onRefreshModels: () => void;
   /** A live-model refresh is in flight for this sheet: the Models section
    * says so while the catalog rows stay interactive. */
   modelsRefreshing?: boolean;
@@ -117,6 +120,7 @@ export function InstanceSheet({
   onSetDefault,
   onTestCredentials,
   onToggleModel,
+  onRefreshModels,
   modelsRefreshing = false,
   testCredentialsPending = false,
   testCredentialsResult,
@@ -470,7 +474,11 @@ export function InstanceSheet({
           {models.length > 0 && (
             <>
               <h3>Models</h3>
-              {modelsRefreshing && <p role="status">Refreshing live models…</p>}
+              <div className={CLASS.fullRow}>
+                <Button variant="quiet" onClick={onRefreshModels} disabled={busy || modelsRefreshing || writesRefused}>
+                  {modelsRefreshing ? "Refreshing live models…" : "Refresh live models"}
+                </Button>
+              </div>
               <div className={CLASS.actionRows}>
                 {models.map((row) => (
                   <div key={row.id} className={CLASS.fullRow}>

@@ -501,6 +501,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
+	// Live-model prefetch: fetch every instance's /models listing into the
+	// held registry once at startup and every livePrefetchInterval after,
+	// so the Providers sheet reads cached inventory instead of fetching on
+	// open. Best-effort per instance; a provider that is down keeps its
+	// catalog rows until the next tick.
+	startLiveModelsPrefetch(ctx, hubReg, livePrefetchInterval, startBackground)
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{

@@ -33,6 +33,7 @@ function handlers() {
     onRemove: vi.fn(),
     onSetDefault: vi.fn(),
     onToggleModel: vi.fn(),
+    onRefreshModels: vi.fn(),
     onClose: vi.fn(),
   };
 }
@@ -75,15 +76,19 @@ describe("model toggles", () => {
     expect(screen.queryByText("Models")).toBeNull();
   });
 
-  test("shows a refreshing note while a live refresh is in flight", () => {
+  test("refresh button delegates to the section owner and disables while refreshing", () => {
+    const h = handlers();
     credentialsStore.setState({ instances: [entry()], availableProviders: [] });
-    render(<InstanceSheet name="work" {...handlers()} modelsRefreshing />);
-    expect(screen.getByText("Refreshing live models…")).toBeTruthy();
+    render(<InstanceSheet name="work" {...h} />);
+    const button = screen.getByRole("button", { name: "Refresh live models" });
+    fireEvent.click(button);
+    expect(h.onRefreshModels).toHaveBeenCalledTimes(1);
   });
 
-  test("no refreshing note once the refresh lands", () => {
+  test("refresh button shows pending state while a refresh is in flight", () => {
     credentialsStore.setState({ instances: [entry()], availableProviders: [] });
-    render(<InstanceSheet name="work" {...handlers()} />);
-    expect(screen.queryByRole("status")).toBeNull();
+    render(<InstanceSheet name="work" {...handlers()} modelsRefreshing />);
+    const button = screen.getByRole("button", { name: "Refreshing live models…" });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 });

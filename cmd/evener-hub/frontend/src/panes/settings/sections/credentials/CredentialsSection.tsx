@@ -93,11 +93,22 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
-  // Live-model refresh for the open sheet: the registry inventory behind
-  // the Models toggles only knows live ids after a fetch, so opening a
-  // sheet triggers one. Keyed by instance name; a refresh for a sheet
-  // since closed still lands in the store, which is the desired outcome.
+  // Live-model refresh for the sheet is manual: the hub prefetches every
+  // instance's listing at startup and every few minutes after, so the
+  // Models toggles read cached inventory. The Refresh button below
+  // re-fetches on demand; failures toast and keep the cached rows.
   const [modelsRefreshing, setModelsRefreshing] = useState<string | null>(null);
+
+  async function handleRefreshModels(name: string): Promise<void> {
+    setModelsRefreshing(name);
+    try {
+      await credentialsStore.getState().refreshModels(name);
+    } catch (err) {
+      toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`);
+    } finally {
+      setModelsRefreshing((current) => (current === name ? null : current));
+    }
+  }
   const previousInstances = useRef(instances);
   const instanceVersion = useRef(0);
   if (previousInstances.current !== instances) {
@@ -116,26 +127,6 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // handshake finishes, and credentialsStore.fetch() requires a connected
   // client (throws otherwise) - see that hook's own doc comment.
   useConnectedEffect(fetch, [fetch]);
-
-  // A sheet shows live ids only after a fetch, so opening one refreshes
-  // that instance. Failures toast and keep the catalog rows: the toggles
-  // still work on what the registry knows.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh on selection change only; instances/toast are stable
-  useEffect(() => {
-    if (selectedInstance === null) return;
-    const name = selectedInstance;
-    setModelsRefreshing(name);
-    void credentialsStore
-      .getState()
-      .refreshModels(name)
-      .then(
-        () => {},
-        (err: unknown) => toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`),
-      )
-      .finally(() => {
-        setModelsRefreshing((current) => (current === name ? null : current));
-      });
-  }, [selectedInstance]);
 
   // handleOAuthStart is shared by the sheet's "Sign in…"/"Refresh OAuth"
   // action and the device editor's "Start again" - always begins with
@@ -311,6 +302,9 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         }}
         onToggleModel={(model, disabled) => {
           if (selectedInstance !== null) void handleToggleModel(selectedInstance, model, disabled);
+        }}
+        onRefreshModels={() => {
+          if (selectedInstance !== null) void handleRefreshModels(selectedInstance);
         }}
         modelsRefreshing={selectedInstance !== null && modelsRefreshing === selectedInstance}
         onTestCredentials={() => {

@@ -595,8 +595,8 @@ describe("set default", () => {
   });
 });
 
-describe("model live refresh on sheet open", () => {
-  test("opening a sheet fetches live models and merges the inventory", async () => {
+describe("model live refresh", () => {
+  test("opening a sheet does not fetch; the Refresh button does and merges", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/refreshModels", (params) => {
@@ -615,11 +615,13 @@ describe("model live refresh on sheet open", () => {
     await screen.findByText("work");
     const user = userEvent.setup();
     const inspector = await openSheet(user, "work");
+    expect(fake.calls.some((c) => c.method === "evener/instance/refreshModels")).toBe(false);
+    await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/refreshModels")).toBe(true));
     await within(inspector).findByRole("switch", { name: "claude-live-new" });
   });
 
-  test("a refresh failure toasts and keeps the catalog rows", async () => {
+  test("a refresh failure toasts and keeps the cached rows", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/refreshModels", () => {
@@ -634,6 +636,7 @@ describe("model live refresh on sheet open", () => {
     await screen.findByText("work");
     const user = userEvent.setup();
     const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
     await screen.findByText("Live refresh failed: Something went wrong.");
     expect(screen.queryByText(/boom/)).toBeNull();
     // Catalog rows from the list fetch still render.

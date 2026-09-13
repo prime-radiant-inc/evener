@@ -28,6 +28,7 @@ function renderHubInstance(name: string) {
       onRemove={vi.fn()}
       onSetDefault={vi.fn()}
       onToggleModel={vi.fn()}
+      onRefreshModels={vi.fn()}
     />,
   );
 }

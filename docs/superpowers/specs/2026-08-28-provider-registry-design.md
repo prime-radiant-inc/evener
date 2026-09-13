@@ -1889,7 +1889,10 @@ change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `Implicit`, and `Models` — the instance's known models (exact catalog rows
 plus cached live ids) with their effective disabled state
 (`InstanceModels`), which the sheet renders as one toggle per row driving
-`evener/instance/setModelDisabled`. Toggling a live-only id authors an
+`evener/instance/setModelDisabled`. The hub prefetches every instance's
+live listing at startup and every few minutes after, so the sheet reads
+cached inventory; a Refresh button drives `evener/instance/refreshModels`
+for one instance on demand. Toggling a live-only id authors an
 exact config row, which precedes live lookup, so the exception takes
 effect; its existing `BaseURL`, `IsDefault`, `HasStoredOAuth`,
 `HasStoredFile`, `StoredEmail`, `CredentialRequired`, `ActiveSource`,

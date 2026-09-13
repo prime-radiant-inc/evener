@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -778,10 +777,7 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	if _, ok := reg.Instance(name); !ok {
 		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	fetchCtx, cancel := context.WithTimeout(ctx, instanceLiveListTimeout)
-	defer cancel()
-	client := cmdutil.NewRegistryClient(reg, "")
-	if _, err := client.Models(fetchCtx, name); err != nil {
+	if err := fetchInstanceLive(ctx, reg, name); err != nil {
 		return appwire.InstanceListResponse{}, err
 	}
 	return c.List(), nil
