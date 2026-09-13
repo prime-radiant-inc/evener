@@ -35,6 +35,7 @@
     "docContent.ts",
     "submitRouting.ts",
     "displayFormat.ts",
-    "toolCallText.ts"
+    "toolCallText.ts",
+    "catalogCommands.ts"
   ]
 }
