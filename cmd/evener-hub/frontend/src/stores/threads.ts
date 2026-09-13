@@ -11,6 +11,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import type { AppwireClientLike } from "../protocol/clientLike";
+import { buildComposerInput, buildInput, type InputAttachment } from "../protocol/composerInput";
 import { ClientNotReadyError, isStaleCursorError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
@@ -33,7 +34,6 @@ import type {
 } from "../protocol/types.gen";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { buildComposerInput, buildInput, type InputAttachment } from "./composerInput";
 import { connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
@@ -50,7 +50,7 @@ import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 
-export type { InputAttachment } from "./composerInput";
+export type { InputAttachment } from "../protocol/composerInput";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
 // hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER
