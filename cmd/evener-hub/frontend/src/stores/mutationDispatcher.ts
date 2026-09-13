@@ -1,5 +1,5 @@
+import type { AppwireClientLike } from "../protocol/clientLike";
 import { mutationErrorData, WireError } from "../protocol/errors";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { MethodName, MutationReceipt, ThreadClearResponse } from "../protocol/types.gen";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";

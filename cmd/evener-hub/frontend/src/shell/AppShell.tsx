@@ -10,7 +10,7 @@ import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
 import { AppwireClient } from "../protocol/client";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import type { AppwireClientLike } from "../protocol/clientLike";
 import { rpcURLFromLocation } from "../protocol/transport";
 import type { NavigationSessionLocation } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";

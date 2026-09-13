@@ -9,6 +9,7 @@ import {
   decodeInitializeResponse,
   RECONNECT_BASE_MS,
 } from "./client";
+import type { AppwireClientLike } from "./clientLike";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { rpcURLFromLocation } from "./transport";
@@ -53,6 +54,19 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("AppwireClientLike", () => {
+  // clientLike.ts declares eight of its ten members by lookup on this class,
+  // so a renamed method fails at that declaration. `state` and
+  // `terminalReason` are spelled out there, and this assignment is what
+  // catches a real client whose accessors have drifted away from the seam
+  // every store and component is written against.
+  test("the real client satisfies the seam applications program against", () => {
+    const seam: AppwireClientLike = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+    expect(seam.state).toBe("idle");
+    expect(seam.terminalReason).toBeNull();
+  });
 });
 
 describe("rpcURLFromLocation", () => {

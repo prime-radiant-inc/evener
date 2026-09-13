@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,35 +25,172 @@ async function qualify() {
     ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
     consumerDir,
   );
+  // Every module the package ships. docContent.ts is here too: only its
+  // readDocFile calls global fetch, and it does so at call time, so the module
+  // loads and its URL builders, size cap and error type run in a bare Node
+  // consumer. The runner therefore never calls readDocFile.
+  const shippedModules = [
+    "index",
+    "client",
+    "clientLike",
+    "errors",
+    "transport",
+    "types.gen",
+    "askAnswers",
+    "activityData",
+    "activityList",
+    "activityMerge",
+    "itemFailure",
+    "jobOutput",
+    "model",
+    "reducer",
+    "sendQueueAvailability",
+    "sessionErrors",
+    "stableDelegate",
+    "docContent",
+  ];
+  // A module can be built, packed and listed here and still be unreachable: the
+  // files list only decides what tsc emits, and the export checks below name
+  // identifiers, not modules. The installed entry point's own declarations are
+  // the honest record of what it re-exports, so require a re-export specifier
+  // for every shipped module. A module nothing exports fails right here.
+  const indexDeclarations = readFileSync(
+    join(consumerDir, "node_modules/@evener/appwire-client/dist/index.d.ts"),
+    "utf8",
+  );
+  for (const module of shippedModules)
+    assert(
+      module === "index" || indexDeclarations.includes(`from "./${module}"`),
+      `shipped module unreachable from the entry point: ${module}`,
+    );
+  // Every runtime export of the package entry point. All four generated
+  // consumer programs are built from this one list, so an export the entry
+  // point stops providing fails here instead of in somebody's consumer.
+  // Whether each shipped MODULE is reachable at all is the check above.
+  const runtimeExports = [
+    "AppwireClient",
+    "APPWIRE_PROTOCOL_VERSION",
+    "ConnectionClosedError",
+    "RequestTimeoutError",
+    "WireError",
+    "rpcURLFromLocation",
+    "composeAskAnswers",
+    "METHOD_NAMES",
+    "NOTIFICATION_NAMES",
+    "STEERING_KINDS",
+    "THREAD_ITEM_EVENT_KINDS",
+    "isFailedJobOutcome",
+    "isFailedDelegateOutcome",
+    "isActivityFailure",
+    "isTurnContainer",
+    "parseActivityTree",
+    "activityNodeID",
+    "delegateHasActiveWork",
+    "defaultExpandedIDs",
+    "reconcileActivityState",
+    "ActivityList",
+    "fenceRootSession",
+    "graftContinuationTree",
+    "hasItemFailure",
+    "hasErrorText",
+    "hasFailureStatus",
+    "isNonZeroExit",
+    "isInProgressStatus",
+    "parseJobLogTail",
+    "SYSTEM_PRELUDE_TURN_ID",
+    "pendingTextJoined",
+    "imageSessionRouteForSession",
+    "hydrateThread",
+    "collectAuthoritativeMutationIds",
+    "prependOlderTurns",
+    "mergeOlderItemPage",
+    "resolvePendingEscalation",
+    "notificationRoutingKey",
+    "notificationTargetsThread",
+    "applyNotification",
+    "deriveSendQueueAvailability",
+    "isActionUnavailable",
+    "isThreadNotFound",
+    "stableDelegateDisplayStatus",
+    "DOC_FILE_MAX_BYTES",
+    "DocFileError",
+    "docFileRawURL",
+    "docImageURL",
+  ];
+  // One exported type per shipped module that declares any, so the declaration
+  // check covers each module's packed .d.ts and not just its runtime half.
+  const typeExports = [
+    "AppwireClientOptions",
+    "AppwireClientLike",
+    "WebSocketLike",
+    "AskAnswerItem",
+    "ActivityTree",
+    "ActivityState",
+    "ItemFailureSignals",
+    "JobLogTail",
+    "ThreadModel",
+    "NotificationRoutingKey",
+    "SendQueueAvailability",
+    "StableDelegateState",
+    "DocFileContent",
+  ];
+  // One call per shipped module, with a trivial input. Importing alone would
+  // pass for a module that needs a browser global at load time; calling proves
+  // each module actually evaluates and runs inside a bare Node consumer.
+  const smokeCalls = `assert.equal(typeof client.AppwireClient, "function");
+assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
+assert.equal(client.composeAskAnswers([]), "[answers]");
+assert.equal(new client.WireError("nope", -32000).code, -32000);
+assert(client.METHOD_NAMES.length > 0);
+const session = {
+  kind: "session", sessionId: "thread", ref: "ref", label: "label", aggregate: "idle",
+  counts: { active: 0, failed: 0, completed: 0, complete: true }, entries: [], branch: {},
+};
+const tree = { revision: 1, root: session };
+assert.equal(client.parseActivityTree(null), null);
+assert.equal(client.activityNodeID(session), "session:thread");
+assert(Array.isArray(client.defaultExpandedIDs(tree)));
+assert.equal(client.isActivityFailure("failure", undefined), true);
+assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
+assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
+assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
+assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
+assert.equal(client.hasErrorText({ error: "  " }), false);
+assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
+assert.equal(client.isInProgressStatus("inProgress"), true);
+assert.equal(client.parseJobLogTail(null), null);
+assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
+assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
+assert.equal(client.notificationRoutingKey({ method: "evener/x", params: {} }), null);
+assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired", capabilities: {} }).canSend, false);
+assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
+assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
+assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.docFileRawURL("s", "p"), "/doc/file?format=raw&session=s&path=p");
+const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
+assert.equal(activity.getSnapshot().tree, null);
+`;
+  const presenceLoop = `for (const name of ${JSON.stringify(runtimeExports)}) assert(name in client, \`missing export \${name}\`);\n`;
   writeFileSync(
     join(consumerDir, "esm.mts"),
     `import {
-  AppwireClient,
-  APPWIRE_PROTOCOL_VERSION,
-  ConnectionClosedError,
-  RequestTimeoutError,
-  WireError,
-  rpcURLFromLocation,
-  composeAskAnswers,
-  METHOD_NAMES,
-  NOTIFICATION_NAMES,
-  STEERING_KINDS,
-  THREAD_ITEM_EVENT_KINDS,
+${runtimeExports.map((name) => `  ${name},`).join("\n")}
+} from "@evener/appwire-client";
+import type {
+${typeExports.map((name) => `  ${name},`).join("\n")}
 } from "@evener/appwire-client";
 const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
 const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;
-void ConnectionClosedError; void RequestTimeoutError; void WireError;
-void rpcURLFromLocation; void composeAskAnswers; void METHOD_NAMES;
-void NOTIFICATION_NAMES; void STEERING_KINDS; void THREAD_ITEM_EVENT_KINDS;
+declare const shipped: [${typeExports.join(", ")}]; void shipped;
+${runtimeExports.map((name) => `void ${name};`).join("\n")}
 `,
   );
   writeFileSync(
     join(consumerDir, "commonjs.cts"),
     `import client = require("@evener/appwire-client");
 const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;
-void client.ConnectionClosedError; void client.RequestTimeoutError; void client.WireError;
-void client.rpcURLFromLocation; void client.composeAskAnswers; void client.METHOD_NAMES;
-void client.NOTIFICATION_NAMES; void client.STEERING_KINDS; void client.THREAD_ITEM_EVENT_KINDS;
+declare const shipped: [${typeExports.map((name) => `client.${name}`).join(", ")}]; void shipped;
+${runtimeExports.map((name) => `void client.${name};`).join("\n")}
 `,
   );
   run(
@@ -74,28 +211,21 @@ void client.NOTIFICATION_NAMES; void client.STEERING_KINDS; void client.THREAD_I
   );
   writeFileSync(
     join(consumerDir, "esm-runtime.mjs"),
-    `import * as client from "@evener/appwire-client";
-for (const name of ["AppwireClient", "ConnectionClosedError", "RequestTimeoutError", "WireError", "rpcURLFromLocation", "composeAskAnswers", "METHOD_NAMES", "NOTIFICATION_NAMES", "STEERING_KINDS", "THREAD_ITEM_EVENT_KINDS"]) {
-  if (!(name in client)) process.exit(1);
-}
-if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocation !== "function" || typeof client.composeAskAnswers !== "function") process.exit(1);
-`,
+    `import assert from "node:assert/strict";
+import * as client from "@evener/appwire-client";
+${presenceLoop}${smokeCalls}`,
   );
   writeFileSync(
     join(consumerDir, "commonjs-runtime.cjs"),
-    `const client = require("@evener/appwire-client");
-for (const name of ["AppwireClient", "ConnectionClosedError", "RequestTimeoutError", "WireError", "rpcURLFromLocation", "composeAskAnswers", "METHOD_NAMES", "NOTIFICATION_NAMES", "STEERING_KINDS", "THREAD_ITEM_EVENT_KINDS"]) {
-  if (!(name in client)) process.exit(1);
-}
-if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocation !== "function" || typeof client.composeAskAnswers !== "function") process.exit(1);
-`,
+    `const assert = require("node:assert/strict");
+const client = require("@evener/appwire-client");
+${presenceLoop}${smokeCalls}`,
   );
   run(process.execPath, [join(consumerDir, "esm-runtime.mjs")], consumerDir);
   run(process.execPath, [join(consumerDir, "commonjs-runtime.cjs")], consumerDir);
   const listing = run("tar", ["-tzf", tarball], consumerDir);
   for (const expected of [
-    "package/dist/index.js",
-    "package/dist/index.d.ts",
+    ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),
     "package/README.md",
     "package/examples/connection.mjs",
     "package/examples/inspect.mjs",
