@@ -41,6 +41,7 @@ const CLASS = {
   message: requireClass(styles.message, "agentmessageitem.module.css", "message"),
   bubble: requireClass(styles.bubble, "agentmessageitem.module.css", "bubble"),
   continuation: requireClass(styles.continuation, "agentmessageitem.module.css", "continuation"),
+  terminal: requireClass(styles.terminal, "agentmessageitem.module.css", "terminal"),
   opener: requireClass(styles.opener, "agentmessageitem.module.css", "opener"),
   column: requireClass(styles.column, "agentmessageitem.module.css", "column"),
   header: requireClass(styles.header, "agentmessageitem.module.css", "header"),
@@ -58,6 +59,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   item,
   live,
   opensExchange,
+  closesExchange,
   agentLabel,
 }: ItemRenderProps) {
   const time = Date.parse(item.startedAt ?? "");
@@ -88,11 +90,15 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   // never changes shape - tailed toward the avatar on openers, fully
   // rounded on continuations, which have no tile to point at.
   function wrap(prose: ReactNode, liveFlag: "true" | "false") {
+    // The terminal wash is settled-only: a live tail never closes an
+    // exchange, so applying it mid-stream would flicker the shape on
+    // settle. Failed-turn suppression lives in exchangeClosersFor, which
+    // never names prose on an errored turn; this class is purely the
+    // prose treatment.
+    const terminal = !live && closesExchange === true;
+    const bubbleClass = opensExchange ? CLASS.bubble : `${CLASS.bubble} ${CLASS.continuation}`;
     const bubble = (
-      <div
-        className={opensExchange ? CLASS.bubble : `${CLASS.bubble} ${CLASS.continuation}`}
-        data-testid="agent-bubble"
-      >
+      <div className={terminal ? `${bubbleClass} ${CLASS.terminal}` : bubbleClass} data-testid="agent-bubble">
         {prose}
       </div>
     );

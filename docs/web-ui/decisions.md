@@ -5,6 +5,34 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-09-13 message prominence in the editorial transcript (option B)
+
+Jesse picked **option B (filled bubbles)** from the A/B/C mockup round for
+making user messages and exchange-concluding agent messages prominent in the
+editorial transcript. The editorial pass had removed both fills (the user's
+`--accent-bg` bubble and the agent's neutral wash); this restores containment
+with serif prose kept for both speakers.
+
+**User messages** get the exact pre-editorial bubble back
+(`usermessageitem.module.css`): `--accent-bg` fill, `fit-content` hug,
+`space-2/space-3` padding. The corners are uniformly 4px under the editorial
+radius scale, so the pre-editorial chat tail toward the avatar does not
+render as a distinct shape (roborev PR 1260). Known tension,
+accepted: accent means focus/selection/links under editorial law, not
+"user". If that reuse bothers later, the fallback is a neutral wash keeping
+this same geometry.
+
+**Terminal agent messages** (the final prose concluding an exchange, i.e.
+the last text-bearing settled `agentMessage` before the next `userMessage`
+or transcript end) get the 2026-07-30 neutral wash
+(`color-mix(in oklab, var(--ink-mid) 6%, transparent)`) on a new
+`exchangeClosersFor()` set mirroring `exchangeOpenersFor()`, threaded as
+`closesExchange` through `TranscriptBody`/`TurnBlock`/`ItemRenderProps`
+(including the `ignoringTurn` comparator). Mid-turn fragments stay flat
+documents. Settled-only (a live tail never closes, so no mid-stream
+flicker); a failed turn's prose never closes (the `TurnFailureEndCap` is
+already that turn's visual close).
+
 ## 2026-09-11 the reasoning placeholder is content-free, on Loader's grid
 
 Turning the Reasoning content flag off still streamed a live thought open and
@@ -40,7 +68,6 @@ banned, and `widgets/loader`'s own doc note no longer claims its motion is
 reserved away from agent liveness.
 
 ## Editorial instrument (2026-09-09)
-
 The user approved a comprehensive Tufte-inspired editorial direction and the
 `editorial-instrument` / `tools-and-collaborators` studies. The governing
 [specification](../superpowers/specs/2026-09-09-tufte-webui-design.md) supersedes the
