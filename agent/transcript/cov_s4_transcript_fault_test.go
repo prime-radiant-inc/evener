@@ -278,6 +278,45 @@ func TestAppendDurable_WriteFailsRollbackAlsoFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "rollback failed") {
 		t.Fatalf("error = %q, want a rollback-failed suffix", err.Error())
 	}
+	if !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("error = %v, want an indeterminate-append outcome callers can reconcile on", err)
+	}
+}
+
+// The same double failure with a write that transferred NOTHING is a different
+// shape: no bytes past startOffset, the position unmoved, the file's end still
+// known. There is nothing for a later append to run onto, so the writer stays
+// usable — the same rule the buffered door follows, and the shape every
+// pre-existing write-failure fixture produces.
+func TestAppendDurable_WriteTransferredNothingLeavesWriterUsable(t *testing.T) {
+	plan := bytes.Repeat([]byte{0x01}, 128)
+	plan[5] = 0x00 // entry Write, which fault.FS fails having transferred nothing
+	plan[6] = 0x00 // rollback Truncate
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller"))); !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("append error = %v, want the rollback failure over a write that transferred nothing", err)
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands"))); err != nil {
+		t.Fatalf("append after a write that transferred nothing: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := faultTestEntries(t, base)
+	if len(entries) != 1 {
+		t.Fatalf("entries a reader sees = %d, want only the append that landed", len(entries))
+	}
+	if got := entries[0].Turn.Message.Text(); got != "lands" {
+		t.Fatalf("entry text = %q, want the append that landed", got)
+	}
+	if entries[0].Seq != 0 {
+		t.Fatalf("entry seq = %d, want the 0 the failed append never spent", entries[0].Seq)
+	}
 }
 
 // When the durable Sync faults (index 6), rollback runs; a compounding fault on a
@@ -320,7 +359,121 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantRollback) {
 				t.Fatalf("error = %q, want rollback detail %q", err.Error(), tc.wantRollback)
 			}
+			if !errors.Is(err, ErrRollbackFailed) {
+				t.Fatalf("error = %v, want an indeterminate-append outcome callers can reconcile on", err)
+			}
 		})
+	}
+}
+
+// A durable append whose sync fails and whose rollback cannot truncate the
+// entry back out leaves that entry in the file. The writer's own bookkeeping
+// has to agree with what a later reader of the file sees: the seq the entry
+// took is spent, so the next append must not reuse it, and the failure the
+// entry settles is one that reader counts. Indices: entry Sync 6 (fault),
+// rollback Truncate 7 (fault).
+func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T) {
+	plan := bytes.Repeat([]byte{0x01}, 128)
+	plan[6] = 0x00 // entry Sync
+	plan[7] = 0x00 // rollback Truncate
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	w.TrackFailures(nil, 0)
+
+	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
+	if err := w.AppendDurable(retained); !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("append error = %v, want a rollback failure leaving the entry in the file", err)
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
+		t.Fatalf("append after retained entry: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := faultTestEntries(t, base)
+	if len(entries) != 2 {
+		t.Fatalf("entries a reader sees = %d, want the retained entry and the one after it", len(entries))
+	}
+	if entries[1].Seq <= entries[0].Seq {
+		t.Fatalf("seq %d follows retained seq %d, want a strictly greater sequence", entries[1].Seq, entries[0].Seq)
+	}
+
+	reader := NewFailureCounter(0)
+	for _, entry := range entries {
+		reader.Observe(entry.Turn)
+	}
+	count, ok := w.FailedToolCalls()
+	if !ok || count != reader.Count() {
+		t.Fatalf("writer failure count = %d (counted=%v), want the %d a reader of the transcript counts", count, ok, reader.Count())
+	}
+}
+
+// faultTestEntries decodes every entry line the transcript holds.
+func faultTestEntries(t *testing.T, fs afero.Fs) []Entry {
+	t.Helper()
+	data, err := afero.ReadFile(fs, faultTranscriptPath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'})
+	entries := make([]Entry, 0, len(lines))
+	for _, raw := range lines[1:] {
+		entry, err := DecodeEntry(raw)
+		if err != nil {
+			t.Fatalf("decode entry %s: %v", raw, err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// The buffered door rolls nothing back, so a sync that fails leaves the whole
+// line in the file — a record every reader of this transcript will see for the
+// rest of the process. Its sequence number is spent even though the call
+// reports failure, or the next append takes that number again and a reader
+// finds two entries claiming one sequence. This is the ordinary recordTurn
+// door: the default SyncInterval of 0 sends every buffered append through it.
+// Indices: entry Write 4, entry Sync 5 (fault).
+func TestAppend_SyncFailureSpendsTheSequenceOfTheLineItLeft(t *testing.T) {
+	plan := bytes.Repeat([]byte{0x01}, 128)
+	plan[5] = 0x00 // entry Sync
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	w.TrackFailures(nil, 0)
+
+	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
+	if err := w.Append(retained); err == nil {
+		t.Fatal("buffered append reported success over a faulted sync")
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
+		t.Fatalf("append after the faulted sync: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := faultTestEntries(t, base)
+	if len(entries) != 2 {
+		t.Fatalf("entries a reader sees = %d, want the unsynced line and the one after it", len(entries))
+	}
+	if entries[1].Seq <= entries[0].Seq {
+		t.Fatalf("seq %d follows seq %d, want a strictly greater sequence", entries[1].Seq, entries[0].Seq)
+	}
+
+	reader := NewFailureCounter(0)
+	for _, entry := range entries {
+		reader.Observe(entry.Turn)
+	}
+	count, ok := w.FailedToolCalls()
+	if !ok || count != reader.Count() {
+		t.Fatalf("writer failure count = %d (counted=%v), want the %d a reader of the transcript counts", count, ok, reader.Count())
 	}
 }
 

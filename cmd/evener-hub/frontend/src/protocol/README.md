@@ -11,14 +11,18 @@ the send/queue availability table, the stable delegate status rule, and the
 doc-pane URL builders.
 
 Build and qualify from this directory with `npm run qualification`. The runner
-packs the package, installs that tarball into a temporary consumer, checks ESM
-and CommonJS TypeScript resolution, runs both runtime import forms, calls at
-least one export of every shipped module on a trivial input, and checks the
-tarball contains each shipped module and no source files or dependencies. It also runs the
-installed inspection and discovery examples against a scripted local WebSocket
-server, verifying the handshake, read-only requests, structured readback, and
-private output file. The qualification command is run with the repository's
-configured Node 22 runtime.
+packs the package, installs that tarball into a temporary consumer, and then,
+for every specifier the `exports` map publishes, checks ESM and CommonJS
+TypeScript resolution and runs both runtime import forms against the names that
+specifier promises. A subpath with no entry in the runner's qualification
+manifest is not qualified, so the manifest and the `exports` map must name the
+same specifiers. The runner also calls at least one export of every shipped
+module on a trivial input, and checks the tarball contains each shipped module
+and no source files or dependencies. It also runs the installed inspection and
+discovery examples against a scripted local WebSocket server, verifying the
+handshake, read-only requests, structured readback, and private output file.
+The qualification command is run with the repository's configured Node 22
+runtime.
 
 Applications own credentials, caches, transcript storage, subscriptions, and
 mutation reconciliation. Connection loss during a mutation leaves its outcome
