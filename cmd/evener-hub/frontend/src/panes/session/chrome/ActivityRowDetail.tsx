@@ -49,6 +49,21 @@ const CLASS = {
 export const WATCH_NO_SCHEDULE_LINE =
   "There is no schedule to draw here — this one fires when the job says the word, not when a clock says so.";
 
+// The row header already prints a watch's note as the row's own name, in a
+// sidebar name column that fits roughly 40 characters at its narrow width.
+// Repeating the note as the detail's lead paragraph would therefore print every
+// row's title twice within a few pixels. The lead paragraph exists only to show
+// what that column truncated, so it renders only for notes longer than this
+// budget - 48, a little above the ~40-character column so a note that just fits
+// the title never duplicates.
+export const WATCH_NOTE_LEAD_BUDGET = 48;
+
+// The now marker sits at left:100% and is taller than a delivery dot, so a dot
+// in the span's final percent would land underneath it and read as the marker.
+// Clamping dots to 98% reserves the last 2% as the marker's own column: the
+// newest delivery still stops just short of "now" instead of hiding under it.
+export const WATCH_TIMELINE_DOT_MAX_PERCENT = 98;
+
 // Local HH:MM from an epoch instant, through the same clock formatter the rest
 // of the detail uses.
 function clockFromMillis(millis: number): string {
@@ -66,7 +81,7 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
   const span = now - earliest;
   const position = (millis: number): number => {
     if (span <= 0) return 0;
-    return Math.min(100, Math.max(0, ((millis - earliest) / span) * 100));
+    return Math.min(WATCH_TIMELINE_DOT_MAX_PERCENT, Math.max(0, ((millis - earliest) / span) * 100));
   };
   const startLabel = clockFromMillis(earliest);
   const endLabel = clockFromMillis(now);
@@ -83,6 +98,14 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
         aria-label={`${caption}, ${startLabel} to now ${endLabel}`}
       >
         <span className={CLASS.timelineLine} aria-hidden="true" />
+        {/* The marker precedes the dots in DOM order so a dot can never be
+            painted over it when positions coincide. */}
+        <span
+          className={CLASS.timelineNow}
+          data-testid="watch-timeline-now"
+          style={{ left: "100%" }}
+          aria-hidden="true"
+        />
         {instants.map((millis) => (
           <span
             key={millis}
@@ -92,12 +115,6 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
             aria-hidden="true"
           />
         ))}
-        <span
-          className={CLASS.timelineNow}
-          data-testid="watch-timeline-now"
-          style={{ left: "100%" }}
-          aria-hidden="true"
-        />
       </div>
       <div className={CLASS.timelineLabels}>
         <span data-testid="watch-timeline-start">{startLabel}</span>
@@ -311,18 +328,20 @@ export function ActivityRowDetail({
   );
 }
 
-// ActivityWatchDetail is a watch row's expanded block: the note verbatim, one
-// facts sentence, and - for a clock-driven watch with retained instants - the
+// ActivityWatchDetail is a watch row's expanded block: the note once more only
+// when the row title's name column could not show it in full, one facts
+// sentence, and - for a clock-driven watch with retained instants - the
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
 export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now: number }): JSX.Element {
   const { watch } = row;
   const note = watch.note?.trim();
+  const leadNote = note !== undefined && note.length > WATCH_NOTE_LEAD_BUDGET ? note : undefined;
   return (
     <div className={CLASS.detailStrip}>
-      {note ? (
+      {leadNote ? (
         <p className={CLASS.watchNote} data-testid="watch-note">
-          {note}
+          {leadNote}
         </p>
       ) : null}
       <p className={CLASS.watchFacts} data-testid="watch-facts">

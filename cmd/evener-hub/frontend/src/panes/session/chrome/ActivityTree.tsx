@@ -518,7 +518,7 @@ interface WatchRowViewProps {
 }
 
 // A watch row shares the dense row grammar (toggle, name, right-hand meta) but
-// has no live clock cluster: its meta is cadence plus fire count or armed
+// has no live clock cluster: its meta is cadence plus delivery count or armed
 // state, all snapshot data. Its detail is the one place the panel's `now` is
 // read, so only an open watch detail re-renders on a tick.
 function WatchRowView({
