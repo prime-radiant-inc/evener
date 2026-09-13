@@ -342,6 +342,14 @@ func (l *failureLedger) record(key dispatchKey, isErr bool, output string) (fail
 
 	s, ok := l.semantic[key.semantic]
 	if !ok {
+		// A successful dispatch carries no failure evidence worth remembering.
+		// Creating a semantic entry for it would consume an LRU slot, so a
+		// session issuing more than maxFailureLedgerEntries distinct successful
+		// calls between two failures of one fingerprint would evict the pending
+		// run and delay or skip the park the semantic breaker exists to apply.
+		if !isErr {
+			return 0, repeatStreak
+		}
 		s = &failureEntry{}
 		l.semantic[key.semantic] = s
 	}
