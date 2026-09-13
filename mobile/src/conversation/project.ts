@@ -180,7 +180,7 @@ function outputAttachment(
 }
 
 // --- ask_user question parsing ----------------------------------------------
-// Mirrors the Hub's parseAskUserQuestions (askShared.ts): defensive throughout.
+// Mirrors parseAskUserQuestions (protocol/askShared.ts): defensive throughout.
 // Malformed argumentsJson degrades to a fallback (undefined) rather than
 // throwing, since this is untrusted wire JSON.
 
