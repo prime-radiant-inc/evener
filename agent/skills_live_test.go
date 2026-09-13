@@ -177,7 +177,10 @@ func skillsLiveDiagnose(t *testing.T, s *Session, rec *skillsLiveRecorder, stage
 	var selection *schema.SkillReloadSelection
 	if meta != nil {
 		pending = meta.PendingCompaction
-		selection = meta.PendingSelection
+		if pending != nil {
+			// The cycle's selection lives on its operation.
+			selection = &pending.Selection
+		}
 	}
 	var calls []string
 	for _, ev := range rec.snapshot() {

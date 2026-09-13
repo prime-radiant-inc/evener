@@ -228,7 +228,6 @@ func reconcileSkillCompactionReceipts(entries []transcript.Entry, snapshot *sche
 	// lock or transaction.
 	if op := snapshot.PendingCompaction; op != nil && op.Phase == skillCompactionPhasePublished {
 		snapshot.PendingCompaction = nil
-		snapshot.PendingSelection = nil
 		for i := range snapshot.PendingHandoffs {
 			if snapshot.PendingHandoffs[i].Operation.PublicationID == op.PublicationID {
 				snapshot.PendingHandoffs[i].Phase = skillCompactionReceiptDelivered
@@ -274,7 +273,6 @@ func applySkillCompactionReceipt(snapshot *schema.SkillLifecycleSnapshot, receip
 			// The handoff completed: the operation must not be repeated —
 			// clear the cycle's slot and its consumed selection.
 			snapshot.PendingCompaction = nil
-			snapshot.PendingSelection = nil
 		case skillCompactionReceiptPublished:
 			// The winning publication claimed the operation. The live
 			// transaction defines delivery-complete as the slot cleared, the
@@ -284,13 +282,11 @@ func applySkillCompactionReceipt(snapshot *schema.SkillLifecycleSnapshot, receip
 			// post-recovery state (R18), so reconciliation completes the
 			// same delivery here. The receipt coalesces below as delivered.
 			snapshot.PendingCompaction = nil
-			snapshot.PendingSelection = nil
 			receipt.Phase = skillCompactionReceiptDelivered
 		case skillCompactionReceiptCancelled:
 			// The retirement predates any metadata write that could have
 			// recorded it: redo it, and only for its own generation.
 			snapshot.PendingCompaction = nil
-			snapshot.PendingSelection = nil
 		}
 	}
 	// The handoff itself coalesces by publication identity, so the final

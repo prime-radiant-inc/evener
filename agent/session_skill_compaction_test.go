@@ -98,7 +98,7 @@ func TestSkillCompaction_AcceptanceSecondRequestRejected(t *testing.T) {
 	if got := s.PinnedNote(); got != "first" {
 		t.Fatalf("rejected request mutated the note: %q", got)
 	}
-	sel := s.pendingSkillReloadSelection()
+	sel := cycleSkillReloadSelection(s)
 	if sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
 		t.Fatalf("rejected request mutated the selection: %+v", sel)
 	}
@@ -135,7 +135,7 @@ func TestSkillCompaction_AcceptanceForcedRequestSupersedesAutomaticOperation(t *
 	if got := s.PinnedNote(); got != "replacing-note" {
 		t.Fatalf("replacing note = %q", got)
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "absent" {
 		t.Fatalf("the superseded automatic operation's selection must be discarded, got %+v", sel)
 	}
 }
@@ -161,7 +161,7 @@ func TestSkillCompaction_StaleCapturedGenerationRejected(t *testing.T) {
 	if s.pendingSkillCompactionSnapshot() != nil {
 		t.Fatal("rejected acceptance must not create an operation")
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "absent" {
 		t.Fatalf("rejected acceptance must not store a selection: %+v", sel)
 	}
 }
@@ -265,7 +265,7 @@ func TestSkillCompaction_LatchFirstSelectionWins(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("second elicitation in the same cycle must be latched, elicitor called %d times", calls)
 	}
-	sel := s.pendingSkillReloadSelection()
+	sel := cycleSkillReloadSelection(s)
 	if sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
 		t.Fatalf("pending selection = %+v, want the first valid selection preserved", sel)
 	}
@@ -307,7 +307,7 @@ func TestSkillCompaction_ClearNoteCancelsAutomaticOperation(t *testing.T) {
 	if s.pendingSkillCompactionSnapshot() != nil {
 		t.Fatal("clear must cancel the associated automatic operation")
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "absent" {
 		t.Fatalf("the cancelled operation's selection must be discarded, got %+v", sel)
 	}
 	if _, ok := s.takeForceRequest(); ok {

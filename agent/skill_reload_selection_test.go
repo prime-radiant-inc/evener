@@ -181,7 +181,7 @@ func TestSkillReloadSelection_CompactToolStoresValidSelection(t *testing.T) {
 	if _, ok := s.takeForceRequest(); !ok {
 		t.Fatal("compaction not scheduled")
 	}
-	sel := s.pendingSkillReloadSelection()
+	sel := cycleSkillReloadSelection(s)
 	if sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
 		t.Fatalf("pending selection = %+v, want valid [scope:probe]", sel)
 	}
@@ -207,7 +207,7 @@ func TestSkillReloadSelection_CompactToolUnknownNameKeepsNote(t *testing.T) {
 	if _, ok := s.takeForceRequest(); !ok {
 		t.Fatal("compaction not scheduled")
 	}
-	sel := s.pendingSkillReloadSelection()
+	sel := cycleSkillReloadSelection(s)
 	if sel.State != "invalid" || sel.ErrorCode != "unknown_skill" {
 		t.Fatalf("pending selection = %+v, want invalid/unknown_skill", sel)
 	}
@@ -234,7 +234,7 @@ func TestSkillReloadSelection_CompactToolSelectionOnlyRequestsCompaction(t *test
 	if _, ok := s.takeForceRequest(); !ok {
 		t.Fatal("an explicit empty selection must still request the compaction")
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "valid" || len(sel.Names) != 0 {
+	if sel := cycleSkillReloadSelection(s); sel.State != "valid" || len(sel.Names) != 0 {
 		t.Fatalf("pending selection = %+v, want valid empty", sel)
 	}
 
@@ -271,7 +271,7 @@ func TestSkillReloadSelection_CompactToolDoubleCallKeepsFirstSelection(t *testin
 	if got := s.PinnedNote(); got != "first" {
 		t.Fatalf("rejected double-call mutated the note: %q", got)
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
+	if sel := cycleSkillReloadSelection(s); sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
 		t.Fatalf("rejected double-call mutated the selection: %+v", sel)
 	}
 }
@@ -349,7 +349,7 @@ func TestSkillReloadElicitation_SessionParsesBlockAndStoresSelection(t *testing.
 	if got := s.PinnedNote(); got != "keep the token OPAQUE-77" {
 		t.Fatalf("pinned note = %q, want the free text without the selection block", got)
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
+	if sel := cycleSkillReloadSelection(s); sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
 		t.Fatalf("pending selection = %+v, want valid [scope:probe]", sel)
 	}
 }
@@ -370,7 +370,7 @@ func TestSkillReloadElicitation_SessionInvalidSelectionPreservesNote(t *testing.
 	if got := s.PinnedNote(); got != raw {
 		t.Fatalf("invalid parsing must preserve the note verbatim, got %q", got)
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "invalid" || sel.ErrorCode != "unknown_skill" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "invalid" || sel.ErrorCode != "unknown_skill" {
 		t.Fatalf("pending selection = %+v, want invalid/unknown_skill", sel)
 	}
 }

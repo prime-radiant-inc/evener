@@ -144,17 +144,16 @@ type SkillCompactionReceipt struct {
 // SkillLifecycleSnapshot is the durable skill lifecycle state saved in
 // session metadata: the activation inventory, outstanding delivery
 // obligations, the pinned-note generation, the operation generation counter,
-// and the pending reload selection, compaction operation and handoff receipts.
+// and the pending compaction operation and handoff receipts. A compaction
+// cycle's reload selection lives on its operation (PendingCompaction.Selection,
+// captured into the operation's receipts) — there is deliberately no second
+// copy to drift out of step with the cycle that owns it.
 type SkillLifecycleSnapshot struct {
 	Revision         uint64                         `json:"revision"`
 	Inventory        map[string]SkillInventoryEntry `json:"inventory"`
 	Obligations      []SkillDeliveryObligation      `json:"obligations"`
 	PinnedNoteGen    uint64                         `json:"pinned_note_gen"`
 	NextOperationGen uint64                         `json:"next_operation_gen"`
-	// PendingSelection is the parsed reload selection awaiting consumption by
-	// the next successfully published compaction; absent means no selection
-	// was made (or a previous one was consumed).
-	PendingSelection *SkillReloadSelection `json:"pending_selection,omitempty"`
 	// PendingCompaction is the compaction operation owning the current cycle:
 	// awaiting publication (phase "pending") or delivery (phase "published").
 	// Nil means no compaction intent is outstanding.
@@ -246,11 +245,6 @@ func (s SkillLifecycleSnapshot) Clone() SkillLifecycleSnapshot {
 		out.Inventory[name] = entry
 	}
 	out.Obligations = slices.Clone(s.Obligations)
-	if s.PendingSelection != nil {
-		selection := *s.PendingSelection
-		selection.Names = slices.Clone(selection.Names)
-		out.PendingSelection = &selection
-	}
 	if s.PendingCompaction != nil {
 		operation := *s.PendingCompaction
 		operation.Selection.Names = slices.Clone(operation.Selection.Names)

@@ -93,31 +93,6 @@ func (s *Session) skillInventorySnapshot() map[string]schema.SkillInventoryEntry
 	return maps.Clone(s.skillLifecycle.Inventory)
 }
 
-// pendingSkillReloadSelection reports the parsed selection awaiting the next
-// published compaction; absent when none was recorded.
-func (s *Session) pendingSkillReloadSelection() schema.SkillReloadSelection {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.skillLifecycle.PendingSelection == nil {
-		return schema.SkillReloadSelection{State: "absent"}
-	}
-	return *s.skillLifecycle.PendingSelection
-}
-
-// setPendingSkillReloadSelection records the parsed selection for the current
-// compaction cycle. An absent selection clears the slot; consumption and
-// cancellation live with the fold publication transaction.
-func (s *Session) setPendingSkillReloadSelection(selection schema.SkillReloadSelection) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if selection.State == "absent" {
-		s.skillLifecycle.PendingSelection = nil
-		return
-	}
-	selection.Names = slices.Clone(selection.Names)
-	s.skillLifecycle.PendingSelection = &selection
-}
-
 // skillInventorySummaries flattens the inventory into deterministic,
 // elicitation-ready loaded-skill metadata sorted by canonical name.
 func skillInventorySummaries(inventory map[string]schema.SkillInventoryEntry) []schema.SkillInventorySummary {

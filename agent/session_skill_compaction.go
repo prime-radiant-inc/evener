@@ -109,9 +109,6 @@ func (s *Session) cancelSkillCompactionLocked(generation uint64, reason string) 
 		return nil
 	}
 	s.skillLifecycle.PendingCompaction = nil
-	// The cancelled operation owned the selection slot: a cancelled intent
-	// must not leak its selection into the next compaction cycle.
-	s.skillLifecycle.PendingSelection = nil
 	s.skillLifecycle.Revision++
 	cancelled := *op
 	cancelled.Selection.Names = slices.Clone(op.Selection.Names)
@@ -234,9 +231,6 @@ func (s *Session) requestSkillCompaction(ctx context.Context, note, instructions
 	if superseded != nil {
 		s.skillCompactionCancelNotice(*superseded, skillCompactionCancelSupersededNote)
 	}
-	// The selection slot is stored after the ownership critical section (same
-	// turn goroutine, before the save) exactly as Task 6 recorded it.
-	s.setPendingSkillReloadSelection(selection)
 	if err := s.saveMeta(); err != nil {
 		// Retire the operation and its trigger: no dispatch may treat an
 		// unsaved intent as durable, and the caller must be able to retry.
@@ -283,9 +277,6 @@ func (s *Session) acceptAutomaticSkillCompaction(ctx context.Context, capturedNo
 	s.skillLifecycle.PendingCompaction = op
 	s.skillLifecycle.Revision++
 	s.mu.Unlock()
-	if selection.State != "absent" {
-		s.setPendingSkillReloadSelection(selection)
-	}
 	if err := s.saveMeta(); err != nil {
 		_ = s.cancelSkillCompaction(ctx, gen, skillCompactionCancelSaveFailed)
 		return false, &skillCompactionSaveError{Generation: gen, Reason: skillCompactionCancelSaveFailed, Err: err}
@@ -380,7 +371,6 @@ func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {
 			// summary turn — so the delivery completes here and the cycle's
 			// slot reopens.
 			s.skillLifecycle.PendingCompaction = nil
-			s.skillLifecycle.PendingSelection = nil
 			receipt.Phase = skillCompactionReceiptDelivered
 			for i := range s.skillLifecycle.PendingHandoffs {
 				if s.skillLifecycle.PendingHandoffs[i].Operation.PublicationID == receipt.Operation.PublicationID {

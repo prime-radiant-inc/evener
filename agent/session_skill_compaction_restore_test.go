@@ -127,7 +127,6 @@ func TestSkillCompactionRestore_PublishedOperationCompletesAtRestore(t *testing.
 				Phase:          "published",
 				PublicationID:  "pub-opaque-1",
 			},
-			PendingSelection: &schema.SkillReloadSelection{State: "valid", Names: []string{}},
 			PendingHandoffs: []schema.SkillCompactionReceipt{{
 				Revision:  9,
 				SessionID: "resume-published-compaction",
@@ -150,7 +149,7 @@ func TestSkillCompactionRestore_PublishedOperationCompletesAtRestore(t *testing.
 	if op := restored.pendingSkillCompactionSnapshot(); op != nil {
 		t.Fatalf("restore must complete the window artifact's delivery, still holding %+v", op)
 	}
-	if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(restored); sel.State != "absent" {
 		t.Fatalf("the completed delivery must have consumed the selection, got %+v", sel)
 	}
 	handoffs := pendingHandoffsSnapshot(restored)
@@ -228,10 +227,12 @@ func TestSkillCompactionRestore_MissingLegacyMetadataResumesWithoutBackfill(t *t
 	}
 }
 
-// TestSkillCompactionRestore_PendingSelectionRoundTrip carries the Task 6
-// deferred minor: the pending reload selection recorded with a compaction
-// request survives save and the real restart path.
-func TestSkillCompactionRestore_PendingSelectionRoundTrip(t *testing.T) {
+// TestSkillCompactionRestore_ReloadSelectionRoundTrip pins that a compaction
+// cycle's reload selection survives save and the real restart path. The
+// selection lives on the operation that owns it — the single authority, with no
+// second persisted copy to drift — so this asserts the operation the restart
+// rebuilt.
+func TestSkillCompactionRestore_ReloadSelectionRoundTrip(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	id := s.Meta().ID
@@ -243,7 +244,7 @@ func TestSkillCompactionRestore_PendingSelectionRoundTrip(t *testing.T) {
 	s.Close()
 
 	restored := restoreSkillCompactionSession(t, stateDir, id)
-	sel := restored.pendingSkillReloadSelection()
+	sel := cycleSkillReloadSelection(restored)
 	if sel.State != "valid" || !reflect.DeepEqual(sel.Names, []string{"scope:probe"}) {
 		t.Fatalf("pending selection = %+v, want valid [scope:probe] across restart", sel)
 	}
