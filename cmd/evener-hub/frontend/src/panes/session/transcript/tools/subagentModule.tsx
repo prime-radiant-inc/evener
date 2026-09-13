@@ -3,6 +3,7 @@
 // spawn materializes a frozen pre-hydration row in the shared store; once the
 // owning stable delegate projection exists, it supplies the hydrated state.
 import { useEffect } from "react";
+import { formatElapsed, plainQuoteLine } from "../../../../protocol/displayFormat";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
@@ -12,7 +13,6 @@ import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosu
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
 import { useSessionNow } from "../../liveness";
-import { formatElapsed, plainQuoteLine } from "../messages/format";
 import { statedIntentOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";

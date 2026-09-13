@@ -1,8 +1,8 @@
 // Pure formatting helpers for the dense activity tree rows. Kept React-free so
-// each is trivially unit-testable (same contract as transcript/messages/format).
+// each is trivially unit-testable (same contract as protocol/displayFormat).
 
 import { type ActivityUsage, isActivityFailure } from "../../../protocol/activityData";
-import { formatTokenCount } from "../transcript/messages/format";
+import { formatTokenCount } from "../../../protocol/displayFormat";
 
 // formatUsagePair renders a delegate row's token cluster ("↑41k ↓6k"), or null
 // when the daemon sent no usage (old daemon, shell-only work) so the row hides

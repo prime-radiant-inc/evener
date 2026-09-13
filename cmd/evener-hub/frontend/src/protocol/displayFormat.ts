@@ -1,4 +1,4 @@
-// Pure text-formatting helpers shared by transcript renderers.
+// Pure text-formatting helpers shared by the web and native renderers.
 
 // Deliberately never scales past "k" to match the legacy formatter.
 export function formatTokenCount(n: number): string {
