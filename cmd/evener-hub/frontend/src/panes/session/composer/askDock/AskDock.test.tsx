@@ -1179,9 +1179,9 @@ test("an atomic pending-set replacement with an identical count re-announces the
 
 const SECOND_ASK = [{ header: "Later", question: "q_later", options: [{ label: "later-opt", detail: "d" }] }];
 
-// renderTwoBatches drives the REAL two-batch route (reconcileBatches.ts: a
-// batch mid-send is frozen, so the late ask_user call mints a sibling batch
-// instead of joining the open one). Determinism lives in the ordering, not
+// renderTwoBatches drives the REAL two-batch route
+// (protocol/reconcileBatches.ts: a batch mid-send is frozen, so the late
+// ask_user call mints a sibling batch instead of joining the open one). Determinism lives in the ordering, not
 // in any timing: the click and the ack run in ONE synchronous block (act's
 // callback executes synchronously), and send() can only resolve after its
 // durable outbox write - an IndexedDB round trip that cannot complete inside
