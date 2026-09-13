@@ -621,6 +621,35 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });
 
+  test("the hidden chrome owner discovers activity once before the summary is established", async () => {
+    const fake = connectFakeClient();
+    const gate = deferred<{ data: unknown }>();
+    fake.on("evener/jobs/list", () => gate.promise);
+
+    const chromeOwners = (second: boolean) => (
+      <>
+        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} hideTrigger refreshWhenHidden />
+        {second && <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} hideTrigger refreshWhenHidden />}
+      </>
+    );
+
+    expect(activitySummaryStore.getState().entries.has("ref_root")).toBe(false);
+    const { rerender } = render(chromeOwners(false));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
+
+    rerender(chromeOwners(true));
+    await act(async () => Promise.resolve());
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
+
+    await act(async () => {
+      gate.resolve({ data: activityTree() });
+      await gate.promise;
+      await Promise.resolve();
+    });
+
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
+  });
+
   test("establishes a failed first attempt and does not retry the same bump while closed", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

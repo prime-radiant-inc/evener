@@ -13,11 +13,12 @@ import {
   EMPTY_ACTIVITY_SUMMARY_ENTRY,
   useActivitySummaryStore,
 } from "../../../stores/activitySummary";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { threadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
 import styles from "./activitypanel.module.css";
+import { refreshActivityRoot, useActivityRefresh } from "./useActivityRefresh";
 
 export interface ActivityPanelProps {
   sessionRef: string;
@@ -71,17 +72,6 @@ function triggerLabel(counts: ActivityCounts | undefined): string {
   return `Activity · ${counts.active}`;
 }
 
-function refreshRoot(
-  sessionRef: string,
-  bump: number | null,
-  onFailure?: (sentence: string) => void,
-  force = false,
-): number | null {
-  return activitySummaryStore
-    .getState()
-    .refreshRoot(sessionRef, bump, (ref) => threadsStore.getState().listJobs(ref), onFailure, force);
-}
-
 /** Shared activity reader body used by the mobile Sheet and desktop pane. */
 export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
   const toasts = useToasts();
@@ -90,11 +80,6 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
   const bodyGenerationRef = useRef(0);
   const currentSessionRef = useRef(sessionRef);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
-  const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
-  // Bumped on every full-snapshot publish (reconnect, targeted resync). It is
-  // the freshness effect's only way to notice a wholesale model replacement
-  // whose jobsUpdatedAt is null on both sides - see threads.ts's own comment.
-  const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
   currentSessionRef.current = sessionRef;
 
   useEffect(() => {
@@ -108,11 +93,14 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     };
   }, [sessionRef]);
 
+  const handleRefreshFailure = useCallback((sentence: string) => toasts.push("error", sentence), [toasts]);
+  useActivityRefresh(sessionRef, model, { kind: "body", onFailure: handleRefreshFailure });
+
   const fetchRoot = useCallback(
     (continuation?: { nodeID: string; token: string }, forceRoot = false) => {
       if (!continuation) {
         const bodyGeneration = bodyGenerationRef.current;
-        refreshRoot(
+        refreshActivityRoot(
           sessionRef,
           model.jobsUpdatedAt,
           (sentence) => {
@@ -158,31 +146,6 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     },
     [model.jobsUpdatedAt, sessionRef, toasts],
   );
-
-  // The mount fetch preserves the old visible-fetch contract exactly: a
-  // changed jobs bump is fresh, while idle/failed/unsupported/ended retained
-  // states are retried even when the bump has not changed. Store completions
-  // stay live after this body unmounts, so this effect intentionally does not
-  // depend on completion state and cannot loop after a failed request.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the gate is sampled on mount and jobsUpdatedAt pushes; store completion changes must not turn a retained failure into a retry loop
-  useEffect(() => {
-    const bumpMismatch = summary.lastFetchedBump !== model.jobsUpdatedAt;
-    const retainedNonReady =
-      entry.load.kind === "idle" ||
-      entry.load.kind === "failed" ||
-      entry.load.kind === "unsupported" ||
-      entry.load.kind === "ended";
-    // A null bump can't prove retained data is current: jobsUpdatedAt only
-    // ever comes from live pushes and re-hydrates to null after a thread-model
-    // eviction, so bumps seen while nothing held the model are gone. Force the
-    // fetch past the store's established/bump dedupe in that case.
-    const unprovenFreshness = model.jobsUpdatedAt === null;
-    if (bumpMismatch || retainedNonReady || unprovenFreshness) {
-      fetchRoot(undefined, retainedNonReady || unprovenFreshness);
-    }
-    // hydrationGeneration is a dependency precisely so a mounted body re-runs
-    // this check after a wholesale rehydration that changed nothing visible.
-  }, [fetchRoot, hydrationGeneration, model.jobsUpdatedAt, sessionRef]);
 
   function handleContinue(nodeID: string, token: string) {
     fetchRoot({ nodeID, token });
@@ -310,13 +273,6 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
 ) {
   const [open, setOpen] = useState(false);
   const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
-  // Same rehydration signal the body watches (see ActivityPanelBody): while
-  // the trigger owns background refresh, a wholesale model replacement with a
-  // null bump on both sides changes no other dependency of the effect below.
-  const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
-  // The generation this owner last considered handled. Initialized to the
-  // current value so mounting never manufactures a refresh by itself.
-  const handledGenerationRef = useRef(hydrationGeneration);
 
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
 
@@ -325,36 +281,14 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     setOpen(false);
   }, [sessionRef]);
 
-  // A closed Sheet has no mounted body, so its trigger owns the established
-  // background refresh. The desktop chrome keeps this owner mounted behind
-  // its replacement trigger, but refreshWhenHidden is false while that
-  // trigger row is collapsed. The root result also reconciles the panel store.
-  useEffect(() => {
-    if (open || summary.mountedBodies > 0) {
-      // A mounted body owns freshness (including the rehydration check), so
-      // any generation seen while it owns is handled by it, not queued here.
-      handledGenerationRef.current = hydrationGeneration;
-      return;
-    }
-    if (hideTrigger && !refreshWhenHidden) return;
-    if (!summary.established) return;
-    const generationChanged = hydrationGeneration !== handledGenerationRef.current;
-    if (!generationChanged && summary.lastFetchedBump === model.jobsUpdatedAt) return;
-    handledGenerationRef.current = hydrationGeneration;
-    // force pushes past the store's established/bump dedupe for the
-    // null-to-null rehydration case the bump comparison cannot see.
-    refreshRoot(sessionRef, model.jobsUpdatedAt, undefined, generationChanged);
-  }, [
-    hideTrigger,
-    hydrationGeneration,
-    model.jobsUpdatedAt,
-    open,
-    refreshWhenHidden,
-    sessionRef,
-    summary.established,
-    summary.lastFetchedBump,
-    summary.mountedBodies,
-  ]);
+  useActivityRefresh(sessionRef, model, {
+    kind: "background",
+    bodyOwnsFreshness: open || summary.mountedBodies > 0,
+    suppressed: hideTrigger && !refreshWhenHidden,
+    // SessionChrome's hidden owner is the only closed trigger that establishes
+    // a fresh summary; ordinary visible triggers retain their fetch-on-open contract.
+    discoverUnestablished: hideTrigger && refreshWhenHidden,
+  });
 
   return (
     <>

@@ -114,25 +114,17 @@ The view is a read-only derived consumer of `activityPanelStore`'s retained
 tree, `ThreadModel.delegates[]`, and the loaded turns. It adds no second cache
 and no freshness value of its own.
 
-**Open decision for the plan: who performs initial discovery.** The chrome
-mount does not establish the summary. `ActivityPanel`'s background effect
-returns early while `!summary.established` (`ActivityPanel.tsx:335`), and only a
-`refreshRoot` call sets `established`; today that call comes from
-`ActivityPanelBody`, which mounts only when the Activity sheet is opened. On a
-fresh session whose activity panel was never opened, no tree is published and
-job entities would not resolve. This must be settled before implementation;
-two viable resolutions:
+Initial discovery belongs to the hidden `ActivityPanel` already mounted by
+`SessionChrome` with `hideTrigger refreshWhenHidden`. `useActivityRefresh`
+shares the complete freshness effect between that background owner and
+`ActivityPanelBody`: while a body is mounted it owns freshness, and a hidden
+trigger without `refreshWhenHidden` remains suppressed. The chrome owner may
+establish an unestablished summary, so its first retained tree is available for
+job resolution without requiring the Activity sheet to have been opened.
 
-1. Let a body-less owner discover: extract the body's complete refresh effect
-   (its `retainedNonReady`/`unprovenFreshness` conditions, `force` handling, and
-   hydration dependency) into one shared hook, use it from both the body and a
-   body-less owner, and skip a forced refresh while `summary.loading` so
-   co-mounted owners cannot queue duplicate forced follow-ups.
-2. Accept the limitation: job entities resolve only after an activity panel for
-   the ref has been opened, and narrow the acceptance criteria accordingly.
-
-Option 1 is preferred because job ids are the headline case; option 2 is the
-fallback if the plan finds the shared hook too invasive.
+Forced refreshes are skipped while the summary is loading. This keeps
+co-mounted owners from queuing a duplicate forced follow-up after the initial
+request completes.
 
 Read-only panes: a read-only `transcript` pane initiates no loading, but
 `activityPanelStore` is keyed by ref, so it consumes any tree already retained
