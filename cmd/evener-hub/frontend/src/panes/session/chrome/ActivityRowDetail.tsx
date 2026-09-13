@@ -47,7 +47,7 @@ const CLASS = {
 // period to draw, because the firing is decided by a job's output or an event,
 // not by a clock.
 export const WATCH_NO_SCHEDULE_LINE =
-  "There is no schedule to draw here — this one fires when the job says the word, not when a clock says so.";
+  "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
 
 // The row header already prints a watch's note as the row's own name, in a
 // sidebar name column that fits roughly 40 characters at its narrow width.

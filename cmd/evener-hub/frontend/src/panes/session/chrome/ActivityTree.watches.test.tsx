@@ -2,7 +2,7 @@
 // accessible name, expand/collapse through a real button, and the expanded
 // note/facts/no-schedule detail. Real props, real component - no mocks of the
 // subject and no snapshot-only assertions.
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
@@ -14,7 +14,7 @@ import { ActivityTree } from "./ActivityTree";
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
 const CREATED = "2026-08-05T12:48:00Z";
 const NO_SCHEDULE =
-  "There is no schedule to draw here — this one fires when the job says the word, not when a clock says so.";
+  "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
 
 function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
   return {
@@ -243,5 +243,39 @@ describe("ActivityTree watch rows", () => {
     expect(screen.queryByTestId("watch-group")).toBeNull();
     expect(screen.queryAllByRole("treeitem")).toHaveLength(0);
     expect(screen.getByRole("tree")).toBeTruthy();
+  });
+
+  // The standalone Activity pane passes no clock of its own, so without the
+  // watch rows enabling the tree's tick an armed age would freeze at whatever
+  // it read when the panel mounted. The tree is rendered WITHOUT a `now` prop
+  // here on purpose: the ticking context is the only clock this case has.
+  test("a session whose only work is watches still runs the clock", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    try {
+      render(
+        <ActivityTree
+          tree={EMPTY_TREE}
+          watches={[
+            watch({
+              id: "watch_tick",
+              note: "Hourly sweep",
+              cadence: [{ kind: "every", seconds: 60 }],
+              deliveries: 0,
+            }),
+          ]}
+          expandedFoldIDs={[]}
+          onToggleFold={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByTestId("watch-facts").textContent).toContain("2h12m");
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByTestId("watch-facts").textContent).toContain("2h13m");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

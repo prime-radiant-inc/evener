@@ -927,7 +927,10 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   );
 
   return (
-    <TreeTickProvider live={hasLive}>
+    // A session whose only work is a watch still needs the clock: armed ages,
+    // the "now" label and the timeline's end marker are all derived from it, and
+    // the standalone Activity pane has no clock of its own to pass in.
+    <TreeTickProvider live={hasLive || watchRows.length > 0}>
       {watchRows.length > 0 && <WatchGroupHeader armed={armedWatches} />}
       <div ref={treeRef} role="tree" className={CLASS.tree}>
         <RowBlock
