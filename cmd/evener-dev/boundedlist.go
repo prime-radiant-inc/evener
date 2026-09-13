@@ -18,13 +18,14 @@ package dev
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"syscall"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,19 +43,36 @@ type attemptResult struct {
 // the group SIGTERM, waits grace, and sends SIGKILL.
 func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Writer) attemptResult {
 	var out bytes.Buffer
-	cmd := exec.Command(argv[0], argv[1:]...)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdout = &out
 	cmd.Stderr = stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	grouped := isolateProcessGroup(cmd)
+	// Cancelling the context is how the bound is delivered, and it has to reach
+	// the group, not the one child: the default cancel kills that child alone.
+	// Once the child has been reaped its pid can belong to something else, so a
+	// cancel that arrives after the wait returned signals nothing.
+	var reaped atomic.Bool
+	cmd.Cancel = func() error {
+		if !reaped.Load() {
+			stopProcessGroup(cmd, false)
+		}
+		return nil
+	}
 	if err := cmd.Start(); err != nil {
 		return attemptResult{err: err, exitCode: 1}
 	}
 	// The child is its own group leader, so its pgid is its pid.
-	result := attemptResult{pgid: cmd.Process.Pid}
+	var result attemptResult
+	if grouped {
+		result.pgid = cmd.Process.Pid
+	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
+		reaped.Store(true)
 		result.stdout = out.Bytes()
 		result.err = err
 		result.exitCode = exitCodeOf(err)
@@ -62,16 +80,17 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	case <-time.After(timeout):
 	}
 	result.timedOut = true
-	_ = syscall.Kill(-result.pgid, syscall.SIGTERM)
+	cancel()
 	select {
 	case <-done:
 	case <-time.After(grace):
-		_ = syscall.Kill(-result.pgid, syscall.SIGKILL)
+		// Still there, so it is not going to answer SIGTERM. The leader has not
+		// been reaped yet, which is what makes this group id still ours to
+		// signal.
+		stopProcessGroup(cmd, true)
 		<-done
 	}
-	// The leader is reaped; the group may still hold a child that took the
-	// SIGTERM and has not finished dying, so make the kill unconditional.
-	_ = syscall.Kill(-result.pgid, syscall.SIGKILL)
+	reaped.Store(true)
 	result.stdout = out.Bytes()
 	result.exitCode = 1
 	return result
@@ -81,8 +100,7 @@ func exitCodeOf(err error) int {
 	if err == nil {
 		return 0
 	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exit.ExitCode()
 	}
 	return 1
