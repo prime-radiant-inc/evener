@@ -144,10 +144,10 @@ function modelListRequests(fake: FakeClient): ModelListParams[] {
   return fake.calls.filter((call) => call.method === "model/list").map((call) => call.params as ModelListParams);
 }
 
-function renderSpawn(client: FakeClient) {
+function renderSpawn(client: FakeClient, focused = true) {
   return render(
     <ClientProvider client={client}>
-      <Spawn params={{}} paneId="spawn-1" focused={true} />
+      <Spawn params={{}} paneId="spawn-1" focused={focused} />
       <Toast />
     </ClientProvider>,
   );
@@ -1583,6 +1583,26 @@ test("the prompt field is focused on mount", async () => {
   renderSpawn(readyClient());
   await settled();
   expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Prompt" }));
+});
+
+// An unfocused spawn pane (a background tab) must never yank keyboard focus,
+// and mobile must never pop the on-screen keyboard on load.
+test("an unfocused pane never focuses the prompt field on mount", async () => {
+  renderSpawn(readyClient(), false);
+  await settled();
+  expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));
+});
+
+test("a focused pane never focuses the prompt field on mount on mobile", async () => {
+  vi.stubGlobal("matchMedia", ((query: string) => ({
+    matches: true,
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as typeof window.matchMedia);
+  renderSpawn(readyClient());
+  await settled();
+  expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));
 });
 
 // The card and the session composer are the SAME object: both render
