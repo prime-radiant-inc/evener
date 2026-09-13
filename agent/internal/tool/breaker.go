@@ -170,19 +170,20 @@ func canonicalNumber(n json.Number) any {
 }
 
 // isNeutralDefaultValue reports whether a canonicalized value means "omitted":
-// null, the empty string, an empty array or object, or numeric zero. Boolean
-// false is deliberately not neutral — a schema's default may be true, so false
-// can be a meaningful instruction.
+// null, the empty string, or an empty array or object. Boolean false and
+// numeric zero are deliberately not neutral, because a value alone cannot say
+// whether a schema treats it as the default. For read_transcript an explicit
+// offset_bytes=0 selects the retained-page operation while omitting it selects
+// the default view (session_tools_transcript.go), so folding zero into
+// "omitted" would hide a meaningful correction and could park a call the model
+// legitimately changed. Erring toward a distinct fingerprint only delays the
+// breaker; erring toward a false match refuses a call the model meant to change.
 func isNeutralDefaultValue(v any) bool {
 	switch x := v.(type) {
 	case nil:
 		return true
 	case string:
 		return x == ""
-	case int64:
-		return x == 0
-	case float64:
-		return x == 0
 	case []any:
 		return len(x) == 0
 	case map[string]any:
