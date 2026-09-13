@@ -1101,6 +1101,32 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err != nil {
 		return failed(err)
 	}
+	// Claim the send-start window by CHILD SESSION ID, here, BEFORE the durable
+	// commit rather than after it (#940). Claiming after CommitStart returned
+	// left a window in which a wake-edge drive read the child as idle and could
+	// launch a second, unleased turn on the session the commit was about to run;
+	// the reservation already carries the child session id, so the claim can
+	// precede the commit and that window does not exist. The claim is handed to
+	// the run at the point `running` is set and released by the deferred rollback
+	// on every exit that does not hand ownership over, including a failed
+	// CommitStart below.
+	committedChildID := strings.TrimSpace(reservation.descriptor.ChildSessionID)
+	committedClaimHeld := false
+	if committedChildID != "" {
+		if !s.claimChildCommittedSendStart(committedChildID) {
+			_ = s.delegateController.AbortStart(reservation)
+			return failed(errDelegateTargetBusy)
+		}
+		committedClaimHeld = true
+	}
+	defer func() {
+		if committedClaimHeld {
+			s.releaseChildCommittedSendStart(committedChildID)
+		}
+	}()
+	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
+		observer(committedChildID)
+	}
 	var waiter *delegateInlineWaiter
 	if maxWaitMS > 0 {
 		waiter, err = s.delegateController.RegisterInlineWaiter(reservation)
@@ -1112,35 +1138,6 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
 		return failed(err)
-	}
-	// Claim the committed-start window by CHILD SESSION ID, immediately, before
-	// restoreIdleForSend has resolved a child to claim (#940). The per-subagent
-	// `driving` claim below can only be taken once restoreIdleForSend has
-	// produced the child, which leaves CommitStart -> restoreIdleForSend ->
-	// admitReconstructed/AttachRuntime uncovered: a wake-edge drive landing in
-	// that stretch reads the child as idle and falls through to
-	// driveSubagentNotificationTurn, launching a second, UNLEASED turn on the
-	// session this generation is about to run. The id-keyed claim makes every
-	// drivability read refuse without needing the child object. It is handed to
-	// the run at the same point `running` is set, and released on every exit that
-	// does not hand ownership to the run.
-	committedChildID := strings.TrimSpace(started.descriptor.ChildSessionID)
-	committedClaimHeld := false
-	if committedChildID != "" {
-		if !s.claimChildCommittedSendStart(committedChildID) {
-			// A second committed start is racing on the same delegate; refuse it
-			// as busy rather than proceeding.
-			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, errDelegateTargetBusy, nil)
-		}
-		committedClaimHeld = true
-	}
-	defer func() {
-		if committedClaimHeld {
-			s.releaseChildCommittedSendStart(committedChildID)
-		}
-	}()
-	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
-		observer(committedChildID)
 	}
 	sub, restored, finishRestore, err := runtime.restoreIdleForSend(started)
 	if err != nil {
