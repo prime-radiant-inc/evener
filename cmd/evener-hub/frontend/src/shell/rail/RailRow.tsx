@@ -46,6 +46,11 @@ import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
+// The watch vocabulary lives in shell/watchText.ts so the session panel's pure
+// row model can import it without pulling this React module (and every widget
+// stylesheet) into its own graph. Re-exported here so the rail's existing
+// callers and tests keep their import path.
+import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, watchTitle } from "../watchText";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
@@ -222,12 +227,6 @@ export function activityGloss(session: RailSession, activity = activeWorkSummary
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
   return parts.join(" · ");
 }
-
-// The watch vocabulary lives in shell/watchText.ts so the session panel's pure
-// row model can import it without pulling this React module (and every widget
-// stylesheet) into its own graph. Re-exported here so the rail's existing
-// callers and tests keep their import path.
-import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, watchTitle } from "../watchText";
 
 export { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, watchTitle };
 

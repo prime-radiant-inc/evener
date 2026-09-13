@@ -110,6 +110,20 @@ describe("watchMeta", () => {
     // reporting an output-only watch for one that also fires every 10s.
     expect(watchMeta(w)).toBe("on output · every 10s · armed");
   });
+
+  test("a watch carrying both an output match and an event trigger names both conditions", () => {
+    // watchKind classifies a multi-trigger watch as a single kind, so an
+    // output+event watch used to report only "on output" while watchFacts and
+    // the rail's watchGloss both named the event trigger too.
+    const w = watch({
+      target: "job_ab12",
+      output_match: "/DONE/",
+      events: ["job.completed"],
+      cadence: [{ kind: "output" }, { kind: "events" }],
+      active: true,
+    });
+    expect(watchMeta(w)).toBe("on output · on event · armed");
+  });
 });
 
 describe("watchFacts", () => {

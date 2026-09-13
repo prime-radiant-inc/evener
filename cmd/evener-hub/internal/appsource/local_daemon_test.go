@@ -655,6 +655,52 @@ func TestLocalDaemonSourceListCarriesRunningNonAgentJobs(t *testing.T) {
 	}
 }
 
+// TestLocalDaemonSourceListCarriesWatches guards the local thread/list
+// compatibility path: a LocalDaemonEntry carrying the roster's watches must
+// surface them in the typed thread diagnostics, the same snapshot navigation
+// already serves, with inner slices the bridge owns.
+func TestLocalDaemonSourceListCarriesWatches(t *testing.T) {
+	entry := LocalDaemonEntry{
+		Entry: rendezvous.Entry{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1/watches",
+			ThreadID:  "th_watch",
+			SessionID: "sess_watch",
+		},
+		Status: appwire.ThreadStatusActive,
+		Watches: []appwire.EvenerWatchInfo{{
+			ID:            "watch_1",
+			Note:          "poll queue",
+			Cadence:       []appwire.EvenerWatchCadence{{Kind: "every", Seconds: 600}},
+			Events:        []string{"job.completed"},
+			DeliveryTimes: []string{"2026-08-05T14:58:00Z"},
+		}},
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{entry}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Diagnostics == nil || len(resp.Data[0].Evener.Diagnostics.Watches) != 1 {
+		t.Fatalf("thread list diagnostics = %+v, want one watch", resp.Data)
+	}
+	got := resp.Data[0].Evener.Diagnostics.Watches[0]
+	if got.ID != "watch_1" || got.Note != "poll queue" {
+		t.Fatalf("watch = %+v, want identity and note", got)
+	}
+	// Mutate the entry's inner slices after the bridge; the diagnostics snapshot
+	// must already own its rows.
+	entry.Watches[0].Cadence[0].Kind = "mutated"
+	entry.Watches[0].Events[0] = "mutated"
+	entry.Watches[0].DeliveryTimes[0] = "mutated"
+	if got.Cadence[0].Kind != "every" || got.Events[0] != "job.completed" || got.DeliveryTimes[0] != "2026-08-05T14:58:00Z" {
+		t.Fatalf("entry watch mutation reached the bridged diagnostics: %+v", got)
+	}
+}
+
 func TestThreadFromEntryCarriesStableRefAndLiveInstance(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return nil }, nil)
 	thread := source.threadFromEntry(LocalDaemonEntry{Entry: rendezvous.Entry{

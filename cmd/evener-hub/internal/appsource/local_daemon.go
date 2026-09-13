@@ -68,6 +68,11 @@ type LocalDaemonEntry struct {
 	// CompletedJobs carries the recent terminal non-agent jobs into the same
 	// typed diagnostics snapshot for local compatibility consumers.
 	CompletedJobs []appwire.EvenerJobInfo
+	// Watches carries the roster's live watches into the same typed thread
+	// diagnostics the hub navigation path already projects, so local AppWire
+	// clients see watch state too. It stays on the owning root entry only;
+	// read-only descendants never receive it (see threadFromEntry).
+	Watches []appwire.EvenerWatchInfo
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -1002,11 +1007,14 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 	if status == appwire.ThreadStatusRestartRequired {
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 	}
-	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0) {
+	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0 || len(item.Watches) > 0) {
 		jobs := make([]appwire.EvenerJobInfo, 0, len(item.RunningJobs)+len(item.CompletedJobs))
 		jobs = append(jobs, item.RunningJobs...)
 		jobs = append(jobs, item.CompletedJobs...)
-		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{Jobs: cloneLocalDaemonJobs(jobs)}
+		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{
+			Jobs:    cloneLocalDaemonJobs(jobs),
+			Watches: cloneLocalDaemonWatches(item.Watches),
+		}
 	}
 	if item.ReadOnlyAlias {
 		thread.Evener.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String()
@@ -1021,6 +1029,10 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 
 func cloneLocalDaemonJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
 	return appwire.CloneEvenerJobs(in)
+}
+
+func cloneLocalDaemonWatches(in []appwire.EvenerWatchInfo) []appwire.EvenerWatchInfo {
+	return appwire.CloneEvenerWatches(in)
 }
 
 func localDaemonRendezvousEntry(item LocalDaemonEntry) rendezvous.Entry {

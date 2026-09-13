@@ -1675,7 +1675,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			Usage: cloneServeUsage(delegate.Usage), Worktree: cloneServeWorktree(delegate.Worktree),
 		})
 	}
-	out.Watches = append([]agent.WatchStatusInfo(nil), ds.Watches...)
+	out.Watches = cloneServeWatches(ds.Watches)
 	if ds.TurnSlots != nil {
 		out.TurnSlots = &server.TurnSlotStatus{
 			InUse: ds.TurnSlots.InUse, Cap: ds.TurnSlots.Cap, Jobs: ds.TurnSlots.Jobs, Drives: ds.TurnSlots.Drives,
@@ -1716,6 +1716,24 @@ func cloneServeWorktree(value *appwire.JobActivityWorktree) *appwire.JobActivity
 	}
 	clone := *value
 	return &clone
+}
+
+// cloneServeWatches returns a defensive copy of the watch diagnostics in a
+// DetailedStatus. Cadence, event, and delivery-time slices are copied so a
+// consumer mutating its copy cannot reach the shared status value, matching
+// appwire.CloneEvenerWatches and appWatchFromDetailedStatus.
+func cloneServeWatches(watches []agent.WatchStatusInfo) []agent.WatchStatusInfo {
+	if watches == nil {
+		return nil
+	}
+	out := make([]agent.WatchStatusInfo, len(watches))
+	for i := range watches {
+		out[i] = watches[i]
+		out[i].Cadence = append([]agent.WatchCadenceInfo(nil), watches[i].Cadence...)
+		out[i].Events = append([]string(nil), watches[i].Events...)
+		out[i].DeliveryTimes = append([]string(nil), watches[i].DeliveryTimes...)
+	}
+	return out
 }
 
 // liveThreadEnvelopeSource is the daemon's one sampling window onto live session

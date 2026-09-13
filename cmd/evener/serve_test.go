@@ -232,6 +232,32 @@ func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	}
 }
 
+// TestAgentToServerDetailedStatus_WatchesDeepCopied proves the watch bridge owns
+// every inner slice: mutating the source's cadence, events, or delivery times
+// after the bridge must not show through the copy (cloneServeWatches).
+func TestAgentToServerDetailedStatus_WatchesDeepCopied(t *testing.T) {
+	source := agent.WatchStatusInfo{
+		ID:            "watch_1",
+		Cadence:       []agent.WatchCadenceInfo{{Kind: "every", Seconds: 600}},
+		Events:        []string{"job.completed"},
+		DeliveryTimes: []string{"2026-08-05T14:58:00Z"},
+	}
+	out := agentToServerDetailedStatus(agent.DetailedStatus{Watches: []agent.WatchStatusInfo{source}})
+	if len(out.Watches) != 1 {
+		t.Fatalf("watches = %+v, want one", out.Watches)
+	}
+	// Mutate the source's inner slices exactly as a caller holding the status
+	// snapshot could; the bridge copy must already be independent of them.
+	source.Cadence[0].Kind = "mutated"
+	source.Events[0] = "mutated"
+	source.DeliveryTimes[0] = "mutated"
+	if out.Watches[0].Cadence[0].Kind != "every" ||
+		out.Watches[0].Events[0] != "job.completed" ||
+		out.Watches[0].DeliveryTimes[0] != "2026-08-05T14:58:00Z" {
+		t.Fatalf("source watch mutation reached the bridged copy: %+v", out.Watches[0])
+	}
+}
+
 func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T) {
 	input := make(chan server.InputMessage, 1)
 	input <- server.InputMessage{Text: "already queued"}
