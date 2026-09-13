@@ -486,6 +486,11 @@ test("the stamp is in-flow by default and leaves the flow only when the transcri
   const rail = /@container\s*\(min-width:\s*55rem\)\s*\{([\s\S]*?)\n\}/.exec(css);
   if (!rail) throw new Error("no container-gated .stamp rail rule");
   expect(rail[1]).toMatch(/\.stamp\s*\{[^}]*position:\s*absolute/);
+  // A terminal continuation's first prose line sits one step lower (its top
+  // padding is --space-2, not the flat bubble's --rhythm-line), so the rail
+  // stamp carries its own lowered offset. Exact px stays with the browser
+  // guards; this pins that the override exists inside the same rail block.
+  expect(rail[1]).toMatch(/\.message:has\(\.terminal\)\s*\.stamp\s*\{[^}]*top:/);
   // The wide-measure revert band: the rail's nowrap is not inert on a static
   // box, so both declarations must be reverted (roborev, PR 1041).
   const band = /@container\s*\(min-width:\s*55rem\)\s*and\s*\(max-width:\s*75rem\)\s*\{([\s\S]*?)\n\}/.exec(css);

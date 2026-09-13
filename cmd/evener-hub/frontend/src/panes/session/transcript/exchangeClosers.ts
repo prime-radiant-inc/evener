@@ -12,11 +12,17 @@ export function exchangeClosersFor(turns: TurnModel[]): ReadonlySet<string> {
   const closers = new Set<string>();
   let pending: string | undefined;
   let inExchange = false;
+  // Any in-progress item anywhere in the exchange suppresses its close: the
+  // wash means concluded work, so a streaming tail, a running tool, or a
+  // live turn later in the exchange all hold it off until everything
+  // settles. Reset per exchange like pending.
+  let exchangeLive = false;
 
   const flush = () => {
-    if (pending !== undefined) closers.add(pending);
+    if (pending !== undefined && !exchangeLive) closers.add(pending);
     pending = undefined;
     inExchange = false;
+    exchangeLive = false;
   };
 
   for (const turn of turns) {
@@ -28,6 +34,7 @@ export function exchangeClosersFor(turns: TurnModel[]): ReadonlySet<string> {
     // any recorded turn error suppresses the wash.
     const failed = turn.error != null;
     for (const item of turn.items) {
+      if (item.status === "inProgress" && inExchange) exchangeLive = true;
       if (item.type === "userMessage") {
         // A new exchange opens: the previous exchange (if any) closes on
         // whatever prose it last produced. Queued user messages before any

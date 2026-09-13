@@ -153,6 +153,15 @@
     left: calc(100% + var(--space-3));
     white-space: nowrap;
   }
+
+  /* A terminal continuation's first prose line sits one step lower: its top
+   * padding is --space-2 (8px), not the flat bubble's --rhythm-line (4px),
+   * so the rail stamp drops by the same --space-1 step to stay aligned
+   * (16px -> 20px from .message's top, matching message padding +
+   * continuation margin + terminal padding). */
+  .message:has(.terminal) .stamp {
+    top: calc(var(--rhythm-item) + var(--rhythm-line) + var(--space-2));
+  }
 }
 
 /* The wide transcript measure (64rem column) eats the margin the 55rem

@@ -79,3 +79,37 @@ test("a failed turn's prose never closes: the end cap already closes the turn", 
   const closers = exchangeClosersFor([failed, turn("t2", [item("u2", "userMessage")])]);
   expect(closers.size).toBe(0);
 });
+
+test("completed prose followed by an in-progress tool call never closes: the exchange is still working", () => {
+  const closers = exchangeClosersFor([
+    turn("t1", [
+      item("u1", "userMessage"),
+      item("a1", "agentMessage"),
+      item("c1", "commandExecution", { status: "inProgress" }),
+    ]),
+  ]);
+  expect(closers.size).toBe(0);
+});
+
+test("once the trailing work settles, the last prose closes", () => {
+  const closers = exchangeClosersFor([
+    turn("t1", [
+      item("u1", "userMessage"),
+      item("a1", "agentMessage"),
+      item("c1", "commandExecution", { status: "completed" }),
+      item("a2", "agentMessage"),
+    ]),
+  ]);
+  expect([...closers]).toEqual(["a2"]);
+});
+
+test("an in-progress item before the last prose still suppresses: the wash means concluded work", () => {
+  const closers = exchangeClosersFor([
+    turn("t1", [
+      item("u1", "userMessage"),
+      item("c1", "commandExecution", { status: "inProgress" }),
+      item("a1", "agentMessage"),
+    ]),
+  ]);
+  expect(closers.size).toBe(0);
+});
