@@ -49,9 +49,5 @@ func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 		Usage:               thread.Evener.Usage,
 		Cost:                thread.Evener.Cost,
 		ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,
-		HumanNote:           thread.Evener.HumanNote,
-		AgentNote:           thread.Evener.AgentNote,
-		SessionURLs:         append([]appwire.SessionURL(nil), thread.Evener.SessionURLs...),
-		SharedNotes:         thread.Evener.Capabilities.SharedNotes,
 	}
 }

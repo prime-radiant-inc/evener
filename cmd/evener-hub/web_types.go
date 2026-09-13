@@ -99,13 +99,4 @@ type daemonStatus struct {
 	Usage               *appwire.EvenerUsage
 	Cost                string
 	ActiveTurnStartedAt int64
-	// HumanNote/AgentNote/SessionURLs mirror appwire.EvenerThread's
-	// shared-notes state for the legacy workspace projection (like
-	// WorkspaceData.GoalStatus/GoalIterations mirror appwire.GoalState in
-	// web_format.go). Empty/nil when unset; SharedNotes mirrors
-	// appwire.ThreadCapabilities.SharedNotes.
-	HumanNote   string
-	AgentNote   string
-	SessionURLs []appwire.SessionURL
-	SharedNotes bool
 }

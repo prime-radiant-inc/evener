@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"reflect"
 	"testing"
 )
 
@@ -41,5 +42,18 @@ func TestSessionRefMatchesIDClusterPrefix(t *testing.T) {
 	id, ok := s.resolveTopLevelSessionRef(context.Background(), "cluster:foo")
 	if ok || id != "" {
 		t.Fatalf("cluster: prefix should return empty/false, got %q %v", id, ok)
+	}
+}
+
+// TestDaemonStatusCarriesNoSharedNotesMirrors pins the review cleanup:
+// fetchStatus used to copy the shared-notes snapshot into daemonStatus fields
+// that no consumer read. Re-adding mirrored state without a reader must fail
+// here rather than silently restoring dead fields.
+func TestDaemonStatusCarriesNoSharedNotesMirrors(t *testing.T) {
+	typ := reflect.TypeOf(daemonStatus{})
+	for _, name := range []string{"HumanNote", "AgentNote", "SessionURLs", "SharedNotes"} {
+		if _, found := typ.FieldByName(name); found {
+			t.Errorf("daemonStatus declares unread shared-notes field %s", name)
+		}
 	}
 }
