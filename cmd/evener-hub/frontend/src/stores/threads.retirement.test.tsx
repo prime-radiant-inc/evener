@@ -381,7 +381,7 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
   // live, then enter the unsent draft through the native textarea.
   const { unmount } = render(
     <ClientProvider client={client}>
-      <ComposerView ref={REF} />
+      <ComposerView ref={REF} focused={false} />
     </ClientProvider>,
   );
 
