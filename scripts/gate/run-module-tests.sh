@@ -814,6 +814,9 @@ run_bounded_package_list() {
 			printf 'run-module-tests.sh: could not record attempt %s beside %s; stopping it rather than running a package list nothing could name.\n' \
 				"$attempt" "$(package_list_pgid_path "$module")" >&2
 			stop_pid "$list_pid" "$PACKAGE_LIST_STOP_GRACE" || :
+			# Stopped, so nothing is left to name: the record goes too, or the
+			# cleanup waits out its grace for a job that is already gone.
+			pgroup_record_clear "$(package_list_pgid_path "$module")"
 			return 1
 		fi
 		started_at=$SECONDS

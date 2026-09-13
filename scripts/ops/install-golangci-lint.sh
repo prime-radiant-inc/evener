@@ -214,6 +214,7 @@ while :; do
 		printf 'install-golangci-lint.sh: could not record the attempt just spawned beside %s; stopping it rather than running an install nothing could name.\n' \
 			"$attempt_record" >&2
 		stop_pid "$attempt_pid" "$attempt_stop_grace" || :
+		pgroup_record_clear "$attempt_record"
 		exit 1
 	fi
 	attempt_status=0

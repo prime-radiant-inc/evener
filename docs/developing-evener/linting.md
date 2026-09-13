@@ -3,10 +3,12 @@
 Static checks that gate merges without running tests: formatting, generated-
 output freshness, compile floors, and the repo secret scan. `make lint` is
 `LINT_TARGETS`: `lint-naming`, `lint-gofmt`, `lint-evenerfuzz`, `lint-eval`,
-`lint-internal`, `lint-golangci`, `lint-generated`, `lint-fuzz-registry`, and
-`secret-scan`. Every one of them is required CI.
+`lint-internal`, `lint-golangci`, `lint-generated`, `lint-fuzz-registry`,
+`lint-process-group`, and `secret-scan`. Every one of them is required CI.
 
-`golangci-lint` and `gitleaks` are the only external tools the gate needs;
+`golangci-lint` and `gitleaks` are the only tools the gate installs;
+`lint-process-group` also needs `perl` and `python3`, which the test gate already
+requires and every supported machine has.
 `make tools` installs the CI-pinned versions from `.tool-versions`. It needs
 `perl` on `PATH` to do it: each install attempt is exec'd through perl's
 `setpgrp(0, 0)` so the whole `curl | sh` pipeline can be stopped as a process

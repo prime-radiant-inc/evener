@@ -25,7 +25,18 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 grace=1
 failures=0
 work=""
-trap scratch_rm EXIT
+spawned_groups=""
+# Whatever this check spawned is stopped from here, by its own group id, before
+# the scratch goes: a failed assertion must not leave a group running.
+selfcheck_cleanup() {
+	local group
+	for group in $spawned_groups; do
+		stop_pgroup "$group" 1 >/dev/null 2>&1 || :
+		stop_pid "$group" 1 >/dev/null 2>&1 || :
+	done
+	scratch_rm
+}
+trap selfcheck_cleanup EXIT
 scratch_dir work process-group-selfcheck
 own_pgid="$(pid_pgroup $$)"
 marker_prefix=evener-selfcheck
@@ -51,6 +62,7 @@ spawn() {
 	pid=$!
 	pgroup_record_spawned "$record" "$pid" "$spawn_marker" || return 1
 	pgroup_record_value "$record" "$grace" >/dev/null || return 1
+	spawned_groups="$spawned_groups $pid"
 	printf '%s' "$pid"
 }
 
@@ -87,6 +99,7 @@ check "group already gone" "0 removed empty" "$status $(record_state "$rec") $(g
 rec="$work/3.pgid"
 perl -e 'sleep 30' "$marker" &
 presplit=$!
+spawned_groups="$spawned_groups $presplit"
 sleep 1
 printf 'pid:%s:%s' "$presplit" "$marker" >"$rec"
 run_case "$rec"
@@ -132,6 +145,7 @@ check "empty record waits then refuses" "2 kept yes" "$status $(record_state "$r
 rec="$work/7.pgid"
 perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' -- sleep 30 &
 stranger=$!
+spawned_groups="$spawned_groups $stranger"
 sleep 1
 printf 'pgid:%s:%s' "$stranger" "$marker" >"$rec"
 python3 -c 'import os,sys,time; t=time.time()-60; os.utime(sys.argv[1], (t, t))' "$rec"
