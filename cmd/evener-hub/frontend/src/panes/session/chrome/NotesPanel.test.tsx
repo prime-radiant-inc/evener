@@ -798,6 +798,47 @@ test("a second Remove click while the first is in flight is ignored and stays si
   expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
 });
 
+test("two Remove clicks in the same tick fire one request", async () => {
+  const { fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const firstInFlight = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return firstInFlight.then(() => ({}));
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  // Both clicks land before React re-renders. A guard that reads the pending set
+  // from the render closure still sees the pre-click value on the second click,
+  // which is the double-click the disabled attribute cannot prevent: the button
+  // is not disabled until that re-render.
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await waitFor(() => expect(calls).toBe(1));
+  expect(calls).toBe(1);
+
+  release();
+  await act(async () => {
+    await firstInFlight;
+  });
+  expect(calls).toBe(1);
+  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+});
+
 // --- save coalescing -------------------------------------------------------------
 
 test("reverting to the stored text during an in-flight save still persists the revert", async () => {

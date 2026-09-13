@@ -145,6 +145,12 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   // spurious "Couldn't remove link" toast. Each row's button is disabled for
   // exactly as long as its own request is pending.
   const [removingURLs, setRemovingURLs] = useState<ReadonlySet<string>>(() => new Set());
+  // The guard has to be synchronous: a click handler reads the pending set from
+  // the render it was created in, so two clicks inside one tick both see it
+  // empty and both fire (the disabled attribute only appears after the
+  // re-render). The ref is checked and updated in the handler; the state exists
+  // to disable the row.
+  const removingURLsRef = useRef(new Set<string>());
   // Editability here tracks the store's own write gate: rendering controls that
   // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
   const live = canWriteHumanNote(model);
@@ -164,13 +170,15 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   }, [sessionRef, live, model.capabilities.sharedNotes]);
 
   async function handleRemoveURL(url: SessionURL) {
-    if (removingURLs.has(url.id)) return;
+    if (removingURLsRef.current.has(url.id)) return;
+    removingURLsRef.current.add(url.id);
     setRemovingURLs((prev) => new Set(prev).add(url.id));
     try {
       await threadsStore.getState().removeURL(sessionRef, url.id);
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't remove link", err));
     } finally {
+      removingURLsRef.current.delete(url.id);
       setRemovingURLs((prev) => {
         const next = new Set(prev);
         next.delete(url.id);
