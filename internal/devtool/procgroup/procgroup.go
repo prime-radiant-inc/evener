@@ -8,6 +8,7 @@
 package procgroup
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -30,6 +31,19 @@ func Terminate(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGTERM) }
 
 // Kill KILLs the whole group.
 func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
+
+// Exists reports whether the group still has members. It is the one question
+// that can be asked safely after the direct child has been reaped: a pid
+// cannot be recycled while it is still a live group's id, so anything but
+// ESRCH means this is still the group the caller started. EPERM is a yes --
+// the group is there, this process just may not signal all of it.
+func Exists(pgid int) bool {
+	if pgid <= 0 {
+		return false
+	}
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
 
 // Stop TERMs the group, waits for the caller to reap the direct child
 // (signalled by closing reaped), and KILLs the group if that takes longer

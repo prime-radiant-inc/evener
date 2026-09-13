@@ -24,6 +24,10 @@ func Kill(pgid int) {
 	}
 }
 
+// Exists answers no: without process groups there is no group to outlive the
+// child, and the caller's Wait has already accounted for that child.
+func Exists(int) bool { return false }
+
 func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
 	Terminate(pgid)
 	select {

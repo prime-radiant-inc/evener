@@ -222,3 +222,33 @@ func TestExitCodeMapsSignalDeathsLikeAShell(t *testing.T) {
 		t.Errorf("ExitCode after clean exit = %d, want 0", got)
 	}
 }
+
+// TestExistsAnswersForTheGroupNotTheLeader is the question stopSurvivors asks
+// after its direct child has been reaped: a leader can exit and leave the
+// group populated.
+func TestExistsAnswersForTheGroupNotTheLeader(t *testing.T) {
+	if got := Exists(0); got {
+		t.Fatal("Exists(0) = true: pgid 0 is this process's own group, never a child's")
+	}
+	cmd := exec.Command("sh", "-c", "sleep 30")
+	if err := Start(cmd); err != nil {
+		t.Fatalf("starting the fixture: %v", err)
+	}
+	pgid := cmd.Process.Pid
+	if pgid == syscall.Getpgrp() {
+		t.Fatalf("the fixture shares this process's group (%d); refusing to signal it", pgid)
+	}
+	if !Exists(pgid) {
+		t.Fatalf("Exists(%d) = false while the group is running", pgid)
+	}
+	// Cleaned up by that group id alone.
+	Kill(pgid)
+	_ = cmd.Wait()
+	deadline := time.Now().Add(3 * time.Second)
+	for Exists(pgid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("Exists(%d) still true after the group was killed", pgid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

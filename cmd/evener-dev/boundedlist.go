@@ -19,7 +19,6 @@ package dev
 import (
 	"bytes"
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -27,9 +26,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
+
+	"primeradiant.com/evener/internal/devtool/procgroup"
 )
 
 // attemptResult is what one bounded run of the command came to.
@@ -54,64 +54,50 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// the interrupt line below is written while the command is still running --
 	// so they share one lock or they corrupt whatever they are writing to.
 	guarded := &serialWriter{w: stderr}
+	// The context is here because a command built without one is a lint
+	// failure; the stopping is procgroup's, which reaches the group rather
+	// than the single child exec's own cancel would kill.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Cancel = func() error { return nil }
 	cmd.Stdout = &out
 	cmd.Stderr = guarded
-	grouped := isolateProcessGroup(cmd)
-	// Cancelling the context is how the bound is delivered, and it has to reach
-	// the group, not the one child: the default cancel kills that child alone.
-	// Once the child has been reaped its pid can belong to something else, so a
-	// cancel that arrives after the wait returned signals nothing.
-	var reaped atomic.Bool
-	cmd.Cancel = func() error {
-		if !reaped.Load() {
-			stopProcessGroup(cmd, false)
-		}
-		return nil
-	}
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return attemptResult{err: err, exitCode: 1}
 	}
-	// The child is its own group leader, so its pgid is its pid.
-	var result attemptResult
-	if grouped {
-		result.pgid = cmd.Process.Pid
-	}
+	// The child leads its own group, so the group id is its pid.
+	result := attemptResult{pgid: cmd.Process.Pid}
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	reaped := make(chan struct{})
+	go func() {
+		err := cmd.Wait()
+		close(reaped)
+		done <- err
+	}()
 	select {
 	case err := <-done:
-		reaped.Store(true)
 		result.stdout = out.Bytes()
 		result.err = err
-		result.exitCode = exitCodeOf(err)
-		stopSurvivors(cmd, result.pgid, grace, guarded)
+		result.exitCode = procgroup.ExitCode(cmd.ProcessState)
+		stopSurvivors(cmd.Path, result.pgid, grace, guarded)
 		result.takeLateSignal(latch)
 		return result
 	case received := <-latch.waiting():
-		// The command is in a process group of its own, which is what keeps a
-		// wedged compiler off this host -- and also what stops the terminal's
-		// SIGINT from reaching it, since it is no longer in the shell's
-		// foreground group. So this helper passes on what it is sent.
+		// The command runs in a process group of its own, which is what keeps
+		// a wedged compiler off this host -- and also what stops the
+		// terminal's SIGINT from reaching it, since it is no longer in the
+		// shell's foreground group. So this helper passes on what it is sent.
 		result.interrupted = latch.receive(received)
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v — stopping %s.\n", received, argv[0])
 	case <-time.After(timeout):
 		result.timedOut = true
 	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(grace):
-		// Still there, so it is not going to answer SIGTERM. The leader has not
-		// been reaped yet, which is what makes this group id still ours to
-		// signal.
-		stopProcessGroup(cmd, true)
-		<-done
-	}
-	reaped.Store(true)
-	stopSurvivors(cmd, result.pgid, grace, guarded)
+	// SIGTERM, the grace, then SIGKILL -- and nothing at all if the child was
+	// reaped first, whose pid may already belong to someone else.
+	procgroup.Stop(result.pgid, reaped, grace)
+	<-done
+	stopSurvivors(cmd.Path, result.pgid, grace, guarded)
 	result.stdout = out.Bytes()
 	result.exitCode = 1
 	if result.interrupted != 0 {
@@ -200,46 +186,30 @@ func (s *serialWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
-// stopSurvivors stops whatever is still in the command's process group once the
-// leader is gone. The leader being reaped says nothing about the group: a
+// stopSurvivors stops whatever is still in the command's process group once
+// the leader is gone. The leader being reaped says nothing about the group: a
 // leader that handles SIGTERM and exits can leave a child that ignores it, and
 // that child goes on holding the build and module cache locks.
 //
-// Signalling a group id whose leader has been reaped is safe exactly while the
-// group is not empty. A pid cannot be reused while it is still a live group's
-// id, so any answer to kill(-pgid, 0) other than ESRCH means the group is the
-// one this attempt created -- and if the answer is ESRCH there is nobody to
-// signal and nothing is sent.
-func stopSurvivors(cmd *exec.Cmd, pgid int, grace time.Duration, stderr io.Writer) {
-	if pgid == 0 || !processGroupExists(pgid) {
+// Asking after the reap is safe exactly while the group is not empty, which is
+// what procgroup.Exists answers: a pid cannot be reused while it is still a
+// live group's id, and an empty group answers no, so nothing is sent.
+func stopSurvivors(name string, pgid int, grace time.Duration, stderr io.Writer) {
+	if !procgroup.Exists(pgid) {
 		return
 	}
-	_, _ = fmt.Fprintf(stderr, "bounded-list: %s left processes running in its group; stopping them.\n", cmd.Path)
-	stopProcessGroup(cmd, false)
+	_, _ = fmt.Fprintf(stderr, "bounded-list: %s left processes running in its group; stopping them.\n", name)
+	procgroup.Terminate(pgid)
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
-		if !processGroupExists(pgid) {
+		if !procgroup.Exists(pgid) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if processGroupExists(pgid) {
-		stopProcessGroup(cmd, true)
+	if procgroup.Exists(pgid) {
+		procgroup.Kill(pgid)
 	}
-}
-
-func exitCodeOf(err error) int {
-	if err == nil {
-		return 0
-	}
-	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
-		return exit.ExitCode()
-	}
-	return 1
-}
-
-func boundedListMain(args []string) int {
-	return boundedList(args, os.Stdout, os.Stderr)
 }
 
 // boundedListUsage is also where the exit statuses are written down, since a
@@ -256,6 +226,10 @@ Exit status:
   128+signal          this helper was interrupted and stopped the command
   2                   a usage error
 `
+
+func boundedListMain(args []string) int {
+	return boundedList(args, os.Stdout, os.Stderr)
+}
 
 // boundedList is the subcommand: run the command under the bound, retry a
 // timed-out attempt up to the attempt count, and write what it produced.
