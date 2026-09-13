@@ -1290,3 +1290,75 @@ The record-only minors go to the hardening list: no fixture exercises time-vs-PI
 same-ref group differs in both keys, and the writer correctly declined to add a fixture that could not
 fail); `chronologicalOrder` is a secondary check that the RED run never reaches; and the discarded parse
 error in the sort degrades deterministically to the next key, which the reviewer judged acceptable as-is.
+### Task 11 — ACCEPTED (`4a35e38f5d` + `9fb3e0c16d` + `10644e0366` + fix `eff8fb3a93`)
+
+Mounted resident controls in Settings → Hub. Frontend-only: a `daemonResidents` store and the
+`HubResidents` section, mounted in `hub.tsx` below `HubUpdates`. `4a35e38f5d` (parent `f5605bec25`) is 8
+files, +1366/−6 — the store and its tests, the component, its tests, a CSS module, and the `hub.tsx` /
+`hub.test.tsx` / `hubUpdates.test.tsx` mount and fixture updates. `9fb3e0c16d` (1 file, +2/−2) replaces a
+restricted `--attention-ink` token in the CSS module. `10644e0366` (2 files, +6/−4) corrects TypeScript
+types in the resident test mock handlers.
+
+**Independent review round 1** (separate provider and model from the writer) returned **spec issues /
+quality Needs fixes — 0 Critical, 4 Important, 5 Minor**, and ran a sabotage probe that came back **RED as
+required**, showing the force-stop retargeting test is genuinely regression-catching rather than merely
+present. It also adjudicated the three out-of-ownership test edits and judged all of them legitimate:
+`hubUpdates.test.tsx` keeps both assertions, `hub.test.tsx` updates rather than relaxes its expectations,
+and the `toBeDisabled`/`toBeEnabled` → `.disabled` matcher adaptation was verified equally strong. Those
+edits fall under the same forced-test-edit precedent as Task 8's goldens and Task 10's catalog/routing
+tests: a test pinning state a later task necessarily changes may be updated, so long as it is disclosed and
+no assertion is weakened.
+
+**Fix round 1 (`eff8fb3a93`, 2 files, +350/−22)** closed eight of the nine findings and recorded the ninth
+as a reasoned deferral. The substantive ones: the row now carries `identity.ref` in both its visible text
+and its `aria-label`, so same-name daemons are distinguishable and the plan's root-reference requirement
+(line 1246) holds outside the force-stop dialog; `lifecycle.blockers` render from the list snapshot rather
+than only after a failed retire attempt, with the blocker's `sessionId`/`delegateId` shown alongside the
+category, closing a gap where the fixture already supplied an ID that no test asserted; and both action
+paths now surface failures — the retire rejection and the previously fire-and-forget force-stop rejection,
+which had turned a documented `CodeConflict` stale-identity refusal into an unhandled rejection with no
+user feedback. The parent independently confirmed that last one is a real fix and not a catch writing to
+dead state: both catches set `actionErrors` keyed by generation (`hubResidents.tsx:152,176`), the row reads
+it back at `:239`, and it renders under `role="alert"` at `:314`. `M-6` was verified as a genuine clear
+rather than a never-set: the `[data]` effect deletes an entry when the daemon left the list **or** its
+lifecycle phase changed. The `M-8` tighteners are genuinely stronger, not merely different — each side of
+the former OR is now required, and the timeout assertions explicitly forbid the raw-millisecond rendering
+the old pattern would have accepted. `M-7` (`probeState` not rendered) is deferred to Task 12 with a reason
+recorded: there is no established detail-pane surface for it yet.
+
+**Scoped re-review of the fix: ACCEPTED — 0 Critical, 0 Important**, all findings ADDRESSED or
+DEFERRED-with-reason, and the reviewer's own focused `vitest run hubResidents.test.tsx` green at **18/18,
+exit 0**, up from 12 before the fix. It confirmed no collateral damage by re-deriving the test file's
+assertions and the commit's file list from the diff. The parent re-derived the two highest-risk claims
+independently rather than accepting the report's word for them.
+
+**Verification.** Parent gates on `eff8fb3a93`, both run by the parent and captured with `make`'s own exit
+status: `make test-web` exit 0 (PASS web-typecheck, web-test, web-lint) and canonical `make test` exit 0
+with all eight modules PASS — `.` 118.25s, `agent` 17.27s, `llm` 15.44s, `auth` 2.76s, `envvars` 1.00s,
+`invariant` 0.61s, `identifier` 2.03s, `web` 160.83s — zero `FAIL`, zero `SKIP`, zero compile-only false
+greens, recorded as `TESTWEB_EXIT=0` and `TEST_EXIT=0` in `parent-fix1-gates.log`. Tree clean.
+
+**A real evidence problem the review caught, and the run's recurring lesson.** The writer's own report had
+cited a *failing* `make test-web` log as its green proof; the review caught it, the claim was retracted, and
+the green evidence is now attributed to the parent's re-run. This is the fourth time on this run that a
+writer's stated gate result did not match its own retained log, and the second time the discrepancy was a
+green claim resting on a red log. The scoped re-reviewer then added a further record-only minor in the same
+vein: the writer's `fix1-make-test-web.log` and `fix1-make-test.log` are 50 and 174 bytes of bare PASS lines
+with no timestamps, HEAD hash, or captured exit codes — indistinguishable from hand-typed summaries and
+therefore unable to independently prove the command ran. The substance is carried by the parent's
+`parent-fix1-gates.log`, but the pattern is on the hardening list.
+
+**Process note.** Two consecutive scoped re-reviewers stalled on this task, both on the same
+provider/model, without producing a report. The first investigated past the point of diminishing returns
+and was unstuck by a nudge to write up immediately; the second stopped producing turns altogether — one
+round of reads and then nothing, with the nudge delivered but ineffective. The parent stopped it after
+confirming no artifact existed, and dispatched a replacement on a different provider *and* model family,
+which completed normally. The stall is a provider-reliability observation, not a property of the review
+task; the replacement's findings are the ones recorded above.
+
+**Environment limitation, unchanged and recorded:** `make test-web-browser` cannot run here (no Chrome
+available), so narrow-viewport geometry and real browser behavior remain covered only by the component
+tests and the `overflow-x: auto` CSS convention. Also carried to the hardening list: `M-7`'s deferral, the
+hand-summary gate logs above, and the pre-existing turn-end-before-fence-clear window noted under Task 9.
+
+Tasks 12 and 13 remain. At this point plan tasks 1–11 of 13 are complete and accepted.
