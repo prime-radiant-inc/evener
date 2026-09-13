@@ -686,7 +686,12 @@ run_bounded_package_list() {
 		list_pid="$!"
 		# Said from this side too, so no instant passes with an attempt running
 		# and a record that names nothing.
-		pgroup_record_spawned "$(package_list_pgid_path "$module")" "$list_pid" "$attempt_marker"
+		if ! pgroup_record_spawned "$(package_list_pgid_path "$module")" "$list_pid" "$attempt_marker"; then
+			printf 'run-module-tests.sh: could not record attempt %s beside %s; stopping it rather than running a package list nothing could name.\n' \
+				"$attempt" "$(package_list_pgid_path "$module")" >&2
+			stop_pid "$list_pid" "$PACKAGE_LIST_STOP_GRACE" || :
+			return 1
+		fi
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
 			if [ $((SECONDS - started_at)) -ge "$PACKAGE_LIST_TIMEOUT" ]; then

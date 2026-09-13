@@ -210,6 +210,31 @@ pgroup_signalable() {
 	return 0
 }
 
+# pid_signalable PID — 0 when PID is a process this caller may signal, 1 when it
+# is not, with the reason on stderr.
+#
+# The single-process counterpart of pgroup_signalable, and refused for the same
+# reasons: 0 and 1 are not jobs anyone here spawned, a non-number is a corrupt
+# record, and this caller must not signal itself.
+pid_signalable() {
+	local pid="$1"
+	case "$pid" in
+	'' | *[!0-9]*)
+		printf 'process-group-lib: refusing to signal pid %q: not a number.\n' "$pid" >&2
+		return 1
+		;;
+	esac
+	if [ "$pid" -le 1 ]; then
+		printf 'process-group-lib: refusing to signal pid %s: 0 and 1 are not jobs spawned here.\n' "$pid" >&2
+		return 1
+	fi
+	if [ "$pid" = "$$" ]; then
+		printf 'process-group-lib: refusing to signal pid %s: it is this caller itself.\n' "$pid" >&2
+		return 1
+	fi
+	return 0
+}
+
 # pgroup_owned_by PGID MARKER — 0 when PGID holds a live member running MARKER,
 # 1 when it holds none, 2 when the process listing would not run.
 #
@@ -385,13 +410,20 @@ stop_recorded_job() {
 # wait is the only thing a SIGTERM can be given. Escalating is not confirming —
 # the caller still owes its reader the fail-closed answer.
 escalate_blind() {
-	local pid="$1" grace="$2" group=1
+	local pid="$1" grace="$2" group=1 single=1
 	pgroup_signalable "$pid" || group=0
+	pid_signalable "$pid" || single=0
+	if [ "$group" -eq 0 ] && [ "$single" -eq 0 ]; then
+		# Neither spelling of this number may be signalled, so nothing was
+		# sent and the caller is owed the unknown it started with.
+		return 2
+	fi
 	[ "$group" -eq 1 ] && { kill -TERM -- -"$pid" 2>/dev/null || :; }
-	kill -TERM "$pid" 2>/dev/null || :
+	[ "$single" -eq 1 ] && { kill -TERM "$pid" 2>/dev/null || :; }
 	sleep "$grace"
 	[ "$group" -eq 1 ] && { kill -KILL -- -"$pid" 2>/dev/null || :; }
-	kill -KILL "$pid" 2>/dev/null || :
+	[ "$single" -eq 1 ] && { kill -KILL "$pid" 2>/dev/null || :; }
+	return 0
 }
 
 # stop_pgroup PGID GRACE — stop every member of PGID and prove
@@ -477,6 +509,7 @@ pid_is_running() {
 # exec that follows the split — so the pid is the whole of it.
 stop_pid() {
 	local pid="$1" grace="$2" signal waited ticks status
+	pid_signalable "$pid" || return 1
 	ticks=$((grace * 10))
 	for signal in TERM KILL; do
 		kill -"$signal" "$pid" 2>/dev/null || :

@@ -194,7 +194,12 @@ while :; do
 	attempt_pid=$!
 	# Said from this side too: between the fork and this line the attempt is
 	# running under a record that names nothing.
-	pgroup_record_spawned "$attempt_record" "$attempt_pid" "$attempt_marker"
+	if ! pgroup_record_spawned "$attempt_record" "$attempt_pid" "$attempt_marker"; then
+		printf 'install-golangci-lint.sh: could not record the attempt just spawned beside %s; stopping it rather than running an install nothing could name.\n' \
+			"$attempt_record" >&2
+		stop_pid "$attempt_pid" "$attempt_stop_grace" || :
+		exit 1
+	fi
 	attempt_status=0
 	wait "$attempt_pid" || attempt_status=$?
 	# Reaped, so both names for it go now, before the backoff below gives a
@@ -250,7 +255,7 @@ reported=" $(printf '%s' "$installed" | tr -s '[:space:]' ' ') "
 # The pin comes out of .tool-versions, so it is a string this script did not
 # choose, and a `case` pattern would let a `*` or a `?` in it match versions it
 # does not name. Quoting it inside [[ ]] compares the characters themselves.
-if [[ "$reported" != *" version $version "* ]]; then
+if [[ "$reported" != *" version "$version" "* ]]; then
 	printf 'install-golangci-lint.sh: %s/golangci-lint reports "%s", not the pinned v%s from %s\n' \
 		"$bindir" "$installed" "$version" "$repo_root/.tool-versions" >&2
 	exit 1
