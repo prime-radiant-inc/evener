@@ -2,9 +2,9 @@
 
 ## Status
 
-Approved in outline. Scope locked with Jesse on 2026-09-13, revised after four
-design reviews (roborev jobs 9855, 9876, 9885, 9890) and a simplify pass over
-four angles (reuse, simplification, efficiency, altitude):
+Approved in outline. Scope locked with Jesse on 2026-09-13, revised through five
+design-review passes (roborev jobs 9855, 9876, 9885, 9890, 9919) and a simplify
+pass over four angles (reuse, simplification, efficiency, altitude):
 
 - **Entities:** shell jobs (`job_…`) and stable delegates (`dlg_…`) get a link
   plus a hover card; evener watches (`watch_…`) get a hover card only.
@@ -108,25 +108,36 @@ decision that must first establish backend resolvability.
 Resolution is a derived view over state the current session already has. It
 adds no fetch engine, no cache layer, and no concurrency policy.
 
-### Ownership
+### Ownership and initial discovery
 
-The view owns no requests and no refresh. It is a read-only derived consumer of
-`activityPanelStore`'s retained tree, `ThreadModel.delegates[]`, and the loaded
-turns. It mounts no body, calls neither `refreshRoot` nor `listJobs`, and adds
-no freshness value.
+The view is a read-only derived consumer of `activityPanelStore`'s retained
+tree, `ThreadModel.delegates[]`, and the loaded turns. It adds no second cache
+and no freshness value of its own.
 
-It does not need to. `SessionChrome` always mounts `ActivityPanel` with
-`hideTrigger` and `refreshWhenHidden`, whose effect owns the per-session
-refresh and publishes the parsed tree into `activityPanelStore`
-(`ActivityPanel.tsx:323-352`). The tree is therefore maintained whenever a
-session pane's chrome is present. A second owner here is exactly what would
-force duplicate forced refreshes, so the design adds none.
+**Open decision for the plan: who performs initial discovery.** The chrome
+mount does not establish the summary. `ActivityPanel`'s background effect
+returns early while `!summary.established` (`ActivityPanel.tsx:335`), and only a
+`refreshRoot` call sets `established`; today that call comes from
+`ActivityPanelBody`, which mounts only when the Activity sheet is opened. On a
+fresh session whose activity panel was never opened, no tree is published and
+job entities would not resolve. This must be settled before implementation;
+two viable resolutions:
 
-Documented limitation: a bare read-only `transcript` pane mounts no session
-chrome, so it has no retained tree. Delegate and watch entities still resolve
-there (delegates arrive with the hydrated thread; watches come from loaded
-turns), but job entities do not. Giving that pane an activity owner is a
-follow-up, not part of this change.
+1. Let a body-less owner discover: extract the body's complete refresh effect
+   (its `retainedNonReady`/`unprovenFreshness` conditions, `force` handling, and
+   hydration dependency) into one shared hook, use it from both the body and a
+   body-less owner, and skip a forced refresh while `summary.loading` so
+   co-mounted owners cannot queue duplicate forced follow-ups.
+2. Accept the limitation: job entities resolve only after an activity panel for
+   the ref has been opened, and narrow the acceptance criteria accordingly.
+
+Option 1 is preferred because job ids are the headline case; option 2 is the
+fallback if the plan finds the shared hook too invasive.
+
+Read-only panes: a read-only `transcript` pane initiates no loading, but
+`activityPanelStore` is keyed by ref, so it consumes any tree already retained
+for that ref (for example while the owning session pane is open). Its
+resolution then matches the session pane's.
 
 ### Sources
 
@@ -157,12 +168,14 @@ One index exists per `(session ref, retained tree, delegates[])`, shared by
 every `EntityRef` on screen through a memoized selector or store subscription;
 inline references must not each flatten the tree.
 
-The watch fold keys on the loaded `job_watch` tool items, not on the turns
-array. `ThreadModel` has no turns version, and agent prose deltas replace that
-array, so keying on it would re-fold every loaded `job_watch` result on each
-delta. Key on the set of `job_watch` items (their ids plus completed state),
-which prose deltas do not change. Tool completion and older-history paging do
-change it, which is correct.
+The watch fold keys on its actual inputs, not on the turns array: `ThreadModel`
+has no turns version, and agent prose deltas replace that array, so keying on it
+would re-fold every loaded `job_watch` result on each delta. Key on the ordered
+watch-relevant inputs: each `job_watch` item's position, arguments, output,
+error, and completion state. Prose deltas do not change those; tool completion,
+output merged during paging, and full-snapshot replacement do, which is correct.
+Ids plus completion state alone are not sufficient, because a snapshot or a
+paging merge can enrich a completed item without changing either.
 
 ### State
 
@@ -314,8 +327,12 @@ resolves and navigates from a live `delegates[]` record without any tree row.
   `{kind: "ready", tree, staleError}` and `retainedActivityTree` still returns
   it, so already-shown cards remain and are marked stale from `staleError`. A
   first-load failure leaves no tree and no card.
-- Malformed or unparseable payload: no card, no link, no error surface. The view
-  never fetches, so it cannot retry; refresh belongs to the panel owner.
+- A retained `ended` tree carries no `staleError`. Treat it as ended, not
+  current: previously running activity must not read as live.
+- Staleness needs its own subscription. `staleError` can change while the tree
+  and delegates are byte-identical, so the index key cannot carry it; a
+  separate selector reads the load state for the indicator.
+- Malformed or unparseable payload: no card, no link, no error surface.
 - Truncated tree without the id: unresolved.
 
 ## Accessibility
@@ -344,25 +361,29 @@ tests).**
 Acceptance: resolution from loaded fixtures for all three kinds; resolution
 identical before and after a fold change (disclosure-independent index);
 revision-aware delegate selection including the tree-lacks-revision case; the
-live-only delegate branch cards and navigates from `EvenerDelegateInfo`; the
-view performs no requests and mounts no refresh owner (no `listJobs`, no
-`refreshRoot`, no body registration); one shared index per
-`(ref, tree, delegates)`; the watch fold does not re-run when only agent prose
-deltas change; a retained-tree refresh failure keeps cards and marks them stale;
-operation-aware watch normalization with field presence preserved; positional
-ordering across older-history paging; no resolution outside the current
-session's tree. `jobWatch`'s existing tests still pass after the extraction.
+live-only delegate branch yields a card entity and an open target from
+`EvenerDelegateInfo`; one shared index per `(ref, tree, delegates)`; the watch
+fold keys on ordered watch-relevant inputs and does not re-run on prose-only
+deltas; retained refresh failure yields stale metadata and a retained `ended`
+tree yields ended metadata (normalized, not rendered); operation-aware watch
+normalization with field presence preserved; positional ordering across
+older-history paging; no resolution outside the current session's tree. An
+integration case starts with empty activity stores and mounted session chrome
+and asserts the chosen initial-discovery behavior. `jobWatch`'s existing tests
+still pass after the extraction.
 
 **Stage 3 — shared interaction (`panes/session/transcript/EntityRef.tsx`,
 `panes/session/transcript/EntityText.tsx`, `widgets/hovercard/index.tsx`, the
 extracted Tooltip lifecycle hook + tests).**
 Acceptance: unresolved plain text; resolved trigger plus card; navigable entity
-adds exactly one `OpenButton`; `aria-describedby` on trigger and control; card
-shows/hides on hover/focus/leave/blur and portals; activating the `OpenButton`
-opens the pane with the correct `ref` and `parentRef` and reuses an already-open
-pane (assert against `workspaceStore`, as `agentFileLinks.test.tsx` does), while
-activating the id trigger does not navigate; `Tooltip`'s existing tests still
-pass after the lifecycle extraction.
+adds exactly one `OpenButton`; a refresh-failed entity renders a stale card and
+an ended-tree entity renders ended, both without a live indicator;
+`aria-describedby` on trigger and control; card shows/hides on
+hover/focus/leave/blur and portals; activating the `OpenButton` opens the pane
+with the correct `ref` and `parentRef` and reuses an already-open pane (assert
+against `workspaceStore`, as `agentFileLinks.test.tsx` does), while activating
+the id trigger does not navigate; `Tooltip`'s existing tests still pass after
+the lifecycle extraction.
 
 **Stage 4 — structured fields (`tools/jobTools.tsx`, `tools/jobWatch.tsx`,
 `tools/delegateStatus.tsx`).**
