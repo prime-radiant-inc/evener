@@ -4,6 +4,41 @@ Deferred review findings from PR #1070's roborev rounds, cheapest first. PR #107
 shared-notes/human-whiteboard and session-URL work itself; this branch picks up the findings that
 were deliberately left out of it.
 
+## Status
+
+Closed on `shared-notes-followups` (PR #1249) unless noted; hashes are on that branch.
+
+- **1** — fixed in `99fb9b8089`: the per-row Remove button is disabled while its request is in
+  flight, and an entry already absent from `model.sessionUrls` counts as a successful removal.
+- **2, 7** — fixed in `24a4a433c3` (merged in `fe3c249fc0`): the delayed save samples the instance
+  identity inside `save()` after hydration, so a rotation the client has already observed saves
+  against the current instance. The daemon's `ExpectedInstanceID` fence remains the authority.
+- **3** — not fixed: accepted limitation, per Jesse's ruling.
+- **4** — fixed in `e113febe21` (merged in `0a9f86926c`): `urlsCarrierGeneration` split out of
+  `notesCarrierGeneration`, so each carrier fences only the fields it wrote and neither can drop
+  the other's newer sample.
+- **5** — fixed in `53d83a21da`: `normalizeNote` strips C0, DEL, and C1 after its whitespace
+  collapse, covering the human note, the agent note, and every URL label; both unknown-id error
+  echoes now quote the id. Write-path fix: text persisted before it is not re-sanitized.
+- **6** — closed without a code change; see the note on the item below.
+- **8, 9** — fixed in `a30b1ab8e3` (merged in `80747e1a0`): readers take one atomic load of a
+  published committed notes cut (human note, agent note, URL list, ever-projected flag), and a
+  notes mutator publishes only after its metadata save returns nil, so a tentative value can no
+  longer reach `Meta()`, the projection snapshot, or `notes_read`, and no reader can straddle a
+  mutation. The metadata write itself persists the live staged store, because that write is the
+  mutation's durability point.
+- **10, 11** — fixed in `655bac680f`: character references are parsed completely (any number of
+  case-insensitive `amp;` layers, a required `;`, a named or numeric base, and a resolved value
+  that really is an angle bracket) and rewritten to the canonical `&lt;`/`&gt;` spelling, so
+  nesting depth stops buying anything and the pass is idempotent; text such as `?a=1&ltd=2` is
+  left alone. Recorded residual: a reader that decodes one layer still sees `<` from the canonical
+  spelling, exactly as it already did from a literally-typed `<`.
+- **12** — fixed in `1f7c3f07e3`: `conversationSignals` excludes `schema.TurnNotesContext`
+  alongside the hook-execution and environment turns.
+- **13** — fixed in `481c34b2d8`: the past-session roster reads the top-level `human_note` through
+  the lightweight projection reader (`ReadPersistedHumanNote`) instead of decoding and validating
+  a journal-sized snapshot per entry; the strict reader remains the authority everywhere else.
+
 ## 1. `handleRemoveURL` in-flight guard (Low)
 
 `cmd/evener-hub/frontend/src/panes/session/chrome/NotesPanel.tsx` — a double-click on Remove sends
@@ -51,6 +86,11 @@ malicious control-sequence input.
 
 `agent/session_notes.go` (`canonicalSessionURL`) — a bare `a:b.md` is rejected as a URI scheme
 before the in-scope path fallback runs. Try `canonicalFilePath` before rejecting a colon name.
+
+Resolved without a code change: the rejection is the deliberate defense against `javascript:`,
+`data:`, `mailto:` and friends (there is no exhaustive scheme list to check against), so review
+round 14 kept the semantics and made the contract honest instead — `DefUrlsAdd` documents the colon
+rule and the error names the `./` escape hatch. See Status.
 
 ## 7. `blurHumanNote` captures the instance before hydration (Low)
 
