@@ -159,6 +159,24 @@ func (r *Registry) ApplyLive(instance string, rows []Model) {
 	r.live[instance] = listing
 }
 
+// SnapshotLive returns the cached live listings by instance, for carriers
+// like a registry reload that must preserve them across a fresh object.
+// ApplyLive restores each entry; the round trip keeps exactly the chat ids
+// with their advertised facts.
+func (r *Registry) SnapshotLive() map[string][]Model {
+	r.liveMu.RLock()
+	defer r.liveMu.RUnlock()
+	out := make(map[string][]Model, len(r.live))
+	for instance, listing := range r.live {
+		rows := make([]Model, 0, len(listing.rows))
+		for _, id := range sortedKeys(listing.rows) {
+			rows = append(rows, listing.rows[id])
+		}
+		out[instance] = rows
+	}
+	return out
+}
+
 // LiveModels returns the cached live listing of an instance, sorted by id.
 func (r *Registry) LiveModels(instance string) []Model {
 	r.liveMu.RLock()

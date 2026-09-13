@@ -70,10 +70,22 @@ describe("model toggles", () => {
     expect(h.onToggleModel).toHaveBeenCalledWith("gpt-4o", false);
   });
 
-  test("no models section when the instance carries no inventory", () => {
+  test("models section shows the refresh button even when the instance carries no inventory", () => {
     credentialsStore.setState({ instances: [{ ...entry(), models: undefined }], availableProviders: [] });
     render(<InstanceSheet name="work" {...handlers()} />);
-    expect(screen.queryByText("Models")).toBeNull();
+    expect(screen.getByText("Models")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh live models" })).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  test("refresh button renders even when the instance carries no inventory", () => {
+    const h = handlers();
+    credentialsStore.setState({ instances: [{ ...entry(), models: undefined }], availableProviders: [] });
+    render(<InstanceSheet name="work" {...h} />);
+    expect(screen.getByText("Models")).toBeTruthy();
+    const button = screen.getByRole("button", { name: "Refresh live models" });
+    fireEvent.click(button);
+    expect(h.onRefreshModels).toHaveBeenCalledTimes(1);
   });
 
   test("refresh button delegates to the section owner and disables while refreshing", () => {

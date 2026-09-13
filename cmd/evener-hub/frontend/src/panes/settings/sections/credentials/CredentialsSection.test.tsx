@@ -621,6 +621,31 @@ describe("model live refresh", () => {
     await within(inspector).findByRole("switch", { name: "claude-live-new" });
   });
 
+  test("an instance with no inventory still offers the Refresh button", async () => {
+    const fake = connectFakeClient();
+    const bare = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
+    fake.on("evener/instance/list", () => ({ instances: [bare], availableProviders: [] }));
+    fake.on("evener/instance/refreshModels", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return {
+        instances: [{ ...bare, models: [{ id: "claude-live-new" }] }],
+        availableProviders: [],
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/refreshModels")).toBe(true));
+    await within(inspector).findByRole("switch", { name: "claude-live-new" });
+  });
+
   test("a refresh failure toasts and keeps the cached rows", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);

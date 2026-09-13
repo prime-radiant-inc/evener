@@ -48,7 +48,7 @@ func TestInstances_SetModelDisabledLiveOnlyID(t *testing.T) {
 	if err := f.ctl.reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	f.ctl.reg.Get().ApplyLive("base", []registry.Model{{ID: "claude-live-new"}})
+	f.ctl.reg.Get().ApplyLive("base", []registry.Model{{ID: "claude-live-new"}, {ID: "claude-live-sibling"}})
 	got := entry(t, f.ctl.List(), "base")
 	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "claude-live-new" && !m.Disabled }) {
 		t.Fatalf("entry models = %+v, want live-only id listed enabled", got.Models)
@@ -63,6 +63,12 @@ func TestInstances_SetModelDisabledLiveOnlyID(t *testing.T) {
 	// The authored exact row precedes live lookup, so the toggle takes effect.
 	if _, err := f.ctl.reg.Get().Resolve("base/claude-live-new"); !errors.Is(err, registry.ErrModelDisabled) {
 		t.Fatalf("Resolve after live disable = %v, want ErrModelDisabled", err)
+	}
+	// The toggle's Reload swaps in a fresh registry: the sibling live-only
+	// id fetched earlier must survive it in the returned inventory.
+	got = entry(t, f.ctl.List(), "base")
+	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "claude-live-sibling" }) {
+		t.Fatalf("entry models = %+v, want sibling live id to survive the toggle reload", got.Models)
 	}
 }
 

@@ -217,6 +217,23 @@ func TestInstanceModels_SkipsAliasRows(t *testing.T) {
 	}
 }
 
+func TestSnapshotLive_RoundTripsListings(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	r.ApplyLive("anthropic", []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}})
+	snap := r.SnapshotLive()
+	rows, ok := snap["anthropic"]
+	if !ok || len(rows) != 1 || rows[0].ID != "claude-live-new" {
+		t.Fatalf("SnapshotLive = %+v, want the single chat id", snap)
+	}
+	r2 := fixtureLoad(t, nil, "")
+	for inst, models := range snap {
+		r2.ApplyLive(inst, models)
+	}
+	if got := r2.LiveModels("anthropic"); len(got) != 1 || got[0].ID != "claude-live-new" {
+		t.Fatalf("restored live = %+v, want claude-live-new", got)
+	}
+}
+
 func TestMarshalConfig_RoundTripsDisabled(t *testing.T) {
 	l := &Layer{Tag: LayerConfig, Providers: map[string]Provider{
 		"work": {ID: "work", Base: "openai", Models: map[string]Model{

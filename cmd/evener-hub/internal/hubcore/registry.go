@@ -34,23 +34,39 @@ func NewProviderRegistry(load RegistryLoader) *ProviderRegistry {
 // Reload re-reads the registry and returns the load error, if any. A failing
 // user layer leaves the holder on an implicit-only registry so sessions still
 // launch, and the error is what refuses instance writes until the file is
-// fixed.
+// fixed. Cached live listings carry over to the fresh object either way, so
+// an instance write never wipes what background prefetch and manual
+// refreshes already fetched.
 func (h *ProviderRegistry) Reload() error {
 	r, _, err := h.load()
 	if err != nil {
 		fallback, _, ferr := h.load(registry.WithNoUserLayer())
 		h.mu.Lock()
 		defer h.mu.Unlock()
+		old := h.current
 		h.loadErr = err
 		if ferr == nil {
+			carryLive(old, fallback)
 			h.current = fallback
 		}
 		return err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	carryLive(h.current, r)
 	h.current, h.loadErr = r, nil
 	return nil
+}
+
+// carryLive re-applies old's cached live listings onto r. Both nil-safe;
+// ApplyLive re-filters, so the round trip is idempotent.
+func carryLive(old, r *registry.Registry) {
+	if old == nil || r == nil {
+		return
+	}
+	for instance, rows := range old.SnapshotLive() {
+		r.ApplyLive(instance, rows)
+	}
 }
 
 // Get returns the registry currently held; nil before the first successful load.

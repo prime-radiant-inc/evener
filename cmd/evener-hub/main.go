@@ -505,8 +505,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// held registry once at startup and every livePrefetchInterval after,
 	// so the Providers sheet reads cached inventory instead of fetching on
 	// open. Best-effort per instance; a provider that is down keeps its
-	// catalog rows until the next tick.
-	startLiveModelsPrefetch(ctx, hubReg, livePrefetchInterval, startBackground)
+	// catalog rows until the next tick. A pass that changes what any
+	// client shows announces it over the reused instance channel, so every
+	// browser refetches its list; a no-op pass stays silent.
+	startLiveModelsPrefetch(ctx, hubReg, livePrefetchInterval, startBackground, func() {
+		notifyInstanceUpdated(web.appRPC)
+	})
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{

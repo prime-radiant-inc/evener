@@ -316,8 +316,10 @@ export function InstanceSheet({
   const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !instance.implicit);
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
-  // The sheet's per-model toggles read the registry's own inventory; an
-  // instance with no rows (or an older hub that sends none) shows no section.
+  // The sheet's per-model toggles read the registry's own inventory. The
+  // Models section always renders - with its Refresh button - so an
+  // instance whose live listing has not arrived yet still offers a manual
+  // re-fetch; only the toggles need rows.
   const models = instance?.models ?? [];
   const safeTestResult = testCredentialsResult
     ? safeCredentialTestResult(name ?? "", testCredentialsResult)
@@ -471,7 +473,7 @@ export function InstanceSheet({
               fired in that window goes out against the name the write is
               moving away from - and the credential ones would recreate under
               it the orphan the rename just moved. */}
-          {models.length > 0 && (
+          {instance !== undefined && (
             <>
               <h3>Models</h3>
               <div className={CLASS.fullRow}>
