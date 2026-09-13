@@ -17,7 +17,7 @@ import type {
   ModelDescriptor,
   Thread,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
+import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/protocol/composerInput";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
 import {
   type CreationDraft,
