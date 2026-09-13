@@ -90,6 +90,21 @@ func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir strin
 	return &hubInstancesController{reg: auth.reg, providersConfigPath: tomlPath, auth: auth}
 }
 
+// unkeyableStateRoot puts an obstacle where the fingerprint key file belongs: a
+// non-empty directory, which cannot be read as a key, created around, or
+// removed, so the hub has none and omits every fingerprint. An *empty*
+// directory would not do - the key loader repairs a state root it can reach.
+func unkeyableStateRoot(t *testing.T, stateDir string) {
+	t.Helper()
+	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", path, err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "obstacle"), []byte("in the way"), 0o600); err != nil {
+		t.Fatalf("WriteFile(obstacle): %v", err)
+	}
+}
+
 // pinEndpointFingerprintKey gives a state root a fixed fingerprint key, so a
 // corpus that compares a committed file byte for byte has the same digests on
 // every run. A state root without one gets its own key, created there and
@@ -1446,11 +1461,148 @@ func TestInstances_EndpointFingerprintIsOmittedWithoutAKey(t *testing.T) {
 	}
 	// A directory where the key file belongs: neither reading nor creating it
 	// can succeed, which is the shape of a state root the hub cannot key under.
-	if err := os.Mkdir(filepath.Join(f.stateDir, endpointFingerprintKeyFile), 0o700); err != nil {
-		t.Fatalf("Mkdir(%s): %v", endpointFingerprintKeyFile, err)
-	}
+	unkeyableStateRoot(t, f.stateDir)
 	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
 		t.Fatalf("EndpointFingerprint = %q, want it omitted when no key is available", got)
+	}
+}
+
+// A curated provider with no credential yet has no instance, but the listing
+// still advertises a setup entry for it whose endpoint fingerprint is built by
+// resolving the provider. A client asserting that value has to be answered from
+// the same lookup, or the first key for every credential-requiring provider
+// could never be saved: the hub would compute no fingerprint and call the
+// write a conflict.
+func TestInstances_ApiKeySetAcceptsTheFingerprintTheCatalogueAdvertises(t *testing.T) {
+	// No ANTHROPIC_API_KEY and no stored key: anthropic has no instance here.
+	f := newInstancesFixture(t, map[string]string{"ANTHROPIC_API_KEY": ""})
+	var setup *appwire.InstanceEntry
+	for _, p := range f.ctl.List().AvailableProviders {
+		if p.ID == "anthropic" {
+			setup = p.Setup
+			break
+		}
+	}
+	if setup == nil {
+		t.Fatal("the listing carries no setup entry for anthropic")
+	}
+	if setup.EndpointFingerprint == "" {
+		t.Fatal("the setup entry advertises no endpoint fingerprint to assert")
+	}
+	if _, ok := f.ctl.reg.Get().Instance("anthropic"); ok {
+		t.Fatal("fixture drift: anthropic must have no instance without a credential")
+	}
+
+	// The check is live for such a provider, not skipped: a form opened on a
+	// different endpoint is still refused. Without the resolution fallback the
+	// hub would have no fingerprint to compare and would let this through.
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "anthropic",
+		Value:                       "sk-ant-stale",
+		ExpectedEndpointFingerprint: "an-endpoint-this-name-does-not-resolve-to",
+	}); err == nil {
+		t.Fatal("ApiKeySet accepted a stale assertion for an uncredentialed provider")
+	}
+	if v, ok := f.store.Get("anthropic"); ok {
+		t.Fatalf("stored key = %q, want nothing stored for the stale assertion", v)
+	}
+
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "anthropic",
+		Value:                       "sk-ant-first",
+		ExpectedEndpointFingerprint: setup.EndpointFingerprint,
+	}); err != nil {
+		t.Fatalf("ApiKeySet refused the endpoint the catalogue advertises: %v", err)
+	}
+	if v, _ := f.store.Get("anthropic"); v != "sk-ant-first" {
+		t.Fatalf("stored key = %q, want the first key for the provider to land", v)
+	}
+}
+
+// A key file that is there but empty is a corrupt one, and treating it as "no
+// key" would fail the endpoint-change protection open without a word. The hub
+// replaces it, so the listing keeps serving fingerprints a client can compare.
+func TestInstances_EndpointFingerprintRepairsAnEmptyKeyFile(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	if err := os.WriteFile(keyPath, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
+		t.Fatal("an empty key file left the endpoint fingerprint omitted")
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("the empty key file was left in place")
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("the repaired key file is %v, want 0600", perm)
+	}
+}
+
+// A credential write that landed must not be reported as failed because the
+// config it belongs to cannot be loaded: the secret is stored either way, and a
+// caller told it failed retypes one the hub already has. The reload failure
+// stays visible where it belongs - as the registry's own state, which is what
+// carries the diagnostics and refuses instance writes (spec §10).
+func TestInstances_ApiKeySetLandsWhenTheRegistryCannotReload(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// An entry that parses but cannot resolve an endpoint (#711): the reload
+	// that follows the write fails.
+	raw, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-landed"}); err != nil {
+		t.Fatalf("ApiKeySet reported a failure for a write that landed: %v", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-landed" {
+		t.Fatalf("stored key = %q, want the write to have landed", v)
+	}
+	if !f.ctl.reg.WritesRefused() {
+		t.Fatal("the reload failure is no longer visible as the registry's own state")
+	}
+}
+
+// An assertion the hub cannot check is not a refusal. With no usable key the
+// hub computes no fingerprint for any name, and a write whose endpoint nobody
+// can describe has to land rather than be reported as moved.
+func TestInstances_ApiKeySetDoesNotConflictWhenTheHubCannotFingerprint(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A directory where the key file belongs: neither reading nor creating it
+	// can succeed, so every fingerprint is omitted.
+	unkeyableStateRoot(t, f.stateDir)
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
+		t.Fatalf("EndpointFingerprint = %q, want it omitted with no usable key", got)
+	}
+
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "work",
+		Value:                       "sk-unchecked",
+		ExpectedEndpointFingerprint: "asserted-by-a-form-the-hub-cannot-describe",
+	}); err != nil {
+		t.Fatalf("ApiKeySet refused an assertion it cannot check: %v", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-unchecked" {
+		t.Fatalf("stored key = %q, want the write to land", v)
 	}
 }
 

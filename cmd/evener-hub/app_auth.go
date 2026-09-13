@@ -320,9 +320,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	c.mu.Lock()
 	delete(c.flows, flowID)
 	c.mu.Unlock()
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthLoginCompleteResponse{}, err
-	}
+	c.refreshAfterCredentialWrite()
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
@@ -376,9 +374,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	}); err != nil {
 		return appwire.AuthLogoutResponse{}, err
 	}
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthLogoutResponse{}, err
-	}
+	c.refreshAfterCredentialWrite()
 	if !codex {
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
 		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
@@ -423,6 +419,20 @@ func (c *hubAuthController) reloadRegistry() error {
 		return nil
 	}
 	return c.credentialWrite(func() error { return c.reg.Reload() })
+}
+
+// refreshAfterCredentialWrite re-derives the instance set after a credential
+// changed: a key that has just been stored can make an implicit instance exist,
+// and clearing one can take it away (spec §5.1).
+//
+// A reload failure is deliberately not returned. The credential is stored
+// either way, so failing the response would report a landed write as lost and
+// have the caller retype one the hub already has. The failure is not lost
+// either: reloadRegistry leaves it on the registry, which is where the pane
+// reads it (Diagnostics) and where instance writes are refused until the file
+// loads (WritesRefused, spec §10).
+func (c *hubAuthController) refreshAfterCredentialWrite() {
+	_ = c.reloadRegistry()
 }
 
 // List is what the credentials pane renders: one row per curated implicit
@@ -498,9 +508,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthStatusResponse{}, err
-	}
+	c.refreshAfterCredentialWrite()
 	return c.Status(appwire.AuthStatusParams{Provider: name})
 }
 
@@ -519,9 +527,7 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	if err := c.credentialWrite(func() error { return c.clearCredential(name) }); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthStatusResponse{}, err
-	}
+	c.refreshAfterCredentialWrite()
 	return c.Status(appwire.AuthStatusParams{Provider: name})
 }
 
@@ -656,9 +662,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	c.mu.Lock()
 	delete(c.deviceFlows, flowID)
 	c.mu.Unlock()
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthDevicePollResponse{}, err
-	}
+	c.refreshAfterCredentialWrite()
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
@@ -737,14 +741,26 @@ func (c *hubAuthController) nameIsConnectable(name string) bool {
 
 // endpointFingerprintFor is the endpoint fingerprint a client was shown for
 // name, asked of the same registry the write lands against. Empty when the name
-// resolves to no endpoint here - which is also what a client that asserts
-// nothing sends.
+// resolves to no endpoint here, or when the hub has no key to digest with -
+// which is also what a client that asserts nothing sends.
 func (c *hubAuthController) endpointFingerprintFor(name string) string {
 	r := c.registry()
 	if r == nil {
 		return ""
 	}
-	inst, ok := r.Instance(name)
+	if inst, ok := r.Instance(name); ok {
+		return endpointFingerprint(c.stateDir, inst.BaseURL)
+	}
+	// A curated provider with no instance yet - no credential - is still listed,
+	// with a setup entry whose fingerprint is built by resolving the provider.
+	// A client asserts that value, so this answers from the same lookup List
+	// uses; anything else would refuse the first key for every provider that
+	// needs one.
+	p, ok := r.Provider(name)
+	if !ok {
+		return ""
+	}
+	inst, ok := resolvedInstanceFor(r, name, p.Hidden)
 	if !ok {
 		return ""
 	}
@@ -762,7 +778,15 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 	if asserted == "" {
 		return nil
 	}
-	if current := c.endpointFingerprintFor(name); current != asserted {
+	current := c.endpointFingerprintFor(name)
+	// No fingerprint to compare means the hub cannot say where this name points
+	// - no registry, no usable key, nothing resolvable - and refusing on that
+	// would block a write whose endpoint nobody disputed. The name itself is
+	// still judged by nameIsConnectable beside this call.
+	if current == "" {
+		return nil
+	}
+	if current != asserted {
 		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
 	}
 	return nil
@@ -816,9 +840,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthStatusResponse{}, err
-	}
+	c.refreshAfterCredentialWrite()
 	return c.Status(appwire.AuthStatusParams{Provider: name})
 }
 

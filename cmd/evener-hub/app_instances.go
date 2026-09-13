@@ -81,22 +81,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 			var setup *appwire.InstanceEntry
 			inst, addressable := r.Instance(id)
 			if !addressable {
-				if resolved, err := r.ResolveInstance(id); err == nil {
-					// Resolve also addresses implicit providers with no credential
-					// or incomplete destination. Copy listing metadata only, never
-					// the resolved credential value or either headers map.
-					inst = registry.Instance{
-						Name: resolved.Instance, ProviderID: resolved.ProviderID,
-						Protocol: resolved.Protocol, Surface: resolved.Surface,
-						Auth: resolved.Transport.Auth, Implicit: true, Hidden: p.Hidden,
-						CredentialSource: resolved.Credential.Source,
-						ShadowedEnvVar:   resolved.ShadowedEnvVar, Warnings: resolved.Warnings,
-					}
-					if !p.Hidden {
-						inst.BaseURL = resolved.Transport.BaseURL
-					}
-					addressable = true
-				}
+				inst, addressable = resolvedInstanceFor(r, id, p.Hidden)
 			}
 			if addressable {
 				var authored *registry.Provider
@@ -132,6 +117,34 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 		// the pane cannot offer an edit this controller would reject.
 		WritesRefused: c.refuseWhenBroken() != nil,
 	}
+}
+
+// resolvedInstanceFor is the listing view of a curated provider that has no
+// instance of its own - no credential yet, or no complete destination. Resolve
+// reaches those; the copy carries listing metadata only, never the resolved
+// credential value or either headers map. A hidden provider keeps an empty
+// BaseURL, the same suppression the sanitized copy makes.
+//
+// The credential write's endpoint assertion reads this too: a client asserts
+// the fingerprint of the entry it was shown, so the value it is checked against
+// has to come from the same resolution - otherwise the first key for a
+// credential-requiring provider would be refused as a moved endpoint.
+func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry.Instance, bool) {
+	resolved, err := r.ResolveInstance(id)
+	if err != nil {
+		return registry.Instance{}, false
+	}
+	inst := registry.Instance{
+		Name: resolved.Instance, ProviderID: resolved.ProviderID,
+		Protocol: resolved.Protocol, Surface: resolved.Surface,
+		Auth: resolved.Transport.Auth, Implicit: true, Hidden: hidden,
+		CredentialSource: resolved.Credential.Source,
+		ShadowedEnvVar:   resolved.ShadowedEnvVar, Warnings: resolved.Warnings,
+	}
+	if !hidden {
+		inst.BaseURL = resolved.Transport.BaseURL
+	}
+	return inst, true
 }
 
 // entryFor is the wire view of one instance: the registry's own description,
@@ -289,7 +302,7 @@ func endpointFingerprintKey(stateDir string) []byte {
 	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
 	key, err := readEndpointFingerprintKey(path)
 	if err != nil {
-		key, err = createEndpointFingerprintKey(path)
+		key, err = repairEndpointFingerprintKey(path)
 		if err != nil {
 			return nil
 		}
@@ -306,36 +319,58 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []byte(strings.TrimSpace(string(raw))), nil
-}
-
-// createEndpointFingerprintKey writes a fresh 32-byte key at 0600. O_EXCL is
-// what keeps two hubs racing to create it from each ending up with a different
-// key, which would leave them disagreeing about every fingerprint.
-func createEndpointFingerprintKey(path string) ([]byte, error) {
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return nil, err
-	}
-	key := []byte(base64.RawURLEncoding.EncodeToString(raw[:]))
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return readEndpointFingerprintKey(path)
-		}
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(key); err != nil {
-		return nil, err
-	}
-	if err := f.Sync(); err != nil {
-		return nil, err
+	key := []byte(strings.TrimSpace(string(raw)))
+	if len(key) == 0 {
+		// A file that is there but empty is a corrupt one (an operator's
+		// placeholder, a truncated write). Reporting it as "no key" would fail
+		// the endpoint-change protection open without a word, so the caller
+		// replaces it instead.
+		return nil, fmt.Errorf("%s is empty", path)
 	}
 	return key, nil
+}
+
+// repairEndpointFingerprintKey puts a usable key at path: it creates one where
+// there is none, and replaces a corrupt one. O_EXCL is why a key another hub
+// wrote first is used as-is - two hubs must not each key their own digests -
+// and a file that exists but is not usable is removed so the next attempt can
+// write a fresh one.
+func repairEndpointFingerprintKey(path string) ([]byte, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return nil, err
+		}
+		key := []byte(base64.RawURLEncoding.EncodeToString(raw[:]))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			if _, err := f.Write(key); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			if err := f.Sync(); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			if err := f.Close(); err != nil {
+				return nil, err
+			}
+			return key, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if existing, readErr := readEndpointFingerprintKey(path); readErr == nil {
+			return existing, nil
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			return nil, removeErr
+		}
+	}
+	return nil, fmt.Errorf("%s is not a usable endpoint fingerprint key", path)
 }
 
 // writeLoadable is the invariant every mutation holds: a providers.toml the
