@@ -442,6 +442,11 @@ only behavioral changes are the four fixes above, each pinned red-before /
 green-after by its named test.
 ## Third post-PR-review fix round (2026-09-13, PR #1168 head d04a8cc5ed)
 
+The head this round produced is `922b557885695102c46e1ff9fcb1bf5d662a0f4f` (the
+header names the baseline the round's findings were raised against, following
+the convention of the two rounds above). See the fourth-round section below for
+the rebase that superseded it.
+
 This round resumed after the previous agent was stopped having run ZERO tests
 and written NO test file, leaving uncommitted scaffolding (a
 `SkillInputRecord.Prepared` carrier plus `recordPreparedSelection` wiring whose
@@ -527,3 +532,119 @@ No assertion, filter, pairing, or tolerance was weakened in this round. The
 pre-existing QueueStrip edit test's call assertion was updated to the new
 three-argument `onRestoreToComposer` contract with its restored-text and
 loser-safe-ordering assertions unchanged.
+
+## Fourth post-PR-review round: rebase onto main + review findings (2026-09-13)
+
+### Rebase onto main (Jesse's ruling)
+
+`origin/main` had advanced to `e2c77cc72e38101f92c52110ec69982a6c94bf3f`
+while the branch sat at `922b557885`. The branch was rebased onto that commit;
+the safety branch `pre-r4-922b557885` preserves the old head. Both the rebase's
+conflict resolution and this round's fixes were performed by the orchestrator
+after two workers failed (an openrouter credit error mid-rebase, and a worker
+that made no progress in 25 minutes).
+
+The decisive fact for resolving every conflict: main contains none of this
+feature's compaction-claim machinery — `claimCompactionLocked`,
+`foldPublicationID`, and the `foldCommit` extensions are all ours — while both
+sides extend the shared `foldCommit` struct. So the rule throughout was: main's
+newer structure wins, and our semantics are re-applied on top. Concretely:
+
+- `foldCommit` = main's `resetEnvContextTrackerLocked` plus our fields, with our
+  parameterless `claimCompactionLocked func()` (our final intent; commit
+  `5762e87f4c` carried the older `func(publicationID string)` form, which its
+  child `6e5d09b3f3` superseded).
+- `pushQueueHead` keeps main's error-returning signature with our
+  `inputHasContent(entry.Text, entry.Images, entry.SkillNames)` check.
+- the drain path keeps main's `refuseBeforeClaimingOnPoisonedTranscript`
+  refusal and our `inputHasContent(queued.Text, queued.Images, queued.SkillNames)`.
+- the user-input turn keeps main's `appendUserInputTurnRefusingPoison` flow with
+  our `buildSelectedUserInputMessage(input, images, skillInputNames(skillInput))`.
+- the accepted-turn re-push keeps main's `returnAcceptedUserTurn(queuedIdentity)`:
+  our `SkillNames` preservation already lives inside
+  `completeClientMutationTurnWithState`.
+- the queued-mutation turn keeps main's `appendEnvironmentContext` error handling
+  with our `buildSelectedUserInputMessage(queued.Text, queued.Images, queued.SkillNames)`.
+
+Integrity audit: `git range-diff a361254ab2..pre-r4-922b557885 e2c77cc72e..bb8bbf8596`
+reports no dropped (`<`) and no added (`>`) patches, and exactly six patches whose
+content changed (12, 15, 16, 17, 22, 35) — the six conflicts. `go build ./...`
+exits 0; `git merge-base --is-ancestor e2c77cc72e HEAD` holds.
+
+### F1 (Medium, a regression the third round introduced) — FIXED
+
+Editing a queued entry with no skill selection threw a `TypeError`: the daemon
+emits a JSON `null` slot for that entry, and the guard only excluded
+`undefined`. The throw landed after the text was written, so the entry was
+duplicated behind a spurious error toast and never cancelled.
+
+- Fix: `Composer.tsx`'s guard is now
+  `if (restoredSkillNames && restoredSkillNames.length > 0)` — null-safe and
+  narrowing. (The reviewer's suggested `(restoredSkillNames?.length ?? 0) > 0`
+  is runtime-safe but does not narrow the type and fails `tsc`; see the gate
+  table.)
+- RED test (new): `Composer.integration.test.tsx`, "clicking Edit on a queued
+  entry whose daemon skillNames slot is null restores the text and still cancels
+  it" — the real composed Composer+QueueStrip tree with `skillNames: [null]`, the
+  shape the daemon actually emits. Observed RED (text restored, `turn/cancelQueued`
+  never fired), then GREEN; reverting the one-line fix in place returns it to RED.
+
+### F2 (Low, coverage gap) — FIXED
+
+New `TestSkillActivation_FailedPreparationIsNotReDeliveredAtRestore` pins that a
+record whose preparation failed (nil `Prepared`) is never re-delivered at
+restore. It is deliberately discriminating: the selected source is unavailable
+when the steering message is consumed (so preparation fails) and available again
+before the restart, so a reconcile that wrongly re-drove the failure would
+succeed and deliver it. It also pins its own premise (one typed input record,
+zero prepared invocations, zero live and zero persisted obligations).
+Load-bearing proof by mutation: with reconcile temporarily changed to re-drive
+from `input.Names` when `Prepared` is empty, the test fails with
+`restored obligations = [{InvocationID:mutant-redelivery ... Identity:{Name:no-such-skill ...}}], want none`;
+reverted, it passes and the production file is byte-identical.
+
+### F3 (Low, documentation) — FIXED
+
+The third-round section above now states the head that round produced
+(`922b557885`) alongside its baseline header.
+
+### Gates on the final head
+
+Each gate was run serially and its own exit status captured directly (`make`
+followed immediately by reading `$?` — never a trailing `echo`, which masked a
+real `lint-gofmt` failure earlier in this delivery).
+
+First run — four passed, three failed:
+
+| Gate | Exit | Duration |
+| --- | --- | --- |
+| `make generate` (zero-diff) | 0 | 1s |
+| `make fuzz` | 0 | 206s |
+| `make test-api-package` | 0 | 3s |
+| `make vet` | 0 | 6s |
+| `make merge-approval-gate` | 2 | 2s |
+| `make test-web` | 2 | 192s |
+| `TMPDIR=/tmp make test-web-browser` | 2 | 255s |
+
+The three failures were real and two were this round's own work:
+`FAIL lint-gofmt` on `agent/session_compaction.go` (a doc comment left over-indented
+inside a conflict hunk); `web-typecheck` `TS18048: 'restoredSkillNames' is
+possibly 'undefined'` (the first guard form does not narrow); and `web-skillguard`
+"expected two live sessions in the rail, found 0" — the rail-row race this
+delivery has recorded as load-induced, but not assumed to be one without evidence.
+
+After fixing the formatting and the guard, re-run on the final head:
+
+| Gate | Exit | Duration |
+| --- | --- | --- |
+| `make merge-approval-gate` | 0 | 1154s |
+| `make test-web` | 0 | 188s |
+| `TMPDIR=/tmp make test-web-browser` (all six guards PASS, incl. `web-skillguard`) | 0 | 199s |
+
+The only differences between the two browser runs were the Go comment
+formatting and the composer guard, neither of which touches the session rail;
+the guard passed on re-run, so the first failure was the known flake. Both
+results are recorded here rather than only the green one.
+
+No assertion, filter, pairing, or tolerance was weakened in this round. The
+`generate` gate stayed zero-diff across both runs.
