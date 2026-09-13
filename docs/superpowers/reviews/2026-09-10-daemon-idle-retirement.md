@@ -1362,3 +1362,51 @@ tests and the `overflow-x: auto` CSS convention. Also carried to the hardening l
 hand-summary gate logs above, and the pre-existing turn-end-before-fence-clear window noted under Task 9.
 
 Tasks 12 and 13 remain. At this point plan tasks 1–11 of 13 are complete and accepted.
+
+#### Correction: the "no Chrome" environment limitation recorded above was wrong
+
+The Task 11 entry above states that `make test-web-browser` cannot run here because no Chrome is
+available, and carries that forward as an environment limitation. **That is incorrect and is retracted.**
+It had been inherited through several tasks and recorded without ever being tested. The parent finally
+tested it before dispatching Task 12, because Task 12's acceptance bar explicitly requires real browser
+evidence.
+
+Chrome is installed: `/usr/bin/google-chrome`, `/usr/bin/google-chrome-stable`, and `/opt/google/chrome`
+all exist.
+
+The gate does fail under the default sandbox `TMPDIR`, but for an unrelated and narrower reason, and it is
+not a missing browser. All five guards abort with Chrome's own fatal error:
+
+```
+FATAL:chrome/browser/process_singleton_posix.cc:313] Socket path too long:
+  .../com.google.Chrome.<rand>/SingletonSocket
+```
+
+`scripts/web/test-web-browser.sh` hands each guard a private `TMPDIR="$guard_dir/tmp"` nested under a scratch
+root, and Chrome's process-singleton Unix socket must fit `sun_path` (108 bytes on Linux); the default
+sandbox root makes the path about 141 bytes.
+
+Running the gate with a short `TMPDIR` makes it work:
+
+```sh
+TMPDIR=/tmp/eb make test-web-browser
+```
+
+All five guards PASS with `BROWSER_EXIT=0` (parent-run, `make`'s own exit status captured directly, log
+`.superpowers/sdd/2026-09-10-daemon-idle-retirement/task-12-preflight-browser-shorttmp.log`). The guards do
+real work rather than short-circuiting: running `transcriptscrollguard` directly under the same short
+scratch printed its actual measurement — "transcript 14172px in a 700px scroll port (42 turns); pill appeared
+on a native scroll away; jump settled at the true bottom (bottomGap 0px, pill gone, held 30 frames)".
+
+**Consequences, stated plainly.** First, Task 11's `M-9` hardening note is narrower than recorded: the
+component-level keyboard-focus assertion was genuinely added, but narrow-viewport overflow is *not*
+unverifiable here, it was merely not run — the real browser guard is available. Second, Task 12's stated
+acceptance bar has not been weakened by the environment, so Task 12 is expected to produce the real browser
+evidence the plan requires rather than a deferral. Third, this is a process failure worth naming: an
+untested environmental claim sat in the permanent record for several tasks and would have been used to
+justify skipping the browser half of two more tasks. Environmental limitations must be tested before they
+are recorded.
+
+The parent also hit the run's own documented trap while establishing this: the first probe command ended in
+`echo | tee`, so the job reported `exit_zero` while the gate had actually exited 2. Reading the log caught
+it. Capture `make`'s own exit status, not a trailing `echo`'s — that rule applies to the parent too.
