@@ -136,6 +136,7 @@ async function qualify() {
     "AppwireClientLike",
     "WebSocketLike",
     "AskAnswerItem",
+    "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
     "ItemFailureSignals",
