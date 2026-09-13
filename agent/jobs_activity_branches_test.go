@@ -435,7 +435,7 @@ func TestTrimActivityTreeToFit(t *testing.T) {
 			Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})}},
 		},
 	}
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0)
+	got, err := trimActivityTreeToFit(tree, "root", 0, 0, 0, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 			Entries: entries,
 		},
 	}
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0)
+	got, err := trimActivityTreeToFit(tree, "root", 0, 0, 0, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,10 +484,10 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 func TestTrimActivityTrailingEntry_EmptyReturnsFalse(t *testing.T) {
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}
-	if trimActivityTrailingEntry(session, "root", nil, 0, nil, 0) {
+	if trimActivityTrailingEntry(session, "root", nil, 0, 0, 0, nil, 0) {
 		t.Error("empty entries should return false")
 	}
-	if trimActivityTrailingEntry(nil, "root", nil, 0, nil, 0) {
+	if trimActivityTrailingEntry(nil, "root", nil, 0, 0, 0, nil, 0) {
 		t.Error("nil session should return false")
 	}
 }
@@ -506,7 +506,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
 		},
 	}
-	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0) {
+	if !trimActivityTrailingEntry(session, "root", nil, 0, 0, 0, nil, 0) {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	// The recursive call trims the child's entry and returns true; the
@@ -547,7 +547,7 @@ func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 		},
 	}
 	jobsEpochs := map[string]uint64{"root": 7, "child": 42}
-	if !trimActivityTrailingEntry(session, "root", nil, 9, jobsEpochs, 17) {
+	if !trimActivityTrailingEntry(session, "root", nil, 0, 0, 9, jobsEpochs, 17) {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	if child.Branch.Continuation == "" {

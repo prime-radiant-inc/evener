@@ -715,7 +715,7 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 	// collectActivityJobsEpochs and trimActivityTrailingEntry. revision is
 	// the same value just seeded into budget.revision above, embedded the
 	// same way in whatever continuation trimming mints too.
-	return trimActivityTreeToFit(tree, rootID, snapshot.DelegatesEpoch, collectActivityJobsEpochs(snapshot), revision)
+	return trimActivityTreeToFit(tree, rootID, startDepth, resumeIndex, snapshot.DelegatesEpoch, collectActivityJobsEpochs(snapshot), revision)
 }
 
 // collectActivityJobsEpochs walks snapshot's Children tree and returns
@@ -1311,10 +1311,12 @@ func activityBranchComplete(branch appwire.JobActivityBranchState) bool {
 }
 
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
-// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs, and
-// revision feed every continuation trimming mints — see
-// trimActivityTrailingEntry.
-func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) (appwire.JobActivityTree, error) {
+// encodes within activityMaxEncodedBytes. startDepth/resumeIndex are
+// projectBoundedActivityTree's own projection inputs, threaded through so a
+// minted continuation can name an ABSOLUTE entry index — see
+// trimActivityTrailingEntry. delegatesEpoch, jobsEpochs, and revision feed
+// every continuation trimming mints.
+func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, startDepth, resumeIndex int, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) (appwire.JobActivityTree, error) {
 	for {
 		recomputeActivitySession(&tree.Root)
 		raw, err := json.Marshal(tree)
@@ -1324,7 +1326,7 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
-		if !trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision) {
+		if !trimActivityTrailingEntry(&tree.Root, rootID, nil, startDepth, resumeIndex, delegatesEpoch, jobsEpochs, revision) {
 			return tree, nil
 		}
 	}
@@ -1343,19 +1345,34 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 // Carrying all three lets a resumed continuation's staleness check
 // actually detect a rewrite — or, for a live root, a mutation — that raced
 // this trim.
-func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) bool {
+//
+// depth and resumeIndex are projectActivitySessionAt's own projection inputs,
+// not trimming's: depth is the same counter projection walked the tree with
+// (starting at startDepth, +1 per delegate hop), and resumeIndex is how many
+// of the continuation TARGET's leading entries projection skipped. Only the
+// target sits at depth 0 — projectActivitySessionAt applies resumeIndex there
+// and nowhere else — so the entry this session loses is named absolutely by
+// resumeIndex+i for the target and by i alone for every other visited session.
+func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, depth, resumeIndex int, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) bool {
 	if session == nil || len(session.Entries) == 0 {
 		return false
 	}
 	i := len(session.Entries) - 1
 	entry := &session.Entries[i]
 	if entry.Delegate != nil && entry.Delegate.Child != nil {
-		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision) {
+		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), depth+1, resumeIndex, delegatesEpoch, jobsEpochs, revision) {
 			return true
 		}
 	}
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
+	// i is a position within the ALREADY-RESUMED page. Add the page's resume
+	// offset back for the one session projection applied it to, or a trim on
+	// page 2+ mints an index pointing back inside the page just returned and
+	// paging repeats it forever.
+	if depth == 0 {
+		i += resumeIndex
+	}
 	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
 		Version:        activityContinuationV1,
 		RootID:         rootID,

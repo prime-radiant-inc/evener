@@ -1042,3 +1042,78 @@ func TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOve
 		}
 	}
 }
+
+// TestLoadSessionJobActivityTree_SizeTrimResumeIndexAdvancesAcrossPages is the
+// 60-job form of the walk above: enough ordinary jobs, each large enough that
+// a page size-trims, that page 2 or later must trim BEFORE returning every
+// remaining entry. trimActivityTrailingEntry mints the continuation's
+// ResumeIndex from the trimmed entry's position in the ALREADY-RESUMED page;
+// if that index is page-relative rather than the session's absolute entry
+// index, the minted token points back inside the page just returned and the
+// next page repeats it forever. The 20-job fixture never trims on page 2, so
+// only a strictly advancing token across this longer walk can see it. The
+// observable assertion: every page's minted ResumeIndex is strictly greater
+// than the previous page's, ending at the last job with zero overlap and zero
+// gap.
+func TestLoadSessionJobActivityTree_SizeTrimResumeIndexAdvancesAcrossPages(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "advancingtrimroot"
+	const jobCount = 60
+	description := strings.Repeat("d", 250_000)
+	var events []jobstore.Event
+	for i := range jobCount {
+		ts := time.Unix(int64(100+i), 0).UTC()
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	continuation := ""
+	lastResumeIndex := -1
+	pages := 0
+	for {
+		pages++
+		if pages > jobCount+1 {
+			t.Fatalf("too many pages (%d) without terminating -- resume is looping instead of advancing", pages)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		if tree.Root.Branch.Continuation == "" {
+			break
+		}
+		cont, err := decodeActivityContinuation(tree.Root.Branch.Continuation, rootID)
+		if err != nil {
+			t.Fatalf("page %d decode continuation: %v", pages, err)
+		}
+		if cont.ResumeIndex <= lastResumeIndex {
+			t.Fatalf("page %d minted ResumeIndex %d, which did not advance past the previous page's %d -- the minted index points back inside the page just returned, so paging repeats", pages, cont.ResumeIndex, lastResumeIndex)
+		}
+		lastResumeIndex = cont.ResumeIndex
+		continuation = tree.Root.Branch.Continuation
+	}
+	if pages < 2 {
+		t.Fatalf("got %d page(s), want at least 2 -- the fixture must be large enough to force a size trim", pages)
+	}
+	if len(delivered) != jobCount {
+		t.Fatalf("delivered %d entries across %d pages, want exactly %d (zero overlap, zero gap): %v", len(delivered), pages, jobCount, delivered)
+	}
+	for i, id := range delivered {
+		want := fmt.Sprintf("job_%02d", i)
+		if id != want {
+			t.Fatalf("delivered[%d] = %q, want %q -- entries must arrive in order across pages with zero overlap and zero gap: %v", i, id, want, delivered)
+		}
+	}
+}
