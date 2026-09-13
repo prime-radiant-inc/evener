@@ -50,11 +50,12 @@ type APIAttemptResponse struct {
 }
 
 type Usage struct {
-	InputTokens      *int `json:"input_tokens,omitempty"`
-	OutputTokens     *int `json:"output_tokens,omitempty"`
-	TotalTokens      *int `json:"total_tokens,omitempty"`
-	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+	InputTokens        *int `json:"input_tokens,omitempty"`
+	OutputTokens       *int `json:"output_tokens,omitempty"`
+	TotalTokens        *int `json:"total_tokens,omitempty"`
+	CacheReadTokens    *int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens   *int `json:"cache_write_tokens,omitempty"`
+	CacheWrite1hTokens *int `json:"cache_write_1h_tokens,omitempty"`
 }
 
 type APIAttemptRecord struct {
@@ -220,6 +221,9 @@ func (u Usage) validate() error {
 	}
 	if u.CacheWriteTokens != nil && *u.CacheWriteTokens < 0 {
 		return errors.New("cache-write token usage must be non-negative")
+	}
+	if u.CacheWrite1hTokens != nil && *u.CacheWrite1hTokens < 0 {
+		return errors.New("1-hour cache-write token usage must be non-negative")
 	}
 	return nil
 }
