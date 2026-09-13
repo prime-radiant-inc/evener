@@ -1,12 +1,14 @@
 /* The slack-lean speaker treatment for the user's own messages
  * (docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md, decisions
- * 1, 2, 5). No bubble, no right-alignment: the whole message is one flex row
- * - a 24px avatar tile beside a content column whose first line is the
- * speaker header (avatar + "You" + clock time, actions right-anchored) - so
- * speaker identity reads as structure, the way a chat app's avatar column
- * does. There is deliberately NO breakpoint in this file: the avatar stays
- * inline in the header row at every width; the responsive gutter media query
- * belongs to turnblock.module.css (decision 4).
+ * 1, 2, 5). No right-alignment: the whole message is one flex row - a 24px
+ * avatar tile beside a content column whose first line is the speaker header
+ * (avatar + "You" + clock time, actions right-anchored) - so speaker
+ * identity reads as structure, the way a chat app's avatar column does.
+ * The user's words keep the restored option-B accent bubble (see .body):
+ * header structure plus bubble containment, not header alone. There is
+ * deliberately NO breakpoint in this file: the avatar stays inline in the
+ * header row at every width; the responsive gutter media query belongs to
+ * turnblock.module.css (decision 4).
  *
  * Decision 5, recorded: the body text is --ink-hi, reversing the old
  * tiered-density demotion ("the user knows what they said", which muted it
