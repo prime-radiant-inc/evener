@@ -37,6 +37,8 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // it. It joins the entry point when it takes a base-URL and fetch port.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
 export { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+export type { ItemFailureSignals } from "./itemFailure";
+export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
 export type {
