@@ -50,7 +50,26 @@ export function describeMissingCoverage(expected, reported, dir) {
   ].join("\n");
 }
 
+const USAGE = `package-coverage.mjs - assert every compiled AppWire package module is scored.
+
+Usage: node scripts/package-coverage.mjs
+
+Run it only after a FULL coverage run: \`vitest run --coverage\` with no file
+filter. A targeted run loads only the modules its filter reaches, so every other
+package module is legitimately absent from the report and this check would fail
+on work that run never measured. That is why \`npm run test:coverage\` skips it
+whenever it is given arguments of its own.`;
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const args = process.argv.slice(2);
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(USAGE);
+    process.exit(0);
+  }
+  if (args.length > 0) {
+    console.error(`unexpected argument: ${args[0]}\n\n${USAGE}`);
+    process.exit(2);
+  }
   const summaryPath = path.join(frontend, "coverage", "coverage-summary.json");
   let summary;
   try {

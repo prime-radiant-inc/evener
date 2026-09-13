@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -254,4 +256,45 @@ test("describeCwdRelativeReads ignores a path literal that no filesystem call re
     describeCwdRelativeReads([file], () => source, dir),
     "",
   );
+});
+
+test("describeCwdRelativeReads sees fs reached through require and dynamic import", () => {
+  const file = path.join(dir, "a.ts");
+  for (const header of [
+    'const fs = require("fs");',
+    'const fs = require("node:fs");',
+    'const fs = await import("node:fs/promises");',
+    'import fs from "fs";',
+  ]) {
+    const source = `${header}\nconst text = fs.readFileSync(join("..", "testdata", "x.json"), "utf8");\n`;
+    assert.match(
+      describeCwdRelativeReads([file], () => source, dir),
+      /a\.ts:2/,
+      header,
+    );
+  }
+});
+
+test("describeCwdRelativeReads also catches a ./-prefixed literal", () => {
+  const file = path.join(dir, "a.ts");
+  const source = 'import { readFileSync } from "node:fs";\nconst text = readFileSync("./responses.json", "utf8");\n';
+  assert.match(
+    describeCwdRelativeReads([file], () => source, dir),
+    /a\.ts:2/,
+  );
+});
+
+test("describeProofRun matches when one side reaches the file through a symlink", (t) => {
+  const scratch = mkdtempSync(path.join(os.tmpdir(), "appwire-realpath-"));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const realDir = path.join(scratch, "real");
+  mkdirSync(realDir);
+  const realFile = path.join(realDir, "a.test.ts");
+  writeFileSync(realFile, "// fixture\n");
+  const linkDir = path.join(scratch, "link");
+  symlinkSync(realDir, linkDir);
+  const viaLink = path.join(linkDir, "a.test.ts");
+  const report = { numTotalTests: 1, numFailedTests: 0, testResults: [{ name: viaLink }] };
+  assert.equal(describeProofRun(report, realFile, realDir), "");
+  assert.equal(describeProofRun({ ...report, testResults: [{ name: realFile }] }, viaLink, linkDir), "");
 });

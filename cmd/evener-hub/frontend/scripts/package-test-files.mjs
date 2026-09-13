@@ -12,7 +12,7 @@
 // resolve from outside the Vitest root, which is a transform-time error a
 // collected-but-never-executed file hides.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -50,15 +50,19 @@ const APP_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'][^"']*cmd\/evener-
 // answered the question. testing/hubWireFixtures.ts read
 // `join("..", "testdata", "authwire", "responses.json")` against the frontend's
 // CWD; it lives in the app now, which is the other way to satisfy this.
-const FS_PATH_CALL = /\b(?:join|resolve|readFileSync|readFile|readdirSync|readdir|existsSync|createReadStream|statSync|stat|openSync|open)\s*\(/;
+const FS_PATH_CALL =
+  /\b(?:join|resolve|readFileSync|readFile|readdirSync|readdir|existsSync|createReadStream|statSync|stat|openSync|open)\s*\(/;
 const MODULE_SPECIFIER = /^\s*(?:import\b|export\b[^=]*\bfrom\b|.*\brequire\s*\()/;
-const RELATIVE_PATH_LITERAL = /["'](?:\.\.["'/]|[^"']*\btestdata\b)/;
+const RELATIVE_PATH_LITERAL = /["'](?:\.{1,2}["'/]|[^"']*\btestdata\b)/;
+// `import fs from "node:fs"`, `require("fs")` and `await import("node:fs")`
+// all reach the filesystem; matching only the first let the other two through.
+const FS_MODULE = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'](?:node:)?fs(?:\/promises)?["']/;
 
 export function describeCwdRelativeReads(files, read, dir) {
   const offenders = [];
   for (const file of files) {
     const source = read(file);
-    if (!/from\s+["']node:fs(?:\/promises)?["']/.test(source)) continue;
+    if (!FS_MODULE.test(source)) continue;
     if (source.includes("import.meta.url")) continue;
     source.split("\n").forEach((line, index) => {
       if (MODULE_SPECIFIER.test(line)) return;
@@ -125,11 +129,25 @@ export function pickProofFile(files, read) {
 // collected the file and executed nothing reports numTotalTests 0 and would
 // otherwise read as a pass.
 export function describeProofRun(report, file, dir) {
-  // Compare on the path relative to the package, not on the absolute string:
-  // the reporter and this process can reach the same file by different
-  // prefixes (a symlinked worktree, /var vs /private/var), and an inequality
-  // there would read as "never executed".
-  const key = (name) => path.relative(dir, path.resolve(name));
+  // Compare on the real path relative to the package, not on the absolute
+  // string: the reporter and this process can reach the same file by different
+  // prefixes (a symlinked worktree, /var against /private/var on macOS), and an
+  // inequality there would read as "never executed". realpathSync throws for a
+  // path that does not exist, which for this comparison is the same answer as
+  // "a different file", so fall back to the unresolved form.
+  // A path that does not exist has no real path, and for this comparison that
+  // is the same answer as "a different file". Only that case falls back: any
+  // other error is a bug here and has to be loud, because a silent fallback
+  // turns a broken comparison into a wrong verdict.
+  const real = (name) => {
+    try {
+      return realpathSync(name);
+    } catch (err) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+      return path.resolve(name);
+    }
+  };
+  const key = (name) => path.relative(real(dir), real(name));
   const ran = report.testResults?.some((result) => key(result.name) === key(file)) ?? false;
   if (!ran)
     return `${path.basename(file)} was not executed - the JSON report names ${(report.testResults ?? []).length} other file(s)`;
