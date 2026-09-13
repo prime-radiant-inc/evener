@@ -282,7 +282,9 @@ done
 module_test_flags() {
 	local m="$1" flag
 	for flag in ${flag_args[@]+"${flag_args[@]}"}; do
-		if [ "$m" = "." ] && [ "$ROOT_FULL" -ne 0 ] && [ "$flag" = "-short" ]; then
+		# Through go_flag, because `--short` and `-short` are the same flag to
+		# go and ROOT_FULL means to drop it however the caller spelled it.
+		if [ "$m" = "." ] && [ "$ROOT_FULL" -ne 0 ] && [ "$(go_flag "$flag")" = "-short" ]; then
 			continue
 		fi
 		printf '%s\n' "$flag"
