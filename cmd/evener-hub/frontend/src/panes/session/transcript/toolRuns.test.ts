@@ -3,13 +3,18 @@ import type { ItemModel } from "../../../protocol/model";
 import type { ProjectedEntry } from "../../../transcriptDisplay/projector";
 import { foldToolRuns, runLabel, type ToolRun } from "./toolRuns";
 
-const tool = (id: string, toolName: string, status = "completed"): Extract<ProjectedEntry, { kind: "item" }> => ({
+const tool = (
+  id: string,
+  toolName: string,
+  status = "completed",
+  overrides: Partial<ItemModel> = {},
+): Extract<ProjectedEntry, { kind: "item" }> => ({
   kind: "item",
   id,
   turnId: "t1",
   sourceIndex: 0,
   isMessage: false,
-  item: { id, turnId: "t1", type: "commandExecution", text: "", toolName, status } as ItemModel,
+  item: { id, turnId: "t1", type: "commandExecution", text: "", toolName, status, ...overrides } as ItemModel,
 });
 
 const message = (id: string): Extract<ProjectedEntry, { kind: "item" }> => ({
@@ -153,4 +158,29 @@ test("the label hands the working-directory context to the summary, as an expand
   });
   expect(runLabel(run as never, descriptorFor, { cwd: "/repo" })).toBe("3 steps · Ran ls");
   expect(runLabel(run as never, descriptorFor)).toBe("3 steps · Ran cd /repo && ls");
+});
+
+// The fold rule breaks a run on a failure, and a failure is whatever the
+// shared settled-item predicate says it is - not a second, looser reading of
+// the same wire fields.
+test("a settled call that exited nonzero is a failure and breaks the run", () => {
+  const out = foldToolRuns(
+    [
+      tool("a", "read_file"),
+      tool("b", "read_file"),
+      tool("c", "read_file", "completed", { exitCode: 1 }),
+      tool("d", "read_file"),
+    ],
+    { turnSettled: true, descriptorFor },
+  );
+  expect(out.map((e) => e.kind)).toEqual(["item", "item", "item", "item"]);
+});
+
+test("a whitespace-only error is not a failure and folds like any other quiet call", () => {
+  const out = foldToolRuns(
+    [tool("a", "read_file", "completed", { error: "  \n " }), tool("b", "read_file"), tool("c", "read_file")],
+    { turnSettled: true, descriptorFor },
+  );
+  expect(out.map((e) => e.kind)).toEqual(["run"]);
+  expect((out[0] as ToolRun).entries.map((e) => e.id)).toEqual(["a", "b", "c"]);
 });

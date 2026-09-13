@@ -1,3 +1,4 @@
+import { hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "../protocol/itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "../protocol/model";
 import {
   type ContentVector,
@@ -138,22 +139,10 @@ function isMessage(item: ItemModel): boolean {
   return MESSAGE_TYPES.has(item.type);
 }
 
-function isNonZeroExit(item: ItemModel): boolean {
-  return typeof item.exitCode === "number" && item.exitCode !== 0;
-}
-
-function hasFailureStatus(item: ItemModel): boolean {
-  return item.status === "failed" || item.status === "interrupted";
-}
-
-function hasItemFailure(item: ItemModel): boolean {
-  return (item.error !== undefined && item.error.trim() !== "") || hasFailureStatus(item) || isNonZeroExit(item);
-}
-
 function isActiveItem(item: ItemModel, turn: TurnModel): boolean {
-  // Current wire status is `inProgress`. The turn check covers an older or
-  // partial item frame that has not carried its item status yet.
-  return item.status === "inProgress" || (turn.status === "inProgress" && item.status === undefined);
+  // The turn check covers an older or partial item frame that has not carried
+  // its item status yet.
+  return isInProgressStatus(item.status) || (isInProgressStatus(turn.status) && item.status === undefined);
 }
 
 function isTerminalTurn(turn: TurnModel): boolean {
@@ -168,7 +157,7 @@ function isTerminalTurn(turn: TurnModel): boolean {
 // carry a stale `inProgress` reasoning item in a snapshot or a race, and the
 // loader must not pulse for an agent that is no longer thinking.
 function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
-  return turn.status === "inProgress" && isActiveItem(item, turn) && turn.items[turn.items.length - 1] === item;
+  return isInProgressStatus(turn.status) && isActiveItem(item, turn) && turn.items[turn.items.length - 1] === item;
 }
 
 function itemSummary(item: ItemModel): string {
