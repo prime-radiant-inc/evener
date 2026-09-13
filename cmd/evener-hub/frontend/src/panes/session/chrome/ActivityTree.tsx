@@ -20,12 +20,6 @@ import {
   type ActivityTree as ActivityTreeData,
   activityNodeID,
 } from "../../../protocol/activityData";
-import { Button, Chevron } from "../../../widgets";
-import { requireClass } from "../../../widgets/internal/requireClass";
-import { OpenTranscriptButton } from "../transcript/openTranscript";
-import { ActivityRowDetail } from "./ActivityRowDetail";
-import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
-import styles from "./activitypanel.module.css";
 import {
   type ActivityDelegateRow,
   type ActivityFoldRow,
@@ -34,7 +28,13 @@ import {
   activityDelegateState,
   buildActivityRows,
   jobIsFailed,
-} from "./activityRows";
+} from "../../../protocol/activityRows";
+import { Button, Chevron } from "../../../widgets";
+import { requireClass } from "../../../widgets/internal/requireClass";
+import { OpenTranscriptButton } from "../transcript/openTranscript";
+import { ActivityRowDetail } from "./ActivityRowDetail";
+import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
+import styles from "./activitypanel.module.css";
 
 export interface ActivityTreeProps {
   tree: ActivityTreeData;

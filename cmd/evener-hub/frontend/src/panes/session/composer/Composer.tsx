@@ -32,6 +32,7 @@ import {
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
+import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
@@ -88,7 +89,6 @@ import {
   spliceSlashCommand,
 } from "./slashCompletion";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
   ref: string;

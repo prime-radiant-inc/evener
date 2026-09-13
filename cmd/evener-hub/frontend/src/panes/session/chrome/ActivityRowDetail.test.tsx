@@ -2,10 +2,10 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "../../../protocol/activityData";
+import type { ActivityDelegateRow, ActivityJobRow } from "../../../protocol/activityRows";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { ActivityRowDetail } from "./ActivityRowDetail";
-import type { ActivityDelegateRow, ActivityJobRow } from "./activityRows";
 
 // Pinned clock: every quiet-age assertion below measures against this instant.
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
