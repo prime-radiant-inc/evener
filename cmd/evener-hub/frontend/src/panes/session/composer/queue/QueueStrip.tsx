@@ -232,7 +232,12 @@ export function QueueStrip({
     }
   }
 
-  async function handleEdit(index: number, entryId: string, fullText: string, skillNames?: readonly string[]): Promise<void> {
+  async function handleEdit(
+    index: number,
+    entryId: string,
+    fullText: string,
+    skillNames?: readonly string[],
+  ): Promise<void> {
     setRowBusy(entryId, true);
     try {
       // FIRST - loser-safe: the user's text is safely in the composer
