@@ -264,6 +264,10 @@ export function chromeProfileEnvironment(profileDir, environment = process.env) 
 // too. createChromeProfileDir bounds the profile so the derived socket path
 // always fits.
 export const CHROME_SOCKET_PATH_LIMIT = 107;
+// The branding component for a Google Chrome build. A Chromium build names its
+// singleton directory org.chromium.Chromium instead (4 bytes longer), which
+// only bites when a caller's prefix is trimmed to the very last byte under a
+// long ambient TMPDIR.
 const CHROME_SINGLETON_SUFFIX = "/com.google.Chrome.XXXXXX/SingletonSocket";
 // Node's mkdtemp appends this many random characters to its prefix.
 const CHROME_PROFILE_RANDOM_CHARS = 6;
@@ -336,7 +340,13 @@ export function createChromeProfileDir(
   let lastError = null;
   for (const root of candidates) {
     if (platform !== "win32" && !exists(root)) continue;
-    const prefix = trimToByteBudget(profilePrefix, maxProfilePrefixBytes(root, socketLimit));
+    // win32 has no sun_path to fit, so keep the caller's whole identifying
+    // prefix there; this matches the win32 exemptions on the existence check
+    // below and on the fit check after mkdtemp.
+    const prefix =
+      platform === "win32"
+        ? profilePrefix
+        : trimToByteBudget(profilePrefix, maxProfilePrefixBytes(root, socketLimit));
     let dir;
     try {
       // Keep a trailing separator when the prefix was trimmed away so mkdtemp
