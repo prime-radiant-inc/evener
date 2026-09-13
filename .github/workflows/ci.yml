@@ -132,7 +132,7 @@ jobs:
       - name: Lint repository structure, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint-generated lint-naming lint-gofmt lint-internal secret-scan
+        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports secret-scan
 
   # Both fuzz consistency checks are fast, static AST analyses over the same
   # target manifest and registry inputs; running them in one lane pays a

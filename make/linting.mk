@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-cache-clean secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-cache-clean secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -209,7 +209,27 @@ lint-generated:
 lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
+# lint-package-imports keeps the AppWire TypeScript package addressed by its
+# package name. A relative path into appwire-client/typescript/ typechecks and
+# bundles exactly as well as @evener/appwire-client, so nothing else in the
+# tree notices one reappearing - and each one is a line that has to be
+# rewritten again the next time the package moves, which is the coupling the
+# SDK migration exists to remove.
+## Fail if a web or native import names the AppWire TypeScript package by
+## path instead of by its package name.
+## proves: Every import of the package in cmd/evener-hub/frontend/src,
+##   mobile-native and mobile/src spells it @evener/appwire-client (or one of
+##   its two in-repo subpaths), and the six carved-out
+##   mobile-native/scripts/*.mts imports still never name the directory the
+##   package moved out of.
+## trigger: Required CI (via make lint); local pre-merge. Well under a second.
+## requires: None beyond a POSIX shell and grep.
+## fails-when: Any import specifier in those trees contains protocol/ or
+##   appwire-client/typescript/.
+lint-package-imports:
+	$(call run_quiet_lint,scripts/sdk/package-import-paths-check.sh)
+
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, and secrets.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
