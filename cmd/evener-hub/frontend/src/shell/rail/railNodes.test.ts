@@ -173,6 +173,19 @@ describe("resource projection semantics", () => {
     expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", count: 2, suffix: "more watches", pages: [] });
   });
 
+  test("marks the watch overflow row passive: it can reveal nothing by activating", () => {
+    // The inline cap is local to the rail and the wire already carried every
+    // watch, so there is no page behind "+N more watches". The row must be an
+    // honest count, not a control that looks actionable and no-ops.
+    const root = session({
+      ref: "root",
+      row_id: "root",
+      watches: ["w1", "w2", "w3", "w4", "w5"].map((id) => watch({ id })),
+    });
+    const [node] = sessionNodes([root], closed);
+    expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", suffix: "more watches", pages: [], passive: true });
+  });
+
   test("counts a session's own armed watches once, never a descendant's", () => {
     const child = session({
       ref: "child",

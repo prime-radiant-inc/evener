@@ -1,8 +1,11 @@
 import { expect, test } from "vitest";
+import type { NavigationSessionSummary, NavigationWatchSummary } from "../../protocol/types.gen";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "./codec";
-import { relativeAge, selectRailModel } from "./selectors";
+import { relativeAge, selectRailModel, selectSessionWatches } from "./selectors";
+import { navigationStore } from "./store";
 import {
   isSettledGone,
+  keyID,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   navigationViewScope,
@@ -224,4 +227,56 @@ test("a settled gone tombstone counts, a stale retained one does not", () => {
   expect(isSettledGone(tombstone(true))).toBe(false);
   expect(isSettledGone(undefined)).toBe(false);
   expect(isSettledGone(null)).toBe(false);
+});
+
+function watchesState(title: string, watches: NavigationWatchSummary[]): ReturnType<typeof navigationStore.getState> {
+  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  const summary = {
+    ref: "local:s",
+    host_id: "local",
+    session_id: "s",
+    title,
+    project: "p",
+    state: "idle",
+    kind: "session",
+    live: true,
+    watches,
+    children: [],
+  } as unknown as NavigationSessionSummary;
+  const resource: ResourceState = {
+    key: sectionKey,
+    data: { sessions: [summary] },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "tag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  return { ...navigationStore.getState(), resources: new Map([[keyID(sectionKey), resource]]) };
+}
+
+// SessionPanelPane selects its watches through this helper so it re-renders
+// only when its OWN session's watch content changes. That contract is array
+// identity: unrelated navigation churn must return the same reference, and a
+// real change must return a new one.
+test("selectSessionWatches keeps identity across unrelated navigation churn", () => {
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  const first = selectSessionWatches("local:s", watchesState("one", [watchRow]));
+  // A different title is navigation churn for an unrelated field: the watches
+  // are the same content, so the result must keep its identity.
+  const second = selectSessionWatches("local:s", watchesState("two", [watchRow]));
+  expect(second).toBe(first);
+
+  const changed = selectSessionWatches("local:s", watchesState("two", [{ ...watchRow, deliveries: 2 }]));
+  expect(changed).not.toBe(first);
+  expect(changed?.[0]?.deliveries).toBe(2);
 });

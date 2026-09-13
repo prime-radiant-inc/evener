@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -1144,6 +1145,15 @@ func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.
 func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray[hubapi.NavigationWatchSummary] {
 	out := make(hubapi.NavigationArray[hubapi.NavigationWatchSummary], 0, len(watches))
 	for _, watch := range watches {
+		// created_at is a REQUIRED watch field and the web codec validates it as
+		// strict RFC3339. Truncating a malformed or oversized value (the generic
+		// label cap) produced an ellipsized string the codec rejects, which
+		// silently failed the whole watch-carrying navigation snapshot. A watch
+		// whose created_at cannot be represented is dropped rather than poisoning
+		// every other row in the resource.
+		if !validNavigationTimestamp(watch.CreatedAt) {
+			continue
+		}
 		cadence := make([]hubapi.NavigationWatchCadence, 0, len(watch.Cadence))
 		for _, step := range watch.Cadence {
 			cadence = append(cadence, hubapi.NavigationWatchCadence{
@@ -1157,7 +1167,11 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray
 		}
 		deliveryTimes := make([]string, 0, len(watch.DeliveryTimes))
 		for _, at := range watch.DeliveryTimes {
-			deliveryTimes = append(deliveryTimes, truncateNavigationRunes(at, maxNavigationLabelRunes))
+			// An instant the codec cannot decode is dropped: one missing dot is
+			// honest, a rejected snapshot is not.
+			if validNavigationTimestamp(at) {
+				deliveryTimes = append(deliveryTimes, at)
+			}
 		}
 		out = append(out, hubapi.NavigationWatchSummary{
 			ID:             truncateNavigationRunes(watch.ID, maxNavigationLabelRunes),
@@ -1171,12 +1185,29 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray
 			WildcardEvents: watch.WildcardEvents,
 			Deliveries:     watch.Deliveries,
 			DeliveryTimes:  deliveryTimes,
-			CreatedAt:      truncateNavigationRunes(watch.CreatedAt, maxNavigationLabelRunes),
+			CreatedAt:      watch.CreatedAt,
 			Active:         watch.Active,
 			EndReason:      truncateNavigationRunes(watch.EndReason, maxNavigationLabelRunes),
 		})
 	}
 	return out
+}
+
+// navigationTimestampPattern matches exactly the grammar the web codec's
+// rfc3339Timestamp accepts: a four-digit year, capital T, seconds, an optional
+// 1-9 digit fraction, and Z or a numeric offset. Go's time.Parse additionally
+// enforces the calendar/clock ranges, so together they reject the truncated
+// "…"-suffixed strings the label cap used to produce.
+var navigationTimestampPattern = regexp.MustCompile(
+	`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$`,
+)
+
+func validNavigationTimestamp(value string) bool {
+	if !navigationTimestampPattern.MatchString(value) {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil
 }
 
 func (p navigationProjection) isLive(id, ref string) bool {

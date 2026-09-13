@@ -108,7 +108,25 @@ function watchKind(watch: NavigationWatchSummary): WatchKind {
   return "scheduled";
 }
 
+// The cadence kinds that fire on a clock rather than on a condition. A watch
+// can carry these alongside an output/event condition, so the rail and the
+// detail must read them independently of watchKind's single condition label.
+const CLOCK_CADENCE_KINDS: ReadonlySet<string> = new Set(["after", "every", "progress"]);
+
+function clockCadenceLabels(watch: NavigationWatchSummary): string[] {
+  return (watch.cadence ?? [])
+    .filter((cadence) => CLOCK_CADENCE_KINDS.has(cadence.kind))
+    .map(watchCadenceLabel)
+    .filter((label) => label !== "");
+}
+
+// A watch is "scheduled" when it has ANY clock cadence, even when it also has
+// an output/event condition. A pure condition watch (no clock cadence at all)
+// is the only kind with no schedule to draw - which is exactly the statement
+// the no-schedule line makes, so collapsing a multi-trigger watch to its
+// condition kind would make that line false for it.
 export function watchIsScheduled(watch: NavigationWatchSummary): boolean {
+  if (clockCadenceLabels(watch).length > 0) return true;
   return watchKind(watch) === "scheduled";
 }
 
@@ -119,10 +137,6 @@ export function watchDeliveryInstants(watch: NavigationWatchSummary): number[] {
     .map((iso) => Date.parse(iso))
     .filter((millis) => !Number.isNaN(millis))
     .sort((a, b) => a - b);
-}
-
-function cadenceLabels(watch: NavigationWatchSummary): string[] {
-  return (watch.cadence ?? []).map(watchCadenceLabel).filter((label) => label !== "");
 }
 
 function armedState(watch: NavigationWatchSummary): string {
@@ -165,26 +179,34 @@ function deliveryCountLabel(count: number): string {
 // keeps no such instant.
 export function watchMeta(watch: NavigationWatchSummary): string {
   const kind = watchKind(watch);
-  if (kind === "output") return `on output · ${armedState(watch)}`;
-  if (kind === "event") return `on event · ${armedState(watch)}`;
-  const cadence = cadenceLabels(watch).join(" · ");
+  // Every configured trigger source is named, not just the one watchKind
+  // happens to pick: a watch with both an output match and a progress cadence
+  // is both, and saying only "on output" would hide half its schedule.
+  const conditions: string[] = [];
+  if (kind === "output") conditions.push("on output");
+  else if (kind === "event") conditions.push("on event");
+  conditions.push(...clockCadenceLabels(watch));
   const suffix = watch.deliveries > 0 ? deliveryCountLabel(watch.deliveries) : armedState(watch);
-  return [cadence, suffix].filter((part) => part !== "").join(" · ");
+  return [...conditions, suffix].filter((part) => part !== "").join(" · ");
 }
 
 // A watch's one facts sentence, built only from real fields. The armed segment
 // reports the watch's real armed state: an inactive watch is never called armed.
 export function watchFacts(watch: NavigationWatchSummary, now: number): string {
-  const kind = watchKind(watch);
   const segments: string[] = [];
-  if (kind === "output") {
+  // Each condition the watch actually carries gets its own segment, so a
+  // multi-trigger watch reads as all of what it waits on rather than only the
+  // first kind watchKind classifies.
+  if ((watch.output_match ?? "").trim() !== "") {
     const target = watch.target?.trim() || watch.source;
     segments.push(`Waiting on ${target}, matching ${watch.output_match ?? ""}`);
-  } else if (kind === "event") {
+  }
+  const clockCadence = clockCadenceLabels(watch).join(" · ");
+  if (clockCadence !== "") {
+    segments.push(`Fires ${clockCadence}`);
+  }
+  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
     segments.push(`Waiting on ${eventLabel(watch)}`);
-  } else {
-    const cadence = cadenceLabels(watch).join(" · ");
-    if (cadence !== "") segments.push(`Fires ${cadence}`);
   }
   if (!watch.active) {
     segments.push(armedState(watch));
@@ -194,7 +216,9 @@ export function watchFacts(watch: NavigationWatchSummary, now: number): string {
   }
   if (watch.deliveries > 0) {
     segments.push(deliveryCountLabel(watch.deliveries));
-    if (kind === "scheduled") {
+    // Only a watch with a clock cadence has a drawable timeline, so only it
+    // reports the newest instant that timeline plots.
+    if (clockCadence !== "") {
       const last = lastDeliveryClock(watch);
       if (last !== undefined) segments.push(`last at ${last}`);
     }

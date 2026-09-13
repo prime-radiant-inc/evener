@@ -684,6 +684,31 @@ func TestRosterFingerprintIncludesRunningJobIdentityAndStatus(t *testing.T) {
 	}
 }
 
+// DeliveryTimes feeds the activity panel's timeline. A delivery can change the
+// ring without changing the count (the daemon-restore case rebuilds it empty),
+// so it must move the fingerprint on its own or navigation never invalidates.
+func TestRosterFingerprintIncludesWatchDeliveryTimes(t *testing.T) {
+	watch := func(times []string) map[string]LiveEntry {
+		return map[string]LiveEntry{"parent": {Watches: []appwire.EvenerWatchInfo{{
+			ID: "watch-1", Source: "self", Deliveries: 2, DeliveryTimes: times,
+			CreatedAt: "2026-09-12T10:00:00Z", Active: true,
+		}}}}
+	}
+	base := watch([]string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"})
+	same := watch([]string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"})
+	changed := watch([]string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:03Z"})
+	emptied := watch(nil)
+	if rosterFingerprint(base) != rosterFingerprint(same) {
+		t.Fatal("roster fingerprint must not change when the delivery instants are identical")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(changed) {
+		t.Fatal("roster fingerprint must change when a delivery instant changes")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(emptied) {
+		t.Fatal("roster fingerprint must change when the delivery ring is rebuilt empty")
+	}
+}
+
 type overlappingRefreshProber struct {
 	calls         atomic.Int32
 	firstStarted  chan struct{}

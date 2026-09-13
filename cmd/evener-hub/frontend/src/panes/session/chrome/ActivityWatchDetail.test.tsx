@@ -1,7 +1,7 @@
 // DOM assertions for the watch detail's delivery timeline: real props, real
 // component, positions derived only from the supplied instants and `now`.
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { type ActivityWatchRow, watchRowID } from "../../../protocol/activityRows";
 import { formatClockTime } from "../../../protocol/displayFormat";
 import type { NavigationWatchSummary } from "../../../protocol/types.gen";
@@ -70,6 +70,25 @@ describe("ActivityWatchDetail timeline", () => {
     const newest = screen.getAllByTestId("watch-timeline-dot")[1] as HTMLElement;
     expect(leftOf(newest)).toBe(98);
     expect(leftOf(newest)).toBeLessThan(leftOf(screen.getByTestId("watch-timeline-now")));
+  });
+
+  test("renders one dot per instant when two deliveries share a millisecond", () => {
+    const same = "2026-08-05T15:00:11Z";
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <ActivityWatchDetail
+          row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 2, delivery_times: [same, same] })}
+          now={NOW}
+        />,
+      );
+      expect(screen.getAllByTestId("watch-timeline-dot")).toHaveLength(2);
+      // A millisecond-only key would collide and make React warn about two
+      // children with the same key. The composite key keeps both real dots.
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("orders the now marker before the dots so a dot can never be painted over it", () => {
@@ -160,6 +179,26 @@ describe("ActivityWatchDetail timeline", () => {
     );
     expect(screen.queryByTestId("watch-timeline")).toBeNull();
     expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
+  });
+
+  test("a watch with an output match and a clock cadence draws its timeline, not the no-schedule line", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({
+          target: "job_ab12cd",
+          output_match: "/DONE/",
+          cadence: [{ kind: "output" }, { kind: "progress", seconds: 10 }],
+          deliveries: 2,
+          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T14:30:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    // This watch has BOTH an output condition and a real period. It used to be
+    // collapsed to output-only and told there was no schedule to draw.
+    expect(screen.queryByTestId("watch-no-schedule")).toBeNull();
+    expect(screen.getByTestId("watch-timeline")).toBeTruthy();
+    expect(screen.getAllByTestId("watch-timeline-dot")).toHaveLength(2);
   });
 
   test("a scheduled watch with no instants draws neither timeline nor no-schedule line", () => {

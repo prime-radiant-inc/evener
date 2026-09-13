@@ -2463,22 +2463,83 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 // always agree on which watches are visible; only liveWatchSummaries feeds
 // job_list's model-facing output, and this one leaves it untouched.
 func (jm *jobManager) liveWatchStatuses() []WatchStatusInfo {
+	statuses := jm.liveWatchStatusesForSession(jm.sessionID)
+	sortWatchStatuses(statuses)
+	return statuses
+}
+
+// liveWatchStatusesForSession is liveWatchStatuses' session-parameterized body:
+// it snapshots the configs THIS manager holds that are visible to sessionID. A
+// config with no receiver key belongs to the manager that owns it, so it is
+// visible only when that manager is sessionID's own; otherwise a descendant's
+// keyless watch would leak onto an ancestor's projection.
+func (jm *jobManager) liveWatchStatusesForSession(sessionID string) []WatchStatusInfo {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	statuses := make([]WatchStatusInfo, 0, len(jm.watches))
 	for _, cfg := range jm.watches {
-		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
+		if !watchConfigVisibleToSession(cfg, sessionID) {
+			continue
+		}
+		if cfg.receiverSessionID == "" && jm.sessionID != sessionID {
 			continue
 		}
 		statuses = append(statuses, watchStatusInfoFromConfig(cfg))
 	}
+	return statuses
+}
+
+func sortWatchStatuses(statuses []WatchStatusInfo) {
 	sort.SliceStable(statuses, func(i, j int) bool {
 		if statuses[i].Source != statuses[j].Source {
 			return statuses[i].Source < statuses[j].Source
 		}
 		return statuses[i].ID < statuses[j].ID
 	})
+}
+
+// aggregateWatchStatuses projects the watches every supplied manager holds that
+// are visible to receiverSessionID. Managers are deduped so two live sessions
+// sharing one manager do not double every row, and the result is ordered like
+// the single-manager projection.
+func aggregateWatchStatuses(receiverSessionID string, managers []*jobManager) []WatchStatusInfo {
+	var statuses []WatchStatusInfo
+	seen := make(map[*jobManager]struct{}, len(managers))
+	for _, jm := range managers {
+		if jm == nil {
+			continue
+		}
+		if _, ok := seen[jm]; ok {
+			continue
+		}
+		seen[jm] = struct{}{}
+		statuses = append(statuses, jm.liveWatchStatusesForSession(receiverSessionID)...)
+	}
+	sortWatchStatuses(statuses)
 	return statuses
+}
+
+// liveWatchStatuses aggregates every live manager that can hold a config whose
+// receiver is THIS session: its own manager plus the stable watch-source
+// sessions (stableWatchSourceSessions), the same set the #655 stop inventory
+// scans. A receiver watch on a descendant's job lives in that descendant's job
+// manager with this session recorded as the receiver, so reading only
+// s.jobManager made it invisible to both sessions - the exact "watch my child's
+// long-running job" case this feature exists for.
+func (s *Session) liveWatchStatuses() []WatchStatusInfo {
+	if s == nil {
+		return nil
+	}
+	managers := make([]*jobManager, 0, 8)
+	if s.jobManager != nil {
+		managers = append(managers, s.jobManager)
+	}
+	for _, holder := range s.stableWatchSourceSessions() {
+		if holder != nil && holder.jobManager != nil {
+			managers = append(managers, holder.jobManager)
+		}
+	}
+	return aggregateWatchStatuses(s.ID(), managers)
 }
 
 // watchStatusInfoFromConfig projects one live config into its structured

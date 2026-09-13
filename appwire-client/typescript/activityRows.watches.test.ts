@@ -98,6 +98,18 @@ describe("watchMeta", () => {
     const w = watch({ events: ["job.completed"], cadence: [{ kind: "events" }], active: true });
     expect(watchMeta(w)).toBe("on event · armed");
   });
+
+  test("a watch with an output match and a clock cadence names both", () => {
+    const w = watch({
+      target: "job_ab12",
+      output_match: "/DONE/",
+      cadence: [{ kind: "output" }, { kind: "progress", seconds: 10 }],
+      active: true,
+    });
+    // Collapsing to watchKind's first condition used to drop the cadence here,
+    // reporting an output-only watch for one that also fires every 10s.
+    expect(watchMeta(w)).toBe("on output · every 10s · armed");
+  });
 });
 
 describe("watchFacts", () => {
@@ -163,6 +175,18 @@ describe("watchFacts", () => {
     expect(watchFacts(w, NOW)).toBe(`Waiting on session events · armed ${armedLabel()} ago · no deliveries yet`);
   });
 
+  test("a multi-trigger watch states every configured condition, not only its first", () => {
+    const w = watch({
+      target: "job_ab12",
+      output_match: "/DONE/",
+      cadence: [{ kind: "output" }, { kind: "progress", seconds: 10 }],
+      deliveries: 0,
+    });
+    expect(watchFacts(w, NOW)).toBe(
+      `Waiting on job_ab12, matching /DONE/ · Fires every 10s · armed ${armedLabel()} ago · no deliveries yet`,
+    );
+  });
+
   test("never overstates an inactive watch as armed", () => {
     const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 1, active: false });
     expect(watchFacts(w, NOW)).toBe("Fires every 10m · not armed · 1 delivery");
@@ -176,6 +200,17 @@ describe("watchIsScheduled", () => {
     expect(watchIsScheduled(watch({ cadence: [{ kind: "progress", seconds: 30 }] }))).toBe(true);
     expect(watchIsScheduled(watch({ output_match: "/x/", cadence: [{ kind: "output" }] }))).toBe(false);
     expect(watchIsScheduled(watch({ events: ["a"], cadence: [{ kind: "events" }] }))).toBe(false);
+  });
+
+  test("a watch that also has a clock cadence is scheduled even with an output condition", () => {
+    // This is the case the no-schedule line is false for: it has a real period
+    // and a real timeline, so it must not claim there is no schedule to draw.
+    expect(
+      watchIsScheduled(watch({ output_match: "/x/", cadence: [{ kind: "output" }, { kind: "every", seconds: 600 }] })),
+    ).toBe(true);
+    expect(
+      watchIsScheduled(watch({ events: ["a"], cadence: [{ kind: "events" }, { kind: "after", seconds: 60 }] })),
+    ).toBe(true);
   });
 });
 

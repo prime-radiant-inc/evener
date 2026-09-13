@@ -235,6 +235,30 @@ export function selectSessionSummary(ref: string, state = navigationStore.getSta
 }
 export const findSessionNode = selectSessionSummary;
 
+type SessionWatchesCacheEntry = Readonly<{ key: string; watches: NavigationSessionSummary["watches"] }>;
+// One entry per session ref, holding the LAST result's content key and the
+// exact array reference returned for it. A selector consumer comparing with
+// Object.is (zustand's default) therefore re-renders only when the rendered
+// content actually changes; a navigation update that rebuilds an unrelated
+// session's summary leaves this session's array reference intact.
+const sessionWatchesCache = new Map<string, SessionWatchesCacheEntry>();
+
+/** The watches on `ref`'s session summary, or undefined when the session is not
+ * currently materialized. The returned array keeps its identity while its JSON
+ * content is unchanged, so a narrow subscription does not fire on unrelated
+ * navigation churn. */
+export function selectSessionWatches(
+  ref: string,
+  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
+): NavigationSessionSummary["watches"] {
+  const watches = selectSessionSummary(ref, state)?.watches;
+  const key = watches === undefined ? "" : JSON.stringify(watches);
+  const cached = sessionWatchesCache.get(ref);
+  if (cached && cached.key === key) return cached.watches;
+  sessionWatchesCache.set(ref, { key, watches });
+  return watches;
+}
+
 import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
 import type { NormalizedResource } from "./codec";
 

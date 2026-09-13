@@ -155,6 +155,11 @@ export interface OverflowRailNode extends WidgetTreeNode {
   pages: OverflowPage[];
   /** The wording after the count. Absent means the tier cap's "older". */
   suffix?: string;
+  /** True when the row stands for rows that cannot be revealed by a fetch
+   * (the local watch cap: the wire already carried every row). Such a row is a
+   * count, not a control: nothing activates it. Tier and catalog overflow rows
+   * leave this false and reveal their next page on activation. */
+  passive?: boolean;
 }
 
 export function sectionOverflowNode(
@@ -217,8 +222,14 @@ const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, Pro
 // renders: an active project's inline list shows Current+Recent (the archived
 // tier is diverted out of it), the archived sub-branch shows only Archived,
 // and a hydrated archived project shows all three.
-function overflowNode(id: string, count: number, pages: OverflowPage[] = [], suffix?: string): OverflowRailNode[] {
-  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages, suffix }] : [];
+function overflowNode(
+  id: string,
+  count: number,
+  pages: OverflowPage[] = [],
+  suffix?: string,
+  passive = false,
+): OverflowRailNode[] {
+  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages, suffix, passive }] : [];
 }
 
 function tierOverflow(p: RailProject, tiers: ("current" | "recent" | "archived")[]): number {
@@ -390,7 +401,9 @@ function splitChildren(parent: RailSession, isExpanded: IsExpanded): SessionRail
   children.push(...watches.slice(0, MAX_INLINE_WATCHES).map((watch) => toWatchNode(parent, watch)));
   if (watches.length > MAX_INLINE_WATCHES) {
     children.push(
-      ...overflowNode(watchOverflowId(parent.row_id), watches.length - MAX_INLINE_WATCHES, [], "more watches"),
+      // The cap is local to the rail: the wire already carried every watch, so
+      // there is no page to fetch. The row is an honest count, not a control.
+      ...overflowNode(watchOverflowId(parent.row_id), watches.length - MAX_INLINE_WATCHES, [], "more watches", true),
     );
   }
   if (inactiveCount > 0) {

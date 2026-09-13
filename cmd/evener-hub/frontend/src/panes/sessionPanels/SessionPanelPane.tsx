@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
+import { selectSessionWatches } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
@@ -10,7 +11,6 @@ import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
 import { NotesPanelBody } from "../session/chrome/NotesPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
 import { NOW_TICK_MS, useNowTick } from "../session/liveness";
-import { navigationSummaryFor } from "../session/threadTitle";
 import { type SessionPanelKind, type SessionPanelParams, sessionPanelTitle } from "./index";
 
 export interface SessionPanelPaneProps extends PaneProps<SessionPanelParams> {
@@ -37,8 +37,10 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
   // watch detail falls back to the activity tree's own live tick (and a
   // watch-only, live-row-free tree is static, exactly like every other row
   // there) - the Details pane's NOW_TICK_MS clock stays Details-only.
-  const navigation = useNavigationStore();
-  const watches = navigationSummaryFor(ref, navigation)?.watches;
+  // Narrow subscription: selectSessionWatches keeps its result identity while
+  // this session's watch content is unchanged, so the pane no longer re-renders
+  // on every navigation update for any session.
+  const watches = useNavigationStore((state) => selectSessionWatches(ref, state));
 
   useEffect(() => {
     let started = false;
