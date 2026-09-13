@@ -205,9 +205,10 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // it for free. A descriptor may still set HOW large they render
   // (outputImageSize).
   const hasOutputImages = (item.outputImages?.length ?? 0) > 0;
-  // Two independent failure signals, OR'd: the generic wire one (error text /
-  // honest status) and the descriptor's own (a shell command that ran and
-  // exited nonzero is a clean tool RESULT the reader still needs marked).
+  // Two independent failure signals, OR'd: the generic wire one every client
+  // shares (non-blank error text, a failed/interrupted status, a nonzero exit
+  // code - protocol/itemFailure.ts) and the descriptor's own, which is for a
+  // tool whose failure shows up only in the shape of its output.
   const failed = toolCallFailed(item);
   const showErrorText = hasErrorText(item);
   // Rendered in TWO places, deliberately: the collapsed row's hover title (a
