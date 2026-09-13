@@ -1218,6 +1218,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return nil, err
 		}
 	}
+	// Re-drive user skill selections whose durable typed input record
+	// survived but whose admission did not (a metadata save failure or a
+	// crash between the input turn and the obligation persist). It runs over
+	// ALL decoded entries — after the catalog is discovered and the
+	// transcript is attached, before setRestoredTranscript publishes the
+	// final entry list — and never repeats a covered invocation.
+	if s.reconcilePendingSkillSelections(context.Background(), transcriptEntries) && tw != nil {
+		if err := refreshFromDisk("skill selection reconciliation"); err != nil {
+			return nil, err
+		}
+	}
 	// setRestoredTranscript and the attention rearm both run after every
 	// restore-time transcript append, so serve and the fold see the same
 	// final entry list the file holds.

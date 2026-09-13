@@ -141,6 +141,26 @@ func (s *Session) skillInventorySummary(ctx context.Context) ([]schema.SkillInve
 	return summaries, diagnostics
 }
 
+// skillInventoryDiagnostics maps the discovery pass's diagnostics onto the
+// reminder's schema-level records, so the typed turn carries the reason an
+// entry classified unavailable — an unreadable or invalid source — instead
+// of discarding it.
+func skillInventoryDiagnostics(diagnostics []skill.Diagnostic) []schema.SkillInventoryDiagnostic {
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	out := make([]schema.SkillInventoryDiagnostic, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		out = append(out, schema.SkillInventoryDiagnostic{
+			Category: diagnostic.Category,
+			Name:     diagnostic.Name,
+			Source:   diagnostic.Source,
+			Message:  diagnostic.Message,
+		})
+	}
+	return out
+}
+
 // prepareCompactedSkillReloads consumes the session's pending compaction
 // handoff receipts — every entry still recorded and not yet removed, whatever
 // phase Task 8's publication or restart reconciliation left it in. Per the
@@ -249,7 +269,6 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			// typed metadata notification — every inventory entry — and never
 			// enqueue bodies here.
 			summary, diagnostics := s.skillInventorySummary(ctx)
-			_ = diagnostics // the reminder's entries carry their own availability; diagnostics ride the typed turn
 			if len(summary) == 0 {
 				// No skill is loaded: the complete reminder is an empty list
 				// with nothing to notify. Consume the receipt without a turn
@@ -268,7 +287,8 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 					Names:     slices.Clone(receipt.Operation.Selection.Names),
 					ErrorCode: receipt.Operation.Selection.ErrorCode,
 				},
-				Inventory: summary,
+				Inventory:   summary,
+				Diagnostics: skillInventoryDiagnostics(diagnostics),
 			}
 			content := renderSkillReloadReminder(reminder, s.canInstructTool("use_skill"))
 			if !s.skillReloadReminderFits(content) {

@@ -89,6 +89,21 @@ type SkillReloadReminder struct {
 	PublicationID string                  `json:"publication_id,omitempty"`
 	Selection     SkillReloadSelection    `json:"selection"`
 	Inventory     []SkillInventorySummary `json:"inventory"`
+	// Diagnostics carries the discovery pass's per-source reasons an entry
+	// classified unavailable (an unreadable or invalid source), so the typed
+	// turn keeps the reason, not just the classification.
+	Diagnostics []SkillInventoryDiagnostic `json:"diagnostics,omitempty"`
+}
+
+// SkillInventoryDiagnostic is the schema-level, machine-readable reason a
+// discovery pass could not read or classify one skill source. It mirrors the
+// skill package's own diagnostic without importing it (schema is the
+// lower-level package).
+type SkillInventoryDiagnostic struct {
+	Category string `json:"category"`
+	Name     string `json:"name,omitempty"`
+	Source   string `json:"source"`
+	Message  string `json:"message"`
 }
 
 // SkillCompactionOperation is one generation-owned compaction intent: the
@@ -161,6 +176,23 @@ type SkillInputRecord struct {
 	Arguments     string   `json:"arguments"`
 	Names         []string `json:"names"`
 	AtomicGroupID string   `json:"atomic_group_id"`
+	// Prepared lists the typed invocations a successful preparation produced
+	// for this selection, in admission order. Nil when preparation failed —
+	// a failed input keeps the selection for correction and an explicit
+	// new-intent retry, never re-delivery — and on records older than the
+	// field. It is what lets a lost admission (a metadata save failure or a
+	// crash between the input turn and the obligation persist) be reconciled
+	// from the durable input record alone.
+	Prepared []SkillSelectionInvocation `json:"prepared,omitempty"`
+}
+
+// SkillSelectionInvocation is one typed invocation a successful preparation
+// produced for an input's selection: the canonical name it resolved to, the
+// identity it admits under, and the route it was prepared for.
+type SkillSelectionInvocation struct {
+	Name         string `json:"name"`
+	InvocationID string `json:"invocation_id"`
+	Route        string `json:"route"`
 }
 
 // SkillActivationOutcome records operation metadata, not instruction bodies.
@@ -241,6 +273,7 @@ func (s *SkillTurnState) Clone() *SkillTurnState {
 	if s.Input != nil {
 		input := *s.Input
 		input.Names = slices.Clone(input.Names)
+		input.Prepared = slices.Clone(input.Prepared)
 		out.Input = &input
 	}
 	out.Outcomes = slices.Clone(s.Outcomes)
@@ -268,6 +301,7 @@ func (s *SkillTurnState) Clone() *SkillTurnState {
 	if s.ReloadReminder != nil {
 		reminder := *s.ReloadReminder
 		reminder.Inventory = slices.Clone(s.ReloadReminder.Inventory)
+		reminder.Diagnostics = slices.Clone(s.ReloadReminder.Diagnostics)
 		reminder.Selection.Names = slices.Clone(s.ReloadReminder.Selection.Names)
 		out.ReloadReminder = &reminder
 	}
