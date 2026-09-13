@@ -79,6 +79,27 @@ func exactSignature(name string, args []byte) string {
 	return name + ":" + shortHash(args)
 }
 
+// dispatchKey holds the two ledger keys one dispatch is judged under. Both are
+// derived from the call's name and raw argument bytes, and both are computed
+// once per dispatch by newDispatchKey so the semantic canonicalization (decode,
+// walk, re-encode) is paid at most once even though check, record, and
+// clearFailures each need the keys.
+type dispatchKey struct {
+	exact    string
+	semantic string
+}
+
+// newDispatchKey computes both ledger keys for a single dispatch. It is the
+// only production caller of exactSignature and failureFingerprint, so a tool
+// call's arguments are hashed exactly once on the dispatch path regardless of
+// how many ledger operations consult the result.
+func newDispatchKey(name string, args []byte) dispatchKey {
+	return dispatchKey{
+		exact:    exactSignature(name, args),
+		semantic: failureFingerprint(name, args),
+	}
+}
+
 // failureFingerprint returns the ledger key for a dispatch's repeated-failure
 // run. Unlike exactSignature it hashes a normalized view of the arguments:
 // free-text fields no tool executes on (intent, and the shell tool's
@@ -267,22 +288,20 @@ func breakerBypassed(ctx context.Context) bool {
 // check is the pre-dispatch read: the normalized fingerprint's current
 // consecutive-failure streak and recorded failure snippets, plus the exact
 // call's consecutive-identical-body streak, without mutating the ledger.
-func (l *failureLedger) check(name string, args []byte) (failStreak int, repeatStreak int, snippets []string) {
+func (l *failureLedger) check(key dispatchKey) (failStreak int, repeatStreak int, snippets []string) {
 	if l == nil { // a zero-value Registry has no ledger and judges nothing
 		return 0, 0, nil
 	}
-	// Both fingerprints hash the argument body, so compute them before taking
-	// the lock (as record and clearFailures already do): canonicalizing a large
-	// call under l.mu would stall every other dispatch in the batch.
-	exactKey := exactSignature(name, args)
-	semKey := failureFingerprint(name, args)
+	// The key is computed by the caller before dispatch, off l.mu: the semantic
+	// fingerprint canonicalizes a large call body, and doing that under the lock
+	// would stall every other dispatch in the batch.
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if e, ok := l.semantic[semKey]; ok {
+	if e, ok := l.semantic[key.semantic]; ok {
 		failStreak = e.count
 		snippets = append([]string(nil), e.snippets...)
 	}
-	if e, ok := l.entries[exactKey]; ok {
+	if e, ok := l.entries[key.exact]; ok {
 		repeatStreak = e.bodyCount
 	}
 	return failStreak, repeatStreak, snippets
@@ -297,21 +316,19 @@ func (l *failureLedger) check(name string, args []byte) (failStreak int, repeatS
 // own failure streak is still maintained so byte-identical calls keep their
 // original history. A success zeroes a failure streak and clears the class and
 // snippets, but the entry survives so the body hash persists.
-func (l *failureLedger) record(name string, args []byte, isErr bool, output string) (failStreak int, repeatStreak int) {
+func (l *failureLedger) record(key dispatchKey, isErr bool, output string) (failStreak int, repeatStreak int) {
 	if l == nil { // a zero-value Registry has no ledger and judges nothing
 		return 0, 0
 	}
-	exactKey := exactSignature(name, args)
-	semKey := failureFingerprint(name, args)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	e, ok := l.entries[exactKey]
+	e, ok := l.entries[key.exact]
 	if !ok {
 		e = &failureEntry{}
-		l.entries[exactKey] = e
+		l.entries[key.exact] = e
 	}
-	l.order = l.touch(l.order, l.entries, exactKey)
+	l.order = l.touch(l.order, l.entries, key.exact)
 
 	bodyHash := shortHash([]byte(output))
 	if e.bodyHash == bodyHash {
@@ -323,12 +340,12 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 	observeFailure(e, isErr, output)
 	repeatStreak = e.bodyCount
 
-	s, ok := l.semantic[semKey]
+	s, ok := l.semantic[key.semantic]
 	if !ok {
 		s = &failureEntry{}
-		l.semantic[semKey] = s
+		l.semantic[key.semantic] = s
 	}
-	l.semanticOrder = l.touch(l.semanticOrder, l.semantic, semKey)
+	l.semanticOrder = l.touch(l.semanticOrder, l.semantic, key.semantic)
 	failStreak = observeFailure(s, isErr, output)
 
 	return failStreak, repeatStreak
@@ -372,25 +389,23 @@ func observeFailure(e *failureEntry, isErr bool, output string) int {
 //
 // The body-hash streak is deliberately left alone. Repetition only ever nudges,
 // and approving a call says nothing about whether its output changed.
-func (l *failureLedger) clearFailures(name string, args []byte) {
+func (l *failureLedger) clearFailures(key dispatchKey) {
 	if l == nil { // a zero-value Registry has no ledger and judges nothing
 		return
 	}
-	exactKey := exactSignature(name, args)
-	semKey := failureFingerprint(name, args)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if e, ok := l.semantic[semKey]; ok {
+	if e, ok := l.semantic[key.semantic]; ok {
 		e.class = ""
 		e.count = 0
 		e.snippets = nil
-		l.semanticOrder = l.touch(l.semanticOrder, l.semantic, semKey)
+		l.semanticOrder = l.touch(l.semanticOrder, l.semantic, key.semantic)
 	}
-	if e, ok := l.entries[exactKey]; ok {
+	if e, ok := l.entries[key.exact]; ok {
 		e.class = ""
 		e.count = 0
 		e.snippets = nil
-		l.order = l.touch(l.order, l.entries, exactKey)
+		l.order = l.touch(l.order, l.entries, key.exact)
 	}
 }
 
