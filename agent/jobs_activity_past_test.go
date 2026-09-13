@@ -1640,3 +1640,95 @@ func TestLoadSessionJobActivityTree_OversizedEnvelopeIsNotBlamedOnAnEntry(t *tes
 		t.Fatalf("walked %d pages, want 1 -- nothing can be rendered, so there is nothing to continue to", pages)
 	}
 }
+
+// TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable pins
+// that dropping a delegate whose child was already trimmed to a continuation
+// does not strand the child's remaining entries. The delegate's branch — and
+// the continuation minted inside it — goes with the entry, so what has to
+// carry the child forward is the owner's own position: it resumes AT the
+// delegate, whose subtree is then rendered again from its own top with the
+// room the dropped siblings freed. The fixture forces exactly that order: the
+// child is trimmed to empty, the delegate is dropped next, and the owner's
+// remaining entries are trimmed after it.
+func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "strandroot"
+	childID := "strandchild"
+	const rootJobCount = 20
+	const childJobCount = 10
+	description := strings.Repeat("s", 250_000)
+	started := time.Unix(12000, 0).UTC()
+
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "child task"))
+	rootEvents := make([]jobstore.Event, 0, rootJobCount)
+	for i := range rootJobCount {
+		ts := started.Add(time.Duration(i) * time.Second)
+		rootEvents = append(rootEvents, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, rootEvents...)
+	childEvents := make([]jobstore.Event, 0, childJobCount)
+	for i := range childJobCount {
+		ts := started.Add(time.Duration(100+i) * time.Second)
+		childEvents = append(childEvents, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("child_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, childID, childEvents...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+
+	var walk pastActivityWalk
+	pending := []string{""}
+	requested := map[string]bool{"": true}
+	pages := 0
+	for len(pending) > 0 {
+		pages++
+		if pages > rootJobCount {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %d jobs", pages, len(walk.jobs))
+		}
+		continuation := pending[0]
+		pending = pending[1:]
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		before := len(walk.continuations)
+		collectPastActivityPage(t, &tree.Root, &walk)
+		for _, next := range walk.continuations[before:] {
+			if next == continuation {
+				t.Fatalf("page %d re-minted the continuation it was loaded with (%q)", pages, next)
+			}
+			if requested[next] {
+				continue
+			}
+			requested[next] = true
+			pending = append(pending, next)
+		}
+	}
+	if len(walk.branchErrors) != 0 {
+		t.Fatalf("branch errors %q, want none -- every entry here is renderable on some page", walk.branchErrors)
+	}
+	counts := map[string]int{}
+	for _, id := range walk.jobs {
+		counts[id]++
+	}
+	if len(walk.jobs) != rootJobCount+childJobCount {
+		t.Fatalf("delivered %d jobs across %d pages, want %d exactly once each: %v", len(walk.jobs), pages, rootJobCount+childJobCount, counts)
+	}
+	for i := range rootJobCount {
+		if id := fmt.Sprintf("job_%02d", i); counts[id] != 1 {
+			t.Fatalf("%s delivered %d times, want exactly once", id, counts[id])
+		}
+	}
+	for i := range childJobCount {
+		if id := fmt.Sprintf("child_%02d", i); counts[id] != 1 {
+			t.Fatalf("%s delivered %d times, want exactly once -- the child's entries must survive its delegate being trimmed", id, counts[id])
+		}
+	}
+}
