@@ -17,8 +17,8 @@ import {
   isFailedDelegateOutcome,
   isFailedJobOutcome,
   isTurnContainer,
-} from "../../../protocol/activityData";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
+} from "./activityData";
+import { stableDelegateDisplayStatus } from "./stableDelegate";
 
 export interface ActivityRowBase {
   id: string;

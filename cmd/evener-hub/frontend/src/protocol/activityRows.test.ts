@@ -1,10 +1,5 @@
 import { expect, test } from "vitest";
-import type {
-  ActivityJob,
-  ActivitySessionNode,
-  ActivityShellEntry,
-  ActivityTree,
-} from "../../../protocol/activityData";
+import type { ActivityJob, ActivitySessionNode, ActivityShellEntry, ActivityTree } from "./activityData";
 import { activityDelegateState, buildActivityRows, foldRowID } from "./activityRows";
 
 function shell(jobId: string, terminal: boolean, status = terminal ? "completed" : "running") {
