@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -48,11 +49,16 @@ type attemptResult struct {
 // the group SIGTERM, waits grace, and sends SIGKILL.
 func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Writer, signals <-chan os.Signal) attemptResult {
 	var out bytes.Buffer
+	// The command's stderr goes where this helper's diagnostics go, and exec
+	// copies it from a goroutine of its own. Both writers are live at once --
+	// the interrupt line below is written while the command is still running --
+	// so they share one lock or they corrupt whatever they are writing to.
+	guarded := &serialWriter{w: stderr}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdout = &out
-	cmd.Stderr = stderr
+	cmd.Stderr = guarded
 	grouped := isolateProcessGroup(cmd)
 	// Cancelling the context is how the bound is delivered, and it has to reach
 	// the group, not the one child: the default cancel kills that child alone.
@@ -81,7 +87,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.stdout = out.Bytes()
 		result.err = err
 		result.exitCode = exitCodeOf(err)
-		stopSurvivors(cmd, result.pgid, grace, stderr)
+		stopSurvivors(cmd, result.pgid, grace, guarded)
 		return result
 	case received := <-signals:
 		// The command is in a process group of its own, which is what keeps a
@@ -93,7 +99,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		} else {
 			result.interrupted = syscall.SIGTERM
 		}
-		_, _ = fmt.Fprintf(stderr, "bounded-list: %v — stopping %s.\n", received, argv[0])
+		_, _ = fmt.Fprintf(guarded, "bounded-list: %v — stopping %s.\n", received, argv[0])
 	case <-time.After(timeout):
 		result.timedOut = true
 	}
@@ -108,13 +114,26 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		<-done
 	}
 	reaped.Store(true)
-	stopSurvivors(cmd, result.pgid, grace, stderr)
+	stopSurvivors(cmd, result.pgid, grace, guarded)
 	result.stdout = out.Bytes()
 	result.exitCode = 1
 	if result.interrupted != 0 {
 		result.exitCode = 128 + int(result.interrupted)
 	}
 	return result
+}
+
+// serialWriter is one writer two goroutines can use: this helper's own
+// diagnostics and the copier exec runs for the command's stderr.
+type serialWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *serialWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 // stopSurvivors stops whatever is still in the command's process group once the
