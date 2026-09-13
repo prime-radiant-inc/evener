@@ -19,9 +19,13 @@ a row is DUPLICATED only if a grep names the exact symbol and `file:line` on
 apply the same fallback. A pair that merely occupies the same conceptual slot —
 "both compute usage", "both fold runs" — is two different rules, and is recorded
 as PLATFORM-ONLY or single-consumer PACKAGE CANDIDATE instead. A row is
-PACKAGE CANDIDATE (2 consumers) only if `git grep "frontend/src/<module>\""
-origin/main -- mobile-native` returns at least one hit; all 34 such rows were
-re-checked this way and all 34 hold. Line counts are non-test lines at the stated
+PACKAGE CANDIDATE (2 consumers) only if
+`git grep -l frontend/src/<module> origin/main -- mobile-native` returns a hit.
+**Consumers are counted by direct import:** a module has two consumers when both
+trees name it in an import statement of their own. Transitive reach does not
+count, and neither does a type-only import — neither survives to run time, and
+neither is evidence that the second tree depends on the module's behaviour. All
+33 such rows were re-checked this way and all 33 hold. Line counts are non-test lines at the stated
 commit. Where I am unsure I say so in the row.
 
 ## 0. What the package was at the baseline
@@ -160,7 +164,7 @@ migration has to place.
 | `transcriptDisplay/config.ts` (603) | Transcript display config: wire↔local encode/decode, presets, fingerprint | none | native imports this file (10 sites) | PACKAGE CANDIDATE (2 consumers) | none — pure |
 | `transcriptDisplay/projector.ts` (415) | `ThreadModel` → display entries at a content level; failure/interaction classification | none | `mobile/src/conversation/project.ts` (787), whose comment at line ~108 says it "mirrors the web frontend's hasItemFailure/hasFailureStatus/isNonZeroExit predicate (projector.ts:118-130) exactly" | DUPLICATED | this is the clearest duplication in the repo — one side says so in a comment |
 | `transcriptDisplay/renderContext.tsx` (246) | React context for the projector | none | none | PLATFORM-ONLY | React |
-| `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` (1445) | Chord grammar, default table, override delta application, semantic validation | none | native imports `defaults`, `display`, `registry`, `validation` (1 site each) | PACKAGE CANDIDATE (2 consumers) | `registry.ts:6` imports `zustand/vanilla` and `chord.ts:12` imports `tinykeys` — a zero-dependency package cannot take them as-is; `registry.ts` is also a module-level singleton needing an instance factory |
+| `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` (1485) | Chord grammar, default table, override delta application, semantic validation | none | native imports `defaults`, `display`, `registry`, `validation` (1 site each) | PACKAGE CANDIDATE (2 consumers) | `registry.ts:6` imports `zustand/vanilla` and `chord.ts:12` imports `tinykeys` — a zero-dependency package cannot take them as-is; `registry.ts` is also a module-level singleton needing an instance factory |
 | `keybindings/dispatcher.ts` (197) | Keydown routing through tinykeys | none | native has its own | PLATFORM-ONLY | DOM events |
 | `panes/session/chrome/taskData.ts` (102) | Narrows `TaskListResponse.data` (typed `unknown`) to `TaskRow[]` | none | native imports this file (2 sites). Not a twin of `services/activity.ts:409` `projectTasks`, which emits three *counts* off `TaskAggregate` with `active` pinned to literal `0`, against this module's parsed row list | PACKAGE CANDIDATE (2 consumers) | a relocation, not a dedup — the two task rules answer different questions and both are load-bearing |
 | `panes/session/chrome/taskGroups.ts` (24) | Status partition for the tasks panel | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none |
@@ -241,7 +245,7 @@ names eight runtime modules; the ninth below is dead.
 | `activityData.ts` (702) | **no** | web (15), native (6) | PACKAGE CANDIDATE (2 consumers) |
 | `activityList.ts` (188) | **no** | web 0, native (3) | PACKAGE CANDIDATE — the only protocol module the web does not use |
 | `activityMerge.ts` (278) | **no** | web (2), native 0 | PACKAGE CANDIDATE |
-| `sendQueueAvailability.ts` (147) | **no** | web (2), native via `submitRouting` | PACKAGE CANDIDATE (2 consumers) |
+| `sendQueueAvailability.ts` (147) | **no** | web (1): `Composer.tsx:34`. Native reaches it only through `submitRouting`'s type-only import, which the counting rule in §1 does not count — and since C10 moved `submitRouting` into the package, that reach is now intra-package anyway | PACKAGE CANDIDATE (single consumer) — shipped by A1 already, so nothing moves |
 | `sessionErrors.ts` (42) | **no** | web (2), native (2) | PACKAGE CANDIDATE (2 consumers) |
 | `stableDelegate.ts` (12) | **no** | web (3), native (1) | PACKAGE CANDIDATE (2 consumers) |
 | `jobOutput.ts` (35) | **no** | web (2), native (1) | PACKAGE CANDIDATE (2 consumers) |
@@ -334,7 +338,7 @@ later PR a place to land. Both have since been written — see "Delta since base
 | --- | --- |
 | SHARED ALREADY | 6 |
 | DUPLICATED | 33 |
-| PACKAGE CANDIDATE | 55 (of which 34 already have two consumers via deep relative import) |
+| PACKAGE CANDIDATE | 55 (of which **33** have two consumers by direct import; `sendQueueAvailability.ts` left that set in round 23 under the counting rule in §1) |
 | PLATFORM-ONLY | 13 |
 | dead code | 1 |
 | **Total rows** | **108** |
@@ -363,7 +367,7 @@ Statuses observed at `c867646c4`; re-query before acting.
 | C26 #1226 | `b9a98151c` | `messages/format.ts` → `protocol/displayFormat.ts`. Left `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` together at the package root with different rules — filed as #1228 for a naming pass after C11b |
 | C10 #1222 | `ba4164649` | `submitRouting` relocated into the package |
 | C13 #1223 | `e2c77cc72` | `activityRows` relocated into the package. Exposed that `shippedModules` is what arms the reachability assertion, so a `dist/` module missing from it passes silently — filed as #1224 |
-| C24 #1221 | `303053dfb` | `DocPort = { origin, fetch }`; `docFileRawURL`/`docImageURL` take the origin; adapters at `panes/doc/browserDocPort.ts` and `mobile-native/src/nativeDocPort.ts`. `docImageURL` stays a string builder — native image auth goes through the existing `transcriptImageSource` |
+| C24 #1221 | `303053dfb` | `DocPort = { origin, fetch }`; `docFileRawURL`/`docImageURL` take the origin; adapters at `panes/doc/browserDocPort.ts` and `mobile-native/src/nativeDocPort.ts`. `docImageURL` stays a string builder, and native doc-image auth is `nativeDocImageSource` (`nativeDocPort.ts:26`) — shipped with no importer, because native has no doc pane; plan row D29 wires it |
 | A3d #1209 | `f39aa2c83` | Publishes `./docContent` as the package's second specifier and turns `readDocFile` into `readDocFile(session, path, fetchDoc)`, where `DocFetch` returns a `DocResponseLike` — the minimal `{ ok, status, headers.get, arrayBuffer }` a real `Response` satisfies, because a `Promise<Response>` in the `.d.ts` fails the runner's DOM-free declaration consumers. The web's adapter was `panes/doc/browserDocFetch.ts`; the root keeps the pure helpers. C24 (#1221) then renamed that adapter `panes/doc/browserDocPort.ts` and widened `DocFetch` into `DocPort = { origin, fetch }`, so today's signature is `readDocFile(session, path, port: DocPort)`. §3's `docContent` seam row is answered by the pair |
 
 A3 and A4 are unstarted, and what they block is narrower than an earlier draft
