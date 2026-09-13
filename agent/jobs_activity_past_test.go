@@ -2145,8 +2145,77 @@ func TestActivityPlaceholderEpochs_MatchesTheLoaderOnADegradedDelegateJournal(t 
 	}
 	loaderEpoch := loaded.snapshot.DelegatesEpoch
 	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
-	_, placeholderEpoch := activityPlaceholderEpochs(loc, loaded, cache, childID)
+	_, placeholderEpoch, err := activityPlaceholderEpochs(loc, loaded, cache, childID)
+	if err != nil {
+		t.Fatalf("name the placeholder's generations: %v", err)
+	}
 	if placeholderEpoch != loaderEpoch {
 		t.Fatalf("placeholder names generation %d while the loader reports %d -- a token minted from one and checked against the other is refused for a journal both sides read the same way", placeholderEpoch, loaderEpoch)
 	}
+}
+
+// TestBuildActivityFullSnapshot_PlaceholderLookupFailuresSurface pins that
+// naming a depth-truncated child's generations reports its failures instead of
+// answering 0. A canceled request and an unreadable journal are not a
+// generation of zero: minting a token against a number nobody read hands the
+// client a page that cannot be resumed, and hides the cancellation the caller
+// asked for.
+func TestBuildActivityFullSnapshot_PlaceholderLookupFailuresSurface(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "lookupfailroot"
+	childID := "lookupfailchild"
+	childRootID := "lookupfailchildroot"
+	started := time.Unix(940, 0).UTC()
+
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+	})
+	// The child names a DIFFERENT root, so naming its delegate generation
+	// reads a journal this traversal has not folded yet.
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", childRootID, 0)
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
+	writePastStableDelegates(t, stateDir, childRootID, pastStableDescriptor(childRootID, "unrelatedchild", "other"))
+	childRootDelegates := filepath.Join(jobsDir(stateDir, childRootID), "delegates.jsonl")
+
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	original := scanDelegateJournal
+	defer func() { scanDelegateJournal = original }()
+
+	t.Run("io error", func(t *testing.T) {
+		boom := errors.New("delegate journal unreadable")
+		scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+			if path == childRootDelegates {
+				return nil, 0, delegatestore.ReadDiagnostics{}, boom
+			}
+			return original(ctx, path, fromOffset, limits)
+		}
+		cache := newHistoricalActivityCache(context.Background(), rootID)
+		cache.budget.maxDepth = 0
+		if _, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0); !errors.Is(err, boom) {
+			t.Fatalf("err = %v, want the journal read's own failure", err)
+		}
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		scanDelegateJournal = func(scanCtx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+			if path == childRootDelegates {
+				cancel()
+				return nil, 0, delegatestore.ReadDiagnostics{}, scanCtx.Err()
+			}
+			return original(scanCtx, path, fromOffset, limits)
+		}
+		cache := newHistoricalActivityCache(ctx, rootID)
+		cache.budget.maxDepth = 0
+		if _, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	})
 }

@@ -475,7 +475,10 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			if !activityConsumeWorkUnit(cache.budget, 1) {
 				continue
 			}
-			placeholderJobs, placeholderDelegates := activityPlaceholderEpochs(loc, loaded, cache, childID)
+			placeholderJobs, placeholderDelegates, err := activityPlaceholderEpochs(loc, loaded, cache, childID)
+			if err != nil {
+				return nil, err
+			}
 			snapshot.Children[childID] = &activitySessionSnapshot{
 				SessionID:       childID,
 				Ref:             row.descriptor.TranscriptRef,
@@ -670,14 +673,18 @@ func liveActivitySessionLabel(s *Session) string {
 // never-folded path's generation is 0 and that is what its first fold
 // assigns. A journal actually rewritten between this read and that fold
 // raises the fold's number, and the resulting mismatch is the true answer.
-func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoadedBase, cache *historicalActivityCache, childID string) (jobs, delegates uint64) {
+func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoadedBase, cache *historicalActivityCache, childID string) (jobs, delegates uint64, err error) {
 	childLoc, err := resolveActivityChildByID(loc, loaded, childID)
 	if err != nil || childLoc.live != nil {
-		return 0, 0
+		// An unresolvable link and a live child are answers, not failures of
+		// this lookup: the caller records the first per child
+		// (snapshot.Errors) and projection reports it from there, and the
+		// second folds nothing. Both name no generations.
+		return 0, 0, nil //nolint:nilerr // the caller records this per child; naming generations is neither possible nor needed here
 	}
 	stateDir := strings.TrimSpace(childLoc.stateDir)
 	if stateDir == "" {
-		return 0, 0
+		return 0, 0, nil
 	}
 	meta, _ := schema.LoadSessionMeta(stateDir, childID)
 	// The delegates generation comes from the same index the child's own load
@@ -688,9 +695,12 @@ func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoaded
 	// degraded.
 	index, err := cache.rootDelegates(stateDir, activityRootIDFromMeta(childID, meta))
 	if err != nil {
-		return 0, 0
+		// A canceled request or an unreadable journal is a failure of this
+		// load, not a generation of 0: swallowing it would mint a token
+		// against a number nobody read.
+		return 0, 0, err
 	}
-	return currentHistoricalJobsEpoch(stateDir, childID), index.epoch
+	return currentHistoricalJobsEpoch(stateDir, childID), index.epoch, nil
 }
 
 func resolveActivityChildByID(parent activitySessionLocator, loaded activityLoadedBase, childID string) (activitySessionLocator, error) {
