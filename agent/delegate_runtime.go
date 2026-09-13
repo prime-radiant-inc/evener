@@ -1113,6 +1113,35 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err != nil {
 		return failed(err)
 	}
+	// Claim the committed-start window by CHILD SESSION ID, immediately, before
+	// restoreIdleForSend has resolved a child to claim (#940). The per-subagent
+	// `driving` claim below can only be taken once restoreIdleForSend has
+	// produced the child, which leaves CommitStart -> restoreIdleForSend ->
+	// admitReconstructed/AttachRuntime uncovered: a wake-edge drive landing in
+	// that stretch reads the child as idle and falls through to
+	// driveSubagentNotificationTurn, launching a second, UNLEASED turn on the
+	// session this generation is about to run. The id-keyed claim makes every
+	// drivability read refuse without needing the child object. It is handed to
+	// the run at the same point `running` is set, and released on every exit that
+	// does not hand ownership to the run.
+	committedChildID := strings.TrimSpace(started.descriptor.ChildSessionID)
+	committedClaimHeld := false
+	if committedChildID != "" {
+		if !s.claimChildCommittedSendStart(committedChildID) {
+			// A second committed start is racing on the same delegate; refuse it
+			// as busy rather than proceeding.
+			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, errDelegateTargetBusy, nil)
+		}
+		committedClaimHeld = true
+	}
+	defer func() {
+		if committedClaimHeld {
+			s.releaseChildCommittedSendStart(committedChildID)
+		}
+	}()
+	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
+		observer(committedChildID)
+	}
 	sub, restored, finishRestore, err := runtime.restoreIdleForSend(started)
 	if err != nil {
 		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, err, func() {
@@ -1247,6 +1276,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// reads idle between the committed start and the run that owns it.
 	sub.driving = false
 	sub.mu.Unlock()
+	// running is now true under the same hold, so every drivability read refuses
+	// on the run itself; the id-keyed claim has done its job and is released. The
+	// deferred release sees committedClaimHeld false and does nothing.
+	if committedClaimHeld {
+		s.releaseChildCommittedSendStart(committedChildID)
+		committedClaimHeld = false
+	}
 	launched = true
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)

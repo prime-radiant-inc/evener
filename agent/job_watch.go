@@ -4908,7 +4908,7 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 		// live work, so driving it here would have the drain kicking a child it
 		// has already told the operator it abandoned — and abandoning a queued
 		// notification the drive loop was mid-way through delivering.
-		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) {
+		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) || s.childCommittedSendStart(child.id) {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
@@ -4932,7 +4932,7 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if sub == nil || sub.sess == nil {
 		return
 	}
-	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) || s.childDrainAbandoned(sub.sess.id) || s.childDrainGracePending(sub.sess.id) {
+	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) || s.childDrainAbandoned(sub.sess.id) || s.childDrainGracePending(sub.sess.id) || s.childCommittedSendStart(sub.sess.id) {
 		return
 	}
 	if s.driveStableDelegateAttention(sub) {
@@ -5048,6 +5048,53 @@ func (s *Session) directStableDelegateForChildSession(childSessionID string) (de
 func (s *Session) childStopGated(childSessionID string) bool {
 	row, ok := s.directStableDelegateForChildSession(childSessionID)
 	return ok && delegateRowStopGated(row)
+}
+
+// childCommittedSendStart reports whether childSessionID has a committed send
+// start whose owning run has not yet taken the generation over (#940). The
+// claim is keyed by child session id, not by the child object, so it covers the
+// stretch CommitStart -> restoreIdleForSend -> admitReconstructed/AttachRuntime
+// where the child does not exist yet or is still idle and drivable. Every
+// wake-edge drivability check reads it, and driveSubagentNotificationTurn reads
+// it too, so the drive refuses without needing a resolved child object.
+func (s *Session) childCommittedSendStart(childSessionID string) bool {
+	if s == nil || childSessionID == "" {
+		return false
+	}
+	s.childCommittedSendMu.Lock()
+	defer s.childCommittedSendMu.Unlock()
+	_, held := s.childCommittedSendChildren[childSessionID]
+	return held
+}
+
+// claimChildCommittedSendStart takes the id-keyed committed-send-start claim.
+// It returns false when the claim is already held — a second committed start
+// racing on the same delegate — so the caller refuses as busy rather than
+// launching a second turn on the session the first start is about to run.
+func (s *Session) claimChildCommittedSendStart(childSessionID string) bool {
+	if s == nil || childSessionID == "" {
+		return false
+	}
+	s.childCommittedSendMu.Lock()
+	defer s.childCommittedSendMu.Unlock()
+	if _, held := s.childCommittedSendChildren[childSessionID]; held {
+		return false
+	}
+	if s.childCommittedSendChildren == nil {
+		s.childCommittedSendChildren = make(map[string]struct{})
+	}
+	s.childCommittedSendChildren[childSessionID] = struct{}{}
+	return true
+}
+
+// releaseChildCommittedSendStart drops the id-keyed committed-send-start claim.
+func (s *Session) releaseChildCommittedSendStart(childSessionID string) {
+	if s == nil || childSessionID == "" {
+		return
+	}
+	s.childCommittedSendMu.Lock()
+	delete(s.childCommittedSendChildren, childSessionID)
+	s.childCommittedSendMu.Unlock()
 }
 
 // delegateRowStopGated is childStopGated's verdict on a row the caller already

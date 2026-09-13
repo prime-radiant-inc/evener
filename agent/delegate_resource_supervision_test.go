@@ -267,6 +267,75 @@ func TestDelegateResourceSupervision_CommittedSendStartRefusesASecondTurn(t *tes
 	waitForStableSupervisionRun(t, root, fixture.childID)
 }
 
+// TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn
+// pins the EARLIEST stretch of the send-start window (#940): commit -> child
+// resolution. The late delegateSendStartCommitted seam fires only after
+// restoreIdleForSend has produced the child AND the per-subagent `driving`
+// claim is held, so it proves nothing about the stretch the issue names:
+// CommitStart -> restoreIdleForSend -> admitReconstructed/AttachRuntime. This
+// test drives the child from a seam placed immediately after CommitStart, while
+// the child object is not yet resolved, and asserts the id-keyed claim refuses
+// the drive: the retained idle child never reads drivable and no second,
+// unleased EntryNotification turn launches on it.
+func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return finalResponse("send result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	warmStableSupervisionDelegate(t, root, fixture)
+
+	var handoffMu sync.Mutex
+	var claimSeen, claimHeld, candidateFound, secondTurnLaunched bool
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateSendStartClaimed = func(childSessionID string) {
+			// Resolve the retained idle child by the id the claim is keyed by,
+			// exactly as the wake edge would before the child is re-resolved.
+			candidate := root.subagents.get(childSessionID)
+			handoffMu.Lock()
+			defer handoffMu.Unlock()
+			if claimSeen {
+				return
+			}
+			claimSeen = true
+			claimHeld = root.childCommittedSendStart(childSessionID)
+			if candidate == nil {
+				return
+			}
+			candidateFound = true
+			// This is the drive the wake edge would launch. With the id-keyed
+			// claim held the guard must refuse it; without the claim the idle
+			// child passes and this launches a second, unleased turn.
+			secondTurnLaunched = root.driveSubagentNotificationTurn(candidate)
+		}
+	})
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "early committed send start", 0)
+	if outcome.result.Err != nil || outcome.result.Action != "started" {
+		t.Fatalf("early committed send start = %+v, want started", outcome.result)
+	}
+
+	handoffMu.Lock()
+	seen, held, found, launched := claimSeen, claimHeld, candidateFound, secondTurnLaunched
+	handoffMu.Unlock()
+	if !seen {
+		t.Fatal("the early committed send start claim was never observed")
+	}
+	if !found {
+		t.Fatal("the retained idle child was not resident at the early committed send start")
+	}
+	if !held {
+		t.Fatal("the committed send start did not hold the id-keyed claim before the child was resolved")
+	}
+	if launched {
+		t.Fatal("an early committed send start left the child drivable as a plain notification turn")
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("provider requests = %d, want warm plus the one send turn", got)
+	}
+}
+
 func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {
