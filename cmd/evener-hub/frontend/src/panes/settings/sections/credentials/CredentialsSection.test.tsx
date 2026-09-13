@@ -910,6 +910,48 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await screen.findByText("Removed instance personal");
   });
 
+  // A name the environment also supplies keeps resolving after the authored
+  // entry is removed: the hub re-lists it as an implicit instance, and the
+  // access it resolves is the environment's, not the removed entry's. The
+  // removal is confirmed by the authored row leaving - requiring the *name* to
+  // vanish would report a removal that did happen as unconfirmed, leaving the
+  // sheet open on stale authored state.
+  test("removing an instance the environment also supplies confirms on the authored row leaving", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "personal" });
+      return {
+        instances: [
+          WORK,
+          instance({
+            name: "personal",
+            providerId: "openai-codex",
+            implicit: true,
+            activeSource: "env:OPENAI_API_KEY",
+          }),
+        ],
+        availableProviders: [],
+      };
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+    await screen.findByText(/Removed instance personal/);
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(screen.queryByText(/could not be confirmed/)).toBeNull();
+  });
+
   test("cancelling a confirm dialog makes no RPC call and keeps the sheet open", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
