@@ -130,9 +130,8 @@ type activityBudget struct {
 	usedWork     int
 	maxDepth     int
 	now          time.Time
-	// revision is the value markActivitySessionTruncated and
-	// markActivityDelegateTruncated embed as activityContinuation.Revision
-	// — see that field's doc comment.
+	// revision is the value markActivitySessionTruncated embeds as
+	// activityContinuation.Revision — see that field's doc comment.
 	revision uint64
 }
 
@@ -190,8 +189,7 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	// recursion, which this path-following code doesn't go through. The
 	// limit itself is activityMaxContinuationPathLength
 	// (activityMaxNewDepth+1), not activityMaxNewDepth — see its doc
-	// comment for why a legitimately-minted depth-boundary continuation
-	// needs the extra hop.
+	// comment for why the extra hop is still accepted.
 	if len(cont.Path) > activityMaxContinuationPathLength {
 		return activityContinuation{}, fmt.Errorf("continuation path length %d exceeds %d", len(cont.Path), activityMaxContinuationPathLength)
 	}
@@ -1072,6 +1070,8 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		// a fresh root at position 0, so the page it fetches is the page a
 		// direct request fetches — with generations this page cannot
 		// honestly name, since nothing here loaded that child's journals.
+		// Turning this diagnostic into an affordance the reader can click is
+		// frontend work, tracked in #1270.
 		delegate.Branch.Truncated = true
 		delegate.Diagnostics = append(delegate.Diagnostics, fmt.Sprintf("depth limit reached; request session %q directly", childID))
 		return delegate

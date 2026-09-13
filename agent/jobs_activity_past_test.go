@@ -718,13 +718,10 @@ func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *test
 // doesn't go through).
 func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) {
 	// activityMaxContinuationPathLength (activityMaxNewDepth+1), not
-	// activityMaxNewDepth itself, is the real limit: a depth-boundary
-	// continuation legitimately mints a path exactly activityMaxNewDepth+1
-	// hops long (see
-	// TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable),
-	// so this test's own path must exceed THAT to prove genuinely-too-long
-	// paths are rejected without also rejecting that legitimate boundary
-	// case.
+	// activityMaxNewDepth itself, is the real limit: the extra hop is slack
+	// this build still accepts (see that constant's doc comment), so this
+	// test's own path must exceed THAT to prove genuinely-too-long paths are
+	// rejected without also rejecting a token the decoder still honours.
 	path := make([]string, activityMaxContinuationPathLength+1)
 	for i := range path {
 		path[i] = fmt.Sprintf("hop%d", i)
