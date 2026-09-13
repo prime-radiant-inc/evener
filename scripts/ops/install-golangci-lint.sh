@@ -97,7 +97,7 @@ attempt_stop_grace=5
 # signal handler that called it, so the group is probed under a bounded grace
 # and an unstoppable one is named rather than waited on.
 stop_attempt() {
-	local stop_status=0 members target="$attempt_pid" recorded
+	local stop_status=0 members target="$attempt_pid" recorded marker
 	if [ -z "$target" ] && [ -n "$attempt_record" ] && [ -e "$attempt_record" ]; then
 		# The spawn records itself, and this is why: between the fork and the
 		# shell's own `attempt_pid=$!` there is an attempt running that this
@@ -106,7 +106,14 @@ stop_attempt() {
 		# the child before it splits, so waiting on it is waiting for the pid the
 		# shell has not been given yet.
 		if recorded="$(pgroup_record_value "$attempt_record" "$attempt_stop_grace")"; then
+			marker="${recorded##*:}"
+			recorded="${recorded%:*}"
 			target="${recorded#p*:}"
+			# Only while the number still names this attempt: a pid read from
+			# a file is a number the kernel may have handed on since.
+			if ! pgroup_owned_by "$target" "$marker" && ! pid_owned_by "$target" "$marker"; then
+				return 0
+			fi
 		else
 			printf 'install-golangci-lint.sh: an install attempt was spawned but never named itself, so it cannot be shown to have stopped.\n' >&2
 			return 1
@@ -226,7 +233,7 @@ while :; do
 		exit 1
 	fi
 	perl -e "$PGROUP_SPAWN_PERL" \
-		-- "$attempt_record" \
+		-- "$attempt_record" install-golangci-lint-attempt \
 		bash -c 'set -o pipefail; curl -sSfL --connect-timeout 10 --max-time 60 "$1" | sh -s -- -b "$2" "$3"' \
 		install-golangci-lint-attempt "$installer_url" "$bindir" "v$version" 2>"$attempt_log" &
 	attempt_pid=$!

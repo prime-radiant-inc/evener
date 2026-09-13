@@ -327,7 +327,7 @@ stop_children() {
 # stalled `go list` was left running with ppid 1, holding the GOCACHE and
 # GOMODCACHE locks that every later run on the host needs.
 stop_recorded_package_list_groups() {
-	local pgid_file recorded members stop_status
+	local pgid_file recorded members stop_status marker ownership
 	[ -n "$logdir" ] || return 0
 	# A record is dropped only once it has been acted on: a file removed before
 	# the probe takes the only name anyone had for a survivor with it, and a
@@ -367,6 +367,8 @@ stop_recorded_package_list_groups() {
 				"${recorded#survivor:}" "$pgid_file" >&2
 			continue
 		fi
+		marker="${recorded##*:}"
+		recorded="${recorded%:*}"
 		if [ "${recorded#pid:}" != "$recorded" ]; then
 			# A pid, not a group: the attempt had not split when it wrote this,
 			# so it is in the runner's own group and nothing here may signal that
@@ -383,6 +385,17 @@ stop_recorded_package_list_groups() {
 			continue
 		fi
 		recorded="${recorded#pgid:}"
+		# The number is only worth signalling while it still names this attempt.
+		# A group that has gone takes its number with it, and the kernel gives
+		# that number to somebody else in time: a cleanup that skipped this would
+		# be sending SIGTERM and SIGKILL to a stranger's group on the strength of
+		# a file this run wrote minutes earlier.
+		ownership=0
+		pgroup_owned_by "$recorded" "$marker" || ownership=$?
+		if [ "$ownership" -eq 1 ]; then
+			rm -f "$pgid_file"
+			continue
+		fi
 		# What is recorded is a group, so ask about the group rather than
 		# about its leader alone: `go list` can exit with a child of the
 		# attempt still running in it, and a leader-only check would leave
@@ -736,7 +749,8 @@ run_bounded_package_list() {
 		# Word-split deliberately, as everywhere else the flags are passed on.
 		# shellcheck disable=SC2086
 		perl -e "$PGROUP_SPAWN_PERL" \
-			-- "$(package_list_pgid_path "$module")" go list $build_flags ./... >"$attempt_list" 2>>"$package_list_stderr" &
+			-- "$(package_list_pgid_path "$module")" go \
+			go list $build_flags ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do

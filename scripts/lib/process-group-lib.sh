@@ -14,18 +14,32 @@
 # to be stoppable. Its first argument is the record path, the rest is the command
 # to run:
 #
-#   perl -e "$PGROUP_SPAWN_PERL" -- "$record" cmd arg...  &
+#   perl -e "$PGROUP_SPAWN_PERL" -- "$record" "$marker" cmd arg...  &
 #
 # The caller creates the record, empty, before the fork; this fills it in. The
-# order is the whole point. `pid:N` is written before the split, so a cleanup
-# that finds it knows the job is still in the caller's own group and must be
-# stopped by pid; `pgid:N` is written after, and only after setpgrp says it made
-# the group, so a record that claims a group never names one that does not exist.
+# marker is the argv0 the job will run under, and it is what makes the record
+# safe to act on later: a pid and the group named after it both outlive the job
+# that held them, so a reader has to ask what is in that group now, not only
+# whether something is.
+#
+# The record's states, which every reader here shares:
+#
+#   (no file)        no job is live for this caller
+#   (empty)          the file exists and nothing has been spawned yet, or the
+#                    spawn died before it could write
+#   pid:N:MARKER     N is a pid still in the caller's own process group: it has
+#                    not split yet, so it is stopped by pid and never by -N
+#   pgid:N:MARKER    N is a process group of the job's own, written only once
+#                    setpgrp said it made one
+#   survivor:N       a group that took SIGTERM and SIGKILL and was still there:
+#                    kept for whoever runs next, deliberately not signalled again
+#
 # Each write goes to a temporary file and is renamed into place, so a reader sees
 # a whole record or no file at all. A record that cannot be written fails the
 # spawn rather than leaving a job nothing can name.
 PGROUP_SPAWN_PERL='
 	my $record_path = shift @ARGV;
+	my $marker = shift @ARGV;
 	sub record {
 		my ($path, $line) = @_;
 		open my $fh, ">", "$path.tmp" or die "process group record $path: $!\n";
@@ -33,9 +47,9 @@ PGROUP_SPAWN_PERL='
 		close $fh or die "process group record $path: $!\n";
 		rename "$path.tmp", $path or die "process group record $path: $!\n";
 	}
-	record($record_path, "pid:$$");
+	record($record_path, "pid:$$:$marker");
 	setpgrp(0, 0) or die "setpgrp: $!\n";
-	record($record_path, "pgid:$$");
+	record($record_path, "pgid:$$:$marker");
 	exec @ARGV or die "exec: $!\n";
 '
 
@@ -105,6 +119,49 @@ pid_leads_pgroup() {
 	local pid="$1" pgid
 	pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
 	[ -n "$pgid" ] && [ "$pgid" = "$pid" ]
+}
+
+# pgroup_owned_by PGID MARKER — 0 when PGID holds a live member running MARKER,
+# 1 when it holds none, 2 when the process listing would not run.
+#
+# The question every recorded number has to answer before it is signalled. A pid
+# and the group named after it outlive the job that held them, and the kernel
+# hands both to somebody else in time, so "is anything in group N" is not the
+# same as "is the job I recorded still in group N". MARKER is the argv0 the job
+# was spawned under; a group whose live members are all somebody else's is gone
+# as far as this caller is concerned, and gets no signal.
+pgroup_owned_by() {
+	local pgid="$1" marker="$2" listing
+	if ! listing="$(ps -axo pid=,pgid=,state=,command= 2>/dev/null)" || [ -z "$listing" ]; then
+		return 2
+	fi
+	printf '%s\n' "$listing" |
+		awk -v pgid="$pgid" -v marker="$marker" '
+			$2 == pgid && $3 !~ /^[Zz]/ {
+				n = split($4, parts, "/")
+				if (parts[n] == marker) { found = 1 }
+			}
+			END { exit(found ? 0 : 1) }
+		'
+}
+
+# pid_owned_by PID MARKER — the same question about a single process, for a job
+# that has not split into a group of its own yet. 0 when PID is running MARKER,
+# 1 when it is not — gone, a zombie, or a number somebody else now holds — and 2
+# when the listing would not run.
+pid_owned_by() {
+	local pid="$1" marker="$2" command state
+	command="$(ps -o command= -p "$pid" 2>/dev/null)"
+	if [ -z "$command" ]; then
+		kill -0 "$pid" 2>/dev/null || return 1
+		return 2
+	fi
+	state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+	case "$state" in
+	[Zz]*) return 1 ;;
+	esac
+	command="${command%% *}"
+	[ "${command##*/}" = "$marker" ]
 }
 
 # escalate_blind PID GRACE — the last thing to do for a job nothing can see:
