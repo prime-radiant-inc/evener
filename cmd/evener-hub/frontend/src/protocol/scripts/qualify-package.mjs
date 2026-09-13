@@ -39,7 +39,11 @@ async function qualify() {
     "transport",
     "types.gen",
     "askAnswers",
+    "askShared",
+    "deriveAskQuestions",
+    "reconcileBatches",
     "attachmentMarkers",
+    "composerInput",
     "activityData",
     "activityList",
     "activityMerge",
@@ -81,7 +85,13 @@ async function qualify() {
     "sessionActionHeadline",
     "rpcURLFromLocation",
     "composeAskAnswers",
+    "parseAskUserQuestions",
+    "answeredAskUserSuffix",
+    "liveAskQuestions",
+    "reconcileBatches",
     "translateAttachmentMarkers",
+    "buildInput",
+    "buildComposerInput",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
     "STEERING_KINDS",
@@ -160,7 +170,11 @@ async function qualify() {
     "AppwireClientLike",
     "WebSocketLike",
     "AskAnswerItem",
+    "AskUserQuestion",
+    "AskQuestionRef",
+    "AskBatch",
     "MarkerAttachment",
+    "InputAttachment",
     "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
@@ -181,7 +195,24 @@ async function qualify() {
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
+const askItem = {
+  id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
+  argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
+};
+assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
+assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
+assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
+assert.equal(askBatches[0].id, "batch1");
+assert.equal(askBatches[0].questions[0].key, "ask1:0");
+const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
+assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
+assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
+assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
+  { type: "text", text: "(attached image 1: shot.png)go" },
+  { type: "image", mediaType: "image/png", data: "AA", name: "shot.png" },
+]);
 assert.equal(new client.WireError("nope", -32000).code, -32000);
 assert.equal(client.errorText(new Error("boom")), "boom");
 assert.equal(client.errorKind(new Error("boom")), "unknown");
