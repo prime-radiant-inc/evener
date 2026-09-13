@@ -1,5 +1,5 @@
-import { translateAttachmentMarkers } from "../protocol/attachmentMarkers";
-import type { InputItem } from "../protocol/types.gen";
+import { translateAttachmentMarkers } from "./attachmentMarkers";
+import type { InputItem } from "./types.gen";
 
 /** Staged image bytes; marker identifies its editing anchor, never a wire field. */
 export interface InputAttachment {

@@ -3,7 +3,7 @@ import { translateAttachmentMarkers } from "../../cmd/evener-hub/frontend/src/pr
 import {
   buildComposerInput,
   buildInput,
-} from "../../cmd/evener-hub/frontend/src/stores/composerInput";
+} from "../../cmd/evener-hub/frontend/src/protocol/composerInput";
 
 describe("shared composer input", () => {
   it("preserves ordinary text and allows image-only input", () => {
