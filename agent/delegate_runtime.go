@@ -1152,6 +1152,48 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			})
 		}
 	}
+	// Take the drive claim for the committed-start window, exactly as
+	// driveStableDelegateAttention does (#932/#940). CommitStart has already
+	// consumed the reservation, but sub.running stays false through the restored
+	// side effects and the start-input mutation plans (BeginStartInput,
+	// preseedInput, CompleteStartInput); the run goroutine only sets running at
+	// the far end of it. A wake-edge drive landing in that gap reads an idle
+	// child, and driveChildIfNotStopGated falls through to
+	// driveSubagentNotificationTurn, which launches a second, UNLEASED
+	// EntryNotification turn on the session this generation is about to run. The
+	// two turns then share one drain ladder and popFollowUp (a destructive pop
+	// with no owner check) lets the unleased turn steal the run's follow-up.
+	// sub.driving is the flag every other guard already reads as "a turn is in
+	// flight on this idle child"; it is handed to the run under the same sub.mu
+	// hold that sets running and released by the deferred rollback on every
+	// failure exit below.
+	//
+	// The claim starts here, once restoreIdleForSend has produced the child to
+	// claim, so it does not cover CommitStart through restoreIdleForSend, nor the
+	// admitReconstructed/AttachRuntime leg on the restored path: a drive landing
+	// in that earlier stretch still reads an idle child. Closing it needs a claim
+	// keyed by delegate id, taken before the child is resolved.
+	sub.mu.Lock()
+	blocked := sub.running || sub.driving
+	if !blocked {
+		sub.driving = true
+	}
+	sub.mu.Unlock()
+	if blocked {
+		cause := errDelegateTargetBusy
+		return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, cause, func() {
+			finishRestore(sub, nil)
+		})
+	}
+	launched := false
+	defer func() {
+		if launched {
+			return
+		}
+		sub.mu.Lock()
+		sub.driving = false
+		sub.mu.Unlock()
+	}()
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
 	if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
@@ -1169,6 +1211,9 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	finishRestore(sub, nil)
+	if observer := s.cfg.testOnly.delegateSendStartCommitted; observer != nil {
+		observer(sub)
+	}
 	claim, err := s.delegateController.BeginStartInput(started.lease)
 	if err != nil {
 		s.sendersWG.Done()
@@ -1198,7 +1243,11 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	sub.mu.Lock()
 	sub.fatalRunGated = false
 	resetSubagentForRunLocked(sub, runCancel, started.startedAt)
+	// Hand the start claim over to the run under one hold, so the child never
+	// reads idle between the committed start and the run that owns it.
+	sub.driving = false
 	sub.mu.Unlock()
+	launched = true
 	s.launchSubagentRun(runCtx, sub, runCancel, message, descriptorProvenance(started.descriptor))
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
 	result := sendMessageResult{
