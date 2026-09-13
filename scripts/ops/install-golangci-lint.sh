@@ -63,27 +63,77 @@ bindir="$(go env GOPATH)/bin"
 # Declared before the mint so the name is assigned in one place; scratch_dir
 # fills it with printf -v and exits on any failure.
 attempt_scratch=""
-trap scratch_rm EXIT
+attempt_pid=""
+# stop_attempt — end the running attempt and reap it.
+#
+# The attempt is a whole pipeline of other people's programs, so stopping the
+# one process this script spawned is not enough: it runs in a process group of
+# its own and the group is what gets signalled, which reaches the curl and the
+# shell running the installer however late either appeared. The pid is signalled
+# too, for the instant before the group exists. Reaping matters as much as
+# signalling: without it the script can exit while the installer is still
+# writing into the Go bin directory.
+stop_attempt() {
+	[ -n "$attempt_pid" ] || return 0
+	kill -TERM "$attempt_pid" 2>/dev/null || :
+	kill -TERM -- -"$attempt_pid" 2>/dev/null || :
+	local waited=0
+	while [ "$waited" -lt 50 ] && kill -0 "$attempt_pid" 2>/dev/null; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	kill -KILL "$attempt_pid" 2>/dev/null || :
+	kill -KILL -- -"$attempt_pid" 2>/dev/null || :
+	wait "$attempt_pid" 2>/dev/null || :
+	attempt_pid=""
+}
+trap 'stop_attempt; scratch_rm' EXIT
 # A signal ends the script without running the EXIT trap, and a CI cancellation
 # lands during the fetch more often than anywhere else, so the scratch would be
-# left behind on the runner. Each of these cleans up and exits with the
-# conventional 128 plus the signal number; scratch_rm is safe to run twice, so
-# the EXIT trap that follows changes nothing.
-trap 'scratch_rm; exit 129' HUP
-trap 'scratch_rm; exit 130' INT
-trap 'scratch_rm; exit 143' TERM
+# left behind on the runner and the installer left running in it. Each of these
+# stops the attempt, cleans up and exits with the conventional 128 plus the
+# signal number; stop_attempt and scratch_rm are both safe to run twice, so the
+# EXIT trap that follows changes nothing.
+trap 'stop_attempt; scratch_rm; exit 129' HUP
+trap 'stop_attempt; scratch_rm; exit 130' INT
+trap 'stop_attempt; scratch_rm; exit 143' TERM
 scratch_dir attempt_scratch evener-golangci-install
 attempt_log="$attempt_scratch/attempt.stderr"
 
 # pipefail is what makes the fetch of install.sh part of the attempt: without
 # it a failed curl hands `sh` an empty script, which exits 0 and reports a
-# successful install of nothing. The timeouts are what make a stalled fetch a
-# failed attempt rather than a hang: curl has none by default, so a connection
-# that opens and then goes quiet never returns and the retry never happens.
+# successful install of nothing. It is set inside the attempt's own shell, since
+# that is where the pipeline now runs. The timeouts are what make a stalled
+# fetch a failed attempt rather than a hang: curl has none by default, so a
+# connection that opens and then goes quiet never returns and the retry never
+# happens.
+#
+# Each attempt is exec'd through perl so it lands in its own process group and
+# can be stopped as one. Named here rather than discovered at the spawn, where
+# it would fail as an exec error inside an attempt log.
+if ! command -v perl >/dev/null 2>&1; then
+	printf 'install-golangci-lint.sh: perl is not on PATH. Each install attempt runs through perl setpgrp(0, 0) so the whole curl | sh pipeline can be stopped as a process group; setsid(1) would serve as well but is not on macOS.\n' >&2
+	exit 2
+fi
 attempt=1
 while :; do
 	: >"$attempt_log"
-	if { curl -sSfL --connect-timeout 10 --max-time 60 "$installer_url" | sh -s -- -b "$bindir" "v$version"; } 2>"$attempt_log"; then
+	# The attempt runs in the background, in a process group of its own, and is
+	# waited on. Backgrounded because a trapped signal is held until the current
+	# foreground command returns, and a stalled fetch would hold a cancellation
+	# for as long as curl's own bound; `wait` takes the signal at once. In its own
+	# group because that is the only handle on the pipeline's other processes.
+	# perl's setpgrp(0, 0) does the split between fork and exec — setsid(1) would
+	# too and is not on macOS, and `set -m` would turn job control on for the
+	# whole script.
+	perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' \
+		-- bash -c 'set -o pipefail; curl -sSfL --connect-timeout 10 --max-time 60 "$1" | sh -s -- -b "$2" "$3"' \
+		install-golangci-lint-attempt "$installer_url" "$bindir" "v$version" 2>"$attempt_log" &
+	attempt_pid=$!
+	attempt_status=0
+	wait "$attempt_pid" || attempt_status=$?
+	attempt_pid=""
+	if [ "$attempt_status" -eq 0 ]; then
 		cat "$attempt_log" >&2
 		break
 	fi
