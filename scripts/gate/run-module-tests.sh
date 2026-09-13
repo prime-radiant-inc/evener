@@ -565,7 +565,7 @@ stop_package_list_group() {
 # already changed to that module.
 run_bounded_package_list() {
 	local module="$1" package_list="$2" package_list_stderr attempt attempt_list
-	local list_pid list_pgid started_at list_status descendant survivors stop_status
+	local list_pid list_pgid started_at list_status survivors stop_status
 	# Every attempt below is exec'd through perl so it lands in its own process
 	# group. Named here rather than discovered at the spawn, where it would fail
 	# as an exec error buried in a package-list log that says nothing about what
@@ -653,22 +653,18 @@ run_bounded_package_list() {
 					break
 				fi
 				if [ "$list_pgid" != "$list_pid" ]; then
-					# No group to name, so signal what a snapshot shows and
-					# stop. Nothing is waited on here: a retry would race
-					# whatever is left, and a process wedged in
-					# uninterruptible sleep would never be reaped, which
-					# would hang the gate instead of failing it.
-					for descendant in $(process_descendants "$list_pid"); do
-						kill -KILL "$descendant" 2>/dev/null || :
-					done
-					kill -KILL "$list_pid" 2>/dev/null || :
+					# There is no group here this script may aim at, and every
+					# fallback is worse than saying so. A descendant walk reads
+					# the same process listing that just failed, and killing the
+					# leader alone leaves whatever `go` spawned still holding the
+					# build and module cache locks — with the record deleted, so
+					# nothing downstream even knows the number to look for. So
+					# nothing is signalled, nothing is retried, and the record
+					# stays: the EXIT cleanup stops the group by that name if a
+					# later listing can see it.
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
-					printf 'run-module-tests.sh: attempt %s is not its own process group (pgid %s, pid %s), so it cannot be stopped as one. Not retrying.\n' \
-						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" >&2
-					# The record goes with the attempt. This pid's group is not
-					# itself, so the signal cleanup could never aim at it anyway,
-					# and a file left behind only buys a probe that must refuse.
-					rm -f "$(package_list_pgid_path "$module")"
+					printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: its process group reads as %s, not %s, so it cannot be stopped as one. Not retrying, and its record is kept at %s.\n' \
+						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" "$(package_list_pgid_path "$module")" >&2
 					return 1
 				fi
 				stop_status=0
@@ -681,18 +677,21 @@ run_bounded_package_list() {
 					# Name what is known instead and fail.
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					if [ "$stop_status" -eq 2 ]; then
-						printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: the process listing that answers "is process group %s empty" would not run. Not retrying, because a retry that cannot see the previous attempt would race it.\n' \
-							"$attempt" "$list_pid" >&2
+						# Nobody could look, so the record is all anyone has and it
+						# stays — the same rule the cleanup follows for a listing
+						# that will not run.
+						printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: the process listing that answers "is process group %s empty" would not run. Not retrying, because a retry that cannot see the previous attempt would race it. Its record is kept at %s.\n' \
+							"$attempt" "$list_pid" "$(package_list_pgid_path "$module")" >&2
 					else
 						survivors="$(package_list_group_survivor_report "$list_pid")"
 						printf 'run-module-tests.sh: attempt %s would not stop: process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each. Not retrying, and not waiting on it.\n' \
 							"$attempt" "$list_pid" "$survivors" "$ROOT_PACKAGE_LIST_STOP_GRACE" >&2
+						# Here the group has had SIGTERM and SIGKILL with a full
+						# grace each and the line above names what survived, so the
+						# record buys nothing the reader does not already have and
+						# would cost the EXIT cleanup two more graces.
+						rm -f "$(package_list_pgid_path "$module")"
 					fi
-					# The record goes too. This group has already had SIGTERM and
-					# SIGKILL with a full grace each and the diagnostic above names
-					# what survived; the EXIT cleanup can only repeat that, and the
-					# cost this script documents does not include a second pass.
-					rm -f "$(package_list_pgid_path "$module")"
 					return 1
 				fi
 				# The group has no live member, so the leader is a zombie or
