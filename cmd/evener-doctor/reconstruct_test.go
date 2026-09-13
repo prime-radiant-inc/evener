@@ -1073,3 +1073,41 @@ func TestReconstructSkipsPresentationalRecordsInsteadOfFailing(t *testing.T) {
 		t.Fatal("the source snapshot lost the presentational evidence it is supposed to preserve")
 	}
 }
+
+// A round's timings and a mid-turn compaction record land between a tool call
+// and the result answering it. They describe the session's presentation, not
+// its conversation — this reconstruction drops them — but they still sit in
+// the archive between the two, and reading them as the start of a new tool
+// round makes the result look like it crossed a boundary it never crossed.
+func TestReconstructTreatsPresentationalRecordsAsInsideTheToolRound(t *testing.T) {
+	dbPath, meta, output := reconstructionFixture(t)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// The tool result moves to the end; the two presentational records take
+	// the ordinals between it and the call it answers.
+	for _, statement := range []string{
+		`UPDATE sessions SET message_count=7 WHERE id='evener:02wLIRxqmq3AUo6vl2OW37'`,
+		`UPDATE messages SET ordinal=6 WHERE id=5`,
+		`INSERT INTO messages VALUES (6,'evener:02wLIRxqmq3AUo6vl2OW37',4,'Round timings: 1 round','2026-09-09T01:03:20Z','entry','ROUND_TIMINGS','','','','','')`,
+		`INSERT INTO messages VALUES (7,'evener:02wLIRxqmq3AUo6vl2OW37',5,'Layer: checkpoint','2026-09-09T01:03:40Z','entry','CONTEXT_COMPACTION','','','','','')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"reconstruct", "02wLIRxqmq3AUo6vl2OW37", "--agentsview-db", dbPath, "--meta", meta, "--output-dir", output}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, &errOut)
+	}
+	data, err := os.ReadFile(filepath.Join(output, "sessions", "02wLIRxqmq3AUo6vl2OW37.transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("result sentinel")) {
+		t.Fatal("the tool result answering the call is missing from the reconstruction")
+	}
+}

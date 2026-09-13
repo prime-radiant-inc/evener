@@ -436,8 +436,14 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		}
 		content := m.Content
 		switch turn.Kind {
-		case schema.TurnTool, schema.TurnToolResults, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnSteering:
-			// Native history permits these records inside a pending tool round.
+		case schema.TurnTool, schema.TurnToolResults, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnSteering,
+			schema.TurnRoundTimings, schema.TurnContextCompaction:
+			// Native history permits these records inside a pending tool
+			// round. The last two describe the session's presentation — a
+			// round's timings, a compaction layer's measurements — and this
+			// reconstruction drops them entirely, but they still sit in the
+			// archive between a call and its result, and a round boundary read
+			// from one of them fails a result that never crossed anything.
 		default:
 			toolRoundOrdinal = m.Ordinal
 		}
