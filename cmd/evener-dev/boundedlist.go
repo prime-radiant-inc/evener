@@ -25,7 +25,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -34,14 +36,17 @@ type attemptResult struct {
 	stdout   []byte
 	err      error
 	timedOut bool
-	exitCode int
-	pgid     int
+	// interrupted is the signal this helper was sent while the command ran,
+	// and zero when it was not.
+	interrupted syscall.Signal
+	exitCode    int
+	pgid        int
 }
 
 // runBoundedAttempt runs argv with its own process group, returning when it
 // finishes or when timeout passes, whichever comes first. On the bound it sends
 // the group SIGTERM, waits grace, and sends SIGKILL.
-func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Writer) attemptResult {
+func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Writer, signals <-chan os.Signal) attemptResult {
 	var out bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -78,9 +83,20 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.exitCode = exitCodeOf(err)
 		stopSurvivors(cmd, result.pgid, grace, stderr)
 		return result
+	case received := <-signals:
+		// The command is in a process group of its own, which is what keeps a
+		// wedged compiler off this host -- and also what stops the terminal's
+		// SIGINT from reaching it, since it is no longer in the shell's
+		// foreground group. So this helper passes on what it is sent.
+		if s, ok := received.(syscall.Signal); ok {
+			result.interrupted = s
+		} else {
+			result.interrupted = syscall.SIGTERM
+		}
+		_, _ = fmt.Fprintf(stderr, "bounded-list: %v — stopping %s.\n", received, argv[0])
 	case <-time.After(timeout):
+		result.timedOut = true
 	}
-	result.timedOut = true
 	cancel()
 	select {
 	case <-done:
@@ -95,6 +111,9 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	stopSurvivors(cmd, result.pgid, grace, stderr)
 	result.stdout = out.Bytes()
 	result.exitCode = 1
+	if result.interrupted != 0 {
+		result.exitCode = 128 + int(result.interrupted)
+	}
 	return result
 }
 
@@ -140,11 +159,38 @@ func boundedListMain(args []string) int {
 	return boundedList(args, os.Stdout, os.Stderr)
 }
 
+// boundedListUsage is also where the exit statuses are written down, since a
+// caller's next move depends on which one it got.
+const boundedListUsage = `usage: evener-dev bounded-list [-timeout d] [-attempts n] [-grace d] -- command [args...]
+
+Runs the command under a per-attempt time bound and retries an attempt that
+hits it, stopping the command's whole process group when it does. Whatever the
+command wrote to stdout is passed through on every outcome.
+
+Exit status:
+  the command's own   it finished within the bound
+  124                 every attempt timed out (coreutils' timeout convention)
+  128+signal          this helper was interrupted and stopped the command
+  2                   a usage error
+`
+
 // boundedList is the subcommand: run the command under the bound, retry a
-// timed-out attempt up to the attempt count, and write the list it produced.
+// timed-out attempt up to the attempt count, and write what it produced.
 func boundedList(args []string, stdout, stderr io.Writer) int {
+	// TERM, INT and HUP have to be forwarded by hand. The command runs in its
+	// own process group, so a signal sent to this helper's group -- Ctrl-C in
+	// the terminal, a gate runner stopping its children -- no longer reaches
+	// it the way it did when the shell ran `go list` in the foreground group.
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	return boundedListWith(args, stdout, stderr, signals)
+}
+
+func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.Signal) int {
 	fs := flag.NewFlagSet("bounded-list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { _, _ = fmt.Fprint(stderr, boundedListUsage) }
 	timeout := fs.Duration("timeout", 60*time.Second, "how long one attempt may take")
 	attempts := fs.Int("attempts", 3, "how many attempts a timed-out command gets")
 	grace := fs.Duration("grace", 5*time.Second, "how long the group has to answer SIGTERM before SIGKILL")
@@ -154,6 +200,7 @@ func boundedList(args []string, stdout, stderr io.Writer) int {
 	argv := fs.Args()
 	if len(argv) == 0 {
 		_, _ = fmt.Fprintln(stderr, "bounded-list: give it a command to run, after --")
+		fs.Usage()
 		return 2
 	}
 	if *attempts < 1 || *timeout <= 0 || *grace <= 0 {
@@ -161,20 +208,38 @@ func boundedList(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	for attempt := 1; attempt <= *attempts; attempt++ {
-		result := runBoundedAttempt(argv, *timeout, *grace, stderr)
-		if !result.timedOut {
+		result := runBoundedAttempt(argv, *timeout, *grace, stderr, signals)
+		switch {
+		case result.interrupted != 0:
+			// An interrupt is an answer about this run, not about the command:
+			// retrying it would be the opposite of what was asked.
+			_, _ = stdout.Write(result.stdout)
+			return result.exitCode
+		case !result.timedOut:
 			// Whatever it decided, it decided: a command that exits non-zero
 			// has an answer about its input, and repeating it repeats the
 			// answer.
 			_, _ = stdout.Write(result.stdout)
 			return result.exitCode
-		}
-		if attempt < *attempts {
+		case attempt < *attempts:
 			_, _ = fmt.Fprintf(stderr, "bounded-list: attempt %d of %d timed out after %s; retrying.\n",
 				attempt, *attempts, *timeout)
+		default:
+			_, _ = fmt.Fprintf(stderr, "bounded-list: %s timed out after %s on %s.\n",
+				argv[0], *timeout, attemptCount(*attempts))
+			// Whatever it managed to print before the bound is the evidence a
+			// caller has to work from, so it is passed through here too.
+			_, _ = stdout.Write(result.stdout)
+			return 124
 		}
 	}
-	_, _ = fmt.Fprintf(stderr, "bounded-list: %s timed out after %s on each of %d attempts.\n",
-		argv[0], *timeout, *attempts)
-	return 1
+	return 124
+}
+
+// attemptCount reads the way the sentence around it needs it to.
+func attemptCount(attempts int) string {
+	if attempts == 1 {
+		return "1 attempt"
+	}
+	return fmt.Sprintf("each of %d attempts", attempts)
 }

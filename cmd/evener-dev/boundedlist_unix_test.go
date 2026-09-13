@@ -5,6 +5,7 @@ package dev
 import (
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,7 +18,7 @@ const termProofChild = `trap "" TERM; sleep 60`
 
 func TestBoundedAttemptPassesAFastChildsOutputThrough(t *testing.T) {
 	var stderr bytes.Buffer
-	result := runBoundedAttempt([]string{"sh", "-c", "echo one; echo two"}, 5*time.Second, time.Second, &stderr)
+	result := runBoundedAttempt([]string{"sh", "-c", "echo one; echo two"}, 5*time.Second, time.Second, &stderr, nil)
 	if result.err != nil {
 		t.Fatalf("err = %v, stderr = %q", result.err, stderr.String())
 	}
@@ -32,7 +33,7 @@ func TestBoundedAttemptPassesAFastChildsOutputThrough(t *testing.T) {
 func TestBoundedAttemptStopsAGroupThatIgnoresTerm(t *testing.T) {
 	var stderr bytes.Buffer
 	start := time.Now()
-	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 200*time.Millisecond, 500*time.Millisecond, &stderr)
+	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 200*time.Millisecond, 500*time.Millisecond, &stderr, nil)
 	if !result.timedOut {
 		t.Fatalf("timedOut = false, want true; err = %v", result.err)
 	}
@@ -50,7 +51,7 @@ func TestBoundedAttemptStopsAChildTheLeaderLeftBehind(t *testing.T) {
 	// and holds neither end of the pipe, so the wait returns with the group
 	// still populated. Being reaped says nothing about the group.
 	const orphanMaker = `sh -c 'trap "" TERM; sleep 60' >/dev/null 2>&1 & exit 0`
-	result := runBoundedAttempt([]string{"sh", "-c", orphanMaker}, 5*time.Second, 300*time.Millisecond, &stderr)
+	result := runBoundedAttempt([]string{"sh", "-c", orphanMaker}, 5*time.Second, 300*time.Millisecond, &stderr, nil)
 	if result.timedOut {
 		t.Fatalf("timedOut = true, want the leader's own prompt exit; stderr = %q", stderr.String())
 	}
@@ -82,7 +83,7 @@ func requireGroupGone(t *testing.T, pgid int) {
 
 func TestBoundedListRejectsANonPositiveGrace(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := boundedList([]string{"-grace", "0s", "--", "true"}, &stdout, &stderr)
+	code := boundedListWith([]string{"-grace", "0s", "--", "true"}, &stdout, &stderr, nil)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2 for a grace that would SIGKILL at once", code)
 	}
@@ -93,7 +94,7 @@ func TestBoundedListRejectsANonPositiveGrace(t *testing.T) {
 
 func TestBoundedListRetriesThenFailsWithADiagnostic(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := boundedList([]string{"-timeout", "200ms", "-attempts", "2", "-grace", "500ms", "--", "sh", "-c", termProofChild}, &stdout, &stderr)
+	code := boundedListWith([]string{"-timeout", "200ms", "-attempts", "2", "-grace", "500ms", "--", "sh", "-c", termProofChild}, &stdout, &stderr, nil)
 	if code == 0 {
 		t.Fatalf("exit code = 0 for a command that never finished; stderr = %q", stderr.String())
 	}
@@ -107,7 +108,7 @@ func TestBoundedListRetriesThenFailsWithADiagnostic(t *testing.T) {
 
 func TestBoundedListKeepsAFailedCommandsStatusAndDoesNotRetry(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := boundedList([]string{"-timeout", "5s", "-attempts", "3", "--", "sh", "-c", "echo broken >&2; exit 3"}, &stdout, &stderr)
+	code := boundedListWith([]string{"-timeout", "5s", "-attempts", "3", "--", "sh", "-c", "echo broken >&2; exit 3"}, &stdout, &stderr, nil)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3: a command that decided something is not a timeout", code)
 	}
@@ -121,11 +122,67 @@ func TestBoundedListKeepsAFailedCommandsStatusAndDoesNotRetry(t *testing.T) {
 
 func TestBoundedListWritesTheListOnSuccess(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := boundedList([]string{"-timeout", "5s", "-attempts", "2", "--", "sh", "-c", "echo primeradiant.com/evener"}, &stdout, &stderr)
+	code := boundedListWith([]string{"-timeout", "5s", "-attempts", "2", "--", "sh", "-c", "echo primeradiant.com/evener"}, &stdout, &stderr, nil)
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
 	}
 	if got := stdout.String(); got != "primeradiant.com/evener\n" {
 		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestBoundedAttemptForwardsAnInterruptToTheGroup(t *testing.T) {
+	var stderr bytes.Buffer
+	// The command runs in a process group of its own, so a signal sent to this
+	// helper does not reach it the way it reached a `go list` the shell ran in
+	// its foreground group. It has to be passed on.
+	signals := make(chan os.Signal, 1)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		signals <- syscall.SIGTERM
+	}()
+	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 30*time.Second, 300*time.Millisecond, &stderr, signals)
+	if result.interrupted != syscall.SIGTERM {
+		t.Fatalf("interrupted = %v, want SIGTERM; timedOut = %v", result.interrupted, result.timedOut)
+	}
+	if result.exitCode != 143 {
+		t.Fatalf("exitCode = %d, want 143", result.exitCode)
+	}
+	if result.timedOut {
+		t.Fatal("timedOut = true: the 30s bound was nowhere near")
+	}
+	requireGroupGone(t, result.pgid)
+}
+
+func TestBoundedListDoesNotRetryAfterAnInterrupt(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	signals := make(chan os.Signal, 1)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		signals <- syscall.SIGINT
+	}()
+	code := boundedListWith([]string{"-timeout", "30s", "-attempts", "3", "-grace", "300ms", "--", "sh", "-c", termProofChild}, &stdout, &stderr, signals)
+	if code != 130 {
+		t.Fatalf("exit code = %d, want 130 for SIGINT; stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr = %q: an interrupt is an answer about this run, not one to retry", stderr.String())
+	}
+}
+
+func TestBoundedListPassesThroughWhatATimedOutCommandPrinted(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	// Half a package list is the evidence a caller has to work from, and the
+	// old code threw it away with the attempt.
+	code := boundedListWith([]string{"-timeout", "300ms", "-attempts", "1", "-grace", "200ms", "--",
+		"sh", "-c", "echo primeradiant.com/evener/agent; sleep 60"}, &stdout, &stderr, nil)
+	if code != 124 {
+		t.Fatalf("exit code = %d, want 124 for a timeout; stderr = %q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "primeradiant.com/evener/agent\n" {
+		t.Fatalf("stdout = %q, want what the command printed before the bound", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "on 1 attempt") {
+		t.Fatalf("stderr = %q, want it to say one attempt in the singular", got)
 	}
 }
