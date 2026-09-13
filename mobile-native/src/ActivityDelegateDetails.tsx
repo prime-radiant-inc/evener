@@ -10,7 +10,7 @@ import { absoluteTime } from "../../cmd/evener-hub/frontend/src/panes/session/ch
 import {
   formatElapsed,
   splitMandate,
-} from "../../cmd/evener-hub/frontend/src/panes/session/transcript/messages/format";
+} from "../../cmd/evener-hub/frontend/src/protocol/displayFormat";
 import type { ActivityDelegate } from "../../cmd/evener-hub/frontend/src/protocol/activityData";
 import {
   delegateModel,
