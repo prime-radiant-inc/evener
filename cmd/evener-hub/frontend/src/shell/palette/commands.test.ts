@@ -101,6 +101,7 @@ const CAPS: ThreadCapabilities = {
   changeVisionModel: true,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -116,6 +117,7 @@ const NO_CAPS: ThreadCapabilities = {
   changeVisionModel: false,
   queue: false,
   goal: false,
+  sharedNotes: false,
   rename: false,
 };
 
@@ -138,6 +140,9 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     lastFrameAt: 0,
     capabilities: CAPS,
     goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,
@@ -201,6 +206,74 @@ function cmd(id: string): Command {
   return found;
 }
 
+// Notes navigation reads saved content; gating it on write liveness would
+// remove the supported ended-session read path. The capability alone gates it.
+test("/notes is unavailable when the focused model lacks shared-notes capability", () => {
+  focusSession("ref_a");
+  seedModel("ref_a", { capabilities: { ...CAPS, sharedNotes: false } });
+
+  const notes = sessionBuiltinCommands(buildPaletteContext()).find((command) => command.id === "notes");
+  expect(notes).toBeDefined();
+  expect(notes?.unavailableReason).toBe(UNAVAILABLE_REASON);
+});
+
+test("/notes cannot open an unsupported workspace pane even when invoked directly", () => {
+  focusSession("ref_a");
+  seedModel("ref_a", { capabilities: { ...CAPS, sharedNotes: false } });
+
+  cmd("notes").run?.(runContext());
+
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+});
+
+test("only /notes is unavailable before the focused session model hydrates", () => {
+  focusSession("ref_a");
+  const inScope = commandsInScope(buildPaletteContext());
+
+  expect(inScope.find((command) => command.id === "notes")?.unavailableReason).toBe(UNAVAILABLE_REASON);
+  expect(
+    inScope.filter((command) => command.id !== "notes").every((command) => command.unavailableReason === undefined),
+  ).toBe(true);
+});
+
+test("/notes refuses direct invocation before the focused model hydrates", () => {
+  focusSession("ref_a");
+
+  const result = cmd("notes").run?.(runContext());
+
+  expect.soft(isBlocked(result)).toBe(true);
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+});
+
+test("a previously available /notes invocation rechecks the current capability", () => {
+  focusSession("ref_a");
+  seedModel("ref_a");
+  const notes = sessionBuiltinCommands(buildPaletteContext()).find((command) => command.id === "notes");
+  expect(notes?.unavailableReason).toBeUndefined();
+  seedModel("ref_a", { capabilities: { ...CAPS, sharedNotes: false } });
+
+  notes?.run?.(runContext());
+
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+});
+
+test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
+  "/notes keeps supported %s sessions reachable for reading",
+  (status) => {
+    focusSession("ref_a");
+    seedModel("ref_a", { status: { type: status } });
+    const notes = sessionBuiltinCommands(buildPaletteContext()).find((command) => command.id === "notes");
+    expect(notes).toBeDefined();
+    expect(notes?.unavailableReason).toBeUndefined();
+
+    notes?.run?.(runContext());
+
+    expect(workspaceStore.getState().panes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: "ref_a" } })]),
+    );
+  },
+);
+
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -248,11 +321,11 @@ test("with no focused session, only the 9 global commands are in scope", () => {
   expect(inScope).toHaveLength(9);
 });
 
-test("a live focused session exposes global + session (all 24 commands)", () => {
+test("a live focused session exposes global + session (all 25 commands)", () => {
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(24);
+  expect(inScope).toHaveLength(25);
   expect(inScope.some((c) => c.id === "steer")).toBe(true);
   expect(inScope.some((c) => c.id === "project")).toBe(true);
 });
@@ -269,7 +342,7 @@ test("an ended focused session still lists every command; only the wire's own fa
     capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
   });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(24);
+  expect(inScope).toHaveLength(25);
   const byId = new Map(inScope.map((c) => [c.id, c]));
   for (const id of ["model", "goal", "clear", "compact", "aside", "shutdown", "copy-id"]) {
     expect(byId.get(id)?.unavailableReason).toBeUndefined();
@@ -310,11 +383,12 @@ test("a session command with no wire capability is never capability-gated", () =
   expect(byId.get("clear")?.unavailableReason).toBe(UNAVAILABLE_REASON);
 });
 
-test("a focused session whose model has not hydrated yet leaves every command enabled", () => {
+test("an unhydrated focused session keeps every command listed and only Notes unavailable", () => {
   focusSession("ref_a");
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope).toHaveLength(24);
-  expect(inScope.every((c) => c.unavailableReason === undefined)).toBe(true);
+  expect(inScope).toHaveLength(25);
+  expect(inScope.find((c) => c.id === "notes")?.unavailableReason).toBe(UNAVAILABLE_REASON);
+  expect(inScope.filter((c) => c.id !== "notes").every((c) => c.unavailableReason === undefined)).toBe(true);
 });
 
 // 2026-08-14: filterCommands is the palette's OWN browsable list, and it is
@@ -888,6 +962,19 @@ test("/tasks and /status toggle-close already-open panes", () => {
   cmd("status").run?.(runContext());
   expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(false);
   expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
+});
+
+test("/notes toggles the sessionNotes workspace pane", () => {
+  focusSession("ref_a");
+  seedModel("ref_a");
+
+  cmd("notes").run?.(runContext());
+  expect(workspaceStore.getState().panes).toEqual(
+    expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: "ref_a" } })]),
+  );
+
+  cmd("notes").run?.(runContext());
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionNotes")).toBe(false);
 });
 
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend

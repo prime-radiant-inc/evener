@@ -11,6 +11,7 @@
 
 import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
 import type { ThreadModel } from "../../protocol/model";
+import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
 import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
@@ -159,7 +160,7 @@ export function splitModelId(id: string): { provider: string; model: string } {
 // now owns Details/Tasks/Activity at every width, so those triggers never
 // render and the mobile path was a guaranteed no-op. Like the rail adapter,
 // both commands now toggle the workspace pane on ALL viewports.
-function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails"): void {
+function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails" | "sessionNotes"): void {
   if (ctx.sessionRef) workspaceStore.getState().togglePane(type, { ref: ctx.sessionRef });
 }
 
@@ -589,6 +590,18 @@ export function buildCommands(): Command[] {
       run: (ctx) => toggleSessionPane(ctx, "sessionDetails"),
     },
     {
+      id: "notes",
+      title: "Toggle session notes",
+      hint: "",
+      keywords: ["notes", "shared"],
+      scope: "session",
+      capability: "sharedNotes",
+      run: (ctx) => {
+        if (!canReadSharedNotes(focusedModel(ctx.sessionRef))) return blocked(UNAVAILABLE_REASON);
+        toggleSessionPane(ctx, "sessionNotes");
+      },
+    },
+    {
       id: "project",
       title: "Reveal session's project in sidebar",
       hint: "scroll sidebar",
@@ -624,7 +637,8 @@ export function rememberableId(command: Command): string {
 //
 // An unhydrated model (no snapshot in the store yet) leaves everything
 // enabled: unknown is not the same as refused, and the hub still gets the
-// final word on the call itself.
+// final word on the call itself. Notes is the exception: its reader requires
+// a known capability, rather than opening a blank pane before hydration.
 export function commandsInScope(ctx: PaletteContext, catalog = useCommandCatalog.getState().commands): ScopedCommand[] {
   const model = focusedModel(ctx.sessionRef);
   const catalogEntries = ctx.sessionRef === null ? [] : catalogCommands(catalog);
@@ -688,6 +702,9 @@ function catalogCommands(catalog: CommandDescriptor[]): Command[] {
 
 function scopeCommand(command: Command, model: ThreadModel | undefined): ScopedCommand {
   const capability = command.capability;
+  if (capability === "sharedNotes" && !canReadSharedNotes(model)) {
+    return { ...command, unavailableReason: UNAVAILABLE_REASON };
+  }
   if (!capability || !model || model.capabilities[capability]) return command;
   return { ...command, unavailableReason: UNAVAILABLE_REASON };
 }

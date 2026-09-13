@@ -66,6 +66,7 @@
           "changeVisionModel": false,
           "queue": false,
           "goal": false,
+          "sharedNotes": false,
           "rename": false
         },
         "queue": {
@@ -174,6 +175,7 @@
           "changeVisionModel": false,
           "queue": false,
           "goal": false,
+          "sharedNotes": false,
           "rename": false
         },
         "queue": {

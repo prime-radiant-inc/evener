@@ -102,6 +102,9 @@ type clientMutationRecord struct {
 	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
 	Failure             *clientMutationFailure          `json:"failure,omitempty"`
 	AttemptGeneration   uint64                          `json:"attempt_generation"`
+	// SteeringKind is accepted atomically with a typed pending notification.
+	// Reconstruction restores it onto the delivered steering entry.
+	SteeringKind string `json:"steering_kind,omitempty"`
 }
 
 type clientMutationFailure struct {
@@ -137,8 +140,10 @@ type clientMutationInterruptFence struct {
 type clientMutationPendingExecutions map[string]appwire.PendingMutation
 
 type clientMutationSnapshot struct {
-	Version   int    `json:"version"`
-	SessionID string `json:"session_id"`
+	// HumanNote is absent until canonical authority has been established; empty is a saved clear.
+	HumanNote *string `json:"human_note,omitempty"`
+	Version   int     `json:"version"`
+	SessionID string  `json:"session_id"`
 	// ActiveTurnID is the sole durable authority used by retry-safe mutation
 	// preconditions, and it names the turn that is RUNNING — not merely one a
 	// client mutation reserved. Queue and steering transitions only compare it.
@@ -1328,6 +1333,10 @@ func validateClientMutationRequest(request clientMutationRequest) error {
 
 func cloneClientMutationSnapshot(src clientMutationSnapshot) clientMutationSnapshot {
 	dst := src
+	if src.HumanNote != nil {
+		note := *src.HumanNote
+		dst.HumanNote = &note
+	}
 	dst.Journal = make(map[string]clientMutationRecord, len(src.Journal))
 	for id, record := range src.Journal {
 		dst.Journal[id] = cloneClientMutationRecord(record)

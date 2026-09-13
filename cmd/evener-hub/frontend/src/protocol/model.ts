@@ -12,6 +12,7 @@ import type {
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
+  SessionURL,
   TaskAggregate,
   ThreadCapabilities,
   ThreadItemPosition,
@@ -226,6 +227,14 @@ export interface ThreadModel {
   instanceId?: string;
   name: string;
   status: ThreadStatus;
+  // ResumeRequired is the hub's recovery fence, carried straight from
+  // appwire.EvenerThread.ResumeRequired on the snapshot: recovery stopped this
+  // session and every action waits for an explicit thread/resume, while saved
+  // transcripts and shared notes stay readable. The SharedNotes capability is
+  // deliberately retained while fenced, so this flag is the only model signal
+  // separating a fenced live+idle session from an editable one. Snapshot-only:
+  // an explicit resume re-hydrates the model with the flag cleared.
+  resumeRequired?: boolean;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;
@@ -303,6 +312,22 @@ export interface ThreadModel {
   // are authoritative. goal/set's response-derived value is only an immediate
   // fallback until either authoritative path is accepted.
   goal: GoalState | null;
+  // HumanNote is the human's one-paragraph session whiteboard (wire:
+  // EvenerThread.HumanNote, omitempty). Empty means unset. Hydration and
+  // accepted evener/notes/updated pushes are authoritative. notes/human/set's
+  // response-derived value is only an immediate fallback until either
+  // authoritative path is accepted.
+  humanNote: string;
+  // AgentNote is the agent's one-paragraph session whiteboard (wire:
+  // EvenerThread.AgentNote, omitempty). Empty means unset. Read-only in the
+  // UI; updated by the same evener/notes/updated push as humanNote.
+  agentNote: string;
+  // SessionUrls is the agent-curated session URL list (wire:
+  // EvenerThread.SessionURLs, omitempty). Empty means no links. Hydration
+  // and accepted evener/urls/updated pushes are authoritative; urls/remove's
+  // response carries no state (the push is the authority). No human
+  // add-URL affordance exists.
+  sessionUrls: SessionURL[];
   contextUsed: number;
   contextWindow: number;
   contextPressure: number;

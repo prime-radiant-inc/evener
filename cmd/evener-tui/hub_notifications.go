@@ -264,6 +264,17 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 				}
 			}
 		}
+	case appwire.NotifyEvenerNotesUpdated:
+		var params appwire.NotesUpdatedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.detail.HumanNote = params.HumanNote
+			m.detail.AgentNote = params.AgentNote
+		}
+	case appwire.NotifyEvenerUrlsUpdated:
+		var params appwire.UrlsUpdatedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.detail.SessionURLs = params.URLs
+		}
 	case appwire.NotifyWarning:
 		// Cause is decoded as a pointer so its absence (legacy payloads)
 		// stays distinguishable from kind=="" (kata 5q3p). When present,

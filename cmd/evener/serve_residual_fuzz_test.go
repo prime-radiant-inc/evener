@@ -36,6 +36,8 @@ type residualServeServer struct {
 	queue          func(string) error
 	queueImages    func(string, []server.ImageAttachment) error
 	goal           func(string) (bool, error)
+	notesHumanSet  func(outerID, note string) (appwire.NotesHumanSetResponse, error)
+	urlsRemove     func(outerID, id string) (bool, error)
 	drain          func() error
 	drainInput     func(string, []server.ImageAttachment) error
 	promote        func(int, string) error
@@ -71,7 +73,13 @@ func (s *residualServeServer) SetQueueWithImagesFunc(f func(string, []server.Ima
 	s.queueImages = f
 }
 func (s *residualServeServer) SetGoalFunc(f func(string) (bool, error)) { s.goal = f }
-func (s *residualServeServer) SetDrainAsSteerFunc(f func() error)       { s.drain = f }
+func (s *residualServeServer) SetNotesHumanSetFunc(f func(outerID, note string) (appwire.NotesHumanSetResponse, error)) {
+	s.notesHumanSet = f
+}
+func (s *residualServeServer) SetUrlsRemoveFunc(f func(outerID, id string) (bool, error)) {
+	s.urlsRemove = f
+}
+func (s *residualServeServer) SetDrainAsSteerFunc(f func() error) { s.drain = f }
 func (s *residualServeServer) SetDrainAsSteerWithInputFunc(f func(string, []server.ImageAttachment) error) {
 	s.drainInput = f
 }
@@ -111,6 +119,8 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	_ = s.queueImages("queued", nil)
 	_, _ = s.goal(" ")
 	_, _ = s.goal("objective")
+	_, _ = s.notesHumanSet("outer-1", "note")
+	_, _ = s.urlsRemove("outer-1", "u1")
 	_ = s.drain()
 	_ = s.drainInput("x", nil)
 	_ = s.promote(0, "q_1_x")

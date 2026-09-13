@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 )
@@ -20,6 +21,17 @@ const (
 type hubCommandContext struct {
 	mode hubMode
 	caps hubSessionCapabilities
+	// live reports whether the current session is live. Mutating commands
+	// (notes, url-remove) require it alongside their capability: the
+	// SharedNotes capability bit is retained on ended sessions for read
+	// rendering, so capability alone would fire resume-first writes on
+	// read-only past sessions.
+	live bool
+	// state is the session's ThreadStatus type. Restart-required sessions
+	// keep the read capability too, so liveness alone still advertises writes
+	// the daemon refuses; mutating notes commands require a state that can
+	// actually change notes.
+	state string
 }
 
 type hubCommandDefinition struct {
@@ -188,6 +200,32 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return m.runHubGoal(args)
+		},
+	},
+	{
+		Name:               "notes",
+		Summary:            "Set or clear your shared session note",
+		PaletteLabel:       "/notes",
+		PaletteDetail:      "set/clear your session note",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "edit note",
+		UnavailableSummary: "Note editing is not available for this session.",
+		Available:          sharedNotesLiveAvailable,
+		Run: func(m *hubModel, args string) tea.Cmd {
+			return m.runHubNotes(args)
+		},
+	},
+	{
+		Name:               "url-remove",
+		Summary:            "Remove a shared session URL by id",
+		PaletteLabel:       "/url-remove",
+		PaletteDetail:      "remove a session URL by id",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "remove URL",
+		UnavailableSummary: "URL removal is not available for this session.",
+		Available:          sharedNotesLiveAvailable,
+		Run: func(m *hubModel, args string) tea.Cmd {
+			return m.runHubURLRemove(args)
 		},
 	},
 	{
@@ -519,6 +557,36 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 }
 
+// sharedNotesLiveAvailable gates the mutating shared-notes commands on both
+// the SharedNotes capability and session liveness. The capability bit is
+// deliberately retained on ended sessions so the drawer keeps rendering the
+// section read-only (hubDetailFromThread); gating availability on capability
+// alone would advertise /notes and /url-remove on read-only past sessions,
+// where dispatch would fire resume-first writes. Liveness mirrors how the
+// other mutating commands gate: hubDetailFromThread zeroes their capability
+// bits for non-live sessions, and SharedNotes keeps its bit for reads, so
+// the live check lives here instead.
+func sharedNotesLiveAvailable(ctx hubCommandContext) (bool, string) {
+	if !ctx.caps.SharedNotes {
+		return false, "source does not advertise shared notes"
+	}
+	if !sharedNotesWritable(ctx.live, ctx.state, ctx.caps.ResumeRequired) {
+		return false, "session cannot change notes"
+	}
+	return true, ""
+}
+
+// sharedNotesWritable reports whether the shared-notes surface accepts edits.
+// The SharedNotes capability is retained wherever saved notes stay readable —
+// ended sessions, restart-required sessions, and sessions under the hub's
+// recovery fence — so it gates reading alone; a session that can actually
+// change notes must also be live, must not be waiting behind a restart, and
+// must not be recovery-fenced (resumeRequired), where the hub refuses every
+// mutation until an explicit thread/resume.
+func sharedNotesWritable(live bool, state string, resumeRequired bool) bool {
+	return live && state != appwire.ThreadStatusRestartRequired && !resumeRequired
+}
+
 func capabilityAvailable(check func(hubSessionCapabilities) bool, reason string) func(hubCommandContext) (bool, string) {
 	return func(ctx hubCommandContext) (bool, string) {
 		if check(ctx.caps) {
@@ -580,7 +648,7 @@ func hubCommandAvailable(command hubCommandDefinition, ctx hubCommandContext) (b
 
 func runHubCommandDefinition(m *hubModel, command hubCommandDefinition, args string) tea.Cmd {
 	if command.Name == "help" {
-		m.addSessionSystem(hubSlashCommandHelp(m.detail.Capabilities))
+		m.addSessionSystem(hubSlashCommandHelpLive(m.detail.Capabilities, m.detail.Live, m.detail.State))
 		return nil
 	}
 	if command.Run == nil {
@@ -590,7 +658,11 @@ func runHubCommandDefinition(m *hubModel, command hubCommandDefinition, args str
 }
 
 func hubCommandHelp(caps hubSessionCapabilities) string {
-	ctx := hubCommandContext{mode: hubModeSession, caps: caps}
+	return hubCommandHelpLive(caps, true, "")
+}
+
+func hubCommandHelpLive(caps hubSessionCapabilities, live bool, state string) string {
+	ctx := hubCommandContext{mode: hubModeSession, caps: caps, live: live, state: state}
 	lines := []string{"Available commands:"}
 	for _, command := range hubCommandsForScope(hubCommandSession) {
 		available, _ := hubCommandAvailable(command, ctx)

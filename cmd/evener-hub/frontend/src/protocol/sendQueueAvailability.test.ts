@@ -15,6 +15,7 @@ function caps(overrides: Partial<ThreadCapabilities> = {}): ThreadCapabilities {
     changeVisionModel: true,
     queue: true,
     goal: true,
+    sharedNotes: true,
     rename: true,
     ...overrides,
   };
@@ -44,6 +45,7 @@ function daemonIdleCapabilities(): ThreadCapabilities {
     changeVisionModel: true,
     queue: false,
     goal: true,
+    sharedNotes: true,
     rename: true,
   };
 }

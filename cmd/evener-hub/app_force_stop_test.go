@@ -1193,6 +1193,16 @@ func (s *recoveryReasoningSource) SetThreadReasoningEffort(context.Context, appw
 	return nil
 }
 
+func (s *recoveryReasoningSource) NotesHumanSet(context.Context, appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	s.applied++
+	return appwire.NotesHumanSetResponse{}, nil
+}
+
+func (s *recoveryReasoningSource) UrlsRemove(context.Context, appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	s.applied++
+	return appwire.UrlsRemoveResponse{}, nil
+}
+
 type recoverySandboxSource struct {
 	relayLifecycleSource
 	approvals []appwire.SandboxEscalationResolveParams
@@ -1272,10 +1282,15 @@ func TestCapturedSessionActionsRejectAdmissionBeforeRecovery(t *testing.T) {
 		appwire.MethodThreadClear, appwire.MethodThreadShutdown, appwire.MethodGoalSet,
 		appwire.MethodTurnQueue, appwire.MethodTurnDrainAsSteer,
 		appwire.MethodTurnPromoteQueuedAsSteer, appwire.MethodTurnCancelQueued,
+		appwire.MethodNotesHumanSet, appwire.MethodUrlsRemove,
 	} {
 		t.Run(method, func(t *testing.T) {
 			cfg := hubcore.WebConfig{ResumeLocks: hubcore.NewResumeLocks()}
 			source := &recoveryReasoningSource{}
+			// The notes relays gate on the shared-notes capability after the
+			// admission check; advertise it so a stale write that crosses
+			// admission is visibly applied rather than masked by that gate.
+			source.thread.Evener.Capabilities.SharedNotes = true
 			sources := appsource.NewRegistry()
 			sources.Add(source)
 			server := newHubAppServer(cfg, sources)

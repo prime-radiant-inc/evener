@@ -351,20 +351,24 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Status:               appwire.TurnStatusCompleted,
 			EventKind:            appwire.ThreadItemEventKindModelSwitch,
 		}}
-	case schema.TurnEnvironment:
+	case schema.TurnEnvironment, schema.TurnNotesContext:
 		text := strings.TrimSpace(turn.Message.Text())
 		if text == "" {
 			return nil
 		}
+		id, description, eventKind := fmt.Sprintf("item_environment_%d", turnIndex), "Environment", appwire.ThreadItemEventKindEnvironment
+		if turn.Kind == schema.TurnNotesContext {
+			id, description, eventKind = fmt.Sprintf("item_notes_context_%d", turnIndex), "Shared notes", appwire.ThreadItemEventKindNotesContext
+		}
 		return []appwire.ThreadItem{{
 			Type:                 "systemMessage",
-			ID:                   fmt.Sprintf("item_environment_%d", turnIndex),
+			ID:                   id,
 			TurnID:               turnID,
 			TranscriptEntryIndex: turnIndex,
-			Description:          "Environment",
+			Description:          description,
 			Text:                 text,
 			Status:               appwire.TurnStatusCompleted,
-			EventKind:            appwire.ThreadItemEventKindEnvironment,
+			EventKind:            eventKind,
 		}}
 	case schema.TurnFailure:
 		// Unlike the marker kinds above, a failure with no text still renders:

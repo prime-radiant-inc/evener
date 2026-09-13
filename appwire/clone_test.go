@@ -65,6 +65,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 			}},
 			Tasks:                 &TaskAggregate{Total: 2, Done: 1, Current: &TaskSummary{ID: 2, Description: "current task"}},
 			Goal:                  &GoalState{Status: "active", Iterations: 1},
+			SessionURLs:           []SessionURL{{ID: "u1", URL: "https://x.test/"}},
 			Usage:                 &EvenerUsage{TotalTokens: 15},
 			FailedToolCalls:       &failedToolCalls,
 			ReasoningEffortLevels: []string{"low", "high"},
@@ -105,6 +106,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	clone.Evener.PendingMutations[0].Input[0].Metadata["pending"] = "changed"
 	*clone.Evener.Tasks = TaskAggregate{Total: 104}
 	*clone.Evener.Goal = GoalState{Status: "blocked"}
+	clone.Evener.SessionURLs[0].URL = "mutated"
 	*clone.Evener.Usage = EvenerUsage{TotalTokens: 105}
 	*clone.Evener.FailedToolCalls = 106
 
@@ -117,7 +119,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	if *original.Evener.Diagnostics.Jobs[0].Resumable != true || *original.Evener.Diagnostics.Jobs[0].ExitCode != 8 || *original.Evener.Diagnostics.Delegates[0].RunningForMS != 9 || original.Evener.Diagnostics.Delegates[0].Worktree.Branch != "feature" || string(original.Evener.Diagnostics.Delegates[0].Message) != `{"message":true}` || original.Evener.Diagnostics.Delegates[0].Warnings[0] != "warning" {
 		t.Fatal("diagnostic state was changed through its clone")
 	}
-	if original.Evener.Queue.Preview[0] != "preview" || original.Evener.PendingMutations[0].Input[0].Data[0] != 'p' || original.Evener.PendingMutations[0].Input[0].Metadata["pending"] != "value" || original.Evener.Tasks.Total != 2 || original.Evener.Goal.Status != "active" || original.Evener.Usage.TotalTokens != 15 || *original.Evener.FailedToolCalls != 12 {
+	if original.Evener.Queue.Preview[0] != "preview" || original.Evener.PendingMutations[0].Input[0].Data[0] != 'p' || original.Evener.PendingMutations[0].Input[0].Metadata["pending"] != "value" || original.Evener.Tasks.Total != 2 || original.Evener.Goal.Status != "active" || original.Evener.SessionURLs[0].URL != "https://x.test/" || original.Evener.Usage.TotalTokens != 15 || *original.Evener.FailedToolCalls != 12 {
 		t.Fatal("evener state was changed through its clone")
 	}
 }

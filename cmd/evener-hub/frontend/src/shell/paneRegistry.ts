@@ -12,6 +12,7 @@ export type PaneTypeId =
   | "sessionTasks"
   | "sessionActivity"
   | "sessionDetails"
+  | "sessionNotes"
   | "spawn"
   | "settings"
   | "welcome";

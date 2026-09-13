@@ -64,6 +64,7 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 				shutdown: false,
 				changeModel: false,
 				changeVisionModel: false,
+				sharedNotes: false,
 				queue: true,
 				goal: false,
 				rename: false,

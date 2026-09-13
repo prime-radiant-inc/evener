@@ -499,6 +499,22 @@ func (c *Client) GoalSet(ctx context.Context, params GoalSetParams) (GoalSetResp
 	return out, err
 }
 
+// NotesHumanSet calls notes/human/set to store the human's session whiteboard
+// note. The daemon returns the stored (post-clamp) note the hub retry
+// converges on, and injects a human-note steer so the update interrupts.
+func (c *Client) NotesHumanSet(ctx context.Context, params NotesHumanSetParams) (NotesHumanSetResponse, error) {
+	var out NotesHumanSetResponse
+	err := c.request(ctx, MethodNotesHumanSet, params, &out)
+	return out, err
+}
+
+// UrlsRemove calls urls/remove to remove one session URL list entry by id.
+func (c *Client) UrlsRemove(ctx context.Context, params UrlsRemoveParams) (UrlsRemoveResponse, error) {
+	var out UrlsRemoveResponse
+	err := c.request(ctx, MethodUrlsRemove, params, &out)
+	return out, err
+}
+
 // TurnDrainAsSteer calls turn/drainAsSteer (kata 0bq1) to drain every queued
 // message into a single STEERING message for the in-flight turn.
 func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerParams) error {

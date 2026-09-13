@@ -25,6 +25,7 @@ const capabilities = {
   changeVisionModel: false,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: false,
 };
 export const summaries = [

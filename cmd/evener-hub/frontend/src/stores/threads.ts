@@ -30,10 +30,12 @@ import type {
   ThreadForkResponse,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  UrlsRemoveResponse,
 } from "../protocol/types.gen";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectionStore } from "./connection";
+import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
 import {
   type MutationAttachment,
@@ -176,6 +178,20 @@ export interface ThreadsStoreState {
   // after it). A successful response commits the known goal state locally;
   // the structured goal update push keeps every other client synchronized.
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
+  // Durably enqueues the human shared-note (an empty note clears it). Returns
+  // the committed outbox record, not the daemon acknowledgment. Receipt
+  // responses and evener/notes/updated publish canonical note state.
+  setHumanNote(
+    ref: string,
+    note: string,
+    expectedInstanceId?: string,
+    onCommitted?: (record: MutationOutboxRecord) => void,
+  ): Promise<MutationOutboxRecord>;
+  // Removes one session URL list entry by id. The response carries no
+  // state; the evener/urls/updated push is the authority. Local list edits
+  // on success are the push's business, not this response's — unlike
+  // setGoal/setHumanNote there is no response-derived local commit here.
+  removeURL(ref: string, id: string): Promise<UrlsRemoveResponse>;
   rename(ref: string, name: string): Promise<void>;
   compact(ref: string): Promise<void>;
   // Clears the thread's conversation through the durable mutation outbox. The
@@ -253,6 +269,32 @@ const goalUpdateGenerations = new Map<string, number>();
 
 function invalidateGoalResponseFallback(ref: string): void {
   goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
+}
+// A generation changes at every local human-note request and every accepted
+// notes authority (a matching evener/notes/updated or full hydration). Same
+// contract as goalUpdateGenerations above: a notes/human/set response may
+// publish its derived local state only while its generation is still current,
+// so neither a later request nor accepted authoritative state that arrived
+// during the await can be overwritten by that delayed response. Per-verb,
+// not shared with urls: the two verbs write disjoint fields (humanNote vs
+// sessionUrls), and a urls/updated push carries no note state — sharing one
+// generation would drop a note commit on an unrelated URL removal.
+// Durable ordering survives hydration: an older retry must not displace a
+// newer queued note even when both share the current authority generation.
+const notesLatestIntentSequences = new Map<string, number>();
+const notesUpdateGenerations = new Map<string, number>();
+
+function invalidateNotesResponseFallback(ref: string): void {
+  notesUpdateGenerations.set(ref, (notesUpdateGenerations.get(ref) ?? 0) + 1);
+}
+
+// Pushes whose acceptance retires a response-derived local commit: the goal
+// push retires setGoal's, the notes push retires setHumanNote's. The
+// pending-hydration path (targeted sets below) and the steady-state path
+// (the per-method blocks in handleNotification) must agree on exactly this
+// set, so it lives here rather than inline in both.
+function isFallbackInvalidatingPush(method: string): boolean {
+  return method === "evener/goal/updated" || method === "evener/notes/updated";
 }
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
@@ -774,6 +816,32 @@ function getMutationRuntime(): MutationRuntime | null {
       dispatchableMutationRefs.delete(targetRef);
     },
     onClearResponse: applyClearResponse,
+    onHumanNoteReconciled: (record) => {
+      if (!isCurrentMutationRuntime(runtime)) return;
+      const model = trackedThreadModel(record.targetRef);
+      if (model) acknowledgeHumanNote(record, model.humanNote);
+    },
+    prepareHumanNoteResponse: (record) => {
+      const ref = record.targetRef;
+      const generation = notesUpdateGenerations.get(ref);
+      notesLatestIntentSequences.set(ref, Math.max(notesLatestIntentSequences.get(ref) ?? 0, record.intentSequence));
+      return (response) => {
+        if (!isCurrentMutationRuntime(runtime)) return;
+        const current =
+          notesUpdateGenerations.get(ref) === generation &&
+          notesLatestIntentSequences.get(ref) === record.intentSequence;
+        if (current) {
+          threadsStore.setState((state) => ({
+            threads: replaceThread(state.threads, ref, (model) => ({ ...model, humanNote: response.note })),
+            watchedThreads: replaceThread(state.watchedThreads, ref, (model) => ({
+              ...model,
+              humanNote: response.note,
+            })),
+          }));
+        }
+        acknowledgeHumanNote(record, current ? response.note : (trackedThreadModel(ref)?.humanNote ?? response.note));
+      };
+    },
   });
   const outbox = new MutationOutbox(storage, {
     isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
@@ -829,6 +897,7 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
+  if (record.method === "notes/human/set" && !canWriteHumanNote(trackedThreadModel(record.targetRef))) return false;
   if (!threadsStore.getState().mutationAuthorityRefs.has(record.targetRef)) return false;
   const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
   if (!status || status === "restartRequired" || status === "notLoaded") return false;
@@ -1191,7 +1260,10 @@ function composerMutationIntent(
   };
 }
 
-async function enqueueMutationIntent(intent: MutationIntent): Promise<void> {
+async function enqueueMutationIntent(
+  intent: MutationIntent,
+  onCommitted?: (record: MutationOutboxRecord) => void,
+): Promise<MutationOutboxRecord> {
   const ref = intent.targetRef;
   const client = requireClient();
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
@@ -1205,13 +1277,14 @@ async function enqueueMutationIntent(intent: MutationIntent): Promise<void> {
   }
   let record: MutationOutboxRecord;
   try {
-    record = await runtime.outbox.enqueueIntent(intent);
+    record = await runtime.outbox.enqueueIntent(intent, onCommitted);
   } catch (error) {
     if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
     throw error;
   }
   pinnedMutationRefs.add(ref);
   notifyMutationPersistence([ref], { record });
+  return record;
 }
 
 async function enqueueMutation(
@@ -1423,6 +1496,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   pendingThreadHydrations.delete(ref);
   putThreadModel(ref, hydrated);
   invalidateGoalResponseFallback(ref);
+  invalidateNotesResponseFallback(ref);
   threadsStore.setState((s) => {
     const hydrations = new Map(s.hydrations);
     hydrations.set(ref, (hydrations.get(ref) ?? 0) + 1);
@@ -1679,7 +1753,16 @@ function handleNotification(n: AnyNotification): void {
   }
   const now = Date.now();
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
+  // Accepted fallback-invalidating refs, one set per family: goal pushes
+  // invalidate the goal fallback, notes pushes the notes fallback. A push never invalidates another family's
+  // fallback (a urls/updated carries no note state, so it must not retire
+  // a setHumanNote response commit).
   const acceptedGoalRefs = new Set<string>();
+  const acceptedNotesRefs = new Set<string>();
+  let acceptedPendingRefs: Set<string> | undefined;
+  if (isFallbackInvalidatingPush(n.method)) {
+    acceptedPendingRefs = n.method === "evener/goal/updated" ? acceptedGoalRefs : acceptedNotesRefs;
+  }
   // Pending-hydration routing: pendingThreadHydrations/pendingWatchedHydrations
   // are intentionally left as plain map iterations (NOT indexed). They are
   // usually tiny — at most one entry per in-flight thread/read (bounded by
@@ -1692,18 +1775,14 @@ function handleNotification(n: AnyNotification): void {
   let pendingRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingThreadHydrations.size > 0) {
     const refs = new Set<string>();
-    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
-    collectPendingRefs(pendingThreadHydrations, n, refs, targeted);
+    collectPendingRefs(pendingThreadHydrations, n, refs, acceptedPendingRefs);
     if (refs.size > 0) pendingRefs = refs;
-    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
   }
   let pendingWatchedRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingWatchedHydrations.size > 0) {
     const refs = new Set<string>();
-    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
-    collectPendingRefs(pendingWatchedHydrations, n, refs, targeted);
+    collectPendingRefs(pendingWatchedHydrations, n, refs, acceptedPendingRefs);
     if (refs.size > 0) pendingWatchedRefs = refs;
-    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
   }
   const {
     next: nextThreads,
@@ -1721,6 +1800,11 @@ function handleNotification(n: AnyNotification): void {
     for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
     for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
     for (const ref of acceptedGoalRefs) invalidateGoalResponseFallback(ref);
+  }
+  if (n.method === "evener/notes/updated") {
+    for (const ref of acceptedThreads) acceptedNotesRefs.add(ref);
+    for (const ref of acceptedWatchedThreads) acceptedNotesRefs.add(ref);
+    for (const ref of acceptedNotesRefs) invalidateNotesResponseFallback(ref);
   }
   if (!nextThreads && !nextWatchedThreads) return;
 
@@ -1747,6 +1831,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   if (!includeTurns && hydratedRich) return;
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
   invalidateGoalResponseFallback(ref);
+  invalidateNotesResponseFallback(ref);
   putWatchedThreadModel(ref, model);
 }
 
@@ -2706,6 +2791,48 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
+  async setHumanNote(ref, note, expectedInstanceId, onCommitted) {
+    const model = trackedThreadModel(ref);
+    if (!canWriteHumanNote(model)) throw new Error("Session cannot accept notes");
+    const instanceId = threadInstanceID(model) ?? "";
+    if (expectedInstanceId !== undefined && expectedInstanceId !== instanceId)
+      throw new Error("Session instance changed");
+    const generation = (notesUpdateGenerations.get(ref) ?? 0) + 1;
+    notesUpdateGenerations.set(ref, generation);
+    return enqueueMutationIntent(
+      {
+        targetRef: ref,
+        threadId: model?.threadId,
+        method: "notes/human/set",
+        payload: { ref, expectedInstanceId: expectedInstanceId ?? instanceId, note },
+        attachments: [],
+        optimisticDisplay: null,
+      },
+      (record) => {
+        notesLatestIntentSequences.set(ref, Math.max(notesLatestIntentSequences.get(ref) ?? 0, record.intentSequence));
+        onCommitted?.(record);
+      },
+    );
+  },
+
+  async removeURL(ref, id) {
+    const model = trackedThreadModel(ref);
+    if (!canWriteHumanNote(model)) throw new Error("Session cannot accept notes");
+    const client = requireClient();
+    try {
+      const response = await client.request("urls/remove", {
+        ref,
+        clientMutationId: createSecureUUID(),
+        expectedInstanceId: threadInstanceID(model) ?? "",
+        id,
+      });
+      // The response carries no state; evener/urls/updated is authoritative.
+      return response;
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
   async rename(ref, name) {
     const client = requireClient();
     try {
@@ -2900,6 +3027,8 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  resetHumanNoteDrafts();
+  notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
   resetActivitySummaryStoreForTests();
   resetTasksPanelStoreForTests();
@@ -2926,6 +3055,7 @@ export function resetThreadsStoreForTests(): void {
   ensureGenerations.clear();
   olderPageGenerations.clear();
   goalUpdateGenerations.clear();
+  notesUpdateGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();

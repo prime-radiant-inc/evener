@@ -479,6 +479,10 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool, publishedRevision int) {
 	s.reportCompactionTranscriptAppend(writeErr)
 	if isSessionNameCompactionTurn(t) {
+		// Folded-away NOTES_CONTEXT turns are gone from what the model sees, so the
+		// change gate must forget the last projected block and re-emit the current
+		// state (see resetNotesProjectionAfterCompaction).
+		s.resetNotesProjectionAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	if superseded {

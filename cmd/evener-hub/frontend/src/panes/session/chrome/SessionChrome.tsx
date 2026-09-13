@@ -24,6 +24,7 @@
 // goal chip + clear popover only.
 import { useRef, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
+import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
@@ -46,6 +47,7 @@ import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
+import { NotesPanel, type NotesPanelHandle } from "./NotesPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
 import { TasksPanel, type TasksPanelHandle, taskAggregateLabel } from "./TasksPanel";
@@ -81,6 +83,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
+  const notesOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionNotes", { ref: sessionRef }));
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
@@ -130,6 +133,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const detailsRef = useRef<DetailsPanelHandle>(null);
   const tasksRef = useRef<TasksPanelHandle>(null);
   const activityRef = useRef<ActivityPanelHandle>(null);
+  const notesRef = useRef<NotesPanelHandle>(null);
   if (!model) return null;
 
   // Force-stop eligibility mirrors the reach of the retired inline footer
@@ -158,6 +162,11 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const openActivity = () => {
     if (isMobile) activityRef.current?.open();
     else workspaceStore.getState().togglePane("sessionActivity", { ref: sessionRef });
+  };
+  const openNotes = () => {
+    if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
+    if (isMobile) notesRef.current?.open();
+    else workspaceStore.getState().togglePane("sessionNotes", { ref: sessionRef });
   };
   const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
 
@@ -288,14 +297,16 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
             hideTrigger
             refreshWhenHidden
           />
+          <NotesPanel ref={notesRef} sessionRef={sessionRef} model={model} hideTrigger />
           <SessionMenu
             sessionRef={sessionRef}
             title={model.name}
             triggerLabel="Session actions"
             canRename={model.capabilities.rename}
             canShutdown={model.capabilities.shutdown}
+            canReadNotes={canReadSharedNotes(model)}
             session={menuSession}
-            panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
+            panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
             taskLabel={model.tasks ? `Tasks ${taskAggregateLabel(model.tasks)}` : undefined}
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
@@ -303,6 +314,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
               onOpenPane: (pane) => {
                 if (pane === "details") openDetails();
                 else if (pane === "tasks") openTasks();
+                else if (pane === "notes") openNotes();
                 else openActivity();
               },
               onRename: async (name) => {

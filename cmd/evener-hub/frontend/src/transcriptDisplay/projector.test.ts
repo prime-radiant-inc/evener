@@ -273,6 +273,15 @@ describe("transcript projector", () => {
     ]);
   });
 
+  test("governs the notes-context event with Advanced systemEvents", () => {
+    const model = threadWith(item("notes-context", "systemMessage", { eventKind: "notes-context" }));
+
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    expect(entriesFor(model, preset("chat", { systemEvents: true }))).toEqual([
+      expect.objectContaining({ kind: "item", id: "notes-context" }),
+    ]);
+  });
+
   test("covers every current event kind with Advanced diagnostics enabled", () => {
     const eventKinds = [
       "system_prompt",
@@ -291,6 +300,7 @@ describe("transcript projector", () => {
       "model_switch",
       "error",
       "environment",
+      "notes-context",
     ] as const;
     const model = threadWith(
       ...eventKinds.map((eventKind, index) =>

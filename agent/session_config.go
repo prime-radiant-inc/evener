@@ -544,6 +544,12 @@ type testConfig struct {
 	// meta-file IO; nil in production.
 	metaFS afero.Fs
 
+	// notesAutoSaveFault injects a deterministic metadata-persistence failure
+	// into the shared-notes mutation paths. Nil preserves the production
+	// save; a non-nil return is surfaced as the mutation error and blocks
+	// the success journal. Tests use it to prove durability gating.
+	notesAutoSaveFault func() error
+
 	// contentWindowClock, when non-nil, is the clock consumeModelStream reads
 	// to measure an attempt's content-event window (attemptObservation.
 	// ContentWindow). The cap early-stop rule keys on a window of 60 seconds or

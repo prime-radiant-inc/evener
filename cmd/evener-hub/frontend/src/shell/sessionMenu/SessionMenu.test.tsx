@@ -59,7 +59,8 @@ function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
       triggerLabel="Session actions"
       canRename
       canShutdown
-      panesOpen={{ details: false, tasks: true, activity: false }}
+      canReadNotes
+      panesOpen={{ details: false, tasks: true, activity: false, notes: false }}
       actions={actions}
       {...overrides}
     />,
@@ -209,6 +210,7 @@ test("full menu: organize group between separators, delete last", async () => {
     "Details",
     "Tasks ✓",
     "Activity",
+    "Notes",
     "Rename",
     "Pin this session…",
     "Archive",

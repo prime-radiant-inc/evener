@@ -436,7 +436,7 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			toolRoundOrdinal = m.Ordinal
 		}
 		switch turn.Kind {
-		case schema.TurnUserInput, schema.TurnSteering, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary:
+		case schema.TurnUserInput, schema.TurnSteering, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnNotesContext:
 			turn.Message.Role = llm.RoleUser
 			if turn.Kind == schema.TurnUserInput || (turn.Kind == schema.TurnSteering && m.PromptSource == "user") {
 				turn.ClientMutationID = mutations[m.StableID]

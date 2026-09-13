@@ -67,6 +67,10 @@ type toolDeps struct {
 	// goalGuard exposes goal-store access and the ordered terminal mutation.
 	goalGuard goalGuard
 
+	// notesGuard exposes the shared-notes store (Task 3 methods) without
+	// leaking the concrete *Session type into the handler closures.
+	notesGuard notesGuard
+
 	// worktreeGuard exposes the native worktree lifecycle plumbing (env swap,
 	// control env, occupancy snapshot, create) to the manage_worktree handler,
 	// mirroring taskGuard/goalGuard (spec §2, §7).
@@ -210,6 +214,29 @@ func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time)
 	return snap, true
 }
 
+// notesGuard is a thin facade over the session's shared-notes store. It uses
+// the same s.mu as the rest of the session — it does NOT introduce a second
+// mutex. Every method forwards to an existing *Session method, preserving all
+// locking; notesGuard adds no behavior of its own.
+type notesGuard struct {
+	// mutateAgentNote stores the agent note, persists it, and emits the
+	// resulting snapshot as one serialized unit under notesUpdateMu.
+	mutateAgentNote func(note string) (stored string, changed bool, human, agent string, err error)
+	// mutateAddURL appends the URL entry, persists it, and emits the
+	// resulting list as one serialized unit under notesUpdateMu.
+	mutateAddURL func(rawURL, label string) (entry schema.SessionURL, urls []schema.SessionURL, err error)
+	// mutateRemoveURL deletes the entry, persists the removal, and emits the
+	// resulting list as one serialized unit under notesUpdateMu.
+	mutateRemoveURL func(id string) (removed bool, urls []schema.SessionURL, err error)
+	// snapshotAll reads human note, agent note, and URL list under s.mu.
+	snapshotAll func() (human, agent string, urls []schema.SessionURL)
+}
+
+// SnapshotAll reads human note, agent note, and URL list together.
+func (g notesGuard) SnapshotAll() (human, agent string, urls []schema.SessionURL) {
+	return g.snapshotAll()
+}
+
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
 type webDeps struct {
@@ -255,6 +282,12 @@ func newToolDeps(s *Session) *toolDeps {
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
 			setTerminal:          s.setGoalTerminal,
+		},
+		notesGuard: notesGuard{
+			mutateAgentNote: s.mutateAgentNoteSerialized,
+			mutateAddURL:    s.mutateSessionURLAddSerialized,
+			mutateRemoveURL: s.mutateSessionURLRemoveSerialized,
+			snapshotAll:     s.notesSnapshotAll,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,
@@ -391,6 +424,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	}
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)
+	registerNotesTools(reg, deps)
 	registerWorktreeTool(reg, deps)
 	registerCompactTool(reg, deps)
 	registerWebTools(reg, deps)

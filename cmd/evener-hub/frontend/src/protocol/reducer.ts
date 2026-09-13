@@ -763,6 +763,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     ...(thread.evener.instanceId === undefined ? {} : { instanceId: thread.evener.instanceId }),
     name: thread.name ?? "",
     status: thread.status,
+    resumeRequired: thread.evener.resumeRequired ?? false,
     modelProvider: thread.modelProvider,
     // Thread has no separate "model id" field on the wire snapshot — only
     // ModelProvider, which appwire/types.go documents as overloaded to
@@ -794,6 +795,10 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     capabilities: thread.evener.capabilities,
     capabilitySource: "read",
     goal: thread.evener.goal ?? null,
+    humanNote: thread.evener.humanNote ?? "",
+    agentNote: thread.evener.agentNote ?? "",
+    // Go wire-nullable-array rule: omitempty absent means empty, not missing.
+    sessionUrls: thread.evener.sessionUrls ?? [],
     contextUsed: thread.evener.contextUsed ?? 0,
     contextWindow: thread.evener.contextWindow ?? 0,
     contextPressure: thread.evener.contextPressure ?? 0,
@@ -1447,6 +1452,16 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "evener/goal/updated": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, goal: n.params.goal ?? null, lastFrameAt: now };
+    }
+
+    case "evener/notes/updated": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return { ...model, humanNote: n.params.humanNote ?? "", agentNote: n.params.agentNote ?? "", lastFrameAt: now };
+    }
+
+    case "evener/urls/updated": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return { ...model, sessionUrls: n.params.urls ?? [], lastFrameAt: now };
     }
 
     case "thread/vision-model/changed": {

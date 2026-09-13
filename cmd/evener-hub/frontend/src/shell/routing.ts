@@ -111,6 +111,7 @@ export function paneToURL(type: PaneTypeId, params: unknown): string | null {
     case "sessionTasks":
     case "sessionActivity":
     case "sessionDetails":
+    case "sessionNotes":
       // Session panel panes are contextual surfaces opened beside a session;
       // they intentionally have no standalone URL.
       return null;

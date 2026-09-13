@@ -532,6 +532,30 @@ func (s *LocalDaemonSource) GoalSet(ctx context.Context, params appwire.GoalSetP
 	return out, err
 }
 
+func (s *LocalDaemonSource) NotesHumanSet(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.NotesHumanSetResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
+	}
+	var out appwire.NotesHumanSetResponse
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodNotesHumanSet, params, &out)
+	})
+	return out, err
+}
+
+func (s *LocalDaemonSource) UrlsRemove(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.UrlsRemoveResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
+	}
+	var out appwire.UrlsRemoveResponse
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodUrlsRemove, params, &out)
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) ClearThread(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
@@ -993,6 +1017,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				ChangeModel:  true,
 				Queue:        status == appwire.ThreadStatusActive,
 				Goal:         true,
+				SharedNotes:  !item.ReadOnlyAlias,
 				Rename:       true,
 			},
 			AskPending: item.PendingAsk,
@@ -1000,7 +1025,13 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Status: appwire.ThreadStatus{Type: status},
 	}
 	if status == appwire.ThreadStatusRestartRequired {
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+		// A restart-required session cannot act, but its saved notes are still
+		// readable: advertise the read capability alone and let the write gate
+		// (and the daemon's admission fence) refuse every mutation. The alias
+		// guard is redundant with the alias gate below, which clears every
+		// capability; it is here so this advertisement never depends on that
+		// branch running after it.
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: !item.ReadOnlyAlias}
 	}
 	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0) {
 		jobs := make([]appwire.EvenerJobInfo, 0, len(item.RunningJobs)+len(item.CompletedJobs))

@@ -104,6 +104,7 @@ func cumulativeUsageSnapshot(u llm.Usage) schema.CumulativeUsage {
 // Meta returns the current session metadata without the conversation history.
 func (s *Session) Meta() schema.SessionMeta {
 	originalPrompt := s.extractOriginalPrompt()
+	human, _ := s.notesSnapshot()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -163,6 +164,9 @@ func (s *Session) Meta() schema.SessionMeta {
 		Origin:                   s.origin,
 		Goal:                     s.goalSnapshotForMeta(),
 		PinnedNote:               s.pinnedNote,
+		HumanNote:                human,
+		AgentNote:                s.agentNote,
+		SessionURLs:              append([]schema.SessionURL(nil), s.sessionURLs...),
 		WorktreePath:             s.worktreeCurrentPath,
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,

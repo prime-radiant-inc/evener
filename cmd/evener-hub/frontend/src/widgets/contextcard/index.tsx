@@ -29,7 +29,7 @@ const CLASS = {
 // ToolIcon's own kinds already draw for tool rows. The same test decides
 // link behavior: a web href leaves the app, so it opens in the reader's
 // own browser with the opener severed; anything else stays in-app.
-function isWebHref(href: string | undefined): boolean {
+export function isWebHref(href: string | undefined): boolean {
   return href !== undefined && /^https?:\/\//.test(href);
 }
 

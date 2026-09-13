@@ -4,6 +4,7 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
 {
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
+  "agentNote": "",
   "askPending": false,
   "capabilities": {
     "changeModel": true,
@@ -29,6 +30,7 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   "failedToolCalls": undefined,
   "gitBranch": undefined,
   "goal": null,
+  "humanNote": "",
   "imageSessionId": "sess_1001",
   "jobsTreeRevision": null,
   "jobsUpdatedAt": null,
@@ -44,6 +46,8 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_1001",
+  "resumeRequired": false,
+  "sessionUrls": [],
   "skills": [],
   "status": {
     "type": "idle",
@@ -158,6 +162,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
 {
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
+  "agentNote": "",
   "askPending": false,
   "capabilities": {
     "changeModel": true,
@@ -183,6 +188,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
   "failedToolCalls": undefined,
   "gitBranch": undefined,
   "goal": null,
+  "humanNote": "",
   "imageSessionId": "sess_4001",
   "jobsTreeRevision": null,
   "jobsUpdatedAt": null,
@@ -216,6 +222,8 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
     "high",
   ],
   "ref": "ref_4001",
+  "resumeRequired": false,
+  "sessionUrls": [],
   "skills": [],
   "status": {
     "type": "active",
@@ -298,6 +306,7 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
 {
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
+  "agentNote": "",
   "askPending": false,
   "capabilities": {
     "changeModel": true,
@@ -323,6 +332,7 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
   "failedToolCalls": undefined,
   "gitBranch": undefined,
   "goal": null,
+  "humanNote": "",
   "imageSessionId": "sess_2001",
   "jobsTreeRevision": null,
   "jobsUpdatedAt": null,
@@ -338,6 +348,8 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_2001",
+  "resumeRequired": false,
+  "sessionUrls": [],
   "skills": [],
   "status": {
     "type": "idle",
@@ -428,6 +440,7 @@ exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
 {
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
+  "agentNote": "",
   "askPending": false,
   "capabilities": {
     "changeModel": true,
@@ -453,6 +466,7 @@ exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
   "failedToolCalls": undefined,
   "gitBranch": undefined,
   "goal": null,
+  "humanNote": "",
   "imageSessionId": "sess_3001",
   "jobsTreeRevision": null,
   "jobsUpdatedAt": 1006,
@@ -468,6 +482,8 @@ exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_3001",
+  "resumeRequired": false,
+  "sessionUrls": [],
   "skills": [],
   "status": {
     "type": "idle",
