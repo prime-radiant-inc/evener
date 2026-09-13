@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved in outline. Scope locked with Jesse on 2026-09-13, revised after two
-design reviews (roborev jobs 9855 and 9876) and a simplify pass over four
+Approved in outline. Scope locked with Jesse on 2026-09-13, revised after three
+design reviews (roborev jobs 9855, 9876, 9885) and a simplify pass over four
 angles (reuse, simplification, efficiency, altitude):
 
 - **Entities:** shell jobs (`job_…`) and stable delegates (`dlg_…`) get a link
@@ -31,9 +31,9 @@ The pieces exist and are disconnected:
 - `panes/session/transcript/openTranscript.tsx` opens a read-only transcript
   pane beside; the `transcript` pane renders a `job:<id>` ref as a job log and
   a session ref as a thread transcript.
-- `protocol/activityList.ts` and `stores/activityPanel.ts` already own per-ref
-  `evener/jobs/list` requests, dedup, invalidation, parsing, and a retained
-  tree.
+- `stores/activitySummary.ts` coordinates per-ref `evener/jobs/list` requests
+  (dedup, request fencing, queued follow-up) and publishes into
+  `stores/activityPanel.ts`, which retains the parsed tree.
 - `protocol/activityRows.ts` already normalizes the tree into
   `ActivityJobRow`/`ActivityDelegateRow` (with `transcriptRef`/`parentRef`),
   and `ThreadModel.delegates[]` carries live delegate projections.
@@ -58,9 +58,11 @@ Nothing connects an id found in text to any of this.
 ## Non-goals
 
 - No Go, AppWire, or daemon changes.
-- No cross-session resolution. An id that names an entity outside the current
-  session stays plain text. This is what makes the client-side-only choice
-  coherent.
+- No resolution outside the current session's loaded activity tree. Scope is
+  that tree (recursive: nested delegates and child-owned jobs), the live
+  `ThreadModel.delegates[]`, and loaded `job_watch` payloads. An id naming
+  anything else stays plain text. This is what makes the client-side-only
+  choice coherent.
 - No link affordance on watches; they get a hover card only.
 - No linking of session ids, `ag_`, `att_`, `call_`, `wg_`, `wd_`, `plugin_`,
   or `item_` ids.
@@ -104,31 +106,56 @@ decision that must first establish backend resolvability.
 ## Resolution
 
 Resolution is a derived view over state the current session already has. It
-adds no fetch engine, no LRU/TTL/negative-cache layer, and no concurrency cap.
+adds no fetch engine, no cache layer, and no concurrency policy.
+
+### Request coordination
+
+The view reuses `activitySummaryStore.refreshRoot` as its one request
+coordinator, exactly as `ActivityPanelBody` does:
+
+- On mount it registers a body (`mountBody(ref)` / `unmountBody(ref)`) so its
+  lifetime counts like any other activity consumer.
+- When it needs a tree it calls
+  `refreshRoot(ref, model.jobsUpdatedAt, (r) => threadsStore.listJobs(r))`.
+  That store already owns deduplication (`beginRootFetch`), monotonic request
+  fencing (`requestID`), and the queued follow-up (`pendingBump`, drained by
+  `issuePendingRootFetch`), and it publishes the parsed tree into
+  `activityPanelStore`.
+- Freshness provenance is therefore the coordinator's own state
+  (`lastFetchedBump`, `requestID`, `pendingBump`), plus the panel's
+  `retainedNonReady` and `unprovenFreshness` (`jobsUpdatedAt === null`) rules.
+  The design stores no second freshness value and issues no direct `listJobs`
+  call.
 
 ### Sources
 
 1. **`ThreadModel.delegates[]`** (live `EvenerDelegateInfo`) for delegates.
-2. **The retained activity tree** (`retainedActivityTree` in
-   `stores/activityPanel.ts`) for jobs and nested delegates. When the current
-   session has no retained tree and a job id needs one, issue one coalesced
-   `threadsStore.listJobs(ref)` and memoize the parsed tree for that ref until
-   its `(hydrations, jobsUpdatedAt)` pair changes. That single memo is the
-   whole cache.
+2. **The retained tree**
+   (`retainedActivityTree(activityPanelStore.entries.get(ref))`) for jobs and
+   nested delegates. It is a raw `ActivityTree`, not a disclosure-filtered row
+   list.
 3. **`job_watch` payloads in loaded turns** for watches. There is no watch
    field anywhere else on the wire.
 
-A retained tree is reused only while it matches the current
-`(threadsStore.hydrations.get(ref), model.jobsUpdatedAt)`. Those are the same
-two signals the activity panel already uses (`ActivityPanel.tsx:74-97`); the
-design adds no third freshness concept.
-
 ### id to entity map
 
-Build the map by reusing `buildActivityRows` (which already yields jobs and
-delegates with `transcriptRef` and `parentRef`) over `activityNodeID`. Export a
-small flatten helper from the existing activity modules if one is needed. Do
-not write a second tree walker.
+Index the raw tree, not `buildActivityRows`: that builder takes `expandedFolds`
+and collapses inactive entries behind fold rows, so it would leave completed
+jobs and delegates unresolvable and would change transcript links whenever the
+user opened an activity fold.
+
+Write one `indexActivityEntities(tree)` that walks every loaded entry (no fold
+logic) and reuses `activityNodeID`. Factor the `transcriptRef`/`parentRef`
+derivation out of `buildActivityRows` into a shared function so the index and
+the panel build identical row fields. Resolution must be identical before and
+after a fold change.
+
+### Derivation ownership
+
+One index exists per `(session ref, retained tree, delegates[], turns version)`,
+shared by every `EntityRef` on screen through a memoized selector or store
+subscription. Inline references must not each flatten the tree, and the watch
+fold must not re-run per stream tick.
 
 ### State
 
@@ -141,9 +168,15 @@ and the existing formatters and classifiers: `activityDelegateState`,
 
 ### Delegate precedence
 
-Prefer the live `ThreadModel.delegates[]` record when present; else the tree
-record. The live projection is the controller fold, so a revision comparison
-earns nothing.
+Selection is revision-aware, because a tree response can carry a higher
+`projectionRevision` than the live array (which `listJobs` does not update):
+
+- both numeric: higher wins, live record on a tie;
+- tree record lacks `projectionRevision`: live record;
+- no live record: tree record.
+
+`ActivityDelegate.projectionRevision` is optional; `EvenerDelegateInfo
+.projectionRevision` is required.
 
 ## Rendering
 
@@ -232,24 +265,37 @@ target (`openTranscriptRef` / `openTranscriptInline`, consumed by
 
 ## Open targets
 
+Open targets come from the activity row contract, the same fields
+`ActivityTree`'s own `OpenTranscriptButton` already uses (`transcriptTarget(row)`
+and `row.parentRef`):
+
 | Id | Ref | parentRef |
 | --- | --- | --- |
-| job | the tree row's `transcriptRef` when known, else `job:<jobId>` | the tree row's `ownerRef` |
-| delegate | the delegate's `transcriptRef` | the current session ref |
+| job | `row.transcriptRef` when present, else `job:<jobId>` | `row.parentRef` |
+| delegate | `row.transcriptRef` | `row.parentRef` |
 | watch | none | — |
 
-Job navigation requires an owner from the retained tree. A job whose owner is
-not the current session is outside the client-side scope and stays plain text.
-`JobLog` fetches output through `parentRef`, so a guessed owner is worse than
-no link.
+Field notes: `ActivityJobRow.parentRef` is required and its `transcriptRef` is
+optional, with ownership on `row.job.ownerRef`. `ActivityDelegateRow.transcriptRef`
+and `.parentRef` are both required, and the row's `transcriptRef` is normalized
+from `delegate.childRef` (the underlying `ActivityDelegate.transcriptRef` is
+optional). Use the row fields, never the underlying record's optional ones.
+
+Only rows from the current session's loaded tree are eligible. `JobLog` fetches
+output through `parentRef`; a guessed owner is worse than no link, so an id
+with no eligible row stays plain text.
 
 ## Failure modes
 
 - Unresolvable id (no delegate projection, no tree, no loaded `job_watch`):
   plain text, no link, no card.
 - Malformed or server-invalid id: not detected.
-- Job with state but no tree row: no link; card only if the tree supplied it.
-- Lookup or parse failure: no card, no link, no error surface, no retry loop.
+- Job id with no eligible tree row: plain text, no link, no card. A job's state
+  and target both come from the row.
+- Lookup or parse failure: no card, no link, no error surface. The view never
+  retries on its own; re-fetch is governed only by `refreshRoot`'s existing
+  rules (bump change, unproven freshness, or a retained non-ready state on
+  remount). No timer and no per-hover retry.
 - Truncated tree without the id: unresolved.
 
 ## Accessibility
@@ -272,13 +318,18 @@ over 128 bits; wrong UUIDv7 version or variant; boundaries (`xjob_…`,
 `job_…extra`, trailing `_`); multiple matches and none; golden vectors match
 the Go identifier package.
 
-**Stage 2 — resolution (`protocol/watchRows.ts`, `protocol/entityView.ts` +
+**Stage 2 — resolution (`protocol/activityRows.ts` gains
+`indexActivityEntities`, `protocol/watchRows.ts`, `protocol/entityView.ts` +
 tests).**
-Acceptance: job, delegate, and watch resolution from loaded fixtures; delegate
-preference for the live projection; retained tree gated on
-`(hydrations, jobsUpdatedAt)`; one coalesced `listJobs` per ref; operation-aware
-watch normalization with field presence preserved; positional ordering with
-older-history paging; no cross-session resolution. `jobWatch`'s existing tests
+Acceptance: resolution from loaded fixtures for all three kinds; resolution
+identical before and after a fold change (disclosure-independent index);
+revision-aware delegate selection including the tree-lacks-revision case;
+`refreshRoot` is the only request path (no direct `listJobs`, no duplicate
+request when the panel is also mounted, and a queued follow-up when an
+invalidation lands mid-fetch); one shared index per
+`(ref, tree, delegates, turns version)`; operation-aware watch normalization
+with field presence preserved; positional ordering across older-history paging;
+no resolution outside the current session's tree. `jobWatch`'s existing tests
 still pass after the extraction.
 
 **Stage 3 — shared interaction (`panes/session/transcript/EntityRef.tsx`,
@@ -286,8 +337,11 @@ still pass after the extraction.
 extracted Tooltip lifecycle hook + tests).**
 Acceptance: unresolved plain text; resolved trigger plus card; navigable entity
 adds exactly one `OpenButton`; `aria-describedby` on trigger and control; card
-shows/hides on hover/focus/leave/blur and portals; `Tooltip`'s existing tests
-still pass after the lifecycle extraction.
+shows/hides on hover/focus/leave/blur and portals; activating the `OpenButton`
+opens the pane with the correct `ref` and `parentRef` and reuses an already-open
+pane (assert against `workspaceStore`, as `agentFileLinks.test.tsx` does), while
+activating the id trigger does not navigate; `Tooltip`'s existing tests still
+pass after the lifecycle extraction.
 
 **Stage 4 — structured fields (`tools/jobTools.tsx`, `tools/jobWatch.tsx`,
 `tools/delegateStatus.tsx`).**
