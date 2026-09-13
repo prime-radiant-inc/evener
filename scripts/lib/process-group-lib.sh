@@ -62,6 +62,25 @@ pid_leads_pgroup() {
 	[ -n "$pgid" ] && [ "$pgid" = "$pid" ]
 }
 
+# escalate_blind PID GRACE — the last thing to do for a job nothing can see:
+# SIGTERM, GRACE seconds, then SIGKILL, to the group the pid may lead and to the
+# pid itself.
+#
+# It is sent blind, which is the point. When the process listing will not run,
+# "cannot be shown to have stopped" is an honest answer but on its own it leaves
+# the job running and holding whatever it holds, poisoning every later run on
+# the host. The grace is blind too: nothing here can watch a handler run, so the
+# wait is the only thing a SIGTERM can be given. Escalating is not confirming —
+# the caller still owes its reader the fail-closed answer.
+escalate_blind() {
+	local pid="$1" grace="$2"
+	kill -TERM -- -"$pid" 2>/dev/null || :
+	kill -TERM "$pid" 2>/dev/null || :
+	sleep "$grace"
+	kill -KILL -- -"$pid" 2>/dev/null || :
+	kill -KILL "$pid" 2>/dev/null || :
+}
+
 # stop_pgroup PGID GRACE — stop every member of PGID and prove
 # nothing of it is still running. Returns 0 when the group is confirmed empty,
 # 1 when it still has a live member after the escalation, and 2 when liveness

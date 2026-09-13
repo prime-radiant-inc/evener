@@ -365,7 +365,17 @@ stop_recorded_package_list_groups() {
 		# that child writing its package list and holding Go's cache locks.
 		# A probe that cannot run knows nothing about the group, and blind is
 		# the one state in which -PID could name a stranger, so it is left.
-		members="$(pgroup_survivors "$recorded")" || continue
+		if ! members="$(pgroup_survivors "$recorded")"; then
+			# Nothing can be seen, and saying nothing is how a `go list` is left
+			# holding the cache locks: the deadline gives a blind probe a blind
+			# signal, and this is the same probe failing at the last moment anyone
+			# is looking. The record stays, because blind is exactly when the only
+			# name for the group is worth keeping.
+			escalate_blind "$recorded" "$PACKAGE_LIST_STOP_GRACE"
+			printf 'run-module-tests.sh: process group %s could not be shown to have stopped: the process listing that answers whether it is empty would not run. It has been signalled blind; its record is kept at %s.\n' \
+				"$recorded" "$pgid_file" >&2
+			continue
+		fi
 		if [ -z "$members" ]; then
 			rm -f "$pgid_file"
 			continue
@@ -497,25 +507,6 @@ package_list_timeout_diagnostic() {
 		"$repo_root" "$((PACKAGE_LIST_TIMEOUT * 2))" >&2
 }
 
-# package_list_escalate PID — the last thing to do for an attempt nothing can
-# see: SIGTERM, the stop's own grace, then SIGKILL, to the group the pid may
-# lead and to the pid itself.
-#
-# It is sent blind, which is the point. When the process listing will not run,
-# the answer "cannot be shown to have stopped" is honest but on its own it
-# leaves a `go list` running with the build and module cache locks, poisoning
-# every later run on the host — the failure the escalation inside the group stop
-# was added for. The grace is blind too: nothing here can watch a handler run,
-# so the wait is the only thing a SIGTERM can be given.
-package_list_escalate() {
-	local pid="$1"
-	kill -TERM -- -"$pid" 2>/dev/null || :
-	kill -TERM "$pid" 2>/dev/null || :
-	sleep "$PACKAGE_LIST_STOP_GRACE"
-	kill -KILL -- -"$pid" 2>/dev/null || :
-	kill -KILL "$pid" 2>/dev/null || :
-}
-
 # stop_package_list_attempt PID — stop a timed-out attempt, whatever state its
 # process group is in, and say what happened. PID is the pid the runner spawned,
 # which is also the attempt's group number once it has split into one.
@@ -557,7 +548,7 @@ stop_package_list_attempt() {
 		# — a verdict about the package list retried to the end of the budget
 		# and then reported as a timeout.
 		if ! live="$(pgroup_survivors "$pid")"; then
-			package_list_escalate "$pid"
+			escalate_blind "$pid" "$PACKAGE_LIST_STOP_GRACE"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
@@ -574,7 +565,7 @@ stop_package_list_attempt() {
 		# becomes `go` only at the exec after the split.
 		stop_pid "$pid" "$PACKAGE_LIST_STOP_GRACE" || status=$?
 		if [ "$status" -eq 2 ]; then
-			package_list_escalate "$pid"
+			escalate_blind "$pid" "$PACKAGE_LIST_STOP_GRACE"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
@@ -588,7 +579,7 @@ stop_package_list_attempt() {
 		# leader and left `go list`'s children in a group of their own. The pid
 		# is that group's number too, so ask whether one formed.
 		if ! live="$(pgroup_survivors "$pid")"; then
-			package_list_escalate "$pid"
+			escalate_blind "$pid" "$PACKAGE_LIST_STOP_GRACE"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi

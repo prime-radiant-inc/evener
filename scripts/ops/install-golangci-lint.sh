@@ -110,8 +110,19 @@ stop_attempt() {
 			fi
 		fi
 	fi
+	if [ "$stop_status" -eq 2 ]; then
+		# Nothing could be seen, so nothing here can say the pipeline stopped —
+		# and leaving it at that leaves curl and the upstream installer running,
+		# writing into the Go bin directory after this script has gone. Signal
+		# blind and say so, which is what the gate does with the same answer.
+		escalate_blind "$attempt_pid" "$attempt_stop_grace"
+		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: the process listing that answers whether group %s is empty would not run. It has been signalled blind, and not waited on.\n' \
+			"$attempt_pid" >&2
+		attempt_pid=""
+		return 0
+	fi
 	if [ "$stop_status" -ne 0 ]; then
-		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped; process group %s still holds %s. Not waiting on it.\n' \
+		printf 'install-golangci-lint.sh: the install attempt would not stop; process group %s still holds %s. Not waiting on it.\n' \
 			"$attempt_pid" "$(pgroup_survivor_report "$attempt_pid")" >&2
 		attempt_pid=""
 		return 0
