@@ -520,3 +520,53 @@ func TestHookEndAnnouncesNothingWhenTheTranscriptWriteFails(t *testing.T) {
 		t.Fatalf("persisted append log entries after a failed transcript write = %d, want 0; a fold would re-append a turn the transcript never held", got)
 	}
 }
+
+// A session with no state directory has no transcript writer at all, and its
+// hook completions still have to reach the client: the entry is the durable
+// half of the pair, and a session that keeps nothing durable keeps none of it
+// while still announcing every hook it ran.
+func TestHookEndAnnouncedByANonPersistentSession(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		PluginDirs: []string{hookPluginDir(t, "exit 0")},
+		testOnly:   testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if sess.TranscriptPath() != "" {
+		t.Fatalf("test setup: session has a transcript at %q, so it is not the non-persistent case", sess.TranscriptPath())
+	}
+	sess.Close()
+	ends := 0
+	for event := range sess.Events() {
+		if event.Kind == events.EventHookEnd {
+			ends++
+		}
+	}
+	if ends == 0 {
+		t.Fatal("a non-persistent session announced no hook completion; its SessionStart hook ran and the client was never told")
+	}
+
+	// The same holds after attachment: such a session is marked ready with a
+	// nil writer, so a completion arriving later takes the ordinary write path
+	// and finds the writer's own no-op rather than a special case here.
+	ready := &Session{id: "hook-no-writer", transcriptReady: true, events: make(chan events.SessionEvent, 4)}
+	ready.emitHookCompleted(events.HookEndData{Event: "PreCompact", HookType: "command", PluginName: "hook-turn-plugin"})
+	close(ready.events)
+	late := 0
+	for event := range ready.events {
+		if event.Kind == events.EventHookEnd {
+			late++
+		}
+	}
+	if late != 1 {
+		t.Fatalf("hook completions announced by a ready session with no writer = %d, want 1", late)
+	}
+	if got := len(ready.history); got != 1 {
+		t.Fatalf("history turns = %d, want the completion kept in live history when there is nowhere durable to put it", got)
+	}
+}
