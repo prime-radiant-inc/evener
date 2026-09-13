@@ -49,8 +49,8 @@
   max-width: 36rem;
   margin: var(--space-4) 0 0;
   color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
   line-height: var(--line-height-body);
 }
 

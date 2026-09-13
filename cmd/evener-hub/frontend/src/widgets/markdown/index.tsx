@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify";
 import { Marked, type RendererObject, type Token, type Tokens } from "marked";
-import { useMemo, useRef } from "react";
+import { type Ref, useMemo, useRef } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { markdownLexer } from "./lexer";
@@ -9,6 +9,8 @@ import { closeOpenMarkdown } from "./streaming";
 
 export interface MarkdownProps {
   source: string;
+  /** Lets a caller attach actions to sanitized content without a layout wrapper. */
+  ref?: Ref<HTMLDivElement>;
   /** True while `source` is a possibly-truncated stream still in flight:
    * constructs left open at the tail (unterminated `**`/`*`/`~~`, inline
    * code, fenced code blocks) are closed before parsing via
@@ -328,7 +330,7 @@ function tailStartsIndented(tail: string): boolean {
  * source is treated as a truncated stream and its open constructs are
  * closed before parsing (see streaming.ts).
  */
-export function Markdown({ source, live = false }: MarkdownProps) {
+export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // Live streams re-render per streamed token, and each render re-parses the
   // whole message (marked + DOMPurify) - O(n^2) over a long stream. Past the
   // window above, the settled head is served from a cache keyed on its own
@@ -415,5 +417,5 @@ export function Markdown({ source, live = false }: MarkdownProps) {
   // filtering for href/src is untouched - SANITIZE_CONFIG never sets
   // ALLOWED_URI_REGEXP). See this file's own comments above for the rest.
   // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via DOMPurify + escaped renderer overrides, see above
-  return <div className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div ref={ref} className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
 }

@@ -299,15 +299,15 @@ effort-capability rather than a separately configured
 
 | `thinking_format` | when an effort is set | with `ThinkingAlwaysOn` and no effort |
 |---|---|---|
-| `openai` (default) | `reasoning_effort: <wire>` if effort-capable, else nothing | `reasoning_effort: medium` clamped to `EffortValues`, if effort-capable, else nothing |
-| `openrouter` | `reasoning: {effort: <wire>}` unconditionally | `reasoning: {enabled: true}` |
-| `zai` | always `thinking: {type: enabled, clear_thinking: false}`; plus `reasoning_effort: <wire>` if effort-capable | `thinking: {type: enabled, clear_thinking: false}` |
-| `deepseek` | always `thinking: {type: enabled}`; plus `reasoning_effort: <wire>` if effort-capable | `thinking: {type: enabled}` |
-| `together` | always `reasoning: {enabled: true}`; plus `reasoning_effort: <wire>` if effort-capable | `reasoning: {enabled: true}` |
+| `openai` (default) | `reasoning_effort: <wire>` when the ladder vouches for the level, else nothing | `reasoning_effort: medium` clamped to `EffortValues` when the ladder lists a level, else nothing |
+| `openrouter` | `reasoning: {effort: <wire>}` unconditionally — the vouch-gate exception below | `reasoning: {enabled: true}` |
+| `zai` | always `thinking: {type: enabled, clear_thinking: false}`; plus `reasoning_effort: <wire>` when the ladder vouches | `thinking: {type: enabled, clear_thinking: false}` |
+| `deepseek` | always `thinking: {type: enabled}`; plus `reasoning_effort: <wire>` when the ladder vouches | `thinking: {type: enabled}` |
+| `together` | always `reasoning: {enabled: true}`; plus `reasoning_effort: <wire>` when the ladder vouches | `reasoning: {enabled: true}` |
 | `qwen` | `enable_thinking: true` | `enable_thinking: true` |
 | `qwen-chat-template` | `chat_template_kwargs: {enable_thinking: true, preserve_thinking: true}` | same |
 | `chat-template` | `chat_template_kwargs: <ChatTemplateKwargs>` (omitted when empty) | same |
-| `string-thinking` | `thinking: <wire>` | `thinking: "medium"` clamped to `EffortValues` |
+| `string-thinking` | `thinking: <wire>` when the ladder vouches, else nothing | `thinking: "medium"` when the ladder lists a level, else nothing |
 
 An explicit `none` is the user turning thinking off. The `openai` (and
 default) dialect sends `reasoning_effort: none`, `openrouter` sends
@@ -318,12 +318,24 @@ anthropic and google protocols have no value that says off, so they omit the
 control. An off never falls through to the `ThinkingAlwaysOn` column: those
 shapes switch thinking on, which would invert what the user asked for.
 
+**The vouch gate.** A field that spells the level is written only when the
+row's `effort_values` ladder lists a rankable level (`llm.VouchedEffort`); a
+level the ladder cannot vouch for is omitted, not sent, so an uncatalogued
+model cannot 400 a provider that rejects it. Two exemptions keep working:
+`openrouter` passes the requested effort through unconditionally because
+OpenRouter normalizes the level itself and its model listing often omits
+supported efforts; and rows that map the effort to a numeric budget (Anthropic
+`budget_tokens`/`budget+effort`, the Google `thinkingConfig`) still consume the
+effort even with an empty ladder, because the row declares that control. On
+the Responses protocol the encrypted-reasoning `include` and a configured
+summary survive an unvouched effort: no level is sent, but replay stays intact.
+
 **anthropic.** `ThinkingShape` picks one of three bodies: `adaptive` →
 `thinking: {type: adaptive}` plus `display`, sent whenever `ThinkingAlwaysOn`
-or an effort is set, plus `output_config.effort` only when the caller set
-one; `budget` → `thinking: {type: enabled, budget_tokens}`, only when an
-effort is set; `budget+effort` (Opus 4.5, Kimi K3) → both. An unset shape
-sends no thinking object at all.
+or an effort is set, plus `output_config.effort` only when the caller set one
+and the ladder vouches for it; `budget` → `thinking: {type: enabled,
+budget_tokens}`, only when an effort is set; `budget+effort` (Opus 4.5, Kimi
+K3) → both. An unset shape sends no thinking object at all.
 
 **Replay.** Prior thinking on the openai-chat protocol writes back to
 whichever field it arrived on — `reasoning_content`, `reasoning`, or
@@ -336,9 +348,9 @@ What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),
 not a `[instances.X.compat]` table entry. There's no separate `thinking_levels`
 per-model map anymore — a wire-spelled `effort_values` ladder on a model row
-under the existing clamp behavior reproduces it exactly: a below-range
-request raises to the lowest supported value, and the top tier resolves to
-the model's own spelling.
+drives the clamp-and-vouch behavior: a below-range request raises to the
+lowest supported value, the top tier resolves to the model's own spelling, and
+a level the ladder does not list sends no effort name at all.
 
 ## `providers.toml`
 
@@ -747,10 +759,13 @@ generation, the zai and qwen thinking toggles) do move to `medium`. Set
 the off level that reaches the wire, and on any other model it means no
 reasoning control at all, so the provider decides.
 
-**Per-model clamping.** Each resolved row advertises the levels it supports
-(`EffortValues` → `Profile.ReasoningEffortLevels()`), so an over-range
-request (e.g. `xhigh` to a model capped at `high`) is reduced rather than
-rejected. A row that states no ladder passes the effort through unchanged.
+**Per-model clamping and vouching.** Each resolved row advertises the levels
+it supports (`EffortValues` → `Profile.ReasoningEffortLevels()`), so an
+over-range request (e.g. `xhigh` to a model capped at `high`) is reduced rather
+than rejected. A row that states no ladder vouches for no level: the effort
+still sizes budget-shaped thinking, but a field that spells the level is
+omitted rather than sent (see
+[Reasoning and thinking dialects](#reasoning-and-thinking-dialects)).
 
 **Provider mapping.** The openai-chat dialects send the `reasoning_effort`
 enum (see [Reasoning and thinking dialects](#reasoning-and-thinking-dialects)

@@ -20,7 +20,7 @@ func TestSeedDefaultMarketplaces_FirstRunOnly(t *testing.T) {
 	if !seeded {
 		t.Fatal("first run should seed")
 	}
-	mk, _ := m.ListMarketplaces()
+	mk, _ := m.ListMarketplaces(context.Background())
 	if _, ok := mk["claude-plugins-official"]; !ok {
 		t.Fatalf("official marketplace not seeded: %v", mk)
 	}
@@ -44,7 +44,7 @@ func TestSeedDefaultMarketplaces_FirstRunOnly(t *testing.T) {
 	if _, err := m.SeedDefaultMarketplaces(context.Background()); err != nil {
 		t.Fatalf("third seed: %v", err)
 	}
-	mk, _ = m.ListMarketplaces()
+	mk, _ = m.ListMarketplaces(context.Background())
 	if _, ok := mk["superpowers-marketplace"]; ok {
 		t.Fatal("removed seed was re-added")
 	}
@@ -69,7 +69,7 @@ func TestBrowse_LazyFetchesSeededPointer(t *testing.T) {
 		t.Fatalf("catalog = %+v", cat)
 	}
 	// InstallLocation now backfilled
-	mk, _ := m.ListMarketplaces()
+	mk, _ := m.ListMarketplaces(context.Background())
 	if mk["acme"].InstallLocation == "" {
 		t.Fatal("InstallLocation not backfilled after lazy fetch")
 	}

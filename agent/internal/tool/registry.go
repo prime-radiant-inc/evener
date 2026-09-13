@@ -273,7 +273,7 @@ type ExecResult struct {
 	// alongside the text output so the model can "see" the image.
 	ImageData      []byte
 	ImageMediaType string
-	ImageIntent    string // from the caller: what they hope to learn
+	ImagePrompt    string // from the caller: what they hope to learn
 
 	// ToolState is an optional JSON-encoded snapshot emitted alongside
 	// Output via the TOOL_CALL_END event. The LLM never sees this — it's a
@@ -312,7 +312,7 @@ type ImageResult struct {
 	Text      string
 	Data      []byte
 	MediaType string
-	Intent    string // what the caller hopes to learn from this image
+	Prompt    string // what the caller hopes to learn from this image
 }
 
 // ParseImageResult checks if ReadFile output is an image response (the [image: ...]
@@ -733,17 +733,15 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		}
 	}
 
-	if name != "read_file" {
-		intent, _ := args["intent"].(string)
-		delete(args, "intent")
-		// The handler can no longer see intent in args — but the shell tool
-		// stamps it onto the job record (so job surfaces can show why the
-		// model said it is running the command), so keep it reachable on ctx.
-		// Set unconditionally: a nested call reusing a context that already
-		// carries a stale intent would otherwise inherit it when this call
-		// omits intent.
-		ctx = context.WithValue(ctx, ctxIntentKey{}, strings.TrimSpace(intent))
-	}
+	intent, _ := args["intent"].(string)
+	delete(args, "intent")
+	// The handler can no longer see intent in args — but the shell tool
+	// stamps it onto the job record (so job surfaces can show why the
+	// model said it is running the command), so keep it reachable on ctx.
+	// Set unconditionally: a nested call reusing a context that already
+	// carries a stale intent would otherwise inherit it when this call
+	// omits intent.
+	ctx = context.WithValue(ctx, ctxIntentKey{}, strings.TrimSpace(intent))
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)
 	if judged {
@@ -801,7 +799,7 @@ func dispatchedResult(name, callID string, lim schema.ToolOutputLimit, v any, er
 		res := truncateResult(name, callID, img.Text, false, lim)
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
-		res.ImageIntent = img.Intent
+		res.ImagePrompt = img.Prompt
 		return res
 	}
 

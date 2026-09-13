@@ -17,7 +17,8 @@ contracts that subagents, plugins, and hooks operate under, see
 [docs/subagent-runtime-contracts.md](docs/subagent-runtime-contracts.md). For
 background jobs, see [docs/job-control.md](docs/job-control.md). To confine a
 session's file, process, and network access with `--sandbox`, see
-[docs/sandboxing.md](docs/sandboxing.md). To build, test, and lint this repo,
+[docs/sandboxing.md](docs/sandboxing.md). For how sessions are titled, see
+[docs/session-auto-naming.md](docs/session-auto-naming.md). To build, test, and lint this repo,
 see [docs/developing-evener/README.md](docs/developing-evener/README.md) — or
 run `make help` for every target with a one-line summary.
 
@@ -263,7 +264,7 @@ variables:
 |---|---|
 | `--model <provider/model>` | LLM model identifier (required unless resuming an existing session) |
 | `--dir <path>` | Working directory (default: current directory) |
-| `--enabled-plugins <name,...>` | Load exactly these otherwise-loadable plugins for this new session; an empty value loads none |
+| `--enabled-plugins <name,...>` | Load exactly these plugins for this new session, chosen by manifest name from explicit plugin directories and installed plugins (including ones whose default is off); an empty value loads none |
 | `--output-schema <json>` | Inline JSON Schema replacing the default `communicate.output` schema |
 | `--verbose` | Emit NDJSON events to stderr (replaces human-readable output) |
 | `--resume <id>` | Resume a previous session by ID |
@@ -273,7 +274,7 @@ variables:
 
 ### Per-session plugin selection
 
-Inspect the effective plugins available to a new direct-CLI session with:
+Inspect the plugins a new direct-CLI session loads by default with:
 
 ```bash
 evener plugin list --effective --json
@@ -287,15 +288,17 @@ evener --enabled-plugins=alpha,beta "task"
 evener --enabled-plugins= "task"
 ```
 
-Omitting `--enabled-plugins` uses the current defaults: every otherwise-loadable
-plugin, including globally enabled installed plugins and explicit plugin
-directories. The flag is new-session-only and cannot replace the plugin set of
-an existing resumed session. It selects manifest names from that otherwise-
-loadable set; globally disabled plugins remain unavailable. The selected set is
-stored with the new session, so resumes, forks, and delegates inherit it.
+Omitting `--enabled-plugins` uses the current defaults: explicit plugin
+directories plus installed plugins marked enabled by default. The flag is
+new-session-only and cannot replace the plugin set of an existing resumed
+session. It selects manifest names from the otherwise-loadable set of explicit
+plugin directories and installed plugins, so naming an off-by-default installed
+plugin turns it on for that session. The selected set is stored with the new
+session, so resumes, forks, and delegates inherit it.
 
 This does not change persistent plugin state. `evener plugin enable` and
-`evener plugin disable` remain the global controls for future default sessions.
+`evener plugin disable` set whether an installed plugin loads by default in
+future sessions.
 
 ### Structured output
 

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
+import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const consumerDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
@@ -17,6 +18,7 @@ const run = (command, args, cwd) =>
     stdio: ["ignore", "pipe", "pipe"],
   });
 async function qualify() {
+  const packageManifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
   const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", consumerDir], packageDir))[0];
   const tarball = join(consumerDir, packed.filename);
   run(
@@ -24,37 +26,420 @@ async function qualify() {
     ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
     consumerDir,
   );
-  writeFileSync(
-    join(consumerDir, "esm.mts"),
-    `import {
-  AppwireClient,
-  APPWIRE_PROTOCOL_VERSION,
-  ConnectionClosedError,
-  RequestTimeoutError,
-  WireError,
-  rpcURLFromLocation,
-  composeAskAnswers,
-  METHOD_NAMES,
-  NOTIFICATION_NAMES,
-  STEERING_KINDS,
-  THREAD_ITEM_EVENT_KINDS,
-} from "@evener/appwire-client";
-const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
-const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;
-void ConnectionClosedError; void RequestTimeoutError; void WireError;
-void rpcURLFromLocation; void composeAskAnswers; void METHOD_NAMES;
-void NOTIFICATION_NAMES; void STEERING_KINDS; void THREAD_ITEM_EVENT_KINDS;
+  // Every module the package ships. docContent.ts is here too: it names no
+  // browser global at all - readDocFile takes the host's DocPort - so the
+  // module loads and its URL builders, size cap and error type run in a bare
+  // Node consumer. The runner never calls readDocFile: a port implies a
+  // request, and qualification makes none.
+  const shippedModules = [
+    "index",
+    "client",
+    "clientLike",
+    "errors",
+    "transport",
+    "types.gen",
+    "askAnswers",
+    "askShared",
+    "deriveAskQuestions",
+    "reconcileBatches",
+    "attachmentMarkers",
+    "composerInput",
+    "activityData",
+    "activityList",
+    "activityMerge",
+    "activityRows",
+    "itemFailure",
+    "jobOutput",
+    "model",
+    "reducer",
+    "sendQueueAvailability",
+    "sessionErrors",
+    "stableDelegate",
+    "docContent",
+    "submitRouting",
+    "displayFormat",
+    "toolCallText",
+    "catalogCommands",
+    "slashCompletion",
+  ];
+  // Every runtime export of the package root. The root's generated consumer
+  // programs are built from this one list, so an export the entry point stops
+  // providing fails here instead of in somebody's consumer. Whether each
+  // shipped MODULE is reachable at all is the reachability check below.
+  const rootValues = [
+    "AppwireClient",
+    "APPWIRE_PROTOCOL_VERSION",
+    "ConnectionClosedError",
+    "RequestTimeoutError",
+    "WireError",
+    "ClientNotReadyError",
+    "GENERIC_ERROR_MESSAGE",
+    "HUB_UNREACHABLE_MESSAGE",
+    "errorKind",
+    "errorText",
+    "friendlyErrorMessage",
+    "friendlyLaunchErrorMessage",
+    "isHubLaunchError",
+    "isStaleCursorError",
+    "mutationErrorData",
+    "sessionActionError",
+    "sessionActionHeadline",
+    "rpcURLFromLocation",
+    "composeAskAnswers",
+    "parseAskUserQuestions",
+    "answeredAskUserSuffix",
+    "liveAskQuestions",
+    "reconcileBatches",
+    "translateAttachmentMarkers",
+    "buildInput",
+    "buildComposerInput",
+    "METHOD_NAMES",
+    "NOTIFICATION_NAMES",
+    "STEERING_KINDS",
+    "THREAD_ITEM_EVENT_KINDS",
+    "isFailedJobOutcome",
+    "isFailedDelegateOutcome",
+    "isActivityFailure",
+    "isTurnContainer",
+    "parseActivityTree",
+    "activityNodeID",
+    "delegateHasActiveWork",
+    "defaultExpandedIDs",
+    "reconcileActivityState",
+    "ActivityList",
+    "fenceRootSession",
+    "graftContinuationTree",
+    "foldRowID",
+    "jobIsFailed",
+    "activityDelegateState",
+    "buildActivityRows",
+    "hasItemFailure",
+    "hasErrorText",
+    "hasFailureStatus",
+    "isNonZeroExit",
+    "isInProgressStatus",
+    "parseJobLogTail",
+    "SYSTEM_PRELUDE_TURN_ID",
+    "pendingTextJoined",
+    "imageSessionRouteForSession",
+    "hydrateThread",
+    "collectAuthoritativeMutationIds",
+    "prependOlderTurns",
+    "mergeOlderItemPage",
+    "resolvePendingEscalation",
+    "notificationRoutingKey",
+    "notificationTargetsThread",
+    "applyNotification",
+    "deriveSendQueueAvailability",
+    "isActionUnavailable",
+    "isThreadNotFound",
+    "stableDelegateDisplayStatus",
+    "DOC_FILE_MAX_BYTES",
+    "DocFileError",
+    "docFileRawURL",
+    "docImageURL",
+    "decideSubmitRoute",
+    "decideSteerRoute",
+    "isTurnActive",
+    "formatTokenCount",
+    "formatDurationMs",
+    "formatCharCount",
+    "formatClockTime",
+    "formatClockTimeSeconds",
+    "formatElapsed",
+    "firstLine",
+    "splitMandate",
+    "plainQuoteLine",
+    "clip",
+    "clipJobID",
+    "tailSlice",
+    "tailFold",
+    "formatToolDuration",
+    "formatByteCount",
+    "lineCount",
+    "parseArgs",
+    "parseJSONObject",
+    "trailingBracketFooter",
+    "str",
+    "slashCommandInvocation",
+    "visibleCatalogCommands",
+    "evaluateSlashLabel",
+    "filterSlashMenuItems",
+    "mergeSlashCommands",
+    "parseSlashToken",
+    "spliceSlashCommand",
+  ];
+  // One exported type per shipped module that declares any, so the declaration
+  // check covers each module's packed .d.ts and not just its runtime half.
+  const rootTypes = [
+    "AppwireClientOptions",
+    "AppwireClientLike",
+    "WebSocketLike",
+    "AskAnswerItem",
+    "AskUserQuestion",
+    "AskQuestionRef",
+    "AskBatch",
+    "MarkerAttachment",
+    "InputAttachment",
+    "ActivityNodeLike",
+    "ActivityTree",
+    "ActivityState",
+    "ActivityRow",
+    "ItemFailureSignals",
+    "JobLogTail",
+    "ThreadModel",
+    "NotificationRoutingKey",
+    "SendQueueAvailability",
+    "StableDelegateState",
+    "DocFileContent",
+    "SubmitRoute",
+    "SteerRoute",
+    "SlashToken",
+    "SlashMenuItem",
+  ];
+  // One call per shipped module, with a trivial input. Importing alone would
+  // pass for a module that needs a browser global at load time; calling proves
+  // each module actually evaluates and runs inside a bare Node consumer.
+  const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
+assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
+assert.equal(client.composeAskAnswers([]), "[answers]");
+const askItem = {
+  id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
+  argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
+};
+assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
+assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
+assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
+assert.equal(askBatches[0].id, "batch1");
+assert.equal(askBatches[0].questions[0].key, "ask1:0");
+const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
+assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
+assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
+assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
+assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
+  { type: "text", text: "(attached image 1: shot.png)go" },
+  { type: "image", mediaType: "image/png", data: "AA", name: "shot.png" },
+]);
+assert.equal(new client.WireError("nope", -32000).code, -32000);
+assert.equal(client.errorText(new Error("boom")), "boom");
+assert.equal(client.errorKind(new Error("boom")), "unknown");
+assert.equal(client.friendlyErrorMessage(new Error("boom")), client.GENERIC_ERROR_MESSAGE);
+assert.equal(client.friendlyErrorMessage(new client.ClientNotReadyError("waited")), client.HUB_UNREACHABLE_MESSAGE);
+assert.equal(client.friendlyLaunchErrorMessage(new Error("boom")), client.GENERIC_ERROR_MESSAGE);
+assert.equal(client.isHubLaunchError(new Error("boom")), false);
+assert.equal(client.isStaleCursorError(new Error("boom")), false);
+assert.equal(client.sessionActionHeadline("Couldn't rename", new Error("boom")), "Couldn't rename");
+assert.equal(client.sessionActionError("Couldn't rename", new Error("boom")), "Couldn't rename: boom");
+assert.equal(client.mutationErrorData(new Error("boom")), undefined);
+assert(client.METHOD_NAMES.length > 0);
+const session = {
+  kind: "session", sessionId: "thread", ref: "ref", label: "label", aggregate: "idle",
+  counts: { active: 0, failed: 0, completed: 0, complete: true }, entries: [], branch: {},
+};
+const tree = { revision: 1, root: session };
+assert.equal(client.parseActivityTree(null), null);
+assert.equal(client.activityNodeID(session), "session:thread");
+assert(Array.isArray(client.defaultExpandedIDs(tree)));
+assert.equal(client.isActivityFailure("failure", undefined), true);
+assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
+assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
+assert.equal(client.foldRowID("session:thread"), "session:thread:inactive-fold");
+assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
+assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
+assert.equal(client.activityDelegateState({ kind: "delegate", type: "task", child: session }).failed, false);
+assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
+assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
+assert.equal(client.hasErrorText({ error: "  " }), false);
+assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
+assert.equal(client.isInProgressStatus("inProgress"), true);
+assert.equal(client.parseJobLogTail(null), null);
+assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
+assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
+assert.equal(client.notificationRoutingKey({ method: "evener/x", params: {} }), null);
+assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired", capabilities: {} }).canSend, false);
+assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
+assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
+assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
+assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
+assert.equal(client.isTurnActive("active", "turn_1"), true);
+assert.equal(client.formatTokenCount(41200), "41k");
+assert.equal(client.formatDurationMs(1500), "1.5s");
+assert.equal(client.formatCharCount(2500), "2.5k chars");
+assert.equal(client.formatClockTime(undefined), undefined);
+assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
+assert.equal(client.formatElapsed(65000), "1m05s");
+assert.equal(client.firstLine("\\n  hello  \\n", 20), "hello");
+assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest: "rest" });
+assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
+assert.equal(client.slashCommandInvocation({ name: "plan", source: "plugin", pluginName: "acme" }), "/acme:plan");
+assert.deepEqual(client.visibleCatalogCommands([{ name: "plan", source: "plugin", pluginName: "acme" }], new Set()), []);
+const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
+assert.equal(activity.getSnapshot().tree, null);
+assert.equal(client.clip("hello", 3), "hel\u2026");
+assert.equal(client.clipJobID("job"), "job");
+assert.equal(client.tailSlice("hello", 2), "lo");
+assert.equal(client.tailFold("hello", 99), "hello");
+assert.equal(client.formatToolDuration(0), "1ms");
+assert.equal(client.formatByteCount(1), "1 byte");
+assert.equal(client.lineCount("a\\nb\\n"), 2);
+assert.deepEqual(client.parseArgs("not json"), {});
+assert.equal(client.parseJSONObject("[]"), undefined);
+assert.equal(client.trailingBracketFooter("done [exit 0]"), "exit 0");
+assert.equal(client.str({ path: "/tmp" }, "path"), "/tmp");
+const slashToken = client.parseSlashToken("say /rev", 8);
+assert.deepEqual(slashToken, { start: 4, end: 8, query: "rev" });
+assert.equal(client.parseSlashToken("say /rev\\nthen", 13), null);
+const slashItems = client.mergeSlashCommands(
+  [{ id: "goal", hint: "sets the session goal" }],
+  [{ name: "review", source: "plugin", pluginName: "acme" }],
+  [{ name: "writing", description: "writing skill" }],
+);
+assert.deepEqual(slashItems.map((item) => item.invocation), ["/goal", "/acme:review", "/writing"]);
+assert.deepEqual(
+  client.filterSlashMenuItems(slashItems, slashToken.query).map((item) => item.label),
+  ["review"],
+);
+assert.equal(client.evaluateSlashLabel("review", "rev").embedding.longestRun, 3);
+assert.deepEqual(client.spliceSlashCommand("say /rev", slashToken, "/acme:review"), {
+  text: "say /acme:review ",
+  caret: 17,
+});
+`;
+  // The qualification manifest: every specifier package.json publishes, and the
+  // names the package promises at each one. A subpath with no entry here is not
+  // qualified, whatever the exports map claims, so the two must agree. An
+  // in-repo-only path alias is therefore unlistable: nothing in the tarball
+  // backs it, and the apps' own typecheck is what validates it.
+  const packageExports = {
+    ".": {
+      values: rootValues,
+      types: rootTypes,
+      // A typed construction for the specifiers that offer one, so the
+      // declaration checks prove more than that the names resolve.
+      esmTypeUses: `const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
+      cjsTypeUses: `const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;`,
+      smoke: rootSmokeCalls,
+    },
+    // The doc-pane data layer, published as its own specifier because
+    // readDocFile is not a root export: it needs a fetch, and a consumer that
+    // wants to substitute one (or spy on the module) needs a real subpath to
+    // import, which a root re-export cannot give it.
+    "./docContent": {
+      values: ["DOC_FILE_MAX_BYTES", "DocFileError", "docFileRawURL", "docImageURL", "readDocFile"],
+      types: ["DocFetch", "DocFileContent", "DocFileErrorKind", "DocPort", "DocResponseLike"],
+      esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
+const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
+      cjsTypeUses: `const fetchDoc: client.DocFetch = async (url: string) => {
+  void url;
+  throw new client.DocFileError("error", 500);
+};
+const port: client.DocPort = { origin: "https://hub.example", fetch: fetchDoc }; void port;`,
+      // The URL builders and the size cap are the whole callable surface here:
+      // readDocFile needs a port, and qualification makes no requests, so it is
+      // checked for presence and its behavior is covered by unit tests. The
+      // builders are called with both bases the two adapters supply, so the
+      // same-origin web string and the native absolute URL are both qualified.
+      smoke: `assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.docImageURL("", "s", "p"), "/doc/image?session=s&path=p");
+assert.equal(
+  client.docFileRawURL("https://hub.example", "s", "p"),
+  "https://hub.example/doc/file?format=raw&session=s&path=p",
+);
+assert.equal(client.docImageURL("https://hub.example", "s", "p"), "https://hub.example/doc/image?session=s&path=p");
+assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
+assert.equal(typeof client.readDocFile, "function");
 `,
-  );
-  writeFileSync(
-    join(consumerDir, "commonjs.cts"),
-    `import client = require("@evener/appwire-client");
-const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;
-void client.ConnectionClosedError; void client.RequestTimeoutError; void client.WireError;
-void client.rpcURLFromLocation; void client.composeAskAnswers; void client.METHOD_NAMES;
-void client.NOTIFICATION_NAMES; void client.STEERING_KINDS; void client.THREAD_ITEM_EVENT_KINDS;
+    },
+  };
+  const publishedSpecifiers = Object.keys(packageManifest.exports);
+  for (const specifier of publishedSpecifiers)
+    assert(packageExports[specifier], `published specifier is not qualified: no manifest entry for ${specifier}`);
+  for (const [specifier, surface] of Object.entries(packageExports)) {
+    assert(
+      publishedSpecifiers.includes(specifier),
+      `qualification manifest names ${specifier}, which package.json does not export`,
+    );
+    assert(
+      Array.isArray(surface.values) && Array.isArray(surface.types),
+      `qualification manifest entry ${specifier} needs both a value and a type name list`,
+    );
+  }
+  // A module can be built, packed and listed here and still be unreachable: the
+  // files list only decides what tsc emits, and the export checks below name
+  // identifiers, not modules. Each published specifier's own installed
+  // declarations are the honest record of what it re-exports, so a shipped
+  // module qualifies by being some specifier's entry or by being re-exported
+  // from one. A module no published specifier reaches fails right here.
+  const reachableModules = new Set();
+  for (const specifier of publishedSpecifiers) {
+    const declarations = packageManifest.exports[specifier].types;
+    const entryModule = shippedModules.find((module) => declarations === `./dist/${module}.d.ts`);
+    assert(entryModule, `${specifier} publishes declarations no shipped module emits: ${declarations}`);
+    reachableModules.add(entryModule);
+    const text = readFileSync(join(consumerDir, "node_modules", packageManifest.name, declarations), "utf8");
+    for (const module of shippedModules) if (text.includes(`from "./${module}"`)) reachableModules.add(module);
+  }
+  for (const module of shippedModules)
+    assert(reachableModules.has(module), `shipped module unreachable from every published specifier: ${module}`);
+  // One ESM declaration consumer, one CommonJS declaration consumer and one
+  // runtime presence check in each module form, per published specifier.
+  const declarationConsumers = [];
+  const runtimeConsumers = [];
+  const consumerNames = new Set();
+  for (const [specifier, surface] of Object.entries(packageExports)) {
+    const moduleSpecifier = `${packageManifest.name}${specifier.slice(1)}`;
+    // The specifier itself, reversibly encoded: "./foo-bar" and "./foo/bar" are
+    // different specifiers and must not write over each other's programs.
+    const slug = specifier === "." ? "root" : `sub-${encodeURIComponent(specifier.slice(2))}`;
+    const presenceLoop = `for (const name of ${JSON.stringify(surface.values)}) assert(name in client, \`missing export \${name} from ${moduleSpecifier}\`);\n`;
+    const esmConsumer = `esm-${slug}.mts`;
+    const commonjsConsumer = `commonjs-${slug}.cts`;
+    const esmRuntime = `runtime-${slug}.mjs`;
+    const commonjsRuntime = `runtime-${slug}.cjs`;
+    for (const consumer of [esmConsumer, commonjsConsumer, esmRuntime, commonjsRuntime]) {
+      assert(!consumerNames.has(consumer), `two specifiers generate the same consumer program: ${consumer}`);
+      consumerNames.add(consumer);
+    }
+    declarationConsumers.push(esmConsumer, commonjsConsumer);
+    runtimeConsumers.push(esmRuntime, commonjsRuntime);
+    writeFileSync(
+      join(consumerDir, esmConsumer),
+      `import {
+${surface.values.map((name) => `  ${name},`).join("\n")}
+} from "${moduleSpecifier}";
+import type {
+${surface.types.map((name) => `  ${name},`).join("\n")}
+} from "${moduleSpecifier}";
+${surface.esmTypeUses ?? ""}
+declare const shipped: [${surface.types.join(", ")}]; void shipped;
+${surface.values.map((name) => `void ${name};`).join("\n")}
 `,
-  );
+    );
+    writeFileSync(
+      join(consumerDir, commonjsConsumer),
+      `import client = require("${moduleSpecifier}");
+${surface.cjsTypeUses ?? ""}
+declare const shipped: [${surface.types.map((name) => `client.${name}`).join(", ")}]; void shipped;
+${surface.values.map((name) => `void client.${name};`).join("\n")}
+`,
+    );
+    writeFileSync(
+      join(consumerDir, esmRuntime),
+      `import assert from "node:assert/strict";
+import * as client from "${moduleSpecifier}";
+${presenceLoop}${surface.smoke ?? ""}`,
+    );
+    writeFileSync(
+      join(consumerDir, commonjsRuntime),
+      `const assert = require("node:assert/strict");
+const client = require("${moduleSpecifier}");
+${presenceLoop}${surface.smoke ?? ""}`,
+    );
+  }
   run(
     resolve(packageDir, "node_modules/.bin/tsc"),
     [
@@ -66,38 +451,25 @@ void client.NOTIFICATION_NAMES; void client.STEERING_KINDS; void client.THREAD_I
       "NodeNext",
       "--target",
       "ES2022",
-      "esm.mts",
-      "commonjs.cts",
+      ...declarationConsumers,
     ],
     consumerDir,
   );
-  writeFileSync(
-    join(consumerDir, "esm-runtime.mjs"),
-    `import * as client from "@evener/appwire-client";
-for (const name of ["AppwireClient", "ConnectionClosedError", "RequestTimeoutError", "WireError", "rpcURLFromLocation", "composeAskAnswers", "METHOD_NAMES", "NOTIFICATION_NAMES", "STEERING_KINDS", "THREAD_ITEM_EVENT_KINDS"]) {
-  if (!(name in client)) process.exit(1);
-}
-if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocation !== "function" || typeof client.composeAskAnswers !== "function") process.exit(1);
-`,
-  );
-  writeFileSync(
-    join(consumerDir, "commonjs-runtime.cjs"),
-    `const client = require("@evener/appwire-client");
-for (const name of ["AppwireClient", "ConnectionClosedError", "RequestTimeoutError", "WireError", "rpcURLFromLocation", "composeAskAnswers", "METHOD_NAMES", "NOTIFICATION_NAMES", "STEERING_KINDS", "THREAD_ITEM_EVENT_KINDS"]) {
-  if (!(name in client)) process.exit(1);
-}
-if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocation !== "function" || typeof client.composeAskAnswers !== "function") process.exit(1);
-`,
-  );
-  run(process.execPath, [join(consumerDir, "esm-runtime.mjs")], consumerDir);
-  run(process.execPath, [join(consumerDir, "commonjs-runtime.cjs")], consumerDir);
+  for (const consumer of runtimeConsumers) run(process.execPath, [join(consumerDir, consumer)], consumerDir);
   const listing = run("tar", ["-tzf", tarball], consumerDir);
   for (const expected of [
-    "package/dist/index.js",
-    "package/dist/index.d.ts",
+    ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),
     "package/README.md",
     "package/examples/connection.mjs",
     "package/examples/inspect.mjs",
+    "package/examples/discovery.mjs",
+    "package/examples/discovery-cli.mjs",
+    "package/examples/discovery-logic.mjs",
+    "package/examples/private-output.mjs",
+    // The attribution slashCompletion.ts's port requires. It sits outside dist/
+    // and examples/, so it needs its own expectation here and its own clause in
+    // the allowlist below.
+    "package/LICENSES/beautiful-ui.txt",
   ])
     assert(listing.includes(`${expected}\n`), `missing ${expected}`);
   for (const entry of listing.trim().split("\n")) {
@@ -105,7 +477,8 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
       entry === "package/package.json" ||
         entry === "package/README.md" ||
         entry.startsWith("package/dist/") ||
-        entry.startsWith("package/examples/"),
+        entry.startsWith("package/examples/") ||
+        entry.startsWith("package/LICENSES/"),
       `unexpected shipped path ${entry}`,
     );
     assert(!entry.endsWith(".ts") || entry.endsWith(".d.ts"), `source leak ${entry}`);
@@ -123,12 +496,13 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
       { params: { cwd: fixtureCwd }, result: { effective: {}, layers: {}, provenance: {}, diagnostics: [] } },
     ],
   ]);
+  let discoveryMode;
   const observedMethods = [];
   const controller = new AbortController();
   let serverError;
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   server.on("connection", (socket) => {
-    socket.on("message", (data) => {
+    socket.on("message", async (data) => {
       try {
         const request = JSON.parse(data.toString());
         if (request.method === "initialized" && request.id === undefined) return;
@@ -156,6 +530,19 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
               auth: false,
             },
           };
+        } else if (discoveryMode) {
+          assert.equal(request.method, discoveryMode.method);
+          assert.deepEqual(request.params, discoveryMode.params);
+          await discoveryMode.beforeResponse?.();
+          if (discoveryMode.error) {
+            socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: discoveryMode.error }));
+            return;
+          }
+          if (discoveryMode.close) {
+            socket.close();
+            return;
+          }
+          result = discoveryMode.response;
         } else {
           const response = responses.get(request.method);
           assert(response, `unexpected method ${request.method}`);
@@ -199,6 +586,17 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
       resolvedLayers: [],
       repositoryTrust: "absent",
       diagnostics: 0,
+    });
+
+    await runInstalledDiscoveryContracts({
+      consumerDir,
+      rpcURL: `ws://127.0.0.1:${address.port}/rpc`,
+      fixtureCwd,
+      observedMethods,
+      signal: controller.signal,
+      setMode: (mode) => {
+        discoveryMode = mode;
+      },
     });
   } catch (error) {
     throw serverError ?? error;

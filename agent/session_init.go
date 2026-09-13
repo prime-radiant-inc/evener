@@ -306,7 +306,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	s.retirementController.Store(cfg.spawn.retirementController)
 	if inheritedContext != nil {
 		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
-		s.history = ResumeHistory(inheritedContext)
+		// The inherited prefix comes from the parent's transcript, which keeps the
+		// raw notes block for display; the child's model context gets only the
+		// escaped copy, exactly as the parent's own requests do. The child's own
+		// transcript is seeded from inheritedContext below, so it keeps the raw
+		// text for display.
+		s.history = escapeNotesHistoryTurns(ResumeHistory(inheritedContext))
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
@@ -588,8 +593,9 @@ func (s *Session) hasConfiguredDelegateCapability() bool {
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
-	// LifetimeContext owns this restored session tree when supplied by a
-	// one-shot run. Nil preserves daemon/background ownership.
+	// LifetimeContext owns this restored session tree exactly as
+	// SessionConfig.LifetimeContext owns a fresh one: run and serve each supply
+	// their own, and nil is the library/test shape that roots at Background.
 	LifetimeContext         context.Context
 	StateDir                string
 	Project                 identifier.Project
@@ -833,6 +839,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
 	}
+	// The durable transcript keeps the raw notes block for display, so model
+	// context must receive the escaped copy: rewrite those turns before the
+	// history becomes model context. The projection record is read first, because
+	// it is compared against raw renders (see lastNotesProjection).
+	restoredNotesBlock, notesEverProjected := lastNotesProjection(resumeHistory)
+	resumeHistory = escapeNotesHistoryTurns(resumeHistory)
 	restoredClientMutationTurns := make(map[string]string)
 	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {
@@ -949,6 +961,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 	s.initEnvContext(meta.EnvContext)
+	// The environment turn is durable before meta.EnvContext is checkpointed.
+	// Replay only the effective resumed history, not folded transcript prefix
+	// entries. Starting from zero also honors a compaction boundary: a retained
+	// post-compaction environment block is a full snapshot, while an absent one
+	// means the next turn must emit a fresh full block even if meta is stale.
+	s.envTracker = envctx.NewTracker(envctx.State{})
+	s.envContextState = nil
+	for _, turn := range resumeHistory {
+		if turn.Kind == schema.TurnEnvironment && s.envTracker.ReplayBlock(turn.Message.Text()) {
+			state := s.envTracker.State()
+			s.envContextState = &state
+		}
+	}
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
@@ -1031,6 +1056,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
 	s.pinnedNote = meta.PinnedNote
+	s.agentNote = meta.AgentNote
+	s.sessionURLs = append([]schema.SessionURL(nil), meta.SessionURLs...)
+	// Seed the notes-projection record from the raw form captured above, so the
+	// change-gated projection (maybeAppendNotesContext) does not re-emit a
+	// snapshot the model already saw: the last NOTES_CONTEXT turn in the resumed
+	// history is the model's latest truth. Any NOTES_CONTEXT turn at all marks
+	// the store as having been projected (the transition-to-empty rule), even
+	// when the current store is empty — in that case the next projection after
+	// new content still emits, and a still-empty store stays silent.
+	s.notesLastProjected = restoredNotesBlock
+	s.notesEverProjected = notesEverProjected
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
 	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read
@@ -1194,7 +1230,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// path can append. Restored history and the durable identity index stay
 	// on the pre-recovery list on purpose: the recovered turns enter
 	// s.history directly (recordClientMutationFailure appends them itself).
-	if err := s.recoverClientMutationFailures(); err != nil {
+	if err := s.recoverClientMutationFailures(false); err != nil {
 		return nil, fmt.Errorf("recover client mutation failures: %w", err)
 	}
 	if err := s.recoverClientMutationInterrupt(); err != nil {
@@ -2037,9 +2073,9 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 // conversationSignals reports the two numbers the re-injection detector weighs,
 // read together under one lock so they describe the same instant.
 //
-// The turn count is conversation only, excluding the HOOK_COMPLETED records
-// that report a hook ran. It answers "does this session already carry a
-// conversation?" — the question the detector asks — with a number no hook
+// The turn count is conversation only, excluding hook execution records and
+// environment context saved before the user's first input. It answers
+// "does this session already carry a conversation?" — the question the detector asks — with a number no hook
 // dispatch can inflate. modelResponses is guarded by the same mutex (see the
 // field's documentation on Session), and the detector reaches it on the drain
 // path, where steering turns append from other goroutines.
@@ -2050,7 +2086,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		if t.Kind != schema.TurnHookCompleted {
+		if t.Kind != schema.TurnHookCompleted && t.Kind != schema.TurnEnvironment {
 			historyTurns++
 		}
 	}

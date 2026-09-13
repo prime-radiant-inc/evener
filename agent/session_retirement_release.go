@@ -120,7 +120,7 @@ func (s *Session) ReleaseForRetirement(ctx context.Context, prepared *Retirement
 		return childErr
 	}
 
-	if err := s.releaseRuntime(ctx, false, releaseRetirement); err != nil {
+	if err := s.releaseRuntime(ctx, closeOptions{}, releaseRetirement); err != nil {
 		c.setReleaseFailure()
 		return err
 	}

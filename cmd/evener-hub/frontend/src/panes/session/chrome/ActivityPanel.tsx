@@ -1,4 +1,10 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  type ActivityCounts,
+  type ActivityTree as ActivityTreeData,
+  activityNodeID,
+  parseActivityTree,
+} from "../../../protocol/activityData";
 import { errorText } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
@@ -11,7 +17,6 @@ import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
-import { type ActivityCounts, type ActivityTree as ActivityTreeData, parseActivityTree } from "./activityData";
 import styles from "./activitypanel.module.css";
 
 export interface ActivityPanelProps {
@@ -53,6 +58,12 @@ function retainedTree(load: (typeof EMPTY_ACTIVITY_PANEL_ENTRY)["load"]): Activi
   if (load.kind === "ready") return load.tree;
   if (load.kind === "ended") return load.tree;
   return undefined;
+}
+
+// emptyPageIsPartial reports a page with no rows that is nonetheless not the
+// end of the story: an explanation, a token for what follows, or both.
+function emptyPageIsPartial(tree: ActivityTreeData): boolean {
+  return Boolean(tree.root.branch.continuation || tree.root.branch.error);
 }
 
 function triggerLabel(counts: ActivityCounts | undefined): string {
@@ -117,7 +128,11 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
         );
         return;
       }
-      const requestID = activityPanelStore.getState().beginFetch(sessionRef, { nodeID: continuation.nodeID });
+      const requestID = activityPanelStore.getState().beginContinuationFetch(sessionRef, continuation.nodeID);
+      // Refused while anything else is already out: a root refresh is about to
+      // replace this tree and the token this click carried, and another
+      // branch's page holds the one request this panel can have in flight.
+      if (requestID === null) return;
       void threadsStore
         .getState()
         .listJobs(sessionRef, continuation.token)
@@ -225,11 +240,44 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             </Button>
           </div>
         )}
+        {currentTree && !currentTree.root.counts.complete && (
+          <p className={CLASS.state}>Activity coverage is incomplete.</p>
+        )}
         {currentTree && currentTree.root.entries.length === 0 ? (
-          <EmptyState
-            title="No retained activity yet"
-            hint="No shell or delegate activity has been retained for this session."
-          />
+          emptyPageIsPartial(currentTree) ? (
+            // A page can come back with no rows and still have more behind it:
+            // the agent drops an entry it cannot encode, says so on the root
+            // branch, and hands back a token for what follows. Without this
+            // strip the reader is told there is no activity, and what the
+            // skipped entry was hiding stays unreachable.
+            <EmptyState
+              title="Nothing on this page"
+              hint={
+                entry.continuationFailures[activityNodeID(currentTree.root)] ??
+                currentTree.root.branch.error ??
+                "This page of retained activity came back empty."
+              }
+              action={
+                currentTree.root.branch.continuation ? (
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    disabled={entry.pending !== undefined}
+                    onClick={() =>
+                      handleContinue(activityNodeID(currentTree.root), currentTree.root.branch.continuation ?? "")
+                    }
+                  >
+                    {entry.continuationLoadingID === activityNodeID(currentTree.root) ? "Loading…" : "Load more"}
+                  </Button>
+                ) : undefined
+              }
+            />
+          ) : (
+            <EmptyState
+              title="No retained activity yet"
+              hint="No shell or delegate activity has been retained for this session."
+            />
+          )
         ) : currentTree ? (
           <div className={CLASS.panelColumn}>
             <ActivityTree
@@ -240,6 +288,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
               continuationFailures={entry.continuationFailures}
               onContinue={handleContinue}
               loadingContinuationID={entry.continuationLoadingID}
+              rootRefreshing={entry.pending?.kind === "root"}
             />
           </div>
         ) : null}

@@ -35,6 +35,8 @@ type Source interface {
 	SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error
 	SetThreadName(context.Context, appwire.ThreadNameSetParams) error
 	GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error)
+	NotesHumanSet(context.Context, appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error)
+	UrlsRemove(context.Context, appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error)
 	ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error)
 	ListModels(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error)
 	ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error)

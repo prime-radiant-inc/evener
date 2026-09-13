@@ -51,6 +51,7 @@ function thread(overrides: Partial<Thread> = {}): Thread {
         changeVisionModel: true,
         queue: true,
         goal: true,
+        sharedNotes: true,
         rename: true,
       },
       queue: { revision: 1 },
@@ -68,24 +69,7 @@ async function connect(overrides: Partial<Thread> = {}): Promise<FakeClient> {
   return fake;
 }
 
-// Suppress React's "not configured to support act(...)" warnings. These fire
-// because zustand store updates trigger async re-renders that settle after
-// act() returns in jsdom. The tests are correct; the warning is a known
-// limitation of the jsdom + zustand + testing-library interaction. Matched
-// on its exact, stable one-arg text rather than blanket-silenced, so any
-// *other* console.error a regression here might produce still reaches real
-// console.error and stays visible in test output.
-const ACT_ENVIRONMENT_WARNING = "The current testing environment is not configured to support act(...)";
-const realConsoleError = console.error.bind(console);
-let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
-
 beforeEach(() => {
-  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-    if (args.length === 1 && args[0] === ACT_ENVIRONMENT_WARNING) {
-      return;
-    }
-    realConsoleError(...args);
-  });
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
@@ -93,7 +77,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  consoleErrorSpy.mockRestore();
   cleanup();
   vi.restoreAllMocks();
   // Every test here calls ensureThread(ref)/connect(fake) directly for
@@ -305,6 +288,46 @@ test("a flush cannot settle while a submit is still in flight", async () => {
   expect(flushResolved).toBe(true);
 });
 
+// The flush above waits inside act(), so durable work with no completion left
+// parks the caller there until vitest abandons the whole test - and an
+// abandoned act() leaves React's act queue open for the rest of the FILE, so
+// every later render produces nothing and one stall becomes dozens of
+// unrelated failures (issue #1187). The per-round tripwire is what turns that
+// back into one named failure, in the test that caused it; without this test a
+// regression that clears the timer or swallows its rejection restores the hang
+// silently, and the only symptom is a file that fails 33 ways again.
+test("a flush that can never settle trips instead of hanging inside act", async () => {
+  let releaseSubmit: () => void = () => undefined;
+  const stalled = new Promise<void>((resolve) => {
+    releaseSubmit = resolve;
+  });
+  const submitted = submitWithPendingTracking(
+    { ref: "ref_a", method: "send", text: "never settles", onFailure: () => undefined },
+    () => stalled,
+  );
+
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    // Captured before the clock moves: the rejection lands while the timers
+    // advance, and a handler attached only afterwards is an unhandled
+    // rejection in that window.
+    const flushing = flushPendingTurnsProjectionForTests().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await flushing).toMatchObject({
+      message: expect.stringMatching(/projection work stalled: 1 operation\(s\) still unsettled after \d+ms/),
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+
+  releaseSubmit();
+  await submitted;
+  await flushPendingTurnsProjectionForTests();
+});
+
 test("recovery action wrappers refresh the durable projection", async () => {
   let mutationId = 0;
   const storage = new MutationOutboxIndexedDB({
@@ -514,9 +537,9 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
     if (clientMutationId === mutationId) signalReceiptSettled();
     return settled;
   });
-  replayReceipt();
-  await receiptSettled;
   await act(async () => {
+    replayReceipt();
+    await receiptSettled;
     await refreshPendingTurnsProjection("ref_a");
   });
   expect(await storage.listOutbox("ref_a")).toEqual([]);
@@ -551,8 +574,8 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
       },
     });
   });
-  await identitySettled;
   await act(async () => {
+    await identitySettled;
     await refreshPendingTurnsProjection("ref_a");
   });
 

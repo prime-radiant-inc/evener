@@ -32,6 +32,7 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 		ModelFallbacks:              []string{"f1", "f2"},
 		Env:                         map[string]string{"B": "2", "A": "1"},
 		Verbose:                     new(false),
+		APILog:                      new(true),
 		TraceFile:                   "/t",
 		CPUProfile:                  "/c",
 		ExportATIFPath:              "/e",
@@ -65,6 +66,7 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 		{"model_fallbacks", "2 entries", "f1, f2"},
 		{"env", "2 entries", "A=1, B=2"},
 		{"verbose", "false", "false"},
+		{"api_log", "true", "true"},
 		{"trace_file", "/t", "/t"},
 		{"cpu_profile", "/c", "/c"},
 		{"export_atif_path", "/e", "/e"},
@@ -86,7 +88,7 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 
 func TestLaunchOptionValue_Defaults(t *testing.T) {
 	empty := appwire.LaunchConfigLayer{}
-	for _, field := range []string{"agent", "max_rounds", "no_project_prompts", "verbose", "system_prompt_text"} {
+	for _, field := range []string{"agent", "max_rounds", "no_project_prompts", "verbose", "api_log", "system_prompt_text"} {
 		value, _ := launchOptionValue(appwire.LaunchOption{Field: field}, empty, appwire.LaunchConfigLayer{})
 		if value != "(default)" {
 			t.Errorf("field %q value = %q, want (default)", field, value)

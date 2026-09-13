@@ -365,7 +365,11 @@ in-session fleet. What works:
   refuses too, and the session's shell is dead for good. Two agents
   proved this deterministically; briefs now forbid the call outright.
 - **Fresh isolation worktrees have no `node_modules` symlink.** A
-  frontend brief must carry the `ln -sfn` line itself.
+  frontend brief must carry the `ln -sfn` line itself. The
+  `editorial-preview` script tests skip with a stated reason when they see
+  that symlink (their isolated fixture server pins `fs.allow` to the
+  checkout, which a shared install cannot honor); they run fully only in a
+  checkout with its own `npm ci` install, such as CI.
 
 ## Model tiering
 

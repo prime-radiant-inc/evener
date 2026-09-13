@@ -21,6 +21,7 @@ import type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./
 export type PickerRow =
   | { kind: "group"; key: string; label: string }
   | { kind: "model"; key: string; option: CatalogOption; meta: string }
+  | { kind: "warning"; key: string; text: string }
   | { kind: "unavailable"; key: string; text: string };
 
 /** The pickable row kind - the only one that becomes a listbox option. */
@@ -85,6 +86,16 @@ export function buildPickerRows(catalog: ModelCatalog | null, query: string): Pi
   if (!catalog) return [];
   const rows: PickerRow[] = [];
 
+  // A model row's registry warnings render as their own dim in-place line
+  // directly beneath it, so an uncallable row is visibly flagged without the
+  // note becoming a second listbox option. Same shape as an unavailable line:
+  // informational text, skipped by pickableRows.
+  const pushWarnings = (option: CatalogOption, prefix: string) => {
+    for (const [i, text] of (option.entry.warnings ?? []).entries()) {
+      rows.push({ kind: "warning", key: `warning:${rows.length}:${prefix}:${option.qualified}:${i}`, text });
+    }
+  };
+
   const recent = filterCatalog(toCatalogOptions(catalog.recent), query);
   if (recent.length > 0) {
     rows.push({ kind: "group", key: `group:${rows.length}:${RECENT_GROUP}`, label: RECENT_GROUP });
@@ -95,6 +106,7 @@ export function buildPickerRows(catalog: ModelCatalog | null, query: string): Pi
         option,
         meta: rowMeta(option.entry, true),
       });
+      pushWarnings(option, "recent");
     }
   }
 
@@ -108,6 +120,7 @@ export function buildPickerRows(catalog: ModelCatalog | null, query: string): Pi
       option,
       meta: rowMeta(option.entry, false),
     });
+    pushWarnings(option, "model");
   }
 
   for (const diag of catalog.diagnostics ?? []) {

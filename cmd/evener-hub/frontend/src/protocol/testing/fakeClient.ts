@@ -2,10 +2,11 @@
 // (../../stores/threads.test.ts). Unlike FakeSocket (./fakeSocket.ts), which
 // fakes the raw WebSocket transport underneath a real AppwireClient,
 // FakeClient fakes AppwireClient's own public surface directly — the seam
-// the stores (src/stores/*) depend on, per AppwireClientLike below — with
+// the stores (src/stores/*) depend on, per AppwireClientLike (../clientLike.ts) — with
 // scripted per-method request handlers and manual notification/ready/
 // state-change injection. No sockets, no timers.
 import { APPWIRE_PROTOCOL_VERSION, type AppwireClient, type ConnectionState, type TerminalReason } from "../client";
+import type { AppwireClientLike } from "../clientLike";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "../types.gen";
 import { METHOD_NAMES, NOTIFICATION_NAMES } from "../types.gen";
 
@@ -36,19 +37,6 @@ function assertKnownMethod(method: string): void {
 // therefore satisfy neither tsc nor this fake — it would simply stop
 // matching production and take every assertion about it down quietly.
 const KNOWN_NOTIFICATIONS: ReadonlySet<string> = new Set(NOTIFICATION_NAMES);
-
-export interface AppwireClientLike {
-  connect: AppwireClient["connect"];
-  request: AppwireClient["request"];
-  forceStop: AppwireClient["forceStop"];
-  resumeThread: AppwireClient["resumeThread"];
-  onNotification: AppwireClient["onNotification"];
-  onReady: AppwireClient["onReady"];
-  onStateChange: AppwireClient["onStateChange"];
-  retryNow: AppwireClient["retryNow"];
-  get state(): ConnectionState;
-  get terminalReason(): TerminalReason;
-}
 
 export type RequestHandler<M extends MethodName> = (
   params: MethodTypes[M]["params"],

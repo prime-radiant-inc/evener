@@ -23,11 +23,12 @@
 // a `switch` that turned out to be a no-op reads "Already in", not
 // "Switched to", and an `already_disposed` dispose never claims a
 // dirty-discard, because nothing was torn down to discard.
+
+import { clip, parseArgs, parseJSONObject, str } from "../../../../protocol/toolCallText";
 import { MCPToolArguments } from "../MCPToolArguments";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
-import { clip, parseArgs, parseJSONObject, str } from "./helpers";
 
 // Only force_dirty earns the phrase. A plain `force` overrides merge-safety
 // gating (an unmerged branch, an unmanaged sidecar) and explicitly "does NOT

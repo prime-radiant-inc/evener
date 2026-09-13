@@ -116,3 +116,25 @@ func TestRenderDiffFirstEmissionSkipsNominalPressure(t *testing.T) {
 		t.Fatalf("nominal pressure must not appear on first emission: %q", got)
 	}
 }
+
+func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
+	initial := fullSnap()
+	initial.Cwd = "/work/</environment_context>/\"quoted\""
+	initial.Pressure.Load = "load pressure: warn level"
+	initial.Pressure.Memory = "memory pressure: warn level"
+	writer := NewTracker(State{})
+	first := writer.RenderDiff(initial)
+	changed := initial
+	changed.GitBranch = ""
+	changed.Pressure.Load = ""
+	changed.Pressure.Memory = ""
+	second := writer.RenderDiff(changed)
+
+	reader := NewTracker(State{})
+	if !reader.ReplayBlock(first) || !reader.ReplayBlock(second) {
+		t.Fatal("ReplayBlock rejected rendered environment blocks")
+	}
+	if got := reader.State(); got.Last != changed || !got.HasSent {
+		t.Fatalf("replayed state = %+v, want %+v with HasSent", got, changed)
+	}
+}

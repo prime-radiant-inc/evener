@@ -1,0 +1,839 @@
+import type {
+	AnyNotification,
+	FeatureSet,
+	KeybindingsOverrides,
+	KeybindingsRule,
+} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { TranscriptDisplayConfigV1 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+import {
+	fromWireConfig,
+	normalizeConfig,
+	toWireConfig,
+} from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import {
+	type KeybindingDraftCheckpoint,
+	KeybindingDraftRepository,
+	type KeybindingDraftStorage,
+	keybindingRules,
+} from "./keybindingDraftRepository";
+import {
+	type TranscriptDraftCheckpoint,
+	TranscriptDraftRepository,
+	type TranscriptDraftStorage,
+} from "./preferenceDraftRepository";
+
+type NativeFeatures = Pick<
+	FeatureSet,
+	"keybindingsSettings" | "transcriptDisplaySettings"
+>;
+type Support = "unknown" | "supported" | "unsupported";
+
+export interface PreferenceState<T> {
+	support: Support;
+	loading: boolean;
+	saving: boolean;
+	confirmed: T | null;
+	draft: T | null;
+	error: string | null;
+	conflict: boolean;
+	writeUncertain: boolean;
+	storageUnavailable: boolean;
+}
+
+export interface NativePreferencesSnapshot {
+	keybindings: PreferenceState<KeybindingsOverrides>;
+	transcriptMobile: PreferenceState<{
+		revision: number;
+		config: TranscriptDisplayConfigV1;
+	}>;
+}
+
+const initialDomain = <T>(): PreferenceState<T> => ({
+	support: "unknown",
+	loading: false,
+	saving: false,
+	confirmed: null,
+	draft: null,
+	error: null,
+	conflict: false,
+	writeUncertain: false,
+	storageUnavailable: false,
+});
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRevision(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isRule(value: unknown): value is KeybindingsRule {
+	return (
+		isRecord(value) &&
+		typeof value.action === "string" &&
+		(value.chord === null || typeof value.chord === "string")
+	);
+}
+
+function decodeKeybindings(value: unknown): KeybindingsOverrides {
+	if (
+		!isRecord(value) ||
+		value.version !== 1 ||
+		!isRevision(value.revision) ||
+		!Array.isArray(value.rules) ||
+		!value.rules.every(isRule)
+	)
+		throw new Error("Hub returned invalid keybinding settings.");
+	if (value.loadError !== undefined && typeof value.loadError !== "string")
+		throw new Error("Hub returned invalid keybinding settings.");
+	return {
+		version: 1,
+		revision: value.revision,
+		rules: keybindingRules(value.rules),
+		...(value.loadError === undefined ? {} : { loadError: value.loadError }),
+	};
+}
+
+function decodeTranscript(value: unknown) {
+	if (!isRecord(value) || !isRecord(value.mobile) || !isRecord(value.desktop))
+		throw new Error("Hub returned invalid transcript display settings.");
+	const decode = (entry: unknown) => {
+		if (!isRecord(entry) || !isRevision(entry.revision))
+			throw new Error("Hub returned invalid transcript display settings.");
+		const config = fromWireConfig(entry.config);
+		if (config === undefined)
+			throw new Error("Hub returned invalid transcript display settings.");
+		return { revision: entry.revision, config };
+	};
+	return { desktop: decode(value.desktop), mobile: decode(value.mobile) };
+}
+
+function decodeTranscriptPatch(value: unknown): {
+	revision: number;
+	config: TranscriptDisplayConfigV1;
+} {
+	if (!isRecord(value) || !isRevision(value.revision))
+		throw new Error("Hub returned invalid transcript display settings.");
+	const config = fromWireConfig(value.config);
+	if (config === undefined)
+		throw new Error("Hub returned invalid transcript display settings.");
+	return { revision: value.revision, config };
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error &&
+		error.message === "Hub returned invalid keybinding settings."
+		? error.message
+		: "The hub request could not be confirmed.";
+}
+
+export class NativePreferences {
+	private state: NativePreferencesSnapshot = {
+		keybindings: initialDomain<KeybindingsOverrides>(),
+		transcriptMobile: initialDomain<{
+			revision: number;
+			config: TranscriptDisplayConfigV1;
+		}>(),
+	};
+	private readonly listeners = new Set<() => void>();
+	private readonly client: ConversationClientLike;
+	private readonly unsubscribe: () => void;
+	private generation = 0;
+	private keybindingWriteEpoch = 0;
+	private disposed = false;
+	private readonly transcriptDrafts?: TranscriptDraftRepository;
+	private readonly keybindingDrafts?: KeybindingDraftRepository;
+
+	constructor(
+		client: ConversationClientLike,
+		features: NativeFeatures,
+		transcriptStorage?: TranscriptDraftStorage,
+		keybindingStorage?: KeybindingDraftStorage,
+	) {
+		this.client = client;
+		this.keybindingDrafts = keybindingStorage
+			? new KeybindingDraftRepository(keybindingStorage)
+			: undefined;
+		this.transcriptDrafts = transcriptStorage
+			? new TranscriptDraftRepository(transcriptStorage)
+			: undefined;
+		this.state = {
+			keybindings: {
+				...this.state.keybindings,
+				support:
+					features.keybindingsSettings === true ? "supported" : "unsupported",
+			},
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				support:
+					features.transcriptDisplaySettings === true
+						? "supported"
+						: "unsupported",
+			},
+		};
+		this.unsubscribe = client.onNotification((notification) =>
+			this.onNotification(notification),
+		);
+		if (this.transcriptDrafts) this.restoreTranscriptDraft();
+		if (this.keybindingDrafts) this.restoreKeybindingDraft();
+	}
+
+	getSnapshot = (): NativePreferencesSnapshot => this.state;
+
+	subscribe = (listener: () => void): (() => void) => {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	};
+
+	private publish(change: Partial<NativePreferencesSnapshot>): void {
+		if (this.disposed) return;
+		this.state = { ...this.state, ...change };
+		for (const listener of this.listeners) listener();
+	}
+
+	private onNotification(notification: AnyNotification): void {
+		if (this.disposed) return;
+		if (
+			notification.method === "evener/settings/keybindings/changed" &&
+			this.state.keybindings.support === "supported"
+		) {
+			try {
+				const value = decodeKeybindings(notification.params);
+				const current = this.state.keybindings.confirmed;
+				if (current && value.revision < current.revision) return;
+				const draft = this.state.keybindings.draft;
+				this.publish({
+					keybindings: {
+						...this.state.keybindings,
+						confirmed: value,
+						draft,
+						error:
+							draft || this.state.keybindings.storageUnavailable
+								? this.state.keybindings.error
+								: null,
+						conflict: draft ? value.revision !== draft.revision : false,
+						writeUncertain: this.state.keybindings.writeUncertain,
+					},
+				});
+			} catch {
+				this.publish({
+					keybindings: {
+						...this.state.keybindings,
+						error:
+							"Keybinding settings changed. Refresh to inspect the current value.",
+					},
+				});
+			}
+		}
+		if (
+			notification.method === "evener/settings/transcriptDisplay/changed" &&
+			this.state.transcriptMobile.support === "supported"
+		) {
+			const params = notification.params;
+			if (!isRecord(params) || params.layout !== "mobile") return;
+			try {
+				const value = decodeTranscriptPatch(params);
+				const current = this.state.transcriptMobile.confirmed;
+				if (current && value.revision < current.revision) return;
+				const draft = this.state.transcriptMobile.draft;
+				this.publish({
+					transcriptMobile: {
+						...this.state.transcriptMobile,
+						confirmed: value,
+						draft,
+						error:
+							draft || this.state.transcriptMobile.storageUnavailable
+								? this.state.transcriptMobile.error
+								: null,
+						conflict: draft ? value.revision > draft.revision : false,
+						writeUncertain: this.state.transcriptMobile.writeUncertain,
+					},
+				});
+			} catch {
+				this.publish({
+					transcriptMobile: {
+						...this.state.transcriptMobile,
+						error:
+							"Transcript display settings changed. Refresh to inspect the current value.",
+					},
+				});
+			}
+		}
+	}
+
+	async refresh(): Promise<void> {
+		if (this.disposed) return;
+		const generation = ++this.generation;
+		if (this.state.transcriptMobile.storageUnavailable)
+			this.restoreTranscriptDraft();
+		const reads: Promise<void>[] = [];
+		if (this.state.keybindings.storageUnavailable)
+			this.restoreKeybindingDraft();
+		if (
+			this.state.keybindings.support === "supported" &&
+			!this.state.keybindings.storageUnavailable
+		)
+			reads.push(this.refreshKeybindings(generation));
+		if (
+			this.state.transcriptMobile.support === "supported" &&
+			!this.state.transcriptMobile.storageUnavailable
+		)
+			reads.push(this.refreshTranscript(generation));
+		await Promise.all(reads);
+	}
+
+	private async refreshKeybindings(generation: number): Promise<void> {
+		const writeEpoch = this.keybindingWriteEpoch;
+		this.publish({
+			keybindings: { ...this.state.keybindings, loading: true, error: null },
+		});
+		try {
+			const value = decodeKeybindings(
+				await this.client.request("evener/settings/keybindings/get", {}),
+			);
+			if (generation !== this.generation || this.disposed) return;
+			const domain = this.state.keybindings;
+			if (writeEpoch !== this.keybindingWriteEpoch) {
+				this.publish({ keybindings: { ...domain, loading: false } });
+				return;
+			}
+			if (
+				domain.saving ||
+				(!value.loadError &&
+					(domain.confirmed?.revision ?? -1) > value.revision)
+			) {
+				this.publish({ keybindings: { ...domain, loading: false } });
+				return;
+			}
+			const draft = domain.draft;
+			if (draft && domain.writeUncertain && !value.loadError)
+				this.persistKeybindingDraft({
+					baseRevision: draft.revision,
+					rules: draft.rules,
+					writeUncertain: false,
+				});
+			this.publish({
+				keybindings: {
+					...this.state.keybindings,
+					loading: false,
+					confirmed: value,
+					draft,
+					conflict: draft ? value.revision !== draft.revision : false,
+					writeUncertain: value.loadError ? domain.writeUncertain : false,
+					error: value.loadError
+						? "The hub could not load its saved shortcuts. Repair the hub settings file before editing."
+						: null,
+				},
+			});
+		} catch (error) {
+			if (generation === this.generation && !this.disposed)
+				this.publish({
+					keybindings: {
+						...this.state.keybindings,
+						loading: false,
+						error: errorText(error),
+					},
+				});
+		}
+	}
+
+	private async refreshTranscript(generation: number): Promise<void> {
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				loading: true,
+				error: null,
+			},
+		});
+		try {
+			const value = decodeTranscript(
+				await this.client.request("evener/settings/transcriptDisplay/get", {}),
+			);
+			if (generation !== this.generation || this.disposed) return;
+			if (
+				this.state.transcriptMobile.saving ||
+				(this.state.transcriptMobile.confirmed?.revision ?? -1) >
+					value.mobile.revision
+			) {
+				this.publish({
+					transcriptMobile: { ...this.state.transcriptMobile, loading: false },
+				});
+				return;
+			}
+			const draft = this.state.transcriptMobile.draft;
+			if (draft && this.state.transcriptMobile.writeUncertain)
+				this.persistTranscriptDraft({
+					baseRevision: draft.revision,
+					config: draft.config,
+					writeUncertain: false,
+				});
+			this.publish({
+				transcriptMobile: {
+					...this.state.transcriptMobile,
+					loading: false,
+					confirmed: value.mobile,
+					draft,
+					error: null,
+					conflict: draft ? value.mobile.revision > draft.revision : false,
+					writeUncertain: false,
+				},
+			});
+		} catch (error) {
+			if (generation === this.generation && !this.disposed)
+				this.publish({
+					transcriptMobile: {
+						...this.state.transcriptMobile,
+						loading: false,
+						error: errorText(error),
+					},
+				});
+		}
+	}
+
+	private assertKeybindingsEditable(): KeybindingsOverrides {
+		const domain = this.state.keybindings;
+		if (
+			this.disposed ||
+			domain.saving ||
+			domain.storageUnavailable ||
+			domain.writeUncertain ||
+			domain.support !== "supported" ||
+			!domain.confirmed ||
+			domain.confirmed.loadError
+		)
+			throw new Error("Hub keybinding settings are unavailable.");
+		return domain.confirmed;
+	}
+
+	async editKeybindings(rules: readonly KeybindingsRule[]): Promise<void> {
+		const current = this.assertKeybindingsEditable();
+		const checked = keybindingRules(rules);
+		const revision = this.state.keybindings.draft?.revision ?? current.revision;
+		this.persistKeybindingDraft({
+			baseRevision: revision,
+			rules: checked,
+			writeUncertain: false,
+		});
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				draft: { version: 1, revision, rules: checked },
+				conflict: revision !== current.revision,
+				error: null,
+			},
+		});
+	}
+
+	async saveKeybindings(
+		rules?: readonly KeybindingsRule[],
+	): Promise<KeybindingsOverrides> {
+		const current = this.assertKeybindingsEditable();
+		const existing = this.state.keybindings.draft;
+		if (this.state.keybindings.conflict)
+			throw new Error(
+				"Review the current shortcuts before saving your changes.",
+			);
+		const checked = keybindingRules(rules ?? existing?.rules ?? current.rules);
+		const revision = existing?.revision ?? current.revision;
+		// This durable intent must exist before the request can leave the device.
+		const checkpoint = this.persistKeybindingDraft({
+			baseRevision: revision,
+			rules: checked,
+			writeUncertain: true,
+		});
+		this.keybindingWriteEpoch += 1;
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				saving: true,
+				draft: { version: 1, revision, rules: checked },
+				error: null,
+			},
+		});
+		let value: KeybindingsOverrides;
+		try {
+			if (this.disposed) throw new Error("Shortcut save was cancelled.");
+			value = decodeKeybindings(
+				await this.client.request("evener/settings/keybindings/patch", {
+					expectedRevision: revision,
+					config: { version: 1, rules: checked },
+				}),
+			);
+			if (value.loadError || value.revision < revision)
+				throw new Error("Hub returned invalid keybinding settings.");
+		} catch (error) {
+			this.publish({
+				keybindings: {
+					...this.state.keybindings,
+					saving: false,
+					error: errorText(error),
+					conflict: true,
+					writeUncertain: true,
+				},
+			});
+			throw error;
+		}
+		const latest = this.state.keybindings.confirmed;
+		const conflict =
+			!this.disposed && !!latest && latest.revision > value.revision;
+		let storageError: string | null = null;
+		try {
+			if (conflict)
+				this.persistKeybindingDraft({ ...checkpoint, writeUncertain: false });
+			else this.keybindingDrafts?.removeIf(checkpoint);
+		} catch {
+			storageError =
+				"The hub confirmed this save, but the local draft could not be updated. Check current shortcuts to retry.";
+		}
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				saving: false,
+				confirmed: conflict ? latest : value,
+				draft: conflict || storageError ? this.state.keybindings.draft : null,
+				conflict,
+				writeUncertain: false,
+				storageUnavailable: storageError !== null,
+				error: storageError,
+			},
+		});
+		return value;
+	}
+
+	async discardKeybindingsDraft(): Promise<void> {
+		this.assertKeybindingsEditable();
+		try {
+			const checkpoint = this.keybindingDrafts?.load();
+			if (checkpoint) this.keybindingDrafts?.removeIf(checkpoint);
+		} catch {
+			this.publish({
+				keybindings: { ...this.state.keybindings, storageUnavailable: true },
+			});
+			throw new Error("Could not discard the shortcut draft locally.");
+		}
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				draft: null,
+				conflict: false,
+				error: null,
+			},
+		});
+	}
+
+	async rebaseKeybindingsDraft(reviewedRevision: number): Promise<void> {
+		const current = this.assertKeybindingsEditable();
+		const draft = this.state.keybindings.draft;
+		if (
+			!draft ||
+			this.state.keybindings.loading ||
+			current.revision !== reviewedRevision
+		)
+			throw new Error("Shortcuts changed again. Review the current values.");
+		this.persistKeybindingDraft({
+			baseRevision: current.revision,
+			rules: draft.rules,
+			writeUncertain: false,
+		});
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				draft: { ...draft, revision: current.revision },
+				conflict: false,
+				error: null,
+			},
+		});
+	}
+
+	private persistKeybindingDraft(
+		input: Omit<KeybindingDraftCheckpoint, "id">,
+	): KeybindingDraftCheckpoint {
+		try {
+			const checkpoint = {
+				...input,
+				id: this.keybindingDrafts?.createId() ?? "memory",
+			};
+			this.keybindingDrafts?.save(checkpoint);
+			return checkpoint;
+		} catch {
+			this.publish({
+				keybindings: { ...this.state.keybindings, storageUnavailable: true },
+			});
+			throw new Error("Could not save the shortcut draft locally.");
+		}
+	}
+
+	private restoreKeybindingDraft(): void {
+		try {
+			const checkpoint = this.keybindingDrafts?.load();
+			this.publish({
+				keybindings: {
+					...this.state.keybindings,
+					draft: checkpoint
+						? {
+								version: 1,
+								revision: checkpoint.baseRevision,
+								rules: checkpoint.rules,
+							}
+						: null,
+					writeUncertain: checkpoint?.writeUncertain ?? false,
+					storageUnavailable: false,
+					error: null,
+					conflict:
+						!!checkpoint &&
+						!!this.state.keybindings.confirmed &&
+						checkpoint.baseRevision !==
+							this.state.keybindings.confirmed.revision,
+				},
+			});
+		} catch {
+			this.publish({
+				keybindings: {
+					...this.state.keybindings,
+					storageUnavailable: true,
+					error:
+						"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+				},
+			});
+		}
+	}
+
+	async saveTranscript(
+		config?: TranscriptDisplayConfigV1,
+	): Promise<{ revision: number; config: TranscriptDisplayConfigV1 }> {
+		const current = this.state.transcriptMobile.confirmed;
+		const existing = this.state.transcriptMobile.draft;
+		if (
+			this.disposed ||
+			this.state.transcriptMobile.saving ||
+			this.state.transcriptMobile.storageUnavailable ||
+			this.state.transcriptMobile.writeUncertain ||
+			this.state.transcriptMobile.conflict ||
+			this.state.transcriptMobile.support !== "supported" ||
+			current === null
+		)
+			throw new Error("Hub transcript display settings are unavailable.");
+		const normalized = normalizeConfig(
+			config ?? existing?.config ?? current.config,
+		);
+		const baseRevision = existing?.revision ?? current.revision;
+		let checkpoint: TranscriptDraftCheckpoint;
+		const pending = {
+			baseRevision,
+			config: normalized,
+			writeUncertain: true,
+		};
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				saving: true,
+				draft: { revision: baseRevision, config: normalized },
+				error: null,
+				conflict: false,
+			},
+		});
+		try {
+			checkpoint = this.persistTranscriptDraft(pending);
+		} catch (error) {
+			this.publish({
+				transcriptMobile: {
+					...this.state.transcriptMobile,
+					saving: false,
+					error:
+						error instanceof Error
+							? error.message
+							: "Could not save the transcript draft locally.",
+				},
+			});
+			throw error;
+		}
+		if (this.disposed)
+			throw new Error("Transcript preference save was cancelled.");
+		let value: { revision: number; config: TranscriptDisplayConfigV1 };
+		try {
+			value = decodeTranscriptPatch(
+				await this.client.request("evener/settings/transcriptDisplay/patch", {
+					layout: "mobile",
+					expectedRevision: baseRevision,
+					config: toWireConfig(normalized),
+				}),
+			);
+		} catch (error) {
+			this.publish({
+				transcriptMobile: {
+					...this.state.transcriptMobile,
+					saving: false,
+					error: errorText(error),
+					conflict: true,
+					writeUncertain: true,
+				},
+			});
+			throw error;
+		}
+		const latest = this.state.transcriptMobile.confirmed;
+		const conflict =
+			!this.disposed && !!latest && latest.revision > value.revision;
+		let storageError: string | null = null;
+		try {
+			if (conflict)
+				this.persistTranscriptDraft({ ...checkpoint, writeUncertain: false });
+			else this.transcriptDrafts?.removeIf(checkpoint);
+		} catch {
+			storageError =
+				"The hub confirmed this save, but the local draft could not be updated. Refresh settings to retry.";
+		}
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				saving: false,
+				confirmed: conflict ? latest : value,
+				draft: conflict ? this.state.transcriptMobile.draft : null,
+				conflict,
+				writeUncertain: false,
+				storageUnavailable: storageError !== null,
+				error: storageError,
+			},
+		});
+		return value;
+	}
+
+	async editTranscript(config: TranscriptDisplayConfigV1): Promise<void> {
+		const current = this.state.transcriptMobile.confirmed;
+		if (
+			this.disposed ||
+			this.state.transcriptMobile.saving ||
+			this.state.transcriptMobile.storageUnavailable ||
+			this.state.transcriptMobile.writeUncertain ||
+			this.state.transcriptMobile.support !== "supported" ||
+			!current
+		)
+			throw new Error("Hub transcript display settings are unavailable.");
+		const normalized = normalizeConfig(config);
+		const baseRevision =
+			this.state.transcriptMobile.draft?.revision ?? current.revision;
+		this.persistTranscriptDraft({
+			baseRevision,
+			config: normalized,
+			writeUncertain: false,
+		});
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				draft: { revision: baseRevision, config: normalized },
+				conflict: current.revision > baseRevision,
+				error: null,
+			},
+		});
+	}
+
+	async discardTranscriptDraft(): Promise<void> {
+		if (
+			this.disposed ||
+			this.state.transcriptMobile.saving ||
+			this.state.transcriptMobile.writeUncertain ||
+			this.state.transcriptMobile.storageUnavailable
+		)
+			throw new Error(
+				"Check current transcript settings before discarding the draft.",
+			);
+		this.transcriptDrafts?.remove();
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				draft: null,
+				conflict: false,
+				writeUncertain: false,
+				error: null,
+			},
+		});
+	}
+
+	async rebaseTranscriptDraft(reviewedRevision: number): Promise<void> {
+		const domain = this.state.transcriptMobile;
+		if (
+			this.disposed ||
+			!domain.draft ||
+			domain.storageUnavailable ||
+			domain.loading ||
+			domain.saving ||
+			domain.writeUncertain ||
+			domain.support !== "supported"
+		)
+			throw new Error(
+				"Review the current transcript settings before rebasing.",
+			);
+		const current = domain.confirmed;
+		if (!current || current.revision !== reviewedRevision)
+			throw new Error("The reviewed transcript settings are stale.");
+		const draft = domain.draft;
+		this.persistTranscriptDraft({
+			...draft,
+			baseRevision: reviewedRevision,
+			writeUncertain: false,
+		});
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				draft: { ...draft, revision: current.revision },
+				conflict: false,
+				writeUncertain: false,
+			},
+		});
+	}
+
+	private persistTranscriptDraft(
+		input: Omit<TranscriptDraftCheckpoint, "id">,
+	): TranscriptDraftCheckpoint {
+		try {
+			const checkpoint = {
+				...input,
+				id: this.transcriptDrafts?.createId() ?? "memory",
+			};
+			this.transcriptDrafts?.save(checkpoint);
+			return checkpoint;
+		} catch {
+			throw new Error("Could not save the transcript draft locally.");
+		}
+	}
+
+	private restoreTranscriptDraft(): void {
+		try {
+			const checkpoint = this.transcriptDrafts?.load();
+			if (this.disposed) return;
+			this.publish({
+				transcriptMobile: {
+					...this.state.transcriptMobile,
+					draft: checkpoint
+						? { revision: checkpoint.baseRevision, config: checkpoint.config }
+						: null,
+					writeUncertain: checkpoint?.writeUncertain ?? false,
+					storageUnavailable: false,
+					error: null,
+					conflict: checkpoint
+						? (this.state.transcriptMobile.confirmed?.revision ?? -1) >
+							checkpoint.baseRevision
+						: false,
+				},
+			});
+		} catch {
+			this.publish({
+				transcriptMobile: {
+					...this.state.transcriptMobile,
+					storageUnavailable: true,
+					error:
+						"Could not restore the saved transcript draft. Refresh settings to retry.",
+				},
+			});
+		}
+	}
+
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.generation += 1;
+		this.unsubscribe();
+		this.listeners.clear();
+	}
+}

@@ -143,7 +143,7 @@ func Overlay(opts OverlayOpts) string {
 		Width(opts.Width)
 
 	// 4 = 2 padding columns on each side from Padding(1,2) above.
-	contentWidth := max(opts.Width-4, 1)
+	contentWidth := OverlayContentWidth(opts.Width)
 
 	titleLine := lipgloss.NewStyle().Bold(true).Foreground(accent).Render(opts.Title)
 	body := ansi.Wrap(opts.Body, contentWidth, "")
@@ -153,4 +153,12 @@ func Overlay(opts OverlayOpts) string {
 	}
 	content := titleLine + "\n\n" + body
 	return frame.Render(content)
+}
+
+// OverlayContentWidth is the width a body line occupies inside an overlay of
+// the given width: the frame pads two columns on each side. Callers that
+// measure their own body — a list window counting the lines a row renders —
+// use it to measure at the width the frame will wrap to.
+func OverlayContentWidth(width int) int {
+	return max(width-4, 1)
 }

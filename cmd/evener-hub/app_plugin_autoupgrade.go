@@ -29,7 +29,9 @@ var newPluginAutoUpgradeTicker = func(interval time.Duration) pluginAutoUpgradeT
 var pluginAutoUpgradeTick = runPluginAutoUpgradeTick
 
 var (
-	pluginListMarketplaces   = func(mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) { return mgr.ListMarketplaces() }
+	pluginListMarketplaces = func(ctx context.Context, mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
+		return mgr.ListMarketplaces(ctx)
+	}
 	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
 		return mgr.RefreshMarketplace(ctx, name)
 	}
@@ -50,7 +52,7 @@ var (
 // unit-testable without spinning a real timer: construct a Manager against a
 // temp root, install fixtures, call this once, and assert on the result.
 func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr io.Writer) (updated []plugins.UpgradedPlugin, errs []string) {
-	mk, err := pluginListMarketplaces(mgr)
+	mk, err := pluginListMarketplaces(ctx, mgr)
 	if err != nil {
 		msg := fmt.Sprintf("listing marketplaces: %v", err)
 		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)

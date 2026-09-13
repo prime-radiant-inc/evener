@@ -166,6 +166,16 @@
   font-size: var(--font-size-caption);
 }
 
+/* A resolved row the registry itself warns about (a global-only model under a
+ * regional Vertex location): one dim line under the row, not an option. Same
+ * passive ink as the rest of the catalog's metadata - it is information, not
+ * an alarm - and slightly indented so it reads as belonging to the row above. */
+.warning {
+  padding: 0 var(--space-2) var(--space-1) var(--space-4);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
 /* --- sheet variant (mobile bottom Sheet) ---------------------------------
  * The design system's mobile-forms rule (docs/web-ui/design-system.md §11):
  * sheet options are at least 48px tall, use the existing tokens, and reuse

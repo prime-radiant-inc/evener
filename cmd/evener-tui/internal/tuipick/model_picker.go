@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 )
@@ -21,6 +22,11 @@ type ModelPickerItem struct {
 	// Meta is a compact trailing tail (context window, price, capability
 	// flags) appended dim after the row. "" renders nothing extra.
 	Meta string
+	// Warnings are the registry's resolved-row notes (e.g. a global-only
+	// model under a regional Vertex location). Each renders as its own dim
+	// line under the row; the row stays selectable, matching the web and
+	// mobile pickers. Empty renders nothing extra.
+	Warnings []string
 }
 
 // ModelPicker is an inline Bubble Tea model for selecting from a filtered list.
@@ -90,6 +96,9 @@ func (m ModelPicker) filtered() []ModelPickerItem {
 
 func (m ModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyMsg); ok {
+		// Every key acts on the row the picker is showing, so a cursor left
+		// over a list a filter shortened is clamped before the key reads it.
+		m.cursor = m.cursorIndex(m.filtered())
 		switch msg.Type {
 		case tea.KeyEscape, tea.KeyCtrlC:
 			m.cancelled = true
@@ -97,7 +106,7 @@ func (m ModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyEnter:
 			filtered := m.filtered()
-			if len(filtered) == 0 || m.cursor >= len(filtered) {
+			if len(filtered) == 0 {
 				return m, nil
 			}
 			item := filtered[m.cursor]
@@ -151,54 +160,105 @@ func (m ModelPicker) renderBody() string {
 		b.WriteString(tuitheme.MpDimStyle.Render(emptyText))
 		b.WriteString("\n")
 	} else {
-		maxVisible := 15
-		start := 0
-		if len(filtered) > maxVisible {
-			start = max(m.cursor-maxVisible/2, 0)
-			if start+maxVisible > len(filtered) {
-				start = len(filtered) - maxVisible
-			}
-		}
-		end := min(start+maxVisible, len(filtered))
-
+		start, end := m.visibleRange(filtered)
 		for i := start; i < end; i++ {
-			item := filtered[i]
-			if item.Group != "" && (i == 0 || filtered[i-1].Group != item.Group) {
-				b.WriteString(tuitheme.MpDimStyle.Render(strings.ToUpper(item.Group)))
+			for _, line := range m.itemLines(filtered, i) {
+				b.WriteString(line)
 				b.WriteString("\n")
 			}
-			cursor := "  "
-			style := tuitheme.MpNormalStyle
-			isActive := modelIDMatchesActive(item.ID, m.active)
-			if i == m.cursor {
-				cursor = "> "
-				style = tuitheme.MpCursorStyle
-			} else if isActive {
-				style = tuitheme.MpActiveStyle
-			}
-			line := cursor + style.Render(item.Display)
-			if item.ID != item.Display && item.Display != "" {
-				line += "  " + tuitheme.MpDimStyle.Render(item.ID)
-			}
-			if item.Meta != "" {
-				line += "  " + tuitheme.MpDimStyle.Render(item.Meta)
-			}
-			if isActive {
-				line += "  " + tuitheme.MpActiveTag.Render("(active)")
-			}
-			if item.DisabledReason != "" {
-				line += "  " + tuitheme.MpDimStyle.Render("disabled: "+item.DisabledReason)
-			}
-			b.WriteString(line)
-			b.WriteString("\n")
 		}
 
-		if len(filtered) > maxVisible {
+		if start > 0 || end < len(filtered) {
 			b.WriteString(tuitheme.MpDimStyle.Render(fmt.Sprintf("  ... %d items total", len(filtered))))
 			b.WriteString("\n")
 		}
 	}
 	return b.String()
+}
+
+// maxVisibleLines is the picker body's rendered-line budget. Items are not a
+// fixed height — each warning adds a line under its row, a group's first item
+// adds a header, and the frame wraps anything longer than it is wide — so the
+// window is measured in terminal lines rather than items.
+const maxVisibleLines = 15
+
+// itemLines is the body an item renders: the group header when it starts a
+// group, its row, then one line per warning. The window measurer and the
+// renderer share it, so what a row costs is stated once.
+func (m ModelPicker) itemLines(filtered []ModelPickerItem, i int) []string {
+	item := filtered[i]
+	var lines []string
+	if item.Group != "" && (i == 0 || filtered[i-1].Group != item.Group) {
+		lines = append(lines, tuitheme.MpDimStyle.Render(strings.ToUpper(item.Group)))
+	}
+	cursor := "  "
+	style := tuitheme.MpNormalStyle
+	isActive := modelIDMatchesActive(item.ID, m.active)
+	if i == m.cursorIndex(filtered) {
+		cursor = "> "
+		style = tuitheme.MpCursorStyle
+	} else if isActive {
+		style = tuitheme.MpActiveStyle
+	}
+	line := cursor + style.Render(item.Display)
+	if item.ID != item.Display && item.Display != "" {
+		line += "  " + tuitheme.MpDimStyle.Render(item.ID)
+	}
+	if item.Meta != "" {
+		line += "  " + tuitheme.MpDimStyle.Render(item.Meta)
+	}
+	if isActive {
+		line += "  " + tuitheme.MpActiveTag.Render("(active)")
+	}
+	if item.DisabledReason != "" {
+		line += "  " + tuitheme.MpDimStyle.Render("disabled: "+item.DisabledReason)
+	}
+	lines = append(lines, line)
+	for _, warning := range item.Warnings {
+		lines = append(lines, "    "+tuitheme.MpDimStyle.Render("⚠ "+warning))
+	}
+	return lines
+}
+
+// renderedLines is how many terminal lines filtered[i] takes on screen: the
+// lines it renders, wrapped the way the overlay's frame wraps the body, since
+// a row or warning longer than the frame occupies more than one.
+func (m ModelPicker) renderedLines(filtered []ModelPickerItem, i int) int {
+	block := strings.Join(m.itemLines(filtered, i), "\n")
+	return strings.Count(ansi.Wrap(block, tuiprim.OverlayContentWidth(m.overlayWidth()), ""), "\n") + 1
+}
+
+// visibleRange is the [start, end) window of filtered items to render: the
+// cursor's item plus the neighbours that fit the budget, taken from both sides
+// so the cursor stays near the middle. An item that alone exceeds the budget
+// still renders, since a row cannot be shown in part.
+func (m ModelPicker) visibleRange(filtered []ModelPickerItem) (int, int) {
+	if len(filtered) == 0 {
+		return 0, 0
+	}
+	cursor := m.cursorIndex(filtered)
+	start, end := cursor, cursor+1
+	used := m.renderedLines(filtered, cursor)
+	for {
+		grew := false
+		if end < len(filtered) {
+			if n := m.renderedLines(filtered, end); used+n <= maxVisibleLines {
+				used += n
+				end++
+				grew = true
+			}
+		}
+		if start > 0 {
+			if n := m.renderedLines(filtered, start-1); used+n <= maxVisibleLines {
+				start--
+				used += n
+				grew = true
+			}
+		}
+		if !grew {
+			return start, end
+		}
+	}
 }
 
 // modelIDMatchesActive reports whether a picker item ID names the same model
@@ -221,6 +281,17 @@ func modelIDMatchesActive(id, active string) bool {
 // SetTitle overrides the picker's heading.
 func (m *ModelPicker) SetTitle(title string) { m.title = title }
 
+// cursorIndex is the cursor clamped into the filtered list. A cursor can
+// outlive the list it indexes (a filter narrowed the list, or a caller set it
+// directly), and the window, the highlight, and the selection must agree on
+// which row that is.
+func (m ModelPicker) cursorIndex(filtered []ModelPickerItem) int {
+	if len(filtered) == 0 {
+		return 0
+	}
+	return min(max(m.cursor, 0), len(filtered)-1)
+}
+
 // Done reports whether the picker has been dismissed.
 func (m ModelPicker) Done() bool { return m.done }
 
@@ -235,13 +306,7 @@ func (m ModelPicker) View() string {
 	if title == "" {
 		title = "Select model"
 	}
-	// Match old tuiprim.RenderPopupPane width logic: popup is min(max(termWidth,44),96)
-	// so content at 90 chars won't be word-wrapped by the Overlay frame.
-	w := m.width
-	if w <= 0 {
-		w = 96
-	}
-	w = min(max(w, 44), 96)
+	w := m.overlayWidth()
 	body := m.renderBody()
 	footer := tuiprim.ActionBarForWidth(w, tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("enter", "select"), tuiprim.KbdHint("esc", "cancel"))
 	return tuiprim.Overlay(tuiprim.OverlayOpts{
@@ -250,4 +315,15 @@ func (m ModelPicker) View() string {
 		Body:   body,
 		Footer: footer,
 	})
+}
+
+// overlayWidth is the width of the frame the picker renders into: the old
+// tuiprim.RenderPopupPane logic, min(max(termWidth, 44), 96), so content at 90
+// chars is not word-wrapped by the Overlay frame.
+func (m ModelPicker) overlayWidth() int {
+	w := m.width
+	if w <= 0 {
+		w = 96
+	}
+	return min(max(w, 44), 96)
 }

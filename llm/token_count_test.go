@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,86 @@ func TestEstimateMessagesInputTokensIsAlwaysMarkedInexact(t *testing.T) {
 
 	if empty := EstimateMessagesInputTokens(nil); empty.Exact || empty.Source != TokenCountSourceLocalEstimate {
 		t.Errorf("empty history = %+v, want an inexact local estimate", empty)
+	}
+}
+
+// A thinking part whose raw text the adapter will not replay must not be billed
+// to the context estimate. The OpenAI Responses adapter re-sends a reasoning
+// item only when it carries an encrypted_content blob, so raw reasoning_text
+// kept on the part (gateway-fronted GLM, for example) is display-only. A part
+// that does carry replayable metadata is still counted.
+func TestEstimateMessagesInputTokens_ExcludesNonReplayableThinking(t *testing.T) {
+	rawText := strings.Repeat("r", 400)
+	thinkingOnly := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText}},
+	}}}
+	withReplay := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText, EncryptedContent: "opaque-blob"}},
+	}}}
+
+	got := EstimateMessagesInputTokens(thinkingOnly).Tokens
+	if got != 0 {
+		t.Fatalf("non-replayable thinking estimate = %d, want 0 (raw reasoning_text is display-only)", got)
+	}
+	if replay := EstimateMessagesInputTokens(withReplay).Tokens; replay <= got {
+		t.Fatalf("replayable thinking estimate = %d, want > %d", replay, got)
+	}
+}
+
+// The replayed payload is the encrypted blob itself, not the part's display
+// text: the Responses adapter sends encrypted_content (plus the summary and id)
+// and ignores Text. A blob-only part must therefore still be billed, and the
+// estimate must grow with the blob.
+func TestEstimateMessagesInputTokens_BillsReplayedEncryptedBlob(t *testing.T) {
+	big := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: strings.Repeat("b", 400)}},
+	}}}
+	small := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: "b"}},
+	}}}
+	got := EstimateMessagesInputTokens(big).Tokens
+	if got == 0 {
+		t.Fatalf("blob-only thinking estimate = 0, want the replayed blob billed")
+	}
+	if smallTokens := EstimateMessagesInputTokens(small).Tokens; smallTokens >= got {
+		t.Fatalf("estimate did not grow with the blob: %d vs %d", smallTokens, got)
+	}
+}
+
+// Redacted thinking replays only its text payload: anthropic/request.go emits
+// "data": Text and never the signature, so a signature must not be billed.
+// An OpenAI-compatible encrypted reasoning_details array is replayed together
+// with the separately parsed text, so the text must be billed alongside the
+// blob; ID and Summary never ride a compat blob.
+func TestEstimateMessagesInputTokens_CompatEncryptedBlobBillsItsText(t *testing.T) {
+	const blob = `[{"type":"reasoning.text","text":"","signature":"sig-1"}]`
+	plain := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: blob}},
+	}}}
+	withText := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: blob, Text: strings.Repeat("t", 400)}},
+	}}}
+	a := EstimateMessagesInputTokens(plain).Tokens
+	if b := EstimateMessagesInputTokens(withText).Tokens; b <= a {
+		t.Fatalf("compat blob with replayed text = %d, want > %d", b, a)
+	}
+	extra := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: blob, ID: strings.Repeat("i", 400), Summary: []string{strings.Repeat("s", 400)}}},
+	}}}
+	if c := EstimateMessagesInputTokens(extra).Tokens; c != a {
+		t.Fatalf("compat blob ID/Summary changed the estimate: %d vs %d", c, a)
+	}
+}
+
+func TestEstimateMessagesInputTokens_RedactedThinkingBillsTextOnly(t *testing.T) {
+	withSig := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentRedThinking, Thinking: &ThinkingData{Text: "redacted", Signature: strings.Repeat("s", 400)}},
+	}}}
+	textOnly := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentRedThinking, Thinking: &ThinkingData{Text: "redacted"}},
+	}}}
+	if a, b := EstimateMessagesInputTokens(withSig).Tokens, EstimateMessagesInputTokens(textOnly).Tokens; a != b {
+		t.Fatalf("redacted signature changed the estimate: %d vs %d", a, b)
 	}
 }
 

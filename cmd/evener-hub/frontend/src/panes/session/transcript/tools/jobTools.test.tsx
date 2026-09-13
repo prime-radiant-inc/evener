@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
@@ -236,7 +236,7 @@ test("job_status: copy button writes the normalized structured state, not item.o
   try {
     render(<Body item={item({ toolName: "job_status", output: outputWithJunk, raw })} live={false} />);
     const btn = screen.getByRole("button", { name: "Copy raw JSON" });
-    btn.click();
+    act(() => btn.click());
     expect(writeText).toHaveBeenCalledTimes(1);
     // The copied text must be valid JSON of the structured state, not the
     // raw output string (which has trailing junk). Compare parsed values
@@ -244,6 +244,11 @@ test("job_status: copy button writes the normalized structured state, not item.o
     const copied = writeText.mock.calls[0]![0] as string;
     expect(JSON.parse(copied)).toEqual(raw);
     expect(copied).not.toContain("--- breaker ---");
+    await act(async () => {
+      const completion = writeText.mock.results[0];
+      if (completion?.type !== "return") throw new Error("clipboard write did not return a promise");
+      await completion.value;
+    });
   } finally {
     Object.defineProperty(navigator, "clipboard", {
       value: originalClipboard,

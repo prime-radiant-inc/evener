@@ -30,10 +30,10 @@
 // beside it was. An absent cost (no token data, or an uncataloged model) is an
 // honest unknown and renders no row at all.
 import { forwardRef, useImperativeHandle, useState } from "react";
+import { formatTokenCount } from "../../../protocol/displayFormat";
 import type { ThreadModel } from "../../../protocol/model";
 import { Button, InspectorCard, Meter, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { formatTokenCount } from "../transcript/messages/format";
 import { formatTimestamp, sessionTokens } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
 import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
@@ -53,7 +53,6 @@ export interface DetailsPanelProps {
 }
 
 export interface DetailsPanelBodyProps {
-  sessionRef: string;
   model: ThreadModel;
   now: number;
 }
@@ -203,7 +202,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
         )}
         {model.gitBranch && (
           <DetailRow label="branch" testId="session-details-branch">
-            {model.gitBranch}
+            <span className={CLASS.path}>{model.gitBranch}</span>
           </DetailRow>
         )}
         {createdAt && (
@@ -240,7 +239,7 @@ export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(fu
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Session details">
-        {open ? <DetailsPanelBody sessionRef={model.ref} model={model} now={now} /> : null}
+        {open ? <DetailsPanelBody model={model} now={now} /> : null}
       </Sheet>
     </>
   );

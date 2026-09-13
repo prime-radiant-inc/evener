@@ -64,8 +64,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.useRealTimers();
   vi.restoreAllMocks();
 });

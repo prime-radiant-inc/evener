@@ -1,6 +1,6 @@
 import { Component, lazy, type ReactNode, Suspense, useState } from "react";
+import type { AppwireClientLike } from "../../../protocol/clientLike";
 import { WireError } from "../../../protocol/errors";
-import type { AppwireClientLike } from "../../../protocol/testing/fakeClient";
 import { useClient } from "../../../shell/clientContext";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { copyText } from "./credentials/clipboard";

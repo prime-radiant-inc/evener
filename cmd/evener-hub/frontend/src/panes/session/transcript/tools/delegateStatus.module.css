@@ -9,10 +9,8 @@
    --alive for running, --attention for needs-human, --danger for failure. */
 
 .card {
-  background: var(--surface-1);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  overflow: hidden;
+  min-width: 0;
+  border-block: 1px solid var(--edge);
 }
 
 /* --- Header: ID + status chip (Chip widget provides the pill) --- */
@@ -184,7 +182,6 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--edge);
-  background: var(--surface-inset);
 }
 
 .footerSpacer {

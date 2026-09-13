@@ -79,6 +79,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{SessionStartData{Profile: text, Model: text, Restored: flag, Turns: n, CurrentWork: &CurrentWorkSeedData{Tasks: &TaskStateData{Total: n, Done: n, Cancelled: n, Remaining: n}, Goal: &GoalStateData{Objective: text, Status: text, Iterations: n}}, TaskStoreOwnerSessionID: text}, EventSessionStart},
 		{SessionEndData{Reason: text, State: text, Turns: n, Interrupted: flag}, EventSessionEnd},
 		{UserInputData{Text: text, Turn: n}, EventUserInput},
+		{EnvironmentData{TurnID: text, Text: text}, EventEnvironment},
 		{AssistantTextStartData{Model: text}, EventAssistantTextStart},
 		{AssistantTextDeltaData{Delta: text}, EventAssistantTextDelta},
 		{AssistantTextEndData{Text: text, FinishReason: text, Model: text}, EventAssistantTextEnd},
@@ -122,6 +123,8 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{GoalContinuationData{Text: text}, EventGoalContinuation},
 		{GoalEndedData{Status: text, Reason: text, Iterations: n}, EventGoalEnded},
 		{GoalUpdatedData{Goal: &GoalStateData{Objective: text, Status: text, Iterations: n}}, EventGoalUpdated},
+		{NotesUpdatedData{HumanNote: text, AgentNote: text}, EventNotesUpdated},
+		{UrlsUpdatedData{URLs: []SessionURLData{{ID: text, URL: text, Label: text, AddedBy: text, AddedAt: int64(n)}}}, EventUrlsUpdated},
 		{SandboxEscalationRequestedData{EscalationID: text, Mode: text, Tool: text, PartiallyRan: flag}, EventSandboxEscalationRequested},
 		{SandboxEscalationResolvedData{EscalationID: text}, EventSandboxEscalationResolved},
 	}

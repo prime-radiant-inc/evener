@@ -198,7 +198,12 @@ func ListModelsFunc(client *llm.Client, instance string) func(context.Context) (
 // ModelDescriptorFromResolved is the wire view of a resolved row (spec §11.3).
 func ModelDescriptorFromResolved(res registry.Resolved) appwire.ModelDescriptor {
 	caps := res.Caps
-	d := appwire.ModelDescriptor{Provider: res.Instance, Model: res.ModelID, ReasoningEffortLevels: append([]string(nil), caps.EffortValues...)}
+	d := appwire.ModelDescriptor{
+		Provider:              res.Instance,
+		Model:                 res.ModelID,
+		ReasoningEffortLevels: append([]string(nil), caps.EffortValues...),
+		Warnings:              append([]string(nil), res.Warnings...),
+	}
 	if caps.ContextWindow != nil {
 		d.ContextWindow = new(*caps.ContextWindow)
 	}

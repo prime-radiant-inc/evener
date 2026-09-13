@@ -148,6 +148,7 @@ func checkWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 		SystemPromptAppendFile:    "/append.md",
 		NonInteractive:            &nonInteractive,
 		Verbose:                   &verbose,
+		APILog:                    new(false),
 		TraceFile:                 "/trace",
 		CPUProfile:                "/cpu",
 		ExportATIFPath:            "/atif",
@@ -162,6 +163,9 @@ func checkWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	}
 	if got.Verbose == nil || *got.Verbose != true || got.TraceFile != "/trace" || got.CPUProfile != "/cpu" || got.ExportATIFPath != "/atif" || got.ExportATIFProviderHandles != "raw-local" {
 		t.Fatalf("debug round trip = %#v", got)
+	}
+	if got.APILog == nil || *got.APILog {
+		t.Fatalf("api_log round trip = %v, want explicit false", got.APILog)
 	}
 }
 

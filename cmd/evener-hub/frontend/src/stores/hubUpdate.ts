@@ -13,8 +13,8 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import type { AppwireClientLike } from "../protocol/clientLike";
 import { ConnectionClosedError, friendlyErrorMessage, WireError } from "../protocol/errors";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { UpdateCheckResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 

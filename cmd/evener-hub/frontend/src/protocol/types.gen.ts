@@ -446,6 +446,9 @@ export interface EvenerThread {
   mutationStateAuthoritative?: boolean;
   tasks?: TaskAggregate;
   goal?: GoalState;
+  humanNote?: string;
+  agentNote?: string;
+  sessionUrls?: SessionURL[];
   usage?: EvenerUsage;
   workMillis?: number;
   activeTurnStartedAt?: number;
@@ -868,6 +871,7 @@ export interface LaunchConfigLayer {
   mcps?: MCPServerSpec[];
   env?: Record<string, string>;
   verbose?: boolean;
+  apiLog?: boolean;
   traceFile?: string;
   cpuProfile?: string;
   exportATIFPath?: string;
@@ -1016,6 +1020,7 @@ export interface ModelDescriptor {
   inputCostPerMillion?: number;
   outputCostPerMillion?: number;
   reasoningEffortLevels?: string[];
+  warnings?: string[];
 }
 
 export interface ModelListDiagnostic {
@@ -1276,6 +1281,25 @@ export interface NavigationSnapshot {
 export interface NavigationTier {
   sessions: NavigationSessionSummary[];
   remaining: number;
+}
+
+export interface NotesHumanSetParams {
+  ref: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
+  note?: string;
+}
+
+export interface NotesHumanSetResponse {
+  note: string;
+  receipt: MutationReceipt;
+}
+
+export interface NotesUpdatedParams {
+  threadId: string;
+  ref: string;
+  humanNote?: string;
+  agentNote?: string;
 }
 
 export interface OutputImage {
@@ -1571,6 +1595,14 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionURL {
+  id: string;
+  url: string;
+  label?: string;
+  addedBy?: string;
+  addedAt?: number;
+}
+
 export interface SettingsAgentEntry {
   name: string;
   editPath?: string;
@@ -1623,6 +1655,17 @@ export interface Source {
   label: string;
   kind: string;
   online: boolean;
+}
+
+export interface SpawnSlashCatalogParams {
+  cwd: string;
+  harness?: string;
+  launchOverrides?: LaunchConfigLayer;
+}
+
+export interface SpawnSlashCatalogResponse {
+  commands: CommandDescriptor[];
+  skills?: EvenerSkillInfo[];
 }
 
 export interface TaskAggregate {
@@ -1693,6 +1736,7 @@ export interface ThreadCapabilities {
   changeVisionModel: boolean;
   queue: boolean;
   goal: boolean;
+  sharedNotes: boolean;
   rename: boolean;
 }
 
@@ -2208,6 +2252,22 @@ export interface UpgradeResponse {
   restartMessage: string;
 }
 
+export interface UrlsRemoveParams {
+  ref: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
+  id: string;
+}
+
+export interface UrlsRemoveResponse {
+}
+
+export interface UrlsUpdatedParams {
+  threadId: string;
+  ref: string;
+  urls?: SessionURL[];
+}
+
 export interface WarningParams {
   threadId: string;
   ref: string;
@@ -2246,6 +2306,8 @@ export const METHOD_NAMES = [
   "turn/promoteQueuedAsSteer",
   "turn/cancelQueued",
   "goal/set",
+  "notes/human/set",
+  "urls/remove",
   "evener/tasks/list",
   "evener/jobs/list",
   "evener/jobs/output",
@@ -2312,6 +2374,7 @@ export const METHOD_NAMES = [
   "evener/plugin/disable",
   "evener/plugin/setAutoUpgrade",
   "evener/command/list",
+  "evener/spawn/slashCatalog",
   "evener/settings/overview",
   "evener/settings/transcriptDisplay/get",
   "evener/settings/transcriptDisplay/patch",
@@ -2357,6 +2420,8 @@ export const NOTIFICATION_NAMES = [
   "evener/thread/resync",
   "evener/task/updated",
   "evener/goal/updated",
+  "evener/notes/updated",
+  "evener/urls/updated",
   "evener/sandbox/escalation/requested",
   "evener/sandbox/escalation/resolved",
   "evener/settings/transcriptDisplay/changed",
@@ -2385,6 +2450,7 @@ export const STEERING_KINDS = [
   "task-list",
   "notification",
   "provider-failure",
+  "human-note",
 ] as const;
 
 export type SteeringKind = (typeof STEERING_KINDS)[number];
@@ -2406,6 +2472,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "model_switch",
   "error",
   "environment",
+  "notes-context",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
@@ -2437,6 +2504,8 @@ export interface MethodTypes {
   "turn/promoteQueuedAsSteer": { params: TurnPromoteQueuedAsSteerParams; result: TurnPromoteQueuedAsSteerResponse };
   "turn/cancelQueued": { params: TurnCancelQueuedParams; result: TurnCancelQueuedResponse };
   "goal/set": { params: GoalSetParams; result: GoalSetResponse };
+  "notes/human/set": { params: NotesHumanSetParams; result: NotesHumanSetResponse };
+  "urls/remove": { params: UrlsRemoveParams; result: UrlsRemoveResponse };
   "evener/tasks/list": { params: TaskListParams; result: TaskListResponse };
   "evener/jobs/list": { params: JobsListParams; result: JobsListResponse };
   "evener/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
@@ -2503,6 +2572,7 @@ export interface MethodTypes {
   "evener/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
+  "evener/spawn/slashCatalog": { params: SpawnSlashCatalogParams; result: SpawnSlashCatalogResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
   "evener/settings/transcriptDisplay/get": { params: EmptyParams; result: TranscriptDisplayDefaults };
   "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };
@@ -2546,6 +2616,8 @@ export interface NotificationTypes {
   "evener/thread/resync": ThreadResyncParams;
   "evener/task/updated": TaskUpdatedParams;
   "evener/goal/updated": GoalUpdatedParams;
+  "evener/notes/updated": NotesUpdatedParams;
+  "evener/urls/updated": UrlsUpdatedParams;
   "evener/sandbox/escalation/requested": SandboxEscalationRequested;
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;

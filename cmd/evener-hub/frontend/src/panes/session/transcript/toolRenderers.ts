@@ -4,6 +4,7 @@
 // registers the real per-tool descriptors (read/grep/ls/glob/shell/diff/
 // patch/web fetch+search/delegate/job_*/ask_user/sandbox escalation).
 import { type ComponentType, createElement, Fragment } from "react";
+import { hasItemFailure } from "../../../protocol/itemFailure";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import type { ToolIconKind } from "../../../widgets";
 import { MCPToolArguments } from "./MCPToolArguments";
@@ -152,14 +153,16 @@ export interface ToolRendererDescriptor {
   // updates the moment the answer arrives without item itself needing a new
   // identity.
   summarySuffix?(item: ItemModel, model: ThreadModel | undefined): string | undefined;
-  // summaryHiddenWhenExpanded drops the row's summary line while the row is
+  // summaryWhenExpanded replaces the row's summary TEXT while the row is
   // open. The one case today is shell: its summary IS the raw one-line
   // command, and the expanded body already renders that same command
-  // pretty-printed (ShellCommandBlock), so an open row would show the call
-  // twice - the collapsed row keeps the summary, where it is the only glance
-  // at the command. Undefined (every other tool) renders the summary in both
+  // pretty-printed (ShellCommandBlock), so an open row showing the raw line
+  // would show the call twice. The summary line itself stays - hiding it
+  // (the old shape of this field) lifted the disclosure chevron off the line
+  // it rides, onto the intent line or adrift on an intent-less row - so only
+  // the text swaps. Undefined (every other tool) renders summary() in both
   // states, as before.
-  summaryHiddenWhenExpanded?: boolean;
+  summaryWhenExpanded?: string;
   // summaryLink, if present, is a URL that appears verbatim inside this
   // row's own summary() text and should render as a real, clickable link
   // rather than plain text - kata xw3t, the collapsed-row counterpart to
@@ -178,17 +181,15 @@ export interface ToolRendererDescriptor {
   summaryLink?(item: ItemModel): string | undefined;
 }
 
-// A tool call is failed when the wire carries an error/status failure or when
-// the tool descriptor has a domain-specific failure signal. Shell's nonzero
-// exit code is the important example: the command completed as a tool result,
-// but the result itself still failed. Keeping this predicate beside the
-// descriptor registry lets ToolCallItem and transcript grouping agree without
-// duplicating the registry-specific rule.
+// A tool call is failed when the shared settled-item predicate says so, or
+// when the tool descriptor has a domain-specific failure signal of its own.
+// The shared half is the same rule the transcript projector and the native
+// app apply, so a call cannot read as failed in one surface and clean in
+// another. The descriptor half stays: a tool whose failure lives in its own
+// output shape, not in error/status/exitCode, still marks its row here.
 export function toolCallFailed(item: ItemModel): boolean {
   const descriptor = toolRendererFor(item.toolName ?? "");
-  return (
-    (item.error !== undefined && item.error !== "") || item.status === "failed" || (descriptor.failed?.(item) ?? false)
-  );
+  return hasItemFailure(item) || (descriptor.failed?.(item) ?? false);
 }
 
 const registry: ToolRendererDescriptor[] = [];

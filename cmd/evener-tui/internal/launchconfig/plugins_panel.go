@@ -521,7 +521,7 @@ func (p PluginsPanel) renderInstalledTab() string {
 			badges = append(badges, tuiprim.StatusBadge(th.StateWarning, "broken"))
 		}
 		if !e.Enabled {
-			badges = append(badges, tuiprim.StatusBadge(th.StateEnded, "disabled"))
+			badges = append(badges, tuiprim.StatusBadge(th.StateEnded, "off by default"))
 		}
 		if e.AutoUpgrade {
 			badges = append(badges, tuiprim.StatusBadge(th.StateIdle, "auto-upgrade"))

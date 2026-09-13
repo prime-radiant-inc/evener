@@ -81,7 +81,7 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
                     <StatusDot state={pluginStatus(p)} />
                     {p.plugin}
                     {p.broken && <Chip tone="danger">broken</Chip>}
-                    {!p.enabled && <Chip tone="neutral">disabled</Chip>}
+                    {!p.enabled && <Chip tone="neutral">off by default</Chip>}
                     {p.autoUpgrade && <Chip tone="neutral">auto-upgrade</Chip>}
                   </div>
                   <div className={CLASS.rowMeta}>{`@ ${p.marketplace} · v${p.version || "unknown"}`}</div>

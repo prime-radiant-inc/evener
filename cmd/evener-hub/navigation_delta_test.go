@@ -139,8 +139,8 @@ func TestNavigationDeltaReconstructsResourcesWithoutEntities(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if current.Entities != nil {
-				t.Fatalf("test setup: current snapshot has entities %+v, want an entity-less resource", current.Entities)
+			if len(current.Entities) != 0 {
+				t.Fatalf("test setup: current snapshot has %d entities, want an entity-less resource", len(current.Entities))
 			}
 			baseVersion := appwire.NavigationReadBase{GenerationID: "g", Revision: 1, ETag: "tag-1"}
 			currentVersion := appwire.NavigationReadBase{GenerationID: "g", Revision: 2, ETag: "tag-2"}

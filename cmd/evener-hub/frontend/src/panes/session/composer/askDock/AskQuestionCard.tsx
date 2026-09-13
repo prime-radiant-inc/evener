@@ -24,10 +24,10 @@
 // them.
 import { useEffect, useId, useRef } from "react";
 import type { AskResolution } from "../../../../protocol/askAnswers";
+import type { AskQuestionRef } from "../../../../protocol/deriveAskQuestions";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { AskAnswerState } from "./askDockStore";
 import styles from "./askquestioncard.module.css";
-import type { AskQuestionRef } from "./deriveAskQuestions";
 
 const CLASS = {
   card: requireClass(styles.card, "askquestioncard.module.css", "card"),

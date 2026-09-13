@@ -202,10 +202,7 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			if p.Thinking != nil {
-				chars += len(p.Thinking.Text)
-				chars += len(p.Thinking.Signature)
-			}
+			chars += thinkingReplayChars(p)
 		case ContentWebSearch:
 			if p.WebSearch != nil {
 				chars += len(p.WebSearch.Query)
@@ -217,6 +214,63 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 		}
 	}
 	return chars, tokens
+}
+
+// thinkingReplayChars counts the characters a thinking part contributes to the
+// outgoing request. The estimator is provider-blind, because the compaction path
+// calls EstimateMessagesInputTokens, which carries no provider or model, so one
+// rule stands in for every adapter: bill the payload each adapter may replay.
+//
+//   - redacted thinking replays its text payload only (anthropic/request.go
+//     emits "data": Text and never a signature);
+//   - an encrypted blob is replayed verbatim together with its summary and id
+//     by the OpenAI Responses adapter (responses/input.go), and by the
+//     OpenAI-compatible chat adapter for the reasoning_details shape;
+//   - a cryptographic signature (Anthropic) replays its text and signature; an
+//     OpenAI-compatible wire field name in Signature means the text is replayed
+//     in that field, with the name itself not payload.
+//
+// Raw reasoning text that carries no replay metadata is not billed: the
+// Responses adapter keeps it for display only (gateway-fronted GLM), which is
+// the over-count this rule fixes.
+//
+// Known limitation: replay is a property of the adapter, not of the part, so a
+// part with text and no replay metadata is under-counted for adapters that do
+// replay it unsigned: Anthropic's unsigned thinking block, and the
+// ThinkingAsText merge path in the OpenAI-compatible chat adapter. Deciding per
+// adapter needs the provider threaded into the compaction estimate, which it
+// currently is not.
+func thinkingReplayChars(p ContentPart) int {
+	if p.Thinking == nil {
+		return 0
+	}
+	t := p.Thinking
+	if p.Kind == ContentRedThinking {
+		return len(t.Text)
+	}
+	if t.EncryptedContent != "" {
+		// An OpenAI-compatible encrypted reasoning_details array is replayed by
+		// the chat adapter together with the separately parsed text
+		// (chatcompletions/messages.go), and the Anthropic adapter replays the
+		// text while ignoring the blob. The opaque OpenAI Responses blob is the
+		// other shape: it replays with its summary and id and puts no text on
+		// the wire, so only that shape bills them.
+		if IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
+			return len(t.EncryptedContent) + len(t.Text)
+		}
+		chars := len(t.EncryptedContent) + len(t.ID)
+		for _, s := range t.Summary {
+			chars += len(s)
+		}
+		return chars
+	}
+	if t.Signature != "" {
+		if IsOpenAICompatReasoningField(t.Signature) {
+			return len(t.Text)
+		}
+		return len(t.Text) + len(t.Signature)
+	}
+	return 0
 }
 
 func estimateImageTokens(provider, model string, img *ImageData) int {

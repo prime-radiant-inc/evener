@@ -91,10 +91,9 @@ expect:
       contains: homeDir string) string {
   final_contains: ["DIAGNOSIS_COMPLETE"]
 metrics:
-  # Informational only today — tools/tool-fluency's Metrics field is parsed
-  # but not yet evaluated by the runner (grep `\.Metrics\b` in main.go: no
-  # hits). These name the kata nbcf acceptance metrics that still need a
-  # runner-side implementation; see probes-nbcf/README.md "What remains".
+  # Computed by the runner and reported on result.json's `metrics` field
+  # (#187): each wants_* name a phase-discipline metric; max_tool_calls is
+  # a manifest-local threshold. Unknown keys fail at load time.
   max_tool_calls: 40
   wants_investigative_call_count: true
   wants_repeated_read_or_grep_count: true

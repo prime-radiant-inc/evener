@@ -17,6 +17,8 @@ import (
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
 )
 
@@ -212,59 +214,104 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 	}
 }
 
-func TestOpenAIStateDirFromEnvUsesWindowsHomePrecedence(t *testing.T) {
-	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
-		env := map[string]string{
-			"HOME":        `C:\msys\home\jesse`,
-			"USERPROFILE": `C:\Users\Jesse`,
-		}
-		value, ok := env[key]
-		return value, ok
-	})
-	want := filepath.Join(`C:\Users\Jesse`, ".local", "state", "evener") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
-	if got != want {
+// TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome pins the one thing the hub
+// auth controller still resolves for itself: XDG_STATE_HOME out of the launch
+// env it is handed, which is not the process env cmdutil.DefaultStateRoot reads.
+func TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	launchStateHome := t.TempDir()
+
+	got := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: launchStateHome})
+	if want := filepath.Join(launchStateHome, "evener"); got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
 }
 
-func TestOpenAIStateDirFromEnvUsesWindowsHomeDrivePath(t *testing.T) {
-	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
-		env := map[string]string{
-			"HOME":      `C:\msys\home\jesse`,
-			"HOMEDRIVE": `D:`,
-			"HOMEPATH":  `\Users\Jesse`,
+// TestOpenAIStateDirFromLookupUsesLaunchEnvHome pins the other half of the
+// launch override: when the launch env redirects the home directory and
+// XDG_STATE_HOME is unset, the home arm must read that supplied home, not the
+// process environment. Delegating the whole arm to the process-based
+// cmdutil.DefaultStateRoot() silently ignored the launch env, so a hub handed a
+// redirecting environment read and wrote OAuth state in the ambient home.
+//
+// goos is passed explicitly so the Windows arm is pinned from any host; a test
+// that only set HOME would pass on Unix and fail on Windows, where HOME is not
+// consulted.
+func TestOpenAIStateDirFromLookupUsesLaunchEnvHome(t *testing.T) {
+	lookup := func(env map[string]string) func(string) (string, bool) {
+		return func(key string) (string, bool) {
+			value, ok := env[key]
+			return value, ok
 		}
-		value, ok := env[key]
-		return value, ok
-	})
-	want := filepath.Join(`D:\Users\Jesse`, ".local", "state", "evener") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
-	if got != want {
-		t.Fatalf("stateDir=%q, want %q", got, want)
+	}
+	tests := []struct {
+		name      string
+		goos      string
+		env       map[string]string
+		wantParts []string
+	}{
+		{
+			name:      "unix home",
+			goos:      "linux",
+			env:       map[string]string{envvars.Home.Name: "/launch/home"},
+			wantParts: []string{"/launch/home", ".local", "state", "evener"},
+		},
+		{
+			name:      "windows userprofile",
+			goos:      "windows",
+			env:       map[string]string{envvars.UserProfile.Name: `C:\launch\u`},
+			wantParts: []string{`C:\launch\u`, ".local", "state", "evener"},
+		},
+		{
+			// A launch env that carries only the removed HOMEDRIVE/HOMEPATH
+			// spelling resolves like cmdutil: no profile, so the fallback.
+			name:      "windows homedrive and homepath are not a home",
+			goos:      "windows",
+			env:       map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
+			wantParts: []string{".local", "state", "evener"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			want := filepath.Join(tc.wantParts...)
+			if got := openAIStateDirFromLookup(tc.goos, lookup(tc.env)); got != want {
+				t.Fatalf("stateDir=%q, want launch home %q", got, want)
+			}
+		})
 	}
 }
 
-func TestOpenAIStateDirFromEnvWindowsIgnoresHomeFallback(t *testing.T) {
-	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
-		env := map[string]string{
-			"HOME": `C:\msys\home\jesse`,
-		}
-		value, ok := env[key]
-		return value, ok
-	})
-	want := filepath.Join(os.TempDir(), ".local", "state", "evener")
-	if got != want {
-		t.Fatalf("stateDir=%q, want %q", got, want)
+// TestOpenAIStateDirFromEnvMatchesDefaultStateRoot pins the anti-drift contract
+// #1012 asked for: when the supplied env is the process env, the hub resolves
+// exactly what cmdutil.DefaultStateRoot resolves. The two used to disagree on
+// Windows, where the hub read USERPROFILE/HOMEDRIVE+HOMEPATH out of the
+// supplied env instead of letting os.UserHomeDir find the home directory.
+func TestOpenAIStateDirFromEnvMatchesDefaultStateRoot(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	t.Setenv(envvars.Home.Name, t.TempDir())
+
+	if got, want := openAIStateDirFromEnv(envToMap(os.Environ())), cmdutil.DefaultStateRoot(); got != want {
+		t.Fatalf("stateDir=%q, want cmdutil.DefaultStateRoot() %q", got, want)
 	}
 }
 
-func TestOpenAIStateDirFromEnvDoesNotFallBackToProcessEnv(t *testing.T) {
-	processStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", processStateHome)
+// TestOpenAIStateDirFromEnvFallsBackWhenNoHome pins the last-resort arm: a
+// supplied environment with neither XDG_STATE_HOME nor a home resolves to
+// cmdutil's "."-rooted fallback, not back into the process environment. A
+// launch env that deliberately carries no home therefore cannot silently read
+// or write OAuth state under the ambient one.
+func TestOpenAIStateDirFromEnvFallsBackWhenNoHome(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	t.Setenv(envvars.Home.Name, t.TempDir())
+	t.Setenv(envvars.UserProfile.Name, t.TempDir())
+	processRoot := cmdutil.DefaultStateRoot()
 
 	got := openAIStateDirFromEnv(map[string]string{})
-	want := filepath.Join(os.TempDir(), ".local", "state", "evener")
-	if got != want {
+	if want := filepath.Join(".local", "state", "evener"); got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
+	}
+	if got == processRoot {
+		t.Fatalf("stateDir=%q equals the process root; the supplied env must win", got)
 	}
 }
 

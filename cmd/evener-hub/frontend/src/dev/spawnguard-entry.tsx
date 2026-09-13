@@ -78,6 +78,7 @@ fake.on("evener/plugin/preview", () => ({
     },
   ],
 }));
+fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("spawnguard.html is missing #root");

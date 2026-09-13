@@ -20,6 +20,7 @@ func resolved(mutate func(c *registry.Caps)) registry.Resolved {
 func openaiCaps(c *registry.Caps) {
 	c.Reasoning = new(true)
 	c.ReasoningControls = []string{"effort"}
+	c.EffortValues = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 	c.StrictTools = new(true)
 	c.ReasoningSummary = new("auto")
 	c.WebSearch = new(true)
@@ -69,7 +70,11 @@ func TestBuildBody_GroqBaselineSendsOnlyTheSpecFields(t *testing.T) {
 	req.MaxTokens = new(100)
 	req.ResponseFormat = &llm.ResponseFormat{Type: "json_schema", JSONSchema: map[string]any{"type": "object"}}
 	req.StopSequences = []string{"x"}
-	res := resolved(func(c *registry.Caps) { c.Reasoning = new(true); c.ReasoningControls = []string{"effort"} })
+	res := resolved(func(c *registry.Caps) {
+		c.Reasoning = new(true)
+		c.ReasoningControls = []string{"effort"}
+		c.EffortValues = []string{"low", "medium", "high"}
+	})
 	res.Instance, res.ModelID, res.WireID = "groq", "openai/gpt-oss-120b", "openai/gpt-oss-120b"
 	body := build(t, req, res)
 	for _, k := range []string{"model", "instructions", "input", "tools", "max_output_tokens", "reasoning", "text", "include"} {

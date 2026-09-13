@@ -3,14 +3,12 @@
 // reserve a marker + splice it into the composer text synchronously (before
 // any async work - test-composer-image-markers.js's own "pending: true"
 // contract), re-encode to PNG via encodePng.ts, then settle the item in
-// place. Component state (not a store): per Composer.tsx's own header
-// comment and the wave plan's binding constraints, only DURABLE state
-// (drafts, queue, pending-optimistic entries) needs to survive a dockview
-// tab-switch remount - staged, not-yet-sent attachments are exactly the
-// kind of in-progress, undurable UI state the legacy composer ALSO never
-// persisted past its own DOM lifetime, and base64-heavy image bytes would
-// blow past localStorage's practical quota (up to 8 * 8MB) if it tried.
-import { useCallback, useRef, useState } from "react";
+// place. By default the bag belongs to the mounted composer. A caller can
+// supply an in-memory store to retain the bag and its encode continuations
+// across remounts. Image bytes never go through localStorage.
+import { type SetStateAction, useCallback, useState } from "react";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../../stores/threads";
 import { reencodeToPng } from "./encodePng";
 import { rejectionReason } from "./limits";
@@ -111,13 +109,32 @@ export interface UseAttachmentsResult {
   clearSubmitted(submittedMarkers: Set<number>): void;
 }
 
-export function useAttachments(editor: TextEditor): UseAttachmentsResult {
-  const [items, setItems] = useState<PendingAttachment[]>([]);
+export function createAttachmentStore() {
+  return createStore(() => ({
+    items: [] as PendingAttachment[],
+    nextMarkerRef: { current: 0 },
+    removedWhilePendingRef: { current: new Set<number>() },
+    generationRef: { current: 0 },
+  }));
+}
+
+export type AttachmentStore = ReturnType<typeof createAttachmentStore>;
+
+export function useAttachments(editor: TextEditor, backingStore?: AttachmentStore): UseAttachmentsResult {
+  const [localStore] = useState(() => backingStore ?? createAttachmentStore());
+  const store = backingStore ?? localStore;
+  const items = useStore(store, (state) => state.items);
+  const setItems = useCallback(
+    (next: SetStateAction<PendingAttachment[]>) => {
+      store.setState((state) => ({ items: typeof next === "function" ? next(state.items) : next }));
+    },
+    [store],
+  );
   // The marker high-water mark is deliberately NOT derived from items.length
   // (which shrinks on removal) - a plain ref persists across renders without
   // re-triggering one, exactly mirroring composer-attachments.js's own
   // pendingState.__nextMarker bookkeeping.
-  const nextMarkerRef = useRef(0);
+  const { nextMarkerRef, removedWhilePendingRef, generationRef } = store.getState();
   // kata kt4j: markers removed via removeItem while their decode was still
   // in flight. The browser's Image/canvas pipeline has no cancellation hook,
   // so a reencodeToPng call started before removal keeps running and still
@@ -131,25 +148,26 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
   // learned the hard way, see this file's own header comment). Drained by
   // whichever settle branch runs first, so it only ever holds markers
   // currently removed-while-pending.
-  const removedWhilePendingRef = useRef<Set<number>>(new Set());
   // A reset cannot cancel browser image/canvas work already in flight, so each
   // continuation captures this generation and becomes a no-op if replacement
   // increments it before the encode settles.
-  const generationRef = useRef(0);
 
-  const replaceWithSettled = useCallback((nextItems: PendingAttachment[]) => {
-    nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
-    // A recovery merge carries existing staged objects alongside new items.
-    // Preserve those identities so an in-flight send can still retire them.
-    setItems((previous) => nextItems.map((item) => (previous.includes(item) ? item : { ...item })));
-  }, []);
+  const replaceWithSettled = useCallback(
+    (nextItems: PendingAttachment[]) => {
+      nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
+      // A recovery merge carries existing staged objects alongside new items.
+      // Preserve those identities so an in-flight send can still retire them.
+      setItems((previous) => nextItems.map((item) => (previous.includes(item) ? item : { ...item })));
+    },
+    [nextMarkerRef, setItems],
+  );
 
   const reset = useCallback(() => {
     generationRef.current += 1;
     removedWhilePendingRef.current.clear();
     nextMarkerRef.current = 0;
     setItems([]);
-  }, []);
+  }, [generationRef, removedWhilePendingRef, nextMarkerRef, setItems]);
 
   const ingestFiles = useCallback(
     (files: File[], onRejected: (message: string) => void) => {
@@ -161,7 +179,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
       // reserveAttachmentItems's own running `reserved` counter) - a drop
       // of 8 files at once must reject the 9th within that single batch,
       // not just across separate gestures.
-      let reservedCount = items.length;
+      let reservedCount = store.getState().items.length;
       for (const file of files) {
         const reason = rejectionReason({ type: file.type, size: file.size, name: file.name }, reservedCount);
         if (reason) {
@@ -220,7 +238,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
         );
       }
     },
-    [items, editor],
+    [store, editor, generationRef, nextMarkerRef, removedWhilePendingRef, setItems],
   );
 
   const removeItem = useCallback(
@@ -236,7 +254,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
       editor.write(stripped.value, stripped.cursor ?? current.cursor);
       setItems((prev) => prev.filter((item) => item.marker !== marker));
     },
-    [editor],
+    [editor, removedWhilePendingRef, setItems],
   );
 
   const clearSubmitted = useCallback(
@@ -256,11 +274,24 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
       }
       setItems((prev) => {
         const next = prev.filter((item) => !submittedMarkers.has(item.marker));
-        if (next.length === 0) nextMarkerRef.current = 0;
+        if (next.length === 0) {
+          // Restarting numbering at 1 lets a later attachment reuse marker 1.
+          // Any retired marker still recorded in removedWhilePendingRef must not
+          // survive that reuse: removeItem records EVERY removed marker (a
+          // settled one's entry is never drained by a continuation), so a reused
+          // marker's successful encode would be discarded as "already removed"
+          // and the item would stay pending forever. Clear the retired set, and
+          // retire the continuations that referenced it by advancing the
+          // generation, so neither an old removal nor an old settle can touch
+          // the reused marker. Older invalidation (reset) does the same.
+          nextMarkerRef.current = 0;
+          removedWhilePendingRef.current.clear();
+          generationRef.current += 1;
+        }
         return next;
       });
     },
-    [editor],
+    [editor, nextMarkerRef, removedWhilePendingRef, generationRef, setItems],
   );
 
   const toInputAttachments = useCallback((): InputAttachment[] => {

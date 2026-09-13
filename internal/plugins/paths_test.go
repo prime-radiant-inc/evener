@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -112,11 +113,11 @@ func TestStoreReaders_RefuseARootThatIsNotResolved(t *testing.T) {
 		read func(*Manager) (int, error)
 	}{
 		{"List", func(m *Manager) (int, error) {
-			items, err := m.List()
+			items, err := m.List(context.Background())
 			return len(items), err
 		}},
 		{"ListMarketplaces", func(m *Manager) (int, error) {
-			mk, err := m.ListMarketplaces()
+			mk, err := m.ListMarketplaces(context.Background())
 			return len(mk), err
 		}},
 	}

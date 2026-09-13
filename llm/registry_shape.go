@@ -62,9 +62,11 @@ func samplingPaths(protocol string) (temperature, topP, stop string) {
 
 // ShapeRequest is the single place request-level shaping happens (spec
 // §7.5), in this order: clear reasoning controls when the row has
-// Reasoning = false; clamp the effort to EffortValues (an empty ladder
-// passes it through; no effort is ever added here — §7.4's rule in agent is
-// what sets one); apply MaxOutputTokens when the request has none; drop
+// Reasoning = false; clamp the effort to EffortValues (an empty ladder leaves
+// the effort for the protocol builder, which drops a name it cannot vouch for
+// but still sizes budget-shaped thinking from it; no effort is ever added
+// here — §7.4's rule in agent is what sets one); apply MaxOutputTokens when
+// the request has none; drop
 // request-level sampling parameters the row's
 // Sampling or Fields say not to send; gate the prompt-cache fields; turn
 // store on for a planned Responses continuation. It returns a shaped copy

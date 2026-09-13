@@ -194,7 +194,7 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 // re-minting it from the fields this hub understands would silently drop
 // anything a newer daemon added (the shape enrichOutputImageNotification uses
 // on this same stream, for the same reason).
-func stampClosedThreadCapabilities(notification appwire.Notification) appwire.Notification {
+func stampClosedThreadCapabilities(notification appwire.Notification, allowFork bool) appwire.Notification {
 	if notification.Method != appwire.NotifyThreadStatusChanged {
 		return notification
 	}
@@ -209,12 +209,54 @@ func stampClosedThreadCapabilities(notification appwire.Notification) appwire.No
 	if status.Type != appwire.ThreadStatusClosed {
 		return notification
 	}
-	capabilities, err := json.Marshal(pastThreadCapabilities())
+	set := pastThreadCapabilities()
+	if !allowFork {
+		set.ForkFromTurn = false
+	}
+	capabilities, err := json.Marshal(set)
 	if err != nil {
 		return notification
 	}
 	params["capabilities"] = capabilities
 	stamped, err := json.Marshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = stamped
+	return notification
+}
+
+// stampForkCapability adds the hub-owned action to an existing capability
+// update. Other permissions and fields remain the daemon's current values.
+func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
+	if notification.Method != appwire.NotifyThreadStatusChanged {
+		return notification
+	}
+	var params struct {
+		Status       appwire.ThreadStatus       `json:"status"`
+		Capabilities map[string]json.RawMessage `json:"capabilities"`
+	}
+	if json.Unmarshal(notification.Params, &params) != nil || params.Capabilities == nil {
+		return notification
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(notification.Params, &raw); err != nil {
+		return notification
+	}
+	fenced := hubForkRecoveryFenced(appwire.Thread{Status: params.Status})
+	if allowFork && !fenced {
+		params.Capabilities["forkFromTurn"] = json.RawMessage("true")
+	} else {
+		// Clear a stale daemon value as well as refusing to add the action. The
+		// notification is the client's authoritative status transition.
+		params.Capabilities["forkFromTurn"] = json.RawMessage("false")
+	}
+	encoded, err := json.Marshal(params.Capabilities)
+	if err != nil {
+		return notification
+	}
+	raw["capabilities"] = encoded
+	stamped, err := json.Marshal(raw)
 	if err != nil {
 		return notification
 	}
@@ -571,7 +613,19 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				// gone.
 				if strings.HasPrefix(target.relayKey, "local:") {
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
-					notification = stampClosedThreadCapabilities(notification)
+					// Both stampers return the frame untouched for any other
+					// method, so the method is checked before the answer is
+					// computed rather than after. This is the hottest path the
+					// projection sits on — every frame of every subscribed
+					// session — and the projection is not free: it scans the
+					// roster, resolves the target session and reads the
+					// deletion store. enrichOutputImageNotification above
+					// guards itself the same way.
+					if notification.Method == appwire.NotifyThreadStatusChanged {
+						ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
+						notification = stampClosedThreadCapabilities(notification, ownsFork)
+						notification = stampForkCapability(notification, ownsFork)
+					}
 				}
 				if cfg.RelayHooks.BeforeCanonicalPublish != nil {
 					cfg.RelayHooks.BeforeCanonicalPublish(target.relayKey, notification)

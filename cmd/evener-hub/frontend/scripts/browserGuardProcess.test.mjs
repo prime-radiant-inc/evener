@@ -3,11 +3,12 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { waitForHttp } from "./browserGuardCdp.mjs";
+import { createStartupDeadline, waitForHttp } from "./browserGuardCdp.mjs";
 import * as browserGuardProcess from "./browserGuardProcess.mjs";
 
 const { createBrowserProcessCleanup, findAvailablePort, startBrowserGuard } = browserGuardProcess;
@@ -156,9 +157,15 @@ test("starts concurrent guards on Vite-owned ports and reaps their listeners", a
 
 test("aborts Vite startup and removes its owned profile", async () => {
   const controller = new AbortController();
-  const profilePrefix = `browser-guard-abort-${randomUUID()}-`;
+  // The profile lives under the short guard root (issue #1141), not the ambient
+  // TMPDIR, and a long prefix is trimmed to fit the socket budget -- so the
+  // directory is located by the stable leading marker rather than the full
+  // prefix.
+  const profileMarker = "browser-guard-abort-";
+  const profilePrefix = `${profileMarker}${randomUUID()}-`;
   const children = [];
   let profileDir;
+  const profileRoot = browserGuardProcess.chromeProfileRoot();
   await assert.rejects(
     startBrowserGuard({
       frontend: process.cwd(),
@@ -166,9 +173,9 @@ test("aborts Vite startup and removes its owned profile", async () => {
       chromeBinary: "/fake/chrome",
       signal: controller.signal,
       spawnProcess(command, args, options) {
-        const entry = readdirSync(tmpdir()).find((name) => name.startsWith(profilePrefix));
+        const entry = readdirSync(profileRoot).find((name) => name.startsWith(profileMarker));
         assert.ok(entry, "startup must own a profile before launching its child");
-        profileDir = path.join(tmpdir(), entry);
+        profileDir = path.join(profileRoot, entry);
         const child = new FakeChild(command, args, options);
         child.kill = (signal) => {
           child.signals.push(signal);
@@ -254,6 +261,34 @@ test("stores Chrome crash metadata inside the private browser profile", async ()
   const { guard, children } = await startFakeGuard();
   try {
     assert.equal(children[1].options.env?.BREAKPAD_DUMP_LOCATION, path.join(guard.profileDir, "Crashpad"));
+  } finally {
+    const cleanup = guard.cleanup();
+    for (const child of children) child.exit();
+    await cleanup;
+  }
+});
+
+test("spawns the Vite wrapper with its default config", async () => {
+  const { guard, children } = await startFakeGuard();
+  try {
+    assert.equal(children[0].command, process.execPath);
+    assert.deepEqual(children[0].args, ["scripts/browserguard-vite.mjs"]);
+  } finally {
+    const cleanup = guard.cleanup();
+    for (const child of children) child.exit();
+    await cleanup;
+  }
+});
+
+test("passes a guard's custom Vite config through to the wrapper", async () => {
+  const { guard, children } = await startFakeGuard({
+    viteConfigFile: "scripts/editorial-preview.vite.config.mjs",
+  });
+  try {
+    assert.deepEqual(children[0].args, [
+      "scripts/browserguard-vite.mjs",
+      "scripts/editorial-preview.vite.config.mjs",
+    ]);
   } finally {
     const cleanup = guard.cleanup();
     for (const child of children) child.exit();
@@ -1006,6 +1041,138 @@ test("the diagnostic blames vite for a vite failure and does not send the reader
   assert.doesNotMatch(message, /install Chrome/);
 });
 
+// The Vite readiness poll only recently got a deadline of its own (every guard
+// runner arms one beside the Chrome phase's). What it produces when that
+// deadline fires has to keep reading as an environment problem and has to keep
+// pointing at Vite: a guard that told the reader to install Chrome because its
+// dev server never answered would send them to the wrong place with an
+// authoritative-looking checklist.
+/** A guard whose Chrome never announces, for the announcement-deadline path. */
+function silentChromeGuard(firstStderrDelay) {
+  return {
+    waitForChrome: ({ signal }) =>
+      new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    getChromeFirstStderrDelay: () => firstStderrDelay,
+    getChromeLaunchError: () => null,
+    getChromeFailure: () => new Promise(() => {}),
+    chromeBinary: "/usr/bin/google-chrome",
+    getChromeArgv: () => ["--headless=new"],
+    getChromeError: () => "[3036:3072:0911/063804.935306:ERROR:dbus/bus.cc:405] Failed to connect to the bus",
+    getViteError: () => "",
+  };
+}
+
+// Run 34570447477 died here and could not say so: no DevTools announcement
+// came, and the only thing the guard printed was "browser startup deadline
+// exceeded after 30000ms" - the same sentence the /json/version poll after it
+// would have printed. The phase has to name itself, and it has to say what
+// Chrome had managed to do, because "first stderr byte at 21s" is the number
+// that told us the browser was slow rather than broken.
+test("an announcement that never arrives names its phase and what Chrome had done", async () => {
+  const failure = await browserGuardProcess
+    .waitForBrowserReady(silentChromeGuard(21_004), { announcementTimeoutMs: 50 })
+    .then(
+      () => null,
+      (error) => error.message,
+    );
+
+  assert.match(failure, /environment problem, not a test case failure/);
+  assert.match(failure, /browser startup deadline exceeded after 50ms/);
+  assert.match(failure, /while waiting for Chrome's DevTools announcement on stderr/);
+  assert.match(failure, /Chrome's first stderr byte arrived 21004ms after launch/);
+});
+
+test("an announcement deadline on a Chrome that never said anything reports the silence", async () => {
+  const failure = await browserGuardProcess
+    .waitForBrowserReady(silentChromeGuard(null), { announcementTimeoutMs: 50 })
+    .then(
+      () => null,
+      (error) => error.message,
+    );
+
+  assert.match(failure, /Chrome had written nothing to stderr/);
+});
+
+// The delay above is only worth reporting if it is really measured off Chrome's
+// own output, so this takes it from a started guard rather than a stub.
+test("the first-stderr delay is measured from Chrome's own output", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+
+  assert.equal(guard.getChromeFirstStderrDelay(), null);
+  children[1].stderr.emit("data", "[3036:3072:0911/063804.935306:ERROR:dbus/bus.cc:405] Failed to connect to the bus\n");
+  assert.ok(
+    Number.isInteger(guard.getChromeFirstStderrDelay()) && guard.getChromeFirstStderrDelay() >= 0,
+    `expected a measured delay, got ${guard.getChromeFirstStderrDelay()}`,
+  );
+});
+
+// The readiness handoff every guard runner used to carry a verbatim copy of.
+// All five now call this, so it holds the shape they depend on: the announced
+// endpoint comes back, and neither of its two deadlines is left armed - a guard
+// ends by setting process.exitCode, so a live timer is a guard that will not
+// exit until it fires.
+test("waitForBrowserReady returns the announced endpoint and leaves no deadline armed", async (context) => {
+  const answered = [];
+  const server = createServer((request, response) => {
+    answered.push(request.url);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end("{}");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const endpoint = { url: `ws://127.0.0.1:${server.address().port}/devtools/browser/fixture` };
+  const announcementSignals = [];
+  const guard = {
+    waitForChrome: ({ signal }) => {
+      announcementSignals.push(signal);
+      return Promise.resolve(endpoint);
+    },
+    getChromeFirstStderrDelay: () => 12,
+    getChromeLaunchError: () => null,
+    getChromeFailure: () => new Promise(() => {}),
+    chromeBinary: "/fake/chrome",
+    getChromeArgv: () => [],
+    getChromeError: () => "",
+    getViteError: () => "",
+  };
+  const before = process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+
+  assert.equal(await browserGuardProcess.waitForBrowserReady(guard), endpoint);
+
+  assert.deepEqual(answered, ["/json/version"]);
+  assert.equal(announcementSignals.length, 1);
+  assert.equal(announcementSignals[0].aborted, false);
+  assert.ok(
+    process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length <= before,
+    "a startup deadline outlived the phase it was bounding",
+  );
+});
+
+test("a vite readiness poll that runs out of deadline still frames as a vite environment problem", async () => {
+  const deadline = createStartupDeadline(300);
+  const error = await waitForHttp("http://127.0.0.1:1/", "vite dev server", () => null, {
+    signal: deadline.signal,
+  }).then(
+    () => null,
+    (rejection) => rejection,
+  );
+  deadline.clear();
+
+  assert.match(error.message, /browser startup deadline exceeded after 300ms/);
+  assert.match(error.message, /vite dev server/);
+  const message = browserGuardProcess.describeBrowserStartupFailure({
+    error,
+    subsystem: "vite",
+    viteStderr: "",
+  });
+  assert.match(message, /environment problem, not a test case failure/);
+  assert.match(message, /Chrome is not implicated/);
+  assert.doesNotMatch(message, /install Chrome/);
+});
+
 for (const scenario of [
   { name: "Vite exit", reason: null },
   { name: "primitive cancellation", reason: "fixture cancellation" },
@@ -1019,7 +1186,12 @@ for (const scenario of [
       return true;
     };
     const controller = new AbortController();
-    const profilePrefix = `browser-guard-failure-${randomUUID()}-`;
+    // Located by the stable leading marker under the short guard root, since a
+    // long prefix is trimmed and the profile no longer lives under TMPDIR
+    // (issue #1141).
+    const profileMarker = "browser-guard-failure-";
+    const profilePrefix = `${profileMarker}${randomUUID()}-`;
+    const profileRoot = browserGuardProcess.chromeProfileRoot();
     const stderr = "fixture-vite-startup-stderr";
     let profileDir;
     let spawnCount = 0;
@@ -1034,9 +1206,9 @@ for (const scenario of [
       signal: controller.signal,
       spawnProcess() {
         spawnCount++;
-        const entry = readdirSync(tmpdir()).find((name) => name.startsWith(profilePrefix));
+        const entry = readdirSync(profileRoot).find((name) => name.startsWith(profileMarker));
         assert.ok(entry, "startup must create its owned profile");
-        profileDir = path.join(tmpdir(), entry);
+        profileDir = path.join(profileRoot, entry);
         return vite;
       },
     });
@@ -1425,4 +1597,93 @@ test("a Chrome launch failure does not abort the wait for a Vite that is still c
   children[0].exit();
   await cleanup;
   assert.equal(existsSync(guard.profileDir), false);
+});
+
+// Issue #1141: Chrome derives <user-data-dir>/com.google.Chrome.XXXXXX/
+// SingletonSocket and binds it with AF_UNIX. sun_path holds 108 bytes including
+// the NUL, so the usable path is 107 bytes; a longer one makes Chrome abort with
+// "Socket path too long" before DevTools is ready. Minting the profile under a
+// nested agent-sandbox TMPDIR crossed that limit for every guard.
+const LONG_AMBIENT_TMPDIR = `/tmp/evener-sandbox-3905550766/${"nested-scratch/".repeat(8)}`;
+
+test("selects a Chrome profile root that is independent of a long ambient TMPDIR (#1141)", () => {
+  assert.ok(Buffer.byteLength(LONG_AMBIENT_TMPDIR) > 107, "fixture TMPDIR must itself be long");
+
+  const root = browserGuardProcess.chromeProfileRoot({
+    ambient: LONG_AMBIENT_TMPDIR,
+    // A sandbox that exposes its long scratch and a short /tmp.
+    exists: (candidate) => candidate === "/tmp",
+  });
+  assert.equal(root, "/tmp");
+  assert.ok(!root.startsWith(LONG_AMBIENT_TMPDIR), "the profile root must not derive from the ambient TMPDIR");
+
+  const profilePrefix = "transcriptscrollguard-chrome-";
+  const minted = browserGuardProcess.createChromeProfileDir(profilePrefix, {
+    ambient: LONG_AMBIENT_TMPDIR,
+    exists: (candidate) => candidate === "/tmp",
+  });
+  try {
+    assert.ok(minted.startsWith(`${root}${path.sep}`), `profile ${minted} must sit under the short root`);
+    assert.ok(!minted.startsWith(LONG_AMBIENT_TMPDIR), "the profile must not sit under the ambient TMPDIR");
+    assert.ok(minted.includes(profilePrefix), "the caller's prefix must remain the directory's leading component");
+    const socket = browserGuardProcess.chromeSingletonSocketPath(minted);
+    assert.ok(
+      Buffer.byteLength(socket) <= browserGuardProcess.CHROME_SOCKET_PATH_LIMIT,
+      `socket path ${socket} (${Buffer.byteLength(socket)} bytes) must fit ${browserGuardProcess.CHROME_SOCKET_PATH_LIMIT} bytes`,
+    );
+  } finally {
+    rmSync(minted, { recursive: true, force: true });
+  }
+
+  // The pre-fix derivation -- the profile directly under the ambient TMPDIR --
+  // is what overflows, so this pins that the test would catch a regression.
+  const oversized = browserGuardProcess.chromeSingletonSocketPath(
+    path.join(LONG_AMBIENT_TMPDIR, `${profilePrefix}XXXXXX`),
+  );
+  assert.ok(
+    Buffer.byteLength(oversized) > browserGuardProcess.CHROME_SOCKET_PATH_LIMIT,
+    "fixture must reproduce the overflow the fix removes",
+  );
+});
+
+test("points Chrome's temp directory at the short profile so its singleton socket fits (#1141)", () => {
+  const profileDir = "/tmp/transcriptscrollguard-chrome-AbC123";
+  const env = browserGuardProcess.chromeProfileEnvironment(profileDir, {
+    TMPDIR: LONG_AMBIENT_TMPDIR,
+    PATH: "/usr/bin",
+  });
+  // Chrome mints its socket directory under TMPDIR, so inheriting the long
+  // ambient value is exactly the overflow; it must be replaced.
+  assert.equal(env.TMPDIR, profileDir);
+  assert.equal(env.PATH, "/usr/bin");
+  assert.ok(
+    Buffer.byteLength(browserGuardProcess.chromeSingletonSocketPath(env.TMPDIR)) <=
+      browserGuardProcess.CHROME_SOCKET_PATH_LIMIT,
+  );
+});
+
+test("a Chrome launch under a long ambient TMPDIR gets a --user-data-dir whose socket fits (#1141)", async (context) => {
+  const originalTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = LONG_AMBIENT_TMPDIR;
+  context.after(() => {
+    if (originalTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmpdir;
+  });
+
+  const profilePrefix = "transcriptscrollguard-chrome-";
+  const { guard, children } = await startFakeGuard({ profilePrefix });
+  reapOnTeardown(context, guard, children);
+
+  const userDataDirArg = children[1].args.find((arg) => arg.startsWith("--user-data-dir="));
+  assert.ok(userDataDirArg, "Chrome must be launched with a private profile");
+  const profileDir = userDataDirArg.slice("--user-data-dir=".length);
+  assert.ok(!profileDir.startsWith(LONG_AMBIENT_TMPDIR), `profile ${profileDir} must not sit under the ambient TMPDIR`);
+  // Chrome's singleton socket directory is created under its TMPDIR, not under
+  // --user-data-dir, so the child's environment must carry the short root too.
+  assert.equal(children[1].options.env?.TMPDIR, profileDir);
+  const socket = browserGuardProcess.chromeSingletonSocketPath(profileDir);
+  assert.ok(
+    Buffer.byteLength(socket) <= browserGuardProcess.CHROME_SOCKET_PATH_LIMIT,
+    `Chrome's derived socket path ${socket} (${Buffer.byteLength(socket)} bytes) must fit ${browserGuardProcess.CHROME_SOCKET_PATH_LIMIT} bytes`,
+  );
 });

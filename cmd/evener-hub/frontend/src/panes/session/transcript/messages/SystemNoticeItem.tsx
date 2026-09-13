@@ -23,6 +23,7 @@
 // all, so no disclosure can hold it behind a summary describing a different
 // item.
 
+import { firstLine, formatCharCount, formatDurationMs } from "../../../../protocol/displayFormat";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import type { TranscriptMetadataVisibility } from "../../../../transcriptDisplay/projector";
 import {
@@ -41,7 +42,6 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
-import { firstLine, formatCharCount, formatDurationMs } from "./format";
 import { roundTimingsSummary } from "./roundTimingsView";
 import { isTurnFailureItem, type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";

@@ -6,7 +6,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { ConnectionState } from "../protocol/client";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import type { AppwireClientLike } from "../protocol/clientLike";
 import type { FeatureSet, ServerInfo } from "../protocol/types.gen";
 
 export interface ConnectionStoreState {

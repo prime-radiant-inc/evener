@@ -1,0 +1,11 @@
+/* Reproduce the definite pane width supplied by Session's footer. ThemeFlip
+ * aligns children to flex-start; a generic wrapping widget row shrink-fits
+ * an inline-size-contained Composer to zero. Establish width before mount
+ * so textarea auto-height is measured against the real available measure. */
+.paneFixture {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+}

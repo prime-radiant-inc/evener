@@ -6,13 +6,19 @@
   "files": [
     "dist",
     "README.md",
-    "examples"
+    "examples",
+    "LICENSES"
   ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js"
+    },
+    "./docContent": {
+      "types": "./dist/docContent.d.ts",
+      "import": "./dist/docContent.js",
+      "require": "./dist/docContent.js"
     }
   },
   "scripts": {

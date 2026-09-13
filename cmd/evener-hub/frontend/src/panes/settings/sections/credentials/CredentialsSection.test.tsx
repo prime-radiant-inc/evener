@@ -73,8 +73,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.useRealTimers();
 });
 
@@ -511,13 +511,28 @@ describe("OAuth start branches", () => {
     const user = userEvent.setup();
     const inspector = await openSheet(user, "personal");
     vi.useFakeTimers();
-    fireEvent.click(within(inspector).getByRole("button", { name: "Sign in…" }));
+    const request = vi.spyOn(fake, "request");
+    await act(async () => {
+      const requestIndex = request.mock.calls.length;
+      fireEvent.click(within(inspector).getByRole("button", { name: "Sign in…" }));
+      const started = request.mock.results[requestIndex];
+      if (started?.type !== "return") throw new Error("Sign in did not start the device flow request");
+      expect(request.mock.calls[requestIndex]?.[0]).toBe("evener/auth/device/start");
+      await started.value;
+    });
     await vi.waitFor(() => expect(screen.getByText("AAAA-1111")).toBeTruthy());
 
     // Flow A expires.
     await advanceTime(1000);
     expect(screen.getByText(/Code expired/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    await act(async () => {
+      const requestIndex = request.mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+      const started = request.mock.results[requestIndex];
+      if (started?.type !== "return") throw new Error("Start again did not start a new device flow request");
+      expect(request.mock.calls[requestIndex]?.[0]).toBe("evener/auth/device/start");
+      await started.value;
+    });
 
     // Flow B starts fresh: its own code, NOT flow A's leftover expired state.
     await vi.waitFor(() => expect(screen.getByText("BBBB-2222")).toBeTruthy());

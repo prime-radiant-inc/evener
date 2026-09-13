@@ -1,0 +1,107 @@
+diff --git a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/views/CodeBlockContainerView.kt b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/views/CodeBlockContainerView.kt
+index 380c6be..fd7f5cb 100644
+--- a/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/views/CodeBlockContainerView.kt
++++ b/node_modules/react-native-enriched-markdown/android/src/main/java/com/swmansion/enriched/markdown/views/CodeBlockContainerView.kt
+@@ -54,7 +54,7 @@ class CodeBlockContainerView(
+ 
+   private val inset = contentInset(codeBlockStyle)
+   private val borderW = borderPx(codeBlockStyle)
+-  private val headerH = headerHeight(codeBlockStyle)
++  private val headerH = headerHeight(codeBlockStyle, context)
+ 
+   override val segmentMarginTop: Int get() = codeBlockStyle.marginTop.toInt()
+   override val segmentMarginBottom: Int get() = codeBlockStyle.marginBottom.toInt()
+@@ -211,7 +211,7 @@ class CodeBlockContainerView(
+     bottom: Int,
+   ) {
+     val width = right - left
+-    val labelTop = headerH - languageView.measuredHeight
++    val labelTop = (headerH - languageView.measuredHeight) / 2
+     languageView.layout(
+       inset,
+       labelTop,
+@@ -219,10 +219,8 @@ class CodeBlockContainerView(
+       labelTop + languageView.measuredHeight,
+     )
+ 
+-    val iconWidth = copyButton.drawable?.intrinsicWidth ?: copyButton.measuredWidth
+-    val iconSlack = ((copyButton.measuredWidth - iconWidth) / 2).coerceAtLeast(0)
+-    val buttonLeft = (width - inset - copyButton.measuredWidth + iconSlack).coerceAtLeast(0)
+-    val buttonTop = (headerH - languageView.measuredHeight / 2 - copyButton.measuredHeight / 2).coerceAtLeast(0)
++    val buttonLeft = (width - borderW - copyButton.measuredWidth).coerceAtLeast(0)
++    val buttonTop = 0
+     copyButton.layout(
+       buttonLeft,
+       buttonTop,
+@@ -325,14 +323,14 @@ class CodeBlockContainerView(
+ 
+     // Header is the top content inset plus one label line; the code text
+     // view's own top inset then forms the single gap below the label.
+-    private fun headerHeight(style: CodeBlockStyle): Int {
++    private fun headerHeight(style: CodeBlockStyle, context: Context): Int {
+       val paint =
+         TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+           textSize = style.fontSize * HEADER_LABEL_SCALE
+           typeface = headerTypeface
+         }
+       val metrics = paint.fontMetrics
+-      return contentInset(style) + ceil(metrics.descent - metrics.ascent).toInt()
++      return maxOf(ceil(48 * context.resources.displayMetrics.density).toInt(), contentInset(style) + ceil(metrics.descent - metrics.ascent).toInt())
+     }
+ 
+     private fun createCodePaint(
+@@ -364,7 +362,7 @@ class CodeBlockContainerView(
+     ): Float {
+       val style = config.codeBlockStyle
+       val inset = contentInset(style)
+-      val headerH = headerHeight(style)
++      val headerH = headerHeight(style, context)
+       val text = buildCodeText(CodeBlockNode.extractCode(node), style)
+       if (text.isEmpty()) return headerH + inset * 2f
+       val paint = createCodePaint(style, context)
+diff --git a/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m b/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m
+index a668c26..3140e72 100644
+--- a/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m
++++ b/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m
+@@ -293,20 +293,14 @@ - (void)layoutScrollArea
+ // top inset then forms the single gap below the label.
+ - (CGFloat)headerHeight
+ {
+-  return [self contentInset] + _headerLabelLineHeight;
++  return MAX(44, [self contentInset] + _headerLabelLineHeight);
+ }
+ 
+ - (void)layoutHeaderButton
+ {
+   CGFloat headerH = [self headerHeight];
+-  CGFloat iconWidth = _copyButton.intrinsicContentSize.width;
+-  if (iconWidth <= 0 || iconWidth > headerH) {
+-    iconWidth = headerH;
+-  }
+-  CGFloat iconSlack = (headerH - iconWidth) / 2;
+-  CGFloat buttonLeft = MAX(self.bounds.size.width - [self contentInset] - headerH + iconSlack, 0);
+-  CGFloat labelCenterY = headerH - _headerLabelLineHeight / 2;
+-  CGFloat buttonTop = MAX(labelCenterY - headerH / 2, 0);
++  CGFloat buttonLeft = MAX(self.bounds.size.width - ceil([_config codeBlockBorderWidth]) - headerH, 0);
++  CGFloat buttonTop = 0;
+   _copyButton.frame = CGRectMake(buttonLeft, buttonTop, headerH, headerH);
+ }
+ 
+@@ -412,7 +406,7 @@ - (CGFloat)measureHeight:(CGFloat)maxWidth
+ + (CGFloat)measureHeightForCodeBlockNode:(MarkdownASTNode *)node config:(StyleConfig *)config
+ {
+   CGFloat inset = ENRMCodeBlockContentInset(config);
+-  CGFloat headerH = inset + ENRMCodeBlockHeaderLabelLineHeight(ENRMCodeBlockHeaderFont(config));
++  CGFloat headerH = MAX(44, inset + ENRMCodeBlockHeaderLabelLineHeight(ENRMCodeBlockHeaderFont(config)));
+   NSAttributedString *code = ENRMCodeBlockPlainAttributedCode(ENRMCodeBlockExtractCode(node), config);
+   return ENRMCodeBlockCodeSize(code).height + inset * 2 + headerH;
+ }
+@@ -460,7 +454,7 @@ - (void)drawRect:(CGRect)rect
+   }
+ 
+   if (_languageLabel.length > 0) {
+-    [_languageLabel drawAtPoint:CGPointMake(inset, headerH - _languageLabelSize.height)];
++    [_languageLabel drawAtPoint:CGPointMake(inset, (headerH - _languageLabelSize.height) / 2)];
+   }
+ }
+ 

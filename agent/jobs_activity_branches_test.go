@@ -1,7 +1,13 @@
 package agent
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -435,7 +441,7 @@ func TestTrimActivityTreeToFit(t *testing.T) {
 			Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})}},
 		},
 	}
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0)
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +472,7 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 			Entries: entries,
 		},
 	}
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0)
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,13 +487,166 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 	}
 }
 
+// TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries pins that a
+// page too tight even for the advanced position is recognised as such rather
+// than assumed to fit. Advancing past the skipped entry lengthens the
+// continuation, so a page weighed with the position it is leaving behind has
+// not been weighed at all. The advance still stands — a page the client can
+// never get past is worse than one a token's length over the limit — but the
+// overrun is now a measured, logged decision instead of an unnoticed one.
+func TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries(t *testing.T) {
+	// Not parallel: this swaps the default logger to read what was reported
+	// and to keep the run's output pristine.
+	var logged bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+	shape := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root", Entries: []appwire.JobActivityEntry{},
+	}}
+	shape.Root.Branch.Truncated = true
+	shape.Root.Branch.Continuation = encodeActivityContinuation(activityContinuation{
+		Version: activityContinuationV1, RootID: "root", SessionID: "root",
+	})
+	recomputeActivitySession(&shape.Root)
+	entryless, err := json.Marshal(shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four bytes of slack: less than the advanced token itself costs.
+	label := strings.Repeat("p", activityMaxEncodedBytes-len(entryless)-4)
+	tree := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root", Label: label,
+		Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{
+			JobID: "job_huge", Description: strings.Repeat("h", activityMaxEncodedBytes),
+		})}},
+	}}
+
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont, err := decodeActivityContinuation(got.Root.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode continuation: %v", err)
+	}
+	if cont.ResumeIndex != 1 {
+		t.Fatalf("ResumeIndex = %d, want 1 -- the entry fits no page, so the position moves whatever it costs", cont.ResumeIndex)
+	}
+	if got.Root.Branch.Error != "" {
+		t.Fatalf("branch error = %q, want none -- a page with no room for the advance has none for a sentence either", got.Root.Branch.Error)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logged.String(), "job_huge") {
+		t.Fatalf("server log %q does not name the entry, so a %d-byte response over the %d-byte limit goes unreported", logged.String(), len(raw), activityMaxEncodedBytes)
+	}
+	// The logged size is the proof the page was weighed with this token
+	// rather than assumed to fit once the entry was gone.
+	if want := fmt.Sprintf("bytes=%d", len(raw)); !strings.Contains(logged.String(), want) {
+		t.Fatalf("server log %q does not carry %s -- the overrun was never measured", logged.String(), want)
+	}
+}
+
+// TestTrimActivityTreeToFit_EnvelopeTooLargeLeavesConsistentCounts pins that
+// a page reporting its own fixed parts as over the limit says so in its
+// counts too. Completeness is derived from the branch, so an error written
+// after the last aggregation leaves a page that carries a failure and calls
+// itself complete — a reader trusting the summary never looks at the error.
+func TestTrimActivityTreeToFit_EnvelopeTooLargeLeavesConsistentCounts(t *testing.T) {
+	t.Parallel()
+	// No entries at all: nothing is dropped, so nothing else marks the page
+	// incomplete on the way.
+	tree := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root",
+		Label:   strings.Repeat("p", activityMaxEncodedBytes+(16<<10)),
+		Entries: []appwire.JobActivityEntry{},
+	}}
+
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Root.Branch.Error == "" {
+		t.Fatal("expected the page to report that it cannot carry an entry")
+	}
+	if got.Root.Counts.Complete {
+		t.Fatalf("counts = %+v, want Complete false alongside branch error %q", got.Root.Counts, got.Root.Branch.Error)
+	}
+}
+
+// TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit pins that the
+// message a skip writes is measured as part of the page. The diagnostic and
+// the advanced token are bytes the client receives like any other, so a page
+// that only fits once the entry is gone can still be pushed back over by the
+// sentence explaining why it is gone — and a response over the limit is the
+// one thing the whole trim exists to prevent.
+func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
+	// Not parallel: the silent tier warns through the default logger, which
+	// this test swaps out to keep the run's output pristine and to read what
+	// was reported.
+	var logged bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+	// What the trim leaves behind once the page's only entry is gone: no
+	// entries, truncated, one continuation token.
+	shape := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root", Entries: []appwire.JobActivityEntry{},
+	}}
+	shape.Root.Branch.Truncated = true
+	shape.Root.Branch.Continuation = encodeActivityContinuation(activityContinuation{
+		Version: activityContinuationV1, RootID: "root", SessionID: "root",
+	})
+	recomputeActivitySession(&shape.Root)
+	entryless, err := json.Marshal(shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pad the label until that entry-less page sits just under the cap: room
+	// for the advanced token, none for the shortest sentence explaining it.
+	label := strings.Repeat("p", activityMaxEncodedBytes-len(entryless)-32)
+	tree := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: "root", Ref: "local:root", Label: label,
+		Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{
+			JobID: "job_huge", Description: strings.Repeat("h", activityMaxEncodedBytes),
+		})}},
+	}}
+
+	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > activityMaxEncodedBytes {
+		t.Fatalf("trimmed response is %d bytes, %d over the %d-byte limit -- a skip has to be measured with the diagnostic it writes", len(raw), len(raw)-activityMaxEncodedBytes, activityMaxEncodedBytes)
+	}
+	// Having no room for the explanation is not a reason to hand back a token
+	// that produces this same page forever.
+	cont, err := decodeActivityContinuation(got.Root.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode continuation: %v", err)
+	}
+	if cont.ResumeIndex != 1 {
+		t.Fatalf("ResumeIndex = %d, want 1 -- the entry fits no page, so the token has to advance past it whether or not the page can say so", cont.ResumeIndex)
+	}
+	if !strings.Contains(logged.String(), "job_huge") {
+		t.Fatalf("server log %q does not name the entry the page could not report", logged.String())
+	}
+}
+
 func TestTrimActivityTrailingEntry_EmptyReturnsFalse(t *testing.T) {
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}
-	if trimActivityTrailingEntry(session, "root", nil, 0, nil, 0) {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}); ok {
 		t.Error("empty entries should return false")
 	}
-	if trimActivityTrailingEntry(nil, "root", nil, 0, nil, 0) {
+	if _, ok := trimActivityTrailingEntry(nil, "root", nil, 0, nil, 0, activityTrimResume{}); ok {
 		t.Error("nil session should return false")
 	}
 }
@@ -506,7 +665,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
 		},
 	}
-	if !trimActivityTrailingEntry(session, "root", nil, 0, nil, 0) {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}); !ok {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	// The recursive call trims the child's entry and returns true; the
@@ -547,7 +706,7 @@ func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 		},
 	}
 	jobsEpochs := map[string]uint64{"root": 7, "child": 42}
-	if !trimActivityTrailingEntry(session, "root", nil, 9, jobsEpochs, 17) {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, 9, jobsEpochs, 17, activityTrimResume{}); !ok {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	if child.Branch.Continuation == "" {
@@ -617,6 +776,95 @@ func TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation(t *testing.T)
 	}
 	if cont.Revision != 17 {
 		t.Fatalf("Revision = %d, want 17 (the budget's live-clock revision at mint time)", cont.Revision)
+	}
+}
+
+// TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex asserts a trim
+// on the session a page RESUMED mints that session's own entry position,
+// not the position within the entries this page happened to render: the
+// page started at the continuation's ResumeIndex, so a mint that ignores it
+// points back into the page it just returned. The offset belongs to exactly
+// one depth — the resumed session's — so a trim on the root one hop
+// shallower neither takes the offset nor treats its last remaining entry as
+// unrenderable: it mints its own top-relative position, and the page that
+// re-targets it delivers the entry.
+func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
+	t.Parallel()
+	child := &appwire.JobActivitySession{
+		SessionID: "child",
+		Entries: []appwire.JobActivityEntry{
+			{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})},
+			{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j2"})},
+		},
+	}
+	session := &appwire.JobActivitySession{
+		SessionID: "root",
+		Entries: []appwire.JobActivityEntry{
+			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
+		},
+	}
+	// The page resumed the child, one hop down, at its sixth entry: j1 and
+	// j2 are the child's entries 5 and 6.
+	resume := activityTrimResume{depth: 1, index: 5}
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume); !ok {
+		t.Fatal("expected the child's trailing entry to be trimmed")
+	}
+	cont, err := decodeActivityContinuation(child.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode child continuation: %v", err)
+	}
+	if cont.ResumeIndex != 6 {
+		t.Fatalf("child ResumeIndex = %d, want 6 (the child's own entry after j1, not this page's index 1)", cont.ResumeIndex)
+	}
+
+	// The child's last remaining entry is trimmed next. It empties the
+	// page's own target, so the caller may find it unrepresentable and skip
+	// it: that skip lands past the entry's own position, not past this
+	// page's index 0.
+	lastChildEntry, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume)
+	if !ok {
+		t.Fatal("expected the child's remaining entry to be trimmed")
+	}
+	if !lastChildEntry.unrepresentable {
+		t.Fatal("the child is the page's target and kept nothing back, so its drop must be offered for a skip")
+	}
+	// The production skip: advance to the entry's own position + 1, then name
+	// it if the page can carry the sentence — which this tiny tree can.
+	mintActivityTrimContinuation(lastChildEntry, "root", lastChildEntry.index+1, 0, nil, 0)
+	skipTree := appwire.JobActivityTree{Root: *session}
+	if err := explainActivitySkippedEntry(&skipTree, lastChildEntry); err != nil {
+		t.Fatalf("explain the skipped entry: %v", err)
+	}
+	skipped, err := decodeActivityContinuation(child.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode child continuation after the skip: %v", err)
+	}
+	if skipped.ResumeIndex != 6 {
+		t.Fatalf("child ResumeIndex after the skip = %d, want 6 (past j1's own entry 5, not past this page's index 0)", skipped.ResumeIndex)
+	}
+	if !strings.Contains(child.Branch.Error, "j1") {
+		t.Fatalf("child branch error = %q, want it to name the skipped entry j1", child.Branch.Error)
+	}
+
+	// Now the root's own delegate entry: the root is not the session the
+	// page resumed, so its mint carries no offset, and its drop is never
+	// offered for a skip.
+	rootEntry, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume)
+	if !ok {
+		t.Fatal("expected the root's delegate entry to be trimmed")
+	}
+	if rootEntry.unrepresentable {
+		t.Fatal("the root is not the page's target, so an entry alone there is not thereby unrenderable")
+	}
+	rootCont, err := decodeActivityContinuation(session.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode root continuation: %v", err)
+	}
+	if rootCont.ResumeIndex != 0 {
+		t.Fatalf("root ResumeIndex = %d, want 0 (the root rendered from its own top, and an entry alone in a session this page is not targeting is not thereby unrenderable)", rootCont.ResumeIndex)
+	}
+	if session.Branch.Error != "" {
+		t.Fatalf("root branch error = %q, want none (only the page's own target may report an entry as too large)", session.Branch.Error)
 	}
 }
 
@@ -943,5 +1191,188 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 	}
 	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: encodeActivityContinuation(fresh)}); err != nil {
 		t.Fatalf("continuation minted against the current revision was rejected: %v", err)
+	}
+}
+
+// TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs pins
+// that a live root can page into a closed child. A live root reads neither
+// fold cache, so every generation it mints is zero; the child it points at is
+// read historically and reports the real generation of the journals it
+// folded. Comparing the two rejects a continuation minted seconds earlier
+// against journals nobody touched, and the branch becomes unreachable.
+func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	const delegateID = "dlg_live_epoch"
+	const childID = "childliveepoch"
+	descriptor := stableReadonlyDescriptor(s, delegateID)
+	descriptor.ChildSessionID = childID
+	descriptor.TranscriptRef = encodeRef("", childID)
+	started := time.Unix(10, 0).UTC()
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:                  "complete",
+		communicated:            true,
+		structuredResultPresent: true,
+		descriptor:              descriptor,
+		startedAt:               started,
+		latestActivityAt:        started.Add(time.Second),
+		endedAt:                 started.Add(2 * time.Second),
+	})
+	seedStableReadonlyFinish(t, s, delegateID, descriptor, started, finish, true)
+
+	// The child has exited: its activity loads through the fold caches the
+	// live root never touches.
+	childStarted := time.Unix(20, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: childStarted, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+		StartedAt: &childStarted, Description: "child shell",
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", s.ID(), 0)
+
+	// Warm the delegate fold cache, then restamp that journal so the child's
+	// next historical read reports a nonzero generation.
+	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm the fold caches: %v", err)
+	}
+	rewritten := time.Unix(1_000_000, 0)
+	if err := os.Chtimes(filepath.Join(jobsDir(stateDir, s.ID()), "delegates.jsonl"), rewritten, rewritten); err != nil {
+		t.Fatalf("restamp the delegate journal: %v", err)
+	}
+	childBase, err := loadHistoricalActivityBase(stateDir, childID, true, newHistoricalActivityCache(context.Background(), s.ID()))
+	if err != nil {
+		t.Fatalf("load the child historically: %v", err)
+	}
+	if childBase.snapshot.DelegatesEpoch == 0 {
+		t.Fatal("fixture did not move the delegate journal's generation; the mismatch under test cannot occur")
+	}
+
+	// What a size trim on the live root's page mints for the child: the
+	// child's own jobs generation, the live root's (zero) delegate
+	// generation, and the live revision.
+	token := encodeActivityContinuation(activityContinuation{
+		Version:   activityContinuationV1,
+		RootID:    s.ID(),
+		SessionID: childID,
+		Path:      []string{delegateID},
+		JobsEpoch: childBase.snapshot.JobsEpoch,
+		Revision:  activityCurrentRootRevision(s.jobActivityClock),
+	})
+	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err != nil {
+		t.Fatalf("live root's own continuation into its closed child was rejected: %v", err)
+	}
+}
+
+// seedRetainedActivityDelegate seeds one finished, acknowledged delegate on a
+// live session, the shape a completed delegate leaves behind in the activity
+// tree.
+func seedRetainedActivityDelegate(t *testing.T, s *Session, delegateID string) {
+	t.Helper()
+	descriptor := stableReadonlyDescriptor(s, delegateID)
+	started := time.Unix(30, 0).UTC()
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:                  "complete",
+		communicated:            true,
+		structuredResultPresent: true,
+		descriptor:              descriptor,
+		startedAt:               started,
+		latestActivityAt:        started.Add(time.Second),
+		endedAt:                 started.Add(2 * time.Second),
+	})
+	seedStableReadonlyFinish(t, s, delegateID, descriptor, started, finish, true)
+}
+
+// TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears pins that
+// a live root's revision means "the shape of this tree changed", not only
+// "a shell job started or finished". A session's entries are its shell jobs
+// followed by its delegates in sorted order, so a delegate created between
+// pages inserts into that list and moves every entry after it: a ResumeIndex
+// minted before it lands somewhere else entirely, redelivering one entry and
+// stepping over another. The continuation has to be refused, the same as for
+// any other mutation the live fence exists to catch.
+func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	seedRetainedActivityDelegate(t, s, "dlg_b")
+	page, err := s.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(page.Root.Entries) != 1 {
+		t.Fatalf("first page entries = %d, want 1", len(page.Root.Entries))
+	}
+	token := encodeActivityContinuation(activityContinuation{
+		Version:     activityContinuationV1,
+		RootID:      s.ID(),
+		SessionID:   s.ID(),
+		ResumeIndex: 1,
+		Revision:    activityCurrentRootRevision(s.jobActivityClock),
+	})
+
+	// A delegate created now sorts ahead of dlg_b and shifts it by one.
+	seedRetainedActivityDelegate(t, s, "dlg_a")
+
+	resumed, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token})
+	if err == nil {
+		delivered := make([]string, 0, len(resumed.Root.Entries))
+		for _, entry := range resumed.Root.Entries {
+			if entry.Delegate != nil {
+				delivered = append(delivered, entry.Delegate.DelegateID)
+			}
+		}
+		t.Fatalf("resume delivered %v against a list that shifted under it; want the continuation refused", delivered)
+	}
+	if !strings.Contains(err.Error(), "live session changed") {
+		t.Fatalf("error = %v, want a live-session-changed staleness error", err)
+	}
+}
+
+// TestJobTreeShapeChange_SurvivesARestart pins that the revision a delegate
+// creation moves reaches the session's metadata. The live fence is only worth
+// the durability of the number behind it: a restart restores the clock from
+// the last saved revision, so a move that never reached disk lets a
+// continuation minted against the old delegate list be accepted against the
+// new one — the very reordering the fence exists to catch.
+func TestJobTreeShapeChange_SurvivesARestart(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir}),
+		withoutGitSnapshot(),
+	)
+	s.maybeAutoSave()
+	before := activityCurrentRootRevision(s.jobActivityClock)
+
+	// What appending a delegate_created event does, and what the commit that
+	// appended it does once it is off the delegate tree's lock.
+	s.noteJobTreeShapeChange()
+	moved := activityCurrentRootRevision(s.jobActivityClock)
+	if moved <= before {
+		t.Fatalf("revision = %d, want it past %d", moved, before)
+	}
+	s.persistJobTreeShapeChange()
+
+	meta, err := schema.LoadSessionMeta(stateDir, s.ID())
+	if err != nil {
+		t.Fatalf("load meta: %v", err)
+	}
+	if meta.JobTreeRevision < moved {
+		t.Fatalf("persisted JobTreeRevision = %d, want at least %d -- a restart would restore a revision from before the delegate appeared and accept a continuation minted against the old list", meta.JobTreeRevision, moved)
+	}
+
+	// A restore reads that number back, so the continuation minted before the
+	// delegate appeared stays refused.
+	restored := newJobActivityClock(s.ID())
+	restored.ensureAtLeast(meta.JobTreeRevision)
+	if activityCurrentRootRevision(restored) < moved {
+		t.Fatalf("restored revision = %d, want at least %d", activityCurrentRootRevision(restored), moved)
 	}
 }

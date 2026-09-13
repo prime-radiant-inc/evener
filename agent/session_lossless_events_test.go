@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
 )
 
 // The session's event buffer. These tests exist to cross it, so they name it
@@ -90,6 +93,402 @@ func TestSessionWithNoConsumerDropsRatherThanWedging(t *testing.T) {
 
 	if got := len(s.events); got != testEventBuffer {
 		t.Fatalf("buffered %d events, want the buffer full at %d", got, testEventBuffer)
+	}
+}
+
+func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
+	oldBudget := LaneClosePassBudget
+	LaneClosePassBudget = 20 * time.Millisecond
+	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+
+	s := losslessTestSession("close-wedged")
+	s.subagents = newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
+	s.authoritativeConsumer = true
+	emitN(s, testEventBuffer)
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	s.testOnlyBlockedSendEntered = func() { blockedOnce.Do(func() { close(blocked) }) }
+
+	emitterDone := make(chan struct{})
+	go func() {
+		defer close(emitterDone)
+		s.sendEvent(events.EventWarning, events.WarningData{Message: "blocked"}, nil)
+	}()
+	select {
+	case <-blocked:
+	// TRIPWIRE: this ceiling only fires if the emitter fails to reach the
+	// saturated channel; the callback is the deterministic synchronization.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary emitter did not reach the saturated channel")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		s.close(context.Background(), closeOptions{forceTerminal: true})
+	}()
+
+	select {
+	case <-closeDone:
+	// TRIPWIRE: this ceiling only fires if shutdown remains wedged after the
+	// bounded close path; closeDone is the real completion signal.
+	case <-time.After(10 * time.Second):
+		t.Fatal("close remained blocked behind a saturated authoritative event channel")
+	}
+	select {
+	case <-emitterDone:
+	// TRIPWIRE: this ceiling only fires if the emitter stays parked after the
+	// close deadline released it; emitterDone is the real completion signal.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary authoritative emitter remained blocked after close deadline")
+	}
+}
+
+// A blocked authoritative send has to observe the session lifetime too, and for
+// the same structural reason the notification hook did.
+//
+// The send parks holding eventsMu.RLock, and before a close publishes its budget
+// the only things it selects on are the caller's context (context.Background()
+// for every ordinary emit) and closeSignal (closed by close, off the same
+// budget). In the daemon the goroutine parked there can be the input loop, and
+// shutdown waits for that loop before it calls CloseForShutdown -- the only
+// publisher of either. So without a lifetime arm the wait and the publisher are
+// each waiting on the other.
+func TestBlockedAuthoritativeSendReleasedByTheSessionLifetime(t *testing.T) {
+	owner, shutdown := context.WithCancel(context.Background())
+	s := losslessTestSession("lifetime-release")
+	s.sessionCtx = owner
+	s.authoritativeConsumer = true
+	emitN(s, testEventBuffer)
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	s.testOnlyBlockedSendEntered = func() { blockedOnce.Do(func() { close(blocked) }) }
+
+	emitterDone := make(chan struct{})
+	go func() {
+		defer close(emitterDone)
+		s.sendEvent(events.EventWarning, events.WarningData{Message: "blocked"}, nil)
+	}()
+	select {
+	case <-blocked:
+	// TRIPWIRE: this ceiling only fires if the emitter fails to reach the
+	// saturated channel; the callback is the deterministic synchronization.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary emitter did not reach the saturated channel")
+	}
+
+	s.closeCtxMu.RLock()
+	published := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if published != nil {
+		t.Fatal("a close budget was already published; this test covers the window before one exists")
+	}
+
+	shutdown()
+	select {
+	case <-emitterDone:
+	// TRIPWIRE: this ceiling only fires if the parked send never observes the
+	// lifetime; emitterDone is the real completion signal and the release is a
+	// channel close away from it.
+	case <-time.After(10 * time.Second):
+		t.Fatal("a blocked authoritative send did not observe the session lifetime ending; " +
+			"shutdown's wait on the goroutine parked here can never finish")
+	}
+}
+
+// The lifetime arm must not cost round 1 its bounded delivery. Once a close has
+// published its budget, THAT budget governs: close cancels the session context
+// as its own step 2, so a send released by the lifetime instead would drop an
+// event the budget still had time to deliver -- silently truncating the tail
+// shutdown exists to flush.
+func TestPublishedCloseBudgetOutranksTheSessionLifetimeForBlockedSends(t *testing.T) {
+	owner, shutdown := context.WithCancel(context.Background())
+	s := losslessTestSession("budget-outranks-lifetime")
+	s.sessionCtx = owner
+	s.authoritativeConsumer = true
+	emitN(s, testEventBuffer)
+	blocked := make(chan struct{})
+	var blockedOnce sync.Once
+	s.testOnlyBlockedSendEntered = func() { blockedOnce.Do(func() { close(blocked) }) }
+
+	// A live budget: t.Context() runs out only when this test does, so the
+	// window round 1 opened for a wedged bridge is genuinely still open here.
+	s.closeCtxMu.Lock()
+	s.closeCtx = t.Context()
+	s.closeSignal = make(chan struct{})
+	s.closeCtxMu.Unlock()
+
+	type sendResult struct{ delivered bool }
+	results := make(chan sendResult, 1)
+	go func() {
+		_, _, delivered := s.sendEventContext(context.Background(), events.EventWarning,
+			events.WarningData{Message: "waiting on the budget"}, nil)
+		results <- sendResult{delivered: delivered}
+	}()
+	select {
+	case <-blocked:
+	// TRIPWIRE: this ceiling only fires if the emitter fails to reach the
+	// saturated channel; the callback is the deterministic synchronization.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary emitter did not reach the saturated channel")
+	}
+
+	// The lifetime ends first, exactly as it does inside close. The live budget
+	// must still own the decision, so the event is delivered as soon as the
+	// consumer takes one.
+	shutdown()
+	<-s.events
+
+	select {
+	case got := <-results:
+		if !got.delivered {
+			t.Fatal("a live close budget lost a blocked authoritative event to the session lifetime; " +
+				"the bounded delivery window is gone")
+		}
+	// TRIPWIRE: this ceiling only fires if the send neither delivers nor
+	// returns; the drain above is the real completion signal.
+	case <-time.After(10 * time.Second):
+		t.Fatal("blocked authoritative send never returned after the consumer drained")
+	}
+}
+
+// fillEventBuffer emits until the session's buffer is exactly at capacity.
+// A session built through NewSession has already emitted during construction,
+// so a fixed count would either leave room or park the filler itself.
+func fillEventBuffer(s *Session) {
+	for len(s.events) < cap(s.events) {
+		s.sendEvent(events.EventWarning, events.WarningData{Message: "fill"}, nil)
+	}
+}
+
+// A send ALREADY parked when a close begins captured its lifetime channel while
+// no budget existed, so the "a published budget supersedes the lifetime" rule
+// cannot reach it: close publishes the budget and then cancels the session
+// context a few statements later (session_lifecycle.go, step 2), and that
+// cancellation would otherwise drop an event the fresh budget still had 30s to
+// deliver.
+//
+// This is not a daemon-shutdown path. Every session NewSession or restore builds
+// owns a cancellable context whether or not a LifetimeContext was supplied
+// (session_init.go), so it covers an ordinary Close: the clear that supersedes a
+// session with a send parked on its full buffer, a one-shot run's close, any
+// library close. The session here is therefore a real one, not the struct
+// literal the other tests in this file use -- that one has no session context at
+// all, which is exactly why it cannot see this.
+func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
+	// The fixture leaves a full buffer with nothing draining, so the close this
+	// session's cleanup runs would spend the shipped budget parked on its own
+	// terminal boundary. What is under test is which deadline owns the event,
+	// not how long the shipped one is.
+	oldBudget := LaneClosePassBudget
+	LaneClosePassBudget = 20 * time.Millisecond
+	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+
+	s := newSession(t, withoutGitSnapshot())
+	s.authoritativeConsumer = true
+	fillEventBuffer(s)
+
+	parked := make(chan struct{}, 2)
+	s.testOnlyBlockedSendEntered = func() {
+		select {
+		case parked <- struct{}{}:
+		default:
+		}
+	}
+	results := make(chan bool, 1)
+	go func() {
+		_, _, delivered := s.sendEventContext(context.Background(), events.EventWarning,
+			events.WarningData{Message: "parked before the close"}, nil)
+		results <- delivered
+	}()
+	select {
+	case <-parked:
+	// TRIPWIRE: this ceiling only fires if the emitter fails to reach the
+	// saturated channel; the callback is the deterministic synchronization.
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary emitter did not reach the saturated channel")
+	}
+
+	// Close's own order: publish the budget, then cancel the session context.
+	s.closeCtxMu.Lock()
+	s.closeCtx = t.Context()
+	s.closeCtxMu.Unlock()
+	s.cancelFunc()
+
+	// The parked send must come back to the freshly published budget rather
+	// than leave on the lifetime, which is observable as a second park.
+	select {
+	case <-parked:
+	// TRIPWIRE: the re-park is a channel read and a lock away from the
+	// cancellation above; 10s only fires if the send left on the lifetime
+	// instead, taking the event with it.
+	case <-time.After(10 * time.Second):
+		t.Fatal("a send parked before the close did not re-park on the budget the close published; " +
+			"the 30s delivery window is gone for every already-parked send")
+	}
+
+	<-s.events
+	select {
+	case delivered := <-results:
+		if !delivered {
+			t.Fatal("a send parked before the close lost its event to the session lifetime; " +
+				"the budget that close published still had its whole window left")
+		}
+	// TRIPWIRE: this ceiling only fires if the send neither delivers nor
+	// returns; the drain above is the real completion signal.
+	case <-time.After(10 * time.Second):
+		t.Fatal("blocked authoritative send never returned after the consumer drained")
+	}
+}
+
+// A Notification hook that is ALREADY running when shutdown starts has to
+// observe the shutdown. The hook runs synchronously on the goroutine that
+// emitted the warning -- in the daemon that is the input loop shutdown waits
+// for before it closes the session (cmd/evener/serve.go) -- so a hook holding
+// a context nothing cancels spends its whole timeout inside the shutdown
+// budget, delaying session cleanup and the rendezvous removal behind it.
+func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
+	oldBudget := LaneClosePassBudget
+	LaneClosePassBudget = 20 * time.Millisecond
+	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+
+	s := newSession(t, withoutGitSnapshot())
+	marker := t.TempDir() + "/hook-running"
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		// exec replaces the shell, so the process the hook's context kills IS
+		// the sleep. A forked sleep would outlive the killed shell still
+		// holding the command's output pipe, and the run would wait for it.
+		Command: "touch " + marker + " && exec sleep 30",
+		Timeout: 30,
+	})
+	s.hookRunner = runner
+
+	hookDone := make(chan struct{})
+	go func() {
+		defer close(hookDone)
+		s.fireNotificationHook("warning")
+	}()
+	waitFor(t, func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	}, "the notification hook command to start running")
+
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		s.CloseForShutdown()
+	}()
+	select {
+	case <-closeDone:
+	// TRIPWIRE: this ceiling only fires if shutdown parks behind the running
+	// hook; closeDone is the real completion signal, and the close budget
+	// above it is 20ms.
+	case <-time.After(10 * time.Second):
+		t.Fatal("CloseForShutdown remained blocked behind a running notification hook")
+	}
+	select {
+	case <-hookDone:
+	// TRIPWIRE: the hook's own timeout is 30s and its command sleeps for all
+	// of it, so nothing but shutdown cancelling the hook can meet a 10s
+	// ceiling; it is a discriminator, not a bound tuned to the real duration.
+	case <-time.After(10 * time.Second):
+		t.Fatal("notification hook running when shutdown started was not interrupted")
+	}
+}
+
+// The other side of the same window: once the daemon's shutdown context is
+// cancelled but before a close has published its budget, a warning must not
+// start a NEW hook. Nothing is left to wait for one -- shutdown is already
+// past the point where it would.
+//
+// The marker alone cannot pin this: exec.Cmd.Start refuses an already-cancelled
+// context before it spawns anything, so the command stays untouched whether the
+// decline happens here or four layers down. The dispatch is the discriminator --
+// runAll announces HookStart before it runs the hook -- so a decline that stops
+// being taken shows up as an announced hook.
+func TestNotificationHookDeclinedOnceTheSessionLifetimeIsOver(t *testing.T) {
+	owner, shutdown := context.WithCancel(context.Background())
+	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		AgentsDocPath:    t.TempDir() + "/no-personal-AGENTS.md",
+		LifetimeContext:  owner,
+	}))
+	shutdown()
+
+	s.closeCtxMu.RLock()
+	published := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if published != nil {
+		t.Fatal("a close budget was already published; this test covers the window before one exists")
+	}
+
+	marker := t.TempDir() + "/hook-started"
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "touch " + marker,
+		Timeout: 30,
+	})
+	dispatched := make(chan struct{}, 1)
+	runner.SetEventCallback(func(kind events.EventKind, _ events.EventData) {
+		if kind != events.EventHookStart {
+			return
+		}
+		select {
+		case dispatched <- struct{}{}:
+		default:
+		}
+	})
+	s.hookRunner = runner
+
+	s.fireNotificationHook("warning after shutdown started")
+
+	if len(dispatched) != 0 {
+		t.Fatal("a warning emitted after the session lifetime ended dispatched a notification hook")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expired session lifetime started notification hook; stat error = %v", err)
+	}
+}
+
+func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
+	s := newSession(t, withoutGitSnapshot())
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "sleep 30",
+		Timeout: 30,
+	})
+	s.hookRunner = runner
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// TRIPWIRE: the close context is already canceled, so the runner declines
+	// the hook without launching `sleep 30`; this normally returns in well
+	// under a millisecond. 10s sits far below the hook's own 30s timeout, so
+	// it still fires if cancellation stops being honored.
+	awaitWithin(t, 10*time.Second, "canceled notification hook", func() {
+		s.runNotificationHook(ctx, "warning")
+	})
+
+	marker := t.TempDir() + "/hook-started"
+	runner = hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "touch " + marker,
+		Timeout: 30,
+	})
+	s.hookRunner = runner
+	s.closeCtx = ctx
+	s.fireNotificationHook("expired warning")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("expired close started notification hook; stat error = %v", err)
 	}
 }
 

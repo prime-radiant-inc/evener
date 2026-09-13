@@ -2,6 +2,9 @@ package rvreg
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 
 	"primeradiant.com/evener/rendezvous"
@@ -15,14 +18,18 @@ type Registration struct {
 	runDir     string
 	entry      rendezvous.Entry
 	registered bool
+	removed    bool
 }
 
 func (r *Registration) Register(runDir string, entry rendezvous.Entry) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.removed {
+		return errors.New("registration has been removed")
+	}
 	if _, err := rendezvous.Write(runDir, entry); err != nil {
 		return err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.runDir = runDir
 	r.entry = entry
 	r.registered = true
@@ -35,6 +42,9 @@ func (r *Registration) UpdateSessionID(sessionID string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.removed {
+		return errors.New("registration has been removed")
+	}
 	if !r.registered {
 		return nil
 	}
@@ -67,5 +77,28 @@ func (r *Registration) Remove() error {
 	// Exact-ownership removal: if a replacement daemon has rewritten the
 	// entry for this PID, the file on disk is no longer this process's to
 	// delete, and the stale cleanup must leave it in place.
-	return rendezvous.RemoveIfOwned(r.runDir, r.entry)
+	r.removed = true
+	err := rendezvous.RemoveIfOwned(r.runDir, r.entry)
+	if err == nil {
+		r.registered = false
+		return nil
+	}
+	// The ownership guard protects a live replacement's rendezvous entry, and
+	// Write always publishes that entry as a regular file under the same lock.
+	// An artifact at <pid>.json that is not a regular file therefore cannot be
+	// a replacement's entry to protect, so fall back to the plain PID-scoped
+	// removal: a cleanup that failed on a transient filesystem condition must
+	// still finish when a later attempt retries it, which is the contract the
+	// shutdown loop relies on. A regular file that no longer matches this
+	// process's identity is refused by RemoveIfOwned above and left untouched.
+	artifact := filepath.Join(r.runDir, strconv.Itoa(r.entry.PID)+".json")
+	if fi, statErr := os.Stat(artifact); statErr != nil || !fi.Mode().IsRegular() {
+		fallbackErr := rendezvous.Remove(r.runDir, r.entry.PID)
+		if fallbackErr == nil {
+			r.registered = false
+			return nil
+		}
+		err = fallbackErr
+	}
+	return err
 }

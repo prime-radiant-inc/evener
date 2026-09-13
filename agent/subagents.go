@@ -208,9 +208,11 @@ const (
 // released here, both kinds together, per scratch: retained on a handoff,
 // disposed when the child is dropped. The parent's own environment is left
 // untouched in every respect: the parent is still working in it. Which
-// environment (if any) a teardown settles is Session.environmentOwnedAtTeardown's
-// decision, so a teardown reaching a child no parent bookkeeping names still
-// settles it correctly.
+// environment (if any) a teardown settles is two Session decisions:
+// Session.environmentOwnedAtTeardown's for the object the child still holds
+// and Session.ownedParkedWorktreeEnvironment's for the one an enter parked,
+// so a teardown reaching a child no parent bookkeeping names still settles
+// both correctly.
 func teardownChildSession(ctx context.Context, sess *Session, scratch childScratchDisposition) {
 	_ = teardownChildSessionWithPolicy(ctx, sess, scratch, releaseTerminal)
 }
@@ -223,7 +225,7 @@ func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, scratch 
 	if sess == nil {
 		return nil
 	}
-	releaseErr := sess.releaseRuntime(ctx, false, policy)
+	releaseErr := sess.releaseRuntime(ctx, closeOptions{}, policy)
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that
@@ -233,6 +235,15 @@ func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, scratch 
 	// excludes it by construction).
 	sess.settleAbandonedEnvironmentScratch(scratch)
 	releaseOwnedChildEnvironment(sess.environmentOwnedAtTeardown(), scratch)
+	// The environment an enter parked (worktreeRestoreEnv) is a THIRD object a
+	// teardown can settle and the close above does not: a child that owned its
+	// spawn-built environment and entered a worktree parked that object while
+	// working in the clone it now holds. A grandchild sharing the parked object
+	// can mint a scratch there after the enter, and nothing else will ever reach
+	// it. ownedParkedWorktreeEnvironment excludes the one parked object this
+	// teardown must never touch: a child that started on its live parent's own
+	// environment parks THAT, and its scratch is the parent's to close.
+	releaseOwnedChildEnvironment(sess.ownedParkedWorktreeEnvironment(), scratch)
 	return releaseErr
 }
 
@@ -270,6 +281,25 @@ func (s *Session) environmentOwnedAtTeardown() execenv.ExecutionEnvironment {
 		return nil
 	}
 	return s.env
+}
+
+// ownedParkedWorktreeEnvironment returns the environment this session parked
+// the first time it entered a worktree, or nil when there is no such
+// environment or it is the live parent's own object. A child spawned with its
+// own environment parks that environment, and its teardown is the only thing
+// that will ever settle the scratch a grandchild sharing the parked object
+// minted there. A child that started on its parent's own environment parks the
+// parent's object instead; the parent is still working in it, so this returns
+// nil and leaves its scratch to the parent's close, exactly as
+// environmentOwnedAtTeardown excludes it.
+func (s *Session) ownedParkedWorktreeEnvironment() execenv.ExecutionEnvironment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parked := s.worktreeRestoreEnv
+	if parked == nil || sameEnvironment(parked, s.parentSharedEnv) {
+		return nil
+	}
+	return parked
 }
 
 // releaseOwnedChildEnvironment is teardownChildSession's environment step on

@@ -34,6 +34,8 @@ var daemonRetirementAccessKinds = map[string]string{
 	appwire.MethodTurnCancelQueued:               "mutation",
 	appwire.MethodGoalSet:                        "mutation",
 	appwire.MethodEvenerSandboxEscalationResolve: "mutation",
+	appwire.MethodNotesHumanSet:                  "mutation",
+	appwire.MethodUrlsRemove:                     "mutation",
 	appwire.MethodThreadShutdown:                 "control",
 	appwire.MethodEvenerDaemonStatus:             "control",
 	appwire.MethodEvenerDaemonRetire:             "control",

@@ -65,9 +65,9 @@ func readAgentsDoc(path string) (appwire.AgentsDocResponse, error) {
 
 // writeAgentsDoc replaces the file atomically (temp + rename, mode 0644,
 // parent created), the same way registry.WriteConfigFile lands
-// providers.toml beside it, except that this writer follows a symlinked
-// AGENTS.md first so a dotfiles-managed copy keeps being the source of truth
-// (Jesse's ruling, 2026-09-07; providers.toml follows in its own PR).
+// providers.toml beside it: both follow a symlinked target first so a
+// dotfiles-managed copy keeps being the source of truth (Jesse's ruling,
+// 2026-09-07).
 // Content is written byte for byte: this is the user's own prose, and
 // trimming or appending a newline would make the editor disagree with the
 // file it just saved. The temp file is created exclusively, under a name

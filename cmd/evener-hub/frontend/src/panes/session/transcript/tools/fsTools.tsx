@@ -6,10 +6,10 @@
 // target/result slot on the wire like the legacy DOM had).
 
 import type { ItemModel } from "../../../../protocol/model";
+import { clip, lineCount, parseArgs, str } from "../../../../protocol/toolCallText";
 import { CodeBlock } from "../../../../widgets";
 import { registerToolRenderer, type ToolRendererDescriptor, type ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
-import { clip, lineCount, parseArgs, str } from "./helpers";
 
 const GREP_PATTERN_CLIP = 50;
 
@@ -82,7 +82,12 @@ registerToolRenderer({
   autoExpand: isImageRead,
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
-    return `Read ${readFileTarget(item)} · ${readLineRange(args, item.output ?? "")}`;
+    const target = readFileTarget(item);
+    // A binary read's output is only the newline-free "[image|document: ...]"
+    // header, so it has no lines to report. readLineRange counts "\n" chars and
+    // would otherwise report a bogus "lines 1" for that zero count (issue #1174).
+    if (BINARY_PAYLOAD_HEADER.test(item.output ?? "")) return `Read ${target}`;
+    return `Read ${target} · ${readLineRange(args, item.output ?? "")}`;
   },
   body: ReadFileOutputBody,
   // read_file references a single file (floor §3.7): expose it for the "open

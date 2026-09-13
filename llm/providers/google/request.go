@@ -148,14 +148,37 @@ func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {
 	return out
 }
 
+// geminiSchemaMetaKeys are JSON Schema's document-metadata keywords (draft-07
+// and 2020-12). They carry no validation semantics, but Gemini's Schema proto
+// has no field for them and rejects the request ("Unknown name \"$schema\"").
+// MCP servers emit them: a tool schema generated from a Zod shape starts with
+// $schema, so a single MCP tool otherwise fails every Gemini request.
+var geminiSchemaMetaKeys = map[string]bool{
+	"$schema":        true,
+	"$id":            true,
+	"$comment":       true,
+	"$anchor":        true,
+	"$dynamicAnchor": true,
+	"$vocabulary":    true,
+}
+
 func sanitizeGeminiSchema(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
-			// The Gemini Schema proto does not accept JSON Schema's additionalProperties field.
-			// Omitting it preserves compatibility while keeping the rest of the schema useful.
-			if k == "additionalProperties" {
+			// The Gemini Schema proto accepts neither JSON Schema's
+			// additionalProperties field nor its $ document metadata.
+			// Omitting them preserves compatibility while keeping the rest
+			// of the schema useful.
+			if k == "additionalProperties" || geminiSchemaMetaKeys[k] {
+				continue
+			}
+			// A schema's "properties" maps property *names* to schemas, and a
+			// name is data: a tool may declare an argument called "$id". Only
+			// the schemas on the right are sanitized, never the names.
+			if k == "properties" {
+				out[k] = sanitizeGeminiNamedSchemas(vv)
 				continue
 			}
 			if k == "type" {
@@ -183,6 +206,22 @@ func sanitizeGeminiSchema(v any) any {
 	default:
 		return v
 	}
+}
+
+// sanitizeGeminiNamedSchemas sanitizes a map whose keys are names rather than
+// schema keywords (the value of a schema's "properties"): each value is
+// sanitized as a schema, but no key is filtered, so a property legitimately
+// named "$schema" or "additionalProperties" survives.
+func sanitizeGeminiNamedSchemas(v any) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return sanitizeGeminiSchema(v)
+	}
+	out := make(map[string]any, len(m))
+	for name, schema := range m {
+		out[name] = sanitizeGeminiSchema(schema)
+	}
+	return out
 }
 
 func geminiEnumWithoutNull(v any) any {

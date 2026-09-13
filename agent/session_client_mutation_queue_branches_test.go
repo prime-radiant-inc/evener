@@ -1143,14 +1143,14 @@ func TestClientMutationProjectionNilStore(t *testing.T) {
 
 func TestRecoverClientMutationFailuresNil(t *testing.T) {
 	var s *Session
-	if err := s.recoverClientMutationFailures(); err != nil {
+	if err := s.recoverClientMutationFailures(true); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 }
 
 func TestRecoverClientMutationFailuresNilStore(t *testing.T) {
 	s := &Session{}
-	if err := s.recoverClientMutationFailures(); err != nil {
+	if err := s.recoverClientMutationFailures(true); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 }

@@ -109,7 +109,7 @@ describe("visibility", () => {
   test("closes itself when the instance disappears from the store", async () => {
     const { onClose } = renderSheet(instance({ name: "a", providerId: "x" }));
     expect(screen.getByRole("dialog", { name: "a" })).toBeTruthy();
-    credentialsStore.setState({ instances: [] });
+    act(() => credentialsStore.setState({ instances: [] }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 

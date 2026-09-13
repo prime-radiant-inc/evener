@@ -132,8 +132,11 @@ describe('state "reconnecting"', () => {
     const { rerender } = render(<ConnectionBanner state="closed" delayMs={0} />);
 
     const fresh = new FakeClient("reconnecting");
-    connectionStore.getState().connect(fresh);
-    rerender(<ConnectionBanner state="reconnecting" delayMs={0} />);
+    await act(async () => {
+      connectionStore.getState().connect(fresh);
+      rerender(<ConnectionBanner state="reconnecting" delayMs={0} />);
+      await Promise.all(vi.mocked(fetch).mock.results.map((result) => result.value));
+    });
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Retry now" }));
@@ -151,9 +154,12 @@ describe('state "closed" - generic (neither probe matches)', () => {
     expect(screen.getByText("Connection closed.")).toBeTruthy();
   });
 
-  test('offers a "Retry" action', () => {
+  test('offers a "Retry" action', async () => {
     render(<ConnectionBanner state="closed" delayMs={0} />);
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    await act(async () => {
+      await Promise.all(vi.mocked(fetch).mock.results.map((result) => result.value));
+    });
   });
 });
 
@@ -406,7 +412,7 @@ describe("reveal delay", () => {
     expect(screen.queryByText(/reconnecting to the server/i)).toBeNull();
   });
 
-  test("re-arms the delay on a fresh attention state after recovery", () => {
+  test("re-arms the delay on a fresh attention state after recovery", async () => {
     vi.useFakeTimers();
     const { rerender } = render(<ConnectionBanner state="reconnecting" delayMs={10_000} />);
     // Recover before the first delay fires - no banner.
@@ -416,7 +422,10 @@ describe("reveal delay", () => {
     // Drop again: the delay clock starts fresh.
     rerender(<ConnectionBanner state="closed" delayMs={10_000} />);
     expect(screen.queryByText("Connection closed.")).toBeNull();
-    act(() => vi.advanceTimersByTime(10_000));
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.all(vi.mocked(fetch).mock.results.map((result) => result.value));
+    });
     expect(screen.getByText("Connection closed.")).toBeTruthy();
   });
 });

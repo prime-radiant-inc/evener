@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "../auth";
 import { AppwireClient, type ConnectionState } from "../protocol/client";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import type { AppwireClientLike } from "../protocol/clientLike";
 import { rpcURLFromLocation } from "../protocol/transport";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import { Banner } from "../widgets/banner";

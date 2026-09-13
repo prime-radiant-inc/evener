@@ -1,8 +1,7 @@
 .card {
   padding: var(--space-4);
-  background: var(--surface-1);
-  border-radius: var(--radius-pane);
-  /* --shadow-card embeds its own 1px ring, replacing the border. */
+  background: var(--surface-0);
+  border-radius: 0;
   box-shadow: var(--shadow-card);
 }
 

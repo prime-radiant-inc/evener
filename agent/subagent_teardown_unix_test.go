@@ -675,6 +675,80 @@ func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
 	}
 }
 
+// An owning child — a working-dir delegate, any child that spawned its own
+// environment — can enter a worktree like every other child. The enter parks
+// the environment the child spawned with in worktreeRestoreEnv and works in a
+// clone, and a grandchild sharing the parked object mints a scratch there
+// afterwards. teardownChildSession runs no cleanupEnv block, so nothing in it
+// reaches that parked environment unless the teardown itself settles it — the
+// clone the child holds now is a different object. Without that step the
+// grandchild's lease is held for the process lifetime and the directory is left
+// to the crashed-scratch sweeper. The settlement is guarded on ownership: a
+// child that started on its parent's own object parks THAT environment, and its
+// teardown must leave the live parent's scratch lease alone (the sibling test
+// above pins that half).
+func TestOwnedChildTeardownRetainsTheParkedWorktreeEnvironmentScratch(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parentLocal, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
+	}
+
+	// The shape prepareSubagentEnvironment builds for a working_dir child: a
+	// clone of the parent's environment that the child owns outright.
+	childEnv := parentLocal.WithWorkingDirectory(t.TempDir())
+	child, err := NewSession(client, parent.currentProfile(), childEnv, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the child's clone: %v", err)
+	}
+	child.ownsEnv = true
+
+	// The child enters a worktree: its spawn-built environment is parked and the
+	// clone it works in becomes the environment the child holds. Nothing here
+	// needs a real git worktree — the assertion is about the environment the
+	// enter parks, not about git — so a plain temp dir exercises the swap.
+	if err := child.enterWorktree(t.TempDir(), true); err != nil {
+		t.Fatalf("enterWorktree: %v", err)
+	}
+	child.mu.Lock()
+	parked := child.worktreeRestoreEnv
+	child.mu.Unlock()
+	if parked != childEnv {
+		t.Fatalf("parked environment = %p, want the child's spawn-built %p", parked, childEnv)
+	}
+	if currentLocalEnv(t, child) == parked {
+		t.Fatal("the enter did not swap the child off its spawn-built environment; this test would prove nothing")
+	}
+
+	// What a grandchild sharing the parked object does after the move: its
+	// command mints a scratch on the object the enter just emptied.
+	if _, err := parked.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("grandchild command on the parked environment: %v", err)
+	}
+	parkedScratch := parked.SessionScratchDir()
+	if parkedScratch == "" {
+		t.Fatal("the grandchild's command minted no scratch on the parked environment")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(parkedScratch) })
+	if !scratchLeaseHeld(t, parkedScratch) {
+		t.Fatal("the grandchild's scratch lease is not held before the child's teardown")
+	}
+
+	teardownChildSession(context.Background(), child, retainChildScratch)
+
+	if _, err := os.Stat(parkedScratch); err != nil {
+		t.Errorf("the child's teardown removed the parked environment's scratch %s, want it retained for the handoff: %v", parkedScratch, err)
+	}
+	if scratchLeaseHeld(t, parkedScratch) {
+		t.Errorf("the parked environment's scratch %s lease is still held after the child's teardown; nothing else will ever release it", parkedScratch)
+	}
+}
+
 // The same shared-environment child must not take the scratch OFF the
 // environment it shares with its still-working parent: the parent is working in
 // that directory, and a child that carried it into a worktree would silently

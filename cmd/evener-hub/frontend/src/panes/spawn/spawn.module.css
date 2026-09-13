@@ -223,6 +223,7 @@
 
 .promptHeading {
   margin: 0;
+  font-family: var(--font-prose);
   color: var(--ink-hi);
   font-size: var(--font-size-page-title);
   font-weight: var(--font-weight-semibold);
@@ -241,6 +242,16 @@
   flex-direction: column;
   min-width: 0;
   gap: var(--space-2);
+}
+
+/* Positions SlashCompletionMenu (an absolutely-positioned child) above the
+ * prompt card, without affecting this element's own layout - the same
+ * anchored-float recipe as the session composer's own .formAnchor
+ * (composer.module.css): the menu opens upward off the positioned ancestor
+ * it wraps. Without a positioned ancestor the menu's absolute positioning
+ * would anchor to the wrong box. */
+.promptAnchor {
+  position: relative;
 }
 .directoryButton {
   display: flex;

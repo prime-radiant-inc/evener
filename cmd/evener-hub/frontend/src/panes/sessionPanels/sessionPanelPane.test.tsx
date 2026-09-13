@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { ActivityTree } from "../../protocol/activityData";
 import { WireError } from "../../protocol/errors";
 import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -11,7 +12,6 @@ import { connectionStore } from "../../stores/connection";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
-import type { ActivityTree } from "../session/chrome/activityData";
 import { NOW_TICK_MS } from "../session/liveness";
 import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";
@@ -59,6 +59,7 @@ const CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -81,6 +82,9 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     lastFrameAt: 0,
     capabilities: CAPABILITIES,
     goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,
@@ -315,7 +319,7 @@ test("renders a scaffold loading state before the session model hydrates", () =>
   expect(screen.getByText("Loading session panel…")).toBeTruthy();
 });
 
-test("keeps the scaffold heading consistent with the registered title after rename", () => {
+test("keeps the scaffold heading consistent with the registered title after rename", async () => {
   const model = testModel({ name: "Initial name" });
   seedModel(model);
   const { rerender } = render(
@@ -324,7 +328,9 @@ test("keeps the scaffold heading consistent with the registered title after rena
   expect(screen.getByRole("heading", { name: sessionPanelTitle("details", model.ref, model.name) })).toBeTruthy();
 
   const renamed = testModel({ name: "Renamed session" });
-  seedModel(renamed);
+  await act(async () => {
+    seedModel(renamed);
+  });
   rerender(<SessionPanelPane params={{ ref: renamed.ref }} paneId="panel-title" focused kind="details" />);
   expect(screen.getByRole("heading", { name: sessionPanelTitle("details", renamed.ref, renamed.name) })).toBeTruthy();
 });

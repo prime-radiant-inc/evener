@@ -71,13 +71,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import { isActionUnavailable, isThreadNotFound } from "../../../protocol/sessionErrors";
 import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
 import { groupTasks } from "./taskGroups";
 import styles from "./taskspanel.module.css";

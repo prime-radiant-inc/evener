@@ -2,9 +2,9 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--surface-1);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+  border: none;
+  border-radius: 0;
   /* clips children to the rounded corners instead of squaring them off */
   overflow: hidden;
 }
@@ -15,16 +15,11 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-5);
-  background: var(--surface-inset);
+  background: transparent;
   border-bottom: 1px solid var(--edge);
 }
 
-/* A pane's title is its page heading (typography-spacing-critique-2026-09-06
- * R4): sentence case, the pane-title step, semibold, full ink. The uppercase
- * micro-label stays for containers INSIDE a page (InspectorCard,
- * RecommendationCard, Table headers); as a page title it made the page's
- * heading its smallest text, and a session's prompt rendered as an
- * uppercase sentence. */
+/* Editorial page heading; controls and metadata keep the sans face. */
 .title {
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
@@ -35,7 +30,7 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--ink-hi);
-  font-family: var(--font-sans);
+  font-family: var(--font-prose);
   font-size: var(--font-size-pane-title);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-display);

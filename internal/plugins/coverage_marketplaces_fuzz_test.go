@@ -47,7 +47,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	if got := m.catalogRoot(MarketplaceRef{InstallLocation: "root"}); got != "root" {
 		t.Fatalf("catalog root = %q", got)
 	}
-	if _, err := m.ListMarketplaces(); err != nil {
+	if _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 

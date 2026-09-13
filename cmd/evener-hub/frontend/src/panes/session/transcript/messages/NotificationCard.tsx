@@ -19,7 +19,7 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Card, Chip, Markdown } from "../../../../widgets";
+import { Card, Chevron, Chip, Markdown } from "../../../../widgets";
 import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import {
@@ -48,6 +48,7 @@ const CLASS = {
   secondaryTail: requireClass(styles.secondaryTail, "notificationcard.module.css", "secondaryTail"),
   secondaryTailText: requireClass(styles.secondaryTailText, "notificationcard.module.css", "secondaryTailText"),
   openTrailing: requireClass(styles.openTrailing, "notificationcard.module.css", "openTrailing"),
+  chevron: requireClass(styles.chevron, "notificationcard.module.css", "chevron"),
   metadata: requireClass(styles.metadata, "notificationcard.module.css", "metadata"),
   field: requireClass(styles.field, "notificationcard.module.css", "field"),
   fieldLabel: requireClass(styles.fieldLabel, "notificationcard.module.css", "fieldLabel"),
@@ -232,6 +233,28 @@ export function NotificationCard({
   const chip = toneChip(notification.tone);
   const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
   const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
+  // The title-only branch (no secondary) splits the title the same way, so
+  // its chevron rides the title's final word atomically. Computed eagerly: the
+  // branch that reads it is the one where no secondary exists.
+  const titleParts = splitTrailingWord(notification.title);
+  // The head suppresses the native details marker (the old text glyphs were
+  // font-dependent and overhung their boxes - see widgets/chevron), so this is
+  // the reader's only expand affordance: the same trailing <Chevron> idiom
+  // ThinkBlock's summary uses. EVERY branch renders it inside an atomic
+  // secondaryTail unit with the words it opens - after the Open control where
+  // one exists (the ToolRow grammar's "text, Open, chevron" order) - so a line
+  // that runs out moves the whole unit and the glyph can never strand alone
+  // on a wrapped line.
+  const chevron = (
+    <span
+      className={CLASS.chevron}
+      aria-hidden="true"
+      data-open={open ? "true" : "false"}
+      data-testid="notification-chevron"
+    >
+      <Chevron />
+    </span>
+  );
   return (
     <details className={CLASS.disclosure} open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
@@ -249,13 +272,28 @@ export function NotificationCard({
         {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
         <span className={CLASS.headingText}>
           {secondaryParts || !transcriptRef ? (
-            <span className={CLASS.title}>{notification.title}</span>
+            secondaryParts ? (
+              <span className={CLASS.title}>{notification.title}</span>
+            ) : (
+              // Title-only mirrors the secondary treatment: the FINAL word and
+              // the chevron are one atomic unit, so the glyph hugs the title's
+              // last line at any width (a whole-title unit parks it at the
+              // unit's right edge) and never strands.
+              <>
+                <span className={CLASS.title}>{titleParts[0]}</span>
+                <span className={CLASS.secondaryTail}>
+                  <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{titleParts[1]}</span>
+                  {chevron}
+                </span>
+              </>
+            )
           ) : (
             <span className={CLASS.secondaryTail}>
               <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{notification.title}</span>
               <span className={CLASS.openTrailing}>
                 <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
               </span>
+              {chevron}
             </span>
           )}
           {secondaryParts ? (
@@ -272,10 +310,17 @@ export function NotificationCard({
                         label="Open subagent"
                       />
                     </span>
+                    {chevron}
                   </span>
                 </>
               ) : (
-                notification.secondary
+                <>
+                  {secondaryParts[0]}
+                  <span className={CLASS.secondaryTail}>
+                    <span className={CLASS.secondaryTailText}>{secondaryParts[1]}</span>
+                    {chevron}
+                  </span>
+                </>
               )}
             </span>
           ) : null}

@@ -36,11 +36,14 @@ function formatElapsed(startedAt: number, now: number): string {
 
 /**
  * A small pixel-grid glyph plus an optional mm:ss elapsed readout, for a
- * genuinely indeterminate, user-initiated wait (a network fetch, a spawn) -
- * NOT a stand-in for agent liveness. Cadence already owns that signal with
- * its own honest-liveness stance (pure render, decaying trace, no faked
- * motion); reusing Loader's shimmer for "the agent is working" would just
- * be a second, competing liveness indicator.
+ * genuinely indeterminate wait (a network fetch, a spawn). Loader is NOT a
+ * general agent-liveness stand-in: Cadence owns that signal with its own
+ * honest-liveness stance (pure render, decaying trace, no faked motion). The
+ * one scoped exception is the transcript's content-free "Thinking…"
+ * placeholder for a live reasoning item with the Reasoning content flag off
+ * (transcriptDisplay's projector emits it; ThinkBlock renders it) - a
+ * user-approved use of this grid as the only motion the transcript adds,
+ * recorded in docs/web-ui/design-system.md's motion budget.
  *
  * The grid's animation is the one deliberate exception to the app's ban on
  * idle animation (Direction, Global Constraints): it only exists at all

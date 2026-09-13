@@ -547,7 +547,9 @@ func TestCovPopSteeringHead_Success(t *testing.T) {
 // (session_queue.go lines 635-683): empty text + no images — no-op.
 func TestCovPushQueueHead_Empty(t *testing.T) {
 	s := &Session{}
-	s.pushQueueHead(queuedInput{})
+	if err := s.pushQueueHead(queuedInput{}); err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock()
 	if len(s.inputQueue) != 0 {
 		t.Fatal("empty entry should be no-op")
@@ -559,7 +561,9 @@ func TestCovPushQueueHead_Empty(t *testing.T) {
 // a client mutation ID — the direct-input-queue path.
 func TestCovPushQueueHead_NoClientMutation(t *testing.T) {
 	s := &Session{}
-	s.pushQueueHead(queuedInput{ID: "q1", Text: "hello"})
+	if err := s.pushQueueHead(queuedInput{ID: "q1", Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock()
 	if len(s.inputQueue) != 1 || s.inputQueue[0].Text != "hello" {
 		t.Fatalf("input queue: %+v", s.inputQueue)

@@ -549,11 +549,12 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 			response.TextLength = optionalAPILogInt(len(result.Response.Text()), true)
 			response.ToolCallCount = optionalAPILogInt(len(result.Response.ToolCalls()), true)
 			response.Usage = apilog.Usage{
-				InputTokens:      optionalAPILogInt(result.Response.Usage.InputTokens, true),
-				OutputTokens:     optionalAPILogInt(result.Response.Usage.OutputTokens, true),
-				TotalTokens:      optionalAPILogInt(result.Response.Usage.TotalTokens, true),
-				CacheReadTokens:  cloneAPILogInt(result.Response.Usage.CacheReadTokens),
-				CacheWriteTokens: cloneAPILogInt(result.Response.Usage.CacheWriteTokens),
+				InputTokens:        optionalAPILogInt(result.Response.Usage.InputTokens, true),
+				OutputTokens:       optionalAPILogInt(result.Response.Usage.OutputTokens, true),
+				TotalTokens:        optionalAPILogInt(result.Response.Usage.TotalTokens, true),
+				CacheReadTokens:    cloneAPILogInt(result.Response.Usage.CacheReadTokens),
+				CacheWriteTokens:   cloneAPILogInt(result.Response.Usage.CacheWriteTokens),
+				CacheWrite1hTokens: cloneAPILogInt(result.Response.Usage.CacheWrite1hTokens),
 			}
 		}
 		record.Response = &response

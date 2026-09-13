@@ -136,6 +136,8 @@ var Methods = []MethodSpec{
 	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, TurnPromoteQueuedAsSteerResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn."},
 	{MethodTurnCancelQueued, TurnCancelQueuedParams{}, TurnCancelQueuedResponse{}, ScopeBoth, "Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose)."},
 	{MethodGoalSet, GoalSetParams{}, GoalSetResponse{}, ScopeBoth, "Sets or clears the session's /goal objective."},
+	{MethodNotesHumanSet, NotesHumanSetParams{}, NotesHumanSetResponse{}, ScopeBoth, "Atomically accepts the human whiteboard and a notification; returns the canonical note and mutation receipt."},
+	{MethodUrlsRemove, UrlsRemoveParams{}, UrlsRemoveResponse{}, ScopeBoth, "Removes one session URL list entry by id."},
 	{MethodEvenerTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
 	{MethodEvenerJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data."},
 	{MethodEvenerJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback."},
@@ -202,6 +204,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerPluginDisable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Disables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginSetAutoUpgrade, PluginSetAutoUpgradeParams{}, PluginListResponse{}, ScopeHub, "Sets an installed plugin's auto-upgrade flag; returns the updated list."},
 	{MethodEvenerCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display."},
+	{MethodEvenerSpawnSlashCatalog, SpawnSlashCatalogParams{}, SpawnSlashCatalogResponse{}, ScopeHub, "Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer."},
 	{MethodEvenerSettingsOverview, EmptyParams{}, SettingsOverviewResponse{}, ScopeHub, "Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data."},
 	{MethodEvenerSettingsTranscriptDisplayGet, EmptyParams{}, TranscriptDisplayDefaults{}, ScopeHub, "Reads the canonical Desktop and Mobile transcript-display defaults."},
 	{MethodEvenerSettingsTranscriptDisplayPatch, TranscriptDisplayDefaultsPatchParams{}, TranscriptDisplayPatchResponse{}, ScopeHub, "Updates one transcript-display default using an expected revision and returns the canonical value."},
@@ -228,6 +231,8 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 		MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
 		MethodTurnCancelQueued:         {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
 		MethodThreadClear:              {"clientMutationId", "expectedInstanceId"},
+		MethodNotesHumanSet:            {"clientMutationId", "expectedInstanceId"},
+		MethodUrlsRemove:               {"clientMutationId", "expectedInstanceId"},
 	}[method]
 	if len(required) == 0 {
 		return nil
@@ -298,6 +303,8 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
 	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list outcome counts (total/done/cancelled/remaining) changed."},
 	{NotifyEvenerGoalUpdated, GoalUpdatedParams{}, "The session's complete structured goal state changed; null clears it."},
+	{NotifyEvenerNotesUpdated, NotesUpdatedParams{}, "The session's shared-notes whiteboards changed."},
+	{NotifyEvenerUrlsUpdated, UrlsUpdatedParams{}, "The session's shared-notes URL list changed."},
 	{NotifyEvenerSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve."},
 	{NotifyEvenerSandboxEscalationResolved, SandboxEscalationResolved{}, "A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card."},
 	{NotifyEvenerSettingsTranscriptDisplayChanged, TranscriptDisplayChangedParams{}, "Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration."},

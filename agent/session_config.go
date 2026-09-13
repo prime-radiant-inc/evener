@@ -34,8 +34,11 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	// LifetimeContext owns this session tree when supplied by a one-shot run.
-	// Nil preserves daemon/background ownership and is not persisted.
+	// LifetimeContext owns this session tree: `evener run` supplies its run
+	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
+	// context, so cancelling either ends the tree's own context immediately
+	// rather than when Close finally runs. Nil is the library/test shape --
+	// the tree roots at Background and only Close can cancel it. Not persisted.
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
 
@@ -380,6 +383,12 @@ type testConfig struct {
 	// recordings in that window. Nil in production.
 	beforeFoldTranscriptCommit func()
 
+	// beforeEnvironmentEventPublish observes an environment append at the
+	// moment it is about to publish its live event, so a test can state where
+	// that publication sits relative to the transcript ordering boundary.
+	// Nil in production.
+	beforeEnvironmentEventPublish func()
+
 	// afterFoldSupersessionCheck observes a fold flush immediately after it
 	// has evaluated whether a newer publication supersedes it and before it
 	// runs its last-write-wins side effects. Tests use it only to place a
@@ -534,6 +543,12 @@ type testConfig struct {
 	// already use). Tests inject afero.NewMemMapFs() to avoid real fsync-bearing
 	// meta-file IO; nil in production.
 	metaFS afero.Fs
+
+	// notesAutoSaveFault injects a deterministic metadata-persistence failure
+	// into the shared-notes mutation paths. Nil preserves the production
+	// save; a non-nil return is surfaced as the mutation error and blocks
+	// the success journal. Tests use it to prove durability gating.
+	notesAutoSaveFault func() error
 
 	// contentWindowClock, when non-nil, is the clock consumeModelStream reads
 	// to measure an attempt's content-event window (attemptObservation.

@@ -111,6 +111,8 @@ no router (reserved).
 | `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
+| `notes/human/set` | both | `NotesHumanSetParams` | `NotesHumanSetResponse` | Atomically accepts the human whiteboard and a notification; returns the canonical note and mutation receipt. |
+| `urls/remove` | both | `UrlsRemoveParams` | `UrlsRemoveResponse` | Removes one session URL list entry by id. |
 | `evener/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `evener/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
@@ -177,6 +179,7 @@ no router (reserved).
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
+| `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
@@ -225,6 +228,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
+| `evener/notes/updated` | `NotesUpdatedParams` | The session's shared-notes whiteboards changed. |
+| `evener/urls/updated` | `UrlsUpdatedParams` | The session's shared-notes URL list changed. |
 | `evener/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve. |
 | `evener/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
 | `evener/settings/transcriptDisplay/changed` | `TranscriptDisplayChangedParams` | Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration. |
@@ -1078,6 +1083,7 @@ _(no fields)_
 | `mcps` | `[]appwire.MCPServerSpec` | yes |  |
 | `env` | `map[string]string` | yes |  |
 | `verbose` | `*bool` | yes |  |
+| `apiLog` | `*bool` | yes |  |
 | `traceFile` | `string` | yes |  |
 | `cpuProfile` | `string` | yes |  |
 | `exportATIFPath` | `string` | yes |  |
@@ -1243,6 +1249,34 @@ _(no fields)_
 | `etag` | `string` |  |  |
 | `base` | `*appwire.NavigationReadBase` | yes |  |
 | `data` | `jsontext.Value` | yes |  |
+
+
+### `NotesHumanSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
+| `note` | `string` | yes |  |
+
+
+### `NotesHumanSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `note` | `string` |  |  |
+| `receipt` | `appwire.MutationReceipt` |  |  |
+
+
+### `NotesUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `humanNote` | `string` | yes |  |
+| `agentNote` | `string` | yes |  |
 
 
 ### `PathValidateParams`
@@ -1515,6 +1549,23 @@ _(no fields)_
 | `storage` | `*appwire.SettingsStorageOverview` | yes |  |
 | `agents` | `[]appwire.SettingsAgentEntry` | yes |  |
 | `mcpDiscovered` | `*appwire.SettingsMCPOverview` | yes |  |
+
+
+### `SpawnSlashCatalogParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+| `harness` | `string` | yes |  |
+| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+
+
+### `SpawnSlashCatalogResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `commands` | `[]appwire.CommandDescriptor` |  |  |
+| `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
 
 
 ### `TaskListParams`
@@ -2135,6 +2186,30 @@ _(no fields)_
 | `shareBinDir` | `string` |  |  |
 | `installed` | `[]string` |  |  |
 | `restartMessage` | `string` |  |  |
+
+
+### `UrlsRemoveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
+| `id` | `string` |  |  |
+
+
+### `UrlsRemoveResponse`
+
+_(no fields)_
+
+
+### `UrlsUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `urls` | `[]appwire.SessionURL` | yes |  |
 
 
 ### `WarningParams`

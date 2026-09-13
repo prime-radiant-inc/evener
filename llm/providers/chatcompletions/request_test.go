@@ -72,6 +72,7 @@ func TestBuildBody_ThinkingFormats(t *testing.T) {
 			res := resolved(func(caps *registry.Caps) {
 				caps.Reasoning = new(true)
 				caps.ReasoningControls = []string{"effort"}
+				caps.EffortValues = []string{"low", "medium", "high"}
 				if c.format != "" {
 					caps.ThinkingFormat = new(c.format)
 				}
@@ -142,10 +143,12 @@ func TestBuildBody_ReasoningGates(t *testing.T) {
 		t.Fatalf("none sends nothing: %v", body)
 	}
 
-	unknown := resolved(nil) // Reasoning nil, no controls: an explicit effort passes through
+	// A row with no verdict and no controls has no ladder either, so it
+	// vouches for no level: the effort is dropped rather than forced.
+	unknown := resolved(nil)
 	req.ReasoningEffort = &high
-	if body := build(t, req, unknown); body["reasoning_effort"] != "high" {
-		t.Fatalf("unknown row must pass an explicit effort through: %v", body)
+	if body := build(t, req, unknown); body["reasoning_effort"] != nil {
+		t.Fatalf("a row with no ladder must not get an effort name: %v", body)
 	}
 }
 

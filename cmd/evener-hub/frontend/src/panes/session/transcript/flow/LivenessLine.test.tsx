@@ -1,5 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { seedCurrentDelegate } from "../tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests, turnScopeKey, upsertSubagentRow } from "../tools/subagentModuleStore";
 import { LivenessLine } from "./LivenessLine";
 
@@ -7,6 +9,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   resetSubagentModuleStoreForTests();
+  resetThreadsStoreForTests();
 });
 
 test("renders nothing while the thread is not active, regardless of gap", () => {
@@ -49,8 +52,22 @@ test("does not self-tick: the rendered text never changes without a new `now` pr
 
 // --- running children, scoped by session and turn -------------------------
 
+function seedRunningChildren(count: number) {
+  const thread = seedCurrentDelegate("s1", "dlg_1", "running");
+  const stable = thread.delegates![0]!;
+  thread.delegates = Array.from({ length: count }, (_, index) => ({ ...stable, delegateId: `dlg_${index}` }));
+  threadsStore.setState({ threads: new Map([["s1", thread]]) });
+  for (const delegate of thread.delegates) {
+    upsertSubagentRow(turnScopeKey("s1", "turn_0"), {
+      rowKey: `dlg:${delegate.delegateId}`,
+      delegateId: delegate.delegateId,
+      resultPreview: "",
+    });
+  }
+}
+
 test("renders 'Waiting on 1 subagent' instead of the quiet phrase once a running child is tracked for the active turn", () => {
-  upsertSubagentRow(turnScopeKey("s1", "turn_0"), { rowKey: "dlg:1", kind: "running", resultPreview: "" });
+  seedRunningChildren(1);
   render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
   const el = screen.getByTestId("liveness-line");
   expect(el.textContent).toBe("Waiting on 1 subagent");
@@ -61,7 +78,7 @@ test("renders 'Waiting on 1 subagent' instead of the quiet phrase once a running
 // reports both facts - see describeLiveness's own comment for why a believed-
 // running child must not be able to silence the stall report forever.
 test("past the stall threshold, a tracked running child still surfaces the silence rather than hiding it", () => {
-  upsertSubagentRow(turnScopeKey("s1", "turn_0"), { rowKey: "dlg:1", kind: "running", resultPreview: "" });
+  seedRunningChildren(1);
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
   const text = screen.getByTestId("liveness-line").textContent ?? "";
   expect(text).toContain("Waiting on 1 subagent");
@@ -69,26 +86,44 @@ test("past the stall threshold, a tracked running child still surfaces the silen
 });
 
 test("renders 'Waiting on N subagents' (plural) once past the quiet threshold, pre-empting the quiet phrase too", () => {
-  const scopeKey = turnScopeKey("s1", "turn_0");
-  upsertSubagentRow(scopeKey, { rowKey: "dlg:1", kind: "running", resultPreview: "" });
-  upsertSubagentRow(scopeKey, { rowKey: "dlg:2", kind: "running", resultPreview: "" });
-  upsertSubagentRow(scopeKey, { rowKey: "dlg:3", kind: "running", resultPreview: "" });
+  seedRunningChildren(3);
   render(<LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" />);
   expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 3 subagents");
 });
 
 test("a done/failed row alone does not explain a wait - falls back to the ordinary stalled decision", () => {
   const scopeKey = turnScopeKey("s1", "turn_0");
-  upsertSubagentRow(scopeKey, { rowKey: "dlg:1", kind: "done", resultPreview: "ok" });
-  upsertSubagentRow(scopeKey, { rowKey: "dlg:2", kind: "failed", resultPreview: "boom" });
+  upsertSubagentRow(scopeKey, { rowKey: "dlg:1", receiptStatus: "done", resultPreview: "ok" });
+  upsertSubagentRow(scopeKey, { rowKey: "dlg:2", receiptStatus: "failed", resultPreview: "boom" });
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId="turn_0" />);
   expect(screen.getByTestId("liveness-line").textContent!.toLowerCase()).toContain("stalled");
 });
 
 test("an undefined turnId (no active turn yet) reads as zero running children even if rows exist for a real turn in the same session", () => {
-  upsertSubagentRow(turnScopeKey("s1", "turn_0"), { rowKey: "dlg:1", kind: "running", resultPreview: "" });
+  seedRunningChildren(1);
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId={undefined} />);
   expect(screen.getByTestId("liveness-line").textContent!.toLowerCase()).toContain("stalled");
+});
+
+test("a historical running receipt cannot explain a current wait without owner evidence", () => {
+  upsertSubagentRow(turnScopeKey("s1", "turn_0"), {
+    rowKey: "dlg:1",
+    delegateId: "dlg_1",
+    receiptStatus: "running",
+    resultPreview: "",
+  });
+  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  expect(screen.getByTestId("liveness-line").textContent).toBe("Quiet ~1m");
+});
+
+test("an explicitly in-flight launch can explain a current wait before owner evidence arrives", () => {
+  upsertSubagentRow(turnScopeKey("s1", "turn_0"), {
+    rowKey: "call:1",
+    launching: true,
+    resultPreview: "",
+  });
+  render(<LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+  expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 1 subagent");
 });
 
 // --- model-call retries (kata 4zn8): the daemon reports what it is waiting on,

@@ -132,3 +132,74 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 		t.Errorf("failures = %v, want one re-injection diagnostic", entry.Failures)
 	}
 }
+
+// Restoring a session with no conversation still persists the current
+// environment before the deferred resume hook runs. That environment record is
+// setup context, not prior conversation, so it must not make the hook dispatch
+// look like a reinjection.
+func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("done") },
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	meta := schema.SessionMeta{
+		ID:        "01KREINJECTIONEMPTYRESTORE0",
+		ProfileID: "test",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{PluginDirs: []string{newResumeHookPluginDir(t)}},
+	}
+	sess, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{StateDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	if _, err := sess.ProcessInput(t.Context(), "first user task", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	data, err := readTranscriptFull(sess.TranscriptPath())
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	haveEnvironment := false
+	haveResumeHookContext := false
+	for _, item := range data.Entries {
+		if item.Turn.Kind == schema.TurnEnvironment {
+			haveEnvironment = true
+		}
+		if strings.Contains(item.Turn.Message.Text(), "RESUME_HOOK_CONTEXT") {
+			haveResumeHookContext = true
+		}
+	}
+	if !haveEnvironment {
+		t.Fatal("restored empty session did not durably record its environment context")
+	}
+	if !haveResumeHookContext {
+		t.Fatal("resume hook context was not durably delivered")
+	}
+
+	entry := sessionStartHookDispatchEntry(t, stateDir, sess.ID())
+	if entry.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success on an empty restored session; summary = %q; failures = %v", entry.Outcome, entry.Summary, entry.Failures)
+	}
+	if len(entry.Failures) != 0 {
+		t.Fatalf("failures = %v, want none on an empty restored session", entry.Failures)
+	}
+	if !strings.Contains(entry.Summary, "historyTurns=0 ") {
+		t.Fatalf("summary = %q, want historyTurns=0 followed by a delimiter", entry.Summary)
+	}
+}

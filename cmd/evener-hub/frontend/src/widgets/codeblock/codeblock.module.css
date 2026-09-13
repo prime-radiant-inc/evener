@@ -1,7 +1,5 @@
-/* A hairline frame on --surface-1 - no heavy fill, no shadow. Measured in the
- * light theme --surface-1 is the same white as the pane behind it, so the
- * edge is what separates the block from the prose; that is deliberate (the
- * block should read as framed text, not as a slab). */
+/* A fine boundary on the evidence ground separates code from reading text
+ * without adding structural elevation. */
 .root {
   position: relative;
   border: 1px solid var(--edge);
@@ -82,6 +80,7 @@
  * never runs under it. */
 .pre {
   margin: 0;
+  font-family: var(--font-mono);
   padding: var(--space-2) var(--space-3);
   padding-right: var(--space-6);
   white-space: pre-wrap;
@@ -90,7 +89,7 @@
 
 /* --font-size-caption, not --font-size-body: an expanded tool body must not read
  * LARGER than the transcript rows around it, which are --font-size-ui (13px);
- * body is 14px (A4). */
+ * body is 15px. */
 .code {
   color: var(--ink-hi);
   font-family: var(--font-mono);

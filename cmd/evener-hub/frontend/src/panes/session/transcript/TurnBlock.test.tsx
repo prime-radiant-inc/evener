@@ -73,6 +73,34 @@ test("tags the root with the turn id", () => {
   expect(container.querySelector('[data-turn-id="turn_42"]')).toBeTruthy();
 });
 
+test("wires a content-free thinking entry through TurnBlock to the placeholder (never the thought body)", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const projected = turn(
+    [item({ type: "reasoning", status: "inProgress", reasoningSummaries: [["abcdefghijklmnop"]] })],
+    {},
+    config,
+  );
+  render(withConfig(config, <TurnBlock turn={projected} />));
+  expect(screen.getByText(/Thinking…/)).toBeTruthy();
+  expect(screen.getByTestId("loader-grid")).toBeTruthy();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+});
+
+test("redacts a critical reasoning row on a terminal turn", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const projected = turn(
+    [item({ type: "reasoning", status: "failed", reasoningSummaries: [["abcdefghijklmnop"]] })],
+    { status: "interrupted" },
+    config,
+  );
+  render(withConfig(config, <TurnBlock turn={projected} />));
+  expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
+  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
+  expect(document.querySelector("details")).toBeNull();
+});
+
 test("the turn root remains a centered, shrinkable reading column", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -220,13 +248,13 @@ test("with both hook toggles off, only a non-zero hook survives as a compact cri
   expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
 });
 
-test("a blank-intent tool uses the projected neutral summary without a raw command summary", () => {
+test("an intent-less tool shows its own derived summary at chat and tools levels", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
   const blankIntent = item({
     id: "critical-blank-intent",
     type: "commandExecution",
     toolName: "shell",
-    argumentsJSON: JSON.stringify({ command: "echo should-not-be-recomputed" }),
+    argumentsJSON: JSON.stringify({ command: "echo derived-summary" }),
     description: "  ",
     status: "completed",
   });
@@ -235,13 +263,35 @@ test("a blank-intent tool uses the projected neutral summary without a raw comma
   // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
   // <details> children), so it is present even when the group is closed.
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByText("Action summary unavailable")).toBeTruthy();
-  expect(screen.queryByText("Ran echo should-not-be-recomputed")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
 
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   rerender(withConfig(tools, <TurnBlock turn={turn([blankIntent], {}, tools)} />));
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Action summary unavailable");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+});
+
+// Regression for session 034MY2rfMj2ho4Nj6J0jFB: an intent-less read_file row
+// rendered "Action summary unavailable" instead of the row's own
+// "Read <path> · lines N-M", because the projected neutral summary replaced the
+// descriptor's own summary. Every level must show the derived summary.
+test("an intent-less read_file shows the Read summary, never 'Action summary unavailable'", () => {
+  const read = item({
+    id: "read-no-intent",
+    type: "commandExecution",
+    toolName: "read_file",
+    argumentsJSON: JSON.stringify({ file_path: "src/foo.ts" }),
+    output: "line one\nline two\n",
+    description: "  ",
+    status: "completed",
+  });
+  for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { unmount } = render(withConfig(config, <TurnBlock turn={turn([read], {}, config)} />));
+    expect(screen.getByTestId("tool-row-summary").textContent).toBe("Read src/foo.ts · lines 1-2");
+    expect(screen.queryByText("Action summary unavailable")).toBeNull();
+    unmount();
+  }
 });
 
 test("Chat renders a closed action group that expands reasons without tool UI (catches missing Chat intent)", () => {
@@ -349,13 +399,15 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   expect(screen.getByTestId("intent-group")).toBeTruthy();
   expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
   // ToolCallItem renders eagerly inside the intent group. The failed row
-  // auto-expands its body (failure earns the eye). Shell's summaryHiddenWhenExpanded
-  // hides the summary line while the body is open, so "Action summary unavailable"
-  // (the projected neutral summary) is not shown as visible text — the body's
-  // error output is the single representation instead.
+  // auto-expands its body (failure earns the eye). While expanded, shell's
+  // summaryWhenExpanded placeholder is the summary line — "Action summary
+  // unavailable" is not shown either way, since the descriptor's own
+  // summary outranks the projected fallback — and the body's error output
+  // is the single representation of the command.
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
   expect(screen.getByText("command failed")).toBeTruthy();
   expect(screen.queryByText("Action summary unavailable")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
 });
 
 test("intent row drills down through 3 levels: intent button -> summary, body chevron -> body", () => {

@@ -12,6 +12,7 @@ package dev
 //
 //	AGENT_SHARD_COUNT      number of shards (default 4)
 //	AGENT_SHARD_PARALLEL   -parallel within each shard (default 3)
+//	AGENT_SHARD_SURVEY_PARALLEL  -parallel for the survey pass (default 6)
 //	AGENT_SHARD_SKIP       regex handed to the SURVEY's -test.skip, and only
 //	                       to it: a skipped test draws no cost line, so it
 //	                       lands in no shard. The shards themselves never
@@ -61,20 +62,26 @@ import (
 
 const shardScratchPrefix = "agent-test-shards"
 
+// defaultSurveyParallel is the survey pass's default -parallel. The shards get
+// their width from AGENT_SHARD_PARALLEL; the survey measures cost on a single
+// binary, which has always run slightly wider.
+const defaultSurveyParallel = 6
+
 // shardsConfig is one agent-shards run: which module to shard, how wide, and
 // where its words go.
 type shardsConfig struct {
-	agentDir string
-	count    int
-	parallel int
-	skip     string
-	noSurvey bool
-	resurvey bool
-	cacheDir string
-	flags    []string
-	stdout   io.Writer
-	stderr   io.Writer
-	signals  <-chan os.Signal
+	agentDir       string
+	count          int
+	parallel       int
+	surveyParallel int
+	skip           string
+	noSurvey       bool
+	resurvey       bool
+	cacheDir       string
+	flags          []string
+	stdout         io.Writer
+	stderr         io.Writer
+	signals        <-chan os.Signal
 }
 
 // runAgentShards is the subcommand entry: environment in, exit code out.
@@ -89,24 +96,51 @@ func runAgentShards(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
 		return 1
 	}
+	surveyParallel, err := envPositiveInt("AGENT_SHARD_SURVEY_PARALLEL", defaultSurveyParallel)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		return 1
+	}
 	// Two deep, because a second signal must be waiting when the first is
 	// still being handled.
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	return runShards(shardsConfig{
-		agentDir: "agent",
-		count:    count,
-		parallel: parallel,
-		skip:     os.Getenv("AGENT_SHARD_SKIP"),
-		noSurvey: envFlag("AGENT_SHARD_NO_SURVEY"),
-		resurvey: envFlag("AGENT_SHARD_RESURVEY"),
-		cacheDir: os.Getenv("AGENT_SHARD_CACHE_DIR"),
-		flags:    args,
-		stdout:   os.Stdout,
-		stderr:   os.Stderr,
-		signals:  signals,
+		agentDir:       "agent",
+		count:          count,
+		parallel:       parallel,
+		surveyParallel: surveyParallel,
+		skip:           os.Getenv("AGENT_SHARD_SKIP"),
+		noSurvey:       envFlag("AGENT_SHARD_NO_SURVEY"),
+		resurvey:       envFlag("AGENT_SHARD_RESURVEY"),
+		cacheDir:       os.Getenv("AGENT_SHARD_CACHE_DIR"),
+		flags:          args,
+		stdout:         os.Stdout,
+		stderr:         os.Stderr,
+		signals:        signals,
 	})
+}
+
+// surveyArgs is the survey pass's test-binary arguments. The survey runs one
+// binary at a single parallelism to measure each test's cost; the shards then
+// split that work. Keeping the two separate is what lets a loaded host lower
+// the survey's parallelism through AGENT_SHARD_SURVEY_PARALLEL without
+// changing the shard split.
+func surveyArgs(parallel int, skip string, short bool) []string {
+	// A config built without runAgentShards leaves the field zero; never hand
+	// the test binary "-test.parallel 0".
+	if parallel < 1 {
+		parallel = defaultSurveyParallel
+	}
+	args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(parallel), "-test.run", "^(Test|Example)", "-test.v"}
+	if skip != "" {
+		args = append(args, "-test.skip", skip)
+	}
+	if short {
+		args = append(args, "-test.short")
+	}
+	return args
 }
 
 func envPositiveInt(name string, def int) (int, error) {
@@ -261,20 +295,21 @@ func runShards(cfg shardsConfig) int {
 	var costs []testCost
 	if !cfg.noSurvey {
 		surveyLog := filepath.Join(logdir, "survey.log")
+		cacheHit := false
 		if !cfg.resurvey && fileHasContent(cachedSurvey) {
-			if data, err := os.ReadFile(cachedSurvey); err == nil {
+			if data, err := os.ReadFile(cachedSurvey); err == nil && cfg.surveyCoversTestSet(data, listOut) {
 				_ = os.WriteFile(surveyLog, data, 0o644)
+				cacheHit = true
 			}
-		} else {
+			// An unreadable cache, or one measuring only part of the current
+			// test set, is no cache at all: survey. The shared cache is
+			// written by concurrent gate runs, so a nonempty file can be a
+			// partial write caught mid-flight.
+		}
+		if !cacheHit {
 			_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: surveying test costs (one-time for this test set)")
-			surveyArgs := []string{"-test.count=1", "-test.parallel", "6", "-test.run", "^(Test|Example)", "-test.v"}
-			if cfg.skip != "" {
-				surveyArgs = append(surveyArgs, "-test.skip", cfg.skip)
-			}
-			if slices.Contains(cfg.flags, "-short") {
-				surveyArgs = append(surveyArgs, "-test.short")
-			}
-			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, surveyArgs...); err != nil {
+			args := surveyArgs(cfg.surveyParallel, cfg.skip, slices.Contains(cfg.flags, "-short"))
+			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
 				}
@@ -285,7 +320,7 @@ func runShards(cfg shardsConfig) int {
 			}
 			if cachedSurvey != "" {
 				if data, err := os.ReadFile(surveyLog); err == nil {
-					_ = os.WriteFile(cachedSurvey, data, 0o644)
+					_ = writeFileAtomic(cachedSurvey, data)
 				}
 			}
 		}
@@ -435,6 +470,68 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string) string {
 		return ""
 	}
 	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut)+".log")
+}
+
+// surveyCoversTestSet reports whether a cached survey accounts for every test
+// this run must shard. The cache is keyed by test-set identity and written by
+// concurrent gate runs; a nonempty file can be a partial write caught
+// mid-flight, in which case accepting it would pack shards over the subset it
+// measured and still report green while the rest run in no shard. Tests the
+// survey deliberately skips (the -test.skip regex) are exempt: they draw no
+// cost line by design.
+func (cfg shardsConfig) surveyCoversTestSet(data []byte, listOut string) bool {
+	have := map[string]bool{}
+	for _, tc := range parseSurvey(string(data)) {
+		have[tc.name] = true
+	}
+	var skip *regexp.Regexp
+	if cfg.skip != "" {
+		skip, _ = regexp.Compile(cfg.skip)
+	}
+	for _, tc := range equalWeights(listOut) {
+		if skip != nil && skip.MatchString(tc.name) {
+			continue
+		}
+		if !have[tc.name] {
+			return false
+		}
+	}
+	return true
+}
+
+// writeFileAtomic replaces path with data by writing a uniquely named temp
+// file in the same directory and renaming it into place. A reader sharing the
+// path — the survey cache is shared across concurrent gate runs — therefore
+// only ever observes a complete prior survey or a complete new one, never a
+// truncated in-place write.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	// CreateTemp's files are 0o600; the cache was written 0o644.
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	tmpName = ""
+	return nil
 }
 
 // runToLog runs a child in its own process group with both output streams in

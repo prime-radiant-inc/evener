@@ -1,6 +1,6 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
+import type { AppwireClientLike } from "../../protocol/clientLike";
 import type {
   NavigationReadResponse as AppwireNavigationReadResponse,
   AttentionChanged,

@@ -10,9 +10,8 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-2);
+  border-block: 1px solid var(--edge);
+  background: var(--surface-0);
 }
 
 .staleMessage {
@@ -144,7 +143,8 @@
   /* The right edge is the meta's, so the open control stays beside the name. */
   margin-left: auto;
   white-space: nowrap;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
@@ -179,8 +179,7 @@
   margin: 2px var(--space-3) 6px calc(var(--space-3) + 20px);
   padding: var(--space-2) var(--space-3);
   background: var(--surface-0);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
+  border-inline-start: 1px solid var(--edge);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
 }
@@ -207,9 +206,8 @@
 .detailOutput {
   margin: var(--space-1) 0 0;
   padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
+  border-block: 1px solid var(--edge);
+  background: var(--surface-inset);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);

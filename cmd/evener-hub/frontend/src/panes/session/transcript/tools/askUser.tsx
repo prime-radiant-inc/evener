@@ -15,14 +15,14 @@
 // This transcript card stays read-only: no answer affordance here (the
 // composer's askDock owns that - panes/session/composer/askDock/**). The
 // question/option shape check itself (parseAskUserQuestions and its
-// AskUserOption/AskUserQuestion types) moved to ../../askShared so askDock
-// can reuse the identical parsing without duplicating it or reaching into
-// this directory; this file keeps only what's specific to the read-only
+// AskUserOption/AskUserQuestion types) moved to protocol/askShared.ts so
+// askDock - and the native app - can reuse the identical parsing without
+// duplicating it; this file keeps only what's specific to the read-only
 // card (the malformed-vs-absent fallback wording and the static markup).
 
+import { type AskUserQuestion, answeredAskUserSuffix, parseAskUserQuestions } from "../../../../protocol/askShared";
 import type { ItemModel } from "../../../../protocol/model";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { type AskUserQuestion, answeredAskUserSuffix, parseAskUserQuestions } from "../../askShared";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";

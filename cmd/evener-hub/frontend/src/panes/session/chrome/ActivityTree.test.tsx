@@ -5,9 +5,9 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
-import type { ActivityTree as ActivityTreeData } from "./activityData";
 
 // vi.spyOn, not vi.mock: ActivityPanel.test.tsx statically imports ActivityTree
 // (this file's own subject) without ever mocking this module, so under a
@@ -140,6 +140,7 @@ const TREE: ActivityTreeData = {
           jobId: "job_failed",
           description: "broken lint",
           status: "failed",
+          outcome: "failure",
           terminal: true,
           startedAt: "2026-08-05T14:00:00Z",
           endedAt: "2026-08-05T14:02:00Z",
@@ -292,6 +293,59 @@ describe("ActivityTree", () => {
     expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Failed");
   });
 
+  test("active child gives a terminal stable delegate a working glyph", () => {
+    const tree = {
+      revision: 10,
+      root: {
+        kind: "session",
+        sessionId: "sess_root",
+        ref: "ref_root",
+        label: "Root",
+        aggregate: "working",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_stable_child",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
+              childSessionId: "sess_child",
+              childRef: "local:sess_child",
+              transcriptRef: "local:sess_child",
+              type: "delegate",
+              lifecycle: "idle",
+              phase: "idle",
+              status: "completed",
+              outcome: "completed",
+              terminal: true,
+              resumable: true,
+              projectionRevision: 7,
+              task: "Stable child work",
+              branch: {},
+              child: {
+                kind: "session",
+                sessionId: "sess_child",
+                ref: "local:sess_child",
+                label: "Child",
+                aggregate: "working",
+                counts: { active: 1, failed: 0, completed: 0, complete: true },
+                entries: [],
+                branch: {},
+              },
+            },
+          },
+        ],
+        branch: {},
+      },
+    } as unknown as ActivityTreeData;
+
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "Stable child work" });
+    expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Working");
+    expect(row.textContent).toContain("completed");
+  });
+
   test("renders one dense row per live entry with kind glyph and meta", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
@@ -365,6 +419,67 @@ describe("ActivityTree", () => {
     expect(endedGlyph.getAttribute("aria-label")).toBe("Ended");
     expect(endedGlyph.className).not.toContain("kindDanger");
     expect(endedGlyph.className).not.toContain("kindAlive");
+  });
+
+  test("a completed status with a failure outcome uses the failed glyph", () => {
+    const tree = {
+      ...TREE,
+      root: {
+        ...TREE.root,
+        entries: [
+          {
+            kind: "shell" as const,
+            job: shellJob({
+              jobId: "job_outcome_failed",
+              description: "failed outcome",
+              status: "completed",
+              outcome: "failure",
+              terminal: true,
+              startedAt: "2026-08-05T14:00:00Z",
+            }),
+          },
+        ],
+      },
+    } as ActivityTreeData;
+
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+
+    const failedRow = screen.getByRole("treeitem", { name: "failed outcome" });
+    expect(within(failedRow).getByText("completed").className).toContain("denseFailed");
+    const failedGlyph = within(failedRow).getByText("$");
+    expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
+    expect(failedGlyph.className).toContain("kindDanger");
+  });
+
+  test("a terminal status with no failure outcome keeps the ended glyph", () => {
+    const tree = {
+      ...TREE,
+      root: {
+        ...TREE.root,
+        entries: [
+          {
+            kind: "shell" as const,
+            job: shellJob({
+              jobId: "job_status_only",
+              description: "status only",
+              status: "failed",
+              terminal: true,
+              startedAt: "2026-08-05T14:00:00Z",
+            }),
+          },
+        ],
+      },
+    } as ActivityTreeData;
+
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+
+    // The fold counts this entry as completed - no "· 1 failed" - so the row's
+    // own glyph may not contradict it.
+    expect(screen.getByRole("treeitem", { name: "1 inactive" })).toBeTruthy();
+    const row = screen.getByRole("treeitem", { name: "status only" });
+    const glyph = within(row).getByText("$");
+    expect(glyph.getAttribute("aria-label")).toBe("Ended");
+    expect(glyph.className).not.toContain("kindDanger");
   });
 
   test("opening the fold reveals rows with their detail strips collapsed", async () => {
@@ -581,7 +696,7 @@ describe("ActivityTree", () => {
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
     const foldRow = screen.getByRole("treeitem", { name: FOLD_NAME });
 
-    shellRow.focus();
+    act(() => shellRow.focus());
     await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(delegateRow);
     await user.keyboard("{ArrowDown}");
@@ -606,7 +721,7 @@ describe("ActivityTree", () => {
     expect(screen.getByText("npm test")).toBeTruthy();
 
     // Enter on the fold row toggles the fold.
-    foldRow.focus();
+    act(() => foldRow.focus());
     await user.keyboard("{Enter}");
     expect(onToggleFold).toHaveBeenCalledWith(FOLD_ID);
     expect(openTranscript).not.toHaveBeenCalled();
@@ -624,7 +739,7 @@ describe("ActivityTree", () => {
     // #884 round 3). Modified arrows must neither move row focus nor be
     // preventDefaulted here.
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
-    shellRow.focus();
+    act(() => shellRow.focus());
     for (const event of [
       { key: "ArrowDown", altKey: true },
       { key: "ArrowUp", ctrlKey: true },
@@ -655,7 +770,7 @@ describe("ActivityTree", () => {
 
     // Enter on the chevron remains the chevron's own activation (the detail
     // strip), never the row's transcript activation.
-    chevron.focus();
+    act(() => chevron.focus());
     await user.keyboard("{Enter}");
     expect(openTranscript).not.toHaveBeenCalled();
   });
@@ -746,6 +861,27 @@ describe("ActivityTree", () => {
     await user.click(screen.getByRole("button", { name: "Load more" }));
     expect(onContinue).toHaveBeenCalledWith("session:sess_root", "tok_root");
     expect(openTranscript).not.toHaveBeenCalled();
+  });
+
+  test("every continuation control waits while another branch is loading", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const continuedTree: ActivityTreeData = {
+      revision: 1,
+      root: { ...TREE.root, branch: { continuation: "tok_root" } },
+    };
+    render(
+      <ActivityTree
+        tree={continuedTree}
+        expandedFoldIDs={[]}
+        onToggleFold={vi.fn()}
+        onContinue={vi.fn()}
+        loadingContinuationID="delegate:dlg_other"
+      />,
+    );
+    // The panel carries one page at a time, so a branch that is not the one
+    // loading still cannot start a second.
+    expect(screen.getByRole("button", { name: "Load more" }).hasAttribute("disabled")).toBe(true);
   });
 
   test("continuation failure message renders when the load failed", () => {

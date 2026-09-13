@@ -55,6 +55,10 @@ const (
 	MethodTurnPromoteQueuedAsSteer    = "turn/promoteQueuedAsSteer"
 	MethodTurnCancelQueued            = "turn/cancelQueued"
 	MethodGoalSet                     = "goal/set"
+	MethodNotesHumanSet               = "notes/human/set"
+	MethodNotesAgentSet               = "notes/agent/set"
+	MethodUrlsAdd                     = "urls/add"
+	MethodUrlsRemove                  = "urls/remove"
 	MethodEvenerTasksList             = "evener/tasks/list"
 	MethodEvenerJobsList              = "evener/jobs/list"
 	MethodEvenerJobsOutput            = "evener/jobs/output"
@@ -122,6 +126,7 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
+	MethodEvenerSpawnSlashCatalog     = "evener/spawn/slashCatalog"
 	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
 	// hub/runtime, storage, agent roster, and probed MCP servers. See
@@ -163,6 +168,8 @@ const (
 	NotifyEvenerThreadResync          = "evener/thread/resync"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
 	NotifyEvenerGoalUpdated           = "evener/goal/updated"
+	NotifyEvenerNotesUpdated          = "evener/notes/updated"
+	NotifyEvenerUrlsUpdated           = "evener/urls/updated"
 	NotifyEvenerSteeringInjected      = "evener/steering/injected"
 	NotifyEvenerJobStarted            = "evener/job/started"
 	NotifyEvenerJobFinished           = "evener/job/finished"
@@ -641,6 +648,19 @@ type EvenerThread struct {
 	// bespoke transport — like Queue, it is structured per-session state read
 	// from the already-fetched thread snapshot.
 	Goal *GoalState `json:"goal,omitempty"`
+	// HumanNote carries the human's one-paragraph session whiteboard when set,
+	// else empty. It powers the shared-notes display without a bespoke
+	// transport — like Goal, it is structured per-session state read from the
+	// already-fetched thread snapshot.
+	HumanNote string `json:"humanNote,omitempty"`
+	// AgentNote carries the agent's one-paragraph session whiteboard when set,
+	// else empty. It is read from the already-fetched thread snapshot like
+	// HumanNote.
+	AgentNote string `json:"agentNote,omitempty"`
+	// SessionURLs carries the session's shared-notes URL list when set, else
+	// nil. Empty/nil means no links. It is read from the already-fetched
+	// thread snapshot like HumanNote.
+	SessionURLs []SessionURL `json:"sessionUrls,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
@@ -734,6 +754,15 @@ type GoalState struct {
 	Iterations int    `json:"iterations"`
 }
 
+// SessionURL is one entry in a session's shared-notes URL list.
+type SessionURL struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Label   string `json:"label,omitempty"`
+	AddedBy string `json:"addedBy,omitempty"`
+	AddedAt int64  `json:"addedAt,omitempty"`
+}
+
 // EvenerUsage carries a evener session's cumulative self-only token totals for
 // the status row. A nil *EvenerUsage on EvenerThread means no token data (an old
 // daemon, a source-backed thread that omits the field, or a session with zero
@@ -796,6 +825,51 @@ type GoalUpdatedParams struct {
 	ThreadID string     `json:"threadId"`
 	Ref      string     `json:"ref"`
 	Goal     *GoalState `json:"goal"`
+}
+
+// NotesHumanSetParams sets the human's session whiteboard. It follows the
+// retry-safe-mutation shape (clientMutationId, expected-instance fencing) so a
+// hub retry of the outer RPC converges instead of double-applying.
+type NotesHumanSetParams struct {
+	Ref                string `json:"ref"`
+	ClientMutationID   string `json:"clientMutationId"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+	Note               string `json:"note,omitempty"`
+}
+
+// NotesHumanSetResponse reports the canonical whiteboard and durable acceptance
+// receipt. Acceptance does not imply the model has consumed its notification.
+type NotesHumanSetResponse struct {
+	Note    string          `json:"note"`
+	Receipt MutationReceipt `json:"receipt"`
+}
+
+// UrlsRemoveParams removes one URL list entry by id. It follows the
+// retry-safe-mutation shape like NotesHumanSetParams.
+type UrlsRemoveParams struct {
+	Ref                string `json:"ref"`
+	ClientMutationID   string `json:"clientMutationId"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+	ID                 string `json:"id"`
+}
+
+// UrlsRemoveResponse acknowledges a URL list removal. It carries no state: the
+// authoritative list arrives via the evener/urls/updated push.
+type UrlsRemoveResponse struct{}
+
+// NotesUpdatedParams is the session whiteboard state after a mutation.
+type NotesUpdatedParams struct {
+	ThreadID  string `json:"threadId"`
+	Ref       string `json:"ref"`
+	HumanNote string `json:"humanNote,omitempty"`
+	AgentNote string `json:"agentNote,omitempty"`
+}
+
+// UrlsUpdatedParams is the session URL list after a mutation.
+type UrlsUpdatedParams struct {
+	ThreadID string       `json:"threadId"`
+	Ref      string       `json:"ref"`
+	URLs     []SessionURL `json:"urls,omitempty"`
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the
@@ -879,6 +953,14 @@ type ThreadCapabilities struct {
 	// for a evener session that can accept a goal; false for sources that do not
 	// advertise the capability, so goal/set is gated like every other thread action.
 	Goal bool `json:"goal"`
+	// SharedNotes advertises support for the shared-notes surface. Only two of
+	// its verbs are hub RPCs — notes/human/set and urls/remove. The other two,
+	// notes/agent/set and urls/add, are agent tools the daemon handles in
+	// session and are deliberately absent from the RPC method catalog. True for
+	// a live evener session whose daemon wires them; false for sources that do
+	// not advertise the capability, so the notes verbs are gated like every
+	// other thread action.
+	SharedNotes bool `json:"sharedNotes"`
 	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits
 	// meta); false for non-local/source-backed threads that do not advertise it.
@@ -1191,6 +1273,11 @@ const (
 	// toggle — no visibility preference hides it (transcriptVisibility.ts's
 	// "no toggle governs it" default applies).
 	ThreadItemEventKindEnvironment ThreadItemEventKind = "environment"
+	// ThreadItemEventKindNotesContext marks the systemMessage item a reloaded
+	// transcript renders for a schema.TurnNotesContext turn: the harness's
+	// shared-notes snapshot block. Same visibility contract as environment —
+	// harness chrome, never hidden by a toggle.
+	ThreadItemEventKindNotesContext ThreadItemEventKind = "notes-context"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1212,6 +1299,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindModelSwitch),
 	string(ThreadItemEventKindError),
 	string(ThreadItemEventKindEnvironment),
+	string(ThreadItemEventKindNotesContext),
 }
 
 type ThreadItem struct {
@@ -2192,6 +2280,10 @@ type ModelDescriptor struct {
 	InputCostPerMillion   *float64 `json:"inputCostPerMillion,omitempty"`
 	OutputCostPerMillion  *float64 `json:"outputCostPerMillion,omitempty"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
+	// Warnings carries the registry's resolved-row notes (e.g. a global-only
+	// model under a regional Vertex location) so the model picker can flag a
+	// row the resolver itself warns about.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type ModelListDiagnostic struct {
@@ -2891,9 +2983,9 @@ type CommandDescriptor struct {
 	PluginName   string `json:"pluginName,omitempty"`
 	Description  string `json:"description,omitempty"`
 	ArgumentHint string `json:"argumentHint,omitempty"`
-	// Source is "plugin" or "user"; "project" is reserved for a future
-	// project-scoped catalog (project commands are cwd-dependent and never
-	// appear in the hub-wide catalog).
+	// Source is "plugin", "user", or "project". "project" is returned by the
+	// spawn-scoped catalog (project commands are cwd-dependent); it never
+	// appears in the hub-wide catalog.
 	Source string `json:"source,omitempty"`
 }
 
@@ -2937,6 +3029,7 @@ type LaunchConfigLayer struct {
 	MCPs                        []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                         map[string]string `json:"env,omitempty"`
 	Verbose                     *bool             `json:"verbose,omitempty"`
+	APILog                      *bool             `json:"apiLog,omitempty"`
 	TraceFile                   string            `json:"traceFile,omitempty"`
 	CPUProfile                  string            `json:"cpuProfile,omitempty"`
 	ExportATIFPath              string            `json:"exportATIFPath,omitempty"`            //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
@@ -3046,6 +3139,26 @@ type PluginCheckNowResponse struct {
 type PluginPreviewParams struct {
 	CWD             string             `json:"cwd"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogParams requests the slash catalog a spawn with these
+// inputs would load. Field names and shapes match ThreadStartParams exactly:
+// when this call and a thread/start agree on all three, the menu shows what
+// that start would load. Model, effort, access mode, and prompt text do not
+// affect the inventory and are deliberately absent.
+type SpawnSlashCatalogParams struct {
+	CWD             string             `json:"cwd"`
+	Harness         string             `json:"harness,omitempty"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogResponse is the pre-session slash inventory: the commands
+// and skills a session started with the params would offer. Row shapes reuse
+// CommandDescriptor and EvenerSkillInfo verbatim so the web composer merges
+// them with mergeSlashCommands unchanged.
+type SpawnSlashCatalogResponse struct {
+	Commands []CommandDescriptor `json:"commands"`
+	Skills   []EvenerSkillInfo   `json:"skills,omitempty"`
 }
 
 // PluginPreviewResponse is the launch plugin inventory and structured

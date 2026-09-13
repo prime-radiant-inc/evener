@@ -29,12 +29,12 @@
 // (worktreeTool.tsx's findSessionsSummary registration), not this one.
 
 import type { ItemModel } from "../../../../protocol/model";
+import { clip, clipJobID, parseArgs, parseJSONObject, str } from "../../../../protocol/toolCallText";
 import { CodeBlock } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { MCPToolArguments } from "../MCPToolArguments";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { clip, clipJobID, parseArgs, parseJSONObject, str } from "./helpers";
 import styles from "./readtranscript.module.css";
 
 const CLASS = {

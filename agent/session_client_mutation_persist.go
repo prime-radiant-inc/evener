@@ -45,7 +45,15 @@ func loadClientMutationSnapshotFS(fs afero.Fs, stateDir, sessionID string) (clie
 	if err != nil {
 		return clientMutationSnapshot{}, fmt.Errorf("read client mutation snapshot: %w", err)
 	}
+	snapshot, err := decodeClientMutationSnapshot(data, sessionID)
+	if err != nil {
+		return clientMutationSnapshot{}, err
+	}
+	forgetRunningTurnNoOneOwns(&snapshot)
+	return snapshot, nil
+}
 
+func decodeClientMutationSnapshot(data []byte, sessionID string) (clientMutationSnapshot, error) {
 	var snapshot clientMutationSnapshot
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -58,8 +66,27 @@ func loadClientMutationSnapshotFS(fs afero.Fs, stateDir, sessionID string) (clie
 	if err := validateClientMutationSnapshot(snapshot, sessionID); err != nil {
 		return clientMutationSnapshot{}, fmt.Errorf("validate client mutation snapshot: %w", err)
 	}
-	forgetRunningTurnNoOneOwns(&snapshot)
 	return snapshot, nil
+}
+
+// ClientMutationInputIdentities validates a persisted snapshot and maps stable
+// input turn IDs to their client mutation IDs. It reads only the supplied bytes;
+// no pending work is resumed or changed.
+func ClientMutationInputIdentities(data []byte, sessionID string) (map[string]string, error) {
+	snapshot, err := decodeClientMutationSnapshot(data, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]string{}
+	for id, entry := range snapshot.Journal {
+		if entry.StableTurnID != "" && (entry.Method == "turn/start" || entry.Method == "turn/steer" || entry.Method == "turn/promoteQueuedAsSteer" || entry.Method == "turn/drainAsSteer" || entry.Method == "turn/queue") {
+			if previous := ids[entry.StableTurnID]; previous != "" && previous != id {
+				return nil, fmt.Errorf("ambiguous mutation identity for %s", entry.StableTurnID)
+			}
+			ids[entry.StableTurnID] = id
+		}
+	}
+	return ids, nil
 }
 
 // forgetRunningTurnNoOneOwns drops an ActiveTurnID that no pending execution

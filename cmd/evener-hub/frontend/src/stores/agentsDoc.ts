@@ -15,8 +15,8 @@
 // "no client connected" is a programmer error, not a state to degrade into.
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import type { AppwireClientLike } from "../protocol/clientLike";
 import { errorText } from "../protocol/errors";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { AgentsDocResponse, AnyNotification } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 

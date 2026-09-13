@@ -351,7 +351,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerInstanceHandlers(server, instancesController)
 	// launch.toml is user-editable configuration, so its root is the config
 	// root, not HubStateRoot (machine-generated state).
-	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg))
+	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg), cfg.APILogDefault)
 	registerLaunchHandlers(server, launchController)
 	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
 	registerPluginHandlers(server, pluginsController)
@@ -478,6 +478,7 @@ func registerThreadHandlers(
 		}
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread)
 		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
+		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -531,6 +532,9 @@ func registerThreadHandlers(
 			resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
 			annotateThreadProjects([]appwire.Thread{resp.Thread})
 		}
+		// Local forks copy persisted history in the hub. A live daemon's
+		// own unsupported fork flag does not describe this hub-owned action.
+		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -890,6 +894,12 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodGoalSet, func(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 		return setGoalWithResume(ctx, cfg, sources, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodNotesHumanSet, func(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+		return setNotesHumanWithResume(ctx, cfg, sources, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodUrlsRemove, func(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+		return removeURLWithResume(ctx, cfg, sources, params)
+	})
 }
 
 // registerAuthHandlers registers the evener/auth/* RPC handlers, routed to the
@@ -1035,8 +1045,8 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 // RPC handlers, routed to the plugins controller. Mutations broadcast
 // evener/marketplace/updated or evener/plugin/updated.
 func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
-		return pluginsController.ListMarketplaces()
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+		return pluginsController.ListMarketplaces(ctx)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.AddMarketplace(ctx, params)
@@ -1071,8 +1081,8 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 		return pluginsController.Browse(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(_ context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
-		return pluginsController.ListPlugins()
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.ListPlugins(ctx)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
 		return pluginsController.Preview(ctx, params)
@@ -1192,6 +1202,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerCommandList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.CommandListResponse, error) {
 		return hubCommandList(ctx, cfg)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSpawnSlashCatalog, func(ctx context.Context, params appwire.SpawnSlashCatalogParams) (appwire.SpawnSlashCatalogResponse, error) {
+		return hubSpawnSlashCatalog(ctx, cfg, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsOverview, func(ctx context.Context, _ appwire.EmptyParams) (appwire.SettingsOverviewResponse, error) {
 		return hubSettingsOverview(ctx, cfg)

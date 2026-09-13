@@ -21,7 +21,7 @@ import (
 // ever stats sandbox paths.
 var applyEditFields = []string{
 	"max_rounds", "max_subagent_depth", "app_replay_size", // 0,1,2
-	"no_project_prompts", "verbose", // 3,4
+	"no_project_prompts", "verbose", "api_log", // 3,4,5
 	"mcps", "env", "model_fallbacks", // 5,6,7
 	"model", "reasoning_effort", "system_prompt_text", // 8,9,10
 	"skills_dirs", "plugin_dirs", "mcp_configs", // 11,12,13
@@ -37,6 +37,7 @@ type applyEditSeed struct {
 var applyEditSeeds = []applyEditSeed{
 	{"max_rounds", "200"}, {"max_rounds", "not-an-int"}, {"max_rounds", "(default)"}, {"max_rounds", "-3"},
 	{"no_project_prompts", "true"}, {"no_project_prompts", "no"}, {"no_project_prompts", "maybe"}, {"no_project_prompts", "(default)"},
+	{"api_log", "true"}, {"api_log", "no"}, {"api_log", "perhaps"}, {"api_log", "(default)"},
 	{"mcps", `[{"name":"a","command":"c","args":["-x"]}]`},
 	{"mcps", `{"name":"a","command":"c"}`},
 	{"mcps", "name=cmd arg1 arg2"},

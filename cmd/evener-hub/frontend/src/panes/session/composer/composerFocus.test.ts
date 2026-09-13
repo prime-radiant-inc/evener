@@ -51,5 +51,5 @@ test("a focus request remains pending across subscriber remounts until a textare
   expect(second.result.current?.id).toBe(requestId);
   act(() => consumeComposerFocus("ref-pending"));
   expect(second.result.current).toBeUndefined();
-  resetComposerFocusStoreForTests();
+  act(() => resetComposerFocusStoreForTests());
 });

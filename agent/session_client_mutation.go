@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -101,6 +102,9 @@ type clientMutationRecord struct {
 	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
 	Failure             *clientMutationFailure          `json:"failure,omitempty"`
 	AttemptGeneration   uint64                          `json:"attempt_generation"`
+	// SteeringKind is accepted atomically with a typed pending notification.
+	// Reconstruction restores it onto the delivered steering entry.
+	SteeringKind string `json:"steering_kind,omitempty"`
 }
 
 type clientMutationFailure struct {
@@ -136,8 +140,10 @@ type clientMutationInterruptFence struct {
 type clientMutationPendingExecutions map[string]appwire.PendingMutation
 
 type clientMutationSnapshot struct {
-	Version   int    `json:"version"`
-	SessionID string `json:"session_id"`
+	// HumanNote is absent until canonical authority has been established; empty is a saved clear.
+	HumanNote *string `json:"human_note,omitempty"`
+	Version   int     `json:"version"`
+	SessionID string  `json:"session_id"`
 	// ActiveTurnID is the sole durable authority used by retry-safe mutation
 	// preconditions, and it names the turn that is RUNNING — not merely one a
 	// client mutation reserved. Queue and steering transitions only compare it.
@@ -459,6 +465,9 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	if !runnable {
 		return "", false, nil
 	}
+	if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
+		return "", false, err
+	}
 	if onRunnable != nil {
 		onRunnable(turnID)
 	}
@@ -468,6 +477,21 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	}
 	ctx = withQueuedClientMutation(ctx, claimed)
 	result, err := s.ProcessInputKind(ctx, claimed.Text, claimed.Images, EntryUserInput)
+	// The claim above spends a turn of the budget and the turn loop's gate can
+	// refuse after it, when poisoning lands in between. Give the claim back
+	// rather than leave it spent on a turn that never ran.
+	//
+	// Keyed on the poisoned error alone, deliberately. Every other
+	// pre-incorporation failure either unwinds where it happened or is reclaimed
+	// by startup recovery, and a wider key would return a claim whose turn is
+	// already recorded in the transcript — an incorporation marking that fails
+	// after the entry is durable would run the start twice.
+	if errors.Is(err, transcript.ErrWriterPoisoned) &&
+		!s.clientMutationUserTranscriptIncorporated(claimed.ClientMutationID, claimed.StableTurnID) {
+		if returnErr := s.returnClaimedClientMutationStart(claimed.ClientMutationID); returnErr != nil {
+			err = errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
+		}
+	}
 	return result, true, err
 }
 
@@ -1329,6 +1353,10 @@ func validateClientMutationRequest(request clientMutationRequest) error {
 
 func cloneClientMutationSnapshot(src clientMutationSnapshot) clientMutationSnapshot {
 	dst := src
+	if src.HumanNote != nil {
+		note := *src.HumanNote
+		dst.HumanNote = &note
+	}
 	dst.Journal = make(map[string]clientMutationRecord, len(src.Journal))
 	for id, record := range src.Journal {
 		dst.Journal[id] = cloneClientMutationRecord(record)

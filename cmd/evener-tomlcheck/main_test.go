@@ -365,6 +365,7 @@ func TestRun_SkipsExcludedPaths(t *testing.T) {
 	for _, dir := range []string{
 		"inspo/cfg",
 		"vendor/foo",
+		"mobile-native/node_modules/react-native/gradle",
 		"internal/x/testdata",
 	} {
 		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(dir)), 0o755); err != nil {

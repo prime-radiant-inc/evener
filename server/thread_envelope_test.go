@@ -92,6 +92,16 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			},
 		},
 		{
+			name:  "context on ENVIRONMENT",
+			move:  func(e *stubThreadEnvelopeSource) { e.contextPressure = 0.73 },
+			event: events.SessionEvent{Kind: events.EventEnvironment, SessionID: "th_1", Data: events.EnvironmentData{TurnID: "turn_environment_1", Text: "environment"}},
+			want: func(t *testing.T, thread appwire.Thread) {
+				if thread.Evener.ContextPressure != 0.73 {
+					t.Fatalf("contextPressure = %v, want the environment event's refreshed value", thread.Evener.ContextPressure)
+				}
+			},
+		},
+		{
 			name: "queue on QUEUE_CHANGED",
 			move: func(e *stubThreadEnvelopeSource) {
 				e.queue = appwire.QueueState{Depth: 2, Revision: 5, Preview: []string{"alpha", "bravo"}}

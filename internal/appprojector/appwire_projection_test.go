@@ -3267,3 +3267,29 @@ func TestProjectToolCallEndDropsAnUnaddressableOutputImage(t *testing.T) {
 		t.Fatalf("item.OutputImages=%+v, want the unaddressable descriptor dropped", item.OutputImages)
 	}
 }
+
+func TestAppEventProjectorKeepsEnvironmentInOwnTurn(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	environment := projector.Project(events.SessionEvent{Kind: events.EventEnvironment, SessionID: "th_1", Data: events.EnvironmentData{TurnID: "turn_environment_fixture", Text: "<environment_context>\ncwd: /tmp\n</environment_context>"}})
+	user := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	var environmentItem, userItem appwire.ThreadItem
+	for _, n := range environment {
+		if n.Method == appwire.NotifyThreadStatusChanged {
+			t.Fatal("environment context must not publish runnable work status")
+		}
+		if n.Method == appwire.NotifyItemCompleted {
+			environmentItem = n.Params.(appwire.ItemLifecycleParams).Item
+		}
+	}
+	for _, n := range user {
+		if n.Method == appwire.NotifyItemCompleted {
+			userItem = n.Params.(appwire.ItemLifecycleParams).Item
+		}
+	}
+	if environmentItem.EventKind != appwire.ThreadItemEventKindEnvironment {
+		t.Fatalf("environment event kind=%q", environmentItem.EventKind)
+	}
+	if environmentItem.TurnID != "turn_environment_fixture" || environmentItem.TurnID == userItem.TurnID {
+		t.Fatalf("environment turn=%q user turn=%q; environment must be separate", environmentItem.TurnID, userItem.TurnID)
+	}
+}

@@ -125,16 +125,14 @@
   /* Bounded by the column (--session-measure on body), not a percentage of
    * the pane - see agentmessageitem.module.css's .bubble. */
   max-width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: var(--accent-bg);
-  border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
+  padding: var(--space-1) 0;
 }
 
 .text {
   white-space: pre-wrap;
   overflow-wrap: break-word;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
   line-height: var(--line-height-body);
   /* --ink-hi: spec decision 5 - see this file's header comment. */
   color: var(--ink-hi);

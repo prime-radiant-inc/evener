@@ -389,6 +389,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Favorite:                  favorite,
 		PinSections:               pinSections,
 		Spawner:                   spawner,
+		APILogDefault:             cfg.APILog,
 		DeletionStore:             deletionStore,
 		ResumeLocks:               resumeLocks,
 		PastPerPage:               cfg.PastResultsPerPage,

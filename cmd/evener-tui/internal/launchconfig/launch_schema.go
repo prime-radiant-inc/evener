@@ -174,6 +174,8 @@ func launchOptionLayerValue(opt appwire.LaunchOption, l appwire.LaunchConfigLaye
 		return fmt.Sprintf("%d entries", len(l.Env)), envEditValue(l.Env)
 	case "verbose":
 		return ptrBoolStr(l.Verbose), ptrBoolStr(l.Verbose)
+	case "api_log":
+		return ptrBoolStr(l.APILog), ptrBoolStr(l.APILog)
 	case "trace_file":
 		return defaultString(l.TraceFile), l.TraceFile
 	case "cpu_profile":

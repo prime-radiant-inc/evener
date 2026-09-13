@@ -21,13 +21,13 @@
 
 import { useRef } from "react";
 import type { ItemModel } from "../../../../protocol/model";
+import { parseArgs, str, trailingBracketFooter } from "../../../../protocol/toolCallText";
 import { useThreadsStore } from "../../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps, ToolSummaryContext } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { parseArgs, str, trailingBracketFooter } from "./helpers";
 
 const TAIL_MAX_CHARS = 8000;
 
@@ -163,8 +163,9 @@ registerToolRenderer({
   },
   // The row summary IS the raw one-line command; the expanded body renders
   // that same command pretty-printed. Showing both on an open row duplicated
-  // the call, so the summary drops out while expanded (the collapsed row
-  // keeps it - there it is the only glance at the command).
-  summaryHiddenWhenExpanded: true,
+  // the call, so while expanded the summary text swaps to this placeholder:
+  // the summary line stays (it is the line the disclosure chevron rides) and
+  // the collapsed row keeps the command, where it is the only glance at it.
+  summaryWhenExpanded: "Ran a shell command",
   autoExpand: nonzeroExit,
 });

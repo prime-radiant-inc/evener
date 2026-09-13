@@ -21,10 +21,10 @@
 
 import type { ReactNode } from "react";
 import type { ItemModel } from "../../../../protocol/model";
+import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "../../../../protocol/toolCallText";
 import { ContextCard } from "../../../../widgets/contextcard";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "./helpers";
 
 const QUERY_CLIP = 120;
 const RESULT_LINE_CLIP = 200;

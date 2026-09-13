@@ -122,3 +122,42 @@ func TestAttachAPILoggerRejectsRunningResumedSession(t *testing.T) {
 		}
 	}
 }
+
+// TestAttachSessionAPILoggerOwnershipOnlyDiscardsRecords pins the default-off
+// attach contract: with recordAttempts=false the per-session file is still
+// created (and locked) by the reserve boundary, but a completed provider call
+// writes no records to it.
+func TestAttachSessionAPILoggerOwnershipOnlyDiscardsRecords(t *testing.T) {
+	dir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(loggingTestAdapter{})
+
+	reserve, closeLog, err := AttachSessionAPILogger(client, dir, nil, false)
+	if err != nil {
+		t.Fatalf("AttachSessionAPILogger: %v", err)
+	}
+	const sessionID = "sess-1"
+	if err := reserve(sessionID); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	apiPath := filepath.Join(dir, "sessions", sessionID+".api.jsonl")
+
+	if _, err := client.Complete(llm.WithAPILogContext(context.Background(), sessionID), llm.Request{
+		Provider: "test",
+		Model:    "m",
+		Messages: []llm.Message{llm.User("hi")},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := closeLog(); err != nil {
+		t.Fatalf("closeLog: %v", err)
+	}
+
+	info, err := os.Stat(apiPath)
+	if err != nil {
+		t.Fatalf("ownership API log not created by reserve: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("ownership API log size = %d, want 0 (records must be discarded)", info.Size())
+	}
+}

@@ -186,7 +186,7 @@ func TestDescribeImage_OmitsEffortWhenProfileDoesNotSupportReasoning(t *testing.
 	desc := sess.describeImage(context.Background(), tool.ExecResult{
 		ImageData:      []byte("fake-png-bytes"),
 		ImageMediaType: "image/png",
-		ImageIntent:    "what is in this image",
+		ImagePrompt:    "what is in this image",
 	})
 	if desc == "" {
 		t.Fatal("describeImage returned empty description")

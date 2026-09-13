@@ -213,9 +213,9 @@ test("uses the mono font for code content", () => {
 // instead, see the kata report) - what IS unit-testable, and what actually
 // bounds the DOM's height regardless of viewport, is a LINE-COUNT fold: past
 // TAIL_VISIBLE_LINES lines, only the tail renders by default, mirroring
-// this codebase's own tailFold (helpers.ts) - keep the tail, not the head,
-// because the informative part of a long dump (a pytest FAILURES section)
-// is almost always at the end, not the start.
+// this codebase's own tailFold (protocol/toolCallText.ts) - keep the tail,
+// not the head, because the informative part of a long dump (a pytest
+// FAILURES section) is almost always at the end, not the start.
 const LONG_LINES = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
 const LONG_TEXT = LONG_LINES.join("\n");
 

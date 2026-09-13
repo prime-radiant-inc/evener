@@ -513,6 +513,25 @@ func NewRequestTimeoutError(provider string, message string, cause error) error 
 	return &requestTimeoutError{base}
 }
 
+// NewAuthenticationError constructs a non-HTTP authentication failure — a
+// credential the provider's token endpoint refused to refresh, say — that
+// matches the unified error hierarchy. HTTP-level 401s arrive through
+// ClassifyHTTPError instead. It is not retryable, and its category is
+// [KindAuthentication].
+//
+// cause is the underlying error (typically the token endpoint's refusal),
+// exposed via Unwrap so callers can inspect it.
+func NewAuthenticationError(provider string, message string, cause error) error {
+	base := httpBaseError{
+		provider:   strings.TrimSpace(provider),
+		statusCode: 0,
+		message:    message,
+		retryable:  false,
+		cause:      cause,
+	}
+	return &authenticationError{base}
+}
+
 func newResponseHeaderTimeoutError(provider string, message string, cause error) error {
 	base := httpBaseError{
 		provider:   strings.TrimSpace(provider),

@@ -5,9 +5,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import type { AskQuestionRef } from "../../../../protocol/deriveAskQuestions";
 import { AskQuestionCard } from "./AskQuestionCard";
 import type { AskAnswerState } from "./askDockStore";
-import type { AskQuestionRef } from "./deriveAskQuestions";
 
 afterEach(cleanup);
 
@@ -114,7 +114,9 @@ test("the recommended option carries an accent suffix right after its bold label
   const css = cardCss();
   const rule = css.match(/\.optionRecommended\s*\{([^}]*)\}/);
   expect(rule, "askquestioncard.module.css must declare an .optionRecommended rule").not.toBeNull();
-  expect(rule![1]).toMatch(/color:\s*var\(--accent\)/);
+  // Canonical design-system §2: semantic text uses the AA ink companion,
+  // not the bare hue. Keep the exact suffix/label pairing above unchanged.
+  expect(rule?.[1]).toMatch(/color:\s*var\(--accent-ink\)/);
 });
 
 test("the recommended option renders first regardless of input order", () => {

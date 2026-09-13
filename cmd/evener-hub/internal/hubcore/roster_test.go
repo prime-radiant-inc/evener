@@ -560,6 +560,54 @@ func TestRosterCarriesRunningJobsDefensively(t *testing.T) {
 	}
 }
 
+// A crash-retained entry keeps the running-subagent list its daemon reported
+// before it died (Refresh copies the previous richer snapshot onto the crashed
+// record). That daemon is gone, so none of those children is running in any
+// process: subagent activity must not read a dead parent's last word as
+// liveness, or a stopped persisted delegate stays daemon-owned for the whole
+// crash-retention window.
+func TestRosterCrashedParentDoesNotOwnItsChildren(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       1001,
+		Address:   "127.0.0.1:50001",
+		SessionID: "01PARENT",
+		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
+	})
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID:             "01PARENT",
+		Status:                "active",
+		RunningSubagentIDs:    []string{"01CHILD"},
+		RunningSubagentStates: map[string]string{"01CHILD": "active"},
+		OK:                    true,
+	}}
+	r := NewRoster(dir, prober)
+	r.procAlive = func(int) bool { return true }
+	r.Refresh()
+	if state, live := r.SubagentState("01CHILD"); !live || state != "active" {
+		t.Fatalf("SubagentState(01CHILD) = %q, %v while the parent daemon is alive, want active, true", state, live)
+	}
+
+	// kill -9 the parent: its probe fails and the process is confirmed gone.
+	prober.result = ProbeResult{}
+	r.procAlive = func(int) bool { return false }
+	r.Refresh()
+
+	parent, ok := r.Find("01PARENT")
+	if !ok || !parent.Crashed {
+		t.Fatalf("parent entry = %+v, ok=%v, want a retained crashed record", parent, ok)
+	}
+	if !slices.Contains(parent.RunningSubagentIDs, "01CHILD") {
+		t.Fatalf("crash retention dropped the child list (%v); this test no longer covers the case it names", parent.RunningSubagentIDs)
+	}
+	if state, live := r.SubagentState("01CHILD"); live || state != "" {
+		t.Fatalf("SubagentState(01CHILD) = %q, %v after the parent crashed, want \"\", false", state, live)
+	}
+	if r.IsSubagentActive("01CHILD") {
+		t.Fatal("a crashed parent's retained child list still reported the child as daemon-owned")
+	}
+}
+
 func TestRosterSubagentUnresolvedOwner(t *testing.T) {
 	r := NewRosterWithEntries(LiveEntry{
 		RunningSubagentIDs: []string{"child-unresolved-owner"},
@@ -598,6 +646,31 @@ func fuzzScenarioRoster_FingerprintIncludesRunningIDs(t *testing.T) {
 }
 
 func TestRosterFingerprint(t *testing.T) { fuzzScenarioRoster_FingerprintIncludesRunningIDs(t) }
+
+// A daemon that raises a recovery flag while staying idle changes what the hub
+// may offer for that session — the fork capability is projected from these
+// flags — so the fingerprint has to move, or onChange never invalidates
+// navigation and clients keep an action the fork RPC would refuse. Order is not
+// part of the signal: a daemon that reports the same flags in a different order
+// has not changed anything.
+func TestRosterFingerprintIncludesStatusFlagsRegardlessOfOrder(t *testing.T) {
+	base := map[string]LiveEntry{"parent": {Status: "idle"}}
+	flagged := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"resumeRequired"}}}
+	if rosterFingerprint(base) == rosterFingerprint(flagged) {
+		t.Fatal("roster fingerprint must change when a daemon raises a status flag without changing status")
+	}
+	two := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"resumeRequired", "compacting"}}}
+	reordered := map[string]LiveEntry{"parent": {Status: "idle", ActiveFlags: []string{"compacting", "resumeRequired"}}}
+	if rosterFingerprint(two) != rosterFingerprint(reordered) {
+		t.Fatal("roster fingerprint must not change when a daemon reports the same status flags in another order")
+	}
+	if rosterFingerprint(two) == rosterFingerprint(flagged) {
+		t.Fatal("roster fingerprint must change when a status flag is added")
+	}
+	if got := two["parent"].ActiveFlags; !slices.Equal(got, []string{"resumeRequired", "compacting"}) {
+		t.Fatalf("fingerprinting reordered its caller's flags in place: %v", got)
+	}
+}
 
 func TestRosterFingerprintIncludesRunningJobIdentityAndStatus(t *testing.T) {
 	base := map[string]LiveEntry{"parent": {RunningJobs: []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "running"}}}}
@@ -1440,5 +1513,42 @@ func TestRosterOwnershipErrorRequiresNewerCompleteScan(t *testing.T) {
 	roster.Refresh()
 	if roster.OwnershipError() != nil || changes.Load() <= before {
 		t.Fatal("complete scan did not publish recovered ownership")
+	}
+}
+
+// ReadSpawnedThread publishes a freshly spawned daemon from the caller's own
+// read rather than from a scan, so it is the one path into the roster that does
+// not go through the prober. Everything the roster carries about a daemon's
+// status has to survive it, the recovery flags included: the hub projects and
+// enforces the fork capability from those flags, so a confirmation that dropped
+// them would advertise fork for a daemon reporting resumeRequired until the
+// next full scan.
+func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
+	r := NewRoster(t.TempDir(), nil)
+	entry := rendezvous.Entry{
+		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
+		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
+	}
+	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "01SPAWNED", SessionID: "01SPAWNED",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle, ActiveFlags: []string{"resumeRequired"}},
+		}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	live, ok := r.Find("01SPAWNED")
+	if !ok {
+		t.Fatal("the confirmed daemon was not published into the roster")
+	}
+	if live.Status != appwire.ThreadStatusIdle {
+		t.Fatalf("published status = %q, want idle", live.Status)
+	}
+	if !slices.Contains(live.ActiveFlags, "resumeRequired") {
+		t.Fatalf("published entry = %+v, want the status flags the daemon reported", live)
+	}
+	live.ActiveFlags[0] = "mutated"
+	if again, _ := r.Find("01SPAWNED"); !slices.Contains(again.ActiveFlags, "resumeRequired") {
+		t.Fatalf("Find must return a defensive copy of the status flags: %+v", again)
 	}
 }

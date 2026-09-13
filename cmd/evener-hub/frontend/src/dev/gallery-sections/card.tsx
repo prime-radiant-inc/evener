@@ -9,7 +9,7 @@ export default function CardGallerySection() {
       <ThemeFlip>
         <div className={styles.row}>
           <Card>
-            <p className={styles.body}>A raised, bordered surface for grouping related content.</p>
+            <p className={styles.body}>A flat section for grouping related content through space and alignment.</p>
           </Card>
         </div>
       </ThemeFlip>

@@ -1,12 +1,19 @@
 // Descriptors for job_* and delegate_send follow-up calls.
 import type { ItemModel } from "../../../../protocol/model";
+import {
+  clip,
+  clipJobID,
+  parseArgs,
+  parseJSONObject,
+  str,
+  trailingBracketFooter,
+} from "../../../../protocol/toolCallText";
 import { CopyButton } from "../../../../widgets";
 import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
 import { DelegateStatusBody } from "./delegateStatus";
-import { clip, clipJobID, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
 import { statusWordFromText } from "./subagentModule";
 
 const ID_CLIP = 26;

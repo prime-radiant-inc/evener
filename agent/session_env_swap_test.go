@@ -522,7 +522,7 @@ func TestWorktreeSwap_ExpiredBudgetWithNothingAdmittedSaysNothing(t *testing.T) 
 	// that expired before the close began.
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	r.s.close(ctx, true)
+	r.s.close(ctx, closeOptions{cleanupEnv: true})
 
 	if got := fenceWarnings(<-warnings); len(got) != 0 {
 		t.Errorf("a close with nothing admitted warned about the fence anyway: %q", got)

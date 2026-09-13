@@ -10,11 +10,11 @@
 // or malformed JSON), it falls back to HeadClippedOutputBody — the previous
 // behavior — so the renderer never regresses for non-delegate targets.
 import type { ReactNode } from "react";
+import { formatClockTime, formatElapsed, splitMandate } from "../../../../protocol/displayFormat";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chip, type ChipTone, CopyButton, Disclosure, Markdown } from "../../../../widgets";
 import { scopedDisclosureId } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { formatClockTime, formatElapsed, splitMandate } from "../messages/format";
 import { OpenTranscriptButton } from "../openTranscript";
 import type { ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";

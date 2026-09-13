@@ -265,7 +265,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// the wrong version. inFlightFrom is captured there too, so the
 			// boundary this request expands with
 			// matches the exact history this fold published.
-			pub, ok := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
+			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
@@ -276,6 +276,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			})
 			if ok {
 				historyTurns = pub
+				break
+			}
+			if refused != nil {
+				// Not a conflict: the transcript refuses every append for
+				// the rest of the session, so a second attempt would spend
+				// another summarizer call to lose the same way. The round
+				// continues unfolded, exactly as it does when both attempts
+				// lose the race.
 				break
 			}
 			// Conflict: loop retries with a fresh, atomically-paired
@@ -292,24 +300,47 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	// Establish the in-flight-turn boundary (spec N4 exemption) for the
 	// paths that published no fold above — no strategy configured, or both
-	// fold attempts lost the race. Re-snapshot and initialize/read the
-	// boundary under ONE lock so the (historyTurns, inFlightFrom) pair is
-	// mutually consistent even against a concurrently publishing fold; a
-	// winning fold in this round already did both atomically with its own
-	// publication. Round > 0 has nothing to shrink here: this round folded
-	// nothing, and a competing fold's transaction
-	// corrects the boundary for whatever IT folds.
+	// fold attempts lost the race. Initialize round zero's boundary under
+	// the history lock before the notes refresh; the final snapshot below
+	// captures history and its boundary together. A winning fold already
+	// initialized the boundary atomically with publication. Round > 0 has
+	// nothing to shrink here: a competing fold's transaction corrects the
+	// boundary for whatever it folds.
 	if !baselineSynced {
 		s.mu.Lock()
-		historyTurns = append([]schema.Turn{}, s.history...)
 		if round == 0 {
-			s.turnHistoryBaseline = len(historyTurns)
+			s.turnHistoryBaseline = len(s.history)
 		}
-		inFlightFrom = s.turnHistoryBaseline
 		s.mu.Unlock()
 	}
 
-	// Reuse historyTurns from context management — no redundant copy.
+	// Shared-notes refresh AFTER any compaction above: a fold drops the
+	// previously projected NOTES_CONTEXT turns from what the model sees, so
+	// the next projection must re-emit the current state before this request
+	// expands history. This is the common path every entry kind (turn,
+	// notification wake, delegate attention) funnels through, so the refresh
+	// covers entry paths whose accept step projects nothing.
+	s.maybeAppendNotesContext()
+	// Re-snapshot so the request expands the refreshed history. The
+	// in-flight boundary is re-captured alongside the final history copy
+	// under the same lock: a concurrent compaction landing between the two
+	// snapshots would otherwise shrink history and update turnHistoryBaseline
+	// against the new history while this round expands the old one with the
+	// stale boundary, losing thinking/signature content on live fallback
+	// rounds (G4). The appended turn is plain user-role text, unaffected by
+	// the N4 replay-provenance exemption either way, so re-reading the
+	// baseline here changes no exemption decision — it only re-pairs the
+	// boundary with the exact history it guards.
+	s.mu.Lock()
+	historyTurns = append([]schema.Turn{}, s.history...)
+	inFlightFrom = s.turnHistoryBaseline
+	s.mu.Unlock()
+
+	// historyTurns already holds this round's refreshed copy, re-snapshotted
+	// above under s.mu; replayScope and the request expand that copy directly
+	// rather than taking another one. Do not drop the copy above as redundant
+	// work — it is what keeps the boundary paired with the history this round
+	// actually expands (see the G4 note there).
 	scope := replayScope{
 		Instance:       profile.ID(),
 		Model:          profile.Model(),
@@ -1333,7 +1364,7 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// publish. A total loss leaves s.history as the winning competitor
 	// published it, which is a valid state for the retry this recovery
 	// precedes.
-	_ = s.foldWithForceCompact(ctx, "")
+	_, _ = s.foldWithForceCompact(ctx, "")
 	s.maybeAutoSave()
 }
 
@@ -1518,8 +1549,8 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			} else {
 				history = append(history, t.Message)
 			}
-		case schema.TurnEnvironment:
-			// Environment context only ever lands at a turn boundary, so no
+		case schema.TurnEnvironment, schema.TurnNotesContext:
+			// Turn-boundary context only ever lands at a turn boundary, so no
 			// mid-tool-round deferral: pass the message straight through.
 			history = append(history, t.Message)
 		case schema.TurnToolResults:

@@ -76,11 +76,10 @@ import {
   navigateTo,
   realizedViewport,
   createStartupDeadline,
-  devtoolsHttpURL,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
-import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
+import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { resolveComposes } from "./resolve-composes.mjs";
 import { diagnoseRealizedViewport, normalizeViewportSpec } from "./viewport.mjs";
 import { injectWidthMatrix } from "./widthMatrix.mjs";
@@ -226,36 +225,19 @@ async function main() {
   let failed = 0;
   const warnings = [];
   try {
+    const viteDeadline = createStartupDeadline();
     try {
-      await waitForHttp(`http://127.0.0.1:${vitePort}/`, "vite dev server", guard.getViteLaunchError);
+      await waitForHttp(`http://127.0.0.1:${vitePort}/`, "vite dev server", guard.getViteLaunchError, {
+        signal: viteDeadline.signal,
+      });
     } catch (err) {
       throw new Error(
         describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
-    }
-    const startupDeadline = createStartupDeadline();
-    try {
-      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
-      await waitForHttp(
-        devtoolsHttpURL(cdpEndpoint, "/json/version"),
-        "chrome devtools endpoint",
-        guard.getChromeLaunchError,
-        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
-      );
-    } catch (err) {
-      throw new Error(
-        describeBrowserStartupFailure({
-          error: err,
-          subsystem: "chrome",
-          chromeBinary: guard.chromeBinary,
-          chromeArgv: guard.getChromeArgv(),
-          chromeStderr: guard.getChromeError(),
-          viteStderr: guard.getViteError(),
-        }),
-      );
     } finally {
-      startupDeadline.clear();
+      viteDeadline.clear();
     }
+    cdpEndpoint = await waitForBrowserReady(guard);
 
     const page = await connectPage(cdpEndpoint);
     const emulation = { viewportApplied: false };

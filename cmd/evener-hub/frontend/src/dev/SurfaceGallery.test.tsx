@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
@@ -19,8 +19,10 @@ test("renders without throwing, with the intro note", () => {
   expect(screen.getByText(/surface gallery/i)).toBeTruthy();
 });
 
-test.each(SURFACE_GALLERY_SECTIONS)("mounts discovered section $path without throwing", (section) => {
-  render(<SurfaceGallery sections={[section]} />);
+test.each(SURFACE_GALLERY_SECTIONS)("mounts discovered section $path without throwing", async (section) => {
+  await act(async () => {
+    render(<SurfaceGallery sections={[section]} />);
+  });
   expect(screen.getAllByRole("heading", { level: 2 }).length).toBeGreaterThan(0);
 });
 

@@ -184,3 +184,45 @@ test("navigate is a no-op when already at the target pathname", () => {
   window.removeEventListener("popstate", handler);
   expect(handler).not.toHaveBeenCalled();
 });
+
+// RoboRev PR1131 finding 4: navigate() compared only the pathname, so a target
+// with a query is never treated as the same document as the bare path. The
+// review described the inverse symptom (a /new -> /new?dir= navigate returning
+// early); that does not happen because the argument carries the query and so
+// never equals window.location.pathname. The real defects of a pathname-only
+// identity are below. The bare-path case is the closest match to the finding's
+// "returns without updating the query": when already at /new?dir=A, navigating
+// to "/new" must clear the query and notify listeners, not silently return.
+test("navigate clears the query when the target is the bare path of the current URL", () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/project-a");
+  const handler = vi.fn();
+  window.addEventListener("popstate", handler);
+  navigate("/new");
+  window.removeEventListener("popstate", handler);
+  expect(window.location.pathname).toBe("/new");
+  expect(window.location.search).toBe("");
+  expect(handler).toHaveBeenCalledTimes(1);
+});
+
+test("navigate is a no-op when already at the identical path and query", () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/project-a");
+  const handler = vi.fn();
+  window.addEventListener("popstate", handler);
+  navigate("/new?dir=/tmp/project-a");
+  window.removeEventListener("popstate", handler);
+  expect(window.location.search).toBe("?dir=/tmp/project-a");
+  expect(handler).not.toHaveBeenCalled();
+});
+
+// Evidence that the finding's literal symptom does not reproduce: the argument
+// carries the query, so it never equals the bare window.location.pathname.
+test("navigate to /new?dir=... from /new updates the query and notifies", () => {
+  window.history.pushState({}, "", "/new");
+  const handler = vi.fn();
+  window.addEventListener("popstate", handler);
+  navigate("/new?dir=/tmp/project-b");
+  window.removeEventListener("popstate", handler);
+  expect(window.location.pathname).toBe("/new");
+  expect(window.location.search).toBe("?dir=/tmp/project-b");
+  expect(handler).toHaveBeenCalledTimes(1);
+});

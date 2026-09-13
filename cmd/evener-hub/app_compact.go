@@ -109,6 +109,8 @@ func threadActionAvailable(caps appwire.ThreadCapabilities, action string) bool 
 		return caps.Queue
 	case "goal":
 		return caps.Goal
+	case "shared-notes":
+		return caps.SharedNotes
 	default:
 		return false
 	}

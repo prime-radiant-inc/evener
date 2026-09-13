@@ -30,7 +30,7 @@ func TestAttachSessionAPILoggerWithWarnings(t *testing.T) {
 	client.Register(loggingTestAdapter{})
 
 	var warnings strings.Builder
-	reserve, closeLog, err := AttachSessionAPILogger(client, dir, &warnings)
+	reserve, closeLog, err := AttachSessionAPILogger(client, dir, &warnings, true)
 	if err != nil {
 		t.Fatalf("AttachSessionAPILogger: %v", err)
 	}

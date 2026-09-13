@@ -23,6 +23,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"model_fallbacks", "enabled_plugins", "env",
 		"sandbox", "sandbox_net",
 		"verbose", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
+		"api_log",
 	}
 	wantSet := map[string]bool{}
 	for _, field := range want {

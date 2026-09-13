@@ -17,10 +17,10 @@
 // classifier it uses for real diffs.
 
 import type { ItemModel } from "../../../../protocol/model";
+import { parseArgs, str } from "../../../../protocol/toolCallText";
 import { DiffBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { parseArgs, str } from "./helpers";
 
 // diffStats counts add/del lines the same way DiffBlock's own parser does
 // (a "+++"/"---" file-header line never counts as content).

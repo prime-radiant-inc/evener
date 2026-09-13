@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { AppwireClient } from "./protocol/client";
@@ -298,9 +298,11 @@ test("initiates and settles the welcome navigation load without an error", async
   }));
   const navRead = stubDeferredNavigationRead(client);
   render(<AppShell client={client} />);
-  await navRead.requested;
-  navRead.release();
-  await navigationStore.getState().loadManifest();
+  await act(async () => {
+    await navRead.requested;
+    navRead.release();
+    await navigationStore.getState().loadManifest();
+  });
   const manifest = navigationStore.getState().manifest;
   expect(manifest).not.toBeNull();
   expect(manifest?.error).toBeNull();
@@ -322,11 +324,28 @@ test("AppShell's injected v2 handshake selects navigation through AppWire", asyn
     return { ...navigationReadResponse("app-generation"), etag: '"app-manifest"' };
   });
 
-  render(<AppShell client={client} />);
-  await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]));
+  const connect = vi.spyOn(client, "connect");
+  const loadManifest = vi.spyOn(navigationStore.getState(), "loadManifest");
+  try {
+    render(<AppShell client={client} />);
+    expect(connect).toHaveBeenCalled();
+    const connectionResult = connect.mock.results[0];
+    if (connectionResult?.type !== "return") throw new Error("AppShell did not start the handshake");
+    await act(async () => {
+      await connectionResult.value;
+      expect(loadManifest).toHaveBeenCalled();
+      const manifestResult = loadManifest.mock.results[0];
+      if (manifestResult?.type !== "return") throw new Error("AppShell did not start the manifest load");
+      await manifestResult.value;
+    });
+    await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]));
 
-  expect(navigationStore.getState().mode).toBe("v2");
-  expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]);
+    expect(navigationStore.getState().mode).toBe("v2");
+    expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]);
+  } finally {
+    connect.mockRestore();
+    loadManifest.mockRestore();
+  }
 });
 
 test("does not escape a navigation request before the test fake is installed", () => {

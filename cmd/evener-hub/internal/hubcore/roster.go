@@ -27,6 +27,7 @@ type LiveEntry struct {
 	rendezvous.Entry
 	SessionID          string
 	Status             string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	ActiveFlags        []string // the status flags the daemon reported alongside Status
 	Crashed            bool     // true only for a retained record whose daemon PID is confirmed gone
 	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
 	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
@@ -61,6 +62,7 @@ type LiveEntry struct {
 type ProbeResult struct {
 	SessionID             string
 	Status                string
+	ActiveFlags           []string
 	PendingAsk            bool
 	PendingEscalation     bool
 	RunningSubagentIDs    []string
@@ -101,6 +103,7 @@ func cloneRunningJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
 
 func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
+	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
@@ -274,6 +277,17 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		_, _ = h.Write([]byte(id))
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(bySess[id].Status))
+		_, _ = h.Write([]byte{0})
+		// A recovery flag raised while the status itself holds still is what
+		// hides the fork action, so it has to move the fingerprint. Sorted on a
+		// copy: which order a daemon happens to list its flags in is not a
+		// change, and the caller's slice is not this function's to reorder.
+		activeFlags := append([]string(nil), bySess[id].ActiveFlags...)
+		sort.Strings(activeFlags)
+		for _, flag := range activeFlags {
+			_, _ = h.Write([]byte(flag))
+			_, _ = h.Write([]byte{0})
+		}
 		_, _ = h.Write([]byte{0})
 		if bySess[id].Crashed {
 			_, _ = h.Write([]byte{1})
@@ -702,6 +716,11 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
 // status, or "" when its daemon carried no per-descendant states (an old
 // daemon — unknown, NOT settled). Callers deciding what to render should
 // keep their pre-states fallback for the "" case.
+//
+// A crash-retained record keeps the child list its daemon reported before the
+// process died, and that daemon runs nothing any more. Skipping those entries
+// is what lets a stopped persisted delegate stop reading as daemon-owned the
+// moment its parent dies, rather than when crash retention expires.
 func (r *Roster) SubagentState(sessionID string) (string, bool) {
 	if sessionID == "" {
 		return "", false
@@ -709,6 +728,9 @@ func (r *Roster) SubagentState(sessionID string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, entry := range r.byPID {
+		if entry.Crashed {
+			continue
+		}
 		if slices.Contains(entry.RunningSubagentIDs, sessionID) {
 			return entry.RunningSubagentStates[sessionID], true
 		}
@@ -912,6 +934,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Entry:                 e,
 		SessionID:             result.SessionID,
 		Status:                result.Status,
+		ActiveFlags:           append([]string(nil), result.ActiveFlags...),
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
 		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
@@ -980,7 +1003,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	}
 	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	result := ProbeResult{OK: true, SessionID: statusThreadID(root), Status: root.Status.Type,
-		PendingAsk: root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
+		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
+		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		RunningJobs: runningJobs, CompletedJobs: completedJobs}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)

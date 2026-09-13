@@ -7,9 +7,12 @@ import (
 	"sync/atomic"
 )
 
-// jobActivityClock orders shell-job activity snapshots across one live session
-// tree. It is projection metadata only and carries no lifecycle, generation,
-// capacity, authorization, phase, or stop state.
+// jobActivityClock orders activity snapshots across one live session tree: it
+// moves when a shell job starts or finishes and when the tree's shape changes
+// under it (a delegate created — see noteJobTreeShapeChange), which together
+// are what a resumed continuation must not be applied across. It is
+// projection metadata only and carries no lifecycle, generation, capacity,
+// authorization, phase, or stop state.
 type jobActivityClock struct {
 	rootSessionID string
 	revision      atomic.Uint64

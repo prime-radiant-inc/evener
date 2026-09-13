@@ -46,7 +46,7 @@ func referencedInstallPaths(reg Registry) map[string]bool {
 // when the user is idle. Gc itself does not enforce that; it runs under the
 // same flock as every other mutation, so it never races an install/upgrade.
 func (m *Manager) Gc(ctx context.Context) ([]string, error) {
-	release, err := m.acquireStoreLock(ctx, gcAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, gcAcquireLock, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}

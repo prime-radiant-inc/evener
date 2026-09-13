@@ -261,6 +261,12 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	if res := mustResolve(t, r, "google-vertex-anthropic/claude-sonnet-4-6"); hasWarning(res, "regional") {
 		t.Fatal("Sonnet 4.6 and earlier are fine on regional endpoints")
 	}
+	if res := mustResolve(t, r, "google-vertex/gemini-3.5-flash"); !hasWarning(res, "regional") || !hasWarning(res, "Gemini 3") {
+		t.Fatalf("regional vertex gemini: %+v", res)
+	}
+	if res := mustResolve(t, r, "google-vertex/gemini-2.5-flash"); hasWarning(res, "regional") {
+		t.Fatal("Gemini 2.5 and earlier are fine on regional endpoints")
+	}
 	// The warning is about the location the URL was built with: an instance
 	// whose own base_url carries no location placeholder reaches no regional
 	// endpoint, whatever the environment says.
@@ -277,6 +283,9 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	if res := mustResolve(t, r, "hostonly/claude-opus-5"); !hasWarning(res, "regional") || res.Transport.BaseURL != "https://europe-west1-aiplatform.googleapis.com/v1/custom" || res.Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "europe-west1" {
 		t.Fatalf("host derived from the location must warn and expose the location: %+v", res)
 	}
+	if res := mustResolve(t, r, "hostonly/claude-opus-5"); !res.HostDerivedByRule {
+		t.Fatal("a base URL that reads {GOOGLE_VERTEX_HOST} the rule derived from is derived provenance")
+	}
 	// A row's own literal base_url replaces the provider template, so the
 	// provider template's location is neither used nor exposed nor warned about.
 	r = fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
@@ -291,6 +300,109 @@ func TestResolve_TransportAssembly(t *testing.T) {
 		"[providers.directhost]\nbase = \"google-vertex-anthropic\"\nbase_url = \"{GOOGLE_VERTEX_HOST}/v1/custom\"\n[providers.directhost.vars]\nGOOGLE_VERTEX_HOST = \"https://gw.example.test\"\n")
 	if res := mustResolve(t, r, "directhost/claude-opus-5"); hasWarning(res, "regional") || res.Transport.BaseURL != "https://gw.example.test/v1/custom" || res.Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "" {
 		t.Fatalf("a directly supplied host must not expose or warn about the location: %+v", res)
+	}
+	if res := mustResolve(t, r, "directhost/claude-opus-5"); res.HostDerivedByRule {
+		t.Fatal("a supplied host is not a derived authority")
+	}
+	// A host supplied directly is used as-is even when the URL still reads the
+	// location into its path: the request reaches the supplied host, not the
+	// location-derived endpoint, so neither the warning nor a 404 remedy may
+	// claim the location is the problem.
+	r = fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.gateway]\nbase = \"google-vertex-anthropic\"\nbase_url = \"{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n[providers.gateway.vars]\nGOOGLE_VERTEX_HOST = \"https://gw.example.test\"\n")
+	if res := mustResolve(t, r, "gateway/claude-opus-5"); hasWarning(res, "regional") || res.Transport.BaseURL != "https://gw.example.test/v1/projects/p/locations/europe-west1" || res.Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "europe-west1" || res.Transport.Vars["GOOGLE_VERTEX_HOST"] != "https://gw.example.test" {
+		t.Fatalf("a directly supplied host must keep the path location without the regional warning: %+v", res)
+	}
+}
+
+// A base URL with a literal host reaches that host even when its path reads
+// the location: the vertex-location rule produced nothing here, so the
+// location is not the endpoint's problem and must not be warned about. The
+// rule only owns the authority it derives from the location.
+func TestResolve_LiteralHostWithLocationPathDoesNotWarn(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.gwpath]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://gw.example.test/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n")
+	res := mustResolve(t, r, "gwpath/claude-opus-5")
+	if res.Transport.BaseURL != "https://gw.example.test/v1/projects/p/locations/europe-west1" {
+		t.Fatalf("base URL = %q", res.Transport.BaseURL)
+	}
+	if hasWarning(res, "regional") {
+		t.Fatalf("a literal host must not be warned about a location it only reads into its path: %+v", res.Warnings)
+	}
+}
+
+// A GOOGLE_VERTEX_HOST supplied directly is the authority the user chose, even
+// when it names the location's own host: a path prefix puts something else in
+// front of the regional endpoint, so the rule's route is not the one taken and
+// the location is not what the request reaches.
+func TestResolve_DirectHostWithPathPrefixDoesNotWarn(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.gwproxy]\nbase = \"google-vertex-anthropic\"\nbase_url = \"{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n[providers.gwproxy.vars]\nGOOGLE_VERTEX_HOST = \"https://europe-west1-aiplatform.googleapis.com/proxy\"\n")
+	res := mustResolve(t, r, "gwproxy/claude-opus-5")
+	if res.Transport.BaseURL != "https://europe-west1-aiplatform.googleapis.com/proxy/v1/projects/p/locations/europe-west1" {
+		t.Fatalf("base URL = %q", res.Transport.BaseURL)
+	}
+	if hasWarning(res, "regional") {
+		t.Fatalf("a supplied host is not the rule's route even when it names the derived host: %+v", res.Warnings)
+	}
+	if res.HostDerivedByRule {
+		t.Fatal("a supplied host is not a derived authority")
+	}
+}
+
+// The derivation owns the authority it produces, not every URL that names the
+// host it would produce: a literal base URL on the location's own host, with a
+// path the rule did not build, is still the config's route.
+func TestResolve_LiteralCanonicalHostWithPathPrefixDoesNotWarn(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.literalcanon]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://europe-west1-aiplatform.googleapis.com/proxy/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n")
+	res := mustResolve(t, r, "literalcanon/claude-opus-5")
+	if res.Transport.BaseURL != "https://europe-west1-aiplatform.googleapis.com/proxy/v1/projects/p/locations/europe-west1" {
+		t.Fatalf("base URL = %q", res.Transport.BaseURL)
+	}
+	if hasWarning(res, "regional") || res.HostDerivedByRule {
+		t.Fatalf("a literal base URL derives nothing, whatever host it names: %+v", res)
+	}
+}
+
+// A family pattern covers the ids in its family, at a boundary: "gemini-3"
+// covers gemini-3.8-flash and gemini-3-pro-preview, but a longer number is a
+// different family, not a longer member of this one.
+func TestVertexGlobalOnlyMatchesAtAnIDBoundary(t *testing.T) {
+	for _, id := range []string{"gemini-3", "gemini-3.8-flash", "gemini-3-pro-preview", "gemini-3-flash-preview", "claude-opus-5", "claude-opus-5@20251101"} {
+		if !IsVertexGlobalOnly(id) {
+			t.Errorf("%q is global-only", id)
+		}
+	}
+	for _, id := range []string{"", "gemini-30", "gemini-31-flash", "gemini-3x", "claude-opus-50", "claude-sonnet-4-6"} {
+		if IsVertexGlobalOnly(id) {
+			t.Errorf("%q is not global-only", id)
+		}
+	}
+}
+
+// The rule makes the authority, so a {GOOGLE_VERTEX_HOST} the template reads
+// anywhere else — a path or query segment — derives nothing: the request goes
+// where the template's own authority sends it.
+func TestResolve_HostPlaceholderOutsideTheAuthorityDoesNotWarn(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.pathhost]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://gateway.example/{GOOGLE_VERTEX_HOST}/v1\"\n")
+	res := mustResolve(t, r, "pathhost/claude-opus-5")
+	if hasWarning(res, "regional") || res.HostDerivedByRule {
+		t.Fatalf("a host placeholder in the path is not a derived authority: %+v", res)
+	}
+}
+
+// A location the rule refuses derives nothing: the resolver says what is wrong
+// with the location instead of claiming a regional endpoint was reached.
+func TestResolve_InvalidLocationDoesNotWarnRegionally(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe_west1"}, "")
+	res := mustResolve(t, r, "google-vertex-anthropic/claude-opus-5")
+	if !hasWarning(res, "invalid GOOGLE_VERTEX_LOCATION") {
+		t.Fatalf("an invalid location must be reported as such: %+v", res.Warnings)
+	}
+	if hasWarning(res, "regional") || res.HostDerivedByRule {
+		t.Fatalf("a refused location derives no endpoint: %+v", res)
 	}
 }
 

@@ -7,8 +7,116 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 )
+
+// TestStateRootFromLookup pins the canonical state-root chain against a
+// supplied environment lookup: XDG_STATE_HOME (verbatim), then the home
+// directory in os.UserHomeDir's per-OS spellings, then the "."-rooted
+// fallback. The Windows arms are pinned from any host so the hub's launch-env
+// resolution cannot regress off-Windows again (#1012).
+func TestStateRootFromLookup(t *testing.T) {
+	lookup := func(env map[string]string) func(string) (string, bool) {
+		return func(key string) (string, bool) {
+			value, ok := env[key]
+			return value, ok
+		}
+	}
+	tests := []struct {
+		name      string
+		goos      string
+		env       map[string]string
+		wantParts []string
+	}{
+		{
+			name:      "xdg state home wins over home",
+			goos:      "linux",
+			env:       map[string]string{envvars.XDGStateHome.Name: "/state", envvars.Home.Name: "/home/u"},
+			wantParts: []string{"/state", "evener"},
+		},
+		{
+			// os.UserHomeDir's callers read XDG_STATE_HOME raw (rendezvous,
+			// appwire, agent/runtime_dir); the shared chain must not trim it
+			// or it would diverge from them.
+			name:      "xdg state home is used verbatim",
+			goos:      "linux",
+			env:       map[string]string{envvars.XDGStateHome.Name: "  /state  "},
+			wantParts: []string{"  /state  ", "evener"},
+		},
+		{
+			name:      "empty xdg state home falls through to home",
+			goos:      "linux",
+			env:       map[string]string{envvars.XDGStateHome.Name: "", envvars.Home.Name: "/home/u"},
+			wantParts: []string{"/home/u", ".local", "state", "evener"},
+		},
+		{
+			name:      "unix home fallback",
+			goos:      "darwin",
+			env:       map[string]string{envvars.Home.Name: "/home/u"},
+			wantParts: []string{"/home/u", ".local", "state", "evener"},
+		},
+		{
+			name:      "windows userprofile wins over msys home",
+			goos:      "windows",
+			env:       map[string]string{envvars.UserProfile.Name: `C:\Users\u`, envvars.Home.Name: `C:\msys\home\u`},
+			wantParts: []string{`C:\Users\u`, ".local", "state", "evener"},
+		},
+		{
+			// os.UserHomeDir has no HOMEDRIVE/HOMEPATH arm; the old hub did,
+			// and that was the drift #1012 removed. Partial and full
+			// combinations alike fall through to the "."-rooted fallback.
+			name:      "windows ignores homedrive and homepath",
+			goos:      "windows",
+			env:       map[string]string{envvars.HomeDrive.Name: "D:", envvars.HomePath.Name: `\Users\u`},
+			wantParts: []string{".local", "state", "evener"},
+		},
+		{
+			name:      "windows ignores a lone homedrive",
+			goos:      "windows",
+			env:       map[string]string{envvars.HomeDrive.Name: "D:"},
+			wantParts: []string{".local", "state", "evener"},
+		},
+		{
+			name:      "windows ignores a lone homepath",
+			goos:      "windows",
+			env:       map[string]string{envvars.HomePath.Name: `\Users\u`},
+			wantParts: []string{".local", "state", "evener"},
+		},
+		{
+			name:      "windows ignores a msys home with no profile",
+			goos:      "windows",
+			env:       map[string]string{envvars.Home.Name: `C:\msys\home\u`},
+			wantParts: []string{".local", "state", "evener"},
+		},
+		{
+			name:      "android uses the sdcard constant",
+			goos:      "android",
+			env:       map[string]string{},
+			wantParts: []string{"/sdcard", ".local", "state", "evener"},
+		},
+		{
+			name:      "ios uses the root constant",
+			goos:      "ios",
+			env:       map[string]string{},
+			wantParts: []string{"/", ".local", "state", "evener"},
+		},
+		{
+			name:      "no home falls back to dot",
+			goos:      "linux",
+			env:       map[string]string{},
+			wantParts: []string{".local", "state", "evener"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			want := filepath.Join(tc.wantParts...)
+			if got := StateRootFromLookup(tc.goos, lookup(tc.env)); got != want {
+				t.Fatalf("StateRootFromLookup(%q, %v) = %q, want %q", tc.goos, tc.env, got, want)
+			}
+		})
+	}
+}
 
 // runGit runs a git command in dir with a fixed identity, failing the test on
 // error.

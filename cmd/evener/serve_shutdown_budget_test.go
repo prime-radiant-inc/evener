@@ -1,13 +1,20 @@
 package main
 
 import (
+	"context"
 	"net"
 	"net/http"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/server"
 )
 
 // TestServeWaitsForALiveDrainWithinTheBudget pins the arm the budget must not
@@ -150,5 +157,140 @@ func TestServeAbandonsAWedgedDrainWithoutClosingTheObserver(t *testing.T) {
 		t.Fatal("expiry CLOSED the verbose sink with a drain still live: the next event the drain " +
 			"delivers panics with send on closed channel, on the drain's own goroutine, which is " +
 			"exactly the shutdown crash the wait exists to prevent")
+	}
+}
+
+// inputFeedServer is the real daemon server with the input channel handed to
+// the test. The loop under test is the daemon's own; only the supply of work to
+// it is scripted, so nothing about how the loop emits is faked.
+type inputFeedServer struct {
+	*server.Server
+
+	input chan server.InputMessage
+}
+
+func (s *inputFeedServer) InputCh() <-chan server.InputMessage { return s.input }
+
+// TestServeShutdownReleasesAnInputLoopParkedOnAWedgedBridge is the end-to-end
+// shape of the deadlock: the daemon's input loop parked in an authoritative
+// send, holding eventsMu.RLock, behind a bridge that stopped draining.
+//
+// Every link is the production one. The bridge takes the authoritative mark
+// through ConsumeEventsLossless and then wedges inside its consume callback,
+// which is what a bridge stuck in BridgeEvent looks like. Real turns fill the
+// session's real 256-event buffer until the loop can neither deliver nor drop,
+// and the loop is the goroutine shutdown waits for before it calls
+// CloseForShutdown -- the only publisher of the close budget the parked send
+// would otherwise need.
+//
+// The conjunction the test waits on is what makes it deterministic rather than
+// timed: nothing drains, so a full buffer never empties again, and the daemon
+// cannot leave the processing state without emitting the turn's own terminal
+// boundary into that full buffer. Full plus processing is therefore a state the
+// loop can only be in because it is parked.
+func TestServeShutdownReleasesAnInputLoopParkedOnAWedgedBridge(t *testing.T) {
+	shrinkCloseBudget(t, 20*time.Millisecond)
+
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+
+	stopSignals := make(chan context.CancelFunc, 1)
+	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		next, stop := context.WithCancel(ctx)
+		stopSignals <- stop
+		return next, stop
+	}
+	servers := make(chan *inputFeedServer, 1)
+	deps.newServer = func(cfg server.ServerConfig) serveServer {
+		srv := &inputFeedServer{Server: server.NewServer(cfg), input: make(chan server.InputMessage)}
+		servers <- srv
+		return srv
+	}
+	sessions := make(chan *agent.Session, 1)
+	buildSession := deps.newSession
+	deps.newSession = func(c *llm.Client, p *provider.Profile, e execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		sess, err := buildSession(c, p, e, cfg)
+		if err == nil {
+			sessions <- sess
+		}
+		return sess, err
+	}
+
+	// The wedge outlives the whole run and is released only as this test
+	// returns: a bridge that resumed draining would release the parked send by
+	// DELIVERING the event, which is the one way this test could pass without
+	// observing the lifetime at all.
+	unwedge := make(chan struct{})
+	defer close(unwedge)
+	deps.bridge = func(_ serveServer, sess *agent.Session, _ func(events.SessionEvent), onDrained func()) {
+		sess.ConsumeEventsLossless(func(events.SessionEvent) { <-unwedge }, onDrained)
+	}
+	// Teardown must not spend the production drain budget waiting on a drain
+	// this test never lets finish.
+	expired := make(chan time.Time, 1)
+	expired <- time.Now()
+	deps.drainWaitExpiry = func() <-chan time.Time { return expired }
+
+	args := []string{
+		"--model", "openai/test",
+		"--addr", "127.0.0.1:0",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--run-dir", t.TempDir(),
+	}
+	served := make(chan error, 1)
+	go func() { served <- runServeWithDeps(args, deps) }()
+
+	sess := <-sessions
+	srv := <-servers
+	stop := <-stopSignals
+
+	stopFeed := make(chan struct{})
+	stopFeeding := sync.OnceFunc(func() { close(stopFeed) })
+	defer stopFeeding()
+	go func() {
+		for {
+			select {
+			case srv.input <- server.InputMessage{Text: "fill the buffer", SessionID: sess.ID()}:
+			case <-stopFeed:
+				return
+			}
+		}
+	}()
+
+	// TRIPWIRE: real scripted turns fill 256 buffered events in well under a
+	// second; 30s only fires if the loop never reaches the saturated state at
+	// all, which would mean this test is no longer building the scenario.
+	parkDeadline := time.After(30 * time.Second)
+	for len(sess.Events()) != cap(sess.Events()) ||
+		srv.GetStatus().State != string(agent.SessionProcessing) {
+		select {
+		case <-parkDeadline:
+			t.Fatalf("the daemon's input loop never parked in a saturated authoritative send "+
+				"(buffered %d of %d, state %q)", len(sess.Events()), cap(sess.Events()), srv.GetStatus().State)
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	// Stop supplying work before shutdown so the only turn shutdown interrupts
+	// is the parked one: every further message would be another turn cancelled
+	// mid-flight, and the daemon logs each of those. Stopping does not unpark
+	// the loop -- nothing drains the buffer it is parked on.
+	stopFeeding()
+
+	stop()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("runServeWithDeps: %v", err)
+		}
+	// TRIPWIRE: shutdown past a released send is in-process teardown over an
+	// already-expired drain budget and a 20ms close budget -- milliseconds. 30s
+	// only fires on the deadlock this test exists for.
+	case <-time.After(30 * time.Second):
+		t.Fatal("shutdown never completed: the input loop parked in an authoritative send was not " +
+			"released, so the wait on it -- and the close that would publish the budget -- cannot finish")
 	}
 }

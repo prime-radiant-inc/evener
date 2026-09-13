@@ -32,6 +32,15 @@ import {
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
+import {
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  spliceSlashCommand,
+} from "../../../protocol/slashCompletion";
+import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
@@ -79,16 +88,7 @@ import {
 import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import {
-  filterSlashMenuItems,
-  mergeSlashCommands,
-  parseSlashToken,
-  type SlashMenuItem,
-  type SlashToken,
-  spliceSlashCommand,
-} from "./slashCompletion";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
   ref: string;
@@ -166,6 +166,7 @@ export function Composer({ ref }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by textEditor.write() below; consumed (and cleared) by the
   // cursor-restore layout effect once `text`'s new value has committed.
@@ -1093,6 +1094,17 @@ export function Composer({ ref }: ComposerProps) {
       toasts.push("error", "Send is not available for this session");
       return;
     }
+    // Hand off before Send becomes disabled. Never refocus on completion:
+    // the user may have moved to another control or session while submitting.
+    const initiator = submitButtonRef.current;
+    if (
+      initiator &&
+      !initiator.disabled &&
+      (event.nativeEvent as SubmitEvent).submitter === initiator &&
+      initiator.ownerDocument.activeElement === initiator
+    ) {
+      textareaRef.current?.focus();
+    }
     void submitAction(route);
   }
 
@@ -1420,6 +1432,7 @@ export function Composer({ ref }: ComposerProps) {
                         action is Steer, and Send's job is the patient one. */}
                       <Tooltip label={submitTooltip}>
                         <Button
+                          ref={submitButtonRef}
                           type="submit"
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"

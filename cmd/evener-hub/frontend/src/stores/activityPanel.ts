@@ -1,15 +1,17 @@
+import { fenceRootSession, graftContinuationTree } from "../protocol/activityMerge";
+
+export { graftContinuationTree } from "../protocol/activityMerge";
+
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import {
-  type ActivityDelegate,
+  type ActivityCounts,
   type ActivityDisclosureState,
-  type ActivityEntry,
-  type ActivitySessionNode,
   type ActivityTree,
-  activityNodeID,
   defaultExpandedIDs,
   reconcileActivityState,
-} from "../panes/session/chrome/activityData";
+} from "../protocol/activityData";
+import { activitySummaryStore } from "./activitySummary";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 import type { PanelLoadFailure } from "./tasksPanel";
 
@@ -28,7 +30,10 @@ export interface ActivityPanelEntry {
   continuationLoadingID?: string;
   continuationFailures: Record<string, string | undefined>;
   requestID: number;
-  pending?: { kind: "root" } | { kind: "continuation"; nodeID: string };
+  // summaryRequestID is absent when no summary entry existed as the page
+  // began: there is no generation to fence freshness against, and 0 would be
+  // a sentinel that a freshly mounted entry could match by accident.
+  pending?: { kind: "root" } | { kind: "continuation"; nodeID: string; summaryRequestID?: number };
   expandedFoldIDs: string[];
 }
 
@@ -42,6 +47,7 @@ export type ActivityFetchResult =
 export interface ActivityPanelStoreState {
   entries: Map<string, ActivityPanelEntry>;
   beginFetch(ref: string, continuation?: { nodeID: string }): number;
+  beginContinuationFetch(ref: string, nodeID: string): number | null;
   publishFetch(ref: string, requestID: number, result: ActivityFetchResult): void;
   setExpanded(ref: string, expandedIDs: string[]): void;
   setSelected(ref: string, selectedID?: string): void;
@@ -105,136 +111,6 @@ function initialDisclosure(tree: ActivityTree): ActivityDisclosureState {
   };
 }
 
-function cloneEntry(entry: ActivityEntry): ActivityEntry {
-  return entry.kind === "shell"
-    ? { kind: "shell", job: { ...entry.job } }
-    : { kind: "delegate", delegate: cloneDelegate(entry.delegate) };
-}
-
-function cloneSession(session: ActivitySessionNode): ActivitySessionNode {
-  return {
-    ...session,
-    counts: { ...session.counts },
-    branch: { ...session.branch },
-    entries: session.entries.map(cloneEntry),
-  };
-}
-
-function cloneDelegate(delegate: ActivityDelegate): ActivityDelegate {
-  return {
-    ...delegate,
-    warnings: delegate.warnings ? [...delegate.warnings] : undefined,
-    diagnostics: delegate.diagnostics ? [...delegate.diagnostics] : undefined,
-    usage: delegate.usage ? { ...delegate.usage } : undefined,
-    worktree: delegate.worktree ? { ...delegate.worktree } : undefined,
-    branch: { ...delegate.branch },
-    child: delegate.child ? cloneSession(delegate.child) : undefined,
-  };
-}
-
-function maxActivity(current: string | undefined, incoming: string | undefined): string | undefined {
-  if (!incoming) return current;
-  if (!current) return incoming;
-  const currentMillis = Date.parse(current);
-  const incomingMillis = Date.parse(incoming);
-  if (Number.isNaN(incomingMillis)) return current;
-  return Number.isNaN(currentMillis) || incomingMillis > currentMillis ? incoming : current;
-}
-
-function revisionFencedDelegate(current: ActivityDelegate, patch: ActivityDelegate): ActivityDelegate {
-  const currentRevision = current.projectionRevision ?? 0;
-  const patchRevision = patch.projectionRevision ?? 0;
-  const state = patchRevision > currentRevision ? cloneDelegate(patch) : cloneDelegate(current);
-  const latestActivityAt = maxActivity(current.latestActivityAt, patch.latestActivityAt);
-  if (latestActivityAt !== state.latestActivityAt) state.latestActivityAt = latestActivityAt;
-  return state;
-}
-
-function mergeDelegate(current: ActivityDelegate, patch: ActivityDelegate, targetID: string): ActivityDelegate {
-  const delegateID = activityNodeID({ kind: "delegate", delegateId: current.delegateId });
-  const state = revisionFencedDelegate(current, patch);
-  if (delegateID === targetID) return state;
-  return {
-    ...state,
-    branch: { ...patch.branch },
-    child:
-      current.child && patch.child && current.child.sessionId === patch.child.sessionId
-        ? mergeSession(current.child, patch.child, targetID)
-        : patch.child
-          ? cloneSession(patch.child)
-          : current.child
-            ? cloneSession(current.child)
-            : undefined,
-  };
-}
-
-function fenceRootSession(current: ActivitySessionNode, incoming: ActivitySessionNode): ActivitySessionNode {
-  const currentByID = new Map(current.entries.map((entry) => [activityNodeID(entry), entry]));
-  const entries = incoming.entries.map((entry): ActivityEntry => {
-    if (entry.kind === "shell") return cloneEntry(entry);
-    const prior = currentByID.get(activityNodeID(entry));
-    if (prior?.kind !== "delegate") return cloneEntry(entry);
-    const delegate = revisionFencedDelegate(prior.delegate, entry.delegate);
-    delegate.branch = { ...entry.delegate.branch };
-    delegate.child =
-      prior.delegate.child && entry.delegate.child && prior.delegate.child.sessionId === entry.delegate.child.sessionId
-        ? fenceRootSession(prior.delegate.child, entry.delegate.child)
-        : entry.delegate.child
-          ? cloneSession(entry.delegate.child)
-          : undefined;
-    return { kind: "delegate", delegate };
-  });
-  return {
-    ...incoming,
-    counts: { ...incoming.counts },
-    branch: { ...incoming.branch },
-    entries,
-  };
-}
-
-function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode, targetID: string): ActivitySessionNode {
-  if (activityNodeID(current) === targetID) return cloneSession(patch);
-  const patchByID = new Map<string, ActivityEntry>();
-  for (const entry of patch.entries) patchByID.set(activityNodeID(entry), entry);
-  const mergedEntries = current.entries.map((entry) => {
-    const id = activityNodeID(entry);
-    const patchEntry = patchByID.get(id);
-    if (!patchEntry) return cloneEntry(entry);
-    if (entry.kind === "delegate" && patchEntry.kind === "delegate") {
-      return { kind: "delegate", delegate: mergeDelegate(entry.delegate, patchEntry.delegate, targetID) };
-    }
-    return cloneEntry(patchEntry);
-  }) as ActivityEntry[];
-  for (const patchEntry of patch.entries) {
-    const id = activityNodeID(patchEntry);
-    if (!current.entries.some((entry) => activityNodeID(entry) === id)) mergedEntries.push(cloneEntry(patchEntry));
-  }
-  return {
-    ...current,
-    ref: patch.ref,
-    label: patch.label,
-    aggregate: patch.aggregate,
-    counts: { ...patch.counts },
-    branch: { ...patch.branch },
-    entries: mergedEntries,
-  };
-}
-
-export function graftContinuationTree(current: ActivityTree, targetID: string, patch: ActivityTree): ActivityTree {
-  const root = mergeSession(current.root, patch.root, targetID);
-  // A continuation response describes one retained branch and can carry counts
-  // for that partial window. The root counts are the badge's authoritative
-  // summary, so a continuation must never replace them.
-  return {
-    revision: Math.max(current.revision, patch.revision),
-    root: {
-      ...root,
-      aggregate: current.root.aggregate,
-      counts: { ...current.root.counts },
-    },
-  };
-}
-
 function updateEntry(
   set: (update: (state: ActivityPanelStoreState) => Partial<ActivityPanelStoreState>) => void,
   ref: string,
@@ -247,7 +123,7 @@ function updateEntry(
   });
 }
 
-export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => ({
+export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get) => ({
   entries: new Map(),
 
   beginFetch(ref, continuation) {
@@ -256,13 +132,14 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       const current = entryFor(state.entries, ref);
       requestID = ++nextRequestID;
       const tree = retainedTree(current.load);
+      const summaryRequestID = activitySummaryStore.getState().entries.get(ref)?.requestID;
       const next: ActivityPanelEntry = continuation
         ? {
             ...current,
             continuationLoadingID: continuation.nodeID,
             continuationFailures: { ...current.continuationFailures, [continuation.nodeID]: undefined },
             requestID,
-            pending: { kind: "continuation", nodeID: continuation.nodeID },
+            pending: { kind: "continuation", nodeID: continuation.nodeID, summaryRequestID },
           }
         : {
             ...current,
@@ -279,7 +156,27 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
     return requestID;
   },
 
+  // The caller-facing way to start a page, and the mirror of activitySummary's
+  // continuationPending guard: one activity request per ref, whichever started
+  // first. An entry holds a single pending request, so a page started now would
+  // take the panel's request ID and whatever is already out would be dropped on
+  // arrival - the root's own snapshot, with this page's counts then marking its
+  // bump fresh against a tree that never received it, or another branch's page,
+  // discarded without even a failure to show for it. Null means the caller must
+  // not issue the request: a refreshed tree arrives with its own token, and a
+  // branch whose turn has not come keeps the one it already has.
+  beginContinuationFetch(ref, nodeID) {
+    if (get().entries.get(ref)?.pending) return null;
+    return get().beginFetch(ref, { nodeID });
+  },
+
   publishFetch(ref, requestID, result) {
+    let settledContinuation = false;
+    // What this page owes the summary store, decided inside the updater and
+    // paid after it: the updater stays a pure function of panel state, and a
+    // nested set can no longer land inside this store's own commit.
+    let summaryDebt: { kind: "failure" } | { kind: "counts"; counts: ActivityCounts } | undefined;
+    let summaryRequestID: number | undefined;
     set((state) => {
       const current = state.entries.get(ref);
       if (!current || current.requestID !== requestID) return state;
@@ -288,6 +185,9 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       let next = current;
 
       if (pending.kind === "continuation") {
+        settledContinuation = true;
+        summaryRequestID = pending.summaryRequestID;
+        if (result.kind !== "ready") summaryDebt = { kind: "failure" };
         if (result.kind === "continuation-failed") {
           next = {
             ...current,
@@ -299,6 +199,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
           const previousTree = retainedTree(current.load);
           if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
+            summaryDebt = { kind: "counts", counts: tree.root.counts };
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
             const continuationFailures = { ...current.continuationFailures };
             delete continuationFailures[pending.nodeID];
@@ -385,6 +286,17 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       entries.set(ref, next);
       return { entries };
     });
+    // Same order the merge relied on when these ran inside the updater: the
+    // badge settles against the tree just committed, and only then does a root
+    // refresh queued behind this page get its turn.
+    if (summaryDebt && summaryRequestID !== undefined) {
+      const summary = activitySummaryStore.getState();
+      if (summaryDebt.kind === "failure") summary.publishContinuationFailure(ref, summaryRequestID);
+      else summary.publishContinuationCounts(ref, summaryRequestID, summaryDebt.counts);
+    }
+    // A root refresh queued while this continuation was in flight waited for
+    // the merge above rather than replacing the panel tree mid-page.
+    if (settledContinuation) activitySummaryStore.getState().issuePendingRootFetch(ref);
   },
 
   setExpanded(ref, expandedIDs) {

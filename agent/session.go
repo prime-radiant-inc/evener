@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
@@ -53,6 +56,38 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 		}
 	}
 	s.emitWithProvenance(kind, data, p)
+}
+
+// noteJobTreeShapeChange moves the activity clock for a change that adds or
+// removes an entry rather than starting or finishing a job: a delegate
+// appearing shifts its owner's sorted delegate list, and a live continuation
+// minted before it must be refused rather than applied to a list that moved
+// under it. The move is only in memory until persistJobTreeShapeChange runs,
+// which is why the two are separate: this one is called while the delegate
+// tree's own lock is held.
+func (s *Session) noteJobTreeShapeChange() {
+	if s == nil {
+		return
+	}
+	if _, _, ok := s.jobActivityClock.nextRevision(); ok {
+		s.jobTreeShapeUnsaved.Store(true)
+	}
+}
+
+// persistJobTreeShapeChange writes the session's metadata when a shape change
+// has moved the activity clock since the last save, the same way
+// emitWithJobTreeRevision persists the moves a job start or finish makes.
+// Without it a restart restores the revision from before the delegate
+// appeared, and a continuation minted against the older list is accepted
+// against the newer one. It runs off the delegate tree's lock: the save takes
+// the session's own locks, which must never be waited on from behind that one.
+func (s *Session) persistJobTreeShapeChange() {
+	if s == nil {
+		return
+	}
+	if s.jobTreeShapeUnsaved.CompareAndSwap(true, false) {
+		s.maybeAutoSave()
+	}
 }
 
 func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bool) {
@@ -127,7 +162,11 @@ type Session struct {
 	strictTranscriptMaxLineBytes int
 	events                       chan events.SessionEvent
 	eventsMu                     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
-	eventsClosed                 bool         // set under eventsMu.Lock immediately before close(events)
+	closeCtxMu                   sync.RWMutex
+	closeCtx                     context.Context // shared shutdown deadline for blocked authoritative sends
+	closeSignal                  chan struct{}
+	testOnlyBlockedSendEntered   func()
+	eventsClosed                 bool // set under eventsMu.Lock immediately before close(events)
 	// descendantEvent is inherited from the spawning root and remains immutable
 	// for this Session's lifetime. Children use it to expose their live event
 	// stream without acquiring an authoritative consumer for their own channel.
@@ -167,19 +206,45 @@ type Session struct {
 	// reassigned) and only ever read from the turn-processing goroutine, so it
 	// needs no lock. envTracker is NOT single-goroutine-owned: Session.Compact
 	// can run on a caller's own goroutine with no idle gate, and
-	// resetEnvContextTrackerAfterCompaction reassigns the pointer (and
-	// implicitly races the turn goroutine's maybeAppendEnvironmentContext,
-	// which mutates the pointed-to Tracker's internal state via RenderDiff) —
-	// both the read of the pointer and the RenderDiff/reassignment must hold
-	// mu. See maybeAppendEnvironmentContext and
-	// resetEnvContextTrackerAfterCompaction.
+	// resetEnvContextTrackerLocked reassigns the pointer (and implicitly races
+	// the turn goroutine's maybeAppendEnvironmentContext, which mutates the
+	// pointed-to Tracker's internal state via RenderDiff).
+	//
+	// Both sides take attentionMu THEN mu, in that order. mu alone is not
+	// enough: the tracker advance and the transcript entry it describes are one
+	// publication, so a reset that took only mu could replace the tracker
+	// between an append's RenderDiff and the entry that carries its block, and
+	// the next turn would diff against a baseline no transcript records. See
+	// appendEnvironmentContext (which holds the pair across the whole append)
+	// and resetEnvContextTrackerLocked's two callers: publishFoldTransaction
+	// via foldCommit.resetEnvContextTrackerLocked, and handleCompactionTurn.
 	envCollector *envctx.Collector
 	envTracker   *envctx.Tracker
 	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:
 	// nil until the first ENVIRONMENT turn is emitted (or restored from a prior
 	// session), so a session that has said nothing about its environment yet
-	// persists nothing. Guarded by mu (see setEnvContextState).
+	// persists nothing. Guarded by mu; appendEnvironmentContext advances it with
+	// the entry it commits and resetEnvContextTrackerLocked clears it with the
+	// tracker.
 	envContextState *envctx.State
+
+	// notesLastProjected is the last shared-notes block
+	// maybeAppendNotesContext appended as a NOTES_CONTEXT turn. The
+	// projection appends only when the rendered block differs from this
+	// record, so consecutive rounds with no notes change append once rather
+	// than re-emitting a limit-sized block every round. Cleared by
+	// resetNotesProjectionAfterCompaction when compaction folds history away
+	// (the model must re-see the current state), and seeded from restored
+	// history on resume (see below). Guarded by mu.
+	notesLastProjected string
+	// notesEverProjected reports whether this process has ever projected a
+	// non-empty notes block. It distinguishes the transition-to-empty case
+	// (append the explicit cleared marker so the next model request
+	// reflects the cleared list) from the never-populated case (project
+	// nothing, keeping a fresh session's history byte-identical). Seeded
+	// from restored history on resume alongside notesLastProjected.
+	// Guarded by mu.
+	notesEverProjected bool
 
 	// --- Synchronization / lock discipline ---
 	//
@@ -217,10 +282,21 @@ type Session struct {
 	// before mu by maybeAutoSave, preventing an older snapshot from waiting behind
 	// and then overwriting a newer save from another goroutine.
 	metaSaveMu sync.Mutex
+
+	// jobTreeShapeUnsaved records that the activity clock moved for a change
+	// in the tree's shape (a delegate created) whose new revision has not
+	// reached the session's metadata yet — see noteJobTreeShapeChange.
+	jobTreeShapeUnsaved atomic.Bool
 	// goalUpdateMu serializes each goal-store mutation with the GOAL_UPDATED event
 	// that announces it. It is always acquired before mu; emit runs after mu is
 	// released, so observers see mutation order without event emission under mu.
 	goalUpdateMu sync.Mutex
+	// notesUpdateMu serializes each shared-notes store mutation with the event
+	// that announces it, mirroring goalUpdateMu: the mutation and its
+	// snapshot capture run under this lock plus mu, and emit runs after both
+	// are released, so concurrent saves publish in store order and a stale
+	// event never wins at the projector.
+	notesUpdateMu sync.Mutex
 
 	// --- native worktree occupancy (spec §7) ---
 	//
@@ -670,11 +746,14 @@ type Session struct {
 	totalRounds       int  // cumulative tool rounds across all inputs
 
 	// self-compaction state (compact tool)
-	pinnedNote          string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
-	pinnedNoteGen       uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
-	pendingInstructions string // compaction_instructions awaiting the round-tail force
-	forceRequested      bool   // a compact tool call is pending this round
-	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
+	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
+	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
+	// shared-notes state (human/agent whiteboards plus URL list)
+	agentNote           string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
+	sessionURLs         []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
+	pendingInstructions string              // compaction_instructions awaiting the round-tail force
+	forceRequested      bool                // a compact tool call is pending this round
+	nudgedSinceCompact  bool                // warning-nudge latch; reset on any compaction
 
 	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
 	// uses contextMgr.ElicitNote (Variant B of the forced-note mechanism — see
@@ -1659,25 +1738,41 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // no envCollector (e.g. a bare struct literal built directly by a test that
 // bypasses NewSession/RestoreSessionFromMetaWithConfig).
 //
-// envTracker is read and mutated (RenderDiff) under mu because
-// Session.Compact can run resetEnvContextTrackerAfterCompaction on a caller's
-// own goroutine concurrently with this method running on the turn-processing
+// envTracker is read and mutated (RenderDiff) under attentionMu and mu because
+// Session.Compact can run resetEnvContextTrackerLocked on a caller's own
+// goroutine concurrently with this method running on the turn-processing
 // goroutine — see the field's doc comment.
-func (s *Session) maybeAppendEnvironmentContext() {
+func (s *Session) maybeAppendEnvironmentContext() error {
+	return s.appendEnvironmentContext(true)
+}
+
+// appendEnvironmentContext can persist recovery context without publishing a
+// live event: restore seeds its projection from the completed transcript.
+func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if s.envCollector == nil {
-		return
+		return nil
 	}
 	snap := s.envCollector.Collect(envctx.Inputs{
 		Cwd:     s.currentEnv().WorkingDirectory(),
 		Sandbox: s.cfg.Sandbox,
 	})
 
+	s.attentionMu.Lock()
 	s.mu.Lock()
 	tracker := s.envTracker
-	if tracker == nil {
+	// Shutdown has claimed the session: its terminal boundary is published
+	// under this same door, so an append that gets here is one whose entry and
+	// event would land behind SESSION_END -- context for a session that is
+	// over, in a transcript whose writer is about to close. Refuse silently,
+	// like the two early returns beside this one: the caller is a turn the
+	// close is already ending, and failing it would only make a dying turn
+	// unwind state the close is about to discard.
+	if tracker == nil || s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		s.attentionMu.Unlock()
+		return nil
 	}
+	before := tracker.State()
 	block := tracker.RenderDiff(snap)
 	var st envctx.State
 	if block != "" {
@@ -1685,42 +1780,165 @@ func (s *Session) maybeAppendEnvironmentContext() {
 	}
 	s.mu.Unlock()
 	if block == "" {
-		return
+		s.attentionMu.Unlock()
+		return nil
 	}
 
-	s.appendTurn(schema.TurnEnvironment, llm.User(block))
-	// Persist tracker state so resume stays silent when nothing changed.
-	s.setEnvContextState(st)
-}
-
-// setEnvContextState updates the mu-guarded mirror of envTracker.State() that
-// Meta() reads, then flushes meta.json — mirroring the lock-then-release-then-
-// maybeAutoSave pattern used by SetReasoningEffort/Rename (maybeAutoSave
-// re-acquires mu via Meta(), so it must not be called while mu is held).
-func (s *Session) setEnvContextState(st envctx.State) {
-	s.mu.Lock()
-	s.envContextState = &st
-	s.mu.Unlock()
-	s.maybeAutoSave()
-}
-
-// resetEnvContextTrackerAfterCompaction clears the environment-context tracker
-// when a CHECKPOINT/SUMMARY turn replaces history: compaction drops any
-// previously appended ENVIRONMENT turns from the model-visible history (they
-// are model-bound content folded away like any other turn), so the model
-// loses whatever drift was last reported. Rebuilding the tracker at its zero
-// state (HasSent=false) makes the next maybeAppendEnvironmentContext call
-// re-emit a full block rather than staying silent on an environment the model
-// can no longer see anything about.
-func (s *Session) resetEnvContextTrackerAfterCompaction() {
-	s.mu.Lock()
-	if s.envTracker == nil {
+	// Persist the identity with the entry. Model history can be compacted, so
+	// its length cannot name a durable transcript turn.
+	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
+	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
+	err := s.appendTurnAfterTranscriptWriteLocked(
+		turn,
+		func() error { return s.writeTranscriptDurableLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	)
+	committed := err == nil
+	if err != nil {
+		// RenderDiff advances the tracker before the transcript write so it can
+		// render the diff. What becomes of that advance depends on what the
+		// transcript can be shown to hold. attentionMu keeps compaction from
+		// replacing the tracker during this transaction, and holds a late
+		// commit's append whole against a fold publication exactly as the clean
+		// path's pair is held.
+		switch s.reconcileEnvironmentEntryAfterFailedWriteLocked(turn, err) {
+		case environmentEntryAbsent, environmentEntryUnknown:
+			// Neither outcome puts the turn in front of the model, so the
+			// tracker must not claim the model saw it: rewind to the last state
+			// it did see and let the next turn render the whole observation
+			// again. When an unknown entry turns out to have landed after all,
+			// that costs a redundant entry in the transcript — which a reader
+			// can see and reconcile, unlike a tracker advanced past unseen
+			// context, which renders every later block as a diff against a
+			// baseline the model never received.
+			s.mu.Lock()
+			s.envTracker = envctx.NewTracker(before)
+			s.mu.Unlock()
+		case environmentEntryDurable:
+			// The entry is in the transcript and now synced, so the write
+			// committed after all. Complete the half of the pair the failure
+			// skipped; everything below then runs as it does for a clean
+			// append, because the entry is late rather than different.
+			s.mu.Lock()
+			s.history = append(s.history, turn)
+			s.logPairPersistedLocked(turn)
+			s.mu.Unlock()
+			committed = true
+		}
+	}
+	if committed {
+		// Persist tracker state so resume stays silent when nothing changed.
+		s.mu.Lock()
+		s.envContextState = &st
 		s.mu.Unlock()
-		return
+	}
+	if committed && publishEvent {
+		// The entry and the event announcing it are one publication, and the
+		// transcript door is the statement that says so: while it is held no
+		// fold can publish, so the order a live reader sees is the order the
+		// transcript holds. Emitted after the release, a fold could take the
+		// door in between, commit its markers and flush its own events first,
+		// and the projector — which reads an environment event as a turn
+		// boundary — would split a turn cold replay does not.
+		//
+		// This is the one event published under the door, and the trade is
+		// real: emit is not a bounded send. It parks indefinitely against the
+		// authoritative consumer when the buffer is full (holding eventsMu for
+		// read), and it runs the job-watch fan-out synchronously, job-store
+		// persistence and cross-session notification delivery included. All of
+		// that now runs under attentionMu, so a slow daemon consumer stalls
+		// this session's transcript writes and fold publication rather than
+		// only the emitter. Accepted because a parked consumer already stalls
+		// the emitting turn and the door already spans an fsync; see
+		// publishFoldTransaction, whose deferred flush must NOT follow this
+		// example.
+		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
+			hook()
+		}
+		s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turn.StableTurnID, Text: block})
+	}
+	s.attentionMu.Unlock()
+	if committed {
+		s.maybeAutoSave()
+	}
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	return err
+}
+
+// environmentEntryOutcome is what reconciliation could establish about the
+// entry a failed environment append left, or did not leave, in the transcript.
+type environmentEntryOutcome int
+
+const (
+	// environmentEntryUnknown: reconciliation could establish neither, so the
+	// entry cannot be treated as something the model was shown. It takes the
+	// zero value because the outcome nobody set must be the one that claims
+	// nothing about the transcript; environmentEntryDurable commits a turn on
+	// the strength of a confirmation, and a confirmation is exactly what an
+	// unset outcome does not carry.
+	environmentEntryUnknown environmentEntryOutcome = iota
+	// environmentEntryAbsent: the transcript does not hold the entry, so the
+	// next turn must render the observation again.
+	environmentEntryAbsent
+	// environmentEntryDurable: the transcript holds the entry and it is synced,
+	// so the append committed late and owes its in-memory side effects.
+	environmentEntryDurable
+)
+
+// reconcileEnvironmentEntryAfterFailedWriteLocked settles what a failed
+// environment append left behind. A rollback that succeeded took the entry
+// back out, and that is the whole answer. A rollback that failed leaves the
+// entry's line possibly still in the file, so the entry is looked up by its
+// stable ID behind a durability barrier that makes what a reader can see
+// authoritative.
+//
+// Absence is only ever reported when it is established. A barrier that cannot
+// be raised or a transcript that cannot be read leaves the outcome unknown,
+// which is its own answer: only a confirmed entry may be treated as one the
+// model was shown. The caller holds attentionMu, so no other writer can append
+// between the failure and this read.
+func (s *Session) reconcileEnvironmentEntryAfterFailedWriteLocked(turn schema.Turn, err error) environmentEntryOutcome {
+	if !errors.Is(err, transcript.ErrRollbackFailed) {
+		return environmentEntryAbsent
+	}
+	if durabilityErr := s.attachedTranscript().EstablishDurability(); durabilityErr != nil {
+		return environmentEntryUnknown
+	}
+	data, readErr := readTranscriptFull(s.TranscriptPath())
+	if readErr != nil {
+		return environmentEntryUnknown
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.StableTurnID == turn.StableTurnID {
+			return environmentEntryDurable
+		}
+	}
+	return environmentEntryAbsent
+}
+
+// resetEnvContextTrackerLocked clears the environment-context tracker when a
+// CHECKPOINT/SUMMARY turn replaces history: compaction drops any previously
+// appended ENVIRONMENT turns from the model-visible history (they are
+// model-bound content folded away like any other turn), so the model loses
+// whatever drift was last reported. Rebuilding the tracker at its zero state
+// (HasSent=false) makes the next maybeAppendEnvironmentContext call re-emit a
+// full block rather than staying silent on an environment the model can no
+// longer see anything about.
+//
+// Requires attentionMu and mu, in that order, so a fold and an environment
+// append cannot publish different tracker generations together. It reports
+// whether it changed anything, so a caller that has released both locks can
+// persist the new state.
+func (s *Session) resetEnvContextTrackerLocked() bool {
+	if s.envTracker == nil {
+		return false
 	}
 	s.envTracker = envctx.NewTracker(envctx.State{})
-	s.mu.Unlock()
-	s.setEnvContextState(envctx.State{})
+	state := envctx.State{}
+	s.envContextState = &state
+	return true
 }
 
 // appendTurnWithTranscriptMessage keeps the live model context and the durable
@@ -1754,15 +1972,18 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 // with a placeholder.
 func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() error, appendLocked func()) error {
 	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.appendTurnAfterTranscriptWriteLocked(persisted, write, appendLocked)
+}
+
+func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
 	if err := write(); err != nil {
-		s.attentionMu.Unlock()
 		return err
 	}
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
-	s.attentionMu.Unlock()
 	return nil
 }
 
@@ -1823,6 +2044,17 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 // written before attachTranscript is held; everything after goes straight
 // through. Both report a held turn as written (nil error), which is accurate —
 // it has not failed, it has not been flushed yet.
+//
+// A poisoned writer (transcript.ErrWriterPoisoned) is the opposite case and
+// needs no special handling here: an append that failed partway and could not
+// be rolled back leaves the writer refusing every later append, so each one
+// returns that error through these same doors and reaches the caller's ordinary
+// transcript-failure path — the warning, and for a turn-bearing caller the
+// aborted turn. That is the intended behaviour for a transcript nothing further
+// can safely be added to: every turn fails loudly until the session is
+// restarted against the records the file still holds. What must never happen is
+// the silent success a nil writer gives, which is why the writer answers with an
+// error rather than dropping the turn.
 
 // writeTranscript records a turn in the durable transcript, holding it if the
 // session has not yet decided whether it has one.
@@ -1992,9 +2224,44 @@ func (s *Session) saveMeta() error {
 }
 
 func (s *Session) maybeAutoSave() {
-	if err := s.saveMeta(); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("auto-save failed: %v", err)})
+	if err := s.autoSaveMeta(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf("auto-save failed: %v", err),
+		})
 	}
+}
+
+// autoSaveMeta persists the session metadata, reporting the write outcome so
+// mutation paths can refuse to journal success for a write that never landed.
+// maybeAutoSave keeps the warn-only contract for the non-mutation callers.
+//
+// autoSaveMetaLocked is the same write for callers that already hold
+// metaSaveMu (a mutation+rollback critical section): the lock must stay held
+// from the save attempt through the rollback, so a concurrent maybeAutoSave
+// cannot snapshot a transient mutation between a failed save and its restore
+// and persist it to disk.
+func (s *Session) autoSaveMeta() error {
+	if s.stateDir == "" {
+		return nil
+	}
+	s.metaSaveMu.Lock()
+	defer s.metaSaveMu.Unlock()
+	return s.saveSessionMetaLocked()
+}
+
+func (s *Session) autoSaveMetaLocked() error {
+	if s.stateDir == "" {
+		return nil
+	}
+	return s.saveSessionMetaLocked()
+}
+
+func (s *Session) saveSessionMetaLocked() error {
+	meta := s.Meta()
+	if fs := s.cfg.testOnly.metaFS; fs != nil {
+		return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+	}
+	return schema.SaveSessionMeta(s.stateDir, meta)
 }
 
 // sessionsSubdir is the directory, under a session's StateDir, where its

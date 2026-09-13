@@ -251,7 +251,7 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 	if err := m.Remove(context.Background(), "p", "m"); err == nil {
 		t.Fatal("remove load")
 	}
-	if _, err := m.List(); err == nil {
+	if _, err := m.List(context.Background()); err == nil {
 		t.Fatal("list load")
 	}
 	if _, err := m.UpdateAll(ctx); err == nil {
@@ -269,7 +269,7 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 		t.Fatal("remove save")
 	}
 	installValidateDir = func(string) error { return errInstallCoverage }
-	if got, err := m.List(); err != nil || len(got) != 1 || !got[0].Broken {
+	if got, err := m.List(context.Background()); err != nil || len(got) != 1 || !got[0].Broken {
 		t.Fatalf("list %#v %v", got, err)
 	}
 	installLoadRegistry = func(string) (Registry, error) {
@@ -277,7 +277,7 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 			"z@b": {{}}, "a@z": {{}}, "a@a": {{}},
 		}}, nil
 	}
-	if got, err := m.List(); err != nil || len(got) != 3 || got[0].Marketplace != "a" || got[2].Plugin != "z" {
+	if got, err := m.List(context.Background()); err != nil || len(got) != 3 || got[0].Marketplace != "a" || got[2].Plugin != "z" {
 		t.Fatalf("sorted list %#v %v", got, err)
 	}
 	installSaveRegistry = func(string, Registry) error { return nil }

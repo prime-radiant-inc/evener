@@ -65,12 +65,52 @@ type idlePublicationServer struct {
 	idlePublished  chan struct{}
 	publishedState string
 	publishOnce    sync.Once
+
+	// One turn writes the status thread/read returns from two goroutines. The
+	// serve loop writes it synchronously at the tail of every input pass; the
+	// event bridge writes it again as it projects that turn's carriers --
+	// active when the user-input carrier lands
+	// (server/appwire_runtime.go:439), idle again when the session-end carrier
+	// does (server/bridge.go:223-228). The bridge drains a buffered feed on its
+	// own goroutine, so the loop's idle write is not the end of the publication
+	// a reader observes.
+	turnProjected     chan struct{}
+	turnProjectedOnce sync.Once
+
+	// Parking the turn's carrier until the loop has published idle makes the
+	// lagging-bridge ordering happen every run instead of only under load.
+	releaseCarrier     chan struct{}
+	releaseCarrierOnce sync.Once
 }
 
 func newIdlePublicationServer(cfg server.ServerConfig) *idlePublicationServer {
 	return &idlePublicationServer{
-		Server:        server.NewServer(cfg),
-		idlePublished: make(chan struct{}),
+		Server:         server.NewServer(cfg),
+		idlePublished:  make(chan struct{}),
+		turnProjected:  make(chan struct{}),
+		releaseCarrier: make(chan struct{}),
+	}
+}
+
+// holdTurnCarrier parks the bridge on the turn's opening carrier until the serve
+// loop has published its post-turn state, which is the ordering CI reached on
+// its own: the carrier's projection republishes active after the loop wrote
+// idle.
+func (s *idlePublicationServer) holdTurnCarrier(ev events.SessionEvent) {
+	if ev.Kind != events.EventUserInput {
+		return
+	}
+	select {
+	case <-s.idlePublished:
+	case <-s.releaseCarrier:
+	}
+}
+
+// noteTurnProjected opens the gate on the session-end carrier: it is the last
+// write the bridge makes to the status this turn publishes.
+func (s *idlePublicationServer) noteTurnProjected(ev events.SessionEvent) {
+	if ev.Kind == events.EventSessionEnd {
+		s.turnProjectedOnce.Do(func() { close(s.turnProjected) })
 	}
 }
 
@@ -118,6 +158,7 @@ type sessionControlIdentityServer struct {
 
 	mu                   sync.Mutex
 	processing           bool
+	claimedTurnID        string
 	processingStarted    chan struct{}
 	releaseProcessing    chan struct{}
 	processingFinished   chan struct{}
@@ -136,6 +177,15 @@ type sessionControlIdentityServer struct {
 	terminalEnteredOnce       sync.Once
 	terminalProjectedOnce     sync.Once
 	terminalReleaseOnce       sync.Once
+
+	// An input pass that claims nothing still publishes the session's wire
+	// state at its tail. Holding one lets a test place a turn/start inside that
+	// pass, which is the ordering the daemon reaches on its own under load.
+	holdUnclaimedPass        bool
+	unclaimedPassEntered     chan struct{}
+	releaseUnclaimedPass     chan struct{}
+	unclaimedPassOnce        sync.Once
+	unclaimedPassReleaseOnce sync.Once
 }
 
 func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIdentityServer {
@@ -150,17 +200,41 @@ func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIde
 		terminalProjectionEntered: make(chan struct{}),
 		releaseTerminalProjection: make(chan struct{}),
 		terminalProjected:         make(chan struct{}),
+
+		unclaimedPassEntered: make(chan struct{}),
+		releaseUnclaimedPass: make(chan struct{}),
 	}
 }
 
+// SetProcessingTurn records the claim of a durable turn. It is the daemon's one
+// call that publishes a client-mutation turn's stable identity, so it is the
+// signal the processing gate below waits on.
+func (s *sessionControlIdentityServer) SetProcessingTurn(turnID string) {
+	s.Server.SetProcessingTurn(turnID)
+	s.mu.Lock()
+	s.claimedTurnID = turnID
+	s.mu.Unlock()
+}
+
+// SetState holds the daemon inside the claimed turn. Active state alone is not
+// that moment: the serve loop publishes the live session's wire state at the
+// tail of every input pass, and that state reads active for a durable start the
+// loop has accepted but not yet claimed, whose stable identity nothing has
+// published. Only a claim opens this gate.
 func (s *sessionControlIdentityServer) SetState(state string) {
 	s.Server.SetState(state)
 	if state != string(agent.SessionProcessing) {
 		return
 	}
 	s.mu.Lock()
-	s.processing = true
+	claimed := s.claimedTurnID != ""
+	if claimed {
+		s.processing = true
+	}
 	s.mu.Unlock()
+	if !claimed {
+		return
+	}
 	s.processingStartOnce.Do(func() { close(s.processingStarted) })
 	<-s.releaseProcessing
 }
@@ -173,9 +247,14 @@ func (s *sessionControlIdentityServer) SetProcessing(processing bool) {
 	s.mu.Lock()
 	finishing := s.processing
 	s.processing = false
+	holdUnclaimedPass := s.holdUnclaimedPass
 	s.mu.Unlock()
 	if finishing {
 		s.processingFinishOnce.Do(func() { close(s.processingFinished) })
+	}
+	if holdUnclaimedPass {
+		s.unclaimedPassOnce.Do(func() { close(s.unclaimedPassEntered) })
+		<-s.releaseUnclaimedPass
 	}
 }
 
@@ -199,7 +278,7 @@ type sessionControlLifecycle struct {
 	ref    string
 }
 
-func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter) *sessionControlLifecycle {
+func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter, configure ...func(*sessionControlIdentityServer)) *sessionControlLifecycle {
 	t.Helper()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
@@ -216,6 +295,9 @@ func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter) *se
 	var observedServer *sessionControlIdentityServer
 	deps.newServer = func(cfg server.ServerConfig) serveServer {
 		observedServer = newSessionControlIdentityServer(cfg)
+		for _, apply := range configure {
+			apply(observedServer)
+		}
 		return observedServer
 	}
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
@@ -279,6 +361,7 @@ func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter) *se
 	t.Cleanup(func() {
 		observedServer.release()
 		observedServer.terminalReleaseOnce.Do(func() { close(observedServer.releaseTerminalProjection) })
+		observedServer.unclaimedPassReleaseOnce.Do(func() { close(observedServer.releaseUnclaimedPass) })
 		client.Close()
 		if err := shutdownServeTestDaemon(ctx, entry.Address, entry.SessionID); err != nil {
 			return
@@ -305,7 +388,7 @@ func awaitSessionControlLifecycle(t *testing.T, lifecycle *sessionControlLifecyc
 	}
 }
 
-func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
+func startClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
 	t.Helper()
 	response, err := lifecycle.client.TurnStart(lifecycle.ctx, appwire.TurnStartParams{
 		ClientMutationID:   mutationID,
@@ -316,6 +399,12 @@ func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycl
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
+	return response
+}
+
+func startHeldClientMutationTurn(t *testing.T, lifecycle *sessionControlLifecycle, mutationID, text string) appwire.TurnStartResponse {
+	t.Helper()
+	response := startClientMutationTurn(t, lifecycle, mutationID, text)
 	awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
 	return response
 }
@@ -385,13 +474,28 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		t.Fatalf("projected turns do not contain incorporated pending input: %#v", projected.Turns)
 	})
 
+	// Stop runs with an unclaimed input pass held across turn/start. The serve
+	// loop publishes the live session's wire state at the tail of every input
+	// pass, including one that claimed nothing, and that state reads active
+	// from the moment turn/start durably accepts a start -- before the loop
+	// claims it and publishes its stable identity. This subtest reached that
+	// ordering on its own under CI load; holding the pass makes it every run,
+	// so the claimed identity below is pinned against the wake that produced
+	// the intermittent failure.
 	t.Run("stop", func(t *testing.T) {
 		adapter := newStopParkAdapter()
-		lifecycle := startSessionControlLifecycle(t, adapter)
+		lifecycle := startSessionControlLifecycle(t, adapter, func(srv *sessionControlIdentityServer) {
+			srv.mu.Lock()
+			srv.holdUnclaimedPass = true
+			srv.mu.Unlock()
+		})
 		lifecycle.server.mu.Lock()
 		lifecycle.server.holdTerminalProjection = true
 		lifecycle.server.mu.Unlock()
-		start := startHeldClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.unclaimedPassEntered, "unclaimed input pass entry")
+		start := startClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
+		lifecycle.server.unclaimedPassReleaseOnce.Do(func() { close(lifecycle.server.releaseUnclaimedPass) })
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.processingStarted, "processing start")
 		activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
 		if activeTurnID == "" {
 			t.Fatal("thread/read published no active turn while processing")
@@ -466,10 +570,11 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	// The dep must return once attached and drain on its own goroutine; see
 	// serveDeps.bridge.
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
-		go func() {
-			defer onDrained()
-			server.BridgeWithObserver(observedServer.Server, session.Events(), observer)
-		}()
+		session.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			observedServer.holdTurnCarrier(ev)
+			server.BridgeEvent(observedServer.Server, ev, observer)
+			observedServer.noteTurnProjected(ev)
+		}, onDrained)
 	}
 	deps.subscriberCount = func(_ serveServer, id string) int {
 		return observedServer.AppServer().SubscriberCount(id)
@@ -488,6 +593,9 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	}()
 
 	entry := waitForServeTestRendezvous(t, runDir)
+	t.Cleanup(func() {
+		observedServer.releaseCarrierOnce.Do(func() { close(observedServer.releaseCarrier) })
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
@@ -521,6 +629,17 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	if got := observedServer.postTurnState(); got != string(agent.SessionIdle) {
 		t.Fatalf("published post-turn state = %q, want %q", got, agent.SessionIdle)
 	}
+	// Everything below reads the server's published status, which the loop's
+	// write above does not settle: the bridge projects the same turn's carriers
+	// on its own goroutine, republishing active for the user-input carrier and
+	// idle again only for the session-end one. Wait for that last write rather
+	// than for the loop's.
+	select {
+	case <-observedServer.turnProjected:
+	case <-ctx.Done():
+		t.Fatalf("post-turn terminal projection: %v", ctx.Err())
+	}
+
 	if got := observedServer.GetStatus().State; got != string(agent.SessionIdle) {
 		t.Fatalf("stored server state = %q, want %q", got, agent.SessionIdle)
 	}

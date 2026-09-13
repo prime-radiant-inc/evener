@@ -10,7 +10,7 @@ import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./
 // accumulated work time reads "Ns" under a minute, "Nm" under an hour, "Nh Nm"
 // above - the SAME bucketing the rest of the hub's duration displays use, so
 // the status row's work-time clock doesn't invent a new convention. This is
-// deliberately NOT transcript/messages/format.ts's formatDurationMs: that one
+// deliberately NOT protocol/displayFormat.ts's formatDurationMs: that one
 // is scoped to short tool-call durations (sub-second precision, no hour
 // bucket) - work time can span a whole session, hours included.
 test("clamps a zero or negative duration up to the honest minimum of 1 second", () => {

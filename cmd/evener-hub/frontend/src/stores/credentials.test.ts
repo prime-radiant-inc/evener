@@ -1,4 +1,4 @@
-import { cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { threadStartedNotification } from "../protocol/testing/notifications";
@@ -440,7 +440,9 @@ describe("useCredentialsStore", () => {
     fake.on("evener/instance/list", () => LIST_RESPONSE);
     const { result } = renderHook(() => useCredentialsStore((s) => s.instances.length));
     expect(result.current).toBe(0);
-    await credentialsStore.getState().fetch();
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
     expect(result.current).toBe(1);
   });
 

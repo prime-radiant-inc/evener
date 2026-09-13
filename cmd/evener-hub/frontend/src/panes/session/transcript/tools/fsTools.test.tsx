@@ -54,6 +54,34 @@ test("read_file: body renders the output text", () => {
   expect(screen.getByText("file contents here")).toBeTruthy();
 });
 
+// --- read_file summary: binary reads have no line range (issue #1174) ------
+// A binary read's output is only the newline-free "[image: ...]" / "[document:
+// ...]" header. readLineRange counts "\n" characters and would report "lines
+// 1" for that empty count, so the summary must omit the range entirely rather
+// than render "Read docs/shot.png · lines 1".
+
+test("read_file: an image read's summary omits the line range - the binary header has no lines", () => {
+  const d = toolRendererFor("read_file");
+  const args = JSON.stringify({ file_path: "docs/shot.png" });
+  const output = "[image: PNG, 123 bytes, base64 data follows]";
+  expect(d.summary(item({ toolName: "read_file", argumentsJSON: args, output }))).toBe("Read docs/shot.png");
+});
+
+test("read_file: a document (PDF) read's summary omits the line range too", () => {
+  const d = toolRendererFor("read_file");
+  const args = JSON.stringify({ file_path: "docs/report.pdf" });
+  const output = "[document: pdf, 90210 bytes, base64 data follows]";
+  expect(d.summary(item({ toolName: "read_file", argumentsJSON: args, output }))).toBe("Read docs/report.pdf");
+});
+
+test("read_file: a text read's summary still shows the derived line range", () => {
+  const d = toolRendererFor("read_file");
+  const args = JSON.stringify({ file_path: "src/app.ts" });
+  expect(d.summary(item({ toolName: "read_file", argumentsJSON: args, output: "a\nb\nc\n" }))).toBe(
+    "Read src/app.ts · lines 1-3",
+  );
+});
+
 // --- read_file body: image/document marker (kata 1nr4) --------------------
 // An image read's body renders nothing: the image displays below via
 // ToolCallItem's ImageGallery at read_file's up-to-600px size, so the

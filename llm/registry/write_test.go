@@ -115,6 +115,108 @@ func TestReadWriteConfigFile(t *testing.T) {
 	}
 }
 
+func symlinkWriterLayer() *Layer {
+	return &Layer{
+		Tag:     LayerConfig,
+		Default: "local",
+		Providers: map[string]Provider{
+			"local": {ID: "local", Base: "openai-compatible", Transport: Transport{BaseURL: "http://localhost:8080/v1", Auth: AuthNone}},
+		},
+	}
+}
+
+// A dotfiles-managed providers.toml is a symlink into a managed directory.
+// The atomic rename has to land on the link's target: renaming over the link
+// path would replace the link with a regular file and the managed copy would
+// stop being the source of truth (issue #1040). This is the same
+// follow-the-symlink rule writeAgentsDoc already applies to AGENTS.md.
+func TestWriteConfigFileFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "managed", "providers.toml")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("schema = 2\ndefault = \"old\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "providers.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteConfigFile(link, symlinkWriterLayer()); err != nil {
+		t.Fatalf("WriteConfigFile: %v", err)
+	}
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink was replaced with a %v file", info.Mode().Type())
+	}
+	back, exists, err := ReadConfigFile(target)
+	if err != nil || !exists || back.Default != "local" || back.Providers["local"].Base != "openai-compatible" {
+		t.Fatalf("target not updated through the link: %v %v %+v", err, exists, back)
+	}
+}
+
+// A regular providers.toml is written in place: the resolved path is the path
+// itself, so the atomic temp-and-rename behavior is unchanged.
+func TestWriteConfigFileRegularFileUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(path, []byte("schema = 2\ndefault = \"old\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteConfigFile(path, symlinkWriterLayer()); err != nil {
+		t.Fatalf("WriteConfigFile: %v", err)
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("a regular file must stay a regular file")
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("mode = %v, want 0644", info.Mode().Perm())
+	}
+	back, exists, err := ReadConfigFile(path)
+	if err != nil || !exists || back.Default != "local" {
+		t.Fatalf("read back: %v %v %+v", err, exists, back)
+	}
+}
+
+// A link whose target is gone is not a managed file to write through: there is
+// nothing at the end of it, so the save falls back to the link path and the
+// dangling link is replaced by the file itself. A first save with no file yet
+// takes the same path.
+func TestWriteConfigFileDanglingSymlinkFallsBackToLinkPath(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "providers.toml")
+	if err := os.Symlink(filepath.Join(dir, "gone", "providers.toml"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteConfigFile(link, symlinkWriterLayer()); err != nil {
+		t.Fatalf("WriteConfigFile: %v", err)
+	}
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("a dangling link must be replaced by the file itself")
+	}
+	back, exists, err := ReadConfigFile(link)
+	if err != nil || !exists || back.Default != "local" {
+		t.Fatalf("read back: %v %v %+v", err, exists, back)
+	}
+}
+
 // WriteConfigFile holds the invariant every writer needs: a providers.toml
 // it accepts is one the reader can read back. A layer the parser would refuse
 // never lands on disk, so the write cannot lock its own author out of the

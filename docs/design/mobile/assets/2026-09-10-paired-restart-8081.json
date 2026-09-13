@@ -1,0 +1,82 @@
+{
+  "verifiedAt": "2026-09-10T15:00:25.175797+00:00",
+  "scope": "Owned simulator: final combined backend restart and app cold launch. Physical iPhone and current TestFlight installation remain unverified.",
+  "native": {
+    "source": "87e2b876eaf7c765866b600d5b99e20dee2c7b49",
+    "equivalentNativeAndSharedInputsAt": "ec0b6d3af5bed044b17833d11872a591124d3a1a",
+    "executableSha256": "711495869c88518eec5df3667be0c26310ce2d2a43baaa62dea8573a996ba404",
+    "javascriptSha256": "6de2fd0981d564ab7f236225691315717a0b8cac4d960b31366790936afa6d9b",
+    "simulator": "iPhone 17 Pro, iOS 26.5",
+    "signedRelease": true
+  },
+  "backendBefore": "d983930b0e089a26ed8bd1047c2edfb45aa300b4",
+  "backendAfter": {
+    "source": "8081b4e635f54807b6ad186738e2870e8186275f",
+    "version": "evener 8081b4e63 (2026-09-10T14:57:10Z)",
+    "binaryHashes": {
+      "evener": "4106c1e3dd8f62d26fcf28f997bacd8c394b1293b68584e60c04f63c4fd5c1ba",
+      "evener-dev": "811052d54ee0e315d40f0596313407c5711e685629066614c659f9c06ab77ae2"
+    },
+    "sameCredential": true,
+    "sameOrigin": true
+  },
+  "backendBuildVCSModified": false,
+  "combinedGate": {
+    "source": "8081b4e635f54807b6ad186738e2870e8186275f",
+    "command": "make merge-approval-gate",
+    "exitCode": 0,
+    "logSha256": "3a059875f1de74764c911985028fbd935622e648b0492adb3c3610b52e60d0c5",
+    "nativeTests": 720,
+    "sharedTests": 686,
+    "nativeTypecheck": "pass",
+    "installedSDKQualification": "pass"
+  },
+  "priorControlJourney": "2026-09-10-paired-restart-d983.json",
+  "restart": {
+    "persistedCanonicalItemsCompared": 32,
+    "snapshotBasis": "Saved read before restart versus saved read after restart and app cold launch; includes the saved system prompt.",
+    "canonicalFields": [
+      "turnId",
+      "turnStatus",
+      "type",
+      "transcriptKey",
+      "position",
+      "text",
+      "description",
+      "eventKind",
+      "status",
+      "raw",
+      "toolName",
+      "arguments",
+      "clientMutationId",
+      "steeringKind",
+      "source"
+    ],
+    "allComparedFieldsEqual": true,
+    "wireItemIDsCompared": false,
+    "stoppedTurnRemainsInterrupted": true,
+    "providerRequestsBefore": 41,
+    "providerRequestsAfter": 41,
+    "uniqueNativeUserRows": 8
+  },
+  "preservation": {
+    "allSevenDraftTablesUnchanged": true,
+    "draftTableCounts": {
+      "drafts": 16,
+      "question_drafts": 12,
+      "question_positions": 3,
+      "draft_images": 0,
+      "draft_image_sets": 0,
+      "creation_drafts": 1,
+      "creation_draft_images": 0
+    },
+    "preexistingReaderEntriesUnchanged": 11,
+    "currentFixtureReaderAndNavigationMayUpdate": true,
+    "exactUnsentDraftVisible": "Checkpoint final preserved draft after paired restart"
+  },
+  "evidence": {
+    "screenshot": "2026-09-10-native-final-8081-cold.png",
+    "screenshotSha256": "ff1b3f5a8c7514e87315d8fb54393465b2c33f926b5c0f3d658c7ae6f892d7bb",
+    "accessibilitySha256": "320dbd9a82526bbd8adb2c2e95cda39a66a6cb23aa022b60fbb0b9c35bcac401"
+  }
+}

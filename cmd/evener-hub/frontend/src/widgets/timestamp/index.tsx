@@ -5,7 +5,7 @@
 // party date dependency, matching the project's "prefer standard defaults"
 // stance. The locale is pinned to "en" so output is deterministic across
 // environments (CI and dev alike); the existing transcript formatters
-// (messages/format.ts) are likewise en-style by construction.
+// (protocol/displayFormat.ts) are likewise en-style by construction.
 //
 // Pure render, no internal clock — mirrors Cadence and Loader: the caller
 // owns "now" (the session's shared 3s tick via useSessionNow, or a fixed

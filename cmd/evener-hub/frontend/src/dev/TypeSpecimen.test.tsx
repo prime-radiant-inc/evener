@@ -15,6 +15,19 @@ const RHYTHM_LABELS = ["rhythm-line 4", "rhythm-item 8", "rhythm-group 16", "rhy
 const LEADING_LABELS = ["line-height-ui", "line-height-body", "line-height-title"];
 const MEASURE_LABELS = ["44rem", "64rem"];
 
+test.each(["Inter Variable", "Source Serif 4 Variable", "JetBrains Mono Variable"])(
+  "demonstrates the face %s in both themes",
+  (face) => {
+    render(<TypeSpecimen />);
+    expect(screen.getAllByText(face)).toHaveLength(THEMES);
+  },
+);
+
+test("shows the prose step in both themes", () => {
+  render(<TypeSpecimen />);
+  expect(screen.getAllByText("prose 18")).toHaveLength(THEMES);
+});
+
 test("renders without throwing, with the intro note", () => {
   render(<TypeSpecimen />);
   expect(screen.getByText(/type specimen/i)).toBeTruthy();

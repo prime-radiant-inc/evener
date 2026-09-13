@@ -100,21 +100,27 @@ For rows without an intent (tool calls with no description), the summary line
 is always visible — there's no level 0 to collapse to. The body disclosure
 works as before.
 
-#### `summaryHiddenWhenExpanded` is retained
+#### `summaryWhenExpanded` swaps the expanded summary text
 
-The `summaryHiddenWhenExpanded` descriptor flag is **kept**, not removed.
-Shell uses it to hide the raw one-line command when the body is open (since the
-body renders the command pretty-printed). With the two-level disclosure, this
-flag controls whether the summary line is rendered when the body is open:
-- `summaryHiddenWhenExpanded: true` (shell): when body is open, the summary
-  line is hidden — the body's pretty-printed block is the single representation.
-- `summaryHiddenWhenExpanded: false` (every other tool): the summary line
-  stays visible when the body is open.
+The `summaryHiddenWhenExpanded` descriptor flag is **replaced** by
+`summaryWhenExpanded: string`. Shell uses it to swap the summary line's text
+for a placeholder ("Ran a shell command") while the body is open — the body
+renders the command pretty-printed, so the raw one-line command would show the
+call twice. With the two-level disclosure, the summary line itself is never
+dropped by a descriptor:
+- `summaryWhenExpanded: "Ran a shell command"` (shell): when the body is open,
+  the summary line stays and carries the placeholder — the body's
+  pretty-printed block is still the single representation of the command.
+- `summaryWhenExpanded: undefined` (every other tool): the summary line keeps
+  the descriptor's own summary text when the body is open.
 
-This preserves the existing dedup contract and its tests. The `summaryOpen`
-disclosure and `summaryHiddenWhenExpanded` are independent: `summaryOpen`
-controls whether the summary is visible when the body is closed; the flag
-controls whether it stays visible when the body is open.
+This preserves the dedup contract (the command still appears exactly once)
+while keeping the line the body chevron rides — hiding the line entirely
+lifted the chevron onto the intent line, or left it adrift on an intent-less
+row. The `summaryOpen` disclosure is now the only control over summary-line
+visibility, and it stays independent of the swap: `summaryOpen` decides
+whether the line renders; `summaryWhenExpanded` decides only what text it
+carries while the body is open.
 
 ### Verbosity → default expansion mapping
 
@@ -248,10 +254,11 @@ layout is consistent with the tools-level rendering.
 - **`ToolCallItem.tsx`** — Compute `summaryOpen` from the config level (via
   `summaryOpenByDefault`) and the disclosure store (key `summary:${item.id}`).
   Pass `summaryOpen` and `onToggleSummary` to `ToolRow`. Remove `hideIntent`
-  (no longer needed — the two-level disclosure replaces it). Keep
-  `summaryHiddenWhenExpanded` handling: when `expanded &&
-  descriptor.summaryHiddenWhenExpanded`, the summary line is hidden even if
-  `summaryOpen` is true (the body's pretty-printed block is the single copy).
+  (no longer needed — the two-level disclosure replaces it). Replace
+  `summaryHiddenWhenExpanded` handling with the `summaryWhenExpanded` swap:
+  when `expanded && descriptor.summaryWhenExpanded`, the summary line's text
+  is the placeholder (the line is never dropped, so the body chevron keeps its
+  line; the body's pretty-printed block is the single copy of the command).
 
 - **`TurnBlock.tsx`** — Remove `IntentToolCallRow`. `ProjectedIntentGroup`
   renders `ToolCallItem` rows directly, wrapped in a div with
@@ -290,10 +297,13 @@ layout is consistent with the tools-level rendering.
   `ToolCallCluster` grouping. Add tests for the 3-level drill-down (intent →
   summary → body). Update tests that assert `data-testid="intent-tool-call-row"`
   or `data-open` to use `ToolCallItem`'s testids instead.
-- **`toolRowGrammar.test.tsx`** — Update for the two-level disclosure. Keep
-  `summaryHiddenWhenExpanded` tests (shell dedup is preserved).
-- **`ToolCallItem.test.tsx`** — Update for `summaryOpen` default. Keep
-  `summaryHiddenWhenExpanded` tests.
+- **`toolRowGrammar.test.tsx`** — Update for the two-level disclosure. A
+  descriptor never hides the summary line, so the summary-hidden grammar pins
+  drive off `summaryOpen={false}` alone (shell dedup is preserved by the
+  `summaryWhenExpanded` placeholder swap).
+- **`ToolCallItem.test.tsx`** — Update for `summaryOpen` default. Pin the
+  `summaryWhenExpanded` swap: the placeholder text while the body is open,
+  the raw command summary while collapsed.
 - **`TranscriptBody.test.tsx`** — Remove `ToolCallCluster` import (line 16)
   and cluster fixtures (`cluster_1/2/3`). Update tests that depend on cluster
   rendering.
@@ -311,7 +321,8 @@ layout is consistent with the tools-level rendering.
 - The `ToolRow` two-line grammar (intent + summary) — just with independent
   disclosure for each line.
 - The `autoExpand` / failure force-open behavior.
-- The `summaryHiddenWhenExpanded` dedup contract (shell).
+- The shell summary/body dedup contract (preserved by the
+  `summaryWhenExpanded` placeholder swap).
 - The cross-turn intent grouping in `TranscriptBody`.
 - All anchor/focus/scroll behavior (the `data-view-anchor-id` attributes,
   threaded through `ProjectedIntentGroup`'s wrapper divs).

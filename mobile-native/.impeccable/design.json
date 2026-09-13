@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-08T22:22:11-07:00",
+  "title": "Design System: Evener Native Project Browser",
+  "extensions": {
+    "colorMeta": {
+      "light-background": { "role": "neutral", "displayName": "Paper background", "canonical": "#fafaf8" },
+      "dark-background": { "role": "neutral", "displayName": "Night background", "canonical": "#121417" },
+      "light-accent": { "role": "primary", "displayName": "Cobalt accent", "canonical": "#315ad7" },
+      "dark-accent": { "role": "primary", "displayName": "Night cobalt accent", "canonical": "#9cb4ff" }
+    },
+    "typographyMeta": {
+      "project-header": { "displayName": "Project header", "purpose": "Project names in the expandable browser." },
+      "session-title": { "displayName": "Session title", "purpose": "Readable session rows in the browser." },
+      "metadata": { "displayName": "Metadata", "purpose": "Counts and subordinate state explanations." }
+    },
+    "breakpoints": [],
+    "shadows": [],
+    "motion": [
+      { "name": "native-state", "value": "platform native transition", "purpose": "Use native navigation and keyboard transitions; avoid animated token streaming or viewport movement." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Project header",
+      "kind": "custom",
+      "refersTo": "project-header",
+      "description": "Illustrative documentation preview translated from the native expandable project header.",
+      "html": "<div class=\"ds-project-header\"><button class=\"ds-project-toggle\" aria-expanded=\"true\"><span class=\"ds-chevron\"></span><span>Research</span><small>4</small></button><button class=\"ds-project-more\" aria-label=\"Open Research project details\">•••</button></div>",
+      "css": ".ds-project-header{display:flex;align-items:center;margin:16px 20px 0;border-bottom:1px solid #d8dcd9}.ds-project-toggle{display:flex;align-items:center;gap:12px;flex:1;min-height:52px;padding:0;border:0;background:transparent;color:#202326;font:600 19px/23px system-ui}.ds-project-toggle small{margin-left:auto;color:#62676d;font:400 13px/19px system-ui}.ds-project-more{min-width:44px;min-height:44px;border:0;background:transparent;color:#62676d;font-size:16px}.ds-project-toggle:focus-visible,.ds-project-more:focus-visible{outline:2px solid #315ad7;outline-offset:2px}"
+    },
+    {
+      "name": "Session row",
+      "kind": "custom",
+      "refersTo": "session-row",
+      "description": "Illustrative documentation preview translated from the native open session row.",
+      "html": "<button class=\"ds-session-row\"><span>Build the release checklist</span><small>Working</small></button>",
+      "css": ".ds-session-row{display:flex;flex-direction:column;align-items:flex-start;gap:4px;width:calc(100% - 60px);min-height:68px;margin-left:40px;padding:12px 20px 12px 0;border:0;border-bottom:1px solid #d8dcd9;background:transparent;color:#202326;text-align:left;font:400 17px/23px system-ui}.ds-session-row small{color:#62676d;font:400 13px/19px system-ui}.ds-session-row:focus-visible{outline:2px solid #315ad7;outline-offset:-2px}"
+    },
+    {
+      "name": "Search field",
+      "kind": "input",
+      "refersTo": "search-field",
+      "description": "Illustrative documentation preview translated from the native keyboard search controls.",
+      "html": "<label class=\"ds-search\"><input aria-label=\"Search sessions\" placeholder=\"Search sessions\"><button>Search</button><button>Clear</button></label>",
+      "css": ".ds-search{display:flex;align-items:center;gap:8px;padding:0 20px 8px}.ds-search input{flex:1;min-width:0;min-height:48px;padding:12px;border:1px solid #d8dcd9;border-radius:9px;background:#eeefeb;color:#202326;font:400 17px/25px system-ui}.ds-search button{min-width:44px;min-height:44px;padding:8px;border:0;background:transparent;color:#315ad7;font:600 16px/20px system-ui}.ds-search input:focus-visible,.ds-search button:focus-visible{outline:2px solid #315ad7;outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The project first work surface",
+    "overview": "This is a narrow record of the shipped native Sessions browser. Projects provide orientation, sessions remain the work items, and conversation content stays the visual center. The browser uses native navigation, SF system typography, semantic light and dark surfaces, and touch sized controls.\n\nThe main Sessions surface is one expandable scrolling hierarchy. A dedicated Project route is a separate detail surface and may use its own current, recent and archived tabs. These are distinct navigation contracts.",
+    "keyCharacteristics": ["Project headers first; nested session rows remain in the same scroll surface.", "Quiet idle rows, with state text reserved for active work and decisions.", "Native actions, guarded paging, retained browser state, and explicit recovery."],
+    "rules": [
+      { "name": "The Quiet Idle Rule", "body": "Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.", "section": "colors" },
+      { "name": "The Two Level Rule", "body": "Cap nested session indentation at two levels so the title retains reading width.", "section": "typography" },
+      { "name": "The Flat Browser Rule", "body": "Use background, surface, spacing, and sparse borders to convey structure; do not add decorative elevation to ordinary rows.", "section": "elevation" }
+    ],
+    "dos": ["Do lead the main Sessions surface with projects and expand sessions in place.", "Do load the first project initially and lazy-load other project groups.", "Do preserve browser and conversation reading state across navigation.", "Do keep capability affordances mounted and disable them during unavailable or refreshing states.", "Do use human readable state copy and explicit stale/error recovery."],
+    "donts": ["Don't describe the main expandable browser as the dedicated Project route's tabbed detail view.", "Don't wrap every ordinary row in a rounded card or add decorative shadows.", "Don't imply that local warmed transport measurements establish phone or real-network performance.", "Don't make status, counts, paths, or internal IDs compete with the session title."]
+  }
+}

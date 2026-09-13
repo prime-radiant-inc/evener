@@ -1,0 +1,78 @@
+{
+  "verifiedAt": "2026-09-10T13:35:08.096670+00:00",
+  "scope": "Owned iPhone simulator, native controls, actual hub and daemon restart, and app cold launch. This does not qualify physical iPhone performance or a TestFlight build.",
+  "native": {
+    "source": "87e2b876eaf7c765866b600d5b99e20dee2c7b49",
+    "equivalentNativeAndSharedInputsAt": "5da0ef15fddff90d3e466f7fd26c2f67d9f016d8",
+    "executableSha256": "711495869c88518eec5df3667be0c26310ce2d2a43baaa62dea8573a996ba404",
+    "javascriptSha256": "6de2fd0981d564ab7f236225691315717a0b8cac4d960b31366790936afa6d9b",
+    "simulator": "iPhone 17 Pro, iOS 26.5",
+    "signedRelease": true
+  },
+  "backendBefore": "a28e06cb22ba35a25a9abecfff136486c1a1224b",
+  "backendAfter": {
+    "source": "d983930b0e089a26ed8bd1047c2edfb45aa300b4",
+    "version": "evener d983930b0-dirty (2026-09-10T13:28:10Z)",
+    "binaryHashes": {
+      "evener": "3ed6690fa97f57a170c26123c3402971461e424b0aad4dfd890916470a2932cd",
+      "evener-dev": "8804f5336e99856d02344ca28b932382a072371cc7854708cb338d2bc6ad1f89"
+    },
+    "sameCredential": true,
+    "sameOrigin": true
+  },
+  "controls": {
+    "queue": "Exact verified full inputs in turn_m7 and turn_m8 each completed once. The earlier turn_m3 input was truncated by typing and pressing Queue within one automation call; the rerun separated typing verification from submission.",
+    "steer": "Exact steering input retained under turn_m5 and completed once.",
+    "stop": "turn_m6 remains interrupted, has no answer, and provider request37 was cancelled by the client."
+  },
+  "restart": {
+    "persistedCanonicalItemsCompared": 31,
+    "canonicalFields": [
+      "turnId",
+      "turnStatus",
+      "type",
+      "transcriptKey",
+      "position",
+      "text",
+      "description",
+      "eventKind",
+      "status",
+      "raw",
+      "toolName",
+      "arguments",
+      "clientMutationId",
+      "steeringKind",
+      "source"
+    ],
+    "allComparedFieldsEqual": true,
+    "wireItemIdsMayDiffer": true,
+    "liveItemCount": 40,
+    "coldItemCount": 32,
+    "transientPromptLoadedDiagnosticsOmitted": 9,
+    "savedSystemPromptAdded": 1,
+    "fullWireItemParity": false,
+    "providerRequestsBefore": 41,
+    "providerRequestsAfterRestartAndColdLaunch": 41,
+    "coldLaunchTranscriptEqualsSavedRead": true,
+    "uniqueNativeUserRows": 8
+  },
+  "preservation": {
+    "exactDraftText": "Checkpoint final preserved draft after paired restart",
+    "allSevenDraftTablesUnchanged": true,
+    "draftTableCounts": {
+      "drafts": 16,
+      "question_drafts": 12,
+      "question_positions": 3,
+      "draft_images": 0,
+      "draft_image_sets": 0,
+      "creation_drafts": 1,
+      "creation_draft_images": 0
+    },
+    "preexistingReaderEntriesUnchanged": 11,
+    "currentFixtureReaderAndNavigationMayUpdate": true
+  },
+  "evidence": {
+    "coldLaunchScreenshotSha256": "a52e9df90c19cc691a3dcfa1db669b11ede683a4cfcc9d66d3f69c46779987a5",
+    "coldLaunchAccessibilitySha256": "2b7e35fec39ad870d681eb47eac4859d9cbdcb5491658b106323c4195733e981"
+  }
+}

@@ -89,7 +89,7 @@ func TestPluginMarketplaceRemove(t *testing.T) {
 	}
 
 	// Verify it's gone
-	mk, err := m.ListMarketplaces()
+	mk, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}

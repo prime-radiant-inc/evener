@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"sort"
 	"strings"
@@ -35,6 +36,11 @@ const (
 	// legitimately emits is activityMaxNewDepth+1 hops, not
 	// activityMaxNewDepth.
 	activityMaxContinuationPathLength = activityMaxNewDepth + 1
+	// activitySkippedEntrySuffix completes a named skip diagnostic;
+	// activitySkippedEntryShortMessage is what a page falls back to when it
+	// cannot fit the name — see explainActivitySkippedEntry.
+	activitySkippedEntrySuffix       = " is too large to render in one response and was skipped"
+	activitySkippedEntryShortMessage = "one entry was too large to render and was skipped"
 )
 
 // activityContinuation is a real, checked cursor position: resuming from
@@ -336,7 +342,21 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	// either epoch (see activityContinuation's doc comment), so this only
 	// ever rejects a resume whose underlying journal was rewritten or
 	// shrunk since — exactly the case ResumeIndex is unsafe to apply to.
-	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch {
+	//
+	// A LIVE root is exempt, because it cannot mint these at all:
+	// loadLiveActivityBase reads neither fold cache, so a live page carries
+	// zeros no matter what the session it points at folded. Comparing them
+	// against a closed child's real generations rejects a token minted
+	// moments earlier against journals nobody touched, which is the whole
+	// branch made unreachable. Revision fences a live resume instead: the
+	// root's clock is shared with every session spawned under it and moves
+	// on every job started or finished anywhere in that tree, so a change
+	// the daemon makes between mint and resume is caught below. What the
+	// exemption gives up is noticing a child's journal rewritten out of band
+	// mid-pagination — indistinguishable here from the zeros a live mint
+	// always carries, and the price of that branch being readable at all
+	// until a live page can mint each session's own generations.
+	if root.live == nil && (cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch) {
 		return nil, 0, 0, cache, errors.New("activity continuation is stale: the underlying journal changed; restart pagination without a continuation")
 	}
 	// A live root has no fold-cache epoch at all (jobsEpoch/delegatesEpoch
@@ -682,6 +702,13 @@ func cloneActivityVisited(visited map[string]bool) map[string]bool {
 	return clone
 }
 
+// activityFilterSnapshotToDelegate narrows base to the one delegate a
+// continuation's path goes through, keeping the ancestor as a chain to
+// re-descend rather than a subtree to re-render. base's fold-cache
+// generations come along: a continuation minted anywhere on the resumed
+// page is checked against the generations the NEXT request reads for these
+// same journals, so filtering them away mints zeros that read as a rewrite
+// that never happened.
 func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID string, child *activitySessionSnapshot) activitySessionSnapshot {
 	filtered := activitySessionSnapshot{
 		SessionID:       base.SessionID,
@@ -689,6 +716,8 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		Label:           base.Label,
 		RootID:          base.RootID,
 		Revision:        base.Revision,
+		JobsEpoch:       base.JobsEpoch,
+		DelegatesEpoch:  base.DelegatesEpoch,
 		Jobs:            []*jobstore.JobRecord{},
 		LiveJobs:        map[string]*jobstore.JobRecord{},
 		StableDelegates: make(map[string]delegateSnapshot, 1),
@@ -715,7 +744,12 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 	// collectActivityJobsEpochs and trimActivityTrailingEntry. revision is
 	// the same value just seeded into budget.revision above, embedded the
 	// same way in whatever continuation trimming mints too.
-	return trimActivityTreeToFit(tree, rootID, snapshot.DelegatesEpoch, collectActivityJobsEpochs(snapshot), revision)
+	// startDepth is -len(continuation.Path) (loadActivitySnapshotForParams),
+	// so -startDepth is the number of delegate hops down to the session
+	// resumeIndex was applied to — the position trimming has to add back to
+	// mint in that session's own entry numbering rather than this page's.
+	resume := activityTrimResume{depth: -startDepth, index: resumeIndex}
+	return trimActivityTreeToFit(tree, rootID, snapshot.DelegatesEpoch, collectActivityJobsEpochs(snapshot), revision, resume)
 }
 
 // collectActivityJobsEpochs walks snapshot's Children tree and returns
@@ -1310,11 +1344,51 @@ func activityBranchComplete(branch appwire.JobActivityBranchState) bool {
 	return branch.Error == "" && !branch.Truncated && branch.Continuation == ""
 }
 
+// activityTrimResume is the position the page being trimmed started from:
+// the session depth hops below the tree's own root rendered its entries
+// beginning at its own entry index, because that is the session a
+// continuation's ResumeIndex was applied to (projectActivitySessionAt). A
+// trim there counts within the entries THIS page rendered, so it has to add
+// index back to mint a position in the session's own numbering — without
+// that, a size trim on a resumed page mints a token pointing back into the
+// page it just returned, and the client never advances. The zero value is a
+// page that began at the top of its own root, which is every load that
+// carries no continuation.
+type activityTrimResume struct {
+	depth int
+	index int
+}
+
+// targets reports whether the session reached by path from the tree's root
+// is the one this page was built around: every shallower level is the
+// filtered ancestor chain, and every deeper one is a subtree the page
+// carries along.
+func (r activityTrimResume) targets(path []string) bool {
+	return len(path) == r.depth
+}
+
+// offsetAt reports the entry-index offset to apply to a session reached by
+// path from the tree's root. Only the page's own target applies it; every
+// other session rendered from its own top.
+func (r activityTrimResume) offsetAt(path []string) int {
+	if !r.targets(path) {
+		return 0
+	}
+	return r.index
+}
+
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
-// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs, and
-// revision feed every continuation trimming mints — see
-// trimActivityTrailingEntry.
-func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) (appwire.JobActivityTree, error) {
+// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs,
+// revision, and resume feed every continuation trimming mints — see
+// trimActivityTrailingEntry. Dropping an entry is also the only evidence
+// available about WHY the page was too big: an entry that leaves the page
+// within the limit is what did not fit, and is skipped when no later page
+// could carry it either; one that does not is left for a page that
+// re-targets its session. When the page is still over the limit with
+// nothing left to drop, the response's own fixed parts — labels,
+// diagnostics, the ancestor chain's delegate metadata — are what exceed it,
+// and no continuation can lead anywhere.
+func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) (appwire.JobActivityTree, error) {
 	for {
 		recomputeActivitySession(&tree.Root)
 		raw, err := json.Marshal(tree)
@@ -1324,10 +1398,117 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
-		if !trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision) {
+		dropped, ok := trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision, resume)
+		if !ok {
+			markActivityEnvelopeTooLarge(&tree.Root, len(raw))
+			// The error is part of what makes this page incomplete, and
+			// completeness is derived from the branch: aggregate again so the
+			// counts a reader trusts agree with it.
+			recomputeActivitySession(&tree.Root)
 			return tree, nil
 		}
+		if !dropped.unrepresentable {
+			continue
+		}
+		recomputeActivitySession(&tree.Root)
+		without, err := json.Marshal(tree)
+		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		if len(without) > activityMaxEncodedBytes {
+			// The entry was not what did not fit: keep trimming, and leave
+			// its position for the page that re-targets this session.
+			continue
+		}
+		// It was. Advance past it and measure the page with the token it will
+		// actually carry — advancing lengthens that token, so a page weighed
+		// with the position it is leaving behind has not been weighed at all.
+		mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
+		recomputeActivitySession(&tree.Root)
+		advanced, err := json.Marshal(tree)
+		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		if len(advanced) > activityMaxEncodedBytes {
+			// No room even for the position to move. The advance stands
+			// anyway: a page the client can never get past is a worse
+			// response than one a token's length over the limit, and the
+			// omission goes where it costs the page nothing.
+			slog.Warn("activity page skipped an entry with no room to carry the advance",
+				"entry", dropped.ref, "session", dropped.session.SessionID,
+				"bytes", len(advanced), "limit", activityMaxEncodedBytes)
+			return tree, nil
+		}
+		if err := explainActivitySkippedEntry(&tree, dropped); err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		return tree, nil
 	}
+}
+
+// markActivityEnvelopeTooLarge reports a page that cannot carry a single
+// entry and withdraws its continuation: every page this token produced would
+// be this same one, so the client is told what is wrong instead of being
+// handed a loop. size is the encoded length of the entry-less response.
+func markActivityEnvelopeTooLarge(session *appwire.JobActivitySession, size int) {
+	if session == nil {
+		return
+	}
+	session.Branch.Continuation = ""
+	appendActivityBranchError(&session.Branch, fmt.Sprintf("activity response is %d bytes with no entries rendered, over the %d-byte limit", size, activityMaxEncodedBytes))
+}
+
+// activityTrimmedEntry is one entry the size trim dropped, and enough to
+// re-mint its session's continuation once the tree has been re-encoded
+// without it. unrepresentable marks the drop that emptied the page's own
+// target: only there does the tree tell you whether the entry itself was
+// what did not fit, since nothing else remained to shrink.
+type activityTrimmedEntry struct {
+	session         *appwire.JobActivitySession
+	path            []string
+	ref             string
+	index           int
+	unrepresentable bool
+}
+
+// explainActivitySkippedEntry names the skipped entry on a page whose advance
+// past it has already been measured, keeping the most informative message
+// that still fits: the named one, then a fixed short one. A page with room
+// for neither keeps the advance and reports the omission where it costs
+// nothing — a token that stands still is the one failure a client cannot
+// recover from, so the sentence is what gives way, never the advance.
+func explainActivitySkippedEntry(tree *appwire.JobActivityTree, dropped activityTrimmedEntry) error {
+	advanced := dropped.session.Branch
+	for _, message := range []string{dropped.ref + activitySkippedEntrySuffix, activitySkippedEntryShortMessage} {
+		dropped.session.Branch = advanced
+		appendActivityBranchError(&dropped.session.Branch, message)
+		recomputeActivitySession(&tree.Root)
+		raw, err := json.Marshal(*tree)
+		if err != nil {
+			return err
+		}
+		if len(raw) <= activityMaxEncodedBytes {
+			return nil
+		}
+	}
+	dropped.session.Branch = advanced
+	recomputeActivitySession(&tree.Root)
+	slog.Warn("activity page skipped an entry it had no room to report",
+		"entry", dropped.ref, "session", dropped.session.SessionID)
+	return nil
+}
+
+func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, resumeIndex int, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) {
+	dropped.session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
+		Version:        activityContinuationV1,
+		RootID:         rootID,
+		SessionID:      dropped.session.SessionID,
+		Path:           append([]string(nil), dropped.path...),
+		ResumeIndex:    resumeIndex,
+		JobsEpoch:      jobsEpochs[dropped.session.SessionID],
+		DelegatesEpoch: delegatesEpoch,
+		Revision:       revision,
+	})
 }
 
 // trimActivityTrailingEntry drops the deepest, last entry from session's
@@ -1342,31 +1523,54 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 // activityContinuation.Revision), likewise uniform across the tree.
 // Carrying all three lets a resumed continuation's staleness check
 // actually detect a rewrite — or, for a live root, a mutation — that raced
-// this trim.
-func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) bool {
+// this trim. resume locates the page's own starting position so a mint
+// lands in the trimmed session's entry numbering — see activityTrimResume.
+// The dropped entry is reported back so the caller, which owns the encoded
+// size, can decide whether that entry was what did not fit — trimming from
+// the tail cannot tell on its own.
+func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64, resume activityTrimResume) (activityTrimmedEntry, bool) {
 	if session == nil || len(session.Entries) == 0 {
-		return false
+		return activityTrimmedEntry{}, false
 	}
 	i := len(session.Entries) - 1
 	entry := &session.Entries[i]
 	if entry.Delegate != nil && entry.Delegate.Child != nil {
-		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision) {
-			return true
+		if dropped, ok := trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision, resume); ok {
+			return dropped, true
 		}
+	}
+	// An entry at index 0 of the page's own target leaves the page with
+	// nothing else to shrink: whether the response still exceeds the limit
+	// without it is exactly the question of whether this entry is
+	// representable at all, and only the caller can answer it. A DEEPER
+	// session reaching index 0 says only that this page ran out of room —
+	// the continuation minted here re-targets that session, whose own page
+	// carries none of the ancestors' weight.
+	dropped := activityTrimmedEntry{
+		session:         session,
+		path:            append([]string(nil), path...),
+		ref:             activityEntryRef(*entry),
+		index:           resume.offsetAt(path) + i,
+		unrepresentable: i == 0 && resume.targets(path),
 	}
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
-	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version:        activityContinuationV1,
-		RootID:         rootID,
-		SessionID:      session.SessionID,
-		Path:           append([]string(nil), path...),
-		ResumeIndex:    i,
-		JobsEpoch:      jobsEpochs[session.SessionID],
-		DelegatesEpoch: delegatesEpoch,
-		Revision:       revision,
-	})
-	return true
+	mintActivityTrimContinuation(dropped, rootID, dropped.index, delegatesEpoch, jobsEpochs, revision)
+	return dropped, true
+}
+
+// activityEntryRef names an entry for an operator-facing branch error: an
+// entry carries no name of its own, so the underlying job or delegate ID is
+// what makes the omission findable in the journals.
+func activityEntryRef(entry appwire.JobActivityEntry) string {
+	switch {
+	case entry.Job != nil:
+		return fmt.Sprintf("job %q", entry.Job.JobID)
+	case entry.Delegate != nil:
+		return fmt.Sprintf("delegate %q", entry.Delegate.DelegateID)
+	default:
+		return fmt.Sprintf("entry of kind %q", entry.Kind)
+	}
 }
 
 func recomputeActivitySession(session *appwire.JobActivitySession) {

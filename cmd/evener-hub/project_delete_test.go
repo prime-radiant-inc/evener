@@ -313,6 +313,9 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	if len(resp.Deleted) != 1 {
 		t.Fatalf("want 1 deleted ref, got %+v", resp)
 	}
+	if resp.Skipped == nil || len(resp.Skipped) != 0 {
+		t.Fatalf("successful deletion must return an empty skipped array, got %#v", resp.Skipped)
+	}
 	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
 		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); !os.IsNotExist(err) {
 			t.Fatalf("%s should be removed", suffix)
@@ -1631,8 +1634,8 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("project delete: %v", err)
 	}
-	if len(got.Deleted) != 0 {
-		t.Fatalf("expected nothing actually deleted (session skipped), got %+v", got.Deleted)
+	if got.Deleted == nil || len(got.Deleted) != 0 {
+		t.Fatalf("skipped deletion must return an empty deleted array, got %#v", got.Deleted)
 	}
 }
 

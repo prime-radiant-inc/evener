@@ -34,6 +34,7 @@ const CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -193,6 +194,29 @@ afterEach(() => {
 });
 
 describe("visibility", () => {
+  test.each(["rejected", "blockedUnknown"])(
+    "notes %s recovery never offers composer message editing",
+    async (state) => {
+      const fake = connectFakeClient();
+      await hydrate(fake, "ref_a");
+      const storage = new MutationOutboxIndexedDB();
+      const note = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        method: "notes/human/set",
+        payload: { ref: "ref_a", note: "note sentinel" },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      if (state === "rejected") await storage.transferToRecovery(note.clientMutationId, "rejected", "note refusal");
+      else await storage.markUnknown(note.clientMutationId, "blockedUnknown");
+      await refreshPendingTurnsProjection("ref_a");
+      renderStrip(defaultProps());
+      expect(screen.queryByText(/queued messages/i)).toBeNull();
+      expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();
+      storage.close();
+    },
+  );
+
   // Queries for the "Queued messages" heading specifically, not a bare
   // `section` selector - <Toast/> (rendered alongside the strip in every
   // test via renderStrip) also mounts its own <section>, which a generic
@@ -413,6 +437,9 @@ describe("dismiss a rejected Stop", () => {
 
   test("a record already discarded elsewhere still leaves the strip", async () => {
     const { record, row } = await renderRejectedStop();
+    // The seeded row is visible before the mount's projection reads settle.
+    // Finish those existing reads before another surface deletes their record.
+    await flushPendingTurnsProjectionForTests();
     // Discarded by another surface (a second tab, or this session's own
     // Composer) after this projection last read: the durable record is gone,
     // the row on screen is not, and the discard below reports "nothing to do".
@@ -924,8 +951,10 @@ describe("drain-as-steer affordance", () => {
       defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: false }), onDrainSuccess }),
     );
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
 
     await waitFor(() => {
@@ -949,8 +978,10 @@ describe("drain-as-steer affordance", () => {
     });
     renderStrip(defaultProps());
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
     expect(getToasts()).toHaveLength(0);
     expect(screen.queryByText(/reload/i)).toBeNull();
@@ -982,8 +1013,10 @@ describe("drain-as-steer affordance", () => {
     }));
     renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
 
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
     });
 
     await screen.findByText(/image attachment is still processing/i);

@@ -66,9 +66,12 @@ type LaunchPluginResolution struct {
 	SelectionErrors []PluginSelectionError
 }
 
-// ResolveForLaunch enumerates explicit plugin directories followed by globally
-// enabled installed plugins. It loads each candidate with the same loader used
-// by session startup, retaining invalid candidates as structured diagnostics.
+// ResolveForLaunch enumerates explicit plugin directories followed by every
+// installed plugin, whether or not it is enabled by default. It loads each
+// candidate with the same loader used by session startup, retaining invalid
+// candidates as structured diagnostics. An omitted selection selects the
+// candidates that are enabled by default; a present selection selects exactly
+// the named candidates, including ones whose default is off.
 func (m *Manager) ResolveForLaunch(ctx context.Context, explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	return m.resolveForLaunch(ctx, explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
 		path, warnings, err := m.materializeBundledPlugin(ctx, name)
@@ -160,7 +163,10 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		Candidates: []LaunchPluginCandidate{}, SelectedDirs: []string{},
 		Diagnostics: []LaunchPluginDiagnostic{}, SelectionErrors: []PluginSelectionError{},
 	}
-	seen := make(map[string]bool)
+	// competing maps each manifest name to the paths of every candidate that
+	// offered it, winner first, so a duplicate's diagnostic can name every
+	// competing copy rather than only the one it is rejecting.
+	competing := make(map[string][]string)
 
 	// An inventory is something a caller acts on: the hub validates plugins
 	// and then detaches from the request context to finish the spawn, so an
@@ -199,7 +205,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		}
 	}
 
-	add := func(loadPath, path string, source LaunchPluginSource, marketplace, registryVersion, registryName string) {
+	add := func(loadPath, path string, source LaunchPluginSource, marketplace, registryVersion, registryName string, defaultSelected bool) {
 		instance, err := enabledLoad(loadPath)
 		if err != nil {
 			name := registryName
@@ -214,11 +220,13 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		}
 
 		name := instance.Manifest.Name
-		if seen[name] {
+		if prior := competing[name]; len(prior) > 0 {
+			paths := append(slices.Clone(prior), path)
+			competing[name] = paths
 			resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
 				Name:    name,
 				Path:    path,
-				Message: fmt.Sprintf("duplicate plugin name %q; keeping the first", name),
+				Message: fmt.Sprintf("duplicate plugin name %q; keeping the first of: %s", name, strings.Join(paths, ", ")),
 				Source:  source,
 			})
 			return
@@ -228,13 +236,19 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 		// requested by its embedded directory name, and
 		// TestBundledPluginsAreNamedAfterTheirDirectory pins that the two are
 		// the same string for every plugin this ships.
-		seen[name] = true
+		competing[name] = append(competing[name], path)
 
 		version := instance.Manifest.Version
 		if source == LaunchPluginSourceInstalled && registryVersion != "" {
 			version = registryVersion
 		}
-		selected := enabledNames == nil || requested[name]
+		// The registry's Enabled flag is the plugin's default, not a hard
+		// gate: an omitted selection takes the defaults, while a present
+		// allow-list can turn on a plugin whose default is off for one session.
+		selected := defaultSelected
+		if enabledNames != nil {
+			selected = requested[name]
+		}
 		resolution.Candidates = append(resolution.Candidates, LaunchPluginCandidate{
 			Name: name, Version: version, Description: instance.Manifest.Description,
 			Source: source, Marketplace: marketplace, Path: path, Selected: selected,
@@ -248,11 +262,11 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 	}
 
 	for _, path := range explicitDirs {
-		add(path, path, LaunchPluginSourceDirectory, "", "", "")
+		add(path, path, LaunchPluginSourceDirectory, "", "", "", true)
 	}
 
 	if rootErr == nil {
-		items, err := m.List()
+		items, err := m.List(ctx)
 		if err != nil {
 			// A caller that has left hears that it left, not a registry
 			// failure: this one is fail-soft to every caller — the hub
@@ -264,15 +278,28 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 			}
 			return resolution, err
 		}
-		for _, item := range items {
-			if !item.Enabled {
-				continue
+		// Enumerate on-by-default entries first. Manifest names dedup
+		// first-wins, so a name an on-by-default plugin claims keeps the
+		// winner it had when only enabled entries were candidates; an
+		// off-by-default plugin supplies a name only when no on-by-default
+		// plugin claims it. List's own order (plugin, then marketplace)
+		// still decides within each group.
+		slices.SortStableFunc(items, func(a, b ListItem) int {
+			if a.Enabled == b.Enabled {
+				return 0
 			}
+			if a.Enabled {
+				return -1
+			}
+			return 1
+		})
+		for _, item := range items {
 			// Deliberately do not filter item.Broken. List's validation is a
 			// useful snapshot, but loading here gives Preview a structured
 			// diagnostic and avoids turning a broken candidate into a
-			// registry-level failure.
-			add(item.InstallPath, item.InstallPath, LaunchPluginSourceInstalled, item.Marketplace, item.Version, item.Plugin)
+			// registry-level failure. Every installed plugin is a candidate so
+			// a session can see and select one that is off by default.
+			add(item.InstallPath, item.InstallPath, LaunchPluginSourceInstalled, item.Marketplace, item.Version, item.Plugin, item.Enabled)
 		}
 	}
 
@@ -284,7 +311,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 				})
 				continue
 			}
-			if !seen[name] && rootErr == nil {
+			if len(competing[name]) == 0 && rootErr == nil {
 				// Bundled plugins join the inventory only by request, so an
 				// unremarkable launch never picks them up. The lookup is by
 				// embedded directory name while add keys the inventory by
@@ -302,7 +329,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 				}
 				switch {
 				case err == nil:
-					add(candidate.loadPath, candidate.path, LaunchPluginSourceBundled, "", "", name)
+					add(candidate.loadPath, candidate.path, LaunchPluginSourceBundled, "", "", name, true)
 				case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 					// The caller left while the store was being readied. That
 					// is the same answer as a caller who had already left when
@@ -316,7 +343,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 					})
 				}
 			}
-			if !seen[name] {
+			if len(competing[name]) == 0 {
 				resolution.SelectionErrors = append(resolution.SelectionErrors, PluginSelectionError{
 					Name: name, Reason: "no valid plugin candidate",
 				})

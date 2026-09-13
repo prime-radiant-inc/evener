@@ -22,6 +22,7 @@ var projectorCases = []struct {
 	{events.EventSessionStart, func(b []byte) events.EventData { var d events.SessionStartData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventSessionEnd, func(b []byte) events.EventData { var d events.SessionEndData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventUserInput, func(b []byte) events.EventData { var d events.UserInputData; _ = json.Unmarshal(b, &d); return d }},
+	{events.EventEnvironment, func(b []byte) events.EventData { var d events.EnvironmentData; _ = json.Unmarshal(b, &d); return d }},
 	{events.EventAssistantTextStart, func(b []byte) events.EventData {
 		var d events.AssistantTextStartData
 		_ = json.Unmarshal(b, &d)

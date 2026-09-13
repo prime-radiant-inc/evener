@@ -71,13 +71,13 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
 import type { AskResolution } from "../../../../protocol/askAnswers";
+import type { AskBatch } from "../../../../protocol/reconcileBatches";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
 import { type AskAnswerState, askDockStore, nextUnansweredKey, useAskDockStore } from "./askDockStore";
 import styles from "./askdock.module.css";
-import type { AskBatch } from "./reconcileBatches";
 
 const CLASS = {
   dock: requireClass(styles.dock, "askdock.module.css", "dock"),

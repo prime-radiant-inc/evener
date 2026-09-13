@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
@@ -52,36 +52,48 @@ test("renders nothing when target is null", () => {
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("renders name, state chips, version, marketplace, and source", () => {
+test("renders name, state chips, version, marketplace, and source", async () => {
   connectFakeClient();
   extensionsStore.setState({
     plugins: [{ ...LINTER, broken: true, enabled: false, autoUpgrade: true }],
     marketplaces: [ACME],
   });
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
   expect(screen.getByText("broken")).toBeTruthy();
-  expect(screen.getByText("disabled")).toBeTruthy();
+  expect(screen.getByText("off by default")).toBeTruthy();
   expect(screen.getByText("auto-upgrade")).toBeTruthy();
   expect(screen.getByText("v1.2.0")).toBeTruthy();
   expect(screen.getByText("acme-plugins")).toBeTruthy();
   expect(screen.getByText("github: acme/plugins")).toBeTruthy();
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  await act(() => browse.value);
 });
 
-test("omits the source row when the marketplace is not registered", () => {
+test("omits the source row when the marketplace is not registered", async () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [] });
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
   expect(screen.queryByText("github: acme/plugins")).toBeNull();
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  await act(() => browse.value);
 });
 
-test("the Enabled and Auto-upgrade switches reflect the entry's state", () => {
+test("the Enabled and Auto-upgrade switches reflect the entry's state", async () => {
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  expect(screen.getByRole("switch", { name: "Enabled" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("switch", { name: "Auto-upgrade" }).getAttribute("aria-checked")).toBe("false");
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  await act(() => browse.value);
 });
 
 test("the Enabled switch calls pluginDisable on an enabled plugin, pluginEnable on a disabled one", async () => {
@@ -93,9 +105,9 @@ test("the Enabled switch calls pluginDisable on an enabled plugin, pluginEnable 
     return { plugins: [{ ...LINTER, enabled: false }] };
   });
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  await user.click(screen.getByRole("switch", { name: "Enabled" }));
+  await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
-    expect(screen.getByRole("switch", { name: "Enabled" }).getAttribute("aria-checked")).toBe("false"),
+    expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("false"),
   );
   expect(getToasts()).toEqual([]);
 });
@@ -109,9 +121,9 @@ test("the Enabled switch calls pluginEnable on a disabled plugin", async () => {
     return { plugins: [{ ...LINTER, enabled: true }] };
   });
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  await user.click(screen.getByRole("switch", { name: "Enabled" }));
+  await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
-    expect(screen.getByRole("switch", { name: "Enabled" }).getAttribute("aria-checked")).toBe("true"),
+    expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe("true"),
   );
   expect(getToasts()).toEqual([]);
 });
@@ -124,7 +136,7 @@ test("a failed enable toggle re-enables the switch too", async () => {
     throw new Error("boom");
   });
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  const enabledSwitch = screen.getByRole("switch", { name: "Enabled" });
+  const enabledSwitch = screen.getByRole("switch", { name: "Enabled by default" });
   await user.click(enabledSwitch);
   await waitFor(() => expect((enabledSwitch as HTMLButtonElement).disabled).toBe(false));
 });
@@ -137,7 +149,7 @@ test("a failed enable toggle toasts 'Toggle enable failed'", async () => {
     throw new Error("boom");
   });
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  await user.click(screen.getByRole("switch", { name: "Enabled" }));
+  await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
   await waitFor(() =>
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Toggle enable failed: boom")).toBe(true),
   );
@@ -156,13 +168,13 @@ test("the Enabled switch is disabled while its RPC is in flight, and re-enables 
       }),
   );
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
-  const enabledSwitch = screen.getByRole("switch", { name: "Enabled" });
+  const enabledSwitch = screen.getByRole("switch", { name: "Enabled by default" });
   await user.click(enabledSwitch);
   expect((enabledSwitch as HTMLButtonElement).disabled).toBe(true);
 
   resolveDisable({ plugins: [{ ...LINTER, enabled: false }] });
   await waitFor(() =>
-    expect((screen.getByRole("switch", { name: "Enabled" }) as HTMLButtonElement).disabled).toBe(false),
+    expect((screen.getByRole("switch", { name: "Enabled by default" }) as HTMLButtonElement).disabled).toBe(false),
   );
 });
 
@@ -339,8 +351,12 @@ test("closes itself when the entry disappears from the store (removed elsewhere)
   connectFakeClient();
   extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
   const onClose = vi.fn();
+  const browseMarketplace = vi.spyOn(extensionsStore.getState(), "browseMarketplace");
   render(<PluginDetailSheet target={TARGET} onClose={onClose} />);
   expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
-  extensionsStore.setState({ plugins: [] });
+  const browse = browseMarketplace.mock.results[0];
+  if (browse?.type !== "return") throw new Error("Plugin detail sheet did not start its catalog browse");
+  act(() => extensionsStore.setState({ plugins: [] }));
+  await act(() => browse.value);
   await waitFor(() => expect(onClose).toHaveBeenCalled());
 });

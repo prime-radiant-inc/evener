@@ -4,8 +4,8 @@
 // - rememberableId for stayOpen and non-stayOpen commands
 
 import { afterEach, expect, test, vi } from "vitest";
+import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
 import type { CommandDescriptor } from "../../protocol/types.gen";
-import { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 import type { Command } from "./commands";
 import { copyToClipboard, rememberableId, sessionScopedHandoffMatch } from "./commands";
 

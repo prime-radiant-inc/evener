@@ -536,9 +536,18 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // semantic reach is --danger-ink on .sheetError, the MarketplaceSheet's inline
 // failed-save text. Error text is the danger hue's canonical, ungateable job,
 // the same as keybindings.module.css's .rowError above.
+// shared-notes panel: panes/session/chrome/notespanel.module.css earns the
+// same exception for the same structural reason - it lives under
+// panes/session/chrome/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger on
+// .statusError, the blur-save failure text under the human textarea. Error
+// text is the danger hue's canonical, ungateable job, the same as
+// railDialog.module.css's .pickerError and delegateStatus.module.css's
+// .dangerText above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "shell/rail/railDialog.module.css",
+  "panes/session/chrome/notespanel.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/askDock/askdock.module.css",
   "panes/session/composer/currentwork.module.css",
@@ -798,7 +807,9 @@ test("tokens.css dark and light blocks declare the same color token names", () =
 test("the canonical dark token block directly scopes nested dark wrappers", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root\s*,\s*\[data-theme="dark"\]\s*\{/);
   expect(darkBlock).toContain("color-scheme: dark;");
-  expect(darkBlock).toContain("--surface-1: #232427;");
+  // Approved 2026-09-09 editorial-instrument spec replaces the neutral palette;
+  // this still pins direct nested-theme scoping, not a second palette block.
+  expect(darkBlock).toContain("--surface-1: #232320;");
 });
 
 // --- (f) the -ink text companions clear AA in both themes ---------------

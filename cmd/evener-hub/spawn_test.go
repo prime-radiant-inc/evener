@@ -157,7 +157,7 @@ func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -665,7 +665,7 @@ func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -720,7 +720,7 @@ func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -805,6 +805,41 @@ exit 2
 	}
 	if len(models) != 1 || models[0].Provider != "openai" || models[0].Model != "gpt-5.5" {
 		t.Fatalf("models=%+v", models)
+	}
+}
+
+// TestListEvenerLaunchModelContractCarriesWarnings: the launch contract's
+// models are the picker's primary source, so a resolved row's registry warning
+// (a global-only model under a regional Vertex location) must survive the
+// parse instead of being flattened to provider/model.
+func TestListEvenerLaunchModelContractCarriesWarnings(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v5","models":[{"provider":"vertex","model":"gemini-3.5-flash","warnings":["regional Vertex location \\"us-central1\\" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.5-flash"]}]}\n'
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	resp, err := listEvenerLaunchModelContract(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("listEvenerLaunchModelContract: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("data=%+v, want one model", resp.Data)
+	}
+	got := resp.Data[0]
+	if got.Provider != "vertex" || got.Model != "gemini-3.5-flash" {
+		t.Fatalf("descriptor=%+v", got)
+	}
+	if !slices.ContainsFunc(got.Warnings, func(w string) bool {
+		return strings.Contains(w, "regional Vertex location")
+	}) {
+		t.Fatalf("warnings=%v, want the regional-location note", got.Warnings)
 	}
 }
 
@@ -1344,7 +1379,7 @@ func TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v5"}\n'
+	  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then

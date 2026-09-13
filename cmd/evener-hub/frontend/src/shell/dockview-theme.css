@@ -36,7 +36,7 @@
    * (PaneScaffold fills its panel edge to edge) but matches the pane
    * surface rather than leaving dockview's own default gray peeking
    * through on resize/mount. */
-  --dv-group-view-background-color: var(--surface-1);
+  --dv-group-view-background-color: var(--surface-0);
 
   /* Tab strip: the canvas well, same step the rail sits on - the divider
    * below does the separating, plus now the active tab's own lift. */
@@ -44,7 +44,7 @@
 
   /* The active tab in the globally-focused group lifts onto --surface-1,
    * the pane surface it's actually the tab for. */
-  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-1);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-0);
   --dv-activegroup-visiblepanel-tab-color: var(--ink-hi);
 
   /* The active tab of a group that ISN'T the globally-focused one (visible

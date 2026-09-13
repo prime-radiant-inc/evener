@@ -213,7 +213,7 @@ func liveDaemonForThread(roster *hubcore.Roster, threadID string) (hubcore.LiveE
 		return entry, true
 	}
 	workspaceRef := localAppRef(threadID)
-	for _, entry := range roster.List() {
+	for _, entry := range hubRosterList(roster) {
 		if !entry.Crashed && localSpawnWorkspaceRef(entry.Entry) == workspaceRef {
 			return entry, true
 		}

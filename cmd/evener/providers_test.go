@@ -113,9 +113,11 @@ func openAIProbeServer(t *testing.T) *httptest.Server {
 }
 
 func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.T) {
-	root := providersTestEnv(t, map[string]string{"GROQ_API_KEY": "gk"})
+	const envKey = "credential-sentinel:groq:unprinted"
+	const storedKey = "credential-sentinel:work:unprinted"
+	root := providersTestEnv(t, map[string]string{"GROQ_API_KEY": envKey})
 	path := writeProvidersToml(t, root, "[providers.work]\nbase = \"openai\"\nbase_url = \"https://gw.example.com/v1\"\n")
-	creds := "schema = 1\n[providers.kimi]\napi_key = \"old\"\n[providers.work]\napi_key = \"w\"\n"
+	creds := "schema = 1\n[providers.kimi]\napi_key = \"old\"\n[providers.work]\napi_key = \"" + storedKey + "\"\n"
 	if err := os.WriteFile(filepath.Join(root, "credentials.toml"), []byte(creds), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +132,7 @@ func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.
 			t.Fatalf("missing %q in\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "gk") || strings.Contains(out, "\"w\"") {
+	if strings.Contains(out, envKey) || strings.Contains(out, storedKey) || strings.Contains(stderr.String(), envKey) || strings.Contains(stderr.String(), storedKey) {
 		t.Fatalf("list prints credential sources, never values (spec §11.2):\n%s", out)
 	}
 	if !strings.Contains(stderr.String(), `credentials.toml entry "kimi" names no instance`) {

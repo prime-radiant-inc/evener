@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
+import { createStartupDeadline, devtoolsHttpURL, waitForHttp } from "./browserGuardCdp.mjs";
+
 const CHROME_CANDIDATES = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/usr/bin/google-chrome",
@@ -16,6 +18,25 @@ const CHILD_EXIT_GRACE_MS = 2_000;
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
 const VITE_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * How long Chrome gets to print "DevTools listening" before the guard calls it
+ * an environment failure. Deliberately FAR larger than the 30s an endpoint gets
+ * to answer once announced, because the two waits fail for different reasons.
+ *
+ * Measured on the GitHub runner that failed run 34570447477: Chrome's first
+ * stderr byte arrived 21s after launch and it still had not announced at 30s,
+ * with its dbus retries running to 27s - a browser making progress, on a cold
+ * page cache, on a loaded two-core VM. The four guards after it on the SAME
+ * runner came up in seconds. 30s was simply under the cold-start floor.
+ *
+ * This is a tripwire and nothing else depends on its value: a Chrome that
+ * CANNOT start never reaches it, because the exit and spawn-error handlers
+ * below reject the readiness promise the moment either fires. What it bounds is
+ * the one case where the process is alive and silent, and four times the
+ * observed floor is the margin chosen for it.
+ */
+const CHROME_ANNOUNCEMENT_DEADLINE_MS = 120_000;
 const VITE_LOCAL_ANNOUNCEMENT = /Local:\s+http:\/\/(\[[^\]]+\]|[^/:\s]+):(\d+)(?:\/\s*)?$/;
 
 function isLoopbackHost(hostname) {
@@ -150,6 +171,66 @@ export function describeBrowserStartupFailure({
   return lines.join("\n");
 }
 
+/**
+ * Take a started guard from "processes are running" to "there is a browser to
+ * drive", and frame anything that goes wrong as the environment problem it is.
+ *
+ * Every guard runner had a verbatim copy of this. It is one function because
+ * the two waits inside it have to be reasoned about together: the announcement
+ * and the endpoint answering are different failures with different causes, so
+ * they get SEPARATE budgets. Sharing one, as the copies did, let a cold Chrome
+ * that took 25 seconds to announce hand the endpoint wait five - the poll would
+ * then die of a deadline that had already been spent by the phase before it.
+ */
+export async function waitForBrowserReady(guard, { announcementTimeoutMs = CHROME_ANNOUNCEMENT_DEADLINE_MS } = {}) {
+  const announcement = createStartupDeadline(announcementTimeoutMs);
+  let endpointAnswer = null;
+  try {
+    let endpoint;
+    try {
+      endpoint = await guard.waitForChrome({ signal: announcement.signal });
+    } catch (error) {
+      // Name the phase, and say what the browser had managed to do. Run
+      // 34570447477 printed "browser startup deadline exceeded after 30000ms"
+      // and nothing else - the same sentence the endpoint poll after it would
+      // have printed - and which of the two had stalled had to be argued out
+      // of microtask ordering rather than read.
+      if (error !== announcement.signal.reason) throw error;
+      const firstStderr = guard.getChromeFirstStderrDelay();
+      throw new Error(
+        `${error.message} while waiting for Chrome's DevTools announcement on stderr ` +
+          `(${
+            firstStderr === null
+              ? "Chrome had written nothing to stderr"
+              : `Chrome's first stderr byte arrived ${firstStderr}ms after launch`
+          })`,
+      );
+    }
+    endpointAnswer = createStartupDeadline();
+    await waitForHttp(
+      devtoolsHttpURL(endpoint, "/json/version"),
+      "chrome devtools endpoint",
+      guard.getChromeLaunchError,
+      { signal: endpointAnswer.signal, failure: guard.getChromeFailure() },
+    );
+    return endpoint;
+  } catch (error) {
+    throw new Error(
+      describeBrowserStartupFailure({
+        error,
+        subsystem: "chrome",
+        chromeBinary: guard.chromeBinary,
+        chromeArgv: guard.getChromeArgv(),
+        chromeStderr: guard.getChromeError(),
+        viteStderr: guard.getViteError(),
+      }),
+    );
+  } finally {
+    announcement.clear();
+    endpointAnswer?.clear();
+  }
+}
+
 export function chromeProfileIsolationArgs(platform = process.platform) {
   const args = ["--disable-crash-reporter"];
   if (platform === "darwin") args.push("--use-mock-keychain");
@@ -159,8 +240,134 @@ export function chromeProfileIsolationArgs(platform = process.platform) {
 export function chromeProfileEnvironment(profileDir, environment = process.env) {
   return {
     ...environment,
+    // Chrome's process singleton creates its socket directory under the temp
+    // directory, so the launcher's long scratch TMPDIR would push the derived
+    // SingletonSocket path past sun_path (issue #1141). The profile is already
+    // minted under a short root and bounded so this derived path fits; pointing
+    // TMPDIR at it keeps every socket Chrome binds short and reaps them with the
+    // profile.
+    TMPDIR: profileDir,
     BREAKPAD_DUMP_LOCATION: path.join(profileDir, "Crashpad"),
   };
+}
+
+// Chrome's process singleton mints a socket directory under the TEMP DIRECTORY
+// (base::GetTempDir(), i.e. $TMPDIR) named <branding>.<6 random chars> and binds
+// SingletonSocket inside it, and it also puts a SingletonSocket in the profile.
+// AF_UNIX's sun_path is 108 bytes including the terminating NUL, so the usable
+// path is 107 bytes; a longer one makes Chrome abort with "Socket path too long"
+// before DevTools is up (issue #1141). A guard run whose scratch TMPDIR is a
+// nested agent-sandbox path overflows that budget. Both halves of the fix live
+// here: the profile is minted under a short root chosen independently of the
+// ambient TMPDIR, and Chrome is launched with TMPDIR pointed at that short
+// profile (chromeProfileEnvironment) so its temp socket directory lands there
+// too. createChromeProfileDir bounds the profile so the derived socket path
+// always fits.
+export const CHROME_SOCKET_PATH_LIMIT = 107;
+// The branding component for a Google Chrome build. A Chromium build names its
+// singleton directory org.chromium.Chromium instead (4 bytes longer), which
+// only bites when a caller's prefix is trimmed to the very last byte under a
+// long ambient TMPDIR.
+const CHROME_SINGLETON_SUFFIX = "/com.google.Chrome.XXXXXX/SingletonSocket";
+// Node's mkdtemp appends this many random characters to its prefix.
+const CHROME_PROFILE_RANDOM_CHARS = 6;
+
+export function chromeSingletonSocketPath(profileDir) {
+  return `${profileDir}${CHROME_SINGLETON_SUFFIX}`;
+}
+
+// Candidate roots, most preferred first. /private/tmp precedes /tmp so macOS
+// resolves to the canonical short root rather than the long /var/folders/...
+// path os.tmpdir() returns. The ambient TMPDIR is last: it is only used when no
+// short root is usable, and only when the derived socket path still fits.
+export function chromeProfileRootCandidates({ platform = process.platform, ambient = tmpdir() } = {}) {
+  if (platform === "win32") return [ambient];
+  return [...new Set(["/private/tmp", "/tmp", "/var/tmp", ambient])];
+}
+
+function maxProfilePrefixBytes(root, socketLimit) {
+  return (
+    socketLimit -
+    Buffer.byteLength(root) -
+    // path separator between the root and the profile directory
+    1 -
+    CHROME_PROFILE_RANDOM_CHARS -
+    Buffer.byteLength(CHROME_SINGLETON_SUFFIX)
+  );
+}
+
+// The base directory a Chrome profile should be minted under, independent of a
+// long ambient TMPDIR. Pure path selection: the caller may inject `exists`.
+export function chromeProfileRoot({
+  platform = process.platform,
+  ambient = tmpdir(),
+  socketLimit = CHROME_SOCKET_PATH_LIMIT,
+  exists = existsSync,
+} = {}) {
+  const candidates = chromeProfileRootCandidates({ platform, ambient });
+  for (const root of candidates) {
+    if (platform !== "win32" && maxProfilePrefixBytes(root, socketLimit) <= 0) continue;
+    if (platform !== "win32" && !exists(root)) continue;
+    return root;
+  }
+  return ambient;
+}
+
+function trimToByteBudget(text, budget) {
+  if (Buffer.byteLength(text) <= budget) return text;
+  let end = text.length;
+  while (end > 0 && Buffer.byteLength(text.slice(0, end)) > budget) end -= 1;
+  return text.slice(0, end);
+}
+
+// Mint the private profile Chrome is pointed at with --user-data-dir. The
+// caller's prefix stays the directory's leading component (callers and tests use
+// it to identify the run) but is trimmed when it would push the derived socket
+// path past the limit -- the invariant is that the path Chrome binds always
+// fits, whatever the ambient TMPDIR. Each candidate root is tried in order so an
+// unwritable /tmp still falls through; failure to fit any root is fatal.
+export function createChromeProfileDir(
+  profilePrefix,
+  {
+    platform = process.platform,
+    ambient = tmpdir(),
+    socketLimit = CHROME_SOCKET_PATH_LIMIT,
+    makeTempDir = mkdtempSync,
+    exists = existsSync,
+  } = {},
+) {
+  const candidates = chromeProfileRootCandidates({ platform, ambient });
+  let lastError = null;
+  for (const root of candidates) {
+    if (platform !== "win32" && !exists(root)) continue;
+    // win32 has no sun_path to fit, so keep the caller's whole identifying
+    // prefix there; this matches the win32 exemptions on the existence check
+    // below and on the fit check after mkdtemp.
+    const prefix =
+      platform === "win32"
+        ? profilePrefix
+        : trimToByteBudget(profilePrefix, maxProfilePrefixBytes(root, socketLimit));
+    let dir;
+    try {
+      // Keep a trailing separator when the prefix was trimmed away so mkdtemp
+      // appends its random characters INSIDE the root rather than beside it.
+      const template = `${root.replace(/[\\/]+$/, "")}${path.sep}${prefix}`;
+      dir = makeTempDir(template);
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+    if (platform === "win32" || Buffer.byteLength(chromeSingletonSocketPath(dir)) <= socketLimit) {
+      return dir;
+    }
+    rmSync(dir, { recursive: true, force: true });
+    lastError = new Error(
+      `profile ${dir} would put Chrome's singleton socket past the ${socketLimit}-byte sun_path limit`,
+    );
+  }
+  throw new Error(
+    `could not mint a Chrome profile whose socket path fits ${socketLimit} bytes (tried ${candidates.join(", ")}): ${lastError?.message ?? "no usable root"}`,
+  );
 }
 
 function childHasExited(child) {
@@ -701,11 +908,15 @@ export async function startBrowserGuard({
   cancelEscalation = clearTimeout,
   signal = null,
   startupTimeoutMs = VITE_READY_TIMEOUT_MS,
+  // A guard that must serve a different Vite config (the editorial preview's
+  // fixture-only config) hands it to the wrapper here; the wrapper owns config
+  // resolution, so the path is frontend-relative.
+  viteConfigFile = null,
 }) {
   const resolvedChrome = chromeBinary ?? findChrome();
   const vitePort = 0;
   let actualVitePort = vitePort;
-  const profileDir = mkdtempSync(path.join(tmpdir(), profilePrefix));
+  const profileDir = createChromeProfileDir(profilePrefix);
   let vite = null;
   let chrome = null;
   let viteErr = "";
@@ -731,6 +942,8 @@ export async function startBrowserGuard({
   let viteLineBuffer = "";
   let chromeLaunchError = null;
   let chromeArgv = [];
+  let chromeSpawnedAt = 0;
+  let chromeFirstStderrAfterMs = null;
   let chromeEndpoint = null;
   let chromeLineBuffer = "";
   let resolveChromeReady;
@@ -774,7 +987,7 @@ export async function startBrowserGuard({
   });
 
   try {
-    vite = spawnProcess(process.execPath, ["scripts/browserguard-vite.mjs"], {
+    vite = spawnProcess(process.execPath, ["scripts/browserguard-vite.mjs", ...(viteConfigFile ? [viteConfigFile] : [])], {
       cwd: frontend,
       stdio: ["ignore", "pipe", "pipe"],
       detached: useProcessGroups,
@@ -856,6 +1069,7 @@ export async function startBrowserGuard({
       ...chromeArgs,
       "about:blank",
     ];
+    chromeSpawnedAt = Date.now();
     chrome = spawnProcess(resolvedChrome, chromeArgv, {
       // Chrome's stderr is the only thing that says WHY it would not start (a
       // missing dylib, a sandbox denial, a profile it cannot write).
@@ -869,6 +1083,7 @@ export async function startBrowserGuard({
       failChrome(error);
     });
     chrome.stderr?.on("data", (chunk) => {
+      chromeFirstStderrAfterMs ??= Date.now() - chromeSpawnedAt;
       chromeErr += chunk;
       chromeLineBuffer += chunk.toString();
       const lines = chromeLineBuffer.split(/\r\n|\r|\n/);
@@ -927,10 +1142,15 @@ export async function startBrowserGuard({
     getChromeFailure: () => chromeFailure,
     chromeBinary: resolvedChrome,
     getChromeArgv: () => chromeArgv,
-    // This promise is the process/devtools readiness handoff. The runner owns
-    // its single startup deadline and passes its abort signal through both the
-    // announcement and /json/version phases.
+    // This promise is the process/devtools readiness handoff. It rejects with
+    // the caller's own abort reason; waitForBrowserReady, which arms the
+    // announcement budget, is what says which phase that reason belongs to.
     waitForChrome: ({ signal } = {}) => withAbort(chromeReady, signal, chromeFailure),
+    // How long after launch Chrome first wrote ANYTHING, or null if it never
+    // did. The number that separates a browser which is slow from one which is
+    // not running: 21000ms of silence and then dbus retries, in run
+    // 34570447477, is a cold page cache, not a broken install.
+    getChromeFirstStderrDelay: () => chromeFirstStderrAfterMs,
     cleanup: lifecycle.cleanup,
   };
 }

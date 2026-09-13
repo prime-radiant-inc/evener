@@ -260,7 +260,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodEvenerAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "test-key"})
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodEvenerAuthLogout, appwire.AuthLogoutParams{Provider: "anthropic"})
 			launchServer := appserver.NewServer(appserver.ServerConfig{})
-			registerLaunchHandlers(launchServer, newHubLaunchController(t.TempDir()))
+			registerLaunchHandlers(launchServer, newHubLaunchController(t.TempDir(), false))
 			_, _ = exactDispatch(context.Background(), t, launchServer, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{CWD: t.TempDir(), Layer: "global"})
 
 			// Drive successful instance mutations through their registered closures.

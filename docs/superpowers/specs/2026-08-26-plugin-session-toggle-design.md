@@ -4,6 +4,13 @@ Date: 2026-08-26
 Status: Approved
 Branch: `main`
 
+> Partially superseded: the global plugin flag is now **Enabled by default**, so
+> an off-by-default installed plugin is listed in the session plugin picker and
+> can be selected for one session. Everything below that says otherwise — the
+> non-goal "Enabling a globally disabled plugin for one session", "Global state
+> remains authoritative", and the matching testing bullets — no longer describes
+> the product.
+
 ## Summary
 
 Evener currently loads every valid plugin supplied through `--plugin-dir`, then

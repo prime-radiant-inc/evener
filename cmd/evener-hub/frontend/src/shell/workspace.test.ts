@@ -632,3 +632,93 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     expect(freshId).toBe("pane_doc_1"); // the ordinary first-ever id, nothing to bump past
   });
 });
+
+describe("exact Open origin lifetime", () => {
+  let restoreTranscript: () => void;
+  beforeAll(() => {
+    restoreTranscript = registerPaneForTests(fixtureDescriptor("transcript"));
+  });
+  afterAll(() => restoreTranscript());
+
+  async function retainedOriginPair() {
+    const { recordTranscriptOpenOrigin, transcriptOpenOrigin } = await import("./workspace");
+    const workspace = workspaceStore.getState();
+    const ownerId = workspace.openPane("session", { ref: "local:owner" });
+    const leafId = workspace.openPane("transcript", { ref: "local:leaf", parentRef: "local:owner" });
+    const owner = workspaceStore.getState().panes.find((pane) => pane.id === ownerId)!;
+    const leaf = workspaceStore.getState().panes.find((pane) => pane.id === leafId)!;
+    recordTranscriptOpenOrigin(leaf, owner);
+    expect(transcriptOpenOrigin(leaf)).toBe(owner);
+    return { workspace, owner, leaf, recordTranscriptOpenOrigin, transcriptOpenOrigin };
+  }
+
+  test.each(["origin", "child"])("closing the %s removes the edge without affecting retained panes", async (end) => {
+    const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+    workspace.closePane(end === "origin" ? owner.id : leaf.id);
+    expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+    const retained = end === "origin" ? leaf : owner;
+    expect(workspaceStore.getState().panes).toEqual([retained]);
+    const replacement = workspace.openPane(
+      end === "origin" ? "session" : "transcript",
+      end === "origin" ? owner.params : leaf.params,
+    );
+    expect(replacement).not.toBe(end === "origin" ? owner.id : leaf.id);
+    expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+  });
+
+  test("same primary and host unregistration keep edges; a new primary removes them", async () => {
+    const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+    registerDockviewApi(asDockviewApi(new FakeDockviewApi()));
+    registerDockviewApi(null);
+    expect(workspace.replacePrimary("session", owner.params)).toBe(owner.id);
+    expect(transcriptOpenOrigin(leaf)).toBe(owner);
+    workspace.replacePrimary("session", { ref: "local:new-owner" });
+    expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+
+  test("same-primary duplicate removal invalidates its origin edge without retargeting to main", async () => {
+    const { workspace, owner, leaf, recordTranscriptOpenOrigin, transcriptOpenOrigin } = await retainedOriginPair();
+    const duplicateId = workspace.openPane("session", { ref: "local:owner", extra: true });
+    const duplicate = workspaceStore.getState().panes.find((pane) => pane.id === duplicateId)!;
+    recordTranscriptOpenOrigin(leaf, duplicate);
+    expect(transcriptOpenOrigin(leaf)).toBe(duplicate);
+    workspace.replacePrimary("session", owner.params);
+    expect(workspaceStore.getState().panes).toEqual([owner, leaf]);
+    expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+  });
+
+  test("reset cannot resurrect an origin when the next workspace reuses both IDs", async () => {
+    const { owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+    resetWorkspaceStoreForTests();
+    const workspace = workspaceStore.getState();
+    expect(workspace.openPane("session", owner.params)).toBe(owner.id);
+    expect(workspace.openPane("transcript", leaf.params)).toBe(leaf.id);
+    const restoredLeaf = workspaceStore.getState().panes.find((pane) => pane.id === leaf.id)!;
+    expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+    expect(transcriptOpenOrigin(restoredLeaf)).toBeUndefined();
+  });
+
+  test.each(["same identities", "reused identities", "invalid layout"])(
+    "layout restoration with %s clears non-persisted origin edges",
+    async (shape) => {
+      const { workspace, owner, leaf, transcriptOpenOrigin } = await retainedOriginPair();
+      const fake = new FakeDockviewApi();
+      fake.fromJSONBehavior = () => {
+        if (shape === "invalid layout") throw new Error("invalid layout");
+        fake.panels = [
+          {
+            id: owner.id,
+            params: { paneType: shape === "reused identities" ? "doc" : owner.type, paneParams: owner.params },
+          },
+          { id: leaf.id, params: { paneType: leaf.type, paneParams: leaf.params } },
+        ];
+      };
+      registerDockviewApi(asDockviewApi(fake));
+      expect(workspace.restoreLayout({})).toBe(shape !== "invalid layout");
+      expect(transcriptOpenOrigin(leaf)).toBeUndefined();
+      for (const pane of workspaceStore.getState().panes) expect(transcriptOpenOrigin(pane)).toBeUndefined();
+      expect(workspaceStore.getState().panes).toHaveLength(shape === "invalid layout" ? 0 : 2);
+    },
+  );
+});

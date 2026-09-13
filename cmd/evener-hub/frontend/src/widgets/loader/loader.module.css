@@ -20,9 +20,10 @@
   opacity: 0.3;
 }
 
-/* The one deliberate exception to the app's ban on idle animation - see
- * this widget's index.tsx doc comment for why Loader (not Cadence) is where
- * it lives. Nine cells wave on a staggered diagonal at a slow ~1.4s period;
+/* The deliberate exception to the app's ban on idle animation - see this
+ * widget's index.tsx doc comment for why Loader (not Cadence) is where it
+ * lives, and for the scoped transcript placeholder use approved 2026-09-11.
+ * Nine cells wave on a staggered diagonal at a slow ~1.4s period;
  * under prefers-reduced-motion: no-preference only. With a reduced-motion
  * preference set, every cell just stays at its static, dim resting opacity
  * (0.3 above) - the elapsed readout keeps counting either way, since it's

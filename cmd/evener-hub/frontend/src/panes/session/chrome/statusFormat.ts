@@ -1,6 +1,6 @@
 // Pure formatting helpers for the session chrome's status displays. Kept
 // dependency-free (no React, no ThreadModel) so each is trivially
-// unit-testable - same convention as transcript/messages/format.ts,
+// unit-testable - same convention as protocol/displayFormat.ts,
 // deliberately not shared with it (see formatWorkDuration's own comment for
 // why).
 import type { MeterTone } from "../../../widgets";
@@ -25,7 +25,7 @@ export function contextTone(pressure: number): MeterTone {
 // shows whole seconds (floored, clamped up to a minimum of 1 so a real but
 // sub-second duration never reads "0s"); under an hour shows whole minutes
 // (floored); an hour or more shows "Nh Nm" (minutes modulo 60). This is a
-// SEPARATE convention from transcript/messages/format.ts's formatDurationMs
+// SEPARATE convention from protocol/displayFormat.ts's formatDurationMs
 // (sub-second decimal precision for short tool-call durations, no hour
 // bucket at all) - work time is a session-cumulative clock that can span
 // multiple hours, so it needs the coarser, longer-range bucketing instead.

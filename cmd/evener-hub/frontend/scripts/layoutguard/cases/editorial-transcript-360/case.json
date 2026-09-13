@@ -1,0 +1,18 @@
+{
+  "description": "Real TranscriptBody editorial evidence and collaborators",
+  "cssFiles": [
+    "styles/global.css"
+  ],
+  "viewport": {
+    "width": 360,
+    "height": 900,
+    "mobile": true,
+    "deviceScaleFactor": 1
+  },
+  "mutation": {
+    "declaration": "subagentmodule.module.css .lifecycle display:flex changed to display:none",
+    "verified": "2026-09-09",
+    "expect": "fail",
+    "note": "Real component attention visibility assertion failed in both themes and m/xl; restored before green."
+  }
+}

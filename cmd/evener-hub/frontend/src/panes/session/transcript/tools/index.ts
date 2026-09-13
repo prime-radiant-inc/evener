@@ -11,7 +11,7 @@
 // relative to anything else.
 //
 // Not included here (no registerToolRenderer call of their own):
-// helpers.ts, bodies.tsx (shared building blocks), subagentModuleStore.ts
+// bodies.tsx (shared building blocks), subagentModuleStore.ts
 // (state only), sandboxEscalation.tsx (thread-level, no
 // registerToolRenderer integration point exists for it at all - see its
 // own file header for why, and the wave-4 task-3 report for the

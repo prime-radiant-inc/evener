@@ -11,7 +11,7 @@ import (
 )
 
 func protoRes(mutate func(c *registry.Caps)) registry.Resolved {
-	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolAnthropic), MaxOutputTokens: new(64000), Reasoning: new(true), ReasoningControls: []string{"effort"}}
+	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolAnthropic), MaxOutputTokens: new(64000), Reasoning: new(true), ReasoningControls: []string{"effort"}, EffortValues: []string{"minimal", "low", "medium", "high", "xhigh", "max"}}
 	if mutate != nil {
 		mutate(&caps)
 	}
