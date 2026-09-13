@@ -237,6 +237,9 @@ while :; do
 		bash -c 'set -o pipefail; curl -sSfL --connect-timeout 10 --max-time 60 "$1" | sh -s -- -b "$2" "$3"' \
 		install-golangci-lint-attempt "$installer_url" "$bindir" "v$version" 2>"$attempt_log" &
 	attempt_pid=$!
+	# Said from this side too: between the fork and this line the attempt is
+	# running under a record that names nothing.
+	pgroup_record_spawned "$attempt_record" "$attempt_pid" install-golangci-lint-attempt
 	attempt_status=0
 	wait "$attempt_pid" || attempt_status=$?
 	# Reaped, so both names for it go now, before the backoff below gives a

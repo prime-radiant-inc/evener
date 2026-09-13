@@ -53,6 +53,31 @@ PGROUP_SPAWN_PERL='
 	exec @ARGV or die "exec: $!\n";
 '
 
+# pgroup_record_spawned PATH PID MARKER — the parent's own note of what it has
+# just forked, written the moment `$!` is known.
+#
+# The child writes the same `pid:` line from its side, but it cannot write it
+# before it exists: between the fork and the child's first write there is a job
+# running that the record does not name, and a cleanup arriving there finds an
+# empty file and nothing it can signal. The parent knows the pid one command
+# after the fork, so it says so too.
+#
+# It never overwrites a record the child has already filled in: the child may
+# have reached setpgrp and written `pgid:` by now, and turning that back into
+# `pid:` would tell a reader to stop a group by pid. A reader that finds `pid:`
+# asks the kernel what group that pid is in anyway, so the worst this can be is
+# one step behind.
+pgroup_record_spawned() {
+	local path="$1" pid="$2" marker="$3"
+	[ -s "$path" ] && return 0
+	# A temporary of its own: the child renames through `$path.tmp`, and two
+	# writers sharing that name means one of them renames the other's file away
+	# mid-write. Measured, that killed the attempt with "No such file or
+	# directory" from inside the wrapper.
+	printf 'pid:%s:%s' "$pid" "$marker" >"$path.spawned.tmp" || return 1
+	mv "$path.spawned.tmp" "$path"
+}
+
 # pgroup_record_value PATH GRACE — what the spawn recorded at PATH, waiting up to
 # GRACE seconds for a record that exists but has not been filled in yet. Prints
 # `pid:N` or `pgid:N`; returns 1 when it never fills in, which means the job
