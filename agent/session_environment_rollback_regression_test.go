@@ -1408,3 +1408,52 @@ func TestPoisonedCompactionReportsDurabilityNotARace(t *testing.T) {
 		t.Fatalf("compaction error = %v, want a durability failure rather than a race the operator can never win", err)
 	}
 }
+
+// TestTurnWhoseOwnInputPoisonedTheTranscriptNeverRuns: the drain loop refuses a
+// turn on a poisoned writer at the TOP of each iteration, which is one turn too
+// late for the turn that did the poisoning. When the USER_INPUT record is
+// itself the write that lands partially and stops the writer, this turn's every
+// later record -- the assistant answer, its tool calls, their results -- is
+// already lost, and the input it would run is in no transcript either. The turn
+// has to be refused where the poisoning happened: before the input is announced
+// and before the model is asked.
+func TestTurnWhoseOwnInputPoisonedTheTranscriptNeverRuns(t *testing.T) {
+	var requests atomic.Int32
+	steps := countingFinalResponses(&requests, 3)
+	sess := newTestSessionForEnvctx(t, withSteps(steps...))
+	sendOneUserInput(t, sess, "first") // settles the environment block
+	before := sess.clientMutations.snapshot().AcceptedTurns
+	sess.mu.Lock()
+	turnsBefore, historyBefore := sess.turns, len(sess.history)
+	sess.mu.Unlock()
+
+	fs := attachEnvironmentFailureFS(t, sess)
+	// The USER_INPUT record is the next write, and it stops partway.
+	armEnvironmentPartialWrite(fs)
+	drainPendingEvents(sess)
+
+	_, err := sess.ProcessInput(t.Context(), "poisons its own input record", nil)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("turn whose input poisoned the writer = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("model requests = %d, want only the first turn's: the poisoned turn must not reach the model", got)
+	}
+	for _, event := range drainPendingEvents(sess) {
+		if event.Kind == events.EventUserInput {
+			t.Fatal("the refused input was announced to clients")
+		}
+	}
+	sess.mu.Lock()
+	turnsAfter, historyAfter := sess.turns, len(sess.history)
+	sess.mu.Unlock()
+	if historyAfter != historyBefore {
+		t.Fatalf("model history grew from %d to %d turns for an input no transcript holds", historyBefore, historyAfter)
+	}
+	if turnsAfter != turnsBefore {
+		t.Fatalf("accepted input turns = %d, want the %d the refused input never spent", turnsAfter, turnsBefore)
+	}
+	if got := sess.clientMutations.snapshot().AcceptedTurns; got != before {
+		t.Fatalf("durable accepted turns = %d, want the %d the returned claim restores", got, before)
+	}
+}

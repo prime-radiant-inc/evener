@@ -2035,6 +2035,70 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 // appending the user turn. It then emits EventUserInput, appends the user turn,
 // launches the session namer, runs UserPromptSubmit hooks, drains any pending
 // steering, and returns nil.
+// returnAcceptedUserTurn gives back everything acceptUserInput claimed for an
+// input it is about to refuse: the provisional turn count, and whichever
+// mutation claim this input arrived on -- a direct input's reservation, a
+// client start's, or a queued entry's, which goes back to the queue. One shape
+// for every refusal in this function, so a new refusal cannot return a
+// different subset of the same claim than the ones beside it.
+func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIdentity) error {
+	s.mu.Lock()
+	s.turns--
+	s.mu.Unlock()
+	if queuedIdentity.ClientMutationID == "" {
+		if err := s.returnClaimedDirectClientMutationTurn(); err != nil {
+			return fmt.Errorf("return claimed direct user turn: %w", err)
+		}
+		return nil
+	}
+	pending := s.clientMutations.snapshot().PendingExecutions[queuedIdentity.ClientMutationID]
+	if pending.Method == clientMutationMethodStart {
+		if err := s.returnClaimedClientMutationStart(queuedIdentity.ClientMutationID); err != nil {
+			return fmt.Errorf("return claimed client start: %w", err)
+		}
+		return nil
+	}
+	if err := s.completeClientMutationTurn(queuedIdentity.ClientMutationID); err != nil {
+		return fmt.Errorf("return queued input: %w", err)
+	}
+	return nil
+}
+
+// appendUserInputTurnRefusingPoison records the USER_INPUT turn as the
+// history/transcript pair recordTurn makes, but writes BEFORE it publishes, so
+// a write that stops the writer leaves no history entry to take back out.
+//
+// A poisoned writer refuses every later append, so a turn whose own input
+// record poisoned it has already made the last record this session can make:
+// announcing the input and calling the model past that point runs a whole turn
+// -- assistant answer, tool calls, their results -- whose every record is lost,
+// for an input no transcript holds either. The drain loop applies exactly this
+// admission rule, but at the TOP of each iteration, which is one turn too late
+// for the turn that did the poisoning. The error carries the poisoned guards'
+// shared answer so the callers keyed on that sentinel -- the queued restore in
+// ProcessPendingUserInput -- recognize this refusal as one of theirs.
+//
+// Any OTHER write failure keeps recordTurn's warn-and-continue: a writer that
+// failed once still accepts the next record, and whether that is right for
+// every producer is the audit in #1181, not this path's rule to settle.
+func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
+	s.attentionMu.Lock()
+	writeErr := s.writeTranscriptLocked(turn)
+	if writeErr != nil && s.attachedTranscript().Poisoned() {
+		s.attentionMu.Unlock()
+		return errors.Join(writeErr, errTranscriptRefusesRecords())
+	}
+	s.mu.Lock()
+	s.history = append(s.history, turn)
+	s.logPairPersistedLocked(turn)
+	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	if writeErr != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
+	}
+	return nil
+}
+
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
 	// A new top-level input starts a fresh causal context: replace active
 	// provenance with the input's provenance, or empty provenance for ordinary
@@ -2080,24 +2144,8 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	preseededInput := delegateInputWasPreseeded(ctx, s.id, input) && len(images) == 0 && queuedIdentity.ClientMutationID == ""
 	if !preseededInput {
 		if err := s.maybeAppendEnvironmentContext(); err != nil {
-			s.mu.Lock()
-			s.turns--
-			s.mu.Unlock()
-			if queuedIdentity.ClientMutationID == "" {
-				if returnErr := s.returnClaimedDirectClientMutationTurn(); returnErr != nil {
-					return errors.Join(err, fmt.Errorf("return claimed direct user turn: %w", returnErr))
-				}
-			} else {
-				pending := s.clientMutations.snapshot().PendingExecutions[queuedIdentity.ClientMutationID]
-				if pending.Method == clientMutationMethodStart {
-					if returnErr := s.returnClaimedClientMutationStart(queuedIdentity.ClientMutationID); returnErr != nil {
-						return errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
-					}
-				} else {
-					if rollbackErr := s.completeClientMutationTurn(queuedIdentity.ClientMutationID); rollbackErr != nil {
-						return errors.Join(err, fmt.Errorf("return queued input: %w", rollbackErr))
-					}
-				}
+			if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
+				return errors.Join(err, returnErr)
 			}
 			return fmt.Errorf("append environment context: %w", err)
 		}
@@ -2121,7 +2169,12 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
-			s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+			if err := s.appendUserInputTurnRefusingPoison(schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))); err != nil {
+				if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
+					return errors.Join(err, returnErr)
+				}
+				return fmt.Errorf("append user input: %w", err)
+			}
 		}
 	} else {
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
@@ -2152,17 +2205,8 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			func() error { return s.appendClientMutationTranscriptLocked(turn) },
 			func() { s.history = append(s.history, turn) },
 		); err != nil {
-			s.mu.Lock()
-			s.turns--
-			s.mu.Unlock()
-			if pending.Method == clientMutationMethodStart {
-				if returnErr := s.returnClaimedClientMutationStart(queuedIdentity.ClientMutationID); returnErr != nil {
-					return errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
-				}
-			} else {
-				if rollbackErr := s.completeClientMutationTurn(queuedIdentity.ClientMutationID); rollbackErr != nil {
-					return errors.Join(err, fmt.Errorf("return queued input: %w", rollbackErr))
-				}
+			if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
+				return errors.Join(err, returnErr)
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}
