@@ -273,7 +273,12 @@ reported=" $(printf '%s' "$installed" | tr -s '[:space:]' ' ') "
 # The pin comes out of .tool-versions, so it is a string this script did not
 # choose, and a `case` pattern would let a `*` or a `?` in it match versions it
 # does not name. Quoting it inside [[ ]] compares the characters themselves.
-if [[ "$reported" != *" version "$version" "* ]]; then
+# The needle is built first and then quoted whole: a pattern is glob syntax, and
+# a pin out of .tool-versions is a string this script did not choose, so a `*` in
+# it would match a version it does not name. Quoting the variable inside the
+# pattern is not enough — measured, `2.*` matched `version 2.13.1` there.
+needle=" version $version "
+if [[ "$reported" != *"$needle"* ]]; then
 	printf 'install-golangci-lint.sh: %s/golangci-lint reports "%s", not the pinned v%s from %s\n' \
 		"$bindir" "$installed" "$version" "$repo_root/.tool-versions" >&2
 	exit 1
