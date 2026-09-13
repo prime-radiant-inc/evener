@@ -60,6 +60,10 @@ package publishes the named symbols at:
   ${DOC_CONTENT_SUBPATH}       the one published subpath
   ${TESTING_PREFIX}<module>   in-repo test support, never a runtime import
 
+After rewriting, statements that collapsed onto one specifier are merged: a
+file ends up with at most one value import and one type import per specifier,
+rather than the three identical lines three deep paths turn into.
+
 Options:
   --check    report only; exit 1 if any import still names a path
   --help     this text
@@ -204,6 +208,77 @@ function specifierSites(source) {
   return sites;
 }
 
+// Biome sorts named members case-insensitively; match it so the native trees,
+// which no formatter gate reaches, come out looking like the web tree.
+function compareMembers(a, b) {
+  const left = a.replace(/^type /, "").toLowerCase();
+  const right = b.replace(/^type /, "").toLowerCase();
+  return left < right ? -1 : left > right ? 1 : a < b ? -1 : a > b ? 1 : 0;
+}
+
+function indentUnitOf(text) {
+  const match = text.match(/\n(\t+| +)\S/);
+  if (!match) return "  ";
+  return match[1].startsWith("\t") ? "\t" : " ".repeat(Math.min(match[1].length, 4));
+}
+
+function renderImport(members, specifier, typeOnly, indent) {
+  const keyword = typeOnly ? "import type" : "import";
+  const oneLine = `${keyword} { ${members.join(", ")} } from "${specifier}";`;
+  if (oneLine.length <= 120) return oneLine;
+  return `${keyword} {\n${members.map((member) => `${indent}${member},`).join("\n")}\n} from "${specifier}";`;
+}
+
+// Collapse the duplicate statements the rewrite creates: several deep paths
+// that all resolved to one specifier become several imports of that specifier.
+// Only plain named-binding imports are merged — a namespace or default import
+// keeps its own statement, and nothing is merged across the type-only line.
+function mergeDuplicateImports(file) {
+  const text = readFileSync(file, "utf8");
+  const source = parse(file);
+  const groups = new Map();
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const specifier = statement.moduleSpecifier.text;
+    if (!specifier.startsWith(PACKAGE_NAME)) continue;
+    const clause = statement.importClause;
+    if (!clause || clause.name || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) continue;
+    const key = `${specifier}\t${clause.isTypeOnly ? "type" : "value"}`;
+    const members = clause.namedBindings.elements.map((element) => {
+      const name = element.propertyName ? `${element.propertyName.text} as ${element.name.text}` : element.name.text;
+      return element.isTypeOnly ? `type ${name}` : name;
+    });
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ statement, members, typeOnly: Boolean(clause.isTypeOnly), specifier });
+  }
+
+  const indent = indentUnitOf(text);
+  const edits = [];
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const members = [...new Set(group.flatMap((entry) => entry.members))].sort(compareMembers);
+    const [first, ...rest] = group;
+    edits.push({
+      start: first.statement.getStart(source),
+      end: first.statement.getEnd(),
+      text: renderImport(members, first.specifier, first.typeOnly, indent),
+    });
+    for (const entry of rest) {
+      // Take the trailing newline with the statement so no blank line is left.
+      let end = entry.statement.getEnd();
+      if (text[end] === "\n") end += 1;
+      edits.push({ start: entry.statement.getStart(source), end, text: "" });
+    }
+  }
+  if (edits.length === 0) return 0;
+  let updated = text;
+  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+    updated = updated.slice(0, edit.start) + edit.text + updated.slice(edit.end);
+  }
+  writeFileSync(file, updated);
+  return edits.length;
+}
+
 function main() {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) {
@@ -278,6 +353,16 @@ function main() {
     console.error(`${problems.length} import(s) name a symbol the package does not publish; nothing was written:`);
     for (const problem of problems) console.error(`  ${problem}`);
     return 2;
+  }
+
+  if (!checkOnly) {
+    let mergedFiles = 0;
+    for (const tree of TREES) {
+      for (const file of walk(tree.dir, [])) {
+        if (mergeDuplicateImports(file) > 0) mergedFiles += 1;
+      }
+    }
+    if (mergedFiles > 0) console.log(`merged duplicate package imports in ${mergedFiles} file(s)`);
   }
 
   const rows = [...counts.entries()].map(([key, count]) => [...key.split("\t"), count]);
