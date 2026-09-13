@@ -421,7 +421,8 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 		// engine already speaks on): durable in the transcript and projected on
 		// reload. Without this a restored session shows a blocked goal whose
 		// transcript never says the goal stopped, and the only trace is the
-		// ephemeral EventGoalEnded plus the presentational TurnFailure.
+		// ephemeral EventGoalEnded plus whatever failed turn the caller emitted
+		// (provider recovery emits one; the generic lifecycle tail does not).
 		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
 			"[goal-blocked-on-error] Goal blocked after a turn failed: %s. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
 			err.Error())))
