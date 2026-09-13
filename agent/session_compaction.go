@@ -653,11 +653,16 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// and its post-write effects — a compaction announced with no durable
 	// anchor behind it.
 	var compactionTurnWithheld []bool
+	// markerLanded answers, once, whether this fold has an anchor in the
+	// transcript: false when the anchor was withheld and false when its own
+	// write failed, which are the same absence reached two ways. Every effect
+	// that DESCRIBES the marker — its event, the session name, the fold's
+	// steering, the transcript reminder — is gated on this one answer rather
+	// than re-deriving it. A fold that writes no marker at all leaves it true:
+	// nothing is missing, so nothing it publishes is unbacked.
+	markerLanded := true
 	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
-	// steeringWithheld reports that this fold's steering records were not
-	// written because its anchor was withheld, so flush announces none of them.
-	var steeringWithheld bool
 	// anchor is false when a replay copy could not be written: the fold's own
 	// records still land, but the marker that would discard everything before
 	// them does not. See publishFoldTransaction.
@@ -679,18 +684,22 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			// the two cannot drift into disagreeing about what a marker is.
 			if !anchor && isSessionNameCompactionTurn(turn) {
 				compactionTurnWithheld[i] = true
+				markerLanded = false
 				continue
 			}
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
+			if compactionTurnWriteErrs[i] != nil && isSessionNameCompactionTurn(turn) {
+				markerLanded = false
+			}
 		}
 		// The fold's own steering goes with the anchor. A resume that finds no
 		// anchor drops the fold's copies and keeps everything else, so
 		// steering describing a compaction that resume cannot see is stale
 		// guidance — and duplicate guidance the moment the retry injects it
 		// again. An un-anchored fold leaves nothing of itself durable except
-		// the tagged copies every reader already drops.
-		steeringWithheld = !anchor
-		if anchor {
+		// the tagged copies every reader already drops, whether the anchor was
+		// withheld or its write failed.
+		if markerLanded {
 			steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 		}
 	}
@@ -741,15 +750,19 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			// A marker the transcript never received announces nothing and
 			// triggers nothing: its event, the session namer and the task-list
 			// steering all describe an anchor that is not there.
-			if compactionTurnWithheld[i] {
+			if !markerLanded {
+				s.reportCompactionTranscriptAppend(compactionTurnWriteErrs[i])
 				continue
 			}
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
 		}
-		if !steeringWithheld {
+		if markerLanded {
 			s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
 		}
-		if artifactProduced && !superseded {
+		if artifactProduced && !superseded && markerLanded {
+			// The reminder points a reader at the transcript for the detail
+			// this fold compacted away; with no anchor there is nothing there
+			// to point at.
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
 		}
 		if noteCommit != nil {

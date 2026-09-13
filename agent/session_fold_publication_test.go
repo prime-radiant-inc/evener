@@ -2246,6 +2246,9 @@ func TestFoldPublication_FailedMarkerWritePublishesNoCompactionEffects(t *testin
 	}
 	s.attachTranscript(writer)
 	seedNumberedSessionHistory(t, s, 12)
+	// A pinned note gives this fold steering of its own, which is the other
+	// half of what a marker that never landed must not publish.
+	s.setPinnedNote("REMEMBER: the API signature")
 
 	var nameMu sync.Mutex
 	var namedTexts []string
@@ -2257,6 +2260,7 @@ func TestFoldPublication_FailedMarkerWritePublishesNoCompactionEffects(t *testin
 	}
 	var eventMu sync.Mutex
 	var compactionTurns []events.CompactionTurnData
+	var steering []events.SteeringInjectedData
 	const flushDrained = "fold flush drained"
 	drained := make(chan struct{})
 	var drainOnce sync.Once
@@ -2270,6 +2274,10 @@ func TestFoldPublication_FailedMarkerWritePublishesNoCompactionEffects(t *testin
 			case events.CompactionTurnData:
 				eventMu.Lock()
 				compactionTurns = append(compactionTurns, data)
+				eventMu.Unlock()
+			case events.SteeringInjectedData:
+				eventMu.Lock()
+				steering = append(steering, data)
 				eventMu.Unlock()
 			}
 		}
@@ -2302,5 +2310,22 @@ func TestFoldPublication_FailedMarkerWritePublishesNoCompactionEffects(t *testin
 	nameMu.Unlock()
 	if len(named) != 0 {
 		t.Fatalf("a fold whose marker write failed named the session from %d text(s): %#v", len(named), named)
+	}
+	eventMu.Lock()
+	injected := append([]events.SteeringInjectedData(nil), steering...)
+	eventMu.Unlock()
+	if len(injected) != 0 {
+		t.Fatalf("a fold whose marker write failed published %d steering event(s): %#v; the compaction they describe is not in the transcript", len(injected), injected)
+	}
+	// And the same absence after a reload: the guidance describes a
+	// compaction a returning reader cannot find.
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnSteering {
+			t.Fatalf("a fold whose marker write failed left steering in the transcript: %q", entry.Turn.Message.Text())
+		}
 	}
 }
