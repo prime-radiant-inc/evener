@@ -111,7 +111,7 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 	if err := ValidateRawArguments(args); err != nil {
 		return nil, false
 	}
-	if len(bytes.TrimSpace(args)) == 0 {
+	if len(args) == 0 {
 		return []byte("{}"), true
 	}
 	dec := json.NewDecoder(bytes.NewReader(args))
@@ -124,7 +124,7 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, false
 	}
-	encoded, err := json.Marshal(canonicalizeValue(v, name == "shell"))
+	encoded, err := json.Marshal(canonicalizeValue(v, true, name == "shell"))
 	if err != nil {
 		return nil, false
 	}
@@ -135,7 +135,10 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 // decoded JSON value. Maps are re-encoded by json.Marshal with sorted keys, so
 // key order and whitespace cannot change the fingerprint.
 //
-// Fields are dropped by NAME only. A value that looks like a default is
+// Fields are dropped by NAME only, and only at the top-level argument object:
+// the registry strips just the top-level `intent`, so a nested `intent` is
+// passed to the handler and must stay part of the fingerprint. A value that
+// looks like a default is
 // deliberately kept, because whether a value means "omitted" is a property of
 // the field's contract, not of the value: a present read_transcript
 // offset_bytes=0 selects the retained-page operation while omitting it selects
@@ -145,24 +148,24 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 // legitimately changed. The cost of not pruning is only that a caller which
 // materializes a real default gets its own fingerprint, which delays the
 // breaker rather than refusing a call that was meant to change.
-func canonicalizeValue(v any, dropDescription bool) any {
+func canonicalizeValue(v any, topLevel, dropDescription bool) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, val := range x {
-			if k == "intent" {
-				continue // free text; the registry strips it before dispatch
+			if topLevel && k == "intent" {
+				continue // free text; the registry strips the top-level one
 			}
-			if dropDescription && k == "description" {
+			if topLevel && dropDescription && k == "description" {
 				continue // the shell tool's job label, presentation only
 			}
-			out[k] = canonicalizeValue(val, false)
+			out[k] = canonicalizeValue(val, false, false)
 		}
 		return out
 	case []any:
 		out := make([]any, 0, len(x))
 		for _, item := range x {
-			out = append(out, canonicalizeValue(item, false))
+			out = append(out, canonicalizeValue(item, false, false))
 		}
 		return out
 	case json.Number:

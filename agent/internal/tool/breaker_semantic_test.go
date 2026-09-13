@@ -279,6 +279,34 @@ func TestFailureFingerprint_MeaningfulDefaultsArePreserved(t *testing.T) {
 // the size and UTF-8 limits are the pre-parse boundary, so an oversized or
 // non-UTF-8 body falls back to the byte-exact signature rather than being
 // decoded and re-encoded first.
+// Only the top-level intent is free text: the registry strips just that one, so
+// a nested field named intent reaches the handler and must stay meaningful.
+func TestFailureFingerprint_NestedIntentIsMeaningful(t *testing.T) {
+	a := fp("task_list", `{"update":[{"id":1,"intent":"alpha"}]}`)
+	b := fp("task_list", `{"update":[{"id":1,"intent":"beta"}]}`)
+	if a == b {
+		t.Errorf("nested intent was normalized away: %q", a)
+	}
+	rootA := fp("task_list", `{"intent":"alpha","update":[{"id":1}]}`)
+	rootB := fp("task_list", `{"intent":"beta","update":[{"id":1}]}`)
+	if rootA != rootB {
+		t.Errorf("top-level intent must be normalized: %q vs %q", rootA, rootB)
+	}
+}
+
+// Whitespace-only arguments are not an empty object: ExecuteCall rejects them as
+// invalid JSON, so the fingerprint must treat them as opaque bytes rather than
+// folding them into the `{}` call.
+func TestFailureFingerprint_WhitespaceOnlyIsNotAnEmptyObject(t *testing.T) {
+	const spaces = "   "
+	if got, want := fp("read_transcript", spaces), exactSignature("read_transcript", []byte(spaces)); got != want {
+		t.Errorf("whitespace-only fingerprint = %q, want the exact signature %q", got, want)
+	}
+	if fp("read_transcript", `{}`) == fp("read_transcript", spaces) {
+		t.Error("whitespace-only must not fingerprint as an empty object")
+	}
+}
+
 func TestFailureFingerprint_RejectedRawArgumentsFallBackToExact(t *testing.T) {
 	oversized := append([]byte(`{"patch":"`), bytes.Repeat([]byte("a"), MaxToolArgumentBytes)...)
 	oversized = append(oversized, []byte(`"}`)...)
