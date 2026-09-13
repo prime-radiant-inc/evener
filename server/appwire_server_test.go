@@ -2802,3 +2802,52 @@ func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
 		t.Fatalf("unincorporated status = %q", after.Thread.Status.Type)
 	}
 }
+
+// TestServerAppWireEnvironmentEventKeepsTheProcessingReservation covers the gap
+// between SetProcessing(true) and the user-input event that consumes its
+// reservation. A standalone environment event lands in that gap, and projecting
+// one opens and closes a turn of its own -- so the projector's activeTurnID is
+// empty when RecordAppEvent reads it back and writes it over the server's
+// published identity. The published identity must survive that: a client
+// polling thread/read in the gap would otherwise see a session reading active
+// with no active turn, which is the pair the composer's isTurnActive gate needs
+// to agree on.
+func TestServerAppWireEnvironmentEventKeepsTheProcessingReservation(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetProcessing(true)
+
+	srv.mu.RLock()
+	reserved := srv.appActiveTurnID
+	srv.mu.RUnlock()
+	if reserved == "" {
+		t.Fatal("SetProcessing published no active turn id; this test is not in the state it means to be")
+	}
+
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventEnvironment,
+		SessionID: "th_1",
+		Data:      events.EnvironmentData{TurnID: "turn_environment_1", Text: "environment"},
+	})
+
+	srv.mu.RLock()
+	got := srv.appActiveTurnID
+	srv.mu.RUnlock()
+	if got != reserved {
+		t.Fatalf("appActiveTurnID = %q after the environment event, want the %q SetProcessing published: the environment has its own durable identity and must not consume or clear the runnable one", got, reserved)
+	}
+
+	// The reservation is still the one the following user input consumes, so
+	// the identity the client was advertised is the identity that runs.
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "th_1",
+		Data:      events.UserInputData{Text: "prompt"},
+	})
+	srv.mu.RLock()
+	ran := srv.appActiveTurnID
+	srv.mu.RUnlock()
+	if ran != reserved {
+		t.Fatalf("user input ran as turn %q, want the advertised %q", ran, reserved)
+	}
+}

@@ -1,15 +1,22 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -106,6 +113,292 @@ func TestFirstUserTurnIsPrecededByEnvironmentContext(t *testing.T) {
 	}
 }
 
+func TestEnvironmentContextCrossesLiveEventBoundaryBeforeUserInput(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t)
+	sendOneUserInput(t, s, "hello")
+	var kinds []events.EventKind
+	for {
+		select {
+		case event := <-s.Events():
+			kinds = append(kinds, event.Kind)
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	environment, user := -1, -1
+	for i, kind := range kinds {
+		if kind == events.EventEnvironment && environment == -1 {
+			environment = i
+		}
+		if kind == events.EventUserInput && user == -1 {
+			user = i
+		}
+	}
+	if environment == -1 || user == -1 || environment >= user {
+		t.Fatalf("live events must expose environment before user input: environment=%d user=%d kinds=%v", environment, user, kinds)
+	}
+}
+
+func TestEnvironmentContextTranscriptFailureDoesNotPublishOrAdvanceTracker(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t)
+	initialEnvironmentTurns := countEnvironmentTurns(s)
+	for {
+		select {
+		case <-s.Events():
+		default:
+			goto drainedBeforeFailure
+		}
+	}
+drainedBeforeFailure:
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create failing transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	fs.fail = true
+	s.mu.Lock()
+	original := s.transcript
+	if original != nil {
+		t.Cleanup(func() { _ = original.Close() })
+	}
+	s.transcript = writer
+	s.transcriptReady = true
+	s.mu.Unlock()
+
+	if err := s.maybeAppendEnvironmentContext(); err == nil {
+		t.Fatal("environment append reported success over a failing transcript")
+	}
+
+	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns {
+		t.Fatalf("environment history turns = %d, want unchanged at %d after transcript failure", got, initialEnvironmentTurns)
+	}
+	if got := len(environmentTurnsInBytes(t, fs, "/session.jsonl")); got != 0 {
+		t.Fatalf("failed environment append left %d durable environment turns, want 0", got)
+	}
+	for {
+		select {
+		case event := <-s.Events():
+			if event.Kind == events.EventEnvironment {
+				t.Fatal("transcript failure published an environment event")
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	meta := loadMetaForTest(t, s)
+	if meta.EnvContext != nil && meta.EnvContext.HasSent {
+		t.Fatal("transcript failure advanced the persisted environment tracker")
+	}
+
+	fs.fail = false
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatalf("retry after a recovered transcript: %v", err)
+	}
+	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {
+		t.Fatalf("retry environment history turns = %d, want one emitted turn after failure", got)
+	}
+	var environmentEvents []events.SessionEvent
+	for {
+		select {
+		case event := <-s.Events():
+			if event.Kind == events.EventEnvironment {
+				environmentEvents = append(environmentEvents, event)
+			}
+		default:
+			goto drainedAfterRetry
+		}
+	}
+drainedAfterRetry:
+	if len(environmentEvents) != 1 {
+		t.Fatalf("retry published %d environment events, want 1", len(environmentEvents))
+	}
+	var retried schema.Turn
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment {
+			retried = turn
+		}
+	}
+	if environmentEvents[0].Data.(events.EnvironmentData).TurnID != retried.StableTurnID {
+		t.Fatalf("retry event stable ID = %q, durable turn ID = %q", environmentEvents[0].Data.(events.EnvironmentData).TurnID, retried.StableTurnID)
+	}
+	durable := environmentTurnsInBytes(t, fs, "/session.jsonl")
+	if len(durable) != 1 {
+		t.Fatalf("retry durable environment turns = %d, want exactly 1", len(durable))
+	}
+	if durable[0].StableTurnID != environmentEvents[0].Data.(events.EnvironmentData).TurnID {
+		t.Fatalf("retry durable stable ID = %q, event stable ID = %q", durable[0].StableTurnID, environmentEvents[0].Data.(events.EnvironmentData).TurnID)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatalf("turn over an unchanged environment: %v", err)
+	}
+	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {
+		t.Fatalf("unchanged retry environment history turns = %d, want suppressed after success", got)
+	}
+}
+
+func environmentTurnsInBytes(t *testing.T, fs afero.Fs, path string) []schema.Turn {
+	t.Helper()
+	var result []schema.Turn
+	for _, turn := range transcriptTurnsInBytes(t, fs, path) {
+		if turn.Kind == schema.TurnEnvironment {
+			result = append(result, turn)
+		}
+	}
+	return result
+}
+
+func transcriptTurnsInBytes(t *testing.T, fs afero.Fs, path string) []schema.Turn {
+	t.Helper()
+	contents, err := afero.ReadFile(fs, path)
+	if err != nil {
+		t.Fatalf("read transcript bytes: %v", err)
+	}
+	var turns []schema.Turn
+	for line := range bytes.SplitSeq(contents, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var record struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decode record boundary: %v", err)
+		}
+		if record.Kind == "header" {
+			continue
+		}
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			t.Fatalf("decode transcript entry: %v", err)
+		}
+		turns = append(turns, entry.Turn)
+	}
+	return turns
+}
+
+func TestEnvironmentContextWriteFailureAbortsUserAcceptance(t *testing.T) {
+	t.Parallel()
+	s := newTestSessionForEnvctx(t)
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create failing transcript: %v", err)
+	}
+	fs.fail = true
+	t.Cleanup(func() { _ = writer.Close() })
+	s.mu.Lock()
+	original := s.transcript
+	if original != nil {
+		t.Cleanup(func() { _ = original.Close() })
+	}
+	s.transcript = writer
+	s.transcriptReady = true
+	before := len(s.history)
+	s.mu.Unlock()
+
+	if err := s.acceptUserInput(context.Background(), "must not reach model", nil, nil, false); err == nil {
+		t.Fatal("acceptUserInput unexpectedly succeeded after environment transcript failure")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if snapshot := s.clientMutations.snapshot(); snapshot.AcceptedTurns != uint64(s.turns) {
+		t.Fatalf("accepted turns after environment write failure = %d, want %d", snapshot.AcceptedTurns, s.turns)
+	}
+	if len(s.history) != before {
+		t.Fatalf("history length after environment write failure = %d, want %d", len(s.history), before)
+	}
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnUserInput {
+			t.Fatal("user input was appended despite environment durability failure")
+		}
+	}
+}
+
+func TestEnvironmentContextFailureRestoresPublicMutationClaimsForRetry(t *testing.T) {
+	for _, kind := range []string{"direct", "start", "queue"} {
+		t.Run(kind, func(t *testing.T) {
+			s := newTestSessionForEnvctx(t, withSteps(repeatFinalResponse(2, "ok")...))
+			s.cfg.MaxTurns = 1
+			fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+			writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
+			if err != nil {
+				t.Fatalf("create transcript: %v", err)
+			}
+			t.Cleanup(func() { _ = writer.Close() })
+			s.mu.Lock()
+			original := s.transcript
+			if original != nil {
+				t.Cleanup(func() { _ = original.Close() })
+			}
+			s.transcript = writer
+			s.transcriptReady = true
+			s.mu.Unlock()
+			fs.fail = true
+
+			id := "retry-" + kind
+			var run func() error
+			switch kind {
+			case "direct":
+				run = func() error { _, err := s.ProcessInput(context.Background(), "retry direct", nil); return err }
+			case "start":
+				if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: id, Input: []appwire.InputItem{{Type: "text", Text: "retry start"}}}); err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				run = func() error { _, _, err := s.ProcessClientMutationStart(context.Background(), nil); return err }
+			case "queue":
+				if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: id, Input: []appwire.InputItem{{Type: "text", Text: "retry queue"}}}); err != nil {
+					t.Fatalf("AcceptClientMutationQueue: %v", err)
+				}
+				run = func() error { _, _, err := s.ProcessPendingUserInput(context.Background(), nil); return err }
+			}
+			if err := run(); err == nil {
+				t.Fatal("first attempt unexpectedly succeeded")
+			}
+			failed := s.clientMutations.snapshot()
+			if failed.AcceptedTurns != uint64(s.turns) {
+				t.Fatalf("accepted turns after failed %s = %d, want %d", kind, failed.AcceptedTurns, s.turns)
+			}
+			for _, turn := range transcriptTurnsInBytes(t, fs, "/session.jsonl") {
+				if turn.Kind == schema.TurnEnvironment || turn.Kind == schema.TurnUserInput {
+					t.Fatalf("failed %s persisted %s", kind, turn.Kind)
+				}
+			}
+			fs.fail = false
+			if err := run(); err != nil {
+				t.Fatalf("retry %s: %v", kind, err)
+			}
+			if got := countEnvironmentTurns(s); got != 1 {
+				t.Fatalf("retry %s environment turns = %d, want 1", kind, got)
+			}
+			inputCount := 0
+			for _, turn := range s.history {
+				if turn.Kind == schema.TurnUserInput {
+					inputCount++
+				}
+			}
+			if inputCount != 1 {
+				t.Fatalf("retry %s user input turns = %d, want 1", kind, inputCount)
+			}
+			var durableKinds []schema.TurnKind
+			for _, turn := range transcriptTurnsInBytes(t, fs, "/session.jsonl") {
+				if turn.Kind == schema.TurnEnvironment || turn.Kind == schema.TurnUserInput {
+					durableKinds = append(durableKinds, turn.Kind)
+				}
+			}
+			if len(durableKinds) != 2 || durableKinds[0] != schema.TurnEnvironment || durableKinds[1] != schema.TurnUserInput {
+				t.Fatalf("retry %s durable input sequence = %v, want environment then exactly one user input", kind, durableKinds)
+			}
+		})
+	}
+}
+
 func TestSecondUserTurnEmitsNoEnvironmentContextWhenUnchanged(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
@@ -170,21 +463,27 @@ func TestCompactionResetsEnvironmentContextTracker(t *testing.T) {
 
 // TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact hammers
 // maybeAppendEnvironmentContext (reads envTracker, mutates it via RenderDiff)
-// on one goroutine concurrently with resetEnvContextTrackerAfterCompaction
-// (reassigns envTracker) on another — the exact pair the reviewer flagged:
-// Session.Compact can run resetEnvContextTrackerAfterCompaction on a caller's
-// own goroutine with no idle gate, racing the turn goroutine's
-// maybeAppendEnvironmentContext. RED under -race before both methods took mu
-// around the tracker touch; GREEN after.
+// on one goroutine concurrently with resetEnvContextTrackerLocked (reassigns
+// envTracker) on another — the exact pair the reviewer flagged: Session.Compact
+// can reach the reset on a caller's own goroutine with no idle gate, racing the
+// turn goroutine's maybeAppendEnvironmentContext. RED under -race before both
+// sides took the locks around the tracker touch; GREEN after.
 //
-// This calls the two methods directly rather than going through
-// ProcessInput/Compact's full machinery: routing through Compact() (which
-// unconditionally writes s.contextMgr.Meta, same as every per-round
-// ManageContext call inside ProcessInput) surfaces a SEPARATE, pre-existing
-// data race on contextMgr.Meta that predates this task and is out of its
-// scope — see task-5-report.md's fix-round addendum. Calling
-// maybeAppendEnvironmentContext/resetEnvContextTrackerAfterCompaction
-// directly isolates exactly the envTracker race under test without also
+// The reset side is driven through the production sequence rather than a
+// helper of its own: attentionMu then mu around resetEnvContextTrackerLocked,
+// then the autosave outside both, which is exactly what handleCompactionTurn's
+// CHECKPOINT/SUMMARY branch (session_namer.go) and publishFoldTransaction's
+// foldCommit.resetEnvContextTrackerLocked do. Calling those two callers
+// outright would drag in a transcript write, the compaction-turn effects and
+// the async namer — unbounded work this race test has no use for.
+//
+// The append side calls maybeAppendEnvironmentContext directly rather than
+// going through ProcessInput/Compact's full machinery: routing through
+// Compact() (which unconditionally writes s.contextMgr.Meta, same as every
+// per-round ManageContext call inside ProcessInput) surfaces a SEPARATE,
+// pre-existing data race on contextMgr.Meta that predates this task and is out
+// of its scope — see task-5-report.md's fix-round addendum. Calling the two
+// sides directly isolates exactly the envTracker race under test without also
 // tripping that unrelated one.
 func TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact(t *testing.T) {
 	if !raceDetectorEnabled {
@@ -205,12 +504,22 @@ func TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact(t *testing.T) {
 	var hammer sync.WaitGroup
 	hammer.Go(func() {
 		for range 5000 {
-			sess.maybeAppendEnvironmentContext()
+			// The hammer races the append against the fold reset to drive the
+			// tracker's locking; which attempts win and which report a failure
+			// is the race under test, so the results are deliberately dropped.
+			_ = sess.maybeAppendEnvironmentContext()
 		}
 	})
 	hammer.Go(func() {
 		for range 5000 {
-			sess.resetEnvContextTrackerAfterCompaction()
+			sess.attentionMu.Lock()
+			sess.mu.Lock()
+			changed := sess.resetEnvContextTrackerLocked()
+			sess.mu.Unlock()
+			sess.attentionMu.Unlock()
+			if changed {
+				sess.maybeAutoSave()
+			}
 		}
 	})
 	hammer.Wait()
@@ -271,6 +580,56 @@ func TestRestoredSessionWithMatchingEnvContextStaysSilent(t *testing.T) {
 	}
 }
 
+// TestRestoredSessionReconcilesDurableEnvironmentAfterStaleMeta exercises the
+// crash window after the ENVIRONMENT transcript append but before meta.json's
+// EnvContext checkpoint. Restore must seed the tracker from the durable entry
+// so the next unchanged turn does not append a duplicate block.
+func TestRestoredSessionReconcilesDurableEnvironmentAfterStaleMeta(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	probes := &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
+	testCfg := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testCfg,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if countEnvironmentTurns(sess) != 1 {
+		t.Fatalf("setup: want one durable environment turn, got %d", countEnvironmentTurns(sess))
+	}
+	meta := loadMetaForTest(t, sess)
+	meta.EnvContext = &envctx.State{}
+	if err := schema.SaveSessionMeta(dir, meta); err != nil {
+		t.Fatalf("save stale meta: %v", err)
+	}
+	sess.Close()
+
+	c2 := llm.NewClient()
+	c2.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(1, "ok")})
+	restored, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+		StateDir: dir,
+		testOnly: testCfg,
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+	if _, err := restored.ProcessInput(context.Background(), "again", nil); err != nil {
+		t.Fatalf("ProcessInput after restore: %v", err)
+	}
+	if count := countEnvironmentTurns(restored); count != 1 {
+		t.Fatalf("stale EnvContext duplicated durable environment: got %d turns, want original 1", count)
+	}
+}
+
 // TestRestoredSessionWithNilEnvContextReemitsFullBlock: a session closed
 // before ever processing a turn persists a nil EnvContext (predating the
 // feature is the same shape: no prior report to be silent about). The
@@ -318,5 +677,211 @@ func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
 	restoredMeta := loadMetaForTest(t, restored)
 	if restoredMeta.EnvContext == nil || !restoredMeta.EnvContext.HasSent {
 		t.Fatalf("EnvContext not persisted after restore re-emit: %+v", restoredMeta.EnvContext)
+	}
+}
+
+func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "env-fold-provider", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSaved work summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir(), testOnly: testConfig{
+		envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }},
+	}}))
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != 1 {
+		t.Fatalf("initial environment turns = %d, want 1", got)
+	}
+	seedNumberedSessionHistory(t, s, 12)
+	s.contextMgr.PreserveRecentTurns = 1
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldSideEffectsFlush = func() {
+			close(parked)
+			<-release
+		}
+	})
+	done := make(chan struct{})
+	var compactErr error
+	go func() {
+		defer close(done)
+		compactErr = s.Compact(context.Background())
+	}()
+	t.Cleanup(func() { unblock(); <-done })
+	select {
+	case <-parked:
+	case <-done:
+		t.Fatalf("Compact returned before publication barrier: %v", compactErr)
+	}
+	if got := countEnvironmentTurns(s); got != 0 {
+		t.Fatalf("fold retained %d environment turns, want folded prefix removed", got)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != 1 {
+		t.Fatalf("published fold must permit fresh environment before deferred flush: got %d turns", got)
+	}
+	var environmentID string
+	for _, turn := range currentHistory(t, s) {
+		if turn.Kind == schema.TurnEnvironment {
+			environmentID = turn.StableTurnID
+		}
+	}
+	unblock()
+	<-done
+	if compactErr != nil {
+		t.Fatal(compactErr)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != 1 {
+		t.Fatalf("deferred fold flush reset the fresh tracker: got %d environment turns", got)
+	}
+	data, err := readTranscriptFull(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durableEnvironmentIDs []string
+	for _, turn := range ResumeHistory(data.Entries) {
+		if turn.Kind == schema.TurnEnvironment {
+			durableEnvironmentIDs = append(durableEnvironmentIDs, turn.StableTurnID)
+		}
+	}
+	if len(durableEnvironmentIDs) != 1 || durableEnvironmentIDs[0] != environmentID {
+		t.Fatalf("reloaded environment IDs = %v, want exactly %s", durableEnvironmentIDs, environmentID)
+	}
+	meta := loadMetaForTest(t, s)
+	if meta.EnvContext == nil || !meta.EnvContext.HasSent {
+		t.Fatalf("fresh environment tracker not persisted: %+v", meta.EnvContext)
+	}
+}
+
+func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "env-preserved-tail", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
+	seedNumberedSessionHistory(t, s, 6)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	s.contextMgr.PreserveRecentTurns = 2
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := countEnvironmentTurns(s)
+	if before != 1 {
+		t.Fatalf("compaction retained %d environment turns, want 1", before)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != before {
+		t.Fatalf("preserved environment tracker emitted duplicate: before=%d after=%d", before, got)
+	}
+}
+
+func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *testing.T) {
+	now := envctxFixedTime
+	s := newTestSessionForEnvctx(t, withConfig(SessionConfig{testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return now }}}}))
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	oldID := ""
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment {
+			oldID = turn.StableTurnID
+		}
+	}
+	seedNumberedSessionHistory(t, s, 8)
+	now = now.Add(time.Hour)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	changedID := s.history[len(s.history)-1].StableTurnID
+	if countEnvironmentTurns(s) != 2 || changedID == "" || changedID == oldID {
+		t.Fatal("changed observation did not append a distinct environment turn")
+	}
+	s.contextMgr.PreserveRecentTurns = 2
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if oldID == "" {
+		t.Fatal("missing original environment identity")
+	}
+	var retainedIDs []string
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment {
+			retainedIDs = append(retainedIDs, turn.StableTurnID)
+		}
+	}
+	if len(retainedIDs) != 1 || retainedIDs[0] != changedID {
+		t.Fatalf("retained environment IDs = %v, want only changed turn %s (old %s)", retainedIDs, changedID, oldID)
+	}
+	before := countEnvironmentTurns(s)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if countEnvironmentTurns(s) != before+1 {
+		t.Fatalf("removed full context did not trigger full re-emission: before=%d after=%d", before, countEnvironmentTurns(s))
+	}
+}
+
+func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSilent(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var releaseOnce sync.Once
+	releaseProvider := func() { releaseOnce.Do(func() { close(release) }) }
+	s := newScriptedSummaryCompactSession(t, "env-merge-tail", func(llm.Request) llm.Response {
+		once.Do(func() { close(started) })
+		<-release
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
+	t.Cleanup(releaseProvider)
+	seedNumberedSessionHistory(t, s, 12)
+	s.contextMgr.PreserveRecentTurns = 1
+	done := make(chan error, 1)
+	go func() { done <- s.Compact(context.Background()) }()
+	select {
+	case <-started:
+	case err := <-done:
+		t.Fatalf("Compact returned before provider barrier: %v", err)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	releaseProvider()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	before := countEnvironmentTurns(s)
+	if before != 1 {
+		t.Fatalf("compaction retained %d merged environment turns, want 1", before)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if countEnvironmentTurns(s) != before {
+		t.Fatalf("merged environment duplicated after fold: before=%d after=%d", before, countEnvironmentTurns(s))
+	}
+	data, err := readTranscriptFull(s.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := 0
+	for _, turn := range ResumeHistory(data.Entries) {
+		if turn.Kind == schema.TurnEnvironment {
+			got++
+		}
+	}
+	if got != 1 {
+		t.Fatalf("reloaded environment turns = %d, want 1", got)
 	}
 }
