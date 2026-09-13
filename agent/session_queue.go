@@ -25,7 +25,6 @@ type queuedClientMutationIdentity struct {
 	ClientMutationID string
 	StableTurnID     string
 	QueueEntryID     string
-	SkillNames       []string
 }
 
 func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.Context {
@@ -33,7 +32,6 @@ func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.C
 		ClientMutationID: queued.ClientMutationID,
 		StableTurnID:     queued.StableTurnID,
 		QueueEntryID:     queued.ID,
-		SkillNames:       append([]string(nil), queued.SkillNames...),
 	})
 }
 

@@ -297,7 +297,23 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			}
 			turn := schema.NewTurn(schema.TurnSystem, llm.User(content))
 			turn.SkillState = &schema.SkillTurnState{ReloadReminder: &reminder}
-			s.recordTurn(turn, turn)
+			// The reminder's durable admission is this turn, so append through
+			// the durable pair -- transcript write first, live append only on
+			// success. A failed write must NOT consume the receipt: the handoff
+			// stays pending so a retry (or a restart) can still deliver the
+			// only reminder for it, instead of recording nothing and forgetting
+			// the handoff forever.
+			live, persisted := turn, turn
+			live.SkillState = live.SkillState.Clone()
+			persisted.SkillState = persisted.SkillState.Clone()
+			if err := s.appendTurnAfterTranscriptWrite(
+				persisted,
+				func() error { return s.writeTranscriptDurableLocked(persisted) },
+				func() { s.history = append(s.history, live) },
+			); err != nil {
+				s.emit(events.EventWarning, warningDataFromError("recording the post-compaction skill reminder failed", err))
+				return nil, nil, fmt.Errorf("recording the post-compaction skill reminder: %w", err)
+			}
 			reminderPublications[publicationID] = true
 		}
 	}

@@ -123,6 +123,16 @@ func TestSkillReloadElicitation_Blocks(t *testing.T) {
 			state: "absent",
 		},
 		{
+			// A block that carries no reload_skills field at all is malformed,
+			// not an explicit no-selection: only a block WITH the field may be
+			// consumed, so the note survives verbatim for the operator to see.
+			name:    "a block without the reload_skills field is malformed and preserves the note",
+			text:    "keep the token OPAQUE-77\n" + block(`{}`),
+			note:    "keep the token OPAQUE-77\n" + block(`{}`),
+			state:   "invalid",
+			errCode: "invalid_selection",
+		},
+		{
 			name:  "selection-only explicit empty array reloads none",
 			text:  block(`{"reload_skills":[]}`),
 			note:  "",

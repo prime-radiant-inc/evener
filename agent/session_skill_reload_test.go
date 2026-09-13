@@ -21,10 +21,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1027,5 +1030,64 @@ func TestSkillReloadReminder_CarriesDiscoveryDiagnostics(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("diagnostics = %+v, want unreadable_source for %s", reminder.Diagnostics, missing)
+	}
+}
+
+// TestSkillReloadReminder_ConsumesReceiptOnlyAfterDurableAdmission pins the
+// failure side of the reminder's admission contract. The reminder turn IS the
+// receipt's durable admission, so a transcript write failure must surface the
+// failure and leave the receipt UNCONSUMED: consuming it while nothing was
+// recorded would lose the only post-compaction reminder forever, with no retry
+// on the next attempt or after a restart.
+func TestSkillReloadReminder_ConsumesReceiptOnlyAfterDurableAdmission(t *testing.T) {
+	s := newTestSession(t)
+	s.skillLifecycle.Inventory["opaque"] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{
+		Identity: schema.SkillContentIdentity{
+			Name:           "opaque",
+			DeclaredName:   "opaque",
+			Source:         filepath.Join(t.TempDir(), "opaque", "SKILL.md"),
+			FileDigest:     "f",
+			RenderedDigest: "r",
+		},
+		Controls: schema.SkillInvocationControls{UserInvocable: true},
+		Route:    "user_slash",
+	}}
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "absent"},
+			PublicationID: "pub-1",
+		},
+	}}
+
+	// A genuinely failing transcript, wired the way this package's other
+	// transcript-failure tests wire it.
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create failing transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	fs.fail = true
+	s.mu.Lock()
+	if s.transcript != nil {
+		t.Cleanup(func() { _ = s.transcript.Close() })
+	}
+	s.transcript = writer
+	s.transcriptReady = true
+	s.mu.Unlock()
+
+	_, _, err = s.prepareCompactedSkillReloads(context.Background())
+	if err == nil {
+		t.Fatal("a reminder whose transcript write failed reported success")
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 1 {
+		t.Fatalf("the receipt must stay unconsumed when its reminder was not recorded, got %+v", handoffs)
+	}
+	for _, state := range skillTurnStates(s) {
+		if state.ReloadReminder != nil {
+			t.Fatal("a reminder turn joined the history despite the failed transcript write")
+		}
 	}
 }

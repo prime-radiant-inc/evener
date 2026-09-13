@@ -67,13 +67,18 @@ func parseSkillReloadElicitation(text string, inventory map[string]schema.SkillI
 	if strings.Contains(rest, skillReloadSelectionOpen) {
 		return invalid() // exactly one block may authorize a selection
 	}
-	var block struct {
-		ReloadSkills json.RawMessage `json:"reload_skills"`
-	}
+	var block map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text[innerStart:innerEnd]), &block); err != nil {
 		return invalid()
 	}
-	selection := parseSkillReloadSelection(block.ReloadSkills, inventory)
+	// The field must be PRESENT. An empty object (or one without reload_skills)
+	// is a malformed block, not an explicit no-selection, so no body load is
+	// authorized and the note survives verbatim for the operator to see.
+	reloadSkills, ok := block["reload_skills"]
+	if !ok {
+		return invalid()
+	}
+	selection := parseSkillReloadSelection(reloadSkills, inventory)
 	if selection.State == "invalid" {
 		return text, selection
 	}
