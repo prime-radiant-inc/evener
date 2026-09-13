@@ -336,7 +336,7 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 // and a file that exists but is not usable is removed so the next attempt can
 // write a fresh one.
 func repairEndpointFingerprintKey(path string) ([]byte, error) {
-	for attempt := 0; attempt < 2; attempt++ {
+	for range 2 {
 		var raw [32]byte
 		if _, err := rand.Read(raw[:]); err != nil {
 			return nil, err
