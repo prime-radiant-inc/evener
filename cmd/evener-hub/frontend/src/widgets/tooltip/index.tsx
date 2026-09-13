@@ -4,13 +4,14 @@ import {
   isValidElement,
   type ReactElement,
   type ReactNode,
-  useEffect,
+  useCallback,
   useId,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useFloatingLabel } from "../hovercard/useFloatingLabel";
 import { requireClass } from "../internal/requireClass";
 import { computeTooltipPosition, type TooltipPosition, TRIGGER_GAP } from "./computePosition";
 import styles from "./tooltip.module.css";
@@ -19,8 +20,6 @@ export interface TooltipProps {
   label: string;
   children: ReactNode;
 }
-
-const SHOW_DELAY_MS = 300;
 
 const CLASS = {
   wrapper: requireClass(styles.wrapper, "tooltip.module.css", "wrapper"),
@@ -69,14 +68,34 @@ interface DescribableProps {
  *      leaving the clipping subtree does.
  */
 export function Tooltip({ label, children }: TooltipProps) {
-  const [visible, setVisible] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const wrapperRef = useRef<HTMLSpanElement>(null);
   const bubbleRef = useRef<HTMLSpanElement>(null);
   const [position, setPosition] = useState<TooltipPosition | null>(null);
   const tooltipId = useId();
 
-  useEffect(() => () => clearTimeout(timerRef.current), []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: wrapperRef comes from the hook below and is stable for this component's lifetime
+  const measure = useCallback(() => {
+    const wrapperEl = wrapperRef.current;
+    const bubbleEl = bubbleRef.current;
+    if (!wrapperEl || !bubbleEl) return;
+
+    // offsetWidth/offsetHeight, not getBoundingClientRect(), for the
+    // bubble's own size: those report the untransformed layout box, so the
+    // placement stays correct if the bubble ever gains a scale-in
+    // animation. Popover shipped that exact bug - measured mid-animation at
+    // scale(0.96), it clamped a 376px panel as though it were 361px and
+    // overran the viewport by 7px. The wrapper keeps its rect: that one is
+    // wanted in viewport coordinates, which is what position: fixed
+    // consumes.
+    setPosition(
+      computeTooltipPosition(
+        wrapperEl.getBoundingClientRect(),
+        { width: bubbleEl.offsetWidth, height: bubbleEl.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+      ),
+    );
+  }, []);
+
+  const { visible, wrapperRef, triggerProps } = useFloatingLabel({ measure, observe: bubbleRef });
 
   // Measure the trigger and the bubble and place the bubble. A layout effect,
   // so the measure and the re-render its setPosition causes both complete
@@ -87,78 +106,8 @@ export function Tooltip({ label, children }: TooltipProps) {
       setPosition(null);
       return;
     }
-    const wrapperEl = wrapperRef.current;
-    const bubbleEl = bubbleRef.current;
-    if (!wrapperEl || !bubbleEl) return;
-
-    function measure() {
-      if (!wrapperEl || !bubbleEl) return;
-      // offsetWidth/offsetHeight, not getBoundingClientRect(), for the
-      // bubble's own size: those report the untransformed layout box, so the
-      // placement stays correct if the bubble ever gains a scale-in
-      // animation. Popover shipped that exact bug - measured mid-animation at
-      // scale(0.96), it clamped a 376px panel as though it were 361px and
-      // overran the viewport by 7px. The wrapper keeps its rect: that one is
-      // wanted in viewport coordinates, which is what position: fixed
-      // consumes.
-      setPosition(
-        computeTooltipPosition(
-          wrapperEl.getBoundingClientRect(),
-          { width: bubbleEl.offsetWidth, height: bubbleEl.offsetHeight },
-          { width: window.innerWidth, height: window.innerHeight },
-        ),
-      );
-    }
     measure();
-
-    // A bubble whose box changes after it is shown needs its placement
-    // recomputed, or a shift computed off the old size leaves the new one
-    // hanging off the edge. It happens for real: the composer swaps its send
-    // label between "Send now · <chord>" and the ~100px-longer "Queue until
-    // the agent stops · <chord>" the moment a turn starts, which can be while
-    // the bubble is on screen. Observing the box covers that and every other
-    // cause (a late webfont, a re-wrap) without the component having to
-    // enumerate them. Feature-detected: jsdom implements no ResizeObserver,
-    // and the show-time measure above is the whole behavior without it.
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(bubbleEl);
-    return () => observer.disconnect();
-  }, [visible]);
-
-  // A scroll anywhere (capture-phase, so a scrollable ancestor's own scroll
-  // counts) or a viewport resize hides the bubble rather than repositioning
-  // it: placement is computed once per show, and a fixed-position bubble left
-  // alone through a scroll would visibly detach from its trigger. Matches
-  // Popover's own close-on-scroll for the same reason; for a tooltip the cost
-  // is lower still, since re-hovering brings it straight back.
-  useEffect(() => {
-    if (!visible) return;
-    function dismiss() {
-      // Cancels the pending show too, not just the visible bubble: a trigger
-      // that takes focus after a click has already re-armed the delay while
-      // its own tooltip is up, and that timer would otherwise pop the bubble
-      // back 300ms after the scroll that dismissed it.
-      clearTimeout(timerRef.current);
-      setVisible(false);
-    }
-    window.addEventListener("scroll", dismiss, true);
-    window.addEventListener("resize", dismiss);
-    return () => {
-      window.removeEventListener("scroll", dismiss, true);
-      window.removeEventListener("resize", dismiss);
-    };
-  }, [visible]);
-
-  function show() {
-    clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setVisible(true), SHOW_DELAY_MS);
-  }
-
-  function hide() {
-    clearTimeout(timerRef.current);
-    setVisible(false);
-  }
+  }, [measure, visible]);
 
   const singleChild = Children.count(children) === 1 && isValidElement(children) ? children : null;
   const describedChild = singleChild
@@ -174,15 +123,8 @@ export function Tooltip({ label, children }: TooltipProps) {
     // a new interactive control needing a role; it's showing/hiding a
     // role="tooltip" description already wired to the real trigger element
     // via aria-describedby (describedChild below).
-    // biome-ignore lint/a11y/noStaticElementInteractions: already dual mouse+keyboard triggered, see above
-    <span
-      ref={wrapperRef}
-      className={CLASS.wrapper}
-      onMouseEnter={show}
-      onMouseLeave={hide}
-      onFocus={show}
-      onBlur={hide}
-    >
+    // Already dual mouse+keyboard triggered, see above.
+    <span ref={wrapperRef} className={CLASS.wrapper} {...triggerProps}>
       {describedChild}
       {visible &&
         createPortal(
