@@ -205,7 +205,7 @@ func parseFlags(flags []string) (parsedFlags, error) {
 			name, inline, hasInline = f[:j], f[j+1:], true
 		}
 		if name == "-C" {
-			return parsedFlags{}, fmt.Errorf("-C is not supported here: every module is built and tested from its own directory, and a -C would move both somewhere this runner does not expect")
+			return parsedFlags{}, errors.New("-C is not supported here: every module is built and tested from its own directory, and a -C would move both somewhere this runner does not expect")
 		}
 		value := ""
 		hasValue := hasInline
