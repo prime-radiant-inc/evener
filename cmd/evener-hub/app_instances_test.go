@@ -1782,6 +1782,72 @@ func TestInstances_ApiKeySetAcceptsTheFingerprintTheCatalogueAdvertises(t *testi
 	}
 }
 
+// A key file this hub did not write 0600 is one another local user may be able
+// to read, which is the whole guarantee the digest rests on (only a holder of
+// the key can recompute it). Using it as-is would keep keying digests with a
+// value someone else knows; the hub rotates it instead, so the exposed key stops
+// describing anything. The write happens before any listing is read, because a
+// key this hub has already loaded is cached for the process.
+func TestInstances_EndpointFingerprintRotatesAKeyOthersCanRead(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	exposed := "a-key-another-local-user-could-read"
+	if err := os.WriteFile(keyPath, []byte(exposed), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
+		t.Fatal("a key file the hub rotates should leave it serving fingerprints")
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("the key file is %v after the read, want 0600", perm)
+	}
+	rotated, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if string(rotated) == exposed {
+		t.Fatal("the exposed key is still the hub's key: a leaked key has to be rotated, not used")
+	}
+}
+
+// The owner arm of the same judgement: a key file that is not this hub's own is
+// not one it wrote, so it is rotated like an unreadable one. The expected uid is
+// injected because a test cannot own a file as another user.
+func TestInstances_EndpointFingerprintRotatesAKeyThatIsNotItsOwn(t *testing.T) {
+	original := endpointFingerprintKeyOwner
+	endpointFingerprintKeyOwner = func() int { return os.Getuid() + 1 }
+	t.Cleanup(func() { endpointFingerprintKeyOwner = original })
+
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	foreign := "a-key-file-the-hub-did-not-write"
+	if err := os.WriteFile(keyPath, []byte(foreign), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
+		t.Fatal("a key file the hub rotates should leave it serving fingerprints")
+	}
+	rotated, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if string(rotated) == foreign {
+		t.Fatal("a key file belonging to another uid was used as the hub's own")
+	}
+}
+
 // A key file that is there but empty is a corrupt one, and treating it as "no
 // key" would fail the endpoint-change protection open without a word. The hub
 // replaces it, so the listing keeps serving fingerprints a client can compare.

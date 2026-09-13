@@ -323,6 +323,10 @@ const endpointFingerprintKeyFile = "endpoint-fingerprint.key"
 var (
 	endpointFingerprintKeyMu    sync.Mutex
 	endpointFingerprintKeyCache = map[string][]byte{}
+	// endpointFingerprintKeyOwner is the uid a key file has to belong to. A
+	// real uid cannot be varied the way the check needs to be exercised, so it
+	// is a seam in the same sense as the auth store's file operations.
+	endpointFingerprintKeyOwner = os.Getuid
 )
 
 // endpointFingerprintKey returns the key the endpoint fingerprints are keyed
@@ -356,7 +360,29 @@ func endpointFingerprintKey(stateDir string) []byte {
 	return key
 }
 
+// readEndpointFingerprintKey returns the key at path, refusing a file this hub
+// must not treat as its own secret. The fingerprints' whole guarantee is that
+// only a holder of the key can recompute them (see endpointFingerprint), so a
+// key another user can read is one they can key digests with, and a file that
+// is not this hub's own regular file is not a key it wrote. The caller replaces
+// what is refused with a fresh 0600 key, which is the answer a key that may have
+// leaked calls for: rotation is what stops it describing anything.
 func readEndpointFingerprintKey(path string) ([]byte, error) {
+	// Lstat, not Stat: what is at the path is judged, not what it points at.
+	// A symlink here is replaced by the rotation below rather than followed.
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		return nil, fmt.Errorf("%s is %04o, want 0600", path, perm)
+	}
+	if uid, known := fileOwnerUID(info); known && uid != endpointFingerprintKeyOwner() {
+		return nil, fmt.Errorf("%s is owned by uid %d, not by uid %d", path, uid, endpointFingerprintKeyOwner())
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
