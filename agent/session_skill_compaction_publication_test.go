@@ -89,6 +89,22 @@ func pendingHandoffsSnapshot(s *Session) []schema.SkillCompactionReceipt {
 	return out
 }
 
+// cycleSkillReloadSelection reports the current compaction cycle's reload
+// selection from the operation that owns it — the single authority — or the
+// absent selection when no operation is pending. Test-only: the snapshot keeps
+// no second copy of a cycle's selection, so nothing else can disagree with the
+// operation about what the cycle selected.
+func cycleSkillReloadSelection(s *Session) schema.SkillReloadSelection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if op := s.skillLifecycle.PendingCompaction; op != nil {
+		sel := op.Selection
+		sel.Names = slices.Clone(sel.Names)
+		return sel
+	}
+	return schema.SkillReloadSelection{State: "absent"}
+}
+
 // publicationReceiptsFromTranscript reads the durable transcript and returns
 // every typed compaction handoff receipt attached to a turn — the record a
 // restart reconciles from, including pre-marker entries.
@@ -171,27 +187,39 @@ func TestSkillCompaction_CheckpointOnly(t *testing.T) {
 	}
 	// The reload selection belonged to this cycle and was consumed by the
 	// publication that claimed it.
-	if sel := s.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "absent" {
 		t.Fatalf("a published compaction consumes its cycle's reload selection, still holding %+v", sel)
 	}
 	// The winning publication recorded exactly one typed handoff receipt —
-	// coalesced by publication identity — whose delivery completed with the
-	// claimed operation.
-	handoffs := pendingHandoffsSnapshot(s)
-	if len(handoffs) != 1 {
-		t.Fatalf("the winning publication must record exactly one handoff receipt, got %d", len(handoffs))
-	}
-	handoff := handoffs[0]
-	if handoff.Phase != skillCompactionReceiptDelivered || handoff.Operation.Generation == 0 || handoff.Operation.PublicationID == "" || handoff.SessionID != id {
-		t.Fatalf("delivered handoff = %+v", handoff)
+	// coalesced by publication identity — and this request's reload preparation
+	// then CONSUMED it. This selection names only a legacy activation carrying no
+	// recorded identity, which is now reported as a typed invalid_metadata
+	// failure instead of being skipped silently: a silent skip left the receipt
+	// pending forever and re-processed it on every later request, re-announcing
+	// its reloadable names and collecting another obligation each time. The
+	// transcript's publication receipt is what ties that report to this cycle.
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("a reported selection must consume its handoff, still holding %+v", handoffs)
 	}
 	receipts := publicationReceiptsFromTranscript(t, stateDir, id)
-	if len(receipts) != 1 || receipts[0].Operation.PublicationID != handoff.Operation.PublicationID ||
-		receipts[0].Phase != skillCompactionReceiptPublished || receipts[0].Operation.Generation != handoff.Operation.Generation {
-		t.Fatalf("transcript receipts = %+v, want the checkpoint marker carrying the claim's published receipt %+v", receipts, handoff)
+	if len(receipts) != 1 || receipts[0].Phase != skillCompactionReceiptPublished ||
+		receipts[0].Operation.Generation == 0 || receipts[0].Operation.PublicationID == "" {
+		t.Fatalf("transcript receipts = %+v, want the checkpoint marker carrying the claim's published receipt", receipts)
+	}
+	publicationID := receipts[0].Operation.PublicationID
+	reported := false
+	for _, state := range skillTurnStates(s) {
+		for _, outcome := range state.Outcomes {
+			if outcome.ErrorCode == "invalid_metadata" && strings.HasPrefix(outcome.InvocationID, publicationID+":") {
+				reported = true
+			}
+		}
+	}
+	if !reported {
+		t.Fatalf("the legacy reload selection was not reported against publication %q", publicationID)
 	}
 	if skills := loadSkillsSnapshot(t, stateDir, id); skills == nil || skills.PendingCompaction != nil ||
-		len(skills.PendingHandoffs) != 1 || skills.PendingHandoffs[0].Phase != skillCompactionReceiptDelivered {
+		len(skills.PendingHandoffs) != 0 {
 		t.Fatalf("persisted lifecycle after delivery = %+v", skills)
 	}
 	// The cycle reopens: a fresh forced request mints a NEW generation.
@@ -263,7 +291,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 		if skills := loadSkillsSnapshot(t, stateDir, id); skills != nil && skills.PendingCompaction != nil {
 			t.Fatalf("the claimed deferred operation must not stay in the persisted slot, disk says %+v", skills.PendingCompaction)
 		}
-		if sel := s.pendingSkillReloadSelection(); sel.State != "absent" {
+		if sel := cycleSkillReloadSelection(s); sel.State != "absent" {
 			t.Fatalf("the claiming publication must consume the deferred cycle's selection, still holding %+v", sel)
 		}
 		if n := countSteering(currentHistory(t, s), "deferred-note"); n != 1 {
@@ -431,7 +459,7 @@ func TestSkillCompaction_UnchangedPublication(t *testing.T) {
 	if got := s.PinnedNote(); got != "unchanged-note" {
 		t.Fatalf("an unchanged publication must not consume the note, got %q", got)
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "valid" || len(sel.Names) != 1 || sel.Names[0] != "scope:probe" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "valid" || len(sel.Names) != 1 || sel.Names[0] != "scope:probe" {
 		t.Fatalf("an unchanged publication must retain the pending selection, got %+v", sel)
 	}
 	skills := loadSkillsSnapshot(t, stateDir, id)
@@ -505,7 +533,7 @@ func TestSkillCompaction_LosingAttempt(t *testing.T) {
 	if skills := loadSkillsSnapshot(t, stateDir, id); skills != nil && skills.PendingCompaction != nil {
 		t.Fatalf("the claimed forced operation must not stay in the persisted slot, disk says %+v", skills.PendingCompaction)
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "absent" {
 		t.Fatalf("the winning publication must consume the forced cycle's selection, still holding %+v", sel)
 	}
 	// The losing attempt recorded nothing; the winning retry recorded
@@ -578,7 +606,7 @@ func TestSkillCompaction_CompetingForced(t *testing.T) {
 	if op == nil || op.Generation != forced || op.Origin != "forced" || op.Phase != "pending" {
 		t.Fatalf("an unrelated manual fold must not adopt or consume the pending forced operation, got %+v", op)
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "valid" || len(sel.Names) != 1 || sel.Names[0] != "scope:probe" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "valid" || len(sel.Names) != 1 || sel.Names[0] != "scope:probe" {
 		t.Fatalf("an unrelated manual fold must not consume the forced operation's selection, got %+v", sel)
 	}
 	// The forced operation's round trigger must survive the unrelated winner
@@ -609,7 +637,7 @@ func TestSkillCompaction_CompetingForced(t *testing.T) {
 	if skills := loadSkillsSnapshot(t, stateDir, id); skills != nil && skills.PendingCompaction != nil {
 		t.Fatalf("the claimed forced operation must not stay in the persisted slot, disk says %+v", skills.PendingCompaction)
 	}
-	if sel := s.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(s); sel.State != "absent" {
 		t.Fatalf("the forced operation's claiming publication must consume its selection, still holding %+v", sel)
 	}
 	// The competing winner's handoff and the forced claim coexist as two
@@ -907,7 +935,7 @@ func TestSkillCompaction_RestartAfterPublish(t *testing.T) {
 	}
 	// The claiming publication consumed the cycle's selection; the stale
 	// snapshot's copy must not survive to attach to another fold.
-	if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(restored); sel.State != "absent" {
 		t.Fatalf("the completed delivery must have consumed the stale selection, got %+v", sel)
 	}
 	// The final handoff is preserved from the transcript receipts — delivered.
@@ -1009,7 +1037,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		if op != nil {
 			t.Fatalf("reconciliation must complete generation %d's delivery without resurrecting generation %d, still holding %+v", second, first, op)
 		}
-		if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
+		if sel := cycleSkillReloadSelection(restored); sel.State != "absent" {
 			t.Fatalf("the completed delivery must have consumed the stale selection, got %+v", sel)
 		}
 		// Both publications' final handoffs are preserved, coalesced by
@@ -1072,7 +1100,6 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 					Selection:      schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}},
 					Phase:          "pending",
 				},
-				PendingSelection: &schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}},
 			},
 		}
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
@@ -1089,7 +1116,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		if op == nil || op.Generation != 8 || op.Phase != "pending" {
 			t.Fatalf("a cancelled receipt for generation 7 must not retire generation 8's intent, got %+v", op)
 		}
-		if sel := restored.pendingSkillReloadSelection(); sel.State != "valid" || len(sel.Names) != 1 || sel.Names[0] != "scope:probe" {
+		if sel := cycleSkillReloadSelection(restored); sel.State != "valid" || len(sel.Names) != 1 || sel.Names[0] != "scope:probe" {
 			t.Fatalf("generation 8's selection must survive generation 7's cancellation, got %+v", sel)
 		}
 		handoffs := pendingHandoffsSnapshot(restored)
@@ -1141,7 +1168,6 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 					Selection:      schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}},
 					Phase:          "pending",
 				},
-				PendingSelection: &schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}},
 			},
 		}
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
@@ -1154,7 +1180,7 @@ func TestSkillCompaction_StaleSnapshot(t *testing.T) {
 		if op := restored.pendingSkillCompactionSnapshot(); op != nil {
 			t.Fatalf("a delivered operation cannot be repeated into the slot, got %+v", op)
 		}
-		if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
+		if sel := cycleSkillReloadSelection(restored); sel.State != "absent" {
 			t.Fatalf("the delivered operation's selection must be consumed, got %+v", sel)
 		}
 		handoffs := pendingHandoffsSnapshot(restored)
@@ -1294,7 +1320,7 @@ func TestSkillCompaction_IntermediateSaveWindowRestore(t *testing.T) {
 	if armed {
 		t.Fatal("a completed delivery is never re-armed: restart must not arm a fold")
 	}
-	if sel := restored.pendingSkillReloadSelection(); sel.State != "absent" {
+	if sel := cycleSkillReloadSelection(restored); sel.State != "absent" {
 		t.Fatalf("the completed delivery must have consumed the window selection, got %+v", sel)
 	}
 	handoffs := pendingHandoffsSnapshot(restored)

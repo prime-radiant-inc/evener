@@ -218,13 +218,13 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 					// outcome: selecting it is a no-op.
 					continue
 				}
-				if prior.Identity.Name == "" || prior.Identity.DeclaredName == "" || prior.Identity.Source == "" {
-					// The record carries no complete recorded identity, so no
-					// reload can be prepared against it — the same no-op as a
-					// preload-only selection: nothing is attempted, nothing is
-					// reported, and the receipt is left unconsumed.
-					continue
-				}
+				// A record with no complete recorded identity (a legacy
+				// activation) is reported by prepareSkillActivations as a typed
+				// invalid_metadata failure rather than skipped silently: a silent
+				// skip left the publication unconsumed forever, so every later
+				// request re-processed the same selection and re-announced its
+				// reloadable names, growing history and the obligation list
+				// without bound.
 				source := prior.Identity
 				invocation := skillInvocation{
 					Name:         name,
@@ -390,6 +390,12 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 	// would publish a durable carrier whose obligation a failed save (or a crash
 	// before it) could lose.
 	var carriers []schema.Turn
+	// A body staged in this batch is not in the live history yet, so the
+	// history-based reuse check alone would admit a second complete body for
+	// another selection naming the same skill. Track what this batch staged so
+	// the reuse decision matches what the history would show once the carriers
+	// are recorded.
+	stagedBodies := map[schema.SkillContentIdentity]bool{}
 	for _, item := range batch.Items {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -401,10 +407,10 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 			Route:        item.Invocation.Route,
 		}
 		outcome := outcomeByID[item.Invocation.InvocationID]
-		if s.skillContentInLiveHistory(identity) {
+		if s.skillContentInLiveHistory(identity) || stagedBodies[identity] {
 			// Reuse complete content already present in the retained tail or
-			// restored by another activation: no duplicate body, obligation
-			// stands until final admission.
+			// restored by another activation, or staged earlier in this same
+			// batch: no duplicate body, obligation stands until final admission.
 			if outcome != nil {
 				outcome.Status = "already_present"
 				if err := s.recordSkillReloadNotification(
@@ -441,6 +447,7 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 				Obligations: []schema.SkillDeliveryObligation{obligation},
 			}
 			carriers = append(carriers, carrier)
+			stagedBodies[identity] = true
 		}
 		obligations = append(obligations, obligation)
 	}
@@ -491,12 +498,11 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 // consumedReloadPublicationsLocked derives the publication identities whose
 // valid-selection receipts this preparation fully processed: every selected
 // name either has no ordinary record (a preload-only no-op) or produced a
-// typed outcome under the publication's invocation identity. A name whose
-// ordinary record carries an incomplete identity is a preparation no-op that
-// keeps the receipt pending for a later round — consuming it would discard an
-// unreported reload selection (pinned by TestSkillCompaction_CheckpointOnly).
-// Receipts that appeared after the preparation snapshot stay for the next
-// round, and absent/invalid receipts were already consumed with their
+// typed outcome under the publication's invocation identity — including the
+// typed invalid_metadata outcome a legacy record with no complete identity now
+// produces. A name with no outcome at all would leave the receipt pending for a
+// later round. Receipts that appeared after the preparation snapshot stay for
+// the next round, and absent/invalid receipts were already consumed with their
 // reminders.
 // Callers hold s.mu.
 func (s *Session) consumedReloadPublicationsLocked(outcomes []schema.SkillActivationOutcome) map[string]bool {

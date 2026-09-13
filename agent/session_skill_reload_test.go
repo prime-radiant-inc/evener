@@ -1398,3 +1398,141 @@ func TestSkillReload_FailedReloadNotificationWriteFailureIsVisible(t *testing.T)
 		t.Fatal("a failed reload-failure notification write must fail the preparation visibly")
 	}
 }
+
+// TestSkillReload_DuplicateSelectionsAdmitOneBody pins within-batch reuse: two
+// pending handoffs that select the same skill must admit ONE instruction body
+// and one activation, not two. The reuse check reads the live history, so
+// staging the carriers until after the obligation save (which the durability
+// finding required) must not lose the dedup the immediate-record path got for
+// free — otherwise the model receives duplicate instruction bodies and the
+// lifecycle publishes a duplicate activation per extra handoff.
+func TestSkillReload_DuplicateSelectionsAdmitOneBody(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_duplicate")
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_duplicate", nil))
+	plantOrdinaryRecord(t, s, root, "opaque", true)
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{
+		{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    1,
+				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+				PublicationID: "pub-dup-1",
+			},
+		},
+		{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+				PublicationID: "pub-dup-2",
+			},
+		},
+	}
+	s.mu.Unlock()
+
+	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if batch == nil || len(batch.Items) != 2 {
+		t.Fatalf("test setup: prepared batch = %+v, want both selections", batch)
+	}
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads: %v", err)
+	}
+
+	bodies := 0
+	notifications := 0
+	for _, state := range skillTurnStates(s) {
+		switch {
+		case len(state.Obligations) != 0:
+			bodies++
+		case len(state.Outcomes) != 0:
+			notifications++
+		}
+	}
+	if bodies != 1 {
+		t.Fatalf("admitted %d instruction bodies for one skill, want exactly one (the second selection must reuse it)", bodies)
+	}
+	if notifications != 1 {
+		t.Fatalf("recorded %d reuse notifications, want exactly one", notifications)
+	}
+}
+
+// TestSkillReload_IncompleteIdentitySelectionRetiresReceipt pins that a valid
+// selection naming a skill whose recorded identity is incomplete is REPORTED
+// (a typed invalid_metadata failure the model can see) and that its handoff is
+// retired with the rest of the selection. Leaving the name a silent no-op left
+// the publication unconsumed forever, so every later request re-processed the
+// same selection: the reloadable name alongside it was re-announced as
+// already_present and collected another delivery obligation each time, with no
+// bound. The legacy record here is the shape a pre-identity activation leaves.
+func TestSkillReload_IncompleteIdentitySelectionRetiresReceipt(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_legacy")
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_legacy", nil))
+	plantOrdinaryRecord(t, s, root, "opaque", true)
+	s.mu.Lock()
+	// A legacy activation: an ordinary record with no recorded identity at all.
+	s.skillLifecycle.Inventory["scope:probe"] = schema.SkillInventoryEntry{
+		Ordinary: &schema.OrdinarySkillActivation{Description: "legacy-probe"},
+	}
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe", "opaque"}},
+			PublicationID: "pub-legacy-identity",
+		},
+	}}
+	s.mu.Unlock()
+
+	notices := func() int {
+		n := 0
+		for _, state := range skillTurnStates(s) {
+			for _, outcome := range state.Outcomes {
+				if outcome.ErrorCode == "invalid_metadata" {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	obligations := func() int { return len(lifecycleObligations(s)) }
+
+	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if notices() != 1 {
+		t.Fatalf("visible invalid_metadata notices after the first preparation = %d, want exactly one", notices())
+	}
+	if batch != nil {
+		if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, batch, outcomes); err != nil {
+			t.Fatalf("admitCompactedSkillReloads: %v", err)
+		}
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("the reported selection left its handoff pending: %+v", handoffs)
+	}
+	after1, obligations1 := notices(), obligations()
+
+	// A later request must not re-process the retired selection.
+	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
+		t.Fatalf("second prepareCompactedSkillReloads: %v", err)
+	}
+	if got := notices(); got != after1 {
+		t.Fatalf("notices grew from %d to %d on re-processing a retired receipt", after1, got)
+	}
+	if got := obligations(); got != obligations1 {
+		t.Fatalf("obligations grew from %d to %d on re-processing a retired receipt", obligations1, got)
+	}
+}
