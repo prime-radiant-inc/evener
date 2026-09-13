@@ -6,13 +6,13 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import {
   discardRecoveryPendingTurn,
-  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
@@ -22,6 +22,7 @@ import {
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -70,6 +71,7 @@ async function connect(overrides: Partial<Thread> = {}): Promise<FakeClient> {
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
+  setMutationClientIdentityForTests(undefined);
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
@@ -325,6 +327,104 @@ test("a flush that can never settle trips instead of hanging inside act", async 
   releaseSubmit();
   await submitted;
   await flushPendingTurnsProjectionForTests();
+});
+
+test("another tab's durable send is not claimed as this client's submission", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Another tab submits: the shared outbox carries its record, attributed to
+  // that tab's client identity.
+  setMutationClientIdentityForTests("tab-a");
+  const foreign = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "other tab's send" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "other tab's send" }] },
+  });
+  expect(foreign.originClientId).toBe("tab-a");
+  // This tab reads the same shared storage, and the daemon later re-describes
+  // the same submission in its authoritative projection.
+  setMutationClientIdentityForTests("tab-b");
+  const fake = await connect({
+    evener: {
+      ref: "ref_a",
+      activeTurnId: "turn_1",
+      capabilities: thread().evener.capabilities,
+      queue: { revision: 1 },
+      pendingMutations: [
+        {
+          clientMutationId: foreign.clientMutationId,
+          method: "turn/start",
+          input: [{ type: "text", text: "other tab's send" }],
+          executionState: "claimed",
+          projectionState: "pending",
+        },
+      ],
+    },
+  });
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+
+  // The entry must be visible - the send is real and in flight - but it is
+  // NOT this client's, both as the durable projection describes it and once
+  // the daemon's projection takes over the same id: tier-6 routing must not
+  // queue this tab's next message behind another tab's send.
+  const entry = pending.result.current.find((candidate) => candidate.id === foreign.clientMutationId);
+  expect(entry).toBeDefined();
+  expect(entry?.fromThisClient).toBe(false);
+});
+
+test("this client's own and unattributed durable sends stay claimed as its submissions", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  setMutationClientIdentityForTests("tab-b");
+  const own = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "own send" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "own send" }] },
+  });
+  await connect();
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+  const entry = pending.result.current.find((candidate) => candidate.id === own.clientMutationId);
+  expect(entry?.fromThisClient).toBe(true);
+});
+
+test("another tab's send stays foreign once the receipt settles it into optimistic storage", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Another tab submits; the daemon accepts its send while this tab is open on
+  // the same origin, so this tab's settle transition carries the record from
+  // the shared outbox into optimistic storage.
+  setMutationClientIdentityForTests("tab-a");
+  const foreign = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "other tab's accepted send" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "other tab's accepted send" }] },
+  });
+  expect(foreign.originClientId).toBe("tab-a");
+  setMutationClientIdentityForTests("tab-b");
+  expect(await storage.settleReceipt(foreign.clientMutationId, "pending")).toBe(true);
+  await connect();
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+
+  // The accepted-but-unreflected send must still read as the other tab's:
+  // the settle transition once rebuilt the record without provenance, which
+  // made it unattributed and let this tab claim it for tier-6 routing.
+  const entry = pending.result.current.find((candidate) => candidate.id === foreign.clientMutationId);
+  expect(entry).toBeDefined();
+  expect(entry?.source).toBe("optimistic");
+  expect(entry?.fromThisClient).toBe(false);
 });
 
 test("recovery action wrappers refresh the durable projection", async () => {

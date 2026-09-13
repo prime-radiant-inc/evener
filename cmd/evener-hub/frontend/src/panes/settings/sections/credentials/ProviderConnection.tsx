@@ -1,0 +1,834 @@
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
+import { connectionStore, useConnectionStore } from "../../../../stores/connection";
+import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
+import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
+import { useConnectedEffect } from "../useConnectedEffect";
+import { activeSourceLabel, safeCredentialTestResult } from "./credentialLabels";
+import { AddInstanceDialog } from "./instanceDialogs";
+import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
+import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import styles from "./ProviderConnection.module.css";
+import { useEditorLifetime } from "./useEditorLifetime";
+
+/** Instance-identity reports a hosting dialog forwards from a sibling
+ * full-settings view into the connection's mailbox (see reportsRef). */
+export interface InstanceReports {
+  renamed(from: string, to: string): void;
+  removed(name: string): void;
+}
+
+export interface ProviderConnectionProps {
+  visible?: boolean;
+  onClose(): void;
+  onConnected(name?: string): void;
+  onManage(): void;
+  /** The hosting dialog fills this ref with this component's report receivers
+   * for instance-identity changes made in a sibling full-settings view.
+   * Reports live here, next to the selection they address: the guided owner
+   * mounted when a report arrives applies it (its effects run even while it
+   * stays hidden behind the settings view) and consumes it, and any pending
+   * report is dropped when the selection changes, because its addressee is
+   * gone - a later same-name owner is a different editing session and must
+   * not inherit it. */
+  reportsRef?: RefObject<InstanceReports | null>;
+}
+
+// Presentation only. Authentication capabilities always come from the catalogue.
+const HELP: Record<string, { label: string; keyUrl: string; billing: string }> = {
+  anthropic: {
+    label: "Anthropic",
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    billing: "Claude subscriptions do not include API billing. API usage is billed separately.",
+  },
+  openai: {
+    label: "OpenAI",
+    keyUrl: "https://platform.openai.com/api-keys",
+    billing: "ChatGPT subscriptions do not include API billing. API usage is billed separately.",
+  },
+  google: {
+    label: "Gemini",
+    keyUrl: "https://aistudio.google.com/apikey",
+    billing: "Gemini API billing and limits are separate from your chat subscription.",
+  },
+  openrouter: {
+    label: "OpenRouter",
+    keyUrl: "https://openrouter.ai/settings/keys",
+    billing: "API billing uses your OpenRouter credits.",
+  },
+};
+
+function findSetup(name: string): InstanceEntry | undefined {
+  const store = credentialsStore.getState();
+  return (
+    store.instances.find((row) => row.name === name) ??
+    store.availableProviders.find((row) => row.setup?.name === name)?.setup
+  );
+}
+function destination(row: InstanceEntry | undefined): string {
+  if (!row) return "";
+  return JSON.stringify([
+    row.name,
+    row.providerId,
+    row.base,
+    // The complete endpoint identity, query parameters included: baseUrl is the
+    // sanitized copy the user reads, and a query-only change (an API version, a
+    // deployment, a token) leaves it identical. Without this the flow would
+    // treat a different endpoint as the one it anchored on and skip the review.
+    row.endpointFingerprint,
+    row.baseUrl,
+    row.protocol,
+    row.surface,
+    row.auth,
+    row.authModes,
+    row.vars,
+    row.apiKeyEnv,
+    row.credentialHeader,
+    row.hidden,
+  ]);
+}
+function needsConfiguration(row: InstanceEntry | undefined): boolean {
+  return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
+}
+
+export function ProviderConnection(props: ProviderConnectionProps) {
+  const store = useCredentialsStore();
+  const [selected, setSelected] = useState<ProviderDescriptor | null>(null);
+  // Instance-identity reports (rename/removal from the sibling full-settings
+  // view) are scoped to the guided owner mounted when they arrive: that owner
+  // applies and consumes them immediately (its effects run even while it stays
+  // hidden behind the settings view). A report pending against no matching
+  // owner is dropped at the next selection change - its addressee is gone, and
+  // a later same-name owner is a different editing session that must not be
+  // silently re-pointed or re-cleared by it.
+  const [renamed, setRenamed] = useState<{ from: string; to: string } | null>(null);
+  const [removed, setRemoved] = useState<{ name: string } | null>(null);
+  const consumeRenamed = useCallback(() => setRenamed(null), []);
+  const consumeRemoved = useCallback(() => setRemoved(null), []);
+  const selectProvider = useCallback((row: ProviderDescriptor) => {
+    setRenamed(null);
+    setRemoved(null);
+    setSelected(row);
+  }, []);
+  const clearSelection = useCallback(() => {
+    setRenamed(null);
+    setRemoved(null);
+    setSelected(null);
+  }, []);
+  const reportsRef = props.reportsRef;
+  useEffect(() => {
+    if (!reportsRef) return;
+    reportsRef.current = {
+      renamed: (from, to) => setRenamed({ from, to }),
+      removed: (name) => setRemoved({ name }),
+    };
+    return () => {
+      reportsRef.current = null;
+    };
+  }, [reportsRef]);
+  const [all, setAll] = useState(false);
+  const [search, setSearch] = useState("");
+  const errorRef = useRef<HTMLDivElement>(null);
+  useConnectedEffect(store.fetch, [store.fetch]);
+  useEffect(() => {
+    if (props.visible !== false && store.error) errorRef.current?.focus();
+  }, [store.error, props.visible]);
+  if (selected)
+    return (
+      <SelectedConnection
+        key={selected.id}
+        provider={selected}
+        {...props}
+        onChange={clearSelection}
+        renamedInstance={renamed}
+        removedInstance={removed}
+        onRenamedConsumed={consumeRenamed}
+        onRemovedConsumed={consumeRemoved}
+      />
+    );
+  if (props.visible === false) return null;
+  return (
+    <Dialog open onClose={props.onClose} title="Connect a provider">
+      <div className={styles.body}>
+        <p>Connect one provider to get started. Add others later.</p>
+        {store.loading && <Skeleton />}
+        {store.error && (
+          <div role="alert" tabIndex={-1} ref={errorRef}>
+            Providers could not be loaded.{" "}
+            {/* fetch() rejects when there is no client; the error region this
+                button lives in is already the recovery affordance. */}
+            <Button variant="secondary" onClick={() => void store.fetch().catch(() => {})}>
+              Retry
+            </Button>
+          </div>
+        )}
+        <div className={styles.actions}>
+          <Button variant="quiet" onClick={() => setAll(false)}>
+            Popular providers
+          </Button>
+          <Button variant="quiet" onClick={() => setAll(true)}>
+            All providers
+          </Button>
+        </div>
+        {all && (
+          <FormRow label="Search providers" htmlFor="provider-search">
+            <Input id="provider-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </FormRow>
+        )}
+        <div className={styles.grid}>
+          {store.availableProviders
+            .filter((row) =>
+              all
+                ? `${row.id} ${row.name ?? ""} ${HELP[row.id]?.label ?? ""}`
+                    .toLowerCase()
+                    .includes(search.toLowerCase())
+                : Object.hasOwn(HELP, row.id),
+            )
+            .map((row) => (
+              <Button
+                key={row.id}
+                variant="secondary"
+                disabled={store.loading || !!store.error}
+                onClick={() => selectProvider(row)}
+              >
+                {HELP[row.id]?.label || row.name || row.id}
+              </Button>
+            ))}
+        </div>
+        <details>
+          <summary>Already configured access on this host?</summary>
+          <Button variant="quiet" onClick={props.onManage}>
+            Manage existing connections
+          </Button>
+        </details>
+        <Button variant="quiet" onClick={props.onClose}>
+          Cancel
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+type Phase = "idle" | "saving" | "refreshing" | "checking" | "review" | "result";
+function SelectedConnection({
+  provider,
+  visible = true,
+  onClose,
+  onConnected,
+  onManage,
+  onChange,
+  renamedInstance,
+  removedInstance,
+  onRenamedConsumed,
+  onRemovedConsumed,
+}: ProviderConnectionProps & {
+  provider: ProviderDescriptor;
+  onChange(): void;
+  /** The connection's mailbox for instance-identity reports, delivered only
+   * to the owner mounted when the report arrived (see ProviderConnection). */
+  renamedInstance: { from: string; to: string } | null;
+  removedInstance: { name: string } | null;
+  onRenamedConsumed(): void;
+  onRemovedConsumed(): void;
+}) {
+  const store = useCredentialsStore();
+  const connection = useConnectionStore((state) => state.state);
+  const [name, setName] = useState(provider.setup?.name ?? provider.id);
+  const row = findSetup(name);
+  const effectiveProvider = store.availableProviders.find((candidate) => candidate.id === row?.providerId) ?? provider;
+  const [baseline, setBaseline] = useState(row);
+  const resolvedProviderId = row?.providerId;
+  const [draft, setDraft] = useState({ providerId: resolvedProviderId ?? provider.id, value: "" });
+  // Keep the origin while create metadata is unresolved. Never expose or
+  // submit its value for a different provider, even before the effect runs.
+  const value = resolvedProviderId && resolvedProviderId !== draft.providerId ? "" : draft.value;
+  useEffect(() => {
+    if (!resolvedProviderId) return;
+    setDraft((current) =>
+      current.providerId === resolvedProviderId ? current : { providerId: resolvedProviderId, value: "" },
+    );
+  }, [resolvedProviderId]);
+  // The full settings view can rename this very instance while this owner stays
+  // mounted behind it. Adopting the new name keeps findSetup/reloadCreated/repair
+  // pointed at the live row; re-baselining is required with it, because the
+  // destination key includes the name and a stale baseline would demand a review
+  // for a change that is only the rename. Applied reports are consumed so they
+  // can never be delivered twice.
+  useEffect(() => {
+    if (!renamedInstance || renamedInstance.from !== name) return;
+    setName(renamedInstance.to);
+    setBaseline(findSetup(renamedInstance.to));
+    onRenamedConsumed();
+  }, [renamedInstance, name, onRenamedConsumed]);
+  const [missingCredential, setMissingCredential] = useState(false);
+  const [host, setHost] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [configured, setConfigured] = useState(false);
+  const [configure, setConfigure] = useState(false);
+  const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
+  const [phase, setPhaseState] = useState<Phase>("idle");
+  const phaseRef = useRef<Phase>("idle");
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<AuthTestResponse | null>(null);
+  const [review, setReview] = useState<InstanceEntry | null>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const operation = useRef(0);
+  const active = useEditorLifetime();
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
+  const json = modes.includes("credentialJson");
+  const storedMode = json || modes.includes("apiKey");
+  const required = !!row?.credentialRequired && !host;
+  const busy = phase === "saving" || phase === "refreshing" || phase === "checking";
+  // Own-key: a schema-legal id like "constructor" would otherwise resolve to
+  // Object.prototype.constructor here and render a destinationless
+  // "Get an API key" anchor for a provider with no help metadata.
+  const help = Object.hasOwn(HELP, effectiveProvider.id) ? HELP[effectiveProvider.id] : undefined;
+  const unavailable = connection !== "ready" || store.loading;
+
+  const setPhase = useCallback((next: Phase) => {
+    phaseRef.current = next;
+    setPhaseState(next);
+  }, []);
+  const invalidate = useCallback(
+    // message === null invalidates without reporting anything: leaving the
+    // guided view for management or full settings is not a configuration
+    // change, and an alert already on screen is still this draft's own truth.
+    (message: string | null = "Connection or configuration changed. Review access and check again.") => {
+      operation.current += 1;
+      setPhase("idle");
+      setResult(null);
+      setReview(null);
+      setOAuth(null);
+      if (message !== null) setError(message);
+    },
+    [setPhase],
+  );
+  useEffect(() => {
+    if (!visible) {
+      invalidate(null);
+      setConfigure(false);
+    }
+  }, [visible, invalidate]);
+  useEffect(() => {
+    const unsubscribeConnection = connectionStore.subscribe((current, previous) => {
+      if (current.client !== previous.client || current.state !== previous.state) {
+        invalidate();
+        setConfigure(false);
+        if (current.client !== previous.client) {
+          setSaved(false);
+          setConfigured(false);
+        }
+      }
+    });
+    const unsubscribeStore = credentialsStore.subscribe((current, previous) => {
+      // The store schedules its own listing refresh the moment this client's
+      // auth mutation succeeds; that refresh is this flow's own change, not an
+      // unrelated one, and it lands while the flow sits in checking/result.
+      // The selfRefresh marker changes only on the store's own refresh, so a
+      // transition that moved it is excluded here - every foreign change
+      // (another client's edit, a reconnect's restore, a failed read's error
+      // field) keeps the marker still and invalidates exactly as before.
+      if (current.selfRefresh !== previous.selfRefresh) return;
+      if (
+        (["saving", "checking", "result", "review"].includes(phaseRef.current) ||
+          (oauth && destination(findSetup(name)) !== destination(baseline))) &&
+        (current.instances !== previous.instances ||
+          current.availableProviders !== previous.availableProviders ||
+          current.loading !== previous.loading ||
+          current.error !== previous.error)
+      )
+        invalidate();
+    });
+    return () => {
+      unsubscribeConnection();
+      unsubscribeStore();
+    };
+  }, [invalidate, oauth, name, baseline]);
+  // A removal in the full settings view must reach this owner the same way a
+  // rename does. The instance this flow is editing is gone: its retained
+  // draft, saved state, and baseline describe a dead entity, and an instance
+  // later recreated under the same name is a new one, not the thing the draft
+  // was typed against. Clear the editing state and re-anchor to whatever the
+  // name resolves to now, so nothing typed against the removed instance can
+  // be submitted to its replacement. (An in-flight save/check at removal time
+  // is already cancelled by the subscription above, which sees the listing
+  // change; this owns the idle-with-draft case that nothing else observes.)
+  useEffect(() => {
+    if (!removedInstance || removedInstance.name !== name) return;
+    operation.current += 1;
+    setDraft({ providerId: provider.id, value: "" });
+    setSaved(false);
+    setConfigured(false);
+    setHost(false);
+    setMissingCredential(false);
+    setOAuth(null);
+    setResult(null);
+    setReview(null);
+    setError("");
+    setPhase("idle");
+    setBaseline(findSetup(name));
+    onRemovedConsumed();
+  }, [removedInstance, name, provider.id, setPhase, onRemovedConsumed]);
+  useEffect(() => {
+    if (visible && error) errorRef.current?.focus();
+  }, [error, visible]);
+
+  function leave(callback: () => void) {
+    operation.current += 1;
+    callback();
+  }
+  function current(token: number) {
+    return (
+      active.current &&
+      visibleRef.current &&
+      operation.current === token &&
+      connectionStore.getState().state === "ready"
+    );
+  }
+  function changeValue(next: string) {
+    operation.current += 1;
+    setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: next });
+    setMissingCredential(false);
+    setSaved(false);
+    setResult(null);
+    setReview(null);
+    setPhase("idle");
+    setError("");
+  }
+
+  async function check(token: number, target: InstanceEntry) {
+    if (!current(token)) return;
+    setPhase("checking");
+    setError("");
+    setReview(null);
+    try {
+      const response = safeCredentialTestResult(
+        target.name,
+        await credentialsStore.getState().testCredentials(target.name),
+      );
+      if (!current(token)) return;
+      setResult(response);
+      setPhase("result");
+      if (response.status !== "success") setError(response.message);
+    } catch {
+      if (!current(token)) return;
+      const response = safeCredentialTestResult(target.name, {
+        provider: target.name,
+        status: "endpoint_failure",
+        message: "",
+      });
+      setResult(response);
+      setPhase("result");
+      setError(response.message);
+    }
+  }
+
+  async function refreshAndCheck(token: number, expectedSource?: string) {
+    setPhase("refreshing");
+    // The listing this refresh waits for can be superseded by the debounced
+    // refetch evener/auth/updated schedules (250ms after the save), and the
+    // store drops a superseded response without applying it. The read's own
+    // applied verdict separates "the listing really did not move" from "my
+    // response lost the race": a read that did not apply gets one more ask,
+    // and the flow reports a failure only when that one did not apply either.
+    // (This replaces the old listing-identity heuristic, which called the
+    // listing unchanged when EITHER array kept its identity.)
+    let applied = false;
+    try {
+      applied = await credentialsStore.getState().fetch();
+      if (!current(token)) return;
+      if (!applied) {
+        applied = await credentialsStore.getState().fetch();
+        if (!current(token)) return;
+      }
+    } catch {
+      // fetch() rejects when the client is gone (credentials.ts's
+      // requireClient contract), so a dropped connection is reported like any
+      // other refresh failure instead of escaping as an unhandled rejection.
+      if (!current(token)) return;
+      setPhase("idle");
+      setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
+      return;
+    }
+    const fresh = credentialsStore.getState();
+    const target = findSetup(name);
+    if (!applied || fresh.loading || fresh.error) {
+      setPhase("idle");
+      setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
+      return;
+    }
+    if (needsConfiguration(target)) {
+      setPhase("idle");
+      setError("This connection needs configuration before it can be checked. Open the full editor.");
+      return;
+    }
+    // needsConfiguration already covers a missing target, so this is the type
+    // narrowing. If it is ever reached, fail like any other failed refresh
+    // rather than returning with the phase still "refreshing".
+    if (!target) {
+      setPhase("idle");
+      setError("Access could not be refreshed. Your saved credential is retained; retry the check.");
+      return;
+    }
+    if (
+      destination(baseline) !== destination(target) ||
+      target.activeSource !== (expectedSource ?? baseline?.activeSource)
+    ) {
+      setReview(target);
+      setPhase("review");
+      return;
+    }
+    await check(token, target);
+  }
+
+  async function submit() {
+    if (busy || unavailable || needsConfiguration(row)) return;
+    if (!saved && storedMode && required && !value.trim()) {
+      setMissingCredential(true);
+      document.getElementById("provider-credential")?.focus();
+      return;
+    }
+    const token = ++operation.current;
+    setError("");
+    setResult(null);
+    setReview(null);
+    if (!saved && storedMode && !host && value.trim()) {
+      // The draft was typed against the connection this flow anchored on, and a
+      // credential only ever goes to an endpoint the user was shown. If the
+      // name resolves to a different destination now - another client edited
+      // it, or removed and recreated it under the same name - saving would send
+      // this key somewhere the user never reviewed. Report the change, drop the
+      // draft, and re-anchor so a re-entered key lands on the destination now
+      // on screen; the check path's own review step covers the rest.
+      if (row && destination(row) !== destination(baseline)) {
+        changeValue("");
+        setBaseline(row);
+        setError("This connection changed to a different endpoint. Check its destination and enter the key again.");
+        return;
+      }
+      setPhase("saving");
+      try {
+        const state = credentialsStore.getState();
+        if (json) await state.setCredentialJson(name, value.trim());
+        else await state.setApiKey(name, value.trim());
+        if (!current(token)) return;
+        setSaved(true);
+      } catch {
+        if (current(token)) {
+          setPhase("idle");
+          setError("Credential could not be saved. Your draft is retained; retry saving.");
+        }
+        return;
+      }
+      await refreshAndCheck(token, "store");
+    } else await refreshAndCheck(token, saved ? "store" : undefined);
+  }
+
+  async function signIn() {
+    const token = ++operation.current;
+    setPhase("saving");
+    setError("");
+    setResult(null);
+    try {
+      const editor = await startOAuthFlow(name, () => current(token));
+      if (current(token)) {
+        setOAuth(editor);
+        setPhase("idle");
+      }
+    } catch {
+      if (current(token)) {
+        setPhase("idle");
+        setError("Sign-in could not be started. Try again.");
+      }
+    }
+  }
+  function closeOAuth() {
+    operation.current += 1;
+    setOAuth(null);
+    setPhase("idle");
+  }
+  function signedIn() {
+    setOAuth(null);
+    const token = ++operation.current;
+    void refreshAndCheck(token, "oauth");
+  }
+  // DeviceCodeDialog's polling effect owns an in-flight refresh and depends
+  // on this callback. Keep its identity stable while using current setup.
+  const signedInRef = useRef(signedIn);
+  signedInRef.current = signedIn;
+  const completeOAuth = useCallback(() => signedInRef.current(), []);
+
+  // A created instance becomes the flow's connection. An unconfirmed create
+  // (the listing never showed the row) reaches the same state without a
+  // success claim: findSetup finds nothing, so the flow shows its not-ready
+  // reload recovery instead of a working connection.
+  function adoptCreated(createdName: string): void {
+    operation.current += 1;
+    const created = findSetup(createdName);
+    setName(createdName);
+    setBaseline(created);
+    setConfigured(true);
+    setConfigure(false);
+    setSaved(false);
+    // The adopted instance is a different connection: a host-access choice
+    // made for the previous one does not describe it, and inheriting it would
+    // skip this instance's credential submission entirely.
+    setHost(false);
+    setMissingCredential(false);
+    setError("");
+    setReview(null);
+    setResult(null);
+    setPhase("idle");
+  }
+
+  async function reloadCreated() {
+    const token = ++operation.current;
+    setPhase("refreshing");
+    setError("");
+    try {
+      await credentialsStore.getState().fetch();
+    } catch {
+      // Same dropped-connection case as refreshAndCheck: reusing the reload's
+      // own recovery message keeps the user on an actionable path.
+      if (!current(token)) return;
+      setPhase("idle");
+      setError("The saved connection could not be loaded. Reload it or open the full editor; do not create it again.");
+      return;
+    }
+    if (!current(token)) return;
+    setPhase("idle");
+    const state = credentialsStore.getState();
+    const created = findSetup(name);
+    if (state.loading || state.error || !created) {
+      setError("The saved connection could not be loaded. Reload it or open the full editor; do not create it again.");
+    } else setBaseline(created);
+  }
+
+  // Retain only volatile connection state during repair, never a hidden
+  // Dialog, focus trap, credential input or OAuth polling component.
+  if (!visible) return null;
+  if (configure)
+    return (
+      <AddInstanceDialog
+        availableProviders={store.availableProviders}
+        initialBase={effectiveProvider.id}
+        onCancel={() => setConfigure(false)}
+        onSuccess={adoptCreated}
+        onUnconfirmedCreate={adoptCreated}
+      />
+    );
+  if (oauth?.kind === "device")
+    return (
+      <DeviceCodeDialog
+        key={oauth.flowId}
+        name={oauth.name}
+        flowId={oauth.flowId}
+        userCode={oauth.userCode}
+        verificationUrl={oauth.verificationUrl}
+        intervalSeconds={oauth.intervalSeconds}
+        onCancel={closeOAuth}
+        onSuccess={completeOAuth}
+        onRestart={() => void signIn()}
+      />
+    );
+  if (oauth?.kind === "oauth-redirect")
+    return (
+      <OAuthRedirectDialog
+        name={oauth.name}
+        flowId={oauth.flowId}
+        authUrl={oauth.authUrl}
+        onCancel={closeOAuth}
+        onSuccess={completeOAuth}
+      />
+    );
+
+  return (
+    <Dialog
+      open
+      onClose={() => leave(onClose)}
+      title={`Connect ${help?.label || effectiveProvider.name || effectiveProvider.id}`}
+    >
+      <form
+        className={styles.body}
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        {configured && <p>Connection settings saved as {name}. Add access below; retrying will use this connection.</p>}
+        {saved && (
+          <p>
+            Credential saved for {name}. {row && activeSourceLabel(row)}
+          </p>
+        )}
+        {help && modes.includes("apiKey") && (
+          <>
+            <a href={help.keyUrl} target="_blank" rel="noreferrer">
+              Get an API key
+            </a>
+            <p>{help.billing}</p>
+          </>
+        )}
+        {row && (
+          <div className={styles.review}>
+            <p>{row.baseUrl}</p>
+            <p>{activeSourceLabel(row)}</p>
+          </div>
+        )}
+        {configured && needsConfiguration(row) ? (
+          <>
+            <p>Settings were saved, but this connection is not ready. Reload it or repair it in the full editor.</p>
+            <Button disabled={unavailable || busy} onClick={() => void reloadCreated()}>
+              Reload connection
+            </Button>
+            <Button variant="secondary" onClick={() => leave(onManage)}>
+              Open full connection editor
+            </Button>
+          </>
+        ) : needsConfiguration(row) ? (
+          <>
+            <p>
+              Configure the endpoint and required template variables before adding access.{" "}
+              {Object.values(effectiveProvider.vars ?? {}).join(", ")}
+            </p>
+            <Button disabled={store.writesRefused || unavailable} onClick={() => setConfigure(true)}>
+              Configure provider
+            </Button>
+            {store.writesRefused && (
+              <p>Provider settings are read-only. Repair the host configuration to add a connection.</p>
+            )}
+          </>
+        ) : (
+          <>
+            {storedMode && !host && (
+              <FormRow
+                label={json ? "Credential JSON" : "API key"}
+                htmlFor="provider-credential"
+                error={
+                  missingCredential
+                    ? "Enter a credential, or choose existing host access in Advanced settings."
+                    : undefined
+                }
+              >
+                <Input
+                  id="provider-credential"
+                  type="password"
+                  autoComplete="off"
+                  aria-describedby={missingCredential ? "provider-credential-error" : undefined}
+                  required={required}
+                  disabled={busy}
+                  value={value}
+                  onChange={(event) => changeValue(event.target.value)}
+                />
+              </FormRow>
+            )}
+            {json && (
+              <p>
+                Paste a service-account key or application_default_credentials.json. Existing Application Default
+                Credentials can also be checked without replacing them.
+              </p>
+            )}
+            {!row?.credentialRequired && (
+              <p>
+                This endpoint accepts optional or no credentials. Leaving the key empty retains the access resolved on
+                the Evener host.
+              </p>
+            )}
+            {modes.includes("oauth") && (
+              <Button disabled={busy || unavailable} onClick={() => void signIn()}>
+                Sign in
+              </Button>
+            )}
+            <p>The check requests only the model list. It does not send a prompt or generate a response.</p>
+            {review ? (
+              <div className={styles.review}>
+                <p>Review changed access before contacting the provider.</p>
+                <p>Previous destination: {baseline?.baseUrl ?? "Not configured"}</p>
+                <p>Current destination: {review.baseUrl}</p>
+                <p>{activeSourceLabel(review)}</p>
+                <Button
+                  disabled={unavailable}
+                  onClick={() => {
+                    setBaseline(review);
+                    void check(++operation.current, review);
+                  }}
+                >
+                  Use reviewed access and check
+                </Button>
+              </div>
+            ) : result?.status === "success" ? (
+              <>
+                <p role="status">Model list access confirmed. This does not verify generation access.</p>
+                <Button onClick={() => leave(() => onConnected(name))}>Continue</Button>
+              </>
+            ) : (
+              <Button type="submit" disabled={busy || unavailable}>
+                {busy
+                  ? phase === "saving"
+                    ? "Saving…"
+                    : phase === "refreshing"
+                      ? "Refreshing access…"
+                      : "Checking model list…"
+                  : saved || result
+                    ? "Retry check"
+                    : storedMode && !host && (required || value.trim())
+                      ? "Save and check"
+                      : "Check connection"}
+              </Button>
+            )}
+            {result?.status === "unsupported" && (
+              <Button variant="secondary" onClick={() => leave(() => onConnected(name))}>
+                Continue without verification
+              </Button>
+            )}
+          </>
+        )}
+        {error && (
+          <div className={styles.review} role="alert" tabIndex={-1} ref={errorRef}>
+            {error}
+          </div>
+        )}
+        {connection !== "ready" && <p role="status">Waiting for the Evener host to reconnect.</p>}
+        <details>
+          <summary>Advanced settings</summary>
+          <div className={styles.actions}>
+            {storedMode && (
+              <Button
+                variant="quiet"
+                disabled={busy}
+                onClick={() => {
+                  setHost(!host);
+                  setResult(null);
+                  setReview(null);
+                  setPhase("idle");
+                }}
+              >
+                {host ? "Use a new credential" : "Use existing host access"}
+              </Button>
+            )}
+            <Button variant="secondary" disabled={busy || store.writesRefused} onClick={() => setConfigure(true)}>
+              Configure another instance
+            </Button>
+            <Button variant="quiet" onClick={() => leave(onManage)}>
+              Open full connection editor
+            </Button>
+          </div>
+          <p>
+            Existing host access keeps whatever authentication the host resolves; it does not disable authentication.
+          </p>
+        </details>
+        <div className={styles.actions}>
+          <Button variant="quiet" onClick={() => leave(onChange)}>
+            Change provider
+          </Button>
+          <Button variant="quiet" onClick={() => leave(onClose)}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}

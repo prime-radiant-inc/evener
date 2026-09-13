@@ -410,11 +410,19 @@ func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
 // reloadRegistry re-derives the instance set after a credential changed: a
 // key that has just been stored can make an implicit instance exist, and
 // clearing one can take it away (spec §5.1).
+//
+// It takes the shared side of credMu because a reload is not just a read: it
+// commits what it read, and one that read the credentials before a removal
+// deleted them can land after that removal's own reload and resurrect the
+// removed instance as an implicit one (Remove holds credMu exclusively across
+// its cleanup and reload). Sharing the lock keeps the two orders honest - this
+// reload finishes entirely before the removal's section or starts entirely
+// after it, never across it. Callers must not hold credMu themselves.
 func (c *hubAuthController) reloadRegistry() error {
 	if c.reg == nil {
 		return nil
 	}
-	return c.reg.Reload()
+	return c.credentialWrite(func() error { return c.reg.Reload() })
 }
 
 // List is what the credentials pane renders: one row per curated implicit
@@ -471,6 +479,17 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		// this scheme actually reads.
 		if c.instanceUsesGCPADC(name) {
 			return appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
+		}
+		// A name that is neither keeps the key where nothing reads it: the pane
+		// only offers this write for a row its listing had, so a name that no
+		// longer resolves is one an instance was removed from since - and the
+		// key would wait under it for whatever instance is authored under that
+		// name next (see Remove). Asking here, under the credential lock, is
+		// what makes the answer describe the state the write lands in: a removal
+		// holds that lock exclusively across its cleanup and its reload, so one
+		// cannot be in flight while the name is checked.
+		if !c.nameIsConnectable(name) {
+			return appwire.InvalidParams(fmt.Sprintf("%q is not a configured provider or instance: nothing reads a key stored under it", name))
 		}
 		return c.setCredential(name, params.Value)
 	}); err != nil {
@@ -694,6 +713,23 @@ func (c *hubAuthController) instanceAuthScheme(name string) (string, bool) {
 		return p.Transport.Auth, true
 	}
 	return "", false
+}
+
+// nameIsConnectable reports whether name is something this hub authenticates
+// with: an instance the registry holds or a curated implicit provider it
+// declares, the pair instanceAuthScheme answers for (spec §5.2, §11.3). A
+// credential write asks before it stores a secret, so a name that has stopped
+// meaning anything - an instance removed since the pane listed it - cannot take
+// a key nothing reads and hand it to whatever instance is authored under that
+// name next. Without a registry there is no view to answer from (Status and
+// List call the same configuration unsupported), so the write is not refused
+// on its account.
+func (c *hubAuthController) nameIsConnectable(name string) bool {
+	if c.registry() == nil {
+		return true
+	}
+	_, ok := c.instanceAuthScheme(name)
+	return ok
 }
 
 // instanceIsCodex reports whether name authenticates through the Codex

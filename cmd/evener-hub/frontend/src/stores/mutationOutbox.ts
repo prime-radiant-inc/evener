@@ -42,6 +42,12 @@ export interface MutationIntent {
 export interface MutationRecord extends MutationIntent {
   version: 1;
   clientMutationId: string;
+  // Which client (page) submitted this mutation. The outbox is shared per
+  // origin, so without it every tab claims every other tab's records as its
+  // own; see mutationClientIdentity.ts. Optional because records written
+  // before the field existed carry none, and unattributed records stay
+  // claimable rather than losing their sender's tier-6 routing mid-deploy.
+  originClientId?: string;
   intentSequence: number;
   createdAt: number;
 }

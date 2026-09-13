@@ -1,20 +1,7 @@
 // Session creation keeps the project directory above the prompt and the
 // less frequently changed launch settings below it. The directory picker
 // commits once, so browsing does not churn directory-dependent configuration.
-import {
-  Component,
-  type JSX,
-  type LazyExoticComponent,
-  lazy,
-  memo,
-  type ReactNode,
-  Suspense,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { slashCommandInvocation } from "../../protocol/catalogCommands";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
@@ -66,10 +53,13 @@ import { imageFilesFromClipboard } from "../session/composer/attachments/clipboa
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { findBuiltinArgument, matchBuiltinInvocation } from "../session/composer/builtinInvocation";
 import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
+import {
+  ConnectProviderDialogBoundary,
+  useConnectProviderDialogChunk,
+} from "../settings/sections/credentials/ConnectProviderDialogBoundary";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
-import { isStaleConnectDialogChunkError, loadConnectDialog } from "./connectDialogChunk";
 import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
@@ -110,121 +100,14 @@ import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
 // oauthDialogs, oauthFlow) - stays out of the spawn pane's initial bundle
 // and loads on first open.
 //
-// A rejected chunk lands on ConnectProviderDialogBoundary below, scoped to
-// the dialog: without it the lazy() rethrow would bubble into whatever
-// boundary happens to sit above this pane (on desktop the dock's
-// workspace-failure state - misleading, the workspace is fine - and on
-// mobile StackHost mounts panes with no boundary at all, so the whole app).
-// Retry swaps in a fresh lazy component - a rejected payload rethrows
-// forever, so re-rendering the old one could never recover. The Suspense
-// fallback is a real dialog reading "Loading…": a null fallback would leave
-// the click that opened the dialog with no visible response while the chunk
-// fetches, and the boundary below renders the same Dialog shell on failure
-// so the pending/failure states share one frame.
-//
-// The fresh component loads over loadConnectDialog's cache-busted URL -
-// Chrome retains a failed module fetch by URL (see connectDialogChunk.ts),
-// so a same-URL retry would replay the cached failure instead of reaching
-// the network.
-interface ConnectProviderDialogBoundaryProps {
-  // Swaps in a fresh lazy component to load the chunk again. The boundary
-  // clears its own failure state alongside it - both halves are needed, and
-  // neither is any use without the other.
-  onRetry: () => void;
-  // True once a cache-busted retry has already failed: a deploy that replaced
-  // the hashed chunk filename 404s forever under a new query param, so the
-  // second strike offers a page reload instead of another same-file fetch
-  // (the DockRegion chunk-boundary pattern).
-  reloadAvailable: boolean;
-  onClose: () => void;
-  children: ReactNode;
-}
-
-interface ConnectProviderDialogBoundaryState {
-  // The failed chunk's own message ("Failed to fetch dynamically imported
-  // module: ..."), shown verbatim - a stated failure is worth more to
-  // whoever hits it than a generic apology.
-  failure: string | null;
-}
-
-class ConnectProviderDialogBoundary extends Component<
-  ConnectProviderDialogBoundaryProps,
-  ConnectProviderDialogBoundaryState
-> {
-  state: ConnectProviderDialogBoundaryState = { failure: null };
-
-  static getDerivedStateFromError(error: unknown): ConnectProviderDialogBoundaryState {
-    // A logic bug inside the resolved dialog (module init, render) surfaces
-    // through this same boundary as a chunk-fetch failure does. Only a stale
-    // hashed-asset URL (JS or CSS) is a chunk-load failure worth a retry:
-    // anything else keeps unwinding to the next boundary above instead of
-    // being misreported - and retried - as a network fetch.
-    if (!isStaleConnectDialogChunkError(error)) throw error;
-    return { failure: error instanceof Error ? error.message : String(error) };
-  }
-
-  private retry = () => {
-    this.setState({ failure: null });
-    this.props.onRetry();
-  };
-
-  render(): ReactNode {
-    if (this.state.failure === null) return this.props.children;
-    return (
-      <Dialog
-        open
-        onClose={this.props.onClose}
-        title="Couldn't load the connect dialog"
-        footer={
-          <>
-            <Button variant="quiet" onClick={this.props.onClose}>
-              Close
-            </Button>
-            <Button variant="primary" onClick={this.retry}>
-              Retry
-            </Button>
-            {/* reloadAvailable alone counts retries, so a logic bug that rode
-                in on a stale chunk URL would earn a page reload that cannot
-                fix it. The failed retry must itself name a stale hashed
-                asset (the DockRegion chunk-boundary pattern). */}
-            {this.props.reloadAvailable && isStaleConnectDialogChunkError(this.state.failure) && (
-              <Button variant="quiet" onClick={() => window.location.reload()}>
-                Reload page
-              </Button>
-            )}
-          </>
-        }
-      >
-        {this.state.failure}
-      </Dialog>
-    );
-  }
-}
-
-type ConnectProviderDialogComponent = (props: { onClose(): void; onConnected(): void }) => JSX.Element;
-type ConnectProviderDialogChunk = LazyExoticComponent<ConnectProviderDialogComponent>;
-
-function lazyConnectProviderDialog(cacheBust = false): ConnectProviderDialogChunk {
-  // ConnectProviderDialog is a named export, so the import() promise is
-  // adapted the same way App.tsx's own DevHarnessRoute does for
-  // dev/DevHarness.tsx.
-  return lazy(() => loadConnectDialog(cacheBust).then((m) => ({ default: m.ConnectProviderDialog })));
-}
-
-// Module scope, not per mount: a lazy() component caches its resolved
-// module on its own payload, so one shared component means the chunk is
-// fetched once per page load and every later open renders the dialog
-// straight away instead of suspending again.
-let connectProviderDialog = lazyConnectProviderDialog();
-
-// A payload caches its outcome for the life of the module, success or
-// failure, so one test's failed chunk would otherwise be every later test's
-// failed chunk. Mirrors the resetXForTests precedent every other module
-// singleton here follows (stores/navigation/store.ts's own note); no production code
-// should ever call it.
-export function resetConnectDialogChunkForTests(): void {
-  connectProviderDialog = lazyConnectProviderDialog();
-}
+// A rejected chunk lands on ConnectProviderDialogBoundary from
+// settings/sections/credentials/ConnectProviderDialogBoundary (shared with the
+// session chrome's model-switch trigger, which opens the same dialog), scoped
+// to the dialog so the lazy() rethrow does not bubble into this pane's own
+// workspace-failure boundary. The Suspense fallback is a real dialog reading
+// "Loading…": a null fallback would leave the click that opened the dialog
+// with no visible response while the chunk fetches, and the boundary renders
+// the same Dialog shell on failure so pending and failure share one frame.
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -341,29 +224,32 @@ function SpawnForm({
   const toasts = useToasts();
   const providerSetup = useProviderSetup();
   const [connectingProvider, setConnectingProvider] = useState(false);
+  const [modelHandoff, setModelHandoff] = useState<{ name?: string }>();
+  // Save/reload can make new models appear before Continue. Once a draft scope
+  // enters onboarding, do not substitute the legacy untouched-model fallback
+  // for its explicit choice, including after cancellation. Scopes are tracked
+  // as a set, not one slot: onboarding draft B must not forget that draft A
+  // also made an explicit choice (see openProviderSetup below).
+  const providerChoiceScopes = useRef<Set<string>>(new Set());
   const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
-  const providerConnected = useCallback(() => {
-    setConnectingProvider(false);
-    void providerSetup.retry();
-  }, [providerSetup.retry]);
-  // A retry needs a NEW lazy component, not a re-render of the old one:
-  // React.lazy stores the rejection on its payload and rethrows that same
-  // error on every subsequent render, forever.
-  const [ProviderDialog, setProviderDialog] = useState<ConnectProviderDialogChunk>(connectProviderDialog);
-  // A retry re-fetches the same hashed filename over a cache-busted URL:
-  // enough for a transient failure, useless once a deploy has removed the
-  // file. Counting retries lets the boundary offer a page reload on the
-  // second strike (the DockRegion chunk-boundary pattern).
-  const [dialogRetryCount, setDialogRetryCount] = useState(0);
-  const retryProviderDialog = useCallback(() => {
-    setDialogRetryCount((count) => count + 1);
-    const nextDialog = lazyConnectProviderDialog(true);
-    // Publish the new payload before it resolves so a remount during the
-    // retry shares the in-flight request instead of restoring the rejected
-    // payload that caused the boundary.
-    connectProviderDialog = nextDialog;
-    setProviderDialog(() => nextDialog);
-  }, []);
+  const providerConnected = useCallback(
+    (name?: string) => {
+      setConnectingProvider(false);
+      modelListCache.current.entries.clear();
+      setModelHandoff({ name });
+      void providerSetup.retry();
+    },
+    [providerSetup.retry],
+  );
+  // The shared chunk hook owns the lazy payload and its cache-busted retry
+  // state, so this pane and the model-switch trigger cannot drift apart on
+  // recovery behavior; see ConnectProviderDialogBoundary.tsx.
+  const {
+    Dialog: ProviderDialog,
+    retry: retryProviderDialog,
+    reloadAvailable: dialogReloadAvailable,
+    version: dialogChunkVersion,
+  } = useConnectProviderDialogChunk();
 
   const [prompt, setPrompt] = useDraftField(draft, "prompt");
   const [harness, setHarness] = useDraftField(draft, "harness");
@@ -371,6 +257,14 @@ function SpawnForm({
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
+  // Entering onboarding records the draft's own scope; the fallback below is
+  // suppressed for exactly that harness+directory. A later scope in the same
+  // pane mount still gets its own default, and a connection-driven re-render -
+  // which never changes the draft scope - cannot clear the choice.
+  const openProviderSetup = useCallback(() => {
+    providerChoiceScopes.current.add(`${harness}\0${cwd}`);
+    setConnectingProvider(true);
+  }, [harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
   // Scoped by cwd so a draft switch can never show the previous project's
   // branch while the new HEAD request is in flight - or indefinitely after it
@@ -381,6 +275,11 @@ function SpawnForm({
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
   const [advancedOverrides, setAdvancedOverrides] = useDraftField(draft, "advancedOverrides");
+  // The model that will actually launch: an Advanced-options override first,
+  // then the top-level chip, then the hub's resolved default (schema.ts's
+  // resolveScalars). Derived once here so the requirement check, the effort
+  // ladder, and submission all judge the same value.
+  const advancedModel = typeof advancedOverrides.model === "string" ? advancedOverrides.model.trim() : "";
   const [advancedValues, setAdvancedValues] = useDraftField(draft, "advancedValues");
   const [advancedErrors, setAdvancedErrors] = useDraftField(draft, "advancedErrors");
   const readAdvancedValues = useCallback(() => draft.fields.getState().advancedValues, [draft]);
@@ -673,8 +572,22 @@ function SpawnForm({
   const providerRequired = usesEvenerModels && providerSetup.status === "missing";
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
-  // below for how noDefaultModel is set.
-  const modelRequired = model === "" && noDefaultModel;
+  // below for how noDefaultModel is set. The onboarding scope is a second
+  // required case: entering onboarding suppresses the uncredentialed-default
+  // fallback (that same effect) in favor of the user's explicit choice from
+  // the provider they just connected, so an untouched Model there has no
+  // honest fallback - the resolved default may name a provider with no
+  // credentials, and submitting it is a certain thread/start failure. A valid
+  // /model invocation still bootstraps past this (slashModelBootstrap below).
+  // Only a harness whose model comes from Evener's providers has that choice
+  // to make: an unmanaged one (kind "external") carries its own model, so the
+  // connector its model chip opens neither supplies nor replaces what this
+  // pane would submit - requiring a choice there would disable Start, and
+  // label the chip "Choose a model", over a model nothing launches with.
+  const modelRequired =
+    model === "" &&
+    advancedModel === "" &&
+    (noDefaultModel || (usesEvenerModels && providerChoiceScopes.current.has(`${harness}\0${cwd}`)));
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
@@ -730,7 +643,18 @@ function SpawnForm({
   // response. The same promise is shared with the default-model preview, so
   // opening a picker and resolving the working directory cannot issue
   // duplicate model/list RPCs for the same harness and cwd.
-  const loadCatalog = useCallback(() => loadModelList().then(modelListToCatalog), [loadModelList]);
+  const loadCatalog = useCallback(
+    (refresh?: boolean) => {
+      // ModelSwitchTrigger's contract: refresh:true must bypass the caller's
+      // cache. Without this, the pane's per-scope request cache could answer a
+      // post-connection refresh with the listing it fetched before connecting,
+      // and only providerConnected's own entries.clear() would be holding that
+      // apart - an invisible coupling the loader itself should own.
+      if (refresh) modelListCache.current.entries.clear();
+      return loadModelList().then(modelListToCatalog);
+    },
+    [loadModelList],
+  );
   // Both path RPCs answer with a Go slice, and an EMPTY one marshals as JSON
   // null rather than [] - a hub with no remembered projects, or a directory with
   // no children. types.gen.ts declares `data: string[]`, so the compiler is no
@@ -987,7 +911,7 @@ function SpawnForm({
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
           const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
           const fallback = models[0];
-          if (!defaultCredentialed && fallback) {
+          if (!defaultCredentialed && fallback && !providerChoiceScopes.current.has(`${harness}\0${cwd}`)) {
             setModel(`${fallback.provider}/${fallback.model}`);
           }
         },
@@ -1002,13 +926,13 @@ function SpawnForm({
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, draft, advancedOverrides, resolveConfig, loadModels, setModel]);
+  }, [cwd, draft, advancedOverrides, resolveConfig, loadModels, setModel, harness]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, schema.ts's
   // resolveScalars): an Advanced-options model override first, then the
   // top-level chip, then the hub's resolved default for this cwd.
-  const advancedModel = typeof advancedOverrides.model === "string" ? advancedOverrides.model.trim() : "";
+  // advancedModel itself is derived above, next to the override state.
   const effortModel = [advancedModel, model, resolvedDefaultModel].find((candidate) => candidate !== "") ?? "";
   const knownEffortLevels = catalogEffortLevels(
     effortModel === ""
@@ -1637,6 +1561,8 @@ function SpawnForm({
                       value={model}
                       loadCatalog={loadCatalog}
                       onPick={handleModelPickEntry}
+                      connectionRequest={modelHandoff}
+                      onConnectProvider={openProviderSetup}
                       data-testid="spawn-model-trigger"
                       valueTestId="spawn-model-value"
                     />
@@ -1719,7 +1645,7 @@ function SpawnForm({
         {providerRequired && (
           <div className={CLASS.notice} role="status">
             <span>Connect a provider to use a model. Sign in or add an API key here.</span>
-            <Button onClick={() => setConnectingProvider(true)}>Connect provider</Button>
+            <Button onClick={openProviderSetup}>Connect provider</Button>
             <Button variant="quiet" onClick={() => void providerSetup.retry()}>
               Retry provider check
             </Button>
@@ -1729,15 +1655,16 @@ function SpawnForm({
           <div className={CLASS.notice} role="status">
             <span>Could not check provider configuration.</span>
             <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
-            <Button variant="quiet" onClick={() => setConnectingProvider(true)}>
+            <Button variant="quiet" onClick={openProviderSetup}>
               Review providers
             </Button>
           </div>
         )}
         {connectingProvider && (
           <ConnectProviderDialogBoundary
+            key={dialogChunkVersion}
             onRetry={retryProviderDialog}
-            reloadAvailable={dialogRetryCount > 0}
+            reloadAvailable={dialogReloadAvailable}
             onClose={closeProviderSetup}
           >
             <Suspense
@@ -1772,7 +1699,9 @@ function SpawnForm({
             control it names rather than in a form row that no longer exists. */}
         {modelRequired && (
           <p className={CLASS.modelNote} role="alert">
-            This hub has no default model configured — choose one to start.
+            {noDefaultModel
+              ? "This hub has no default model configured — choose one to start."
+              : "Choose one of the connected provider's models to start."}
           </p>
         )}
 

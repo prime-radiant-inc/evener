@@ -558,6 +558,7 @@ export interface InstanceEntry {
   surface?: string;
   auth: string;
   baseUrl?: string;
+  endpointFingerprint?: string;
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;
@@ -1396,6 +1397,8 @@ export interface ProviderDescriptor {
   vars?: Record<string, string>;
   apiKeyEnv?: string[];
   implicit: boolean;
+  authModes?: string[];
+  setup?: InstanceEntry;
 }
 
 export interface QueueState {

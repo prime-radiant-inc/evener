@@ -908,13 +908,23 @@ export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): vo
 // listModels' own session-lifetime cache (models are not per-ref, so this
 // is a single slot, not a Map): modelsCache holds the last successful
 // response; inflightModelsList de-dupes concurrent non-refresh callers the
-// same way inflightHydrates does for ensureThread. A rejection is never
-// written to modelsCache (so a prior good cache survives a later failed
-// refresh, and a first-ever failure leaves nothing stale to keep serving),
-// and the call that owns inflightModelsList clears it in a `finally` so a
-// failed call never poisons the next one with a repeated rejection — only
-// while the slot still holds its own request, because evener/auth/updated
-// drops the slot and a newer call may have claimed it since.
+// same way inflightHydrates does for ensureThread, and always holds the
+// NEWEST request - a refresh supersedes whatever older non-refresh request
+// was waiting there, so a concurrent caller joins the newest request rather
+// than receiving the list the refresh was issued to replace.
+// inflightModelsListIsRefresh records whether the slot's request is a
+// refresh, so a non-refresh caller with a warm cache can tell "the slot is a
+// read I may skip in favor of the cache" from "the slot is a refresh whose
+// answer is newer than the cache I hold" - the latter must join the refresh
+// rather than hand back the listing the refresh was issued to replace (two
+// concurrent model pickers otherwise receive different listings). A
+// rejection is never written to modelsCache (so a prior good cache survives a
+// later failed refresh, and a first-ever failure leaves nothing stale to keep
+// serving), and the call that owns inflightModelsList clears it in a
+// `finally` so a failed call never poisons the next one with a repeated
+// rejection — only while the slot still holds its own request, because
+// evener/auth/updated drops the slot and a newer call may have claimed it
+// since.
 let modelsCache: ModelListResponse | null = null;
 // modelsEpoch advances on every evener/auth/updated: a credential change can
 // make models discoverable (a stored Vertex credential JSON enables the
@@ -922,7 +932,18 @@ let modelsCache: ModelListResponse | null = null;
 // is stale, and a listing still in flight answers the old credentials and
 // must not become the cache either.
 let modelsEpoch = 0;
+// modelsListGeneration advances on every new model/list request, and a
+// response becomes the cache only while it is still the NEWEST request:
+// refresh:true deliberately does not cancel an older in-flight listing, and
+// when no evener/auth/updated intervenes (a keyless connection, a
+// config-only save) the epoch guard alone cannot stop the older answer from
+// landing last and overwriting the fresher one. Every caller still receives
+// its own response; only the cache write is gated.
+let modelsListGeneration = 0;
 let inflightModelsList: Promise<ModelListResponse> | null = null;
+// True exactly while inflightModelsList holds a refresh:true request. Cleared
+// with the slot so the flag is never read for a request it does not describe.
+let inflightModelsListIsRefresh = false;
 
 // watchThread's own refcount/inflight bookkeeping - independent of
 // refCounts/inflightHydrates above, so a watch and a real pane on the
@@ -1661,6 +1682,7 @@ function handleNotification(n: AnyNotification): void {
     modelsEpoch += 1;
     modelsCache = null;
     inflightModelsList = null;
+    inflightModelsListIsRefresh = false;
   }
   const mutationIdentities = notificationMutationIdentities(n);
   if (mutationIdentities.length > 0) {
@@ -2785,7 +2807,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // block on a reconnect that a warm cache makes irrelevant - check them
     // BEFORE waiting for a ready client, unlike the other read-only actions
     // here (which always need the wire, so the order doesn't matter).
-    if (!refresh && modelsCache) return modelsCache;
+    if (!refresh && modelsCache && !inflightModelsListIsRefresh) return modelsCache;
     if (!refresh && inflightModelsList) return inflightModelsList;
     // The ready-wait (issue #195's RCA - read-only, so it waits out a
     // reconnect instead of failing with AppwireClient's synchronous "cannot
@@ -2800,17 +2822,27 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // turn-CAS concept (verified against every server-side handler - see
     // this file's own describe block for the exact citations).
     const epoch = modelsEpoch;
+    const generation = ++modelsListGeneration;
     const request = (async () => {
       const client = await requireReadyClient();
       return client.request("model/list", {});
     })();
-    if (!refresh) inflightModelsList = request;
+    // Supersede the shared in-flight slot with the newest request either way.
+    // A refresh must not leave an older non-refresh request there: a
+    // concurrent non-refresh caller would await that pre-refresh request and
+    // receive the list the refresh was issued to replace. Every caller still
+    // receives a response; de-dupe joins the newest one.
+    inflightModelsList = request;
+    inflightModelsListIsRefresh = refresh === true;
     try {
       const resp = await request;
-      if (epoch === modelsEpoch) modelsCache = resp;
+      if (epoch === modelsEpoch && generation === modelsListGeneration) modelsCache = resp;
       return resp;
     } finally {
-      if (!refresh && inflightModelsList === request) inflightModelsList = null;
+      if (inflightModelsList === request) {
+        inflightModelsList = null;
+        inflightModelsListIsRefresh = false;
+      }
     }
   },
 
@@ -2945,7 +2977,13 @@ export function resetThreadsStoreForTests(): void {
   threadsIndex.clear();
   watchedThreadsIndex.clear();
   modelsCache = null;
+  // A request already in flight when the store resets must not repopulate the
+  // fresh cache: advancing the epoch and generation makes its late answer lose
+  // both guards, exactly as an auth change or a newer request would.
+  modelsEpoch += 1;
+  modelsListGeneration += 1;
   inflightModelsList = null;
+  inflightModelsListIsRefresh = false;
   unwireNotification?.();
   unwireReady?.();
   unwireNotification = null;

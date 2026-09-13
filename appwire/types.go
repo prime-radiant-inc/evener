@@ -2731,13 +2731,18 @@ type InstanceEntry struct {
 	Name string `json:"name"`
 	// Base is the registry id an explicitly-named instance is built on;
 	// empty when the instance name is itself the registry id.
-	Base       string            `json:"base,omitempty"`
-	ProviderID string            `json:"providerId"`
-	Protocol   string            `json:"protocol"`
-	Surface    string            `json:"surface,omitempty"`
-	Auth       string            `json:"auth"`
-	BaseURL    string            `json:"baseUrl,omitempty"`
-	Vars       map[string]string `json:"vars,omitempty"`
+	Base       string `json:"base,omitempty"`
+	ProviderID string `json:"providerId"`
+	Protocol   string `json:"protocol"`
+	Surface    string `json:"surface,omitempty"`
+	Auth       string `json:"auth"`
+	BaseURL    string `json:"baseUrl,omitempty"`
+	// EndpointFingerprint is a digest of the complete endpoint this instance
+	// resolves, including what BaseURL deliberately leaves out (query
+	// parameters and userinfo). A client compares it to notice that the
+	// destination changed without the secret-bearing parts crossing the wire.
+	EndpointFingerprint string            `json:"endpointFingerprint,omitempty"`
+	Vars                map[string]string `json:"vars,omitempty"`
 	// APIKeyEnv and CredentialHeader are the AUTHORED api_key_env (its first
 	// entry) and credential header (as NAME=VALUE) from providers.toml, so
 	// the sheet's form can prefill them. Never the registry's own defaults
@@ -2799,6 +2804,12 @@ type ProviderDescriptor struct {
 	Vars      map[string]string `json:"vars,omitempty"`
 	APIKeyEnv []string          `json:"apiKeyEnv,omitempty"`
 	Implicit  bool              `json:"implicit"`
+	AuthModes []string          `json:"authModes,omitempty"`
+	// Setup is safe discovery metadata for an addressable implicit provider
+	// or existing instance, not membership in InstanceListResponse.Instances.
+	// Hidden implicit providers retain setup even before their destination is
+	// configured; nil means the ID is not yet addressable as an instance.
+	Setup *InstanceEntry `json:"setup,omitempty"`
 }
 
 // InstanceListResponse is the result of evener/instance/list. Diagnostics

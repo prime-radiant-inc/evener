@@ -7,10 +7,12 @@ import { Button, Dialog, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./ConnectProviderDialog.module.css";
+import { CredentialsSection } from "./CredentialsSection";
 import { activeSourceLabel, safeCredentialTestResult } from "./credentialLabels";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { type InstanceReports, ProviderConnection } from "./ProviderConnection";
 
 const CLASS = {
   body: requireClass(styles.body, "ConnectProviderDialog.module.css", "body"),
@@ -37,10 +39,49 @@ const TEST_INTERRUPTED_MESSAGE = "Provider configuration refreshed while testing
 
 export interface ConnectProviderDialogProps {
   onClose(): void;
-  onConnected(): void;
+  onConnected(name?: string): void;
 }
 
-export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderDialogProps) {
+export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
+  const [view, setView] = useState<"connect" | "manage" | "settings">("connect");
+  // Instance-identity reports (rename/removal) made in the full settings view
+  // flow through the connection's own mailbox, which scopes them to the guided
+  // owner mounted when they arrive; this dialog only forwards them.
+  const reportsRef = useRef<InstanceReports | null>(null);
+  return (
+    <>
+      <ProviderConnection
+        {...props}
+        visible={view === "connect"}
+        onManage={() => setView("manage")}
+        reportsRef={reportsRef}
+      />
+      {view === "settings" && (
+        <Dialog open onClose={props.onClose} title="Full provider settings">
+          <Button variant="quiet" onClick={() => setView("connect")}>
+            Back to connection choices
+          </Button>
+          <CredentialsSection
+            sectionId="credentials"
+            fullEditor
+            onInstanceRenamed={(from, to) => reportsRef.current?.renamed(from, to)}
+            onInstanceRemoved={(name) => reportsRef.current?.removed(name)}
+          />
+        </Dialog>
+      )}
+      {view === "manage" && (
+        <ManageConnections {...props} onBack={() => setView("connect")} onSettings={() => setView("settings")} />
+      )}
+    </>
+  );
+}
+
+function ManageConnections({
+  onClose,
+  onConnected,
+  onBack,
+  onSettings,
+}: ConnectProviderDialogProps & { onBack(): void; onSettings(): void }) {
   const { instances, availableProviders, diagnostics, userLayer, writesRefused, loading, error, fetch } =
     useCredentialsStore();
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
@@ -61,7 +102,14 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     instanceVersion.current += 1;
   }
 
-  useConnectedEffect(fetch, [fetch]);
+  useConnectedEffect(async () => {
+    const state = credentialsStore.getState();
+    // Discovery already requested the listing. Reuse its pending answer,
+    // data or error; only load here if navigation preceded connection readiness.
+    if (!state.loading && !state.error && state.instances.length === 0 && state.availableProviders.length === 0) {
+      await fetch();
+    }
+  }, [fetch]);
 
   useEffect(() => {
     mounted.current = true;
@@ -156,7 +204,7 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
       const result = safeCredentialTestResult(name, await credentialsStore.getState().testCredentials(name));
       if (!mounted.current || operationVersion.current !== operation || instanceVersion.current !== version) return;
       if (result.status === "success") {
-        onConnected();
+        onConnected(name);
         return;
       }
       setTestState({ name, version, pending: false, result });
@@ -234,7 +282,9 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
             <p className={CLASS.error} role="alert">
               Failed to load providers: {friendlyErrorMessage(error)}
             </p>
-            <Button variant="secondary" onClick={() => void fetch()}>
+            {/* fetch() rejects when there is no client; this error region is
+                already the recovery affordance, so a failed retry stays here. */}
+            <Button variant="secondary" onClick={() => void fetch().catch(() => {})}>
               Retry
             </Button>
           </div>
@@ -309,6 +359,24 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
           </ul>
         )}
         <div className={CLASS.actions}>
+          <Button
+            variant="quiet"
+            onClick={() => {
+              operationVersion.current += 1;
+              onBack();
+            }}
+          >
+            Back to connection choices
+          </Button>
+          <Button
+            variant="quiet"
+            onClick={() => {
+              operationVersion.current += 1;
+              onSettings();
+            }}
+          >
+            Full provider settings
+          </Button>
           <Button
             variant="secondary"
             onClick={() => chooseEditor({ kind: "add" })}

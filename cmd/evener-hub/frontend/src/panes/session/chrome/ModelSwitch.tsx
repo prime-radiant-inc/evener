@@ -45,8 +45,8 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const disabled = !model.capabilities.changeModel;
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
 
-  const loadCatalog = useCallback(async (): Promise<ModelCatalog> => {
-    return modelListToCatalog(await threadsStore.getState().listModels());
+  const loadCatalog = useCallback(async (refresh?: boolean): Promise<ModelCatalog> => {
+    return modelListToCatalog(await threadsStore.getState().listModels(refresh));
   }, []);
 
   async function handlePick(entry: ModelCatalogEntry): Promise<void> {

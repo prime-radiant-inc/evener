@@ -7,6 +7,8 @@ export interface InputProps {
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
   placeholder?: string;
   disabled?: boolean;
+  required?: boolean;
+  autoComplete?: string;
   type?: "text" | "password" | "email" | "search" | "number" | "tel" | "url";
   id?: string;
   name?: string;
@@ -26,6 +28,8 @@ export function Input({
   onChange,
   placeholder,
   disabled = false,
+  required,
+  autoComplete,
   type = "text",
   id,
   name,
@@ -41,6 +45,8 @@ export function Input({
       onChange={onChange}
       placeholder={placeholder}
       disabled={disabled}
+      required={required}
+      autoComplete={autoComplete}
       aria-describedby={ariaDescribedBy}
     />
   );

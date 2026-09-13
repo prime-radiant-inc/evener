@@ -1,6 +1,8 @@
 package hub
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -72,6 +74,36 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 			// rest of vars_env (a credential's own variable) has no
 			// instance-level meaning the add form could give it.
 			vars := r.TemplateVarsEnv(id)
+			var setup *appwire.InstanceEntry
+			inst, addressable := r.Instance(id)
+			if !addressable {
+				if resolved, err := r.ResolveInstance(id); err == nil {
+					// Resolve also addresses implicit providers with no credential
+					// or incomplete destination. Copy listing metadata only, never
+					// the resolved credential value or either headers map.
+					inst = registry.Instance{
+						Name: resolved.Instance, ProviderID: resolved.ProviderID,
+						Protocol: resolved.Protocol, Surface: resolved.Surface,
+						Auth: resolved.Transport.Auth, Implicit: true, Hidden: p.Hidden,
+						CredentialSource: resolved.Credential.Source,
+						ShadowedEnvVar:   resolved.ShadowedEnvVar, Warnings: resolved.Warnings,
+					}
+					if !p.Hidden {
+						inst.BaseURL = resolved.Transport.BaseURL
+					}
+					addressable = true
+				}
+			}
+			if addressable {
+				var authored *registry.Provider
+				if layer != nil {
+					if p, ok := layer.Providers[id]; ok {
+						authored = &p
+					}
+				}
+				entry := c.entryFor(inst, authored)
+				setup = &entry
+			}
 			providers = append(providers, appwire.ProviderDescriptor{
 				ID:        id,
 				Name:      p.Name,
@@ -81,6 +113,8 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 				Vars:      vars,
 				APIKeyEnv: append([]string(nil), p.APIKeyEnv...),
 				Implicit:  registry.BoolValue(p.Implicit),
+				AuthModes: authModesFor(p.Transport.Auth),
+				Setup:     setup,
 			})
 		}
 		userLayer = r.UserLayerNote()
@@ -103,26 +137,27 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 func (c *hubInstancesController) entryFor(inst registry.Instance, authored *registry.Provider) appwire.InstanceEntry {
 	status := c.auth.instanceStatus(inst)
 	entry := appwire.InstanceEntry{
-		Name:               inst.Name,
-		Base:               inst.Base,
-		ProviderID:         inst.ProviderID,
-		Protocol:           inst.Protocol,
-		Surface:            inst.Surface,
-		Auth:               inst.Auth,
-		BaseURL:            sanitizeEndpointURL(inst.BaseURL),
-		Vars:               inst.Vars,
-		Implicit:           inst.Implicit,
-		Hidden:             inst.Hidden,
-		IsDefault:          inst.Default,
-		AuthModes:          status.AuthModes,
-		ActiveSource:       status.ActiveSource,
-		HasStoredFile:      status.HasStoredFile,
-		HasStoredOAuth:     status.HasStoredOAuth,
-		EnvVar:             status.EnvVar,
-		ShadowedEnvVar:     status.ShadowedEnvVar,
-		StoredEmail:        status.StoredEmail,
-		CredentialRequired: inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
-		Warnings:           inst.Warnings,
+		Name:                inst.Name,
+		Base:                inst.Base,
+		ProviderID:          inst.ProviderID,
+		Protocol:            inst.Protocol,
+		Surface:             inst.Surface,
+		Auth:                inst.Auth,
+		BaseURL:             sanitizeEndpointURL(inst.BaseURL),
+		EndpointFingerprint: endpointFingerprint(inst.BaseURL),
+		Vars:                inst.Vars,
+		Implicit:            inst.Implicit,
+		Hidden:              inst.Hidden,
+		IsDefault:           inst.Default,
+		AuthModes:           status.AuthModes,
+		ActiveSource:        status.ActiveSource,
+		HasStoredFile:       status.HasStoredFile,
+		HasStoredOAuth:      status.HasStoredOAuth,
+		EnvVar:              status.EnvVar,
+		ShadowedEnvVar:      status.ShadowedEnvVar,
+		StoredEmail:         status.StoredEmail,
+		CredentialRequired:  inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
+		Warnings:            inst.Warnings,
 	}
 	if authored != nil {
 		// api_key_env names an environment variable, and the loader takes
@@ -181,6 +216,22 @@ func sanitizeEndpointURL(raw string) string {
 	u.Fragment = ""
 	u.RawFragment = ""
 	return u.String()
+}
+
+// endpointFingerprint identifies the complete endpoint an instance resolves,
+// including the parts sanitizeEndpointURL leaves out of the displayed copy:
+// query parameters, userinfo and fragment. A client cannot compare those
+// itself - they must not cross the appwire boundary, since a query string can
+// carry a token - so the digest is what lets it notice that the destination
+// changed under an open flow. It is over the trimmed raw URL, so two endpoints
+// that differ only in a query parameter fingerprint differently.
+func endpointFingerprint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // writeLoadable is the invariant every mutation holds: a providers.toml the
@@ -690,10 +741,56 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if inst.Implicit {
 		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
 	}
+
+	// Read the authored layer before anything is deleted: this is a pure read,
+	// so a failure here leaves nothing to undo, and it happens inside c.mu, so
+	// the layer it returns is still the one this removal edits. before is an
+	// independent parse of the same file - a fresh read sharing no maps with
+	// l - so the reload rollback below writes back exactly what was on disk
+	// before this call (Edit's own rollback input).
+	before, _, err := c.read()
+	if err != nil {
+		return err
+	}
 	l, _, err := c.read()
 	if err != nil {
 		return err
 	}
+
+	// Held exclusively across the credential cleanup, the providers.toml write
+	// and the reload that follows it, the way a rename holds it across its
+	// check and re-key (see hubAuthController.credMu). A credential writer
+	// already in flight finishes first, and the cleanup below removes whatever
+	// it wrote; one that starts afterwards reads the reloaded registry, where
+	// this instance no longer exists. Holding only the read side left a writer
+	// that had already passed its checks free to store a key after the
+	// cleanup, leaving a credential behind under a name the removal had just
+	// deleted.
+	c.auth.credMu.Lock()
+	defer c.auth.credMu.Unlock()
+
+	// Credentials first, then the authored entry: a cleanup that cannot
+	// complete fails the removal while the instance and its name still exist,
+	// so the caller can retry it. The reverse order would report a deletion
+	// that only half happened and leave the credential under a name nothing
+	// curates - invisible until a later instance of that name inherits it.
+	// What the cleanup is about to delete is captured first, because either
+	// half of it can still fail - the cleanup itself, or the write below -
+	// and both leave [providers.<name>] in place and tell the caller the
+	// removal failed, so the instance the caller still has must still
+	// authenticate. Capture and restore both sit inside this held lock, so no
+	// writer can slip between them.
+	storedKey, hasStoredKey := c.auth.creds.Get(name)
+	oauthBytes, hasOAuth, err := c.captureOAuthFile(name)
+	if err != nil {
+		return err
+	}
+
+	removed, err := c.removeCredentials(name)
+	if err != nil {
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
+	}
+
 	delete(l.Providers, name)
 	// A `default` naming the instance just removed would fail the next load,
 	// so it goes with it; the ranking of §5.1 picks the replacement.
@@ -701,26 +798,154 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		l.Default = ""
 	}
 	if err := c.writeLoadable(l); err != nil {
-		return err
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
 	}
+	if err := c.reg.Reload(); err != nil {
+		// writeLoadable's dry parse only checks the layer against the registry
+		// schema; Reload resolves it, so a config that parses can still fail to
+		// load (#711). A failed reload drops the registry to implicit-only and
+		// refuses every instance write until the file loads again, so leaving
+		// the removal in place would have the file, the hub's view and every
+		// client's listing disagreeing about an instance only some of them
+		// still have - with nothing but hand-editing the file to get back. Put
+		// the file and the credentials this call deleted back, the way Edit
+		// restores its file.
+		if restoreErr := c.write(before); restoreErr != nil {
+			// The rollback could not land, so the entry stays gone and only the
+			// credentials can be put back - under the name the caller re-authors
+			// once this removal is reported as standing. No reload: the failure
+			// above already left the registry on the implicit-only view a load
+			// of this file produces, and writing is what is broken, not loading.
+			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
+				"the entry is gone from the config")
+		}
+		// The credentials go back before the reload below, because a load
+		// resolves each instance's credential from the stores: one that runs
+		// while this call's deletions are still missing caches "none" as the
+		// source of the instance the caller still has, and putting the key back
+		// afterwards does not rebuild that view. The pane would then show a
+		// stored key beside no active source, and the next launch would be
+		// refused for missing credentials, until some later write happened to
+		// reload again.
+		restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
+		// The file this rollback put back is the pre-removal one, and the reload
+		// that just failed read the file this call wrote - so if the config was
+		// already unresolvable before the removal (Remove's own guard reads the
+		// registry, which had not been reloaded since and so never saw the change
+		// that broke it), this reload fails on the very file the rollback
+		// restored. The registry stays on the implicit-only view a failed load
+		// leaves and refuses instance writes until the file loads (registry.go's
+		// WritesRefused, spec §10). Reinstating the previous registry view would
+		// instead have the hub serve and rewrite a config it cannot load, which
+		// is what that refusal exists to prevent - so the failure reports what is
+		// left: the rollback landed, and the config still does not load. A caller
+		// told only that the removal "was rolled back" would read the hub as
+		// healthy.
+		if reloadErr := c.reg.Reload(); reloadErr != nil {
+			return fmt.Errorf("%w; the config it restored does not load either, so instance writes stay refused until it does (%w)", restored, reloadErr)
+		}
+		return restored
+	}
+	return nil
+}
 
-	// A credential write like any other, so it takes the read side of the
-	// lock a rename holds exclusively (hubAuthController.credMu). Edit is
-	// already excluded from here by c.mu; the lock is what keeps one rule
-	// for every path that removes a credential.
-	if err := c.auth.credentialWrite(func() error {
-		// Clear stored credentials (ignore errors for missing entries).
-		_ = c.auth.creds.Clear(name)
-		// DeleteAuth already ignores not-found.
-		_, err := authopenai.DeleteAuth(c.auth.stateDir, name)
-		return err
-	}); err != nil {
-		// Best-effort: the instance is already gone from providers.toml, so
-		// an OAuth state file that would not delete is logged rather than
-		// failing the removal.
-		fmt.Fprintf(os.Stderr, "[hub] remove %s: delete OAuth state: %v\n", name, err)
+// captureOAuthFile reads the OAuth state file a removal's cleanup is about to
+// unlink, so a later failure can write those bytes back. It captures the raw
+// bytes rather than the parsed record because DeleteAuth deletes by path: a
+// record the hub cannot parse (corrupt) or validate is one it will still
+// delete, and only the bytes can put it back. A missing file is (nil, false,
+// nil); one that exists but cannot be read is refused here, before anything is
+// deleted, because the removal cannot promise to restore what it cannot read.
+func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, error) {
+	raw, err := os.ReadFile(authopenai.AuthFilePath(c.auth.stateDir, name))
+	if err == nil {
+		return raw, true, nil
 	}
-	return c.reg.Reload()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
+}
+
+// restoreFailedRemoval puts back what the cleanup deleted after a failed
+// removal, and folds whatever it could not restore into the error the caller
+// sees: a caller told only that the removal failed would have no way to know
+// what state the name is in. frame names that state in the failure to restore
+// - whether the entry is still authored or the removal stood - so the message
+// reads as correct English for the failure that produced it. Its callers pass
+// only the layers the failure actually deleted, so this never rewrites - and
+// never reports a failure to rewrite - a credential that is still where it was.
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) error {
+	var problems []string
+	if hasStoredKey {
+		if err := c.auth.setCredential(name, storedKey); err != nil {
+			problems = append(problems, fmt.Sprintf("its stored key could not be restored (%v)", err))
+		}
+	}
+	if hasOAuth {
+		if err := writeAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
+			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
+		}
+	}
+	if len(problems) == 0 {
+		return cause
+	}
+	return fmt.Errorf("%w; %s, but %s", cause, frame, strings.Join(problems, " and "))
+}
+
+// writeAuthFile puts an OAuth state file back exactly as it was: 0600 like
+// SaveAuth writes, and synced, because what it restores is a credential file
+// whose loss is the reason it exists.
+func writeAuthFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// removeCredentials deletes the credential layers filed under a name whose
+// instance is being removed: the stored key and the OAuth record. Both go
+// through the controller's seams, like every other path that removes a
+// credential (Logout, ApiKeyClear), and neither failure is tolerated - a
+// credential left behind sits under a name nothing curates, and a later
+// instance holding that name would inherit it. A missing entry is not a
+// failure: Store.Clear deletes and persists, and DeleteAuth reports not-found
+// as (false, nil).
+//
+// It reports which layers it actually deleted even when it fails, because its
+// caller restores exactly those: Store.Clear puts its own entry back when the
+// persist fails (nothing deleted), while a failed DeleteAuth leaves its file
+// in place - rewriting either would be a false alarm on a disk that is already
+// refusing writes.
+func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
+	var deleted deletedCredentials
+	if err := c.auth.clearCredential(name); err != nil {
+		return deleted, fmt.Errorf("remove %s: clear stored credential: %w", name, err)
+	}
+	deleted.storedKey = true
+	if _, err := c.auth.deleteAuth(c.auth.stateDir, name); err != nil {
+		return deleted, fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
+	}
+	deleted.oauthRecord = true
+	return deleted, nil
+}
+
+// deletedCredentials names which credential layers a removal's cleanup
+// actually removed, so a restore rewrites only those.
+type deletedCredentials struct {
+	storedKey   bool
+	oauthRecord bool
 }
 
 // describeImplicit names what makes an implicit instance exist, so the remove

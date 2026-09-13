@@ -13,11 +13,13 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { AuthDevicePollResponse } from "../../../../protocol/types.gen";
+import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { copyText } from "./clipboard";
 import styles from "./oauthDialogs.module.css";
+import { refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
 
 const CLASS = {
@@ -57,7 +59,7 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
     try {
       await credentialsStore.getState().loginComplete(name, flowId, trimmed);
       if (!active.current) return;
-      await credentialsStore.getState().fetch();
+      await refreshListingAfterMutation();
       if (!active.current) return;
       toast.push("success", `Signed in to ${name}`);
       onSuccess();
@@ -152,7 +154,7 @@ export function DeviceCodeDialog({
       }
       if (cancelled || !active.current) return;
       if (resp.state === "authorized") {
-        await credentialsStore.getState().fetch();
+        await refreshListingAfterMutation();
         if (cancelled || !active.current) return;
         toast.push("success", `Signed in to ${name}`);
         onSuccess();
@@ -212,11 +214,7 @@ export function DeviceCodeDialog({
               <Button type="button" variant="quiet" onClick={() => void handleCopy()}>
                 {copied ? "Copied ✓" : "Copy code"}
               </Button>
-              <Button
-                type="button"
-                disabled={!copied}
-                onClick={() => window.open(verificationUrl, "_blank", "noopener")}
-              >
+              <Button type="button" disabled={!copied} onClick={() => openInNewTab(verificationUrl)}>
                 Send me to OpenAI
               </Button>
             </>

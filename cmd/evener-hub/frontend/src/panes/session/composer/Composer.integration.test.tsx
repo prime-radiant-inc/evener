@@ -29,11 +29,8 @@ import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore"
 import { Composer as ComposerView } from "./Composer";
 import { readDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
-import {
-  flushPendingTurnsProjectionForTests,
-  resetPendingTurnsStoreForTests,
-  subscribeComposerSubmissionCommitted,
-} from "./queue/pendingTurnsStore";
+import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;

@@ -2,7 +2,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
+import type {
+  AuthLogoutResponse,
+  AuthTestResponse,
+  InstanceEntry,
+  InstanceListResponse,
+} from "../../../../protocol/types.gen";
+import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -76,6 +82,18 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.useRealTimers();
+});
+
+test("Settings Connect provider opens discovery and retains management on cancel", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => LIST);
+  render(<CredentialsSection sectionId="credentials" />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
+  expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  expect(await screen.findByText("work")).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
 });
 
 describe("initial load", () => {
@@ -207,6 +225,132 @@ describe("the detail sheet", () => {
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
     await screen.findByText("Removed instance personal");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull());
+  });
+
+  // The listing a removal answers with is only the truth if the store kept it.
+  // The guided owner clears its retained draft on the removal report, so the
+  // report must not fire against a listing a concurrent read threw away.
+  test("a superseded removal reconciles the listing before it is reported", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let signalRemoved!: () => void;
+    const removedCalled = new Promise<void>((resolve) => {
+      signalRemoved = resolve;
+    });
+    const listingsAtRemoval: InstanceEntry[][] = [];
+    const onInstanceRemoved = vi.fn(() => {
+      listingsAtRemoval.push(credentialsStore.getState().instances);
+      signalRemoved();
+    });
+    render(<CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    let resolveRemoval!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+    );
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    // A listing read issued after the removal wins the store race, so the
+    // removal's own response - the only one without the row - is discarded.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    const WITHOUT_PERSONAL: InstanceListResponse = { instances: [WORK], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_PERSONAL);
+    await act(async () => {
+      resolveRemoval(WITHOUT_PERSONAL);
+      await removedCalled;
+    });
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(listingsAtRemoval[0]).toEqual([WORK]);
+  });
+
+  // fetch() swallows a failed read into the store's error field instead of
+  // rejecting, so a resolved reconcile promise is no confirmation. The
+  // superseded removal is still reported: its RPC resolved (only its response
+  // was discarded), so the entry left providers.toml, and the row the listing
+  // still shows is one this client read before the removal landed. The owner
+  // needs that report - it is the only thing that clears what the guided flow
+  // retained for the name (see ConnectProviderDialog's removal cases) - and the
+  // toast still says the listing could not be confirmed.
+  test("a removal whose reconcile read fails reports the removal it could not confirm", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    let resolveRemoval!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+    );
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    // A listing read issued after the removal supersedes its response.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    fake.on("evener/instance/list", () => {
+      throw new Error("list denied");
+    });
+    await act(async () => {
+      resolveRemoval({ instances: [WORK], availableProviders: [] });
+      // The reconcile read fails outright; wait until the flow settles on
+      // either the honest unconfirmed-removal error or (wrongly) a success.
+      await vi.waitFor(() => {
+        if (!screen.queryByText(/could not be confirmed/) && !screen.queryByText("Removed instance personal")) {
+          throw new Error("no outcome toast yet");
+        }
+      });
+    });
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+  });
+
+  // The applied path is not automatically a confirmation either: the store's
+  // own listing is the applied response, and it must actually have lost the row.
+  test("a removal whose applied listing still holds the row is not reported as removed", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    fake.on("evener/instance/remove", () => ({ instances: [WORK, PERSONAL], availableProviders: [] }));
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy());
+    expect(onInstanceRemoved).not.toHaveBeenCalled();
+    // The row is gone on the host: re-issuing the remove could only fail, so
+    // the confirm dialog closes with the failure.
+    expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
   });
 });
 
@@ -381,7 +525,7 @@ describe("single-open-editor invariant", () => {
   test("opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
-    render(<CredentialsSection sectionId="credentials" />);
+    render(<CredentialsSection sectionId="credentials" fullEditor />);
     await screen.findByText("work");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
@@ -411,7 +555,7 @@ describe("OAuth start branches", () => {
       flowId: "redirect-flow",
       url: "https://auth/start",
     }));
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("personal");
     const user = userEvent.setup();
@@ -419,7 +563,11 @@ describe("OAuth start branches", () => {
     await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
     await screen.findByRole("dialog", { name: "Sign in to personal" });
     expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull();
-    expect(openSpy).toHaveBeenCalledWith("https://auth/start", "_blank", "noopener");
+    expect(openedNewTab(anchors)).toEqual({
+      url: "https://auth/start",
+      target: "_blank",
+      rel: NEW_TAB_POLICY,
+    });
     expect(screen.getByRole("link", { name: /re-open authorize url/i })).toBeTruthy();
   });
 
@@ -625,6 +773,47 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await screen.findByText("Credentials cleared for work");
   });
 
+  test("a cleared credential whose listing read is lost is still reported as cleared", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let logout!: (value: AuthLogoutResponse) => void;
+    fake.on(
+      "evener/auth/logout",
+      () =>
+        new Promise<AuthLogoutResponse>((resolve) => {
+          logout = resolve;
+        }),
+    );
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Clear" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    // Dropped connection during the clear: the logout succeeded, and the
+    // follow-up listing read rejecting must not report "Clear failed".
+    await act(async () => {
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    });
+    await act(async () => {
+      logout({
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      });
+    });
+    // The handler continues past the lost listing read over a few more
+    // microtasks; flush them inside act before asserting.
+    await act(async () => {});
+    await screen.findByText("Credentials cleared for work");
+    expect(screen.queryByText(/Clear failed/)).toBeNull();
+  });
+
   // #713: a stray stored key shadowed behind an active OAuth login needs an
   // affordance that clears the key without dropping the login - distinct
   // from Clear (authLogout), which for a signed-in Codex row would remove
@@ -731,6 +920,48 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await screen.findByText("Removed instance personal");
   });
 
+  // A name the environment also supplies keeps resolving after the authored
+  // entry is removed: the hub re-lists it as an implicit instance, and the
+  // access it resolves is the environment's, not the removed entry's. The
+  // removal is confirmed by the authored row leaving - requiring the *name* to
+  // vanish would report a removal that did happen as unconfirmed, leaving the
+  // sheet open on stale authored state.
+  test("removing an instance the environment also supplies confirms on the authored row leaving", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "personal" });
+      return {
+        instances: [
+          WORK,
+          instance({
+            name: "personal",
+            providerId: "openai-codex",
+            implicit: true,
+            activeSource: "env:OPENAI_API_KEY",
+          }),
+        ],
+        availableProviders: [],
+      };
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+    await screen.findByText(/Removed instance personal/);
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(screen.queryByText(/could not be confirmed/)).toBeNull();
+  });
+
   test("cancelling a confirm dialog makes no RPC call and keeps the sheet open", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
@@ -778,7 +1009,7 @@ describe("diagnostics and writesRefused", () => {
     expect(screen.queryByText("Warnings")).toBeNull();
   });
 
-  test("writesRefused disables Add and each sheet's Remove/make default, but not Test credentials/Set key/Clear", async () => {
+  test("writesRefused gates the raw add-instance action, not the guided connector or credential-only actions", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [WORK, PERSONAL],
@@ -789,7 +1020,11 @@ describe("diagnostics and writesRefused", () => {
     await screen.findByText("work");
     const user = userEvent.setup();
 
-    expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
+    // Credentials go to the credential store, not providers.toml, and the
+    // registry still serves the curated/implicit set when the user layer fails
+    // to load - so the guided entry point must stay usable while writes are
+    // refused.
+    expect((screen.getByRole("button", { name: "Connect provider" }) as HTMLButtonElement).disabled).toBe(false);
 
     const workInspector = await openSheet(user, "work");
     expect((within(workInspector).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
@@ -808,6 +1043,15 @@ describe("diagnostics and writesRefused", () => {
     expect(
       (within(personalInspector).getByRole("button", { name: /make default/i }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  test("writesRefused disables the raw add-instance action that authors providers.toml", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [], writesRefused: true }));
+    render(<CredentialsSection sectionId="credentials" fullEditor />);
+    await screen.findByText("work");
+
+    expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

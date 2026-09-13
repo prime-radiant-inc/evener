@@ -1,5 +1,6 @@
 import type { ThreadModel } from "../../../../protocol/model";
 import type { InputItem, PendingMutation } from "../../../../protocol/types.gen";
+import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 
 export type PendingMethod = "send" | "steer" | "queue" | "drain";
@@ -74,8 +75,11 @@ function outboxEntry(record: BrowserPendingRecord): PendingTurnEntry | undefined
     createdAt: record.createdAt,
     state: record.state,
     source: record.state === "accepted" ? "optimistic" : "outbox",
-    // A durable browser record IS this client's own submission.
-    fromThisClient: true,
+    // The outbox is shared per origin, so a durable record is this client's
+    // own submission only when it is unattributed (predates the owner field)
+    // or names this client - another tab's in-flight send must not claim
+    // tier-6 routing here.
+    fromThisClient: isOwnMutationRecord(record),
   };
 }
 
@@ -125,10 +129,13 @@ export function reconcilePendingEntries(
 
   for (const mutation of model?.pendingMutations ?? []) {
     if (reflected.has(mutation.clientMutationId)) continue;
-    // Every entry placed so far came from a durable record of this client's, so
-    // an id already present is one this client submitted - whatever the daemon's
-    // projection is about to say about the same submission.
-    const fromThisClient = entries.has(mutation.clientMutationId) || submittedHere.has(mutation.clientMutationId);
+    // An entry already placed came from a durable record - which may be
+    // another tab's, since the outbox is shared - so the daemon's projection
+    // inherits THAT entry's provenance rather than assuming every durable
+    // record is this client's. No durable record means submittedHere is the
+    // only provenance carrier for the id.
+    const existing = entries.get(mutation.clientMutationId);
+    const fromThisClient = existing ? existing.fromThisClient : submittedHere.has(mutation.clientMutationId);
     const entry = authoritativeEntry(ref, mutation, fromThisClient);
     if (entry) entries.set(entry.id, entry);
   }

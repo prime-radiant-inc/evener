@@ -29,7 +29,7 @@
 // calling the store), the same division of labor as before.
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
-import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
+import type { AuthTestResponse, InstanceEditParams, InstanceEntry } from "../../../../protocol/types.gen";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, useToasts } from "../../../../widgets";
@@ -74,6 +74,62 @@ const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // how to get the current state.
 const STALE_SAVE_WARNING =
   "Saved, but the list changed underneath; your edits were kept — refresh to see the current state";
+
+// The entry fields a rename carries over unchanged, and that the store's own
+// listing can be compared on. The name alone cannot identify a rename - a
+// removal and a recreation under the same name, or another instance renamed
+// onto the freed one, both leave an entry there - so a superseded rename only
+// belongs to this save when the fields this save did not touch still match.
+const RENAME_IDENTITY_FIELDS = [
+  "providerId",
+  "base",
+  "baseUrl",
+  "protocol",
+  "surface",
+  "vars",
+  "apiKeyEnv",
+  "credentialHeader",
+] as const;
+
+/** The entry fields this save's params changed, whether a field carries a value
+ * or a `clear` flag: those are the fields a rename may legitimately differ in. */
+function changedFields(params: InstanceEditParams): Set<string> {
+  const changed = new Set<string>();
+  for (const key of Object.keys(params)) {
+    if (key === "name" || key === "newName") continue;
+    changed.add(key.startsWith("clear") ? key.charAt(5).toLowerCase() + key.slice(6) : key);
+  }
+  return changed;
+}
+
+/** One entry field as the listing carries it, so two entries can be compared:
+ * scalars by value, vars by content rather than by key order. */
+function fieldValue(entry: InstanceEntry, field: string): string {
+  const raw = (entry as unknown as Record<string, unknown>)[field];
+  if (raw === undefined || raw === null) return "";
+  if (typeof raw === "object") {
+    const pairs = Object.entries(raw as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return JSON.stringify(pairs);
+  }
+  return String(raw);
+}
+
+/** The name this save's rename landed under, or undefined when the store's own
+ * listing cannot say that it did: the new name has to be held by the instance
+ * this save renamed, not by a later tenant of the freed name. */
+function renamedInstanceLanded(
+  instances: InstanceEntry[],
+  before: InstanceEntry,
+  params: InstanceEditParams,
+): string | undefined {
+  const newName = params.newName;
+  if (newName === undefined) return undefined;
+  const listed = instances.find((instance) => instance.name === newName);
+  if (listed === undefined || listed.implicit !== before.implicit) return undefined;
+  const changed = changedFields(params);
+  const untouched = RENAME_IDENTITY_FIELDS.filter((field) => !changed.has(field));
+  return untouched.every((field) => fieldValue(before, field) === fieldValue(listed, field)) ? newName : undefined;
+}
 
 export interface InstanceSheetProps {
   name: string | null;
@@ -236,13 +292,11 @@ export function InstanceSheet({
       // holds, so a toast naming it, a reseed from it, or a steer onto a name
       // it alone reports would all show the user a state that is not there.
       const applied = await credentialsStore.getState().edit(params);
-      // Except when the store's own list already holds the renamed instance:
-      // that is this save, learned from the list instead of the response, so
-      // it is a save like any other.
-      const listedRename =
-        params.newName !== undefined && credentialsStore.getState().instances.some((i) => i.name === params.newName)
-          ? params.newName
-          : undefined;
+      // Except when the store's own list holds this save's rename: the same
+      // instance, now wearing the name it was given. Holding the name is not
+      // enough on its own - a rename frees a name that any other instance can
+      // take - so the entry is checked against the instance this save renamed.
+      const listedRename = renamedInstanceLanded(credentialsStore.getState().instances, instance, params);
       if (applied || listedRename !== undefined) toast.push("success", `Saved ${params.newName ?? instance.name}`);
       // The sheet may have moved on while the request was in flight: dismissed,
       // or pointed at another row. The write stands and the toast above is

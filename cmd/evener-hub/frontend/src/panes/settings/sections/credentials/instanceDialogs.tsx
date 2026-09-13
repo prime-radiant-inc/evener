@@ -24,6 +24,7 @@ import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } 
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
+import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 import { useEditorLifetime } from "./useEditorLifetime";
 
@@ -47,13 +48,26 @@ function nonEmptyVars(vars: Record<string, string>): Record<string, string> | un
 
 export interface AddInstanceDialogProps {
   availableProviders: ProviderDescriptor[];
+  initialBase?: string;
   onCancel: () => void;
-  onSuccess: () => void;
+  onSuccess: (name: string) => void;
+  // A create whose reconciled listing did not show the instance is NOT a
+  // success. A consumer that has its own recovery for a missing row (the
+  // guided flow's not-ready/reload state) takes it through this callback,
+  // without a success toast; a consumer without one gets the dialog's own
+  // error and re-confirm action.
+  onUnconfirmedCreate?: (name: string) => void;
 }
 
 /** The global "+ Add provider instance" form (parity-m7-settings.md §7f). */
-export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: AddInstanceDialogProps) {
-  const [base, setBase] = useState("");
+export function AddInstanceDialog({
+  availableProviders,
+  initialBase = "",
+  onCancel,
+  onSuccess,
+  onUnconfirmedCreate,
+}: AddInstanceDialogProps) {
+  const [base, setBase] = useState(initialBase);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [protocol, setProtocol] = useState("");
@@ -63,8 +77,16 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
   const [credentialHeader, setCredentialHeader] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Set when the create succeeded but the listing could not be confirmed to
+  // contain it: the dialog stays open and offers a re-confirm rather than
+  // re-issuing a create that already landed on the host.
+  const [unconfirmedName, setUnconfirmedName] = useState<string | null>(null);
   const toast = useToasts();
   const active = useEditorLifetime();
+
+  function confirmCreate(instanceName: string): Promise<boolean> {
+    return confirmListingState((instances) => instances.some((instance) => instance.name === instanceName));
+  }
 
   const baseOptions: SelectOption[] = [
     { value: "", label: "" },
@@ -83,6 +105,12 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    // While a create still needs confirming, a submit (the button or Enter)
+    // re-confirms instead of re-issuing a create the host already accepted.
+    if (unconfirmedName) {
+      await handleCheckAgain();
+      return;
+    }
     if (!base) {
       setError("Base provider is required.");
       return;
@@ -100,7 +128,7 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
     setError(null);
     setBusy(true);
     try {
-      await credentialsStore.getState().create({
+      const applied = await credentialsStore.getState().create({
         name: trimmedName,
         base,
         baseUrl: baseUrl.trim(),
@@ -110,9 +138,41 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
         apiKeyEnv: apiKeyEnv.trim() || undefined,
         credentialHeader: trimmedCredentialHeader || undefined,
       });
+      // The listing a superseded create answered with was discarded by the
+      // store's generation guard - reconcile before steering on the create,
+      // and require the listing that applied to actually contain the new
+      // instance. A resolved fetch is not confirmation (a newer read
+      // supersedes it, a failed read lands its error in the store), and
+      // neither is a listing that never reflected the create: reporting
+      // success there would close the editor on an instance the host may not
+      // have. A consumer with its own missing-row recovery (the guided flow's
+      // not-ready/reload state) takes over without a success claim; otherwise
+      // the dialog stays open with a re-confirm path rather than re-issuing
+      // the create. Data refresh deliberately survives an unmount: the dialog
+      // is gone, but the store still owes the caller a current listing.
+      // The store's own listing IS the applied response when the write won the
+      // race, so it can be checked directly; only a superseded write has to be
+      // re-read. Either way the row must be visible before the create is
+      // reported, or the editor would close on an instance the listing never
+      // showed.
+      const confirmed = applied
+        ? credentialsStore.getState().instances.some((instance) => instance.name === trimmedName)
+        : await confirmCreate(trimmedName);
+      if (!confirmed) {
+        if (!active.current) return;
+        if (onUnconfirmedCreate) {
+          onUnconfirmedCreate(trimmedName);
+          return;
+        }
+        setUnconfirmedName(trimmedName);
+        setError(
+          `The connection was saved on the host, but the provider list could not confirm ${trimmedName}. Check again.`,
+        );
+        return;
+      }
       if (!active.current) return;
       toast.push("success", `Created instance ${trimmedName}`);
-      onSuccess();
+      onSuccess(trimmedName);
     } catch (err) {
       if (!active.current) return;
       const message = errorText(err);
@@ -121,6 +181,33 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
     } finally {
       if (active.current) setBusy(false);
     }
+  }
+
+  // Re-confirms a create whose first reconcile could not see the instance.
+  // Only the listing read is retried: the create itself already succeeded on
+  // the host, so re-issuing it could fail on an instance that exists.
+  // confirmCreate cannot reject - confirmListingState owns a lost read (no
+  // client) as one more unapplied attempt - so the only outcomes here are
+  // confirmed and not-confirmed.
+  async function handleCheckAgain(): Promise<void> {
+    const instanceName = unconfirmedName;
+    if (!instanceName) return;
+    setBusy(true);
+    const confirmed = await confirmCreate(instanceName);
+    if (!active.current) return;
+    setBusy(false);
+    if (!confirmed) {
+      // "Could not confirm", never "does not show": a read that never applied
+      // (a dropped connection) says nothing about what the listing holds. The
+      // connection banner owns that story, and the unconfirmed name is kept so
+      // Check again still works once the host is back.
+      setError(`The provider list could not confirm ${instanceName}. Check again.`);
+      return;
+    }
+    setError(null);
+    setUnconfirmedName(null);
+    toast.push("success", `Created instance ${instanceName}`);
+    onSuccess(instanceName);
   }
 
   return (
@@ -210,9 +297,15 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
           </p>
         )}
         <div className={CLASS.actions}>
-          <Button type="submit" disabled={busy}>
-            Create
-          </Button>
+          {unconfirmedName ? (
+            <Button type="button" disabled={busy} onClick={() => void handleCheckAgain()}>
+              Check again
+            </Button>
+          ) : (
+            <Button type="submit" disabled={busy}>
+              Create
+            </Button>
+          )}
           <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
@@ -280,7 +373,7 @@ function CredentialValueDialog({
     try {
       await submit(instance.name, trimmed);
       if (!active.current) return;
-      await credentialsStore.getState().fetch();
+      await refreshListingAfterMutation();
       if (!active.current) return;
       toast.push("success", successText);
       onSuccess();

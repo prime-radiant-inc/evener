@@ -58,19 +58,33 @@ export interface CredentialsStoreState {
   writesRefused: boolean;
   loading: boolean;
   error: string | null;
-  fetch(): Promise<void>;
-  create(params: InstanceCreateParams): Promise<void>;
-  // Resolves true when the listing this edit answered with is the one the
-  // store now holds, false when a newer request superseded it. The instance
-  // sheet steers itself on the store's verdict, never on the raw response.
+  // A marker that changes ONLY when a state transition came from the store's
+  // own post-mutation refresh (see the auth wrappers below). Subscriptions
+  // that watch for unrelated changes compare it across a transition to tell
+  // this client's own refresh apart from a foreign listing change - the
+  // listing-update twin of the own-echo correlation above.
+  selfRefresh: number;
+  // fetch resolves true when the response it carried was applied to the
+  // listing, false when a newer request superseded it or the read failed
+  // (the failure lands in `error`) - a resolved promise alone is never
+  // proof the listing moved.
+  fetch(): Promise<boolean>;
+  // create/edit/remove resolve true when the listing they answered with is
+  // the one the store now holds, false when a newer request superseded it.
+  // Callers that steer a flow on the strength of their own write (the sheet,
+  // the add dialog, the removal report) act on the store's verdict, never on
+  // the raw response.
+  create(params: InstanceCreateParams): Promise<boolean>;
   edit(params: InstanceEditParams): Promise<boolean>;
-  remove(name: string): Promise<void>;
+  remove(name: string): Promise<boolean>;
   setDefault(name: string): Promise<void>;
   // Auth mutations return the raw wire response and never touch
-  // instances/availableProviders themselves - the caller (CredentialsSection)
-  // re-fetches on success, matching the legacy's own "close editor +
-  // refresh()" sequencing, and surfaces failures as inline errors/toasts
-  // itself rather than this store swallowing them into an `error` field.
+  // instances/availableProviders synchronously - on success the store
+  // schedules its own listing refresh (see the wrappers below), which
+  // survives the issuing dialog unmounting before the RPC resolves;
+  // callers may still fetch for their own steering, and failures surface as
+  // inline errors/toasts in the caller rather than this store swallowing
+  // them into an `error` field.
   setApiKey(provider: string, value: string): Promise<AuthStatusResponse>;
   setCredentialJson(provider: string, value: string): Promise<AuthStatusResponse>;
   // clearStoredKey removes only the credentials.toml entry, leaving any
@@ -131,29 +145,47 @@ async function applyMutation(request: () => Promise<InstanceListResponse>): Prom
   }
 }
 
-export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
+let selfRefreshCounter = 0;
+
+// Every listing read - a caller's fetch() and the store's own post-mutation
+// refresh - shares this one read and its ordering guard. `self` marks THIS
+// client's own refresh: each state transition it touches carries a fresh
+// selfRefresh marker (and no other read ever changes it), so a subscription
+// comparing the marker across a transition can tell the client's own refresh
+// apart from a foreign listing change. Resolves true only when the response
+// was applied - a superseded or failed read resolves false without throwing,
+// so a resolved promise alone is never confirmation the listing moved.
+async function readListing(self: boolean): Promise<boolean> {
+  const client = requireClient();
+  requestedList = true;
+  const version = ++requestVersion;
+  const mark = () => (self ? { selfRefresh: ++selfRefreshCounter } : {});
+  credentialsStore.setState({ loading: true, error: null, ...mark() });
+  try {
+    const resp = await client.request("evener/instance/list", {});
+    if (version !== requestVersion || connectionStore.getState().client !== client) return false;
+    credentialsStore.setState({ ...listState(resp), loading: false, ...mark() });
+    return true;
+  } catch (err) {
+    if (version !== requestVersion || connectionStore.getState().client !== client) return false;
+    credentialsStore.setState({ loading: false, error: errorText(err), ...mark() });
+    return false;
+  }
+}
+
+export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   ...emptyListState(),
   loading: false,
   error: null,
+  selfRefresh: 0,
 
   async fetch() {
-    const client = requireClient();
-    requestedList = true;
-    const version = ++requestVersion;
-    set({ loading: true, error: null });
-    try {
-      const resp = await client.request("evener/instance/list", {});
-      if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ ...listState(resp), loading: false });
-    } catch (err) {
-      if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ loading: false, error: errorText(err) });
-    }
+    return readListing(false);
   },
 
   async create(params) {
     const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/create", params));
+    return applyMutation(() => client.request("evener/instance/create", params));
   },
 
   async edit(params) {
@@ -163,7 +195,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async remove(name) {
     const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/remove", { name }));
+    return applyMutation(() => client.request("evener/instance/remove", { name }));
   },
 
   async setDefault(name) {
@@ -173,22 +205,59 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async setApiKey(provider, value) {
     const client = requireClient();
-    return client.request("evener/auth/apiKey/set", { provider, value });
+    noteLocalAuthMutation(provider);
+    try {
+      const result = await client.request("evener/auth/apiKey/set", { provider, value });
+      // The store owns the post-mutation listing refresh: the caller that
+      // issued the save may be canceled, hidden, or unmounted before this
+      // resolves, and its own refresh would die with it. The `self` mark lets
+      // subscriptions (ProviderConnection's invalidation watch) tell this
+      // refresh apart from a foreign listing change.
+      scheduleRefetch(true);
+      return result;
+    } catch (err) {
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async setCredentialJson(provider, value) {
     const client = requireClient();
-    return client.request("evener/auth/credentialJson/set", { provider, value });
+    noteLocalAuthMutation(provider);
+    try {
+      const result = await client.request("evener/auth/credentialJson/set", { provider, value });
+      scheduleRefetch(true); // same rationale as setApiKey
+      return result;
+    } catch (err) {
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async clearStoredKey(provider) {
     const client = requireClient();
-    return client.request("evener/auth/apiKey/clear", { provider });
+    noteLocalAuthMutation(provider);
+    try {
+      const result = await client.request("evener/auth/apiKey/clear", { provider });
+      scheduleRefetch(true); // same rationale as setApiKey
+      return result;
+    } catch (err) {
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async logout(provider) {
     const client = requireClient();
-    return client.request("evener/auth/logout", { provider });
+    noteLocalAuthMutation(provider);
+    try {
+      const result = await client.request("evener/auth/logout", { provider });
+      scheduleRefetch(true); // same rationale as setApiKey
+      return result;
+    } catch (err) {
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async loginStart(provider) {
@@ -198,7 +267,15 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async loginComplete(provider, flowId, redirectUrl) {
     const client = requireClient();
-    return client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
+    noteLocalAuthMutation(provider);
+    try {
+      const result = await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
+      scheduleRefetch(true); // same rationale as setApiKey
+      return result;
+    } catch (err) {
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async deviceStart(provider) {
@@ -208,7 +285,21 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async devicePoll(provider, flowId) {
     const client = requireClient();
-    return client.request("evener/auth/device/poll", { provider, flowId });
+    noteLocalAuthMutation(provider);
+    try {
+      const resp = await client.request("evener/auth/device/poll", { provider, flowId });
+      // Only an authorized poll broadcasts evener/auth/updated; a routine
+      // pending/expired tick must not keep the marker armed, or a poll loop
+      // would silence unrelated same-provider changes tick after tick. An
+      // authorized poll also refreshes the listing through the store - the
+      // polling dialog may already be closed by the time authorization lands.
+      if (resp.state === "authorized") scheduleRefetch(true);
+      else endUnconfirmedAuthMutation(provider);
+      return resp;
+    } catch (err) {
+      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      throw err;
+    }
   },
 
   async testCredentials(provider) {
@@ -236,35 +327,156 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // otherwise. Mirrors stores/extensions.ts's identical
 // wiring, applied here to this store's one wire-truth list. On the wire
 // evener/auth/updated carries {provider, activeSource} (notifyAuthUpdated,
-// cmd/evener-hub/app_rpc.go:764-767), but its generated
-// EvenerAuthUpdatedPayload type is empty ({}) because codegen can't see
-// into Go's untyped map[string]string - and this refetch is
-// payload-agnostic anyway (nothing reads those fields), so a debounced
-// evener/instance/list refetch is the only option, exactly like
-// evener/navigation/invalidated's own "just refetch" contract.
+// cmd/evener-hub/app_rpc.go) matching the generated EvenerAuthUpdatedParams,
+// and `provider` is what the own-echo correlation below reads.
+//
+// The originator is in that audience too, and it must keep receiving the
+// notification - other consumers (the model-list cache's epoch guard) depend
+// on the originating client's own echo to refresh after its own save. But the
+// LISTING refetch is redundant for the originator: the STORE schedules its own
+// refresh the moment a local auth mutation succeeds (see the wrappers below) -
+// a refresh owned by the store survives the issuing dialog being canceled,
+// hidden, or unmounted before the RPC resolves, which a caller-scoped refresh
+// (ProviderConnection's refreshAndCheck, CredentialValueDialog, the OAuth
+// dialogs' completions) does not. Worse, the echo's refetch is misread by a
+// save/check in flight: ProviderConnection's subscription treats the
+// echo-driven listing change as an unrelated change and invalidates the fresh
+// result ("Connection or configuration changed") or cancels the check. So the
+// refetch is skipped for the originator's own echo, correlated narrowly:
+//
+// - Marked per provider when the mutation is ISSUED (not when it resolves):
+//   the broadcast can reach this client before the RPC response does, so a
+//   resolve-time marker would miss the echo entirely.
+// - COUNTED, not a single timestamp: back-to-back same-provider mutations
+//   (two saves in the guided flow, a retry, a poll landing on top of a save)
+//   each broadcast one echo, so a lone per-provider marker would let the
+//   first echo consume the second mutation's marker and leave the second self
+//   echo to be misread as an unrelated client's change - spuriously
+//   invalidating the guided flow. The per-provider entry holds the count of
+//   outstanding mutations plus the latest issue time; each matching
+//   notification consumes exactly one, and only a notification beyond the
+//   outstanding count is foreign and still refetches.
+// - Cleared when the response proves no broadcast will follow: a failed RPC,
+//   or a device poll that comes back pending/expired rather than authorized.
+//   One outstanding marker is retired per such outcome (a floor, not an
+//   unconditional clear): which mutation failed does not matter, only how
+//   many echoed mutations remain outstanding. A failed save must not silence
+//   the next unrelated change, and a poll loop must not keep re-arming the
+//   window tick after tick.
+// - Bounded by a short age window, so a marker that is never consumed (the
+//   echo was lost, or the notification arrived pre-response and the client
+//   disconnected) cannot outlive its meaning.
+//
+// Anything unmatched still refetches - other providers, unattributed
+// notifications, the same provider with no live marker - so unrelated
+// clients' changes keep arriving.
 const REFETCH_DEBOUNCE_MS = 250;
+const SELF_ECHO_WINDOW_MS = 2000;
+interface LocalAuthMutationMarker {
+  // Outstanding same-provider mutations issued but not yet consumed (by an
+  // echo) or retired (by an unconfirmed outcome).
+  count: number;
+  // When the most recent one was issued; ages the whole entry out together.
+  issuedAt: number;
+}
+const localAuthMutations = new Map<string, LocalAuthMutationMarker>();
+
+function noteLocalAuthMutation(provider: string): void {
+  const existing = localAuthMutations.get(provider);
+  localAuthMutations.set(provider, { count: (existing?.count ?? 0) + 1, issuedAt: Date.now() });
+}
+
+function clearLocalAuthMutation(provider: string): void {
+  localAuthMutations.delete(provider);
+}
+
+// Ends a local auth mutation whose outcome proves it will NOT broadcast (a
+// failed RPC, or a device poll that returned pending/expired rather than
+// authorized). The marker only ever suppressed a notification's own refetch,
+// and a matched notification now schedules the store's own refresh itself, so
+// there is no swallowed change left to make up: retiring one outstanding
+// marker is all this owes, and once the count reaches zero the next
+// same-provider notification is foreign again. Which mutation ended does not
+// matter - only how many echoed mutations remain outstanding - so this
+// decrements whether or not it was the mutation that failed.
+function endUnconfirmedAuthMutation(provider: string): void {
+  const existing = localAuthMutations.get(provider);
+  if (existing === undefined) return;
+  if (existing.count <= 1) localAuthMutations.delete(provider);
+  else localAuthMutations.set(provider, { count: existing.count - 1, issuedAt: existing.issuedAt });
+}
+
+// True exactly when this notification is this client's own echo of a
+// just-issued auth mutation; consumes one outstanding marker either way, so a
+// stale entry cannot suppress a later notification. A stale entry (its latest
+// issue older than the window) counts as no marker at all and is dropped
+// whole.
+//
+// The correlation is provider + issue time, and that is as exact as the wire
+// allows: evener/auth/updated carries only {provider, activeSource}
+// (types.gen.ts), with no originator id - the hub's notifyAuthUpdated
+// broadcasts to every client alike (app_rpc.go). A corner remains: another
+// client's same-provider change arriving inside the window is read as this
+// client's own echo. It is deliberately not resolved by treating same-provider
+// notifications as foreign, which would make the originator's own echo look
+// foreign and re-invalidate a successful guided save (the round-8 defect);
+// narrowing the window instead would miss the echo that arrives late. Exact
+// attribution needs an origin id on the auth mutation RPCs, echoed back in the
+// broadcast - a wire change, not a frontend one. The residual is bounded: a
+// matched notification still re-reads the listing (round 20), so only the
+// guided flow's invalidation is skipped, and only for a same-provider change
+// landing within two seconds of this client's own mutation.
+function consumeOwnAuthEcho(provider: string | undefined): boolean {
+  if (provider === undefined) return false;
+  const marker = localAuthMutations.get(provider);
+  if (marker === undefined) return false;
+  if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
+    localAuthMutations.delete(provider); // stale: no marker, no echo of ours left
+    return false;
+  }
+  // One mutation broadcasts one echo: consume exactly one outstanding marker.
+  if (marker.count <= 1) clearLocalAuthMutation(provider);
+  else localAuthMutations.set(provider, { count: marker.count - 1, issuedAt: marker.issuedAt });
+  return true;
+}
 
 let wiredClient: AppwireClientLike | null = null;
 let unsubscribeNotifications: (() => void) | undefined;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
+// Schedule provenance for the coalesced refresh. The debounce collapses every
+// request in its window into one read, so provenance cannot be
+// last-writer-wins: a request that came from a foreign change must survive a
+// later self request (and vice versa), or a genuine foreign change would be
+// silently presented as the store's own refresh and never invalidate the
+// guided flow. `undefined` means no request is pending.
+let pendingRefetchSelf: boolean | undefined;
 
-function scheduleRefetch(): void {
+function scheduleRefetch(self = false): void {
+  pendingRefetchSelf = pendingRefetchSelf === undefined ? self : pendingRefetchSelf && self;
   clearTimeout(refetchTimer);
   refetchTimer = setTimeout(() => {
+    const selfRequest = pendingRefetchSelf ?? false;
+    pendingRefetchSelf = undefined;
+    refetchTimer = undefined;
     // fetch()'s own requireClient() throws outside its try/catch, by design
     // (see this file's own top comment) - a real rejection here would be an
     // unobserved background call with nothing awaiting it, so a rare
     // disconnect-during-the-debounce-window race must be swallowed here
     // rather than surfacing as an unhandled rejection.
-    credentialsStore
-      .getState()
-      .fetch()
-      .catch(() => {});
+    readListing(selfRequest).catch(() => {});
   }, REFETCH_DEBOUNCE_MS);
 }
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "evener/auth/updated") scheduleRefetch();
+  if (n.method !== "evener/auth/updated") return;
+  // A notification this client takes for its own echo is suppressed as a
+  // separate refresh, but it still schedules the store's own refresh: if the
+  // real echo was lost and another client's same-provider change arrived
+  // first, the marker is consumed by that change, and the store's post-save
+  // refresh has already run - without this the foreign change would stay
+  // invisible until something else refetched. The self mark keeps the guided
+  // flow from invalidating on the coalesced read while the listing moves.
+  scheduleRefetch(consumeOwnAuthEcho(n.params.provider));
 }
 
 function attachNotifications(client: AppwireClientLike | null): void {
@@ -287,6 +499,12 @@ connectionStore.subscribe((state, previous) => {
     credentialsStore.setState({ loading: false });
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
+    pendingRefetchSelf = undefined;
+    // A marker belongs to the connection its mutation was issued on: the echo
+    // cannot arrive on a different one, so a marker left over from a replaced
+    // or reconnected client is pure suppression risk for whatever
+    // same-provider notification comes next on the new connection.
+    localAuthMutations.clear();
   }
   attachNotifications(state.client);
   // Once a view has requested credentials, reconnects must restore its list
@@ -313,10 +531,12 @@ if (initialClient) attachNotifications(initialClient);
 export function resetCredentialsStoreForTests(): void {
   requestVersion += 1;
   requestedList = false;
+  localAuthMutations.clear();
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
-  credentialsStore.setState({ ...emptyListState(), loading: false, error: null });
+  pendingRefetchSelf = undefined;
+  credentialsStore.setState({ ...emptyListState(), loading: false, error: null, selfRefresh: 0 });
 }
