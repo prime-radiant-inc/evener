@@ -17,7 +17,7 @@ func strictSnapshotJSON(sessionID, note string) string {
 	return fmt.Sprintf(`{"version":1,"session_id":%q,"human_note":%q,"accepted_turns":0,"journal":{},"input_queue":[],"queue_revision":0,"next_turn_sequence":0,"next_queue_entry_sequence":0,"budget_reservations":{},"pending_executions":{}}`, sessionID, note)
 }
 
-func writeMutationSnapshotFile(t *testing.T, stateDir, sessionID, data string) {
+func writeMutationSnapshotFile(t testing.TB, stateDir, sessionID, data string) {
 	t.Helper()
 	dir := filepath.Join(stateDir, "mutations")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -122,25 +122,42 @@ func TestReadPersistedHumanNoteAbsentAndMalformed(t *testing.T) {
 			t.Fatalf("null field = (%q, %v, %v), want (\"\", false, nil)", note, present, err)
 		}
 	})
-	t.Run("undecodable document", func(t *testing.T) {
+	// Absence is decided by the key's bytes, not by the document's validity: a
+	// document that never spells the key cannot carry a note, so the roster gets
+	// "no canonical note" without the reader walking the journal behind the
+	// missing field (roborev's review asked for exactly that, because the roster
+	// reads one document per past entry). A document that does carry the key but
+	// cannot be parsed at or before the value stays an error, since there the
+	// reader cannot tell whether a note was meant to be there.
+	t.Run("keyless malformed document", func(t *testing.T) {
 		stateDir := t.TempDir()
 		writeMutationSnapshotFile(t, stateDir, sessionID, "{ this is not a decodable snapshot")
-		if _, _, err := ReadPersistedHumanNote(stateDir, sessionID); err == nil {
-			t.Fatal("undecodable document read without error")
+		note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+		if err != nil || present || note != "" {
+			t.Fatalf("keyless malformed document = (%q, %v, %v), want (\"\", false, nil)", note, present, err)
 		}
 	})
-	t.Run("non-object top level", func(t *testing.T) {
+	t.Run("keyless non-object document", func(t *testing.T) {
 		stateDir := t.TempDir()
 		writeMutationSnapshotFile(t, stateDir, sessionID, `[]`)
-		if _, _, err := ReadPersistedHumanNote(stateDir, sessionID); err == nil {
-			t.Fatal("non-object document read without error")
+		note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+		if err != nil || present || note != "" {
+			t.Fatalf("keyless non-object document = (%q, %v, %v), want (\"\", false, nil)", note, present, err)
 		}
 	})
-	t.Run("truncated document", func(t *testing.T) {
+	t.Run("keyless truncated document", func(t *testing.T) {
 		stateDir := t.TempDir()
 		writeMutationSnapshotFile(t, stateDir, sessionID, `{"accepted_turns":1`)
+		note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+		if err != nil || present || note != "" {
+			t.Fatalf("keyless truncated document = (%q, %v, %v), want (\"\", false, nil)", note, present, err)
+		}
+	})
+	t.Run("document broken at the key", func(t *testing.T) {
+		stateDir := t.TempDir()
+		writeMutationSnapshotFile(t, stateDir, sessionID, `{"human_note"`)
 		if _, _, err := ReadPersistedHumanNote(stateDir, sessionID); err == nil {
-			t.Fatal("truncated document read without error")
+			t.Fatal("document broken at the key read without error")
 		}
 	})
 	t.Run("non-string note", func(t *testing.T) {
@@ -151,4 +168,39 @@ func TestReadPersistedHumanNoteAbsentAndMalformed(t *testing.T) {
 			t.Fatal("non-string note read without error")
 		}
 	})
+}
+
+// The roster pays this read once per past entry, so the absent case must not
+// scale with the journal behind the missing field. This document is keyless on
+// purpose: the benchmark reads it at two journal sizes, and before the fix the
+// large case walked every value in it.
+func benchmarkPersistedReadDocument(entries int) string {
+	var b strings.Builder
+	b.WriteString(`{"version":1,"session_id":"01KREINJECTIONNOTESONLY00","accepted_turns":0,"journal":{`)
+	for i := range entries {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `"m%05d":{"client_mutation_id":"m%05d","method":"urls/add","payload":"%s"}`, i, i, strings.Repeat("x", 200))
+	}
+	b.WriteString(`},"input_queue":[],"queue_revision":0,"next_turn_sequence":0,"next_queue_entry_sequence":0,"budget_reservations":{},"pending_executions":{}}`)
+	return b.String()
+}
+
+func BenchmarkReadPersistedHumanNoteAbsent(b *testing.B) {
+	for _, entries := range []int{0, 2000} {
+		data := benchmarkPersistedReadDocument(entries)
+		b.Run(fmt.Sprintf("entries=%d_size=%dKB", entries, len(data)/1024), func(b *testing.B) {
+			sessionID := identifier.MustNewSessionID()
+			stateDir := b.TempDir()
+			writeMutationSnapshotFile(b, stateDir, sessionID, data)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+				if err != nil || present || note != "" {
+					b.Fatalf("light read = (%q, %v, %v), want absent", note, present, err)
+				}
+			}
+		})
+	}
 }

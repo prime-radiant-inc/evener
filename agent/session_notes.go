@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,11 @@ func ReadCanonicalHumanNote(stateDir, sessionID string) (note string, present bo
 	return *snapshot.HumanNote, true, nil
 }
 
+// notesHumanNoteFieldKey is the persisted snapshot's JSON key for the canonical
+// human note, as a quoted byte literal so the reader's absence pre-filter looks
+// for the field rather than for the word appearing inside some string value.
+const notesHumanNoteFieldKey = `"human_note"`
+
 // ReadPersistedHumanNote extracts the top-level human_note value from a
 // session's persisted mutation snapshot without decoding the journal or
 // validating the snapshot. It exists for the hub's read-only past-session
@@ -64,9 +70,11 @@ func ReadCanonicalHumanNote(stateDir, sessionID string) (note string, present bo
 // finds is examined — that is what keeps the read cheap on journal-sized
 // documents — so a note this reader returns is a projection, never authority.
 //
-// An absent snapshot file or an absent/null human_note returns ("", false,
-// nil). A document whose syntax fails before the value is found, that is not a
-// JSON object, or whose human_note is not a string or null returns an error.
+// An absent snapshot file, a document that never spells the key, or a
+// null human_note all return ("", false, nil): each of those cannot carry a
+// note, so the roster reads them the same way. A document that does carry the
+// key but fails to parse at or before the value, or whose human_note is not a
+// string or null, returns an error.
 func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bool, err error) {
 	if err := schema.ValidateSessionID(sessionID); err != nil {
 		return "", false, err
@@ -74,16 +82,25 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 	if stateDir == "" {
 		return "", false, nil
 	}
-	file, err := afero.NewOsFs().Open(clientMutationFilePath(stateDir, sessionID))
+	data, err := afero.ReadFile(afero.NewOsFs(), clientMutationFilePath(stateDir, sessionID))
 	if os.IsNotExist(err) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("read client mutation snapshot: %w", err)
 	}
-	defer func() { _ = file.Close() }()
+	// Absence is decided by the key's bytes rather than by parsing: a document
+	// that never spells the top-level key cannot carry a note, so the roster
+	// answers "no canonical note" from one scan of the bytes instead of a walk
+	// over every value after the key's position. The roster pays this read once
+	// per past entry and the absent case is the common one, which is why the
+	// walk was worth removing. A false positive (the spelling inside some string
+	// value) costs only the walk this used to do unconditionally.
+	if !bytes.Contains(data, []byte(notesHumanNoteFieldKey)) {
+		return "", false, nil
+	}
 
-	decoder := json.NewDecoder(file)
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	open, err := decoder.Token()
 	if err != nil {
 		return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
