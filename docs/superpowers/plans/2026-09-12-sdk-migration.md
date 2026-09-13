@@ -38,7 +38,7 @@ state-store extraction has been approved by this landing task."
    single-consumer candidates in the inventory — 56 PACKAGE CANDIDATE rows less
    the 33 with two consumers by direct import — stay where they are until a
    second consumer arrives in the same PR. This is why phase C schedules 26
-   relocations, not 55. The phase-C table carries 27 rows: those 26 — C11 is two
+   relocations, not 56. The phase-C table carries 27 rows: those 26 — C11 is two
    PRs, C23 moved to phase D in round 29, and C27 was added in round 30 — plus
    C24,
    which is not a relocation but the doc adapters for a module #1184 already
@@ -152,7 +152,7 @@ plumbing.
 | C24 | ~~`docContent.ts` gains an injected origin and the two platform adapters~~ — **done, shipped as #1221 (`303053dfb`)**. `DocPort = { origin, fetch }` (`docContent.ts:72`) is the whole doc seam a host installs; `docFileRawURL(origin, session, path)` (`:97`) and `docImageURL(origin, session, path)` (`:135`) take the origin, and `readDocFile(session, path, port)` (`:113`) composes through the port rather than a fourth positional argument. Adapters: `panes/doc/browserDocPort.ts` and `mobile-native/src/nativeDocPort.ts`, each with its own test. **`docImageURL` stays a pure string builder, and native doc-image authentication lives on the source, not in a port** — but it is shipped unwired, and round 17 of this plan described it wrongly. What #1221 actually landed is `nativeDocImageSource(origin, token, session, path)` at `mobile-native/src/nativeDocPort.ts:26`, returning `{ uri: docImageURL(origin, session, path), headers }` with the bearer header, covered by `nativeDocPort.test.ts:42,46`. **No native renderer imports it**, because native has no doc pane yet; `transcriptImageSource` is a different function for a different surface, used only by `TranscriptImages.tsx` for transcript images. Wiring `nativeDocImageSource` to a real `<Image>`, with an integration test that proves the header reaches the request, belongs to **D29**, the row that adds the native doc pane. The browser side is wired and done: `<img>` carries the hub cookie on a same-origin request. | 180 | A1, A3d | **Shipped, and clean for the fetch path; the image path is shipped but unwired — see D29.** The one design question this row carried for five rounds — how a bare URL string carries a bearer header to a native `<Image>` — was already answered in the tree by `transcriptImageSource`, which nobody had cited. Worth remembering: before specifying a new port, grep the native tree for the adapter that already does it Oracle, for the record: the two adapter tests, `protocol/docContent.test.ts`, and `make test-api-package` for the changed `./docContent` signature and its `packageExports` `values`/`types` |
 | C25 | `panes/session/chrome/{taskData,taskGroups,taskTime}.ts` (154) — all three imported by native (2/1/2 sites) — plus rewriting `panes/session/transcript/tools/taskData.ts:18`, which imports `parseTaskListData` and `TaskRow` from the chrome module | ~300 | A4 | Absorbs withdrawn B2. `TaskListResponse.data` is `unknown` on the wire, so the parser is hand-written and its `null` (no data, old daemon) must stay distinct from `[]` (zero tasks). The `transcript/tools/taskData.ts` consumer is the one a naive move would break |
 | C26 | `panes/session/transcript/messages/format.ts` (87) — imported by native (1 site), and the last two-consumer module with no row of its own | ~150 | A4 | None. The file has no imports at all, so it is the cheapest relocation left |
-| C27 | `panes/session/composer/builtinInvocation.ts` (43) — the last two-consumer module with no row, missed by the inventory until round 30 | ~150 | A4 | None. The file has no imports of its own, and `mobile-native/src/composerCommand.ts:1-4` imports `findBuiltinArgument` and `matchBuiltinInvocation` as values, so it is a genuine runtime two-consumer module. Four web import sites to repoint: `Composer.tsx:73`, `builtinCommand.ts:19`, `spawn/Spawn.tsx:67`, `spawn/spawnSlashMenu.ts:12` |
+| C27 | `panes/session/composer/builtinInvocation.ts` (43) — the last two-consumer module with no row, missed by the inventory until round 30 | ~150 | A4 | None. The file has no imports of its own, and `mobile-native/src/composerCommand.ts:1-4` imports `findBuiltinArgument` and `matchBuiltinInvocation` as values, so it is a genuine runtime two-consumer module. **Every importer on main, grepped, tests included — six sites in six files:** five web — `Composer.tsx:73`, `builtinCommand.ts:19`, **`builtinCommand.test.ts:9`**, `spawn/Spawn.tsx:67`, `spawn/spawnSlashMenu.ts:12` — and one native, `mobile-native/src/composerCommand.ts:1-4`. No `vi.mock` anywhere names it, and it has **no test file of its own**: `builtinCommand.test.ts` covers `builtinCommand.ts` and reaches `matchBuiltinInvocation` through it, so that test stays where it is and is repointed rather than moved, and the module arrives in the package without an oracle — C27 writes one |
 
 Some modules that look like relocations are deliberately not here.
 `stores/secureUUID.ts` has one consumer today and moves inside D26, where the
@@ -362,8 +362,8 @@ tables carry 74 rows, six of them withdrawn phase-B rows that contribute
 nothing — so **68 rows of work**, and **67 real PRs**, because B1b landed inside
 B1 rather than on its own. **Nineteen have landed** (A1, A2, A3b, A3c, A3d, A5,
 B1 carrying B1b, B3b, C5, C6, C9, C10, C11a, C11b, C12, C13, C15, C24, C26), so
-**48 remain**, two of them in flight: A3 (#1241, at `2fb3d5fa2`, awaiting round 2)
-and the Metro gate for #1244 (#1245, at `3c4d54c60`, round-1 fix in progress).
+**48 remain**, two of them in flight: A3 (#1241, at `5062edf34`, awaiting round 3)
+and the Metro gate for #1244 (#1245, at `4c78b34a0`, awaiting round 2).
 
 Phase A 8 PRs / 2,860 lines. Phase B 210, the sum of its three live rows of 9
 (all three landed). Phase C 27 / 8,530. Phase D 30 / 19,090. Each subtotal is its own rows added up, not an estimate.
@@ -406,8 +406,8 @@ Observed at `d7ff88653`, not assumed; re-query before acting.
 | C11a | #1225 | **merged** as `c867646c4` — `tools/helpers.ts` → `protocol/toolCallText.ts` |
 | C11b | #1232 | **merged** as `314281cd5` — `askShared.ts` and `deriveAskQuestions.ts` |
 | C9 | #1234 | **merged** as `d7ff88653` — `composer/slashCompletion.ts` → `protocol/slashCompletion.ts` |
-| A3 | #1241 | open at `2fb3d5fa2`, awaiting round 2 — six commits; residuals #1242, #1243, #1244 |
-| — | #1245 | open at `3c4d54c60`, round-1 fix in progress — the Metro bundling gate for #1244, which A4 depends on |
+| A3 | #1241 | open at `5062edf34`, awaiting round 3 — six commits; residuals #1242, #1243, #1244 |
+| — | #1245 | open at `4c78b34a0`, awaiting round 2 — the Metro bundling gate for #1244, which A4 depends on |
 | C12 | #1233 | **merged** as `a0e594122` — `askDock/reconcileBatches.ts` → `protocol/reconcileBatches.ts` |
 | C6 | #1227 | **merged** as `2b1e02939` — `stores/attachmentMarkers.ts` → `protocol/attachmentMarkers.ts` |
 | C5 | #1229 | **merged** as `31a5a4370` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
@@ -431,6 +431,6 @@ A3b, A3c and A3d landed ahead of A3 for the same reason.
 B7 was executed and stopped as NEEDS_CONTEXT; that triggered a grep re-audit of
 every DUPLICATED row and every 2-consumer claim at `f2599d1ed`. Six phase-B rows
 were withdrawn, seven inventory rows were reclassified, and all 34 2-consumer
-claims held **at the `f2599d1ed` re-audit — 34 then, 32 today**, since
-`sendQueueAvailability.ts` left the set in round 23 and `deriveAskQuestions.ts`
-in round 26, both under the direct-import counting rule. B3b is the rescoped survivor of that lane.
+claims held **at the `f2599d1ed` re-audit — 34 then, 33 today**: `sendQueueAvailability.ts`
+left the set in round 23 and `deriveAskQuestions.ts` in round 26, both under the
+direct-import counting rule, and `builtinInvocation.ts` joined it in round 30. B3b is the rescoped survivor of that lane.

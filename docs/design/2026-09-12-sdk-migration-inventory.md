@@ -26,8 +26,9 @@ trees name it in an import statement of their own. Transitive reach does not
 count, and neither does a type-only import — neither survives to run time, and
 neither is evidence that the second tree depends on the module's behaviour.
 **34 such rows** were re-checked this way at the `f2599d1ed` re-audit and all 34
-held; **32 today**, after `sendQueueAvailability.ts` left the set in round 23 and
-`deriveAskQuestions.ts` in round 26. Line counts are non-test lines at the stated
+held; **33 today**: `sendQueueAvailability.ts` left the set in round 23 and
+`deriveAskQuestions.ts` in round 26, and `builtinInvocation.ts` joined it in
+round 30, having been missing from this document until then. Line counts are non-test lines at the stated
 commit. Where I am unsure I say so in the row.
 
 ## 0. What the package was at the baseline
