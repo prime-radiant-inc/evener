@@ -2,8 +2,8 @@ import {
   mergeSlashCommands,
   type SlashMenuItem,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
+import { visibleCatalogCommands } from "../../cmd/evener-hub/frontend/src/protocol/catalogCommands";
 import { sessionActionError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
-import { visibleCatalogCommands } from "../../cmd/evener-hub/frontend/src/shell/palette/catalogCommands";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface CatalogState {
