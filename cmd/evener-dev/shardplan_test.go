@@ -207,12 +207,12 @@ func TestShellAndGoForwardTheSameBuildFlags(t *testing.T) {
 	}
 	end := strings.Index(body[start:], "\n}\n")
 	shell := map[string]bool{}
-	for _, line := range strings.Split(body[start:start+end], "\n") {
+	for line := range strings.SplitSeq(body[start:start+end], "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "-") || !strings.HasSuffix(line, ")") {
 			continue
 		}
-		for _, name := range strings.Split(strings.TrimSuffix(line, ")"), "|") {
+		for name := range strings.SplitSeq(strings.TrimSuffix(line, ")"), "|") {
 			if name = strings.TrimSpace(name); name != "" {
 				shell[name] = true
 			}
