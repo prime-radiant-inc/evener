@@ -161,6 +161,20 @@ test("recovered selections are deduplicated in catalog order", () => {
   expect(draft.skillNames).toEqual(["pkg:probe", "pkg:other"]);
 });
 
+// A corrupted or hand-edited record can carry padded or empty names. They must
+// canonicalize to the same list the composer would have sent, or restoring the
+// draft puts blank chips and duplicate markers back on the composer.
+test("recovered selections canonicalize padded and empty names", () => {
+  const draft = recoveryComposerDraft(
+    recoveryRecord([
+      { type: "skill", name: " pkg:probe " },
+      { type: "skill", name: "" },
+      { type: "skill", name: "pkg:probe" },
+    ]),
+  );
+  expect(draft.skillNames).toEqual(["pkg:probe"]);
+});
+
 test("merging queue-like recovery keeps current text first and renumbers recovered markers", () => {
   const merged = mergeRecoveryComposerDraft("current [image 1]", [settledAttachment(1, "current.png", "AAAA")], {
     text: "failed [image 1]",

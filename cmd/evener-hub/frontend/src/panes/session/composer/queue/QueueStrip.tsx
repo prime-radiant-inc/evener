@@ -8,6 +8,7 @@
 // so mounting this inside Composer's own tree happens at the wave
 // integration merge (T6), not here.
 import { type ReactNode, useState } from "react";
+import { canonicalSkillNames } from "../../../../protocol/composerInput";
 import { errorText, sessionActionError } from "../../../../protocol/errors";
 import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
@@ -118,10 +119,11 @@ function recordContent(record: MutationOutboxRecord): { text: string; imageCount
     .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
     .join("\n");
-  const skillNames = input
-    .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
-    .map((item) => item.name.trim())
-    .filter((name) => name !== "");
+  const skillNames = canonicalSkillNames(
+    input
+      .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
+      .map((item) => item.name),
+  );
   return { text, imageCount: input.filter((item) => item.type === "image").length, skillNames };
 }
 

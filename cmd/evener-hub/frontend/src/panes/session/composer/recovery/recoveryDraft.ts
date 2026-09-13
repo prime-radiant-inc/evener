@@ -1,8 +1,8 @@
+import { canonicalSkillNames } from "../../../../protocol/composerInput";
 import type { InputItem } from "../../../../protocol/types.gen";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import { markerText } from "../attachments/textareaMarkers";
 import type { PendingAttachment } from "../attachments/useAttachments";
-import { addSkillSelection } from "../skillSelections";
 
 export interface RecoveredComposerDraft {
   text: string;
@@ -23,9 +23,11 @@ function markerNumbers(text: string): number[] {
 }
 
 function skillSelections(input: InputItem[]): string[] {
-  return input
-    .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
-    .reduce((names: string[], item) => addSkillSelection(names, item.name), []);
+  return canonicalSkillNames(
+    input
+      .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
+      .map((item) => item.name),
+  );
 }
 
 // The record carries both halves of the pairing the composer needs: the text
@@ -84,11 +86,9 @@ export function mergeRecoveryComposerDraft(
   const text = [currentText, recoveredText].filter((part) => part.length > 0).join("\n\n");
   // Selections union the same way the text does, current names first, so a
   // recovery edit never drops a skill the user already selected - and never
-  // duplicates one the record carries too.
-  const skillNames = recovered.skillNames.reduce(
-    (names: string[], name) => addSkillSelection(names, name),
-    [...currentSkillNames],
-  );
+  // duplicates one the record carries too. The union is canonicalized so a
+  // padded or empty name from either side collapses to the same list.
+  const skillNames = canonicalSkillNames([...currentSkillNames, ...recovered.skillNames]);
   return {
     text,
     attachments: [...currentAttachments, ...attachments],
