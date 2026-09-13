@@ -28,10 +28,15 @@ var errStreamUnavailable = errors.New("stream unavailable")
 // persistAndEmitRoundTimings commits the presentational timing record before
 // publishing its live event, so the live item always has a durable counterpart.
 func (s *Session) persistAndEmitRoundTimings(timings events.RoundTimings) {
-	payload := schema.RoundTimings(timings)
+	payload := timings.Timings()
 	turn := schema.NewTurn(schema.TurnRoundTimings, llm.System(payload.Announcement()))
 	turn.RoundTimings = &payload
+	// One read of the active turn names both publications. The event carried
+	// no owner before, so the projector resolved it from whatever turn was
+	// running when the event arrived — which a timing published as its turn
+	// ends can miss, grouping the round elsewhere than the transcript does.
 	turn.OwningTurnID = s.activeTurnOwner()
+	timings.OwningTurnID = turn.OwningTurnID
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error { return s.writeTranscriptDurableLocked(turn) },

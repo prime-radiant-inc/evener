@@ -1086,7 +1086,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventRoundTimings:
 		p.clearSkillCandidate()
 		data := eventData[events.RoundTimings](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindRoundTimings, "Round timings", roundTimingsAnnouncement(data), roundTimingsRaw(data))
+		// The durable owner wins over the running turn: a round's timing is
+		// published as that round ends, and the turn can be over by then.
+		return p.ownedSystemAnnouncementItem(data.OwningTurnID, appwire.ThreadItemEventKindRoundTimings, "Round timings", roundTimingsAnnouncement(data), roundTimingsRaw(data), nil)
 	case events.EventQueueChanged:
 		p.clearSkillCandidate()
 		data := eventData[events.QueueChangedData](event.Data)
@@ -1920,7 +1922,7 @@ func roundTimingsRaw(data events.RoundTimings) json.RawMessage {
 }
 
 func roundTimingsAnnouncement(data events.RoundTimings) string {
-	return schema.RoundTimings(data).Announcement()
+	return data.Timings().Announcement()
 }
 
 func fallbackLabel(value, fallback string) string {

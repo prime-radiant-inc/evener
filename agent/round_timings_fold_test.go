@@ -85,10 +85,10 @@ func TestRoundTimingsFoldPublicationSurvivesReloadWithoutProviderHistory(t *test
 	if len(restored) != 1 || restored[0].RoundTimings == nil {
 		t.Fatalf("reloaded round timing records = %+v, want exactly one semantic record", restored)
 	}
-	if !reflect.DeepEqual(*restored[0].RoundTimings, schema.RoundTimings(want)) {
+	if !reflect.DeepEqual(*restored[0].RoundTimings, want.Timings()) {
 		t.Fatalf("reloaded round timings = %+v, want %+v", *restored[0].RoundTimings, want)
 	}
-	wantAnnouncement := schema.RoundTimings(want).Announcement()
+	wantAnnouncement := want.Timings().Announcement()
 
 	reloadAdapter := &agenttest.ScriptedAdapter{
 		Provider: "openai",
@@ -111,5 +111,48 @@ func TestRoundTimingsFoldPublicationSurvivesReloadWithoutProviderHistory(t *test
 		if message.Text() == wantAnnouncement {
 			t.Fatalf("provider request contains persisted round timing announcement: %q", message.Text())
 		}
+	}
+}
+
+// The persisted timing record names the logical turn it belongs to, and the
+// live event has to name the same one. Without it the projector resolves
+// ownership from whatever turn is running when the event arrives — mutable
+// state that a timing published as its turn ends can miss, grouping the round's
+// timing under a different turn than the transcript does.
+func TestRoundTimings_LiveEventCarriesThePersistedOwner(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}), withoutGitSnapshot())
+	owner := s.nameTurnItself()
+
+	evs, mu, done := collectEvents(s)
+	s.persistAndEmitRoundTimings(events.RoundTimings{Round: 2, TotalRound: 5 * time.Millisecond})
+	s.Close()
+	<-done
+
+	var persisted string
+	for _, turn := range currentHistory(t, s) {
+		if turn.Kind == schema.TurnRoundTimings {
+			persisted = turn.OwningTurnID
+		}
+	}
+	if persisted != owner {
+		t.Fatalf("test setup: the persisted timing record is owned by %q, want the running turn %q", persisted, owner)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	seen := 0
+	for _, event := range *evs {
+		data, ok := event.Data.(events.RoundTimings)
+		if !ok || event.Kind != events.EventRoundTimings {
+			continue
+		}
+		seen++
+		if data.OwningTurnID != persisted {
+			t.Fatalf("the live round-timing event is owned by %q, want the owner its entry carries, %q", data.OwningTurnID, persisted)
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("round-timing events on the stream = %d, want 1", seen)
 	}
 }
