@@ -729,6 +729,69 @@ describe("ConnectProviderDialog", () => {
     await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
   });
 
+  test("a save from Manage Connections carries the row's endpoint fingerprint, captured at open", async () => {
+    const row = instance({
+      name: "work",
+      providerId: "anthropic",
+      authModes: ["apiKey"],
+      endpointFingerprint: "fp-manage-open",
+    });
+    const fake = connectFakeClient({ instances: [row], availableProviders: [] });
+    fake.on("evener/auth/apiKey/set", () => ({
+      provider: "work",
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      authModes: ["apiKey"],
+      hasStoredOAuth: false,
+      hasStoredFile: true,
+    }));
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Set API key" }));
+    await user.type(screen.getByLabelText("API key for work"), "manage-key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await vi.waitFor(() =>
+      expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1),
+    );
+    expect(fake.calls.find((call) => call.method === "evener/auth/apiKey/set")?.params).toEqual({
+      provider: "work",
+      value: "manage-key",
+      expectedEndpointFingerprint: "fp-manage-open",
+    });
+  });
+
+  test("a Manage Connections save is refused when the row's endpoint moved after the editor opened", async () => {
+    let row = instance({
+      name: "work",
+      providerId: "anthropic",
+      authModes: ["apiKey"],
+      endpointFingerprint: "fp-manage-open",
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
+    connectionStore.getState().connect(fake);
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Set API key" }));
+
+    // The listing re-resolves the name to a different endpoint while the field
+    // holds the secret; the capture from open time must still govern the save.
+    row = { ...row, endpointFingerprint: "fp-manage-changed" };
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+
+    await user.type(screen.getByLabelText("API key for work"), "manage-key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "");
+    expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  });
+
   test("redirect OAuth returns to the chooser and still requires a successful test", async () => {
     const codex = instance({
       name: "personal",

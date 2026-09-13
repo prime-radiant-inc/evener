@@ -789,6 +789,7 @@ describe("ApiKeyDialog", () => {
     render(
       <ApiKeyDialog
         instance={instance({ name: "work", providerId: "anthropic" })}
+        expectedEndpointFingerprint={undefined}
         onCancel={onCancel}
         onSuccess={() => {}}
       />,
@@ -812,6 +813,7 @@ describe("ApiKeyDialog", () => {
       <>
         <ApiKeyDialog
           instance={instance({ name: "work", providerId: "anthropic" })}
+          expectedEndpointFingerprint={undefined}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -904,6 +906,7 @@ describe("ApiKeyDialog", () => {
       <>
         <ApiKeyDialog
           instance={instance({ name: "work", providerId: "anthropic" })}
+          expectedEndpointFingerprint={undefined}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -932,6 +935,7 @@ describe("ApiKeyDialog", () => {
       <>
         <ApiKeyDialog
           instance={instance({ name: "work", providerId: "anthropic" })}
+          expectedEndpointFingerprint={undefined}
           onCancel={() => {}}
           onSuccess={() => {}}
         />
@@ -949,6 +953,7 @@ describe("ApiKeyDialog", () => {
     render(
       <ApiKeyDialog
         instance={instance({ name: "work", providerId: "anthropic" })}
+        expectedEndpointFingerprint={undefined}
         onCancel={() => {}}
         onSuccess={() => {}}
       />,
@@ -967,6 +972,7 @@ describe("CredentialJsonDialog", () => {
     render(
       <CredentialJsonDialog
         instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+        expectedEndpointFingerprint={undefined}
         onCancel={onCancel}
         onSuccess={() => {}}
       />,
@@ -991,6 +997,7 @@ describe("CredentialJsonDialog", () => {
       <>
         <CredentialJsonDialog
           instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+          expectedEndpointFingerprint={undefined}
           onCancel={() => {}}
           onSuccess={onSuccess}
         />
@@ -1014,6 +1021,7 @@ describe("CredentialJsonDialog", () => {
       <>
         <CredentialJsonDialog
           instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+          expectedEndpointFingerprint={undefined}
           onCancel={() => {}}
           onSuccess={() => {}}
         />

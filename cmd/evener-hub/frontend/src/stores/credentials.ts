@@ -468,11 +468,13 @@ let wiredClient: AppwireClientLike | null = null;
 let unsubscribeNotifications: (() => void) | undefined;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
 // Schedule provenance for the coalesced refresh. The debounce collapses every
-// request in its window into one read, so provenance cannot be
-// last-writer-wins: a request that came from a foreign change must survive a
-// later self request (and vice versa), or a genuine foreign change would be
-// silently presented as the store's own refresh and never invalidate the
-// guided flow. `undefined` means no request is pending.
+// request in its window into one read, so provenance is not last-writer-wins
+// and not symmetric: the read is marked as this client's own only when every
+// request in its window was self. A foreign request wins whichever side of the
+// window it lands on, because the read observes that change either way, and
+// presenting a listing that carries a foreign change as the store's own
+// refresh would keep the guided flow from invalidating on it. `undefined`
+// means no request is pending.
 let pendingRefetchSelf: boolean | undefined;
 
 function scheduleRefetch(self = false): void {

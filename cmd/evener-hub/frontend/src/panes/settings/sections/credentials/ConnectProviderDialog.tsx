@@ -32,7 +32,12 @@ const CLASS = {
 // A stored-value editor's kind doubles as the auth mode that offers it, so
 // the same lookup finds the instance a "Set API key" or "Set credential
 // JSON" editor is open for and closes the editor once that mode is gone.
-type StoredValueEditor = { kind: "apiKey" | "credentialJson"; name: string };
+// expectedEndpointFingerprint is captured from the row the user acted on when
+// the editor opens: the dialog asserts it at submit, so a concurrent change
+// that re-points the name cannot send the already-entered secret to an
+// endpoint the user never reviewed. Undefined when the row showed no endpoint,
+// which asserts nothing.
+type StoredValueEditor = { kind: "apiKey" | "credentialJson"; name: string; expectedEndpointFingerprint?: string };
 type OpenEditor = { kind: "add" } | StoredValueEditor | OAuthEditor | null;
 
 const TEST_INTERRUPTED_MESSAGE = "Provider configuration refreshed while testing. Test the connection again.";
@@ -236,7 +241,14 @@ function ManageConnections({
     const instance = storedValueEditorInstance(openEditor);
     if (instance) {
       const Editor = openEditor.kind === "apiKey" ? ApiKeyDialog : CredentialJsonDialog;
-      return <Editor instance={instance} onCancel={closeEditor} onSuccess={closeEditor} />;
+      return (
+        <Editor
+          instance={instance}
+          expectedEndpointFingerprint={openEditor.expectedEndpointFingerprint}
+          onCancel={closeEditor}
+          onSuccess={closeEditor}
+        />
+      );
     }
   }
   if (openEditor?.kind === "add") {
@@ -332,14 +344,29 @@ function ManageConnections({
                   </div>
                   <div className={CLASS.actions}>
                     {supportsApiKey && (
-                      <Button variant="secondary" onClick={() => chooseEditor({ kind: "apiKey", name: instance.name })}>
+                      <Button
+                        variant="secondary"
+                        onClick={() =>
+                          chooseEditor({
+                            kind: "apiKey",
+                            name: instance.name,
+                            expectedEndpointFingerprint: instance.endpointFingerprint,
+                          })
+                        }
+                      >
                         {instance.hasStoredFile ? "Replace API key" : "Set API key"}
                       </Button>
                     )}
                     {supportsCredentialJson && (
                       <Button
                         variant="secondary"
-                        onClick={() => chooseEditor({ kind: "credentialJson", name: instance.name })}
+                        onClick={() =>
+                          chooseEditor({
+                            kind: "credentialJson",
+                            name: instance.name,
+                            expectedEndpointFingerprint: instance.endpointFingerprint,
+                          })
+                        }
                       >
                         {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                       </Button>

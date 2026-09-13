@@ -340,16 +340,19 @@ export interface ApiKeyDialogProps {
   instance: InstanceEntry;
   /** The endpoint fingerprint the dialog was opened against, captured from the
    * row the user acted on. A submit asserts this value, so a concurrent
-   * endpoint change cannot re-target the already-entered secret. Undefined when
-   * the row showed no endpoint, which asserts nothing. */
-  expectedEndpointFingerprint?: string;
+   * endpoint change cannot re-target the already-entered secret. Required (and
+   * explicitly undefined when the row showed no endpoint, which is the
+   * legitimate "nothing was shown, nothing to assert" case) rather than
+   * optional, so a caller that forgets to capture it is a build error instead
+   * of a save that silently asserts nothing or refuses against undefined. */
+  expectedEndpointFingerprint: string | undefined;
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 interface CredentialValueDialogProps {
   instance: InstanceEntry;
-  expectedEndpointFingerprint?: string;
+  expectedEndpointFingerprint: string | undefined;
   onCancel: () => void;
   onSuccess: () => void;
   title: string;

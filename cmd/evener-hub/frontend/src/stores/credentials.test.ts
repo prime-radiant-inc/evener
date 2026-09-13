@@ -695,6 +695,36 @@ describe("notification-triggered refetch", () => {
     expect(marks.every((mark) => mark === before)).toBe(true);
   });
 
+  test("a foreign change landing after this client's own request still keeps the refresh foreign", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch(); // initial load; also wires notification handling
+    const before = credentialsStore.getState().selfRefresh;
+
+    // The other order of the same rule: this client's own mutation opens the
+    // debounce window and a foreign change lands inside it. The single
+    // coalesced read observes that change too, so it is not the store's own
+    // refresh and the flow's invalidation guard has to keep seeing it as
+    // foreign. Marking it self would suppress a genuine foreign change for
+    // exactly the read that carried it.
+    await credentialsStore.getState().setApiKey("work", "draft");
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "anthropic", activeSource: "store" } });
+    const marks: number[] = [];
+    const unsubscribe = credentialsStore.subscribe((current) => marks.push(current.selfRefresh));
+    await vi.advanceTimersByTimeAsync(250);
+    unsubscribe();
+
+    expect(credentialsStore.getState().selfRefresh).toBe(before);
+    expect(marks.every((mark) => mark === before)).toBe(true);
+  });
+
   test("a refresh serving only this client's own mutation still carries the self mark", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
