@@ -24,11 +24,17 @@ origin/main -- mobile-native` returns at least one hit; all 34 such rows were
 re-checked this way and all 34 hold. Line counts are non-test lines at the stated
 commit. Where I am unsure I say so in the row.
 
-## 0. What the package actually is today
+## 0. What the package was at the baseline
 
-Five facts that change the shape of the whole migration. Facts 1, 2 and 5
-describe the package **as it stood at `92561dbe3`, before A1**; each carries its
-post-A1 value inline, measured at `3bf357337`. Facts 3 and 4 hold as written.
+**Every table and count in sections 0, 2, 3, 4, 5 and 7 is measured at
+`92561dbe3` and is not edited as PRs land.** That is deliberate: this document
+kept drifting because it tried to be both a survey and a status board. The
+survey is frozen; "Delta since baseline" at the end records what has changed and
+by how much. Read a table as history, and the delta section as news.
+
+Five facts that changed the shape of the whole migration, all as of the
+baseline. Facts 1, 2, 3 and 5 have since been acted on; the delta section says
+how. Fact 4 still holds.
 
 1. **The shipped package was six files, not sixteen** — until A1.
    `protocol/tsconfig.build.json:13` lists
@@ -37,13 +43,11 @@ post-A1 value inline, measured at `3bf357337`. Facts 3 and 4 hold as written.
    `activityData.ts`, `activityList.ts`, `activityMerge.ts`, `jobOutput.ts`,
    `docContent.ts`, `sendQueueAvailability.ts`, `sessionErrors.ts`,
    `stableDelegate.ts` — 3,502 lines, per §5's own table) were compiled by the
-   apps' own build, never packed, never qualified. **A1 (#1184) closed this,
-   merged to main as `f2599d1ed`:** the build `files` list now carries all
-   sixteen, `docContent.ts` included, with only `readDocFile` held off
-   `index.ts` until C24. §5's "In tarball?" column reflects the post-A1 state.
+   apps' own build, never packed, never qualified. A1 has since closed this —
+   see the delta section.
 2. **`index.ts` carried nine export statements and eleven runtime exports**
-   before A1 (`protocol/index.ts:1-9` at `92561dbe3`; all sixteen modules export
-   through it now, so size new work off the current file, not this list): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
+   (`protocol/index.ts:1-9`; size new work off the current file and the
+   `runtimeExports` manifest, never off this list): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
    `ConnectionClosedError`, `RequestTimeoutError`, `WireError`,
    `rpcURLFromLocation`, `composeAskAnswers`, `METHOD_NAMES`,
    `NOTIFICATION_NAMES`, `STEERING_KINDS`, `THREAD_ITEM_EVENT_KINDS`, plus the
@@ -60,21 +64,21 @@ post-A1 value inline, measured at `3bf357337`. Facts 3 and 4 hold as written.
    136 web files import from `protocol/testing/fakeClient`, 20 of them
    production modules (`stores/threads.ts:24`, `shell/clientContext.tsx:10`, …).
    `protocol/testing/` is not in the build `files` list. Of those 136 files,
-   only **25** import `AppwireClientLike` itself (27 files name the type; the
-   other two are its declaration and `FakeClient`). The rest import `FakeClient`
-   and keep that import wherever the type moves.
+   only **25** imported `AppwireClientLike` itself; the rest import `FakeClient`
+   and keep that import wherever the type moves. **A2 (#1188) closed this:** at
+   `27503c07d` the type is declared in `protocol/clientLike.ts`, exported from
+   `index.ts` and in the build `files`; 114 `testing/fakeClient` import lines
+   remain and **none** of them import `AppwireClientLike`.
 4. **The package has zero runtime dependencies** (`protocol/package.json` has no
    `dependencies`). Both consumers' stores are zustand
    (`cmd/evener-hub/frontend/package.json` and `mobile-native/package.json`
    both depend on `zustand ^5`). A shared *state* core cannot keep the
    zero-dependency property and use zustand.
-5. **The qualification runner hard-coded the export list four times** — and no
-   longer does. Before A1 it wrote four consumer files each naming all eleven
-   runtime exports literally. **A1 fixed this the way this document asked:** at
-   `3bf357337` one shared `runtimeExports` array (`qualify-package.mjs:69`)
-   feeds all four writes — `esm.mts` (:163), `commonjs.cts` (:177),
-   `esm-runtime.mjs` (:201), `commonjs-runtime.cjs` (:207). A new export is
-   added in one place; a new *subpath* still needs all four write sites touched.
+5. **The qualification runner hard-coded the export list four times.** It wrote
+   four consumer files, each naming all eleven runtime exports literally, so a
+   new export had to be added in four places. A1 has since replaced this with
+   one shared `runtimeExports` manifest — see the delta section. A new *subpath*
+   still needs all four write sites touched.
 
 The unexpected finding: **the native app already imports 30+ web frontend
 modules by relative path.** `mobile-native` reaches into
@@ -222,7 +226,7 @@ names eight runtime modules; the ninth below is dead.
 ## 5. The `protocol/` directory itself (16 top-level modules, 7,233 lines;
 `testing/` adds 799, for the 8,032 the directory holds in all)
 
-| Module (lines) | In tarball? | Consumers | Class |
+| Module (lines) | In tarball? (baseline; A1/A2/B1 have since added all of them plus `clientLike.ts` and `itemFailure.ts` — see the delta section) | Consumers | Class |
 | --- | --- | --- | --- |
 | `index.ts` (9) | yes | — | SHARED ALREADY |
 | `client.ts` (837) | yes | web (12 sites), native (6) | SHARED ALREADY |
@@ -230,16 +234,16 @@ names eight runtime modules; the ninth below is dead.
 | `transport.ts` (20) | yes | web (3), native (5) | SHARED ALREADY |
 | `types.gen.ts` (2505) | yes | web (229), native (78) | SHARED ALREADY |
 | `askAnswers.ts` (100) | yes | web (3), native (2) | SHARED ALREADY |
-| `model.ts` (369) | yes, since #1184 | web (129), native 0 | PACKAGE CANDIDATE |
-| `reducer.ts` (1630) | yes, since #1184 | web (11), native 0 | PACKAGE CANDIDATE |
-| `activityData.ts` (702) | yes, since #1184 | web (15), native (6) | PACKAGE CANDIDATE (2 consumers) |
-| `activityList.ts` (188) | yes, since #1184 | web 0, native (3) | PACKAGE CANDIDATE — the only protocol module the web does not use |
-| `activityMerge.ts` (278) | yes, since #1184 | web (2), native 0 | PACKAGE CANDIDATE |
-| `sendQueueAvailability.ts` (147) | yes, since #1184 | web (2), native via `submitRouting` | PACKAGE CANDIDATE (2 consumers) |
-| `sessionErrors.ts` (42) | yes, since #1184 | web (2), native (2) | PACKAGE CANDIDATE (2 consumers) |
-| `stableDelegate.ts` (12) | yes, since #1184 | web (3), native (1) | PACKAGE CANDIDATE (2 consumers) |
-| `jobOutput.ts` (35) | yes, since #1184 | web (2), native (1) | PACKAGE CANDIDATE (2 consumers) |
-| `docContent.ts` (99) | **yes, since #1184** | web (5), native 0 | PACKAGE CANDIDATE — the module ships and `docFileRawURL`/`docImageURL`/`DOC_FILE_MAX_BYTES`/`DocFileError` are exported and qualified, but `readDocFile` is deliberately kept off `index.ts` until C24 gives it a base-URL and fetch port |
+| `model.ts` (369) | **no** | web (129), native 0 | PACKAGE CANDIDATE |
+| `reducer.ts` (1630) | **no** | web (11), native 0 | PACKAGE CANDIDATE |
+| `activityData.ts` (702) | **no** | web (15), native (6) | PACKAGE CANDIDATE (2 consumers) |
+| `activityList.ts` (188) | **no** | web 0, native (3) | PACKAGE CANDIDATE — the only protocol module the web does not use |
+| `activityMerge.ts` (278) | **no** | web (2), native 0 | PACKAGE CANDIDATE |
+| `sendQueueAvailability.ts` (147) | **no** | web (2), native via `submitRouting` | PACKAGE CANDIDATE (2 consumers) |
+| `sessionErrors.ts` (42) | **no** | web (2), native (2) | PACKAGE CANDIDATE (2 consumers) |
+| `stableDelegate.ts` (12) | **no** | web (3), native (1) | PACKAGE CANDIDATE (2 consumers) |
+| `jobOutput.ts` (35) | **no** | web (2), native (1) | PACKAGE CANDIDATE (2 consumers) |
+| `docContent.ts` (99) | **no** | web (5), native 0 | PACKAGE CANDIDATE — the module ships and `docFileRawURL`/`docImageURL`/`DOC_FILE_MAX_BYTES`/`DocFileError` are exported and qualified, but `readDocFile` is deliberately kept off `index.ts` until C24 gives it a base-URL and fetch port |
 | `testing/` (6 files, 799 lines) | **no**, deliberately | 136 web files import `testing/fakeClient`; 25 name `AppwireClientLike` | PACKAGE CANDIDATE — the type must leave `testing/` |
 
 ## 6. The package boundary
@@ -251,8 +255,11 @@ Three different ways, only one of which is qualified.
 1. **Tarball, qualified.** `make test-api-package` →
    `protocol/scripts/qualify-package.mjs`: `npm pack`, install outside the
    checkout, ESM + CJS type-check and runtime import, declaration check, then the
-   shipped examples against a scripted `ws` server. This exercises exactly the
-   eleven `index.ts` runtime exports, across four generated consumer programs.
+   shipped examples against a scripted `ws` server. What it exercises is whatever the
+   `runtimeExports` manifest at `qualify-package.mjs:69` lists, across four
+   generated consumer programs — cite the manifest, never a number, because a
+   symbol added to `index.ts` and not to that array is unqualified while the
+   gate stays green.
 2. **Deep relative import from the web** (`../protocol/model`,
    `../protocol/reducer`, `../protocol/testing/fakeClient`). Compiled by Vite and
    `tsc --noEmit` in `make test-web`. Nothing checks these files stay packable.
@@ -331,19 +338,22 @@ later PR a place to land. Both are now written: see "Since this was written".
 | **Total rows** | **108** |
 
 Rows cover 32 web `stores/` modules, 49 rows for web modules outside `stores/`
-(several rows group a directory), 9 `mobile/src` modules, and 17 rows for
-`protocol/` (its 16 top-level modules plus the `testing/` directory).
+(several rows group a directory), 10 `mobile/src` rows (9 modules — one row
+covers a duplicate pair), and 17 rows for `protocol/` (its 16 baseline
+top-level modules plus the `testing/` directory): 32 + 49 + 10 + 17 = 108.
 
-## Since this was written
+## Delta since baseline
 
-Recorded 2026-09-12, refreshed after round 6; statuses observed at
-`3bf357337`. Re-query before acting.
+What has landed since `92561dbe3`, and what it does to the frozen tables above.
+Statuses observed at `27503c07d`; re-query before acting.
 
-| Plan PR | GitHub | State | What it changed here |
-| --- | --- | --- | --- |
-| A1 | #1184 | **merged** as `f2599d1ed` | Shipped **all ten** unpacked modules, `docContent.ts` included (`files` goes 6 → 16) — the earlier plan held the whole module back; the PR shipped it and split it at the entry point instead. `docFileRawURL`, `docImageURL`, `DOC_FILE_MAX_BYTES` and `DocFileError` are exported and qualified (`qualify-package.mjs:110-111,155`); `readDocFile` is deliberately absent from `index.ts`, with the reason written there, because it hardcodes a relative URL and the browser `fetch` global. So C24 owns the port and the re-export, not the move. The runner also smoke-calls every other shipped module |
-| A2 | #1188 | **merged** as `3bf357337` | `protocol/clientLike.ts` declares `AppwireClientLike`, exported from `index.ts` and in the build `files`. 25 importers rewritten, `FakeClient` imports left alone — §0 fact 3 above is corrected to match |
-| A5 | #1186 | **merged** (`2245f9715`) | Deleted the dead `mobile/src/dev/conversationFixtures.ts`, which takes `mobile/src` from the 7,615 lines tabulated in §4 down to 6,841 and made `mobile-native` typecheck every file under `mobile/src`, so the gap that hid it is closed too |
-| B3b | #1203 | **merged** as `4da382482` | Native's two `projectUsage` copies collapsed to one; that row's duplication is closed |
-| B1 | #1189 | open | `protocol/itemFailure.ts`; the web and native predicates were byte-identical in behavior. Surfaced the third predicate now recorded above |
-| — | #1190 | open issue | The `toolRenderers.ts:189` divergence |
+| PR | Merged as | Effect on the baseline |
+| --- | --- | --- |
+| A1 #1184 | `f2599d1ed` | `tsconfig.build.json` `files` 6 → **16**: all ten previously-unpacked modules ship, `docContent.ts` included, with only `readDocFile` held off `index.ts` until C24. §5's "In tarball?" column is superseded — every top-level module now ships. Also collapsed the runner's four hard-coded export lists into one `runtimeExports` manifest (`qualify-package.mjs:69`), which fact 5 had asked for |
+| A2 #1188 | `3bf357337` | `files` 16 → **17**: `clientLike.ts` added, declaring `AppwireClientLike` and exported from `index.ts`. §5 has no row for it, by design — the table is the baseline. 25 importers rewritten; 114 `testing/fakeClient` import lines remain, none of them for the type |
+| A5 #1186 | `2245f9715` | Deleted `mobile/src/dev/conversationFixtures.ts`, so §4's nine-module table is one module ahead of reality and `mobile/src` is 6,841 lines, not 7,615. Also widened `mobile-native` typechecking over all of `mobile/src`, closing the gap that let a dead file with dangling imports survive |
+| B1 #1189 | `27503c07d` | `files` 17 → **18**: `itemFailure.ts` added. The web and native settled-item predicates were identical and both now call it. Surfaced the third, divergent predicate at `toolRenderers.ts:189` (issue #1190), which is row B1b |
+| B3b #1203 | `4da382482` | Native's two `projectUsage` copies collapsed to one. That DUPLICATED row is closed; the count in §7 is the baseline count and is not decremented |
+
+Open: #1189's follow-on B1b (issue #1190, no PR). A3 and A4 are unstarted and
+block all of phase C.
