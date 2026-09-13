@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -76,6 +77,29 @@ func skillInputRecordFromQueued(input queuedInput) *schema.SkillInputRecord {
 	}
 }
 
+// recordPreparedSelection annotates an input record with the typed
+// invocations a successful preparation produced for it. The prepared list is
+// what reconcilePendingSkillSelections re-drives when the admission that
+// should have followed was lost to a metadata save failure or a crash: the
+// input turn is durable evidence of the user's selection, and this list is
+// the exact admission it was owed. A nil batch (preparation failed) leaves
+// the record unprepared, which marks it as a failure kept for correction —
+// never re-delivered.
+func recordPreparedSelection(record *schema.SkillInputRecord, batch *skillActivationBatch) {
+	if record == nil || batch == nil {
+		return
+	}
+	prepared := make([]schema.SkillSelectionInvocation, 0, len(batch.Items))
+	for _, item := range batch.Items {
+		prepared = append(prepared, schema.SkillSelectionInvocation{
+			Name:         item.Invocation.Name,
+			InvocationID: item.Invocation.InvocationID,
+			Route:        item.Invocation.Route,
+		})
+	}
+	record.Prepared = prepared
+}
+
 // prepareSelectedInput prepares the skill activations a durable client input
 // selected, as ONE atomic group tied to the input's durable identity: every
 // invocation shares the input's group ID and carries the causal client
@@ -128,17 +152,21 @@ func (s *Session) contextWithSelectedSkills(ctx context.Context, queued queuedIn
 	if len(queued.SkillNames) == 0 {
 		return ctx
 	}
+	record := skillInputRecordFromQueued(queued)
 	batch, err := s.prepareSelectedInput(ctx, queued, "user_selection")
+	recordPreparedSelection(record, batch)
 	return withDurableSkillSelection(ctx, &durableSkillSelection{
-		Selection: skillInputRecordFromQueued(queued),
+		Selection: record,
 		Batch:     batch,
 		Err:       err,
 	})
 }
 
 // admitSteeringSelectionBatch admits a prepared selection a consumed steering
-// message carried. Failure warns: the steering turn is already durably
-// delivered, and the obligation machinery revalidates at the next dispatch.
+// message carried. Failure warns — the steering turn is already durably
+// delivered — but the selection is not lost: the steering turn's typed input
+// record keeps the prepared invocations, and reconcilePendingSkillSelections
+// re-drives the admission at restore.
 func (s *Session) admitSteeringSelectionBatch(batch *skillActivationBatch) {
 	if batch == nil {
 		return
@@ -146,6 +174,88 @@ func (s *Session) admitSteeringSelectionBatch(batch *skillActivationBatch) {
 	if err := s.admitSkillActivationBatch(batch); err != nil {
 		s.emit(events.EventWarning, warningDataFromError("admitting steering skill selection failed", err))
 	}
+}
+
+// reconcilePendingSkillSelections re-drives user selections whose durable
+// typed input record survived but whose admission did not: a metadata save
+// failure or a crash between the input turn and the obligation persist left
+// the prepared invocations on the input record with no obligation, carrier,
+// or delivery record anywhere. It runs once at restore, before any dispatch,
+// over ALL decoded transcript entries — the input turn may predate the
+// resume anchor, exactly like the compaction receipts.
+//
+// A prepared invocation is already covered — and never re-driven — when the
+// snapshot still holds its obligation, the inventory recorded its delivery,
+// or any transcript entry carries its identity in an outcome or obligation
+// (a carrier or notification is published only after the obligation save
+// succeeded, and a finalized failure keeps its record too). Re-admission
+// goes through the same atomic prepare/admit path as a live selection, one
+// input record at a time so one unavailable source cannot block another
+// selection's group; a failure warns and leaves the durable record for the
+// next restore. It reports whether any carrier turn joined the history, so
+// the caller can refresh its retained transcript entry list.
+func (s *Session) reconcilePendingSkillSelections(ctx context.Context, entries []transcript.Entry) bool {
+	covered := map[string]bool{}
+	s.mu.Lock()
+	for _, obligation := range s.skillLifecycle.Obligations {
+		covered[obligation.InvocationID] = true
+	}
+	for _, entry := range s.skillLifecycle.Inventory {
+		if entry.Ordinary != nil && entry.Ordinary.InvocationID != "" {
+			covered[entry.Ordinary.InvocationID] = true
+		}
+	}
+	s.mu.Unlock()
+	for i := range entries {
+		state := entries[i].Turn.SkillState
+		if state == nil {
+			continue
+		}
+		for _, outcome := range state.Outcomes {
+			covered[outcome.InvocationID] = true
+		}
+		for _, obligation := range state.Obligations {
+			covered[obligation.InvocationID] = true
+		}
+	}
+	appended := false
+	for i := range entries {
+		turn := &entries[i].Turn
+		if turn.SkillState == nil || turn.SkillState.Input == nil {
+			continue
+		}
+		input := turn.SkillState.Input
+		var invocations []skillInvocation
+		for _, prepared := range input.Prepared {
+			if prepared.InvocationID == "" || covered[prepared.InvocationID] {
+				continue
+			}
+			// One re-drive per invocation identity, even if a duplicated
+			// record repeats it.
+			covered[prepared.InvocationID] = true
+			invocations = append(invocations, skillInvocation{
+				Name:             prepared.Name,
+				Route:            prepared.Route,
+				InvocationID:     prepared.InvocationID,
+				ClientMutationID: turn.ClientMutationID,
+				AtomicGroupID:    input.AtomicGroupID,
+			})
+		}
+		if len(invocations) == 0 {
+			continue
+		}
+		historyBefore := len(s.history)
+		batch, err := s.prepareSkillActivations(ctx, invocations)
+		if err != nil {
+			s.emit(events.EventWarning, warningDataFromError("reconciling lost skill selection failed", err))
+			continue
+		}
+		// Admission warns on its own save failure; the durable input record
+		// stays for the next restore either way.
+		_ = s.admitSkillActivationBatch(batch)
+		appended = len(s.history) > historyBefore || appended
+	}
+	return appended
 }
 
 // skillActivationError preserves machine-readable failure identity and the

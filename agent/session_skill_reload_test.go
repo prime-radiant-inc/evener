@@ -976,3 +976,56 @@ func TestSkillReload_Repeated_RetainedContentNotDuplicated(t *testing.T) {
 		t.Fatalf("activation events = %v, want exactly the original delivery", names)
 	}
 }
+
+// TestSkillReloadReminder_CarriesDiscoveryDiagnostics: an inventory entry
+// whose recorded source can no longer be read classifies "unavailable" — the
+// typed reminder must also carry the computed diagnostic that says WHY, not
+// discard it (the old comment claimed diagnostics "ride the typed turn"; they
+// never did).
+func TestSkillReloadReminder_CarriesDiscoveryDiagnostics(t *testing.T) {
+	s := newTestSession(t)
+	missing := filepath.Join(t.TempDir(), "gone", "SKILL.md")
+	s.skillLifecycle.Inventory["opaque"] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{
+		Identity:       schema.SkillContentIdentity{Name: "opaque", DeclaredName: "opaque", Source: missing, FileDigest: "f", RenderedDigest: "r"},
+		Controls:       schema.SkillInvocationControls{UserInvocable: true},
+		Route:          "user_slash",
+		InvocationID:   "inv-1",
+		UserAuthorized: true,
+	}}
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "absent"},
+			PublicationID: "pub-1",
+		},
+	}}
+
+	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var reminder *schema.SkillReloadReminder
+	for _, state := range skillTurnStates(s) {
+		if state.ReloadReminder != nil {
+			reminder = state.ReloadReminder
+		}
+	}
+	if reminder == nil {
+		t.Fatal("no reload reminder recorded")
+	}
+	if len(reminder.Inventory) != 1 || reminder.Inventory[0].Availability != skillAvailabilityUnavailable {
+		t.Fatalf("reminder inventory = %+v, want the unreadable entry unavailable", reminder.Inventory)
+	}
+	if len(reminder.Diagnostics) == 0 {
+		t.Fatal("the reminder discarded the discovery diagnostics: an unreadable source shows unavailable with no reason")
+	}
+	found := false
+	for _, diagnostic := range reminder.Diagnostics {
+		if diagnostic.Category == "unreadable_source" && diagnostic.Source == missing {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics = %+v, want unreadable_source for %s", reminder.Diagnostics, missing)
+	}
+}

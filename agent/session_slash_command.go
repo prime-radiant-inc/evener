@@ -103,16 +103,18 @@ func (s *Session) expandSlashCommand(ctx context.Context, input string) slashInp
 		AtomicGroupID: invocationID,
 	}
 	batch, err := s.prepareSkillActivations(ctx, []skillInvocation{invocation})
+	selection := &schema.SkillInputRecord{
+		OriginalText:  input,
+		Arguments:     args,
+		Names:         []string{descriptor.CatalogName},
+		AtomicGroupID: invocationID,
+	}
+	recordPreparedSelection(selection, batch)
 	return slashInputResult{
 		Text:        input,
 		Handled:     true,
 		Activations: batch,
 		Err:         err,
-		Selection: &schema.SkillInputRecord{
-			OriginalText:  input,
-			Arguments:     args,
-			Names:         []string{descriptor.CatalogName},
-			AtomicGroupID: invocationID,
-		},
+		Selection:   selection,
 	}
 }

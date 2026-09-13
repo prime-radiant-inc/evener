@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -840,10 +841,12 @@ func (s *Session) queueChangedDataLocked() events.QueueChangedData {
 		data.Preview = make([]string, len(s.inputQueue))
 		data.IDs = make([]string, len(s.inputQueue))
 		data.Texts = make([]string, len(s.inputQueue))
+		data.SkillNames = make([][]string, len(s.inputQueue))
 		for i, entry := range s.inputQueue {
 			data.Preview[i] = queuedEntryPreviewLine(entry)
 			data.IDs[i] = entry.ID
 			data.Texts[i] = entry.Text
+			data.SkillNames[i] = slices.Clone(entry.SkillNames)
 		}
 	}
 	return data
@@ -1005,12 +1008,16 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	// not the bodies and not the prose -- and is never downgraded to text; a
 	// prominent failure record persists before the pending execution clears.
 	var selectionBatch *skillActivationBatch
+	var selectionRecord *schema.SkillInputRecord
 	if len(msg.SkillNames) > 0 {
-		batch, prepareErr := s.prepareSelectedInput(context.Background(), queuedInputFromSteering(msg), "user_selection")
+		queued := queuedInputFromSteering(msg)
+		selectionRecord = skillInputRecordFromQueued(queued)
+		batch, prepareErr := s.prepareSelectedInput(context.Background(), queued, "user_selection")
 		if prepareErr != nil {
 			s.recordFailedSteeringSelection(msg, prepareErr)
 			return true
 		}
+		recordPreparedSelection(selectionRecord, batch)
 		selectionBatch = batch
 	}
 	t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
@@ -1019,7 +1026,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
 	if len(msg.SkillNames) > 0 {
-		t.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(queuedInputFromSteering(msg))}
+		t.SkillState = &schema.SkillTurnState{Input: selectionRecord}
 	}
 	if s.clientMutations != nil {
 		// ActiveTurnID is the actual logical owner at delivery time. For an
