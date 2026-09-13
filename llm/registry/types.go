@@ -78,7 +78,9 @@ type Model struct {
 	Hidden    bool              `json:"hidden,omitempty"`
 	// Disabled is a user opt-out: a row the config layer disabled is hidden
 	// from every listing and fails Resolve. Nil means no layer set it; the
-	// last layer to set one wins.
+	// last layer to set one wins. On a merged head this carries only the
+	// exact row's own fold input — the effective state comes from the
+	// layer replay (resolveOn, modelDisabled), which also honors globs.
 	Disabled *bool `json:"disabled,omitempty"`
 }
 

@@ -134,6 +134,18 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
     }
   }
 
+  // Model toggles are self-contained like "make default": no confirm, and
+  // a toast only on failure — plus a success toast naming the change, since
+  // unlike a default flag the switch needs visible confirmation it landed.
+  async function handleToggleModel(name: string, model: string, disabled: boolean): Promise<void> {
+    try {
+      await credentialsStore.getState().setModelDisabled({ name, model, disabled });
+      toast.push("success", `${disabled ? "Disabled" : "Enabled"} ${model}`);
+    } catch (err) {
+      toast.push("error", `Model toggle failed: ${friendlyErrorMessage(err)}`);
+    }
+  }
+
   async function handleTestCredentials(name: string): Promise<void> {
     const version = instanceVersion.current;
     if (credentialTests[name]?.version === version && credentialTests[name]?.pending) return;
@@ -271,6 +283,9 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         }}
         onSetDefault={() => {
           if (selectedInstance !== null) void handleSetDefault(selectedInstance);
+        }}
+        onToggleModel={(model, disabled) => {
+          if (selectedInstance !== null) void handleToggleModel(selectedInstance, model, disabled);
         }}
         onTestCredentials={() => {
           if (selectedInstance !== null) void handleTestCredentials(selectedInstance);

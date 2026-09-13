@@ -583,24 +583,43 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string)
 	}
 }
 
-// applyGlobs applies matching glob rows in spec §4.1 order: shorter
-// patterns first, target-matching globs before reference-matching ones, each
-// glob at most once. Cross-protocol rows take only Fields keys their own
-// protocol knows.
-func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, ref, altID, rowProto string, crossProto bool, prov map[string]string) {
+// orderedGlobKeys lists rows' glob patterns matching ref (or its altID,
+// target first) in spec §4.1 order: shorter patterns first, each pattern at
+// most once. applyGlobs and modelDisabled share it so the two replays
+// cannot disagree about matching order.
+func orderedGlobKeys(rows map[string]Model, ref, altID string) []string {
 	var globs []string
 	for k := range rows {
 		if isGlob(k) {
 			globs = append(globs, k)
 		}
 	}
-	if len(globs) == 0 {
+	globs = sortGlobs(globs)
+	var out []string
+	seen := map[string]bool{}
+	for _, id := range []string{altID, ref} {
+		if id == "" {
+			continue
+		}
+		for _, g := range globs {
+			if !seen[g] && matchGlob(g, id) {
+				seen[g] = true
+				out = append(out, g)
+			}
+		}
+	}
+	return out
+}
+
+// applyGlobs applies matching glob rows in spec §4.1 order: shorter
+// patterns first, target-matching globs before reference-matching ones, each
+// glob at most once. Cross-protocol rows take only Fields keys their own
+// protocol knows.
+func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, ref, altID, rowProto string, crossProto bool, prov map[string]string) {
+	if len(rows) == 0 {
 		return
 	}
-	globs = sortGlobs(globs)
-	applied := map[string]bool{}
 	apply := func(g string) {
-		applied[g] = true
 		gr := rows[g]
 		gc := gr.Caps
 		if crossProto && len(gc.Fields) > 0 {
@@ -616,17 +635,8 @@ func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, r
 		mergeCaps(c, gc, tag+"/glob:"+g, prov)
 		applyRowScalars(row, gr, tag+"/glob:"+g, prov)
 	}
-	if altID != "" {
-		for _, g := range globs {
-			if matchGlob(g, altID) {
-				apply(g)
-			}
-		}
-	}
-	for _, g := range globs {
-		if !applied[g] && matchGlob(g, ref) {
-			apply(g)
-		}
+	for _, g := range orderedGlobKeys(rows, ref, altID) {
+		apply(g)
 	}
 }
 
@@ -802,7 +812,7 @@ func (r *Registry) FindModel(id string) []Ref {
 	var out []Ref
 	for _, inst := range r.rankedInstances() {
 		if hit := r.lookupRow(inst.rec, id); !hit.synthesized {
-			if r.modelDisabled(inst.rec, Ref{Instance: inst.name, Model: id}, hit) {
+			if recordMayDisable(inst.rec, r.topGlobs) && r.modelDisabled(inst.rec, Ref{Instance: inst.name, Model: id}, hit) {
 				continue
 			}
 			out = append(out, Ref{Instance: inst.name, Model: id})
@@ -812,74 +822,89 @@ func (r *Registry) FindModel(id string) []Ref {
 }
 
 // modelDisabled replays just the Disabled flag for a reference: every
-// matching glob in spec §4.1 order (target id then reference id, shorter
-// patterns first, later layers after earlier ones) then the exact row, so
-// the last writer wins — the same outcome resolveOn's full replay reaches.
-// A disabled alias target disables the alias too. Cheap enough for browse
-// paths like FindModel that must not pay for a full resolve per candidate.
+// matching glob in spec §4.1 order (via orderedGlobKeys, the same order
+// applyGlobs replays) then the exact row per layer, later layers after
+// earlier ones, so the last writer wins — the same outcome resolveOn's full
+// replay reaches. A disabled alias target disables the alias too. Cheap
+// enough for browse paths like FindModel that must not pay for a full
+// resolve per candidate.
 func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 	if hit.rowID != "" {
-		aliasOf := rec.head.Models[hit.rowID].AliasOf
-		if aliasOf != "" {
-			if _, _, err := r.resolveAliasTarget(rec, aliasOf); err != nil && errors.Is(err, ErrModelDisabled) {
+		if aliasOf := rec.head.Models[hit.rowID].AliasOf; aliasOf != "" {
+			if r.aliasTargetDisabled(rec, aliasOf) {
 				return true
 			}
 		}
-	}
-	var disabled *bool
-	track := func(m Model) {
-		if m.Disabled != nil {
-			disabled = m.Disabled
-		}
-	}
-	matchOrderedGlobs := func(rows map[string]Model, ids ...string) []Model {
-		var globs []string
-		for k := range rows {
-			if isGlob(k) {
-				globs = append(globs, k)
-			}
-		}
-		globs = sortGlobs(globs)
-		var out []Model
-		seen := map[string]bool{}
-		for _, id := range ids {
-			for _, g := range globs {
-				if !seen[g] && matchGlob(g, id) {
-					seen[g] = true
-					out = append(out, rows[g])
-				}
-			}
-		}
-		return out
 	}
 	altID := ""
 	if hit.rowID != "" && hit.rowID != ref.Model {
 		altID = hit.rowID
 	}
-	// Target-matching globs apply before reference-matching ones (spec
-	// §4.1), the same order applyGlobs replays.
-	refIDs := []string{ref.Model}
-	if altID != "" {
-		refIDs = []string{altID, ref.Model}
-	}
+	var disabled bool
 	seenTag := map[string]bool{}
 	for _, layer := range rec.layers {
 		if !seenTag[layer.tag] {
 			seenTag[layer.tag] = true
-			for _, gr := range matchOrderedGlobs(r.topGlobs[layer.tag], refIDs...) {
-				track(gr)
+			for _, g := range orderedGlobKeys(r.topGlobs[layer.tag], ref.Model, altID) {
+				if d := r.topGlobs[layer.tag][g].Disabled; d != nil {
+					disabled = *d
+				}
 			}
 		}
-		for _, gr := range matchOrderedGlobs(layer.rows, refIDs...) {
-			track(gr)
+		for _, g := range orderedGlobKeys(layer.rows, ref.Model, altID) {
+			if d := layer.rows[g].Disabled; d != nil {
+				disabled = *d
+			}
 		}
 		if hit.rowID != "" {
-			if lr, ok := layer.rows[hit.rowID]; ok {
-				track(lr)
+			if lr, ok := layer.rows[hit.rowID]; ok && lr.Disabled != nil {
+				disabled = *lr.Disabled
 			}
 		}
 	}
-	return BoolValue(disabled)
+	return disabled
+}
+
+// aliasTargetDisabled reports whether an alias_of reference names a row the
+// config layer disabled, through the same acceptance rules as
+// resolveAliasTarget (an exact non-alias row, same provider or
+// provider-id/id) but without paying for a full resolve: only the target's
+// own Disabled replay matters here.
+func (r *Registry) aliasTargetDisabled(rec *record, aliasOf string) bool {
+	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
+		return r.modelDisabled(rec, Ref{Instance: rec.name, Model: aliasOf}, lookupHit{rowID: aliasOf, wireID: aliasOf, step: "row"})
+	}
+	if i := strings.Index(aliasOf, "/"); i > 0 {
+		if prov, ok := r.curated[aliasOf[:i]]; ok {
+			if id := aliasOf[i+1:]; !isGlob(id) {
+				if m, ok := prov.head.Models[id]; ok && m.AliasOf == "" {
+					return r.modelDisabled(prov, Ref{Instance: prov.name, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"})
+				}
+			}
+		}
+	}
+	return false
+}
+
+// recordMayDisable reports whether any layer of rec or the top-level glob
+// rows set Disabled at all. Browse paths check this once before replaying
+// per row: with no flag anywhere every answer is false.
+func recordMayDisable(rec *record, topGlobs map[string]map[string]Model) bool {
+	for _, layer := range rec.layers {
+		for _, m := range layer.rows {
+			if m.Disabled != nil {
+				return true
+			}
+		}
+	}
+	for _, rows := range topGlobs {
+		for _, m := range rows {
+			if m.Disabled != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // InstanceModels lists an instance's exact catalog rows with their effective
@@ -892,8 +917,13 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	}
 	ids := exactRowIDs(rec)
 	out := make([]InstanceModel, 0, len(ids))
+	mayDisable := recordMayDisable(rec, r.topGlobs)
 	for _, id := range ids {
-		out = append(out, InstanceModel{ID: id, Disabled: r.modelDisabled(rec, Ref{Instance: instance, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"})})
+		disabled := false
+		if mayDisable {
+			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"})
+		}
+		out = append(out, InstanceModel{ID: id, Disabled: disabled})
 	}
 	return out, nil
 }

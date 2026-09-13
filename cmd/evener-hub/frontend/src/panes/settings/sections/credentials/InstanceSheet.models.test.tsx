@@ -1,7 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
+import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { InstanceSheet } from "./InstanceSheet";
@@ -21,16 +21,6 @@ function entry(): InstanceEntry {
   };
 }
 
-function listResponse(models: InstanceEntry["models"]): InstanceListResponse {
-  return {
-    instances: [{ ...entry(), models }],
-    availableProviders: [],
-    diagnostics: [],
-    userLayer: "",
-    writesRefused: false,
-  };
-}
-
 function handlers() {
   return {
     onTestCredentials: vi.fn(),
@@ -42,6 +32,7 @@ function handlers() {
     onClearStoredKey: vi.fn(),
     onRemove: vi.fn(),
     onSetDefault: vi.fn(),
+    onToggleModel: vi.fn(),
     onClose: vi.fn(),
   };
 }
@@ -68,25 +59,14 @@ describe("model toggles", () => {
     expect(disabled.getAttribute("aria-checked")).toBe("false");
   });
 
-  test("flipping a switch calls setModelDisabled and applies the returned list", async () => {
-    const fake = connectionStore.getState().client as FakeClient;
-    fake.on("evener/instance/setModelDisabled", (params) => {
-      expect(params).toEqual({ name: "work", model: "gpt-5.5", disabled: true });
-      return Promise.resolve(
-        listResponse([
-          { id: "gpt-5.5", disabled: true },
-          { id: "gpt-4o", disabled: true },
-        ]),
-      );
-    });
+  test("flipping a switch delegates to the section owner", () => {
+    const h = handlers();
     credentialsStore.setState({ instances: [entry()], availableProviders: [] });
-    render(<InstanceSheet name="work" {...handlers()} />);
+    render(<InstanceSheet name="work" {...h} />);
     fireEvent.click(screen.getByRole("switch", { name: "gpt-5.5" }));
-    await waitFor(() => {
-      const updated = screen.getByRole("switch", { name: "gpt-5.5" });
-      expect(updated.getAttribute("aria-checked")).toBe("false");
-    });
-    expect(fake.calls.some((c) => c.method === "evener/instance/setModelDisabled")).toBe(true);
+    expect(h.onToggleModel).toHaveBeenCalledWith("gpt-5.5", true);
+    fireEvent.click(screen.getByRole("switch", { name: "gpt-4o" }));
+    expect(h.onToggleModel).toHaveBeenCalledWith("gpt-4o", false);
   });
 
   test("no models section when the instance carries no inventory", () => {

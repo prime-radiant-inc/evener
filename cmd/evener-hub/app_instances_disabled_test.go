@@ -2,6 +2,7 @@ package hub
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -24,13 +25,7 @@ func TestInstances_SetModelDisabledWritesRowAndLists(t *testing.T) {
 		t.Fatalf("authored row = %+v, want disabled=true", row)
 	}
 	got := entry(t, f.ctl.List(), "base")
-	var flagged bool
-	for _, m := range got.Models {
-		if m.ID == "claude-opus-4-6" {
-			flagged = m.Disabled
-		}
-	}
-	if !flagged {
+	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "claude-opus-4-6" && m.Disabled }) {
 		t.Fatalf("entry models = %+v, want claude-opus-4-6 flagged disabled", got.Models)
 	}
 	if _, err := f.ctl.reg.Get().Resolve("base/claude-opus-4-6"); !errors.Is(err, registry.ErrModelDisabled) {

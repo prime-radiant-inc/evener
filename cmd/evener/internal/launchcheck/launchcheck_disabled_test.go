@@ -4,59 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/registry"
 )
 
-// launchCheckGatewayWithConfig is launchCheckGateway with a caller-supplied
-// [providers.gw] body, so tests can add rows the default helper cannot.
-func launchCheckGatewayWithConfig(t *testing.T, gwExtra string) {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/models") {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "providers.toml")
-	cfg := "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key  = \"test-key\"\n" + gwExtra
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stateRoot := t.TempDir()
-	env := map[string]string{"OLLAMA_HOST": "127.0.0.1:1"}
-
-	old := launchCheckLoadClient
-	t.Cleanup(func() { launchCheckLoadClient = old })
-	launchCheckLoadClient = func(stateDir string) (*llm.Client, error) {
-		r, _, err := cmdutil.LoadRegistry(
-			registry.WithConfigPath(cfgPath),
-			registry.WithStateRoot(stateRoot),
-			registry.WithOffline(true), registry.WithoutCache(),
-			registry.WithEnv(func(k string) (string, bool) { v, ok := env[k]; return v, ok }),
-		)
-		if err != nil {
-			return nil, err
-		}
-		return cmdutil.NewRegistryClient(r, stateDir), nil
-	}
-}
-
 func TestLaunchCheckModelsOmitDisabled(t *testing.T) {
-	launchCheckGatewayWithConfig(t, "[providers.gw.models.\"gpt-live\"]\ndisabled = true\n")
+	launchCheckGateway(t, http.StatusOK, `{"data":[{"id":"gpt-live"}]}`, "[providers.gw.models.\"gpt-live\"]\ndisabled = true\n")
 
 	var stdout, stderr bytes.Buffer
 	if err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--models", "--json"}, &stdout, &stderr); err != nil {
@@ -79,7 +34,7 @@ func TestLaunchCheckModelsOmitDisabled(t *testing.T) {
 }
 
 func TestLaunchCheckRejectsDisabledModel(t *testing.T) {
-	launchCheckGatewayWithConfig(t, "[providers.gw.models.\"gpt-live\"]\ndisabled = true\n")
+	launchCheckGateway(t, http.StatusOK, `{"data":[{"id":"gpt-live"}]}`, "[providers.gw.models.\"gpt-live\"]\ndisabled = true\n")
 
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--model", "gw/gpt-live", "--json"}, &stdout, &stderr)

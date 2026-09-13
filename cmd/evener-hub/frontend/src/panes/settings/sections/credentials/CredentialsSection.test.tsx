@@ -35,6 +35,7 @@ const WORK = instance({
   isDefault: true,
   hasStoredFile: true,
   activeSource: "store",
+  models: [{ id: "claude-opus-4-6" }, { id: "claude-sonnet-5", disabled: true }],
 });
 const PERSONAL = instance({
   name: "personal",
@@ -589,6 +590,62 @@ describe("set default", () => {
     await user.click(within(inspector).getByRole("button", { name: /make default/i }));
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
     await screen.findByText("Set default failed: Something went wrong.");
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/boom/)).toBeNull();
+  });
+});
+
+describe("model toggles", () => {
+  test("flipping a switch calls setModelDisabled and applies the returned list", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/setModelDisabled", (params) => {
+      expect(params).toEqual({ name: "work", model: "claude-opus-4-6", disabled: true });
+      return {
+        instances: [
+          {
+            ...WORK,
+            models: [
+              { id: "claude-opus-4-6", disabled: true },
+              { id: "claude-sonnet-5", disabled: true },
+            ],
+          },
+        ],
+        availableProviders: [],
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/setModelDisabled")).toBe(true));
+    await screen.findByText("Disabled claude-opus-4-6");
+  });
+
+  test("a toggle failure toasts 'Model toggle failed'", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/setModelDisabled", () => {
+      throw new Error("boom");
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    await screen.findByText("Model toggle failed: Something went wrong.");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/boom/)).toBeNull();
   });

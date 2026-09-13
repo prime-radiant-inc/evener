@@ -781,15 +781,15 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	if err != nil {
 		return appwire.InvalidParams(err.Error())
 	}
-	var known bool
-	for _, m := range rows {
-		if m.ID == model {
-			known = true
-			break
-		}
-	}
-	if !known {
+	if !slices.ContainsFunc(rows, func(m registry.InstanceModel) bool { return m.ID == model }) {
 		return appwire.InvalidParams(fmt.Sprintf("model %q is not a catalog row of instance %q", params.Model, name))
+	}
+	// before is an independent parse from l below — a fresh read sharing no
+	// maps with it — so a toggle that parses fine but fails to load restores
+	// exactly what was on disk, the way Edit's own before does.
+	before, _, err := c.read()
+	if err != nil {
+		return err
 	}
 	l, _, err := c.read()
 	if err != nil {
@@ -813,7 +813,17 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	return c.reg.Reload()
+	if err := c.reg.Reload(); err != nil {
+		// A models-only shadow parses fine but, like any edit, could fail
+		// to load: restore the file instead of locking the pane behind
+		// refuseWhenBroken on a config only this toggle produced.
+		if restoreErr := c.write(before); restoreErr != nil {
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+		}
+		_ = c.reg.Reload() // best-effort: put the last-good registry view back
+		return appwire.InvalidParams(fmt.Sprintf("this toggle would leave %q unable to load: %v", name, err))
+	}
+	return nil
 }
 
 // SetDefault records which instance a bare model reference resolves on. A

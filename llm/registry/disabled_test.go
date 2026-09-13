@@ -2,6 +2,8 @@ package registry
 
 import (
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -86,13 +88,8 @@ func TestFindModelAgreesWithResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kept := map[string]bool{}
-	for _, ref := range r.FindModel("claude-opus-5") {
-		if ref.Instance == "anthropic" {
-			kept["claude-opus-5"] = true
-		}
-	}
-	if !kept["claude-opus-5"] {
+	kept := slices.ContainsFunc(r.FindModel("claude-opus-5"), func(ref Ref) bool { return ref.Instance == "anthropic" })
+	if !kept {
 		t.Fatal("FindModel dropped a re-enabled row")
 	}
 	if _, err := r.Resolve("anthropic/claude-opus-5"); err != nil {
@@ -128,18 +125,9 @@ func TestInstanceModels_ReportsDisabledState(t *testing.T) {
 	if byID["claude-opus-5"].Disabled {
 		t.Fatalf("re-enabled row flagged disabled: %+v", byID["claude-opus-5"])
 	}
-	if len(models) == 0 || !sortedStrings(models) {
+	if len(models) == 0 || !slices.IsSortedFunc(models, func(a, b InstanceModel) int { return strings.Compare(a.ID, b.ID) }) {
 		t.Fatalf("InstanceModels must be sorted by id: %+v", models)
 	}
-}
-
-func sortedStrings(models []InstanceModel) bool {
-	for i := 1; i < len(models); i++ {
-		if models[i-1].ID > models[i].ID {
-			return false
-		}
-	}
-	return true
 }
 
 func TestMarshalConfig_RoundTripsDisabled(t *testing.T) {
