@@ -2316,3 +2316,61 @@ func bumpFoldGeneration(t *testing.T, path string, observe func()) {
 		t.Fatalf("restore %s: %v", path, err)
 	}
 }
+
+// TestBuildActivityFullSnapshot_MissingBoundaryChildJournalReportsTheLoadersMessage
+// pins that a depth-truncated child with no jobs journal is refused where the
+// reader can act on it. The load a resume performs requires that journal, so a
+// generation of 0 and a continuation only move the failure: the page arrives,
+// the reader follows it, and the resume dies with "child session ... unavailable
+// in state directory". Saying that here costs one stat and one page.
+func TestBuildActivityFullSnapshot_MissingBoundaryChildJournalReportsTheLoadersMessage(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "missingjournalroot"
+	childID := "missingjournalchild"
+	started := time.Unix(970, 0).UTC()
+
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	// The child exists as a session, with no jobs journal of its own.
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
+
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	cache.budget.maxDepth = 0
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	snapshot, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0)
+	if err != nil {
+		t.Fatalf("buildActivityFullSnapshot: %v", err)
+	}
+	recorded := snapshot.Errors[childID]
+	if recorded == nil {
+		t.Fatalf("no error recorded for %q; generation 0 and a continuation here hand the reader a page whose resume fails", childID)
+	}
+	want := fmt.Sprintf("child session %q unavailable in state directory", childID)
+	if recorded.Error() != want {
+		t.Fatalf("recorded %q, want the loader's own message %q", recorded, want)
+	}
+	if snapshot.Children[childID] != nil {
+		t.Fatalf("placeholder installed for a child the resume cannot load: %+v", snapshot.Children[childID])
+	}
+
+	budget := newBoundedActivityBudget(rootID, time.Unix(1000, 0).UTC(), 0)
+	budget.maxDepth = 0
+	projected := projectActivitySessionAt(*snapshot, budget, 0, nil, 0)
+	for _, entry := range projected.Entries {
+		if entry.Delegate == nil {
+			continue
+		}
+		if entry.Delegate.Branch.Error != want {
+			t.Fatalf("branch error = %q, want %q", entry.Delegate.Branch.Error, want)
+		}
+		if entry.Delegate.Branch.Continuation != "" {
+			t.Fatalf("branch offers a token whose resume cannot load the child: %q", entry.Delegate.Branch.Continuation)
+		}
+		return
+	}
+	t.Fatal("the delegate was not projected")
+}

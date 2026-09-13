@@ -500,6 +500,21 @@ func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, ro
 // The delegates side has no such helper on purpose: that
 // generation comes from historicalActivityCache.rootDelegates, the index the
 // loader itself reads, so the two cannot disagree about a degraded journal.
+// activityChildJobJournalReadable applies loadHistoricalActivityBase's own
+// check for a REQUIRED session's jobs journal, so a caller that names a
+// child's generations without loading it refuses exactly what that load would
+// refuse — with the same message, since that is what the reader sees when the
+// resume tries.
+func activityChildJobJournalReadable(stateDir, sessionID string) error {
+	if _, err := historicalJobsStat(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("child session %q unavailable in state directory", sessionID)
+		}
+		return err
+	}
+	return nil
+}
+
 func currentHistoricalJobsEpoch(stateDir, sessionID string) (uint64, error) {
 	return historicalJobFoldCache.Epoch(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
 }

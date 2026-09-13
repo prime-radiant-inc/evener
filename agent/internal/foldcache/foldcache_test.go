@@ -993,6 +993,17 @@ func TestCache_EpochSeparatesAMissingPathFromAnUnreadableOne(t *testing.T) {
 	} else if os.IsNotExist(err) {
 		t.Fatalf("Epoch = %v, want the stat's own failure rather than a missing-path answer", err)
 	}
+
+	// A never-folded path that stats perfectly well and still cannot be read:
+	// a directory. Nothing recorded means there is no probe to catch it, so
+	// the answer has to come from trying to open it.
+	unopenable := filepath.Join(dir, "a-directory")
+	if err := os.Mkdir(unopenable, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Epoch(unopenable); err == nil {
+		t.Fatal("Epoch answered generation 0 for a never-folded path no fold could read")
+	}
 }
 
 // tornStatInfo reports a file's size as it was before an append and its mtime

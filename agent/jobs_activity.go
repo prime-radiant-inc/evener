@@ -727,6 +727,15 @@ func activityPlaceholderEpochs(childLoc activitySessionLocator, cache *historica
 		// against a number nobody read.
 		return 0, 0, err
 	}
+	// Validated the way the load a resume performs validates it: that load
+	// requires this child's journal (buildActivityContinuationAt asks for it
+	// with required set), so an absent one is the failure it reports, word
+	// for word, rather than a generation of 0 and a token whose resume dies
+	// on it. A journal the loader tolerates being absent is only ever the
+	// request's own root, which is never a placeholder.
+	if err := activityChildJobJournalReadable(stateDir, childID); err != nil {
+		return 0, 0, activityChildJournalError{err: err}
+	}
 	jobsEpoch, err := currentHistoricalJobsEpoch(stateDir, childID)
 	if err != nil {
 		return 0, 0, activityChildJournalError{err: err}

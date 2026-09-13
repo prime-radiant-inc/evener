@@ -31,7 +31,9 @@ import (
 	"bytes"
 	"container/list"
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"sync"
 	"time"
@@ -636,6 +638,26 @@ func (c *Cache[T]) Epoch(path string) (uint64, error) {
 			return 0, nil
 		}
 		return 0, err
+	}
+	if st == nil {
+		// Never folded, so there is no recorded state to judge the file
+		// against and the generation is 0 — but only for a file a fold could
+		// read. A directory, or one whose permissions refuse the read, is not
+		// a generation of zero: the read that would follow fails, and naming
+		// a number here promises otherwise. A regular-file check and an open
+		// are the cheapest way to ask; a directory opens perfectly well and
+		// fails only when something tries to read it.
+		if !info.Mode().IsRegular() {
+			return 0, &fs.PathError{Op: "fold", Path: path, Err: errors.New("not a regular file")}
+		}
+		f, openErr := os.Open(path)
+		if openErr != nil {
+			return 0, openErr
+		}
+		if closeErr := f.Close(); closeErr != nil {
+			return 0, closeErr
+		}
+		return 0, nil
 	}
 	fresh, err := freshnessOf(path, info, st)
 	if err != nil {
