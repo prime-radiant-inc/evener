@@ -318,11 +318,15 @@ browser-specific gate in its web job.
 
 ### Frontend setup boundary
 
-`make test-web` and `make test-web-browser` are deterministic after the
-frontend dependencies are installed. Establishing that install may require
-npm/network access or an existing compatible worktree install, so an
-unavailable setup is a reported prerequisite failure rather than a
-deterministic test pass.
+`make test-web` is deterministic after the frontend dependencies are installed.
+Establishing that install may require npm/network access or an existing
+compatible worktree install, so an unavailable setup is a reported prerequisite
+failure rather than a deterministic test pass. `make test-web-browser` also
+needs Chrome/Chromium and a working Go toolchain: its `retirementguard` npm
+script runs the isolated `TestRetirementBrowser` fixture, which starts the Hub
+and drives the guard against it. A cold module cache can therefore also require
+network access to download modules, and a missing browser or Go toolchain is
+likewise a reported prerequisite failure rather than a deterministic test pass.
 
 The frontend unit gate caps Vitest at four workers because `make test` runs it
 beside the Go test waves. Vitest's host-sized default pool oversubscribed a
