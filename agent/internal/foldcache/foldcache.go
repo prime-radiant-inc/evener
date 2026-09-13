@@ -307,9 +307,6 @@ func (c *Cache[T]) tryFastHit(path string, info os.FileInfo) (Result[T], bool, e
 	return Result[T]{}, false, nil
 }
 
-// refresh does the actual (possibly incremental) read. It runs inside the
-// singleflight-owned closure, so exactly one goroutine executes it per path
-// at a time; mu is NOT held while it runs (Extend may take a while).
 // freshness is what the cache's recorded state plus the file as it is right
 // now say about path, WITHOUT folding it: the generation the next fold will
 // carry, whether the cached prefix survived well enough to resume from it,
@@ -378,6 +375,9 @@ func freshnessOf(path string, info os.FileInfo, st *epochState) (freshness, erro
 	}
 }
 
+// refresh does the actual (possibly incremental) read. It runs inside the
+// singleflight-owned closure, so exactly one goroutine executes it per path
+// at a time; mu is NOT held while it runs (Extend may take a while).
 func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, extend Extend[T]) (Result[T], error) {
 	c.mu.Lock()
 	st := c.epochStates[path]
