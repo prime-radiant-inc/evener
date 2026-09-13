@@ -103,6 +103,11 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 	if err := replayClientMutationResult(lookup.Record, &response); err != nil {
 		return response, NormalizeClientMutationError(clientMutationID, err)
 	}
+	// A replayed result was journaled by whichever binary served the original
+	// call, and one that predates the write-path strip can carry controls; the
+	// response is rendered by clients, so the value handed out is normalized
+	// while the journal keeps its historical record.
+	response.Note = normalizeNote(response.Note)
 	disposition := appwire.MutationDispositionApplied
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		disposition = appwire.MutationDispositionReplayed
@@ -865,7 +870,10 @@ func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
 			continue
 		}
 		if text := out[i].Message.Text(); text != "" {
-			out[i].Message = llm.User(escapeNotesContextBlock(text))
+			// A turn persisted before the write-path strip can still carry
+			// controls, and the framing escape only knows the framing spellings:
+			// strip the other controls as well before the model copy is built.
+			out[i].Message = llm.User(escapeNotesContextBlock(stripNoteControls(text)))
 		}
 	}
 	return out

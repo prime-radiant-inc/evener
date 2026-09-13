@@ -223,11 +223,32 @@ func sanitizeRestoredURLs(urls []schema.SessionURL) []schema.SessionURL {
 	}
 	sanitized := make([]schema.SessionURL, 0, len(urls))
 	for _, entry := range urls {
-		entry.URL = stripNoteControls(entry.URL)
+		// A URL and its id are single tokens printed inline by the drawer and the
+		// notes tool output, and neither ever went through the note collapse, so
+		// every control goes here, whitespace controls included — the note rule
+		// leaves those back for a collapse that these values never see.
+		entry.URL = stripDisplayControls(entry.URL)
+		entry.ID = stripDisplayControls(entry.ID)
 		entry.Label = normalizeNote(entry.Label)
 		sanitized = append(sanitized, entry)
 	}
 	return sanitized
+}
+
+// stripDisplayControls removes every control character from a value displayed as
+// a single token (a URL, an entry id): unlike stripNoteControls it keeps nothing
+// back for a whitespace collapse, because there are no meaningful whitespace runs
+// to preserve in those values.
+func stripDisplayControls(text string) string {
+	if !strings.ContainsFunc(text, unicode.IsControl) {
+		return text
+	}
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
 }
 
 // isNoteControl reports whether r is a control character the whitespace collapse

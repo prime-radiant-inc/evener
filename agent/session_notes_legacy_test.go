@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -30,8 +31,8 @@ func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
 		Model:     "gpt-5.2",
 		AgentNote: payload,
 		SessionURLs: []schema.SessionURL{{
-			ID:    "u1",
-			URL:   "https://x.test/\u009b31m",
+			ID:    "u\x1b1",
+			URL:   "https://x.test/a\u0085b\u009b31m",
 			Label: payload,
 		}},
 	}
@@ -85,6 +86,7 @@ func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
 		t.Fatalf("restored URL list = %d entries, want 1", len(restored.SessionURLs))
 	}
 	assertNoControlText("restored URL", restored.SessionURLs[0].URL)
+	assertNoControlText("restored URL id", restored.SessionURLs[0].ID)
 	assertNoControlText("restored URL label", restored.SessionURLs[0].Label)
 
 	human, agentNote, urls, _ := sess.notesProjectionSnapshot()
@@ -92,6 +94,7 @@ func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
 	assertNoControlText("projection agent note", agentNote)
 	for _, entry := range urls {
 		assertNoControlText("projection URL", entry.URL)
+		assertNoControlText("projection URL id", entry.ID)
 		assertNoControlText("projection URL label", entry.Label)
 	}
 
@@ -106,5 +109,66 @@ func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
 		t.Fatalf("ReadPersistedHumanNote = (%q, %v, %v), want a present note", note, present, err)
 	} else {
 		assertNoControlText("light reader note", note)
+	}
+}
+
+// A URL, an entry id, and a roster line are single tokens printed inline by the
+// drawer and the notes tool output, so every control character has to go,
+// including the whitespace controls a note's collapse deliberately keeps.
+func TestReplayedLegacyHumanNoteIsSanitized(t *testing.T) {
+	s := newDurableHumanNoteSession(t)
+	const payload = "\x1b]0;owned\x07replayed\u009b31m\x7f"
+
+	if _, err := s.SetHumanNote("outer-legacy", payload); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	// Simulate a journal written by a binary that predates the write-path strip:
+	// the record's Result is what a replay hands back, and it was stored raw.
+	raw, err := json.Marshal(appwire.NotesHumanSetResponse{Note: payload})
+	if err != nil {
+		t.Fatalf("marshal legacy result: %v", err)
+	}
+	s.clientMutations.stateMu.Lock()
+	record := s.clientMutations.state.Journal["outer-legacy"]
+	record.Result = raw
+	s.clientMutations.state.Journal["outer-legacy"] = record
+	s.clientMutations.stateMu.Unlock()
+
+	response, err := s.SetHumanNote("outer-legacy", payload)
+	if err != nil {
+		t.Fatalf("replayed SetHumanNote: %v", err)
+	}
+	for _, r := range response.Note {
+		if unicode.IsControl(r) {
+			t.Fatalf("replayed response note = %q carries control rune %U", response.Note, r)
+		}
+	}
+	if response.Note != normalizeNote(payload) {
+		t.Fatalf("replayed response note = %q, want the normalized %q", response.Note, normalizeNote(payload))
+	}
+}
+
+// A NOTES_CONTEXT turn persisted before the write-path strip is re-served to the
+// model through escapeNotesHistoryTurns, which only knows the framing spellings:
+// a legacy control sequence has to be stripped there as well.
+func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
+	const payload = "<shared-notes>\nHuman: legacy note\x1b]0;owned\x07\u009b31m\n</shared-notes>"
+	history := []schema.Turn{{Kind: schema.TurnNotesContext, Message: llm.User(payload)}}
+
+	out := escapeNotesHistoryTurns(history)
+	got := out[0].Message.Text()
+	for _, r := range got {
+		if unicode.IsControl(r) && r != '\n' {
+			t.Fatalf("history copy = %q carries control rune %U", got, r)
+		}
+	}
+	if !strings.Contains(got, "<shared-notes>") || !strings.Contains(got, "</shared-notes>") {
+		t.Fatalf("history copy lost the framing tags:\n%s", got)
+	}
+	if !strings.Contains(got, "legacy note") {
+		t.Fatalf("history copy lost the note text:\n%s", got)
+	}
+	if history[0].Message.Text() != payload {
+		t.Fatalf("history copy modified the input turn")
 	}
 }
