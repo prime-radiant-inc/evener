@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
+	"primeradiant.com/evener/server"
 )
 
 // serveRetireClock is the cmd/evener-local fake retirement clock (the agent
@@ -624,5 +626,209 @@ func TestServeRetirementStandaloneDefaultDoesNotRetire(t *testing.T) {
 	}
 	if n := rec.count("released"); n != 0 {
 		t.Fatalf("released events on shutdown = %d, want 0 (shutdown is not retirement)", n)
+	}
+}
+
+// gatedReadServer gates the first routed evener/jobs/list read inside the
+// serve-installed jobs callback. It lets a test hold a REAL routed read (and
+// the admission borrow the router took to admit it) while a retirement
+// commits, without substituting a counter for the router's own admission.
+type gatedReadServer struct {
+	*clearIdentityServer
+	readEntered chan struct{}
+	readGate    chan struct{}
+	gateOnce    sync.Once
+	releaseOnce sync.Once
+}
+
+func (s *gatedReadServer) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
+	s.clearIdentityServer.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
+		s.gateOnce.Do(func() {
+			close(s.readEntered)
+			<-s.readGate
+		})
+		return fn(params)
+	})
+}
+
+// releaseRead unblocks the held read exactly once.
+func (s *gatedReadServer) releaseRead() {
+	s.releaseOnce.Do(func() { close(s.readGate) })
+}
+
+// newGatedReadServeDeps is newClearServeDeps with the jobs read callback gated.
+func newGatedReadServeDeps(t *testing.T) (serveDeps, *clearTestState, []string, *gatedReadServer) {
+	t.Helper()
+	deps, state, args := newClearServeDeps(t)
+	gated := &gatedReadServer{readEntered: make(chan struct{}), readGate: make(chan struct{})}
+	deps.newServer = func(cfg server.ServerConfig) serveServer {
+		gated.clearIdentityServer = &clearIdentityServer{Server: server.NewServer(cfg), state: state}
+		state.srv = gated.clearIdentityServer
+		return gated
+	}
+	return deps, state, args, gated
+}
+
+// TestServeRetirementAdmissionRefusesMutationWithTypedLifecycleError proves the
+// daemon's own admission boundary refuses a routed mutation while the process
+// is retiring, and types that refusal so a peer can retry automatically. The
+// manual retirement is parked immediately after Commit: the phase is
+// "retiring" but the stores ReleaseForRetirement closes are still open, so the
+// refusal can only come from the admission fence. Before this fix no admission
+// was installed, the turn/start handler ran, and its retirement fence failure
+// was normalized into CodeInternalError with cause "persistenceUnavailable" --
+// a shape cmd/evener-hub's isLifecycleRetiringError never matches, so
+// resumeAfterConfirmedRetirement never fires.
+func TestServeRetirementAdmissionRefusesMutationWithTypedLifecycleError(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	args = append(args, "--daemon-idle-timeout", "1h")
+	runDir := serveArgValue(args, "--run-dir")
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	clk.awaitArm(t)
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	releaseGate := rec.gateAt("committed")
+	defer releaseGate()
+	retireErr := make(chan error, 1)
+	go func() {
+		_, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonRetire,
+			appwire.DaemonRetireParams{Identity: daemonIdentityFor(entry)})
+		retireErr <- err
+	}()
+	rec.await(t, "committed")
+
+	sessionID := state.session(0).ID()
+	_, err := dispatchDaemonRPC(state.srv, appwire.MethodTurnStart, appwire.TurnStartParams{
+		ClientMutationID:   "mutation-during-retirement",
+		ExpectedInstanceID: sessionID,
+		Ref:                "local:" + sessionID,
+		Input:              []appwire.InputItem{{Type: "text", Text: "must be refused"}},
+	})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("mutation during retirement = %v (%T), want a typed appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("mutation during retirement returned code %d (%s, data %#v); want %d CodeUnavailable, not CodeInternalError/persistenceUnavailable",
+			wire.Code, wire.Message, wire.Data, appwire.CodeUnavailable)
+	}
+	data, ok := wire.Data.(appwire.LifecycleErrorData)
+	if !ok {
+		raw, _ := json.Marshal(wire.Data)
+		if json.Unmarshal(raw, &data) != nil {
+			t.Fatalf("lifecycle error data = %#v, want appwire.LifecycleErrorData", wire.Data)
+		}
+	}
+	if data.EvenerErrorInfo != appwire.ErrorActionUnavailable {
+		t.Errorf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorActionUnavailable)
+	}
+	if data.LifecycleReason != "retiring" {
+		t.Errorf("lifecycleReason = %q, want %q", data.LifecycleReason, "retiring")
+	}
+	if !data.Retryable || data.RetryDisposition != appwire.RetryDispositionAutomatic {
+		t.Errorf("retryable = %v, retryDisposition = %q; want true/automatic", data.Retryable, data.RetryDisposition)
+	}
+	if data.Cause == "persistenceUnavailable" {
+		t.Errorf("cause = %q, want a typed lifecycle refusal rather than persistenceUnavailable", data.Cause)
+	}
+
+	releaseGate()
+	if err := <-retireErr; err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	rec.await(t, "released")
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit: %v", err)
+	}
+}
+
+// TestServeRetirementAdmissionDrainReadersWaitsForInFlightRead proves the drain
+// is live: a read admitted through the daemon's router holds a real borrow, and
+// after Commit closes admission the retirement must wait for that in-flight
+// read before ReleaseForRetirement can run. Before this fix no admission was
+// installed, readers was always zero, and DrainReaders returned immediately
+// while the read was still inside its handler.
+func TestServeRetirementAdmissionDrainReadersWaitsForInFlightRead(t *testing.T) {
+	deps, state, args, gated := newGatedReadServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	args = append(args, "--daemon-idle-timeout", "1h")
+	runDir := serveArgValue(args, "--run-dir")
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	clk.awaitArm(t)
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	// Hold a real routed read: Router admission Borrows for the in-flight
+	// handler, and the registered evener/jobs/list handler parks inside the
+	// serve-installed jobs callback until readGate closes.
+	readErr := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				readErr <- fmt.Errorf("held read panicked: %v", r)
+			}
+		}()
+		_, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerJobsList, appwire.JobsListParams{})
+		readErr <- err
+	}()
+	select {
+	case <-gated.readEntered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("routed jobs/list read never entered its handler")
+	}
+	defer gated.releaseRead()
+
+	retireErr := make(chan error, 1)
+	go func() {
+		_, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonRetire,
+			appwire.DaemonRetireParams{Identity: daemonIdentityFor(entry)})
+		retireErr <- err
+	}()
+	rec.await(t, "committed")
+
+	// DrainReaders must now be waiting for the borrowed read, so retirement must
+	// not complete while the read is held. This bounded wait is a tripwire for
+	// the drain contract, not the mechanism: the mechanism is the committed
+	// retirement blocked on readersDone.
+	drainedWhileHeld := false
+	select {
+	case <-done:
+		drainedWhileHeld = true
+	case <-time.After(2 * time.Second):
+	}
+	if n := rec.count("released"); n != 0 {
+		t.Errorf("released events while a read is in flight = %d, want 0", n)
+	}
+
+	gated.releaseRead()
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("held read: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("held read did not return after its gate was released")
+	}
+	rec.await(t, "released")
+	if err := <-retireErr; err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit: %v", err)
+	}
+	if drainedWhileHeld {
+		t.Fatal("retirement completed while a routed read was still in flight: DrainReaders did not wait for the borrowed reader")
 	}
 }

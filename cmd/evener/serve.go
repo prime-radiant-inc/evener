@@ -96,6 +96,11 @@ type serveServer interface {
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
 	SetDaemonLifecycle(func() appwire.DaemonLifecycle, func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error))
+	// SetRetirementAdmission installs the process-owned admission boundary on
+	// the daemon's router. The callback receives the access kind ("read" or
+	// "mutation") and returns the lease release the handler runs after it
+	// returns.
+	SetRetirementAdmission(func(context.Context, string) (func(), error))
 	SetProcessing(bool)
 	SetProcessingTurn(string)
 	SetState(string)
@@ -844,6 +849,22 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
 		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
 	}, requestRetirement)
+	// Install the retirement admission boundary on the router. Every routed
+	// handler is classified by access kind (server/appwire_retirement_admission.go):
+	// a mutation holds a lease for the handler's duration and is refused while
+	// the process is preparing or retiring; a read borrows only for its
+	// in-flight handler access and is refused once retirement commits. Without
+	// this install the router skips admission entirely, DrainReaders can never
+	// wait for a reader, and a mid-retirement mutation is normalized into the
+	// wrong (non-retryable) error shape. The category is the reserved
+	// "admission" blocker, not the raw access kind: BeginMutation's whitelist
+	// does not contain "mutation" and would silently demote it to "unsupported".
+	srv.SetRetirementAdmission(func(_ context.Context, kind string) (func(), error) {
+		if kind == "read" {
+			return retirement.Borrow()
+		}
+		return retirement.BeginMutation(getSession().ID(), "admission")
+	})
 	go func() { _ = retirement.Run(ctx, consumeRetirementClaim) }()
 
 	// The observer runs ON the bridge goroutine, which is the daemon's
