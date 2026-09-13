@@ -30,6 +30,19 @@
 set -uo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+
+# The gate compiles nothing of its own. Its subject is a host whose Go caches
+# have stalled, and `go run` of the helper would read those same caches outside
+# any bound this script can apply -- a hang with no diagnostic, which is what
+# the bound exists to replace. `make tools` and the gate's own make targets
+# build this binary; a caller running the script by hand gets told to.
+evener_dev_bin="$repo_root/evener-dev"
+if [ ! -x "$evener_dev_bin" ]; then
+	printf 'run-module-tests.sh: %s is missing; run `make tools` (or `make build-dev`) first.\n' "$evener_dev_bin" >&2
+	exit 2
+fi
+
 . "$script_dir/../lib/private-go-home.sh"
 . "$script_dir/../lib/scratch-lib.sh"
 
@@ -307,9 +320,9 @@ run_package_list() {
 	# bounded-list runs where it was started, and that is the repo root.
 	[ "$module" = "." ] || list_cmd=(go list -C "$module" ./...)
 	package_list_stderr="${package_list}.stderr"
-	(cd "$script_dir/../.." && go run ./cmd/evener-dev/bin dev bounded-list \
+	"$evener_dev_bin" dev bounded-list \
 		-timeout "${PACKAGE_LIST_TIMEOUT}s" -attempts "$PACKAGE_LIST_ATTEMPTS" \
-		-- "${list_cmd[@]}") >"$package_list" 2>"$package_list_stderr" || status=$?
+		-- "${list_cmd[@]}" >"$package_list" 2>"$package_list_stderr" || status=$?
 	if [ "$status" -ne 0 ]; then
 		cat "$package_list_stderr" >&2
 		package_list_diagnostic "$module" "$package_list_stderr"
@@ -357,11 +370,7 @@ run_module() {
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
-		# `go run` collapses its child's exit code to 1 and reports the real
-		# one as an "exit status N" line on stderr, so the runner's 129/130/143
-		# signal exits survive in the binary but not through this call. Only
-		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
+		(cd .. && "$evener_dev_bin" dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
 		local pkg package_list
 		package_list="$logdir/agent.packages"

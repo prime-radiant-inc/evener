@@ -1,12 +1,17 @@
 .PHONY: tools tools-golangci tools-gitleaks generate clean refresh-model-catalog help
 
 # tools installs the CI-pinned lint/scanner versions from .tool-versions, so
-# a local `make lint` runs exactly what CI runs.
+# a local `make lint` runs exactly what CI runs, and builds the evener-dev
+# binary the test gate execs. The gate must not compile anything itself: its
+# whole subject is a host whose Go caches have stalled, and a compile it starts
+# is a hang with no bound and no diagnostic.
 ## Install the CI-pinned golangci-lint and gitleaks versions from
-## .tool-versions, so a local make lint runs exactly what CI runs.
+## .tool-versions and build the evener-dev binary, so a local make lint runs
+## exactly what CI runs and the test gate has the helper it execs.
 tools:
 	@$(MAKE) --no-print-directory tools-golangci
 	@$(MAKE) --no-print-directory tools-gitleaks
+	@$(MAKE) --no-print-directory build-dev
 
 ## Install the CI-pinned golangci-lint version from .tool-versions.
 tools-golangci:

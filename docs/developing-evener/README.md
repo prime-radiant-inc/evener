@@ -46,7 +46,7 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
 <!-- BEGIN GENERATED: make targets. Edit make/repo.mk, then run `make generate`. -->
 | Command | Summary |
 | --- | --- |
-| `make tools` | Install the CI-pinned golangci-lint and gitleaks versions from .tool-versions, so a local make lint runs exactly what CI runs. |
+| `make tools` | Install the CI-pinned golangci-lint and gitleaks versions from .tool-versions and build the evener-dev binary, so a local make lint runs exactly what CI runs and the test gate has the helper it execs. |
 | `make tools-golangci` | Install the CI-pinned golangci-lint version from .tool-versions. |
 | `make tools-gitleaks` | Install the CI-pinned gitleaks version from .tool-versions. |
 | `make refresh-model-catalog` | Replace the embedded models.dev snapshot in llm/registry/data/ with the current upstream and run the converter tests and overlay report. |
