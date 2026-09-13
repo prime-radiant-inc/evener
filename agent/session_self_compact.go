@@ -180,9 +180,16 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 	// caller's compaction_instructions are different: they are intent, not
 	// pressure, and the competitor did not honor them, so losing them
 	// without a trace hides real steering loss.
-	if !s.foldWithForceCompact(ctx, instructions) {
+	if ok, refusal := s.foldWithForceCompact(ctx, instructions); !ok {
 		if strings.TrimSpace(instructions) != "" {
-			s.emit(events.EventWarning, events.WarningData{Message: "compact_context instructions were not applied — a concurrent compaction published first: " + instructions})
+			reason := "a concurrent compaction published first"
+			if refusal != nil {
+				// The same distinction Compact draws: naming a competitor that
+				// does not exist sends the model's next attempt at the same
+				// steering into a fold the transcript will refuse again.
+				reason = refusal.Error()
+			}
+			s.emit(events.EventWarning, events.WarningData{Message: "compact_context instructions were not applied — " + reason + ": " + instructions})
 		}
 		return
 	}

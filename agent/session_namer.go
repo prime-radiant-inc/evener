@@ -470,7 +470,10 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // publisher performs that append inside its publication transaction's
 // transcript-commit phase (under attentionMu, where emitting is unsafe) and
 // hands the error here; the OnCompactionTurn fallback path above writes and
-// reports in one step. superseded reports that a NEWER fold publication has
+// reports in one step. The one sanctioned emission under that door is
+// appendEnvironmentContext's EventEnvironment, which needs the door's ordering
+// and pays a single emit for it; the effects this function runs stay outside
+// because they are unbounded work that re-enters the locks the door holds. superseded reports that a NEWER fold publication has
 // already flushed its deferred effects: the last-write-wins pieces
 // (compaction naming, the task-list reminder) are skipped so a stale parked
 // flush cannot overwrite the newer fold's; the compaction-turn event still

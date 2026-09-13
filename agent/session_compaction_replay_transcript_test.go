@@ -271,8 +271,8 @@ func TestCompactionReplay_NoMarkerFoldWritesNoReplayTail(t *testing.T) {
 
 	// Stage and publish without running any layer: no checkpoint, no summary.
 	_, _, commit, _ := s.stageCompactionEffects(context.Background(), &histCopy)
-	if _, ok := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, nil); !ok {
-		t.Fatal("fold lost the publication race with nothing else publishing")
+	if _, ok, refusal := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, nil); !ok {
+		t.Fatalf("fold lost the publication race with nothing else publishing (refusal=%v)", refusal)
 	}
 
 	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))

@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -205,6 +206,21 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if err := s.ensureClientMutationStore(); err != nil {
 		return "", false, err
 	}
+	// Refuse only a wake that has something to claim. An idle poll against a
+	// dead transcript claims nothing and loses nothing, and answering it with an
+	// error would turn every poll into a logged failure for the rest of the
+	// session's life; the start path takes the same shape by checking after its
+	// runnable test. Parked work is idle work for this purpose: a Stop holds the
+	// queue and the steering rail, and both claims below refuse a held entry, so
+	// asking the claims' own predicates is what keeps the refusal and the claim
+	// from disagreeing about what counts as work. Predicates rather than the
+	// claims themselves because claiming is the durable act this guard exists to
+	// prevent.
+	if s.wakeHasClaimableWork() {
+		if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
+			return "", false, err
+		}
+	}
 	queued := s.popQueueHead()
 	if strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
 		if onRunnable != nil && queued.StableTurnID != "" {
@@ -212,6 +228,22 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		}
 		ctx = withQueuedClientMutation(ctx, queued)
 		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
+		// The pop above is durable and the turn loop's gate can refuse after it,
+		// when poisoning lands in between. Put the message back rather than
+		// leave it in no queue and no transcript; turn completion is the queue's
+		// own restore, the same one the environment-append failure uses.
+		//
+		// Keyed on the poisoned error alone, deliberately. Every other
+		// pre-incorporation failure either unwinds where it happened or is
+		// reclaimed by startup recovery, and a wider key would re-queue a turn
+		// already recorded in the transcript — an incorporation marking that
+		// fails after the entry is durable would deliver the message twice.
+		if errors.Is(err, transcript.ErrWriterPoisoned) &&
+			!s.clientMutationUserTranscriptIncorporated(queued.ClientMutationID, queued.StableTurnID) {
+			if restoreErr := s.completeClientMutationTurn(queued.ClientMutationID); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("return queued input: %w", restoreErr))
+			}
+		}
 		return result, true, err
 	}
 	if !s.hasPendingUserSteering() {
@@ -280,26 +312,12 @@ func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
 		return "", false
 	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		if snapshot.InterruptFence != nil || snapshot.ActiveTurnID != "" {
+		if !steeringCarrierRailOpen(snapshot) {
 			return nil
 		}
-		// A Stop parks pending user steering until the user asks for something to
-		// run, the same way QueueHeld parks the input queue. Claiming the steering
-		// carrier here would hand the steer to a turn the Stop just ended, so it
-		// is refused -- mirroring popQueueHead's QueueHeld gate (issue #174). The
-		// steer stays in PendingExecutions/SteeringOrder; nothing moves, so its
-		// causal provenance is never at risk (issue #146, Option C).
-		if snapshot.SteeringHeld {
-			return nil
-		}
-		for _, id := range snapshot.SteeringOrder {
-			pending, exists := snapshot.PendingExecutions[id]
-			if !exists || pending.ExecutionState != "accepted" || pending.TurnID == "" {
-				continue
-			}
-			snapshot.ActiveTurnID = pending.TurnID
-			turnID = pending.TurnID
-			return nil
+		if id := claimableSteeringCarrierTurnID(snapshot); id != "" {
+			snapshot.ActiveTurnID = id
+			turnID = id
 		}
 		return nil
 	}); err != nil {
@@ -307,6 +325,50 @@ func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
 		return "", false
 	}
 	return turnID, turnID != ""
+}
+
+// steeringCarrierRailOpen reports whether the steering rail is open to a claim
+// at all, before asking whether any steer is ready to use it.
+//
+// A Stop parks pending user steering until the user asks for something to run,
+// the same way QueueHeld parks the input queue. Claiming the steering carrier
+// while it is parked would hand the steer to a turn the Stop just ended, so it
+// is refused -- mirroring popQueueHead's QueueHeld gate (issue #174). The steer
+// stays in PendingExecutions/SteeringOrder; nothing moves, so its causal
+// provenance is never at risk (issue #146, Option C).
+func steeringCarrierRailOpen(snapshot *clientMutationSnapshot) bool {
+	return snapshot.InterruptFence == nil && snapshot.ActiveTurnID == "" && !snapshot.SteeringHeld
+}
+
+// claimableSteeringCarrierTurnID names the reserved turn the first eligible
+// pending steer already owns, or "" when no steer is ready to carry one. The
+// claim above walks the order once through this; the gate's predicate asks it
+// the same question without taking anything.
+func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
+	for _, id := range snapshot.SteeringOrder {
+		pending, exists := snapshot.PendingExecutions[id]
+		if !exists || pending.ExecutionState != "accepted" || pending.TurnID == "" {
+			continue
+		}
+		return pending.TurnID
+	}
+	return ""
+}
+
+// steeringCarrierClaimable reports whether claimSteeringCarrierTurn would take a
+// carrier turn: the rail is open and a steer is ready to use it. Like
+// queueHeadClaimable it is the whole of that decision, so a caller asking
+// whether this session has steering it could actually run asks the question the
+// claim asks.
+func steeringCarrierClaimable(snapshot *clientMutationSnapshot) bool {
+	return steeringCarrierRailOpen(snapshot) && claimableSteeringCarrierTurnID(snapshot) != ""
+}
+
+// wakeHasClaimableWork reports whether this wake has work it could actually
+// take, by the same predicates the two claims decide with.
+func (s *Session) wakeHasClaimableWork() bool {
+	snapshot := s.clientMutations.snapshot()
+	return queueHeadClaimable(&snapshot) || steeringCarrierClaimable(&snapshot)
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored
@@ -374,9 +436,17 @@ func (s *Session) claimDirectClientMutationTurn(acceptedTurnsFloor uint64) error
 	})
 }
 
-func (s *Session) returnClaimedDirectClientMutationTurn(acceptedTurnsFloor uint64) error {
+// returnClaimedDirectClientMutationTurn gives back the one turn a direct input's
+// claim took. A claim is a unit and a release returns that unit, whoever else
+// claimed in between: measuring against the returning caller's own floor instead
+// makes the outcome depend on the order two failed inputs unwind in, and the
+// order that loses leaves a turn nobody is using counted against MaxTurns for
+// the rest of the session. The caller's failure path runs once per claim
+// (session_lifecycle.go's environment-append failure branch), and the zero guard
+// is the same one returnClaimedClientMutationStart keeps for the queued claims.
+func (s *Session) returnClaimedDirectClientMutationTurn() error {
 	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		if snapshot.AcceptedTurns > acceptedTurnsFloor {
+		if snapshot.AcceptedTurns > 0 {
 			snapshot.AcceptedTurns--
 		}
 		return nil

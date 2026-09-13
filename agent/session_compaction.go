@@ -50,8 +50,13 @@ func (s *Session) Compact(ctx context.Context) error {
 	// win the publication race just the same. foldWithForceCompact retries
 	// once against the current history on conflict; report the general
 	// conflict to the caller rather than silently no-op'ing if both attempts
-	// lose.
-	if !s.foldWithForceCompact(ctx, "") {
+	// lose. A transcript that has stopped accepting records is the other
+	// refusal, and it is reported as itself: telling the operator to try again
+	// would send them back to a fold that can only fail the same way.
+	if ok, refusal := s.foldWithForceCompact(ctx, ""); !ok {
+		if refusal != nil {
+			return refusal
+		}
 		return errors.New("a concurrent history change won the publication race; try again")
 	}
 
@@ -153,23 +158,55 @@ func (s *Session) bumpHistoryRevisionLocked() {
 //   - Everything else (events, session naming, hook user messages, the
 //     nudge latch) runs after both locks release, via commit.flush: those
 //     effects re-enter emit/steering/transcript machinery that itself takes
-//     these locks, and none of them need the ordering guarantee.
+//     these locks, and none of them need the ordering guarantee. The lone
+//     deliberate exception is appendEnvironmentContext's EventEnvironment,
+//     which publishes under attentionMu because it DOES need the ordering
+//     guarantee — the projector reads it as a turn boundary, so a live reader
+//     must see it where the transcript holds it. It is one emit of known
+//     content; this flush is unbounded work (naming, hook user messages) that
+//     re-enters these very locks, so it stays out here.
 //
 // onPublishLocked, when non-nil, runs under s.mu immediately after a
 // successful publish — the publisher's baseline correction, per
 // publishFoldedHistory's contract. On conflict NOTHING is committed and
 // ok=false; the caller retries against the now-current history or aborts.
+//
+// refusal names WHICH of the two ok=false outcomes happened. A publication
+// race leaves it nil — that is the retryable one. A poisoned transcript sets
+// it to ErrWriterPoisoned, which no retry can clear: the writer refuses every
+// append for the rest of the session, so a caller that retries a fold against
+// it burns another summarizer call to lose the same way, and a caller that
+// reports the loss must not call it a race the operator can win.
 // The returned published slice is a defensive copy taken under s.mu, never
 // s.history's own backing array — callers may read it without locks.
-func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool) {
+func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool, refusal error) {
 	s.attentionMu.Lock()
+	// Fail closed on a transcript that has stopped accepting records, before
+	// anything is published rather than after the markers fail to land. This
+	// transaction swaps model history, resets the environment tracker and tells
+	// every client the context was compacted, and only then writes the entries
+	// that make the fold survive a restart; a poisoned writer refuses all of
+	// them, so a fold published here is one the session announces, acts on, and
+	// loses -- the restart anchors on the last marker that did land and brings
+	// the pre-compaction history back. It is the turn loop's own admission rule
+	// applied to the other durable write the session makes. Refusing reports the
+	// publication lost, which is the answer both callers already handle: a fold
+	// that did not publish runs neither commit phase.
+	//
+	// The read is under the transcript door, so no session append can poison the
+	// writer between here and the entries below -- every one of them goes
+	// through this lock.
+	if s.attachedTranscript().Poisoned() {
+		s.attentionMu.Unlock()
+		return nil, false, errTranscriptRefusesRecords()
+	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
 	if !ok {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
-		return nil, false
+		return nil, false, nil
 	}
 	// The merge-back rewrite set: the PERSISTED transcript forms of every
 	// append/write pair since this fold's snapshot (snapAppends), taken from
@@ -272,7 +309,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		hook()
 	}
 	commit.flush()
-	return published, true
+	return published, true, nil
 }
 
 // foldWithForceCompact snapshots s.history, runs ForceCompact with the given
@@ -288,7 +325,12 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 // the publish race: s.history is whatever the winning competitor left it as,
 // and this fold's work — including the shrink it would have applied — is
 // entirely discarded; the caller decides what that means for it.
-func (s *Session) foldWithForceCompact(ctx context.Context, instructions string) (ok bool) {
+//
+// refusal carries publishFoldTransaction's reason when ok=false: nil for the
+// publication race this retries, and the poisoned-transcript error for the
+// refusal it does not retry, since no second fold can make that writer accept
+// the markers.
+func (s *Session) foldWithForceCompact(ctx context.Context, instructions string) (ok bool, refusal error) {
 	const maxAttempts = 2
 	for range maxAttempts {
 		s.mu.Lock()
@@ -303,16 +345,20 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string)
 		postLen := len(histCopy)
 		injected := foldInjectedCount()
 
-		if _, published := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func([]schema.Turn) {
+		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func([]schema.Turn) {
 			s.shrinkTurnHistoryBaseline(snapLen, postLen, injected)
-		}); published {
-			return true
+		})
+		if published {
+			return true, nil
+		}
+		if refused != nil {
+			return false, refused
 		}
 		// Conflict: loop retries against the now-current history. commit is
 		// deliberately NOT run — this attempt's side effects must not take
 		// effect for a fold that never published.
 	}
-	return false
+	return false, nil
 }
 
 // noteHandoffPrefix frames the agent's note as a message from its pre-compaction

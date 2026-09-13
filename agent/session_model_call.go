@@ -265,7 +265,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// the wrong version. inFlightFrom is captured there too, so the
 			// boundary this request expands with
 			// matches the exact history this fold published.
-			pub, ok := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
+			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
@@ -276,6 +276,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			})
 			if ok {
 				historyTurns = pub
+				break
+			}
+			if refused != nil {
+				// Not a conflict: the transcript refuses every append for
+				// the rest of the session, so a second attempt would spend
+				// another summarizer call to lose the same way. The round
+				// continues unfolded, exactly as it does when both attempts
+				// lose the race.
 				break
 			}
 			// Conflict: loop retries with a fresh, atomically-paired
@@ -1333,7 +1341,7 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	// publish. A total loss leaves s.history as the winning competitor
 	// published it, which is a valid state for the retry this recovery
 	// precedes.
-	_ = s.foldWithForceCompact(ctx, "")
+	_, _ = s.foldWithForceCompact(ctx, "")
 	s.maybeAutoSave()
 }
 
