@@ -56,26 +56,26 @@ PGROUP_SPAWN_PERL='
 # pgroup_record_spawned PATH PID MARKER — the parent's own note of what it has
 # just forked, written the moment `$!` is known.
 #
-# The child writes the same `pid:` line from its side, but it cannot write it
-# before it exists: between the fork and the child's first write there is a job
-# running that the record does not name, and a cleanup arriving there finds an
-# empty file and nothing it can signal. The parent knows the pid one command
-# after the fork, so it says so too.
+# The child writes the record proper, but it cannot write it before it exists:
+# between the fork and the child's first write there is a job running that the
+# record does not name, and a cleanup arriving there finds an empty file and
+# nothing it can signal. The parent knows the pid one command after the fork, so
+# it says so too.
 #
-# It never overwrites a record the child has already filled in: the child may
-# have reached setpgrp and written `pgid:` by now, and turning that back into
-# `pid:` would tell a reader to stop a group by pid. A reader that finds `pid:`
-# asks the kernel what group that pid is in anyway, so the worst this can be is
-# one step behind.
+# It writes a file of its own, `PATH.spawned`, and never PATH. Sharing PATH
+# meant reading it and then replacing it, and a check followed by a rename is not
+# one step: the child can fill the record in between the two, and the parent then
+# overwrites a `pgid:` with its older `pid:`. With two names there is nothing to
+# clobber, and the reader prefers the record and falls back to this.
 pgroup_record_spawned() {
 	local path="$1" pid="$2" marker="$3"
-	[ -s "$path" ] && return 0
-	# A temporary of its own: the child renames through `$path.tmp`, and two
-	# writers sharing that name means one of them renames the other's file away
-	# mid-write. Measured, that killed the attempt with "No such file or
-	# directory" from inside the wrapper.
 	printf 'pid:%s:%s' "$pid" "$marker" >"$path.spawned.tmp" || return 1
-	mv "$path.spawned.tmp" "$path"
+	mv "$path.spawned.tmp" "$path.spawned"
+}
+
+# pgroup_record_clear PATH — drop a record and everything written beside it.
+pgroup_record_clear() {
+	rm -f "$1" "$1.spawned" "$1.spawned.tmp" "$1.survivor.tmp" "$1.tmp"
 }
 
 # pgroup_record_value PATH GRACE — what the spawn recorded at PATH, waiting up to
@@ -90,60 +90,13 @@ pgroup_record_value() {
 		value="$(cat "$path" 2>/dev/null)"
 		waited=$((waited + 1))
 	done
+	if [ -z "$value" ]; then
+		# Nothing from the job itself; what the parent wrote beside it is the
+		# only name left, and it is a pid, which the reader knows how to use.
+		value="$(cat "$path.spawned" 2>/dev/null)"
+	fi
 	[ -n "$value" ] || return 1
 	printf '%s' "$value"
-}
-
-# pgroup_survivors PGID — print `pid(state)` for every live
-# member of PGID, zombies excluded. Exit status 0 means the printed answer is
-# trustworthy; 2 means the process listing itself failed, so nothing is known
-# about the group and an empty answer must NOT be read as "gone".
-#
-# Zombies have to be excluded, and `kill -0 -- -PGID` cannot do it. A process
-# the kernel has finished with stays a member of its own group until its parent
-# reaps it, and a group signal is reported as delivered to it, so the leader
-# this function is asked about would read as "still running" for as long as the
-# shell had not got round to reaping it — a successful kill reported as a
-# survivor, purely on reap timing. Asking `ps` for the state instead makes the
-# answer independent of when anyone reaps.
-#
-# The status is separate from the output because the two failures look
-# identical otherwise. A `ps` that cannot run prints nothing, and a caller
-# reading that as "no live members" starts beside a job that is still running and holding whatever it holds — the
-# exact race the stop exists to prevent.
-pgroup_survivors() {
-	local pgid="$1" listing
-	if ! listing="$(ps -axo pid=,pgid=,state= 2>/dev/null)" || [ -z "$listing" ]; then
-		return 2
-	fi
-	printf '%s\n' "$listing" |
-		awk -v pgid="$pgid" '$2 == pgid && $3 !~ /^[Zz]/ { printf "%s(%s) ", $1, $3 }'
-}
-
-# pgroup_survivor_report PGID — what is left of PGID, as a phrase a
-# diagnostic can print. "Nothing was there" and "nobody could look" are
-# different answers, and collapsing the second into the first tells the reader
-# the group was confirmed empty when in fact the process listing would not run.
-pgroup_survivor_report() {
-	local report
-	if ! report="$(pgroup_survivors "$1")"; then
-		printf '<unknown: the process listing would not run>'
-		return 0
-	fi
-	printf '%s' "${report:-<none at the final probe>}"
-}
-
-# pid_leads_pgroup PID — 0 when the kernel says PID leads the group numbered
-# PID, 1 otherwise, including when that cannot be read.
-#
-# The one question that makes `kill -- -PID` safe. Before its setpgrp runs a
-# spawned child is still in its parent's group, and once it has gone the number
-# belongs to whoever the kernel hands it to next: a group signal aimed at it in
-# either state names a group the caller has no business touching.
-pid_leads_pgroup() {
-	local pid="$1" pgid
-	pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
-	[ -n "$pgid" ] && [ "$pgid" = "$pid" ]
 }
 
 # pgroup_signalable PGID — 0 when PGID is a group this caller may signal, 1 when
@@ -290,7 +243,7 @@ stop_recorded_job() {
 	recorded_marker="${value##*:}"
 	if [ -n "$marker" ] && [ "$recorded_marker" != "$marker" ]; then
 		pgroup_stop_reason="$(printf 'the record was written for %s, not %s, so it names somebody else job.' "$recorded_marker" "$marker")"
-		rm -f "$record"
+		pgroup_record_clear "$record"
 		return 1
 	fi
 	if [ "${value#pid:}" != "$value" ]; then
@@ -299,7 +252,7 @@ stop_recorded_job() {
 		# to somebody else since.
 		pid_owned_by "$number" "$recorded_marker" || status=$?
 		if [ "$status" -eq 1 ]; then
-			rm -f "$record"
+			pgroup_record_clear "$record"
 			return 1
 		fi
 		if [ "$status" -ne 0 ]; then
@@ -322,14 +275,14 @@ stop_recorded_job() {
 		return 2
 	fi
 	if [ -z "$members" ]; then
-		rm -f "$record"
+		pgroup_record_clear "$record"
 		return 0
 	fi
 	status=0
 	stop_pgroup "$number" "$grace" || status=$?
 	case "$status" in
 	0)
-		rm -f "$record"
+		pgroup_record_clear "$record"
 		return 0
 		;;
 	1)

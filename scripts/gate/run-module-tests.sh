@@ -730,7 +730,7 @@ run_bounded_package_list() {
 				# produced would turn a slow-but-working host into a failure.
 				# bash keeps a reaped job's status, so this answers even when
 				# the race above already removed the process.
-				rm -f "$(package_list_pgid_path "$module")"
+				pgroup_record_clear "$(package_list_pgid_path "$module")"
 				if wait "$list_pid"; then
 					if ! mv "$attempt_list" "$package_list"; then
 						printf 'run-module-tests.sh: could not promote %s to %s\n' "$attempt_list" "$package_list" >&2
@@ -778,7 +778,7 @@ run_bounded_package_list() {
 		# The status has to be read inside the else branch: after the `if`
 		# compound closes, $? is the `if`'s own status, which is 0 when an
 		# else-less condition fails.
-		rm -f "$(package_list_pgid_path "$module")"
+		pgroup_record_clear "$(package_list_pgid_path "$module")"
 		if wait "$list_pid"; then
 			if ! mv "$attempt_list" "$package_list"; then
 				printf 'run-module-tests.sh: could not promote %s to %s\n' "$attempt_list" "$package_list" >&2

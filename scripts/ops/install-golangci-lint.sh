@@ -199,7 +199,7 @@ while :; do
 	# that has been collected names whatever the kernel gives that number to
 	# next, and the trap would aim a SIGTERM and a SIGKILL at it.
 	attempt_pid=""
-	rm -f "$attempt_record"
+	pgroup_record_clear "$attempt_record"
 	if [ "$attempt_status" -eq 0 ]; then
 		cat "$attempt_log" >&2
 		break
