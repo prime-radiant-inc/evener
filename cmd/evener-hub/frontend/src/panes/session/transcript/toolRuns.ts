@@ -19,6 +19,7 @@
 //     flushes the run rather than spanning it, so a folded row can never
 //     gather calls the reader saw separated by an answer;
 //   - a run has to be worth folding. Two rows are not clutter; three are.
+import { hasItemFailure } from "../../../protocol/itemFailure";
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
 import { type ToolRendererDescriptor, type ToolSummaryContext, toolRendererFor } from "./toolRenderers";
 
@@ -46,7 +47,11 @@ function foldable(entry: ProjectedEntry, opts: FoldOptions): entry is ToolItemEn
   if (entry.kind !== "item" || entry.item.type !== "commandExecution") return false;
   const { item } = entry;
   if (item.status !== "completed") return false;
-  if (item.error !== undefined && item.error !== "") return false;
+  // The same failure the row itself renders (protocol/itemFailure.ts), not a
+  // looser re-reading of the wire fields: a call that exited nonzero must not
+  // fold away behind a quiet run summary, and an error string with nothing in
+  // it is not a reason to keep a clean call out of one.
+  if (hasItemFailure(item)) return false;
   const descriptor = opts.descriptorFor(item.toolName ?? "");
   if (descriptor.fold !== "quiet" && descriptor.fold !== "consequential") return false;
   if (descriptor.failed?.(item) || descriptor.autoExpand?.(item)) return false;

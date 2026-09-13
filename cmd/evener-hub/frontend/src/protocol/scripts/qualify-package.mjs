@@ -40,6 +40,7 @@ async function qualify() {
     "activityData",
     "activityList",
     "activityMerge",
+    "itemFailure",
     "jobOutput",
     "model",
     "reducer",
@@ -72,6 +73,18 @@ async function qualify() {
     "ConnectionClosedError",
     "RequestTimeoutError",
     "WireError",
+    "ClientNotReadyError",
+    "GENERIC_ERROR_MESSAGE",
+    "HUB_UNREACHABLE_MESSAGE",
+    "errorKind",
+    "errorText",
+    "friendlyErrorMessage",
+    "friendlyLaunchErrorMessage",
+    "isHubLaunchError",
+    "isStaleCursorError",
+    "mutationErrorData",
+    "sessionActionError",
+    "sessionActionHeadline",
     "rpcURLFromLocation",
     "composeAskAnswers",
     "METHOD_NAMES",
@@ -90,6 +103,11 @@ async function qualify() {
     "ActivityList",
     "fenceRootSession",
     "graftContinuationTree",
+    "hasItemFailure",
+    "hasErrorText",
+    "hasFailureStatus",
+    "isNonZeroExit",
+    "isInProgressStatus",
     "parseJobLogTail",
     "SYSTEM_PRELUDE_TURN_ID",
     "pendingTextJoined",
@@ -120,6 +138,7 @@ async function qualify() {
     "AskAnswerItem",
     "ActivityTree",
     "ActivityState",
+    "ItemFailureSignals",
     "JobLogTail",
     "ThreadModel",
     "NotificationRoutingKey",
@@ -134,6 +153,16 @@ async function qualify() {
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
 assert.equal(new client.WireError("nope", -32000).code, -32000);
+assert.equal(client.errorText(new Error("boom")), "boom");
+assert.equal(client.errorKind(new Error("boom")), "unknown");
+assert.equal(client.friendlyErrorMessage(new Error("boom")), client.GENERIC_ERROR_MESSAGE);
+assert.equal(client.friendlyErrorMessage(new client.ClientNotReadyError("waited")), client.HUB_UNREACHABLE_MESSAGE);
+assert.equal(client.friendlyLaunchErrorMessage(new Error("boom")), client.GENERIC_ERROR_MESSAGE);
+assert.equal(client.isHubLaunchError(new Error("boom")), false);
+assert.equal(client.isStaleCursorError(new Error("boom")), false);
+assert.equal(client.sessionActionHeadline("Couldn't rename", new Error("boom")), "Couldn't rename");
+assert.equal(client.sessionActionError("Couldn't rename", new Error("boom")), "Couldn't rename: boom");
+assert.equal(client.mutationErrorData(new Error("boom")), undefined);
 assert(client.METHOD_NAMES.length > 0);
 const session = {
   kind: "session", sessionId: "thread", ref: "ref", label: "label", aggregate: "idle",
@@ -146,6 +175,11 @@ assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
 assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
 assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
+assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
+assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
+assert.equal(client.hasErrorText({ error: "  " }), false);
+assert.equal(client.isNonZeroExit({ exitCode: 0 }), false);
+assert.equal(client.isInProgressStatus("inProgress"), true);
 assert.equal(client.parseJobLogTail(null), null);
 assert.equal(client.SYSTEM_PRELUDE_TURN_ID, "turn_system");
 assert.equal(client.pendingTextJoined(["a", "b"]), "ab");
