@@ -783,11 +783,15 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	return c.List(), nil
 }
 
-// SetModelDisabled flips one exact model row's disabled flag. It writes an
-// explicit bool on the row — authoring the row when the model exists only as
-// a curated entry — so the choice survives catalog refreshes. Refusals follow
-// Create's convention: the caller sent the bad name, so unknown instances,
-// glob ids, and unknown rows come back as appwire.InvalidParams.
+// SetModelDisabled flips one model row's disabled flag, writing through
+// aliases: an alias id resolves to its target and the flag lands on the
+// target row, so all names of a model share one flag and the alias row
+// itself never carries one. It writes an explicit bool — authoring the row
+// when the model exists only as a curated entry — so the choice survives
+// catalog refreshes. Refusals follow Create's convention: the caller sent
+// the bad name, so unknown instances, glob ids, dangling aliases,
+// cross-provider targets, and unknown rows come back as
+// appwire.InvalidParams.
 func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetModelDisabledParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
@@ -800,15 +804,12 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	if _, ok := c.reg.Get().Instance(name); !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	if strings.Contains(model, "*") {
-		return appwire.InvalidParams(fmt.Sprintf("model %q is a glob: the sheet toggles exact rows only", params.Model))
-	}
-	rows, err := c.reg.Get().InstanceModels(name)
+	// Lockstep: an alias id resolves to its target, and the flag lands on
+	// the target row — never the alias. Membership, glob, dangling, and
+	// cross-provider refusals all come from the same answer.
+	target, err := c.reg.Get().AliasTarget(name, model)
 	if err != nil {
 		return appwire.InvalidParams(err.Error())
-	}
-	if !slices.ContainsFunc(rows, func(m registry.InstanceModel) bool { return m.ID == model }) {
-		return appwire.InvalidParams(fmt.Sprintf("model %q is not a known model of instance %q", params.Model, name))
 	}
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so a toggle that parses fine but fails to load restores
@@ -830,11 +831,11 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	if p.Models == nil {
 		p.Models = map[string]registry.Model{}
 	}
-	row := p.Models[model]
-	row.ID = model
+	row := p.Models[target.Model]
+	row.ID = target.Model
 	disabled := params.Disabled
 	row.Disabled = &disabled
-	p.Models[model] = row
+	p.Models[target.Model] = row
 	l.Providers[name] = p
 	if err := c.writeLoadable(l); err != nil {
 		return err

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"errors"
+	"os"
 	"slices"
 	"testing"
 
@@ -62,6 +63,34 @@ func TestInstances_SetModelDisabledLiveOnlyID(t *testing.T) {
 	// The authored exact row precedes live lookup, so the toggle takes effect.
 	if _, err := f.ctl.reg.Get().Resolve("base/claude-live-new"); !errors.Is(err, registry.ErrModelDisabled) {
 		t.Fatalf("Resolve after live disable = %v, want ErrModelDisabled", err)
+	}
+}
+
+func TestInstances_SetModelDisabledAliasWritesTarget(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"ANTHROPIC_API_KEY": "sk"})
+	cfg := "[providers.base]\nbase = \"anthropic\"\napi_key = \"sk-inline\"\n[providers.base.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n"
+	if err := os.WriteFile(f.tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if err := f.ctl.SetModelDisabled(appwire.InstanceSetModelDisabledParams{Name: "base", Model: "house-model", Disabled: true}); err != nil {
+		t.Fatalf("SetModelDisabled(alias): %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "base")
+	target, ok := p.Models["claude-opus-4-6"]
+	if !ok || !registry.BoolValue(target.Disabled) {
+		t.Fatalf("authored target row = %+v, want disabled=true", target)
+	}
+	if row, ok := p.Models["house-model"]; !ok || row.Disabled != nil {
+		t.Fatalf("alias row must keep no disabled flag of its own: %+v", p.Models)
+	}
+	if _, err := f.ctl.reg.Get().Resolve("base/house-model"); !errors.Is(err, registry.ErrModelDisabled) {
+		t.Fatalf("Resolve(alias) = %v, want ErrModelDisabled", err)
+	}
+	if _, err := f.ctl.reg.Get().Resolve("base/claude-opus-4-6"); !errors.Is(err, registry.ErrModelDisabled) {
+		t.Fatalf("Resolve(target) = %v, want ErrModelDisabled", err)
 	}
 }
 

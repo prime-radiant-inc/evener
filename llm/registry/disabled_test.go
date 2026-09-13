@@ -70,6 +70,38 @@ func TestResolve_AliasOfDisabledTargetIsBlocked(t *testing.T) {
 	}
 }
 
+func TestResolve_AliasIgnoresOwnDisabledFlag(t *testing.T) {
+	// Lockstep: the alias follows its target. Its own Disabled never
+	// applies, so an alias-own disable with an enabled target resolves.
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\ndisabled = true\n")
+	if _, err := r.Resolve("anthropic/house-model"); err != nil {
+		t.Fatalf("Resolve(alias, own-disabled, target-enabled) = %v, want nil", err)
+	}
+}
+
+func TestAliasTarget_ResolvesSameProviderPassthroughAndDangling(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
+	got, err := r.AliasTarget("anthropic", "house-model")
+	if err != nil || got != (Ref{Instance: "anthropic", Model: "claude-opus-4-6"}) {
+		t.Fatalf("AliasTarget(alias) = %+v, %v; want anthropic/claude-opus-4-6", got, err)
+	}
+	got, err = r.AliasTarget("anthropic", "claude-opus-4-6")
+	if err != nil || got != (Ref{Instance: "anthropic", Model: "claude-opus-4-6"}) {
+		t.Fatalf("AliasTarget(exact) = %+v, %v; want passthrough", got, err)
+	}
+	// A dangling config alias never loads (validateRecord refuses it), so
+	// the reachable refusals are glob ids and unknown instances.
+	if _, err := r.AliasTarget("anthropic", "claude-*"); err == nil {
+		t.Fatal("AliasTarget(glob) must error")
+	}
+	if _, err := r.AliasTarget("anthropic", "not-a-model"); err == nil {
+		t.Fatal("AliasTarget(unknown) must error")
+	}
+	if _, err := r.AliasTarget("nope", "m"); err == nil {
+		t.Fatal("AliasTarget(unknown instance) must error")
+	}
+}
+
 func TestFindModel_SkipsDisabled(t *testing.T) {
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n")
 	for _, ref := range r.FindModel("claude-opus-4-6") {
@@ -153,6 +185,24 @@ func TestInstanceModels_IncludesLiveOnlyIDs(t *testing.T) {
 	}
 	if _, err := r.Resolve("anthropic/claude-live-new"); !errors.Is(err, ErrModelDisabled) {
 		t.Fatalf("Resolve(live, glob-disabled) = %v, want ErrModelDisabled", err)
+	}
+}
+
+func TestInstanceModels_SkipsAliasRows(t *testing.T) {
+	// The flag lives on the target, so the inventory offers no toggle on
+	// the alias itself: every row it lists is directly writable.
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
+	models, err := r.InstanceModels("anthropic")
+	if err != nil {
+		t.Fatalf("InstanceModels: %v", err)
+	}
+	for _, m := range models {
+		if m.ID == "house-model" {
+			t.Fatalf("alias row must not list: %+v", models)
+		}
+	}
+	if len(models) == 0 {
+		t.Fatal("inventory must still list the target rows")
 	}
 }
 

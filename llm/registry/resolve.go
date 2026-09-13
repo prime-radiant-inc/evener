@@ -427,6 +427,8 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	// find nothing and fall back to a row-less, and wrong, baseline).
 	canonicalRowID := hit.rowID
 	// Layer 0: alias seeding (spec §4.2).
+	aliasLockstep := false
+	var aliasDisabled *bool
 	if row.AliasOf != "" {
 		target, same, err := r.resolveAliasTarget(rec, row.AliasOf)
 		if err != nil {
@@ -439,6 +441,11 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 			warnings = append(warnings, "dangling alias: "+err.Error())
 		} else {
 			seedFromAlias(&caps, &row, target, prov)
+			// Lockstep: the alias follows its target's Disabled verdict,
+			// so its own exact-row and glob flags never apply. Remember
+			// the verdict now; the replay below is reverted to it.
+			aliasLockstep = true
+			aliasDisabled = clonePointer(target.Model.Disabled)
 			if same && rec.head.Models[hit.rowID].Protocol == "" && rec.head.Models[hit.rowID].Transport == nil {
 				canonicalRowID = target.Model.ID
 				row.Protocol = target.Model.Protocol
@@ -492,6 +499,14 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
 	seedFields(&caps, rowProto)
+	if aliasLockstep {
+		row.Disabled = aliasDisabled
+		if aliasDisabled == nil {
+			delete(prov, "Disabled")
+		} else {
+			prov["Disabled"] = provAlias
+		}
+	}
 	if BoolValue(row.Disabled) {
 		return Resolved{}, fmt.Errorf("%s/%s: %w (set by %s)", rec.name, ref.Model, ErrModelDisabled, prov["Disabled"])
 	}
@@ -831,8 +846,8 @@ func (r *Registry) FindModel(id string) []Ref {
 func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 	if hit.rowID != "" {
 		if aliasOf := rec.head.Models[hit.rowID].AliasOf; aliasOf != "" {
-			if r.aliasTargetDisabled(rec, aliasOf) {
-				return true
+			if v, ok := r.aliasEffectiveDisabled(rec, aliasOf); ok {
+				return v
 			}
 		}
 	}
@@ -865,25 +880,55 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 	return disabled
 }
 
-// aliasTargetDisabled reports whether an alias_of reference names a row the
-// config layer disabled, through the same acceptance rules as
-// resolveAliasTarget (an exact non-alias row, same provider or
-// provider-id/id) but without paying for a full resolve: only the target's
-// own Disabled replay matters here.
-func (r *Registry) aliasTargetDisabled(rec *record, aliasOf string) bool {
+// aliasEffectiveDisabled reports the Disabled verdict an alias follows:
+// the target row's own effective Disabled replay. It answers ok=false for
+// a dangling alias, whose own replay then applies as before. Acceptance
+// matches resolveAliasTarget (an exact non-alias row, same provider or
+// provider-id/id) but without paying for a full resolve.
+func (r *Registry) aliasEffectiveDisabled(rec *record, aliasOf string) (disabled, ok bool) {
 	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
-		return r.modelDisabled(rec, Ref{Instance: rec.name, Model: aliasOf}, lookupHit{rowID: aliasOf, wireID: aliasOf, step: "row"})
+		return r.modelDisabled(rec, Ref{Instance: rec.name, Model: aliasOf}, lookupHit{rowID: aliasOf, wireID: aliasOf, step: "row"}), true
 	}
 	if i := strings.Index(aliasOf, "/"); i > 0 {
 		if prov, ok := r.curated[aliasOf[:i]]; ok {
 			if id := aliasOf[i+1:]; !isGlob(id) {
 				if m, ok := prov.head.Models[id]; ok && m.AliasOf == "" {
-					return r.modelDisabled(prov, Ref{Instance: prov.name, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"})
+					return r.modelDisabled(prov, Ref{Instance: prov.name, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"}), true
 				}
 			}
 		}
 	}
-	return false
+	return false, false
+}
+
+// AliasTarget resolves a model id to the row a toggle writes: the id
+// itself, unless it names an alias, in which case the alias's target —
+// lockstep means the flag lives on the target, never the alias. A glob id,
+// a dangling alias, a cross-provider target (the config layer cannot author
+// another provider's rows), an unknown model, and an unknown instance are
+// errors.
+func (r *Registry) AliasTarget(instance, model string) (Ref, error) {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return Ref{}, r.unknownInstance(instance)
+	}
+	if isGlob(model) {
+		return Ref{}, fmt.Errorf("model %q is a glob: the sheet toggles exact rows only", model)
+	}
+	if m, ok := rec.head.Models[model]; ok && m.AliasOf != "" {
+		target, same, err := r.resolveAliasTarget(rec, m.AliasOf)
+		if err != nil {
+			return Ref{}, err
+		}
+		if !same {
+			return Ref{}, fmt.Errorf("model %q is an alias of %q on another provider, which this instance cannot toggle", model, m.AliasOf)
+		}
+		return Ref{Instance: rec.name, Model: target.Model.ID}, nil
+	}
+	if hit := r.lookupRow(rec, model); hit.synthesized {
+		return Ref{}, fmt.Errorf("model %q is not a known model of instance %q", model, instance)
+	}
+	return Ref{Instance: rec.name, Model: model}, nil
 }
 
 // recordMayDisable reports whether any layer of rec or the top-level glob
@@ -910,8 +955,9 @@ func recordMayDisable(rec *record, topGlobs map[string]map[string]Model) bool {
 // InstanceModels lists an instance's known models with their effective
 // disabled state, sorted by id, for the Providers pane's per-model toggles:
 // exact catalog rows plus cached live ids (the same set ModelIDs lists).
-// A toggle on a live-only id authors an exact config row, which precedes
-// live lookup, so the exception takes effect.
+// Alias rows are skipped: the flag lives on the target, so every listed
+// row is directly writable. A toggle on a live-only id authors an exact
+// config row, which precedes live lookup, so the exception takes effect.
 func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	rec, ok := r.recordFor(instance)
 	if !ok {
@@ -921,9 +967,13 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	out := make([]InstanceModel, 0, len(ids))
 	mayDisable := recordMayDisable(rec, r.topGlobs)
 	for _, id := range ids {
+		hit := r.lookupRow(rec, id)
+		if hit.rowID != "" && rec.head.Models[hit.rowID].AliasOf != "" {
+			continue
+		}
 		disabled := false
 		if mayDisable {
-			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, r.lookupRow(rec, id))
+			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, hit)
 		}
 		out = append(out, InstanceModel{ID: id, Disabled: disabled})
 	}

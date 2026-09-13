@@ -976,8 +976,14 @@ A row the config layer disabled (`disabled = true` on the exact row or a
 matching glob, §10) fails `Resolve` with `ErrModelDisabled`, which every
 listing already drops as a resolve error: `Client.Models`, `launch-check
 --models`, the `model/list` RPC, and the session startup snapshot all omit
-it, and `FindModel` skips it. Disabling a target disables aliases resolving
-through it. `default_model`/`cheap_model` naming a disabled model get no
+it, and `FindModel` skips it. Aliases stay in lockstep with their target:
+disabling a target disables aliases resolving through it, and an alias's
+own exact-row or glob flags never apply — the flag lives on the target
+row alone. Toggling an alias writes through to its target
+(`Registry.AliasTarget`); a dangling alias, a glob id, and a
+cross-provider target are refusals. The sheet inventory lists no alias
+rows, so every toggle maps one-to-one onto the row it writes.
+`default_model`/`cheap_model` naming a disabled model get no
 special validation; they fail at use with the same error. There is no
 grandfathering: a session whose model is disabled afterwards errors on next
 use and recovers by switching models.

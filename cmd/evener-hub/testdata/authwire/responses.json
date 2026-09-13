@@ -295,9 +295,6 @@
             "id": "claude-haiku-4-5-20251001"
           },
           {
-            "id": "claude-mythos-5"
-          },
-          {
             "id": "claude-mythos-preview"
           },
           {
@@ -305,12 +302,6 @@
           },
           {
             "id": "claude-opus-4-5-20251101"
-          },
-          {
-            "id": "claude-opus-4-5-20251101[1m]"
-          },
-          {
-            "id": "claude-opus-4-5[1m]"
           },
           {
             "id": "claude-opus-4-6"
@@ -329,12 +320,6 @@
           },
           {
             "id": "claude-sonnet-4-5-20250929"
-          },
-          {
-            "id": "claude-sonnet-4-5-20250929[1m]"
-          },
-          {
-            "id": "claude-sonnet-4-5[1m]"
           },
           {
             "id": "claude-sonnet-4-6"
@@ -361,18 +346,6 @@
         "storedEmail": "bot@example.com",
         "credentialRequired": true,
         "models": [
-          {
-            "id": "gpt-5.6"
-          },
-          {
-            "id": "gpt-5.6-luna"
-          },
-          {
-            "id": "gpt-5.6-sol"
-          },
-          {
-            "id": "gpt-5.6-terra"
-          },
           {
             "id": "gpt-6-astra"
           }
@@ -582,9 +555,6 @@
             "id": "claude-haiku-4-5-20251001"
           },
           {
-            "id": "claude-mythos-5"
-          },
-          {
             "id": "claude-mythos-preview"
           },
           {
@@ -592,12 +562,6 @@
           },
           {
             "id": "claude-opus-4-5-20251101"
-          },
-          {
-            "id": "claude-opus-4-5-20251101[1m]"
-          },
-          {
-            "id": "claude-opus-4-5[1m]"
           },
           {
             "id": "claude-opus-4-6"
@@ -616,12 +580,6 @@
           },
           {
             "id": "claude-sonnet-4-5-20250929"
-          },
-          {
-            "id": "claude-sonnet-4-5-20250929[1m]"
-          },
-          {
-            "id": "claude-sonnet-4-5[1m]"
           },
           {
             "id": "claude-sonnet-4-6"
@@ -701,9 +659,6 @@
             "id": "claude-haiku-4-5-20251001"
           },
           {
-            "id": "claude-mythos-5"
-          },
-          {
             "id": "claude-mythos-preview"
           },
           {
@@ -711,12 +666,6 @@
           },
           {
             "id": "claude-opus-4-5-20251101"
-          },
-          {
-            "id": "claude-opus-4-5-20251101[1m]"
-          },
-          {
-            "id": "claude-opus-4-5[1m]"
           },
           {
             "id": "claude-opus-4-6"
@@ -735,12 +684,6 @@
           },
           {
             "id": "claude-sonnet-4-5-20250929"
-          },
-          {
-            "id": "claude-sonnet-4-5-20250929[1m]"
-          },
-          {
-            "id": "claude-sonnet-4-5[1m]"
           },
           {
             "id": "claude-sonnet-4-6"
