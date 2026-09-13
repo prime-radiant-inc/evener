@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1683,5 +1684,106 @@ func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *t
 		if id := fmt.Sprintf("child_%02d", i); counts[id] != 1 {
 			t.Fatalf("%s delivered %d times, want exactly once -- the child's entries must survive its delegate being trimmed", id, counts[id])
 		}
+	}
+}
+
+// TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath measures the
+// two bounds against each other. The depth budget a resumed page spends is
+// relative to the continuation's target -- the target is projection's own
+// depth 0 however many hops led to it -- while the path a trim mints is
+// absolute, counted from the tree's root through the filtered ancestor
+// chain. A page resumed two hops down can therefore reach an absolute depth
+// of len(Path)+activityMaxNewDepth, and decodeActivityContinuation rejects
+// anything past activityMaxContinuationPathLength. If that arithmetic is
+// reachable, the page hands back a token its own decoder refuses and the
+// subtree below it is stranded.
+func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T) {
+	stateDir := t.TempDir()
+	started := time.Unix(800, 0).UTC()
+	const chainLen = activityMaxNewDepth + 3
+	sessionIDs := make([]string, chainLen)
+	for i := range sessionIDs {
+		sessionIDs[i] = fmt.Sprintf("deep%d", i)
+	}
+	description := strings.Repeat("d", 250_000)
+	var descriptors []delegatestore.Descriptor
+	for i, id := range sessionIDs {
+		events := []jobstore.Event{{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id,
+			Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started,
+		}}
+		if i == len(sessionIDs)-1 {
+			// The deepest session carries enough to force a trim, so the
+			// entry that gets dropped is the one whose path is longest.
+			for j := range 24 {
+				ts := started.Add(time.Duration(j) * time.Second)
+				events = append(events, jobstore.Event{
+					Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%s_%02d", id, j),
+					Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &ts,
+					Description: description,
+				})
+			}
+		}
+		s1cov_writeJobLog(t, stateDir, id, events...)
+		if i == 0 {
+			savePastActivityMeta(t, stateDir, id, "Root")
+		} else {
+			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
+		}
+		if i+1 < len(sessionIDs) {
+			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
+		}
+	}
+	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+
+	// Resume two hops down, which is what makes the absolute path the trim
+	// mints longer than the depth budget alone would allow.
+	resume := encodeActivityContinuation(activityContinuation{
+		Version:   activityContinuationV1,
+		RootID:    sessionIDs[0],
+		SessionID: sessionIDs[2],
+		Path:      []string{"dlg_" + sessionIDs[1], "dlg_" + sessionIDs[2]},
+	})
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{Continuation: resume})
+	if err != nil {
+		t.Fatalf("resume two hops down: %v", err)
+	}
+	var walk pastActivityWalk
+	collectPastActivityPage(t, &tree.Root, &walk)
+	for _, token := range walk.continuations {
+		if _, decodeErr := decodeActivityContinuation(token, sessionIDs[0]); decodeErr != nil {
+			t.Fatalf("the page minted a token its own decoder refuses: %v -- the subtree below it cannot be requested", decodeErr)
+		}
+	}
+
+	// The deepest session is the one whose absolute path runs past the
+	// limit, so it is the one that has to name itself instead.
+	deepest := &tree.Root
+	hops := 0
+	for {
+		var next *appwire.JobActivitySession
+		for i := range deepest.Entries {
+			if delegate := deepest.Entries[i].Delegate; delegate != nil && delegate.Child != nil {
+				next = delegate.Child
+			}
+		}
+		if next == nil {
+			break
+		}
+		deepest = next
+		hops++
+	}
+	if hops != activityMaxNewDepth+2 {
+		t.Fatalf("the page reached %d hops below the root, want %d -- the fixture must resume 2 hops down and spend the whole depth budget past that", hops, activityMaxNewDepth+2)
+	}
+	if !deepest.Branch.Truncated {
+		t.Fatalf("session %q lost an entry to the trim but is not marked truncated", deepest.SessionID)
+	}
+	if deepest.Branch.Continuation != "" {
+		t.Fatalf("session %q minted a continuation whose path (%d hops) exceeds %d; it must report itself instead", deepest.SessionID, hops, activityMaxContinuationPathLength)
+	}
+	want := activityUnreachableByPathDiagnostic(deepest.SessionID)
+	if !slices.Contains(deepest.Diagnostics, want) {
+		t.Fatalf("diagnostics %q on session %q, want one of them to be %q", deepest.Diagnostics, deepest.SessionID, want)
 	}
 }

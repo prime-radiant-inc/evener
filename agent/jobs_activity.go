@@ -26,12 +26,20 @@ const (
 	activityContinuationV1  = 1
 	// activityMaxContinuationPathLength bounds a client-supplied
 	// continuation's Path at activityMaxNewDepth+1 rather than
-	// activityMaxNewDepth. Projection itself now emits at most
-	// activityMaxNewDepth hops — the depth bound reports the session to
-	// request instead of minting a token one hop past it — so the extra hop
-	// is slack, kept because tokens minted by an earlier build carry it and
-	// rejecting them on length would say "malformed" where the honest
-	// answer is whatever the generation check has to say.
+	// activityMaxNewDepth. The two numbers measure different things: the
+	// depth budget is relative to the page's target, which is projection's
+	// own depth 0 however many hops led to it, while a minted Path is
+	// absolute — counted from the tree's root through the filtered ancestor
+	// chain. A page resumed len(Path) hops down can therefore reach
+	// absolute depth len(Path)+activityMaxNewDepth, past this limit, so the
+	// mint sites check the path they are about to name against it and
+	// report the session to request instead of handing back a token this
+	// decoder would refuse (activityContinuationPathFits).
+	//
+	// The extra hop over activityMaxNewDepth is slack, kept because tokens
+	// minted by an earlier build carry it and rejecting them on length
+	// would say "malformed" where the honest answer is whatever the
+	// generation check has to say.
 	activityMaxContinuationPathLength = activityMaxNewDepth + 1
 	// activitySkippedEntrySuffix completes a named skip diagnostic;
 	// activitySkippedEntryShortMessage is what a page falls back to when it
@@ -1172,6 +1180,10 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 		return
 	}
 	session.Branch.Truncated = true
+	if !activityContinuationPathFits(path) {
+		session.Diagnostics = append(session.Diagnostics, activityUnreachableByPathDiagnostic(sessionID))
+		return
+	}
 	if budget != nil && budget.rootID != "" {
 		session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
 			Version:        activityContinuationV1,
@@ -1184,6 +1196,23 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 			Revision:       budget.revision,
 		})
 	}
+}
+
+// activityContinuationPathFits reports whether a continuation naming this
+// path could be decoded at all. The mint sites ask before encoding: a token
+// whose Path is longer than decodeActivityContinuation accepts is one this
+// service would refuse on the next request, which strands the entries it
+// claims to lead to. Reporting the session to request instead leaves the
+// reader somewhere to go — that session is its own root, where the path
+// starts over at zero.
+func activityContinuationPathFits(path []string) bool {
+	return len(path) <= activityMaxContinuationPathLength
+}
+
+// activityUnreachableByPathDiagnostic is what a session says in place of a
+// continuation it cannot name.
+func activityUnreachableByPathDiagnostic(sessionID string) string {
+	return fmt.Sprintf("continuation path limit reached; request session %q directly", sessionID)
 }
 
 func appendActivityPath(path []string, delegateID string) []string {
@@ -1447,6 +1476,10 @@ func explainActivitySkippedEntry(tree *appwire.JobActivityTree, dropped activity
 }
 
 func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, resumeIndex int, epochs map[string]activitySessionEpochs, revision uint64) {
+	if !activityContinuationPathFits(dropped.path) {
+		dropped.session.Diagnostics = append(dropped.session.Diagnostics, activityUnreachableByPathDiagnostic(dropped.session.SessionID))
+		return
+	}
 	own := epochs[dropped.session.SessionID]
 	dropped.session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
 		Version:        activityContinuationV1,

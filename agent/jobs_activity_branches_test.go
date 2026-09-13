@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1488,5 +1489,44 @@ func TestJobTreeShapeChange_SurvivesARestart(t *testing.T) {
 	restored.ensureAtLeast(meta.JobTreeRevision)
 	if activityCurrentRootRevision(restored) < moved {
 		t.Fatalf("restored revision = %d, want at least %d", activityCurrentRootRevision(restored), moved)
+	}
+}
+
+// TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed
+// covers the mid-list cutoff's half of the path bound. It builds its path the
+// same absolute way the size trim does, from the tree's root down, so a page
+// resumed several hops deep can reach a length decodeActivityContinuation
+// refuses. A token nobody can submit is worse than none: the reader gets the
+// session to request instead.
+func TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed(t *testing.T) {
+	budget := newBoundedActivityBudget("root", time.Unix(10, 0).UTC(), 7)
+	longest := make([]string, activityMaxContinuationPathLength)
+	for i := range longest {
+		longest[i] = fmt.Sprintf("dlg_%d", i)
+	}
+
+	atLimit := appwire.JobActivitySession{SessionID: "deep"}
+	markActivitySessionTruncated(&atLimit, budget, "deep", longest, 3, 0, 0)
+	if !atLimit.Branch.Truncated || atLimit.Branch.Continuation == "" {
+		t.Fatalf("a path exactly at the limit must still mint: truncated=%t continuation=%q", atLimit.Branch.Truncated, atLimit.Branch.Continuation)
+	}
+	if _, err := decodeActivityContinuation(atLimit.Branch.Continuation, "root"); err != nil {
+		t.Fatalf("the token minted at the limit does not decode: %v", err)
+	}
+	if len(atLimit.Diagnostics) != 0 {
+		t.Fatalf("diagnostics %q on a session that minted a usable token, want none", atLimit.Diagnostics)
+	}
+
+	tooLong := appwire.JobActivitySession{SessionID: "deep"}
+	markActivitySessionTruncated(&tooLong, budget, "deep", append(longest, "dlg_one_too_many"), 3, 0, 0)
+	if !tooLong.Branch.Truncated {
+		t.Fatal("a session cut off mid-list is truncated whether or not it can name a path back to itself")
+	}
+	if tooLong.Branch.Continuation != "" {
+		t.Fatalf("continuation %q minted for a path of %d hops, which this service's own decoder refuses above %d", tooLong.Branch.Continuation, len(longest)+1, activityMaxContinuationPathLength)
+	}
+	want := activityUnreachableByPathDiagnostic("deep")
+	if !slices.Contains(tooLong.Diagnostics, want) {
+		t.Fatalf("diagnostics %q, want one of them to be %q", tooLong.Diagnostics, want)
 	}
 }
