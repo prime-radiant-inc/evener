@@ -17,7 +17,8 @@
     "overflowguard": "node scripts/overflowguard/run.mjs",
     "shellguard": "node scripts/shellguard/run.mjs",
     "spawnguard": "node scripts/spawnguard/run.mjs",
-    "transcriptscrollguard": "node scripts/transcriptscrollguard/run.mjs"
+    "transcriptscrollguard": "node scripts/transcriptscrollguard/run.mjs",
+    "retirementguard": "cd ../../.. && go test ./cmd/evener-hub -run '^TestRetirementBrowser$' -count=1 -args -retirement-browser"
   },
   "license": "ISC",
   "dependencies": {

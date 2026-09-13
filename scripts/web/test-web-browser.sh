@@ -37,10 +37,28 @@ trap 'interrupted_browser 129' 1; trap 'interrupted_browser 130' 2; trap 'interr
 
 scratch_dir dir evener-test-web-browser
 
-for guard in layoutguard overflowguard shellguard spawnguard transcriptscrollguard; do
+for guard in layoutguard overflowguard shellguard spawnguard transcriptscrollguard retirementguard; do
 	guard_dir="$dir/$guard"
 	mkdir -p "$guard_dir/home" "$guard_dir/tmp" "$guard_dir/xdg-config" "$guard_dir/xdg-cache" "$guard_dir/xdg-state" || exit 1
-	HOME="$guard_dir/home" TMPDIR="$guard_dir/tmp" XDG_CONFIG_HOME="$guard_dir/xdg-config" XDG_CACHE_HOME="$guard_dir/xdg-cache" XDG_STATE_HOME="$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$guard/run.mjs" >"$dir/$guard.log" 2>&1 &
+	if [ "$guard" = retirementguard ]; then
+		# retirementguard's contract is `npm run retirementguard`: it invokes the
+		# isolated Go fixture (TestRetirementBrowser), which starts the fixture Hub
+		# and drives scripts/retirementguard/run.mjs against it. That runner only
+		# talks to the supplied fixture; it never starts another Go test.
+		#
+		# Because it runs go test, its private HOME must PRESERVE the user's Go
+		# module/build caches (scripts/lib/private-go-home.sh): a bare private HOME
+		# makes Go build a private module cache of hundreds of MB whose read-only
+		# files then defeat this gate's scratch cleanup. `exec` keeps the
+		# backgrounded pid on the real command so stop_guard can terminate it.
+		(
+			. "$script_dir/../lib/private-go-home.sh"
+			evener_prepare_private_go_home "$guard_dir" || exit 1
+			TMPDIR="$guard_dir/tmp" NODE_DISABLE_COMPILE_CACHE=1 exec npm run retirementguard
+		) >"$dir/$guard.log" 2>&1 &
+	else
+		HOME="$guard_dir/home" TMPDIR="$guard_dir/tmp" XDG_CONFIG_HOME="$guard_dir/xdg-config" XDG_CACHE_HOME="$guard_dir/xdg-cache" XDG_STATE_HOME="$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$guard/run.mjs" >"$dir/$guard.log" 2>&1 &
+	fi
 	guard_pid=$!
 	if wait "$guard_pid"; then
 		guard_pid=""

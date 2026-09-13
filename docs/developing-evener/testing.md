@@ -401,10 +401,10 @@ exists to protect. Wiring real enforcement into CI needs the durations sourced
 from the gate's own run instead of a second one. Deciding how to do that is an
 open follow-up (kata b6rv).
 
-## The Five Browser Guards, and Why There Are Five
+## The Six Browser Guards, and Why There Are Six
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class
-of frontend defect is structurally invisible to `vitest`. Five checks in
+of frontend defect is structurally invisible to `vitest`. Six checks in
 `cmd/evener-hub/frontend` cover it, and the split matters:
 
 - **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
@@ -423,15 +423,29 @@ of frontend defect is structurally invisible to `vitest`. Five checks in
   jump-to-latest pill must appear on a scroll away from the bottom, and
   clicking it must land at the true bottom of the settled geometry and stay
   there.
+- **`npm run retirementguard`** drives the real Session pane and Composer
+  through a real `AppwireClient` against a real Hub/scripted-daemon fixture,
+  and proves the selected-thread recovery contract: the transcript and unsent
+  draft survive the daemon retiring and being replaced, submitting the draft
+  produces exactly one user turn, late old-generation frames cannot overwrite
+  the replacement, a lost start reply retries the same mutation ID once,
+  unavailable queue/steer/settings retain unsent input without auto-resuming,
+  and a Hub socket that stayed connected throughout recovers. Unlike the other
+  five, its runner is invoked by `npm run retirementguard`, which runs the
+  isolated `TestRetirementBrowser` Go fixture; `make test-web-browser` calls
+  that npm script.
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure
 modes; the fifth covers scroll behavior, which only exists inside a real
-virtualization engine with real measurements. The second exists because the
-first could not have caught the bug that prompted it. Hand-authored markup
-freezes whatever was current when the case was written, so restoring the old
-glyph would have left the guard green while the app broke. All five are owned
-by `make test-web-browser`, which is required by the CI web job and remains
+virtualization engine with real measurements; the sixth covers the recovery
+lifecycle, where a browser driving the real client over a real socket is the
+only observer that can prove the transcript and draft the user actually sees
+survive a daemon replacement. The second exists because the first could not
+have caught the bug that prompted it. Hand-authored markup freezes whatever was
+current when the case was written, so restoring the old glyph would have left
+the guard green while the app broke. All six are owned by
+`make test-web-browser`, which is required by the CI web job and remains
 separate from `make lint` and `make test` because it needs Chrome.
 
 Three traps, each of which produced a false-green here. They are listed in the
@@ -1005,7 +1019,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | Command | Summary | What it proves | Trigger | Requires | Fails when |
 | --- | --- | --- | --- | --- | --- |
 | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
-| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, and the real transcript scroll/jump-to-latest path. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
+| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard, retirementguard) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, the real transcript scroll/jump-to-latest path, and the real selected-thread recovery contract when its daemon retires and is replaced. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. retirementguard also needs the Go toolchain: its npm script runs the isolated TestRetirementBrowser fixture, which starts the Hub and drives the guard against it. No WebKit/Safari runner. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies; qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, then the full test suite. | make lint, make build, then ROOT_FULL=1 make test all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |

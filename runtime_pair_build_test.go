@@ -373,11 +373,12 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 		logData = append(logData, data...)
 	}
 	wantNPMCommands := map[string]bool{
-		"ci":            false,
-		"run build":     false,
-		"run typecheck": false,
-		"run test":      false,
-		"run lint":      false,
+		"ci":                  false,
+		"run build":           false,
+		"run typecheck":       false,
+		"run test":            false,
+		"run lint":            false,
+		"run retirementguard": false,
 	}
 	wantNodeCommands := map[string]bool{
 		"scripts/layoutguard/run.mjs":           false,
@@ -634,10 +635,10 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 		t.Fatalf("make test-web-browser: %v\n%s", err, output)
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != 5 {
-		t.Fatalf("successful browser output has %d nonempty lines, want 5 verdicts; output = %q", len(lines), output)
+	if len(lines) != 6 {
+		t.Fatalf("successful browser output has %d nonempty lines, want 6 verdicts; output = %q", len(lines), output)
 	}
-	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard"} {
+	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard"} {
 		fields := strings.Fields(lines[index])
 		if len(fields) != 2 || fields[0] != "PASS" || fields[1] != "web-"+guard {
 			t.Errorf("browser verdict %d fields = %q, want PASS for %s", index, fields, guard)
