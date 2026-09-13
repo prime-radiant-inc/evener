@@ -3,14 +3,16 @@
 //   docImageURL - a pure href builder for /doc/image, which already serves
 //   raw image bytes (floor §1.5), so an <img src> can use it directly. The
 //   query shape (session + path, both escaped) mirrors the Go handler exactly
-//   (cmd/evener-hub/output_images.go:202).
+//   (cmd/evener-hub/output_images.go:202). It returns a string: the web feeds
+//   it straight to an <img src>, and native wraps that string in its own
+//   {uri, headers} source, which is a host concern, not a package one.
 //
 //   readDocFile - fetches RAW file bytes from /doc/file?format=raw (the raw
 //   variant of handleDocFile, cmd/evener-hub/doc_serve.go:75), then builds the
 //   client-side DocFileContent the doc pane renders (binary notice / sanitized
 //   markdown / escaped <pre>). It is NOT the legacy /doc/file HTML page. The
-//   request itself comes from a DocFetch the host supplies, so this module
-//   names no browser global and no credentials policy of its own.
+//   request itself comes from the DocPort the host supplies, so this module
+//   names no browser global, no origin and no credentials policy of its own.
 export interface DocFileContent {
   text: string;
   binary: boolean;
@@ -58,10 +60,22 @@ export interface DocResponseLike {
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
-// DocFetch is the host's port for doc requests: it owns transport policy -
+// DocFetch is the host's transport for doc requests: it owns transport policy -
 // credentials in the browser, auth headers on native - so the package neither
 // reaches for a global nor decides how the request is authenticated.
 export type DocFetch = (url: string) => Promise<DocResponseLike>;
+
+// DocPort is the whole doc seam a host installs: where the /doc routes live
+// plus how to reach them. A DocFetch receives an already-resolved URL and so
+// cannot say which hub that URL belongs to; pairing the origin with it keeps
+// origin policy in the one place the host configures instead of in every caller.
+export interface DocPort {
+  // The base the /doc routes hang off, with no trailing "/doc". The empty
+  // string means same-origin, which is what the browser supplies: its URLs stay
+  // the bare "/doc/..." paths the page has always requested.
+  origin: string;
+  fetch: DocFetch;
+}
 
 function errorKindForStatus(status: number): DocFileErrorKind {
   if (status === 403) return "forbidden";
@@ -69,11 +83,19 @@ function errorKindForStatus(status: number): DocFileErrorKind {
   return "error";
 }
 
+// Hub origins are typed by hand, so a trailing slash is ordinary input; dropping
+// it here is what lets both "https://hub.test" and "https://hub.test/" produce
+// one well-formed href. The same-origin empty base passes through unchanged.
+function docBase(origin: string): string {
+  return origin.replace(/\/+$/, "");
+}
+
 // docFileRawURL builds the /doc/file?format=raw href for a session-scoped,
-// cwd-relative path. Both query values are escaped, matching the Go handler's
-// url.QueryEscape of session and path.
-export function docFileRawURL(session: string, path: string): string {
-  return `/doc/file?format=raw&session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
+// cwd-relative path, hung off the host's base origin (empty for same-origin).
+// Both query values are escaped, matching the Go handler's url.QueryEscape of
+// session and path.
+export function docFileRawURL(origin: string, session: string, path: string): string {
+  return `${docBase(origin)}/doc/file?format=raw&session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
 }
 
 // readDocFile fetches raw file content for the native doc pane. The response
@@ -88,8 +110,8 @@ export function docFileRawURL(session: string, path: string): string {
 // headers (writeDocFileRaw), present only when the file exceeded the cap - so a
 // file of exactly the cap reads as complete, no longer a false positive from
 // the old body>=cap inference (floor cross-cutting #9).
-export async function readDocFile(session: string, path: string, fetchDoc: DocFetch): Promise<DocFileContent> {
-  const res = await fetchDoc(docFileRawURL(session, path));
+export async function readDocFile(session: string, path: string, port: DocPort): Promise<DocFileContent> {
+  const res = await port.fetch(docFileRawURL(port.origin, session, path));
   if (!res.ok) {
     throw new DocFileError(errorKindForStatus(res.status), res.status);
   }
@@ -107,8 +129,9 @@ export async function readDocFile(session: string, path: string, fetchDoc: DocFe
 }
 
 // docImageURL builds the /doc/image href for a session-scoped, cwd-relative
-// path. Both query values are escaped, matching the Go handler's own
-// url.QueryEscape of sessionID and rel.
-export function docImageURL(session: string, path: string): string {
-  return `/doc/image?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
+// path, hung off the host's base origin (empty for same-origin). Both query
+// values are escaped, matching the Go handler's own url.QueryEscape of
+// sessionID and rel.
+export function docImageURL(origin: string, session: string, path: string): string {
+  return `${docBase(origin)}/doc/image?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
 }
