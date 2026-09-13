@@ -35,6 +35,7 @@
     "submitRouting.ts",
     "displayFormat.ts",
     "toolCallText.ts",
-    "catalogCommands.ts"
+    "catalogCommands.ts",
+    "slashCompletion.ts"
   ]
 }

@@ -111,6 +111,20 @@ export {
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+export type {
+  SlashEmbedding,
+  SlashMatchEvaluation,
+  SlashMenuItem,
+  SlashSpliceResult,
+  SlashToken,
+} from "./slashCompletion";
+export {
+  evaluateSlashLabel,
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  spliceSlashCommand,
+} from "./slashCompletion";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";

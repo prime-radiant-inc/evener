@@ -34,7 +34,7 @@ import type { AskBatch } from "../../cmd/evener-hub/frontend/src/panes/session/c
 import {
 	parseSlashToken,
 	spliceSlashCommand,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
+} from "../../cmd/evener-hub/frontend/src/protocol/slashCompletion";
 import { humanizeState } from "../../cmd/evener-hub/frontend/src/shell/rail/sessionState";
 import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import { createConversationService } from "../../mobile/src/services/conversation";
