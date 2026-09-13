@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,29 @@ func TestEstimateMessagesInputTokensIsAlwaysMarkedInexact(t *testing.T) {
 
 	if empty := EstimateMessagesInputTokens(nil); empty.Exact || empty.Source != TokenCountSourceLocalEstimate {
 		t.Errorf("empty history = %+v, want an inexact local estimate", empty)
+	}
+}
+
+// A thinking part whose raw text the adapter will not replay must not be billed
+// to the context estimate. The OpenAI Responses adapter re-sends a reasoning
+// item only when it carries an encrypted_content blob, so raw reasoning_text
+// kept on the part (gateway-fronted GLM, for example) is display-only. A part
+// that does carry replayable metadata is still counted.
+func TestEstimateMessagesInputTokens_ExcludesNonReplayableThinking(t *testing.T) {
+	rawText := strings.Repeat("r", 400)
+	thinkingOnly := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText}},
+	}}}
+	withReplay := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText, EncryptedContent: "opaque-blob"}},
+	}}}
+
+	got := EstimateMessagesInputTokens(thinkingOnly).Tokens
+	if got != 0 {
+		t.Fatalf("non-replayable thinking estimate = %d, want 0 (raw reasoning_text is display-only)", got)
+	}
+	if replay := EstimateMessagesInputTokens(withReplay).Tokens; replay <= got {
+		t.Fatalf("replayable thinking estimate = %d, want > %d", replay, got)
 	}
 }
 

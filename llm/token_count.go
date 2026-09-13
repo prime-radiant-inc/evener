@@ -202,10 +202,7 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			if p.Thinking != nil {
-				chars += len(p.Thinking.Text)
-				chars += len(p.Thinking.Signature)
-			}
+			chars += thinkingReplayChars(p)
 		case ContentWebSearch:
 			if p.WebSearch != nil {
 				chars += len(p.WebSearch.Query)
@@ -217,6 +214,30 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 		}
 	}
 	return chars, tokens
+}
+
+// thinkingReplayChars counts the characters a thinking part contributes to the
+// outgoing request. A part is billed only when the active adapter will actually
+// re-send it, and reasoning reaches the wire solely through provider-scoped
+// replay metadata: an encrypted_content blob (the OpenAI Responses opaque blob,
+// or OpenAI-compat encrypted reasoning_details) or a signature (Anthropic's
+// cryptographic signature, or the OpenAI-compat wire field the part arrived
+// on). A part carrying only raw display text — neither encrypted content nor
+// signature — is never replayed: toResponsesInput emits a reasoning item only
+// when encrypted_content is set, so raw reasoning_text kept for display
+// (gateway-fronted GLM) must not be billed. Redacted thinking replays its
+// payload verbatim and stays billable.
+func thinkingReplayChars(p ContentPart) int {
+	if p.Thinking == nil {
+		return 0
+	}
+	// Redacted thinking replays its payload, which is stored in Thinking.Text,
+	// verbatim. Every other thinking part is billable only when it carries
+	// provider-scoped replay metadata.
+	if p.Kind != ContentRedThinking && p.Thinking.EncryptedContent == "" && p.Thinking.Signature == "" {
+		return 0
+	}
+	return len(p.Thinking.Text) + len(p.Thinking.Signature)
 }
 
 func estimateImageTokens(provider, model string, img *ImageData) int {
