@@ -208,9 +208,11 @@ const (
 // released here, both kinds together, per scratch: retained on a handoff,
 // disposed when the child is dropped. The parent's own environment is left
 // untouched in every respect: the parent is still working in it. Which
-// environment (if any) a teardown settles is Session.environmentOwnedAtTeardown's
-// decision, so a teardown reaching a child no parent bookkeeping names still
-// settles it correctly.
+// environment (if any) a teardown settles is two Session decisions:
+// Session.environmentOwnedAtTeardown's for the object the child still holds
+// and Session.ownedParkedWorktreeEnvironment's for the one an enter parked,
+// so a teardown reaching a child no parent bookkeeping names still settles
+// both correctly.
 func teardownChildSession(ctx context.Context, sess *Session, scratch childScratchDisposition) {
 	if sess == nil {
 		return
