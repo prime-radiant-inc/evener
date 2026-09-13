@@ -67,7 +67,7 @@ how. Fact 4 still holds.
    only **25** imported `AppwireClientLike` itself; the rest import `FakeClient`
    and keep that import wherever the type moves. **A2 (#1188) closed this,
    merged as `3bf357337`:** the type is declared in `protocol/clientLike.ts`, exported from
-   `index.ts` and in the build `files`; 114 `testing/fakeClient` import lines
+   `index.ts` and in the build `files`; 112 `testing/fakeClient` import lines
    remain and **none** of them import `AppwireClientLike`.
 4. **The package has zero runtime dependencies** (`protocol/package.json` has no
    `dependencies`). Both consumers' stores are zustand
@@ -350,7 +350,7 @@ Statuses observed at `f39aa2c83`; re-query before acting.
 | PR | Merged as | Effect on the baseline |
 | --- | --- | --- |
 | A1 #1184 | `f2599d1ed` | `tsconfig.build.json` `files` 6 → **16**: all ten previously-unpacked modules ship, `docContent.ts` included, with only `readDocFile` held off `index.ts` until C24. §5's "In tarball?" column is superseded — every top-level module now ships. Also collapsed the runner's four hard-coded export lists into one export manifest, which fact 5 had asked for; A3c (#1207) then made that manifest per-specifier and renamed it `packageExports` |
-| A2 #1188 | `3bf357337` | `files` 16 → **17**: `clientLike.ts` added, declaring `AppwireClientLike` and exported from `index.ts`. §5 has no row for it, by design — the table is the baseline. 25 importers rewritten; 114 `testing/fakeClient` import lines remain, none of them for the type |
+| A2 #1188 | `3bf357337` | `files` 16 → **17**: `clientLike.ts` added, declaring `AppwireClientLike` and exported from `index.ts`. §5 has no row for it, by design — the table is the baseline. 25 importers rewritten; 112 `testing/fakeClient` import lines remain (one per file, counted as lines matching `from "…testing/fakeClient"`), none of them for the type |
 | A5 #1186 | `2245f9715` | Deleted `mobile/src/dev/conversationFixtures.ts`, so §4's nine-module table is one module ahead of reality and `mobile/src` is 6,841 lines, not 7,615. Also widened `mobile-native` typechecking over all of `mobile/src`, closing the gap that let a dead file with dangling imports survive |
 | B1 #1189 | `27503c07d` | `files` 17 → **18**: `itemFailure.ts` added. The web and native settled-item predicates were identical and both now call it. It also closed the third, divergent predicate recorded in §3: `toolRenderers.ts:190-193` now delegates the shared half to `hasItemFailure` and keeps only the descriptor half, so issues #1190 and #1197 are closed. That was plan row B1b; it never needed its own PR |
 | B3b #1203 | `4da382482` | Native's two `projectUsage` copies collapsed to one. That DUPLICATED row is closed; the count in §7 is the baseline count and is not decremented |
