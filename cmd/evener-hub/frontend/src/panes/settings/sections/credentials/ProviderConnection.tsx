@@ -616,9 +616,13 @@ function SelectedConnection({
     // endpoints, and a recovered row can carry the provider's own setup entry
     // while the flow was on another. The listing's digest is what says whether
     // the destination is the one the value was typed against, including the
-    // parts the displayed URL cannot show; an unresolved setup entry compares
-    // unequal and clears.
-    if (created?.endpointFingerprint !== baseline?.endpointFingerprint) {
+    // parts the displayed URL cannot show. Two missing fingerprints are not
+    // such evidence: an unkeyable hub or a row the listing has not resolved
+    // yet leaves nothing to compare, so the draft is cleared unless both sides
+    // carry a non-empty, matching fingerprint.
+    const createdFingerprint = created?.endpointFingerprint;
+    const baselineFingerprint = baseline?.endpointFingerprint;
+    if (!createdFingerprint || !baselineFingerprint || createdFingerprint !== baselineFingerprint) {
       setDraft({ providerId: provider.id, value: "" });
     }
     // The adopted instance is a different connection: a host-access choice

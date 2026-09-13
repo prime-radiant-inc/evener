@@ -1577,6 +1577,48 @@ func TestInstances_ListExposesAnEndpointFingerprint(t *testing.T) {
 	}
 }
 
+// A row's displayed URL and its endpoint fingerprint have to come from one
+// snapshot of the registry. Pairing a URL read from one state of providers.toml
+// with a fingerprint computed against a later one would serve a client a
+// destination that never existed, and a credential write asserting that pair
+// would be checked against it.
+func TestInstances_ListingRowFingerprintsTheSnapshotItCameFrom(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://a.example.test/v1",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	served := entry(t, f.ctl.List(), "work")
+	stale := f.ctl.reg.Get()
+	staleInst, ok := stale.Instance("work")
+	if !ok {
+		t.Fatal("the fixture registry has no work instance")
+	}
+
+	// Another client moves the endpoint while the snapshot above is what a
+	// listing would have been built from.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	moved := f.ctl.reg.Get()
+	movedInst, ok := moved.Instance("work")
+	if !ok {
+		t.Fatal("the fixture registry has no work instance after the edit")
+	}
+
+	got := f.ctl.entryFor(stale, staleInst, nil)
+	if got.BaseURL != served.BaseURL || got.EndpointFingerprint != served.EndpointFingerprint {
+		t.Fatalf("a row built from the snapshot = %q/%q, want the %q/%q that snapshot served",
+			got.BaseURL, got.EndpointFingerprint, served.BaseURL, served.EndpointFingerprint)
+	}
+	if movedFP := destinationFingerprint(f.ctl.authStateDir(), moved, movedInst); got.EndpointFingerprint == movedFP {
+		t.Fatal("the row was fingerprinted against the current registry instead of the snapshot it came from")
+	}
+}
+
 // The digest covers the whole destination a credential-bearing request is built
 // from, not only the URL the listing displays: a protocol switch or a change to
 // a request path template sends the secret somewhere else while every visible
@@ -2356,7 +2398,7 @@ func TestInstances_ListReportsTheFirstAuthoredAPIKeyEnv(t *testing.T) {
 	if !ok {
 		t.Fatal("the fixture registry has no groq instance")
 	}
-	got := f.ctl.entryFor(inst, &registry.Provider{APIKeyEnv: []string{"FIRST", "SECOND"}})
+	got := f.ctl.entryFor(f.ctl.reg.Get(), inst, &registry.Provider{APIKeyEnv: []string{"FIRST", "SECOND"}})
 	if got.APIKeyEnv != "FIRST" {
 		t.Fatalf("APIKeyEnv = %q, want FIRST", got.APIKeyEnv)
 	}

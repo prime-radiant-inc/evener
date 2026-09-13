@@ -67,7 +67,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 					authored = &p
 				}
 			}
-			entries = append(entries, c.entryFor(inst, authored))
+			entries = append(entries, c.entryFor(r, inst, authored))
 		}
 		for _, id := range r.ProviderIDs() {
 			p, ok := r.Provider(id)
@@ -90,7 +90,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 						authored = &p
 					}
 				}
-				entry := c.entryFor(inst, authored)
+				entry := c.entryFor(r, inst, authored)
 				setup = &entry
 			}
 			providers = append(providers, appwire.ProviderDescriptor{
@@ -151,7 +151,14 @@ func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry
 // plus the credential status the auth controller derives for it, and the
 // credential fields from its authored entry — nil for an implicit instance,
 // which has no entry in providers.toml and so prefills neither.
-func (c *hubInstancesController) entryFor(inst registry.Instance, authored *registry.Provider) appwire.InstanceEntry {
+//
+// r is the snapshot inst was read from, and it is what the endpoint
+// fingerprint is derived from. Asking the holder for the current registry
+// instead would let a reload land between the two: the row would then carry a
+// displayed URL from one state of providers.toml and a fingerprint from
+// another, and a credential write asserting that pair would describe a
+// destination that never existed.
+func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.Instance, authored *registry.Provider) appwire.InstanceEntry {
 	status := c.auth.instanceStatus(inst)
 	entry := appwire.InstanceEntry{
 		Name:                inst.Name,
@@ -161,7 +168,7 @@ func (c *hubInstancesController) entryFor(inst registry.Instance, authored *regi
 		Surface:             inst.Surface,
 		Auth:                inst.Auth,
 		BaseURL:             sanitizeEndpointURL(inst.BaseURL),
-		EndpointFingerprint: destinationFingerprint(c.authStateDir(), c.reg.Get(), inst),
+		EndpointFingerprint: destinationFingerprint(c.authStateDir(), r, inst),
 		Vars:                inst.Vars,
 		Implicit:            inst.Implicit,
 		Hidden:              inst.Hidden,

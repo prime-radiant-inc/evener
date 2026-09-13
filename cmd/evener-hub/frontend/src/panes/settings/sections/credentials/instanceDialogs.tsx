@@ -339,12 +339,13 @@ export function AddInstanceDialog({
 export interface ApiKeyDialogProps {
   instance: InstanceEntry;
   /** The endpoint fingerprint the dialog was opened against, captured from the
-   * row the user acted on. A submit asserts this value, so a concurrent
-   * endpoint change cannot re-target the already-entered secret. Required (and
-   * explicitly undefined when the row showed no endpoint, which is the
-   * legitimate "nothing was shown, nothing to assert" case) rather than
+   * row the user acted on. A defined submit asserts this value, so a
+   * concurrent endpoint change cannot re-target the already-entered secret.
+   * Required (and explicitly undefined when the row showed no endpoint, which
+   * is the legitimate "nothing was shown, nothing to assert" case) rather than
    * optional, so a caller that forgets to capture it is a build error instead
-   * of a save that silently asserts nothing or refuses against undefined. */
+   * of a save that silently asserts nothing. An undefined capture is never
+   * compared against the live row: only a defined capture can be moved. */
   expectedEndpointFingerprint: string | undefined;
   onCancel: () => void;
   onSuccess: () => void;
@@ -403,7 +404,11 @@ function CredentialValueDialog({
     // the name now resolves to a different one, refuse before any RPC, drop
     // the value, and say why: a save here would assert an endpoint the user
     // never reviewed and could write the secret somewhere they did not choose.
-    if (instance.endpointFingerprint !== expectedEndpointFingerprint) {
+    // A capture of undefined is nothing to compare against - the row showed no
+    // endpoint when the editor opened - so a row that gained one while the
+    // dialog sat open is not a change to refuse: submit without an assertion,
+    // the "nothing shown, nothing to assert" case this prop's doc names.
+    if (expectedEndpointFingerprint !== undefined && instance.endpointFingerprint !== expectedEndpointFingerprint) {
       setValue("");
       setError(ENDPOINT_CHANGED_ERROR);
       return;

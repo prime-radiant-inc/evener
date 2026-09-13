@@ -809,19 +809,40 @@ test("review regression: discarded cross-provider create clears the old credenti
 });
 
 // Adoption clears the draft unless the adopted connection's destination is the
-// one the value was typed against. The same provider can host two endpoints, so
-// matching providerId alone let a key typed for the first be submitted to the
-// second without re-review (roborev round 36); a recovered row that carries the
-// same destination still keeps the value, which is what keeps the recovery from
-// demanding a retype.
+// one the value was typed against. "Same destination" means the two rows carry
+// the same non-empty endpoint fingerprint: the same provider can host two
+// endpoints, so matching providerId alone let a key typed for the first be
+// submitted to the second without re-review (roborev round 36). A recovered
+// row that carries the same *defined* destination still keeps the value, which
+// is what keeps the recovery from demanding a retype. A pair of missing
+// fingerprints is not evidence of a shared destination - an unkeyable hub or a
+// row the listing has not resolved leaves nothing to compare - so the draft is
+// cleared unless both sides carry a defined, matching fingerprint (roborev
+// round 37).
 test.each([
-  { base: "anthropic", label: "Anthropic", via: "reload", expected: "anthropic-private-draft" },
-  { base: "anthropic", label: "Anthropic", via: "listing", expected: "anthropic-private-draft" },
-  { base: "openai", label: "OpenAI", via: "listing", expected: "" },
+  {
+    base: "anthropic",
+    label: "Anthropic",
+    baselineFp: "fp-shared",
+    rowFp: "fp-shared",
+    expected: "anthropic-private-draft",
+  },
+  { base: "openai", label: "OpenAI", baselineFp: "fp-shared", rowFp: "fp-other", expected: "" },
+  { base: "anthropic", label: "Anthropic", baselineFp: undefined, rowFp: undefined, expected: "" },
 ])(
-  "review regression: deferred $base recovery via $via preserves only same-destination drafts",
-  async ({ base, label, via, expected }) => {
-    const { user, client } = setup();
+  "review regression: deferred $base recovery preserves a draft only across a same, defined destination",
+  async ({ base, label, baselineFp, rowFp, expected }) => {
+    const baselineList: InstanceListResponse = {
+      instances: [],
+      availableProviders: catalogue.map((row) =>
+        row.id === "anthropic"
+          ? provider("anthropic", "Anthropic", ["apiKey"], {
+              ...(baselineFp ? { endpointFingerprint: baselineFp } : {}),
+            })
+          : row,
+      ),
+    };
+    const { user, client } = setup(baselineList);
     await choose(user, "Anthropic");
     await user.type(screen.getByLabelText("API key"), "anthropic-private-draft");
     await user.click(screen.getByText("Advanced settings"));
@@ -833,21 +854,23 @@ test.each([
       ...catalogue.find((candidate) => candidate.id === base)!.setup!,
       name: "recovered-team",
       implicit: false,
+      ...(rowFp ? { endpointFingerprint: rowFp } : {}),
+    };
+    const recovered: InstanceListResponse = {
+      instances: [row],
+      availableProviders: structuredClone(catalogue),
     };
     client.on("evener/instance/create", () => pending.promise);
     await user.click(screen.getByRole("button", { name: "Create" }));
+    // The create's own response loses the race with the concurrent read, but
+    // the reconciling read sees the authored row, so the flow adopts it with
+    // the row's own destination rather than staying unresolved.
     await act(async () => {
       await credentialsStore.getState().fetch();
-      pending.resolve({ instances: [row], availableProviders: structuredClone(catalogue) });
+      client.on("evener/instance/list", () => structuredClone(recovered));
+      pending.resolve(structuredClone(recovered));
       await pending.promise;
     });
-    expect(await screen.findByRole("button", { name: "Reload connection" })).toBeTruthy();
-    client.on("evener/instance/list", () => ({ instances: [row], availableProviders: structuredClone(catalogue) }));
-    if (via === "reload") await user.click(screen.getByRole("button", { name: "Reload connection" }));
-    else
-      await act(async () => {
-        await credentialsStore.getState().fetch();
-      });
     expect(await screen.findByRole("dialog", { name: `Connect ${label}` })).toBeTruthy();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", expected);
     expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
@@ -952,6 +975,36 @@ test("adopting a created instance clears a credential draft typed for the previo
   expect(await screen.findByLabelText("API key")).toHaveProperty("value", "");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+});
+
+// Two missing fingerprints are not evidence of the same destination. An
+// unkeyable hub, or a created row the listing has not resolved yet, leaves
+// nothing to compare, so a value typed for the previous connection must not
+// survive adoption into a connection nobody can describe (roborev finding:
+// undefined === undefined must not be read as a match).
+test("adopting a created instance with no fingerprints on either side clears the draft", async () => {
+  const { user, client } = setup(savedList("anthropic"));
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "anthropic-private-draft");
+
+  const created: InstanceEntry = {
+    ...catalogue[0]!.setup!,
+    name: "anthropic-team",
+    implicit: false,
+  };
+  client.on("evener/instance/create", () => ({
+    instances: [created],
+    availableProviders: structuredClone(catalogue),
+  }));
+
+  await user.click(screen.getByText("Advanced settings"));
+  await user.click(screen.getByRole("button", { name: "Configure another instance" }));
+  await user.type(screen.getByLabelText("Name"), "anthropic-team");
+  await user.click(screen.getByRole("button", { name: "Create" }));
+
+  // The flow's baseline (anthropic) and the adopted row both carry no
+  // fingerprint; missing identity is not a match, so the draft is dropped.
+  expect(await screen.findByLabelText("API key")).toHaveProperty("value", "");
 });
 
 test("the hub's endpoint refusal re-anchors the flow instead of saving to the moved destination", async () => {

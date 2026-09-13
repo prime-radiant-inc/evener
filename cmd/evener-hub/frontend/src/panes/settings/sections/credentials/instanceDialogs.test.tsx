@@ -889,6 +889,77 @@ describe("ApiKeyDialog", () => {
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
 
+  // An undefined capture is the "the row showed no endpoint, nothing to
+  // assert" case, not a value to match: if the row gains a fingerprint while
+  // the dialog is open there is still nothing captured to compare against, so
+  // the save goes out with no assertion and the typed value survives.
+  test("a fingerprint gained while the dialog is open submits without an assertion", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/apiKey/set", (params) => {
+      expect(params).toEqual({ provider: "work", value: "sk-secret" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ApiKeyDialog
+        instance={instance({ name: "work", providerId: "anthropic" })}
+        expectedEndpointFingerprint={undefined}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+      />,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    // The listing entry this name resolves to gains an endpoint identity while
+    // the field holds the secret. The dialog captured none, so there is
+    // nothing to compare a save against.
+    rerender(
+      <ApiKeyDialog
+        instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-new" })}
+        expectedEndpointFingerprint={undefined}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("sk-secret");
+  });
+
+  // The other direction of the same guard: a capture that was defined when the
+  // dialog opened and whose endpoint has since disappeared is a change too, so
+  // the save must refuse rather than assert a fingerprint the row no longer
+  // carries.
+  test("a captured fingerprint that the row no longer carries refuses the save", async () => {
+    const fake = connectFakeClient();
+    const setKey = vi.fn();
+    fake.on("evener/auth/apiKey/set", setKey);
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ApiKeyDialog
+        instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-original" })}
+        expectedEndpointFingerprint="fp-original"
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    // The row loses its endpoint identity while the field holds the secret.
+    rerender(
+      <ApiKeyDialog
+        instance={instance({ name: "work", providerId: "anthropic" })}
+        expectedEndpointFingerprint="fp-original"
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    expect(setKey).not.toHaveBeenCalled();
+    expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+  });
+
   test("a saved key whose listing read is lost is still reported as saved", async () => {
     const fake = connectFakeClient();
     let save!: (value: AuthStatusResponse) => void;

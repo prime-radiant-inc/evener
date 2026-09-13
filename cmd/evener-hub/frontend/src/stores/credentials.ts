@@ -366,7 +366,10 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // save/check in flight: ProviderConnection's subscription treats the
 // echo-driven listing change as an unrelated change and invalidates the fresh
 // result ("Connection or configuration changed") or cancels the check. So the
-// refetch is skipped for the originator's own echo, correlated narrowly:
+// originator's own echo schedules a self-marked refresh rather than a foreign
+// one: it coalesces with the store's own post-save refresh, and the mark is
+// what keeps the flow from invalidating on the read that follows. It is
+// correlated narrowly:
 //
 // - Marked per provider when the mutation is ISSUED (not when it resolves):
 //   the broadcast can reach this client before the RPC response does, so a
