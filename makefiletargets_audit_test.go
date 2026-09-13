@@ -790,6 +790,7 @@ var lintGateCommands = map[string]string{
 	"lint-internal":      "./evener-dev internalcheck",
 	"lint-golangci":      "module-lint",
 	"lint-generated":     "docs/appwire-protocol.md",
+	"lint-process-group": "scripts/lib/process-group-lib.selfcheck.sh",
 	"lint-fuzz-registry": "scripts/fuzz/fuzz-registry-check.sh",
 	"secret-scan":        "scripts/ops/gitleaks-scan.sh repo",
 }
