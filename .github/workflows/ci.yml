@@ -189,6 +189,14 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
+      # The gate execs evener-dev and must never compile it: its subject is a
+      # host whose Go caches have stalled, and a compile it starts has no bound
+      # and no diagnostic. Building it here, with a bound of its own, means the
+      # Makefile prerequisite is already satisfied when the gate runs.
+      - name: Build the dev binary the gate execs
+        timeout-minutes: 5
+        run: make build-dev
+
       - name: Test (race detector — root module)
         run: make test-race RACE_SCOPE=root
 
@@ -204,6 +212,14 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
+
+      # The gate execs evener-dev and must never compile it: its subject is a
+      # host whose Go caches have stalled, and a compile it starts has no bound
+      # and no diagnostic. Building it here, with a bound of its own, means the
+      # Makefile prerequisite is already satisfied when the gate runs.
+      - name: Build the dev binary the gate execs
+        timeout-minutes: 5
+        run: make build-dev
 
       - name: Test (race detector — ${{ matrix.scope }})
         run: make test-race RACE_SCOPE=${{ matrix.scope }}
@@ -226,6 +242,14 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
+
+      # The gate execs evener-dev and must never compile it: its subject is a
+      # host whose Go caches have stalled, and a compile it starts has no bound
+      # and no diagnostic. Building it here, with a bound of its own, means the
+      # Makefile prerequisite is already satisfied when the gate runs.
+      - name: Build the dev binary the gate execs
+        timeout-minutes: 5
+        run: make build-dev
 
       - name: Deterministic tests (full root suite; frontend covered by web job)
         run: ROOT_FULL=1 WEB=0 make test
