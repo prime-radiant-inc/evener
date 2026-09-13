@@ -241,7 +241,11 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
 root_skip="$fuzz_test_skip"
 
-flags="$*"
+# The caller's arguments, kept as they were given. A joined string re-split by
+# the shell is a different thing: `-run 'Test*'` becomes one word or several
+# depending on what happens to be in the working directory, and both `go test`
+# and the enumeration read these, so the two would disagree about the same run.
+flag_args=("$@")
 # go_flag FLAG — a caller's flag in the one spelling the rest of this script
 # reads. Go's flag package takes `--tags` and `-tags` as the same flag, so a
 # reader that knows only one of them refuses nothing and forwards nothing: `--C`
@@ -270,17 +274,19 @@ for flag in "$@"; do
 		;;
 	esac
 done
+# module_test_flags MODULE — the flags `go test` gets for MODULE, one per line.
+#
+# One per line because a flag can carry a value with spaces or glob characters in
+# it, and every consumer here reads them back into an array. ROOT_FULL drops
+# -short for the root module and nothing else is filtered.
 module_test_flags() {
-	local m="$1" flag selected=""
-	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
-		printf '%s' "$flags"
-		return
-	fi
-	for flag in $flags; do
-		[ "$flag" = "-short" ] && continue
-		selected="$selected $flag"
+	local m="$1" flag
+	for flag in ${flag_args[@]+"${flag_args[@]}"}; do
+		if [ "$m" = "." ] && [ "$ROOT_FULL" -ne 0 ] && [ "$flag" = "-short" ]; then
+			continue
+		fi
+		printf '%s\n' "$flag"
 	done
-	printf '%s' "${selected# }"
 }
 
 logdir=""
@@ -615,10 +621,10 @@ stop_package_list_attempt() {
 # -race, -p and -parallel, so nothing here is forwarded in practice; the rule is
 # what keeps the two commands agreeing when that changes.
 package_list_build_flags() {
-	local flag normalised out="" expect_value=0
+	local flag normalised expect_value=0
 	for flag in "$@"; do
 		if [ "$expect_value" -eq 1 ]; then
-			out="$out $flag"
+			printf '%s\n' "$flag"
 			expect_value=0
 			continue
 		fi
@@ -628,15 +634,14 @@ package_list_build_flags() {
 		normalised="$(go_flag "$flag")"
 		case "$normalised" in
 		-tags | -mod | -modfile | -overlay | -pgo | -compiler)
-			out="$out $normalised"
+			printf '%s\n' "$normalised"
 			expect_value=1
 			;;
 		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -compiler=* | -trimpath | -race | -msan | -asan | -race=* | -msan=* | -asan=*)
-			out="$out $normalised"
+			printf '%s\n' "$normalised"
 			;;
 		esac
 	done
-	printf '%s' "${out# }"
 }
 
 # run_bounded_package_list MODULE OUTPUT — enumerate MODULE's packages into
@@ -645,7 +650,8 @@ package_list_build_flags() {
 # itself is `go list ./...` in the current directory, which the caller has
 # already changed to that module.
 run_bounded_package_list() {
-	local module="$1" package_list="$2" package_list_stderr attempt attempt_list build_flags attempt_marker
+	local module="$1" package_list="$2" package_list_stderr attempt attempt_list attempt_marker module_flag
+	local -a build_flags=() module_flags=()
 	local list_pid started_at list_status stop_status
 	# Every attempt below is exec'd through perl so it lands in its own process
 	# group. Named here rather than discovered at the spawn, where it would fail
@@ -660,9 +666,15 @@ run_bounded_package_list() {
 	package_list_stderr="${package_list}.stderr"
 	# The module's own flags, as `go test` will be given them, filtered down to
 	# what changes which packages exist. Derived here rather than at the three
-	# call sites, so there is one answer per module and no copy to drift.
-	# shellcheck disable=SC2046
-	build_flags="$(package_list_build_flags $(module_test_flags "$module") $(module_extra "$module"))"
+	# call sites, so there is one answer per module and no copy to drift, and
+	# read one per line so a value with a space in it stays one flag.
+	while IFS= read -r module_flag; do module_flags+=("$module_flag"); done < <(
+		module_test_flags "$module"
+		module_extra "$module"
+	)
+	while IFS= read -r module_flag; do build_flags+=("$module_flag"); done < <(
+		package_list_build_flags ${module_flags[@]+"${module_flags[@]}"}
+	)
 	# Every attempt appends under its own heading, so the diagnostic still names
 	# one retained log and whoever reads it sees what each attempt said.
 	: >"$package_list_stderr"
@@ -709,7 +721,7 @@ run_bounded_package_list() {
 		# shellcheck disable=SC2086
 		perl -e "$PGROUP_SPAWN_PERL" \
 			-- "$(package_list_pgid_path "$module")" "$attempt_marker" \
-			go list $build_flags ./... >"$attempt_list" 2>>"$package_list_stderr" &
+			go list ${build_flags[@]+"${build_flags[@]}"} ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
 		# Said from this side too, so no instant passes with an attempt running
 		# and a record that names nothing.
@@ -851,10 +863,10 @@ require_packages() {
 }
 
 run_module() {
-	local m="$1" extra="$2" test_flags
-	test_flags="$(module_test_flags "$m")"
-	# Word-split flags and extra intentionally so callers can pass multiple flags.
-	# shellcheck disable=SC2086
+	local m="$1" flag
+	local -a test_flags=() extra=()
+	while IFS= read -r flag; do test_flags+=("$flag"); done < <(module_test_flags "$m")
+	while IFS= read -r flag; do extra+=("$flag"); done < <(module_extra "$m")
 	if [ "$m" = "." ]; then
 		local -a packages=()
 		local pkg package_list
@@ -872,7 +884,7 @@ run_module() {
 		# ROOT_FULL removes short mode through module_test_flags while retaining
 		# the regular Test/Example name filter. Fuzz-owned targets and sanity
 		# functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
+		/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} ${extra[@]+"${extra[@]}"} -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
 		return
 	fi
 	if [ "$m" = "agent" ]; then
@@ -919,19 +931,19 @@ run_module() {
 				racepkgs+=("$pkg")
 			done <"$subpkg_list"
 			require_packages "$m" "${#racepkgs[@]}" || return 1
-			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${racepkgs[@]}"
+			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} ${extra[@]+"${extra[@]}"} -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${racepkgs[@]}"
 			return
 		fi
 		# `go run` collapses its child's exit code to 1 and reports the real
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
+		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
 		while IFS= read -r pkg; do
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
 		done <"$subpkg_list"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} ${extra[@]+"${extra[@]}"} -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
@@ -948,7 +960,7 @@ run_module() {
 		pkgs+=("$pkg")
 	done <"$module_list"
 	require_packages "$m" "${#pkgs[@]}" || return 1
-	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${pkgs[@]}"
+	/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} ${extra[@]+"${extra[@]}"} -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${pkgs[@]}"
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each
@@ -956,19 +968,13 @@ run_module() {
 module_extra() {
 	case "$1" in
 		.)
-			local extra=""
-			[ -n "$ROOT_P" ] && extra="$extra -p $ROOT_P"
-			printf '%s' "$extra"
+			[ -n "$ROOT_P" ] && printf '%s\n%s\n' -p "$ROOT_P"
 			;;
 		agent)
-			local extra=""
-			[ -n "$AGENT_P" ] && extra="$extra -p $AGENT_P"
-			[ -n "$AGENT_PARALLEL" ] && extra="$extra -parallel $AGENT_PARALLEL"
-			printf '%s' "$extra"
+			[ -n "$AGENT_P" ] && printf '%s\n%s\n' -p "$AGENT_P"
+			[ -n "$AGENT_PARALLEL" ] && printf '%s\n%s\n' -parallel "$AGENT_PARALLEL"
 			;;
-		*)
-			printf ''
-			;;
+		*) ;;
 	esac
 }
 
@@ -990,12 +996,11 @@ replay_package_list_retries() {
 run_wave() {
 	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
-	local m log extra tmp
+	local m log tmp
 	for m in "$@"; do
 		log="$(logpath "$m")"
-		extra="$(module_extra "$m")"
 		tmp="$(tmppath "$m")"
-		( mkdir -p "$tmp" && export TMPDIR="$tmp" && evener_prepare_private_go_home "$tmp" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
+		( mkdir -p "$tmp" && export TMPDIR="$tmp" && evener_prepare_private_go_home "$tmp" && cd "$m" && run_module "$m" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")
 	done
 	local i status
