@@ -222,10 +222,11 @@ test("kata xw3t: a URL ending a sentence does not pull the period into the href"
   expect(link.closest("li")?.textContent).toBe(output);
 });
 
-// clip() (helpers.ts, RESULT_LINE_CLIP=200) cuts on a raw character budget
-// with no notion of "mid-URL" and appends its own "…". A match touching
-// that boundary may not be the real URL at all - linkifying it anyway would
-// be exactly the dead-or-wrong anchor tcp9's own carried-over rule forbids.
+// clip() (protocol/toolCallText.ts, RESULT_LINE_CLIP=200) cuts on a raw
+// character budget with no notion of "mid-URL" and appends its own "…". A
+// match touching that boundary may not be the real URL at all - linkifying it
+// anyway would be exactly the dead-or-wrong anchor tcp9's own carried-over
+// rule forbids.
 test("kata xw3t: a URL right at the 200-char clip boundary is never linkified - a truncated href would be a dead anchor", () => {
   const d = toolRendererFor("web_search");
   const Body = d.body!;

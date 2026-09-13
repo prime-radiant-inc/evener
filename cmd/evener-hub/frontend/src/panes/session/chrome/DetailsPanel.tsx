@@ -30,10 +30,10 @@
 // beside it was. An absent cost (no token data, or an uncataloged model) is an
 // honest unknown and renders no row at all.
 import { forwardRef, useImperativeHandle, useState } from "react";
+import { formatTokenCount } from "../../../protocol/displayFormat";
 import type { ThreadModel } from "../../../protocol/model";
 import { Button, InspectorCard, Meter, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { formatTokenCount } from "../transcript/messages/format";
 import { formatTimestamp, sessionTokens } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
 import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";

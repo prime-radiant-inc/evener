@@ -10,7 +10,7 @@ output visibly follows the new instruction.
 
 This is the **classic single-text steer path**: the queue is empty and there
 are no staged attachments, so `decideSteerRoute` takes the `"steer"` branch
-(`panes/session/composer/submitRouting.ts:33-39`). The drain-the-queue branch
+(`protocol/submitRouting.ts:33-39`). The drain-the-queue branch
 is covered by `web-queue-then-drain-as-steer.md`.
 
 The card previously drove `[data-steer-trigger]` and POSTed `/s/<id>/steer`.

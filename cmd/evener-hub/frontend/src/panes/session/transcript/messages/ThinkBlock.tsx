@@ -45,6 +45,7 @@
 // Expanded-trace anatomy adapted from Beautiful UI's Thinking component (beautifului.dev, MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt.
 
 import { memo } from "react";
+import { formatTokenCount } from "../../../../protocol/displayFormat";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import {
   disclosureScopeForSession,
@@ -60,7 +61,6 @@ import {
 } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
-import { formatTokenCount } from "./format";
 import {
   formatThoughtDuration,
   joinedReasoningParagraphs,

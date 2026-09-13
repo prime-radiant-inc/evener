@@ -2,7 +2,7 @@
 // kata 0bq1) - framework-agnostic on purpose so Composer.tsx's own
 // click/keydown handlers stay thin dispatchers over these, and every branch
 // is unit-testable without mounting anything.
-import type { SendQueueAvailability } from "../../../protocol/sendQueueAvailability";
+import type { SendQueueAvailability } from "./sendQueueAvailability";
 
 export type SubmitRoute = "send" | "queue" | "none";
 

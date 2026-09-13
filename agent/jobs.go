@@ -100,6 +100,13 @@ type jobManager struct {
 	// self-influence depth metric consults so a coalesced-away (never delivered)
 	// predecessor cannot inflate depth. Guarded by jm.mu.
 	deliveredWatchSendIDs map[string]struct{}
+	// deliveringWatchSends is the set of watch-send delivery IDs a process-local
+	// executor currently owns. deliverPendingWatchSend claims the id under jm.mu
+	// before touching the store and releases it on every exit, so two executors
+	// (the ancestor drain and the child turn-boundary flush) cannot both deliver
+	// one send and race a re-appended pending behind its own Delivered marker
+	// (#327). Guarded by jm.mu.
+	deliveringWatchSends map[string]struct{}
 	// watchesLostAtRestore holds the durable records of the watches this restore
 	// ended (clearUnrestoredActiveWatches), owed a callback-cancellation or send
 	// end notice by noticeUnrestoredWatchEnds. Written once at construction, read
@@ -634,6 +641,7 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		watches:               make(map[watchKey]*watchConfig),
 		lastFedOffset:         make(map[string]int64),
 		deliveredWatchSendIDs: make(map[string]struct{}),
+		deliveringWatchSends:  make(map[string]struct{}),
 		appendEvent:           store.Append,
 		appendEvents:          store.AppendBatch,
 		createOutput:          createOutput,

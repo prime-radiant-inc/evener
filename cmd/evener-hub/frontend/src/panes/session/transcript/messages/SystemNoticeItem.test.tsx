@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { formatCharCount } from "../../../../protocol/displayFormat";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
 import { makeTranscriptDisplayConfig } from "../../../../transcriptDisplay/config";
@@ -11,7 +12,6 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { TurnBlock } from "../TurnBlock";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { itemRendererFor } from "../types";
-import { formatCharCount } from "./format";
 import { SystemNoticeItem } from "./SystemNoticeItem";
 
 // See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real

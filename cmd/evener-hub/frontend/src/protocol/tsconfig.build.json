@@ -19,7 +19,9 @@
     "transport.ts",
     "types.gen.ts",
     "askAnswers.ts",
+    "attachmentMarkers.ts",
     "activityData.ts",
+    "activityRows.ts",
     "activityList.ts",
     "activityMerge.ts",
     "itemFailure.ts",
@@ -29,6 +31,10 @@
     "sendQueueAvailability.ts",
     "sessionErrors.ts",
     "stableDelegate.ts",
-    "docContent.ts"
+    "docContent.ts",
+    "submitRouting.ts",
+    "displayFormat.ts",
+    "toolCallText.ts",
+    "catalogCommands.ts"
   ]
 }

@@ -342,7 +342,7 @@ mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.
 | Part | Verdict | Where it stands |
 | --- | --- | --- |
 | A — a run of finished calls folds to one summary line naming the consequential step | **ABSENT, unexplained**. Landed 2026-09-06: see below. | There is no cluster concept at all. `TurnBlock` renders items one at a time via `itemRendererFor`, and `toolRowGrammar.test.tsx` pins "exactly one per call." A run of read/grep/edit/test calls is a column of individually-collapsible rows. This is also principle 2 of the brief, so its absence is a gap against the design law, not only against one mockup. Landed 2026-09-06 as `transcript/toolRuns.ts` + `ToolRunGroup.tsx`; the fold rule is written up in the 2026-09-06 typography, measure and rhythm entry below. |
-| D — peek / ride / drop tri-state | CHANGED | **By design.** The anti-lying principle survives — `tools/helpers.ts:tailFold` and `widgets/codeblock` never offer an "expand" over bytes that are gone, and say so inline. The explicit three-state vocabulary is gone; the state is prose, not a labelled UI state. |
+| D — peek / ride / drop tri-state | CHANGED | **By design.** The anti-lying principle survives — `protocol/toolCallText.ts:tailFold` and `widgets/codeblock` never offer an "expand" over bytes that are gone, and say so inline. The explicit three-state vocabulary is gone; the state is prose, not a labelled UI state. |
 
 **07 · System churn & silent success** — chose A (quiet one-liner) + B
 (coalesced "N system events"). Shipped `42b233353`.
