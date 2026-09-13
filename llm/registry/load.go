@@ -544,6 +544,7 @@ func cloneModelView(m Model) Model {
 	out := m
 	out.Headers = maps.Clone(m.Headers)
 	out.Caps = cloneCaps(m.Caps)
+	out.Disabled = clonePointer(m.Disabled)
 	if m.Transport != nil {
 		transport := cloneTransportView(*m.Transport)
 		out.Transport = &transport

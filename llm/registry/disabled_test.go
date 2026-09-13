@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseConfig_DisabledRow(t *testing.T) {
@@ -87,6 +88,29 @@ func TestResolve_CrossProviderAliasOfDisabledTargetIsBlocked(t *testing.T) {
 	}
 }
 
+func TestRecordMayDisable_AliasCycleDoesNotOverflow(t *testing.T) {
+	// A mutual cross-provider alias cycle loads (each target exists) but
+	// must not recurse forever when browse paths ask whether anything
+	// may be disabled: the cycle carries no Disabled flag anywhere.
+	r := fixtureLoad(t, nil, "[providers.anthropic]\nbase = \"anthropic\"\napi_key = \"sk\"\n[providers.anthropic.models.\"gpt-5.5\"]\nalias_of = \"openai/gpt-5.5\"\n[providers.openai]\nbase = \"openai\"\napi_key = \"sk\"\n[providers.openai.models.\"claude-opus-4-6\"]\nalias_of = \"anthropic/claude-opus-4-6\"\n")
+	done := make(chan bool, 1)
+	go func() {
+		defer func() { done <- recover() == nil }()
+		_ = r.FindModel("gpt-5.5")
+		if _, err := r.InstanceModels("anthropic"); err != nil {
+			t.Errorf("InstanceModels: %v", err)
+		}
+	}()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("alias cycle panicked")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("alias cycle did not terminate")
+	}
+}
+
 func TestResolve_AliasIgnoresOwnDisabledFlag(t *testing.T) {
 	// Lockstep: the alias follows its target. Its own Disabled never
 	// applies, so an alias-own disable with an enabled target resolves.
@@ -116,6 +140,15 @@ func TestAliasTarget_ResolvesSameProviderPassthroughAndDangling(t *testing.T) {
 	}
 	if _, err := r.AliasTarget("nope", "m"); err == nil {
 		t.Fatal("AliasTarget(unknown instance) must error")
+	}
+}
+
+func TestAliasTarget_RefusesCrossProviderTarget(t *testing.T) {
+	// The config layer cannot author another provider's rows: toggling a
+	// cross-provider alias is refused, and nothing is writable through it.
+	r := fixtureLoad(t, nil, "[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n")
+	if _, err := r.AliasTarget("mine", "house-model"); err == nil {
+		t.Fatal("AliasTarget(cross-provider alias) must error")
 	}
 }
 

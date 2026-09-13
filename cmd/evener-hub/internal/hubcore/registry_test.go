@@ -61,19 +61,20 @@ func TestProviderRegistryDegradesOnOldSchema(t *testing.T) {
 }
 
 // TestReapplyLiveDiscardsSupersededFetch proves the token contract: a
-// fetch that returns after a newer fetch for the same instance (or after
-// a Reload) must not overwrite the newer listing.
+// fetch that claims after a newer claim for the same instance (or after
+// a Reload) must not overwrite the newer listing. Tokens are claimed
+// once a fetch has a listing to publish, so a failed fetch never mints
+// one at all.
 func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
 	h := NewProviderRegistry(hermeticLoader)
 	if err := h.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	reg := h.Get()
-	if reg == nil {
+	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	_, stale := h.Current("gw")
-	_, fresh := h.Current("gw")
+	stale := h.ClaimLiveApply("gw")
+	fresh := h.ClaimLiveApply("gw")
 	h.ReapplyLive(fresh, "gw", []registry.Model{{ID: "gpt-new"}})
 	h.ReapplyLive(stale, "gw", []registry.Model{{ID: "gpt-old"}})
 	got := h.Get().LiveModels("gw")

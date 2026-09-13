@@ -2817,14 +2817,6 @@ type AuthDevicePollResponse struct {
 // (spec §11.3). ActiveSource and AuthModes speak the registry's vocabulary:
 // a source is one of api_key, credential_headers, store, env:<VAR>, oauth,
 // adc, or none. A credential value never appears here.
-// InstanceModelEntry is one row of an instance's model inventory: the
-// catalog id and whether the config layer disabled it. The Providers pane's
-// instance sheet renders one toggle per row.
-type InstanceModelEntry struct {
-	ID       string `json:"id"`
-	Disabled bool   `json:"disabled,omitempty"`
-}
-
 type InstanceEntry struct {
 	Name string `json:"name"`
 	// Base is the registry id an explicitly-named instance is built on;
@@ -2877,6 +2869,14 @@ type InstanceEntry struct {
 	// disabled state, for the sheet's per-model toggles: exact catalog
 	// rows plus cached live ids. Empty for an instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
+}
+
+// InstanceModelEntry is one row of an instance's model inventory: the
+// catalog id and whether the config layer disabled it. The Providers pane's
+// instance sheet renders one toggle per row.
+type InstanceModelEntry struct {
+	ID       string `json:"id"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 // ProviderDescriptor is a registry provider the add form can build on: its

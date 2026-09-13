@@ -438,6 +438,45 @@ type LiveModelLister interface {
 // it, and every id the registry then knows for the instance is resolved and
 // filtered by the §5 visibility rule.
 func (c *Client) Models(ctx context.Context, instance string) (ModelListing, error) {
+	rows, live, err := c.listLive(ctx, instance)
+	if err != nil {
+		return ModelListing{}, err
+	}
+	if c.isOverride(normalizeProviderName(instance)) {
+		// An override has no registry record behind it: its rows are
+		// returned as they came, never written anywhere.
+		return ModelListing{Live: true, Models: standaloneRows(instance, rows)}, nil
+	}
+	if live && c.hasRegistry {
+		// Only a client that owns its registry records what an
+		// instance's transport said. A client without WithRegistry
+		// resolves against the process-wide EmbeddedRegistry, which it
+		// shares with every other such client (spec §5.1, §8.1).
+		c.Registry().ApplyLive(instance, rows)
+	}
+	return c.resolveListing(instance, live), nil
+}
+
+// isOverride reports whether name is a registered adapter override.
+func (c *Client) isOverride(name string) bool {
+	c.overridesMu.RLock()
+	defer c.overridesMu.RUnlock()
+	return c.overrides[name] != nil
+}
+
+// ListLive fetches one instance's raw live rows without touching the
+// registry: the hub's live prefetch resolves the visible rows itself and
+// applies the raw snapshot only through the holder's token-validated
+// path, so a superseded fetch never writes. ok=false means the endpoint
+// does not support listing (spec §8.1: not a failure); the caller then
+// applies nothing.
+func (c *Client) ListLive(ctx context.Context, instance string) (rows []registry.Model, ok bool, err error) {
+	return c.listLive(ctx, instance)
+}
+
+// listLive is the fetch half of Models: timeout, override seam, and the
+// protocol request. It never writes the registry.
+func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Model, bool, error) {
 	timeout := ModelListingTimeout(ctx)
 	ctx = WithModelListingTimeout(ctx, *timeout)
 	instance = normalizeProviderName(instance)
@@ -448,12 +487,12 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 	if override != nil {
 		// An override owns its instance name: its listing seam is the only
 		// way it can list, so no registry-only fallback stands in for it.
-		// Its rows stay out of the registry — a client without WithRegistry
-		// shares EmbeddedRegistry with every other client in the process,
-		// and only an instance's own transport may speak for it.
+		// Its rows stay out of the registry -- a client without WithRegistry
+		// shares EmbeddedRegistry with every other such client (spec \u00a75.1,
+		// \u00a78.1) -- and only an instance's own transport may speak for it.
 		lister, ok := override.(LiveModelLister)
 		if !ok {
-			return ModelListing{}, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", instance)}
+			return nil, false, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", instance)}
 		}
 		// Overrides have no protocol layer to apply their request deadline.
 		// Built-in protocols own it themselves, preserving the original caller
@@ -464,39 +503,41 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 		rows, err := lister.LiveModels(opCtx)
 		op.settle(opCtx, err)
 		if err != nil {
-			return ModelListing{}, RewriteErrorProvider(err, instance)
+			return nil, false, RewriteErrorProvider(err, instance)
 		}
-		return ModelListing{Live: true, Models: standaloneRows(instance, rows)}, nil
+		return rows, true, nil
 	}
 	res, err := r.ResolveInstance(instance)
 	if err != nil {
-		return ModelListing{}, &ConfigurationError{Message: err.Error()}
+		return nil, false, &ConfigurationError{Message: err.Error()}
 	}
 	p, ok := ProtocolFor(res.Protocol)
 	if !ok {
-		return ModelListing{}, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, res.Protocol)}
+		return nil, false, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, res.Protocol)}
 	}
 	opCtx, op := c.beginProviderOperation(ctx)
 	rows, err := p.ListModels(opCtx, res)
 	op.settle(opCtx, err)
-	live := false
 	switch {
 	case errors.Is(err, ErrModelListingUnsupported):
+		return nil, false, nil
 	case err != nil:
-		return ModelListing{}, RewriteErrorProvider(err, instance)
+		return nil, false, RewriteErrorProvider(err, instance)
 	default:
-		live = true
-		if c.hasRegistry {
-			// Only a client that owns its registry records what an
-			// instance's transport said. A client without WithRegistry
-			// resolves against the process-wide EmbeddedRegistry, which it
-			// shares with every other such client (spec §5.1, §8.1).
-			r.ApplyLive(instance, rows)
-		}
+		return rows, true, nil
 	}
+}
+
+// resolveListing resolves every id the registry knows for instance --
+// after the caller applied the live rows -- and filters by the \u00a75
+// visibility rule. live reports whether a live listing was fetched;
+// false means registry-only (spec \u00a78.1: an unsupported models endpoint
+// is not a failure).
+func (c *Client) resolveListing(instance string, live bool) ModelListing {
+	r := c.Registry()
 	ids, err := r.ModelIDs(instance)
 	if err != nil {
-		return ModelListing{}, &ConfigurationError{Message: err.Error()}
+		return ModelListing{Live: live}
 	}
 	out := make([]registry.Resolved, 0, len(ids))
 	for _, id := range ids {
@@ -506,7 +547,7 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 		}
 		out = append(out, row)
 	}
-	return ModelListing{Live: live, Models: out}, nil
+	return ModelListing{Live: live, Models: out}
 }
 
 // liveSaysNoTools reports the §5 visibility rule: a row is hidden when the

@@ -58,15 +58,21 @@ func TestInstances_RefreshModelsFetchesLiveIDs(t *testing.T) {
 }
 
 func TestInstances_RefreshModelsSurvivesConcurrentReload(t *testing.T) {
-	// The /models handler blocks until release closes: the refresh's fetch
-	// is in flight while the test lands a Reload, so the listing must be
-	// carried onto the fresh registry — with its advertised facts — not
-	// stranded on the detached one the fetch started against.
+	// The /models handler signals arrival, then blocks until release
+	// closes: the refresh's fetch is provably in flight while the test
+	// lands a Reload, so the listing must be carried onto the fresh
+	// registry — with its advertised facts — not stranded on the
+	// detached one the fetch started against.
 	release := make(chan struct{})
+	arrived := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/models") {
 			http.NotFound(w, r)
 			return
+		}
+		select {
+		case arrived <- struct{}{}:
+		default:
 		}
 		<-release
 		w.Header().Set("Content-Type", "application/json")
@@ -93,11 +99,13 @@ func TestInstances_RefreshModelsSurvivesConcurrentReload(t *testing.T) {
 		resp, err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
 		done <- result{resp, err}
 	}()
-	// Let the fetch reach the blocked handler before reloading. The
-	// handler holds the request open, so the reload cannot win the race
-	// against the fetch — it can only land mid-fetch, which is the
-	// interleaving under test.
-	time.Sleep(200 * time.Millisecond)
+	// The handler signals arrival before it blocks, so the reload lands
+	// strictly mid-fetch: no sleep, no missed interleaving.
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the refresh fetch to arrive")
+	}
 	if err := ctl.reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}

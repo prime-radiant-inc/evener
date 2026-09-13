@@ -598,6 +598,15 @@ func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string,
 				return target, id, true
 			}
 		}
+		// No explicit or implicit instance by that name: fall back to
+		// the curated record, the way load-time aliasTarget validates.
+		// recordFor already covers implicit curated ids, so this is
+		// only the non-implicit curated remainder.
+		if prov, ok := r.curated[aliasOf[:i]]; ok {
+			if m, ok := prov.head.Models[id]; ok && m.AliasOf == "" {
+				return prov, id, true
+			}
+		}
 	}
 	return nil, "", false
 }
@@ -960,8 +969,19 @@ func (r *Registry) AliasTarget(instance, model string) (Ref, error) {
 // recordMayDisable reports whether any layer of rec or the top-level glob
 // rows set Disabled at all — or any alias row names a cross-provider
 // target that may itself be disabled. Browse paths check this once before
-// replaying per row: with no flag anywhere every answer is false.
+// replaying per row: with no flag anywhere every answer is false. The
+// cross-provider walk follows aliasTargetRow's acceptance (an exact
+// non-alias row) with a visited set, so a mutual alias cycle terminates
+// instead of overflowing the stack.
 func (r *Registry) recordMayDisable(rec *record) bool {
+	return r.recordMayDisableSeen(rec, map[*record]bool{})
+}
+
+func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool {
+	if seen[rec] {
+		return false
+	}
+	seen[rec] = true
 	for _, layer := range rec.layers {
 		for _, m := range layer.rows {
 			if m.Disabled != nil {
@@ -981,7 +1001,19 @@ func (r *Registry) recordMayDisable(rec *record) bool {
 			continue
 		}
 		if i := strings.Index(m.AliasOf, "/"); i > 0 {
-			if target, ok := r.recordFor(m.AliasOf[:i]); ok && target != rec && r.recordMayDisable(target) {
+			id := m.AliasOf[i+1:]
+			if isGlob(m.AliasOf[:i]) || isGlob(id) {
+				continue
+			}
+			target, ok := r.recordFor(m.AliasOf[:i])
+			if !ok || target == rec || seen[target] {
+				continue
+			}
+			row, ok := target.head.Models[id]
+			if !ok || row.AliasOf != "" {
+				continue
+			}
+			if r.recordMayDisableSeen(target, seen) {
 				return true
 			}
 		}

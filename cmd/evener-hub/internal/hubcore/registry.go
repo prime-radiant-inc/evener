@@ -23,26 +23,15 @@ type ProviderRegistry struct {
 	mu      sync.RWMutex
 	current *registry.Registry
 	loadErr error
-	// generation counts successful holder swaps: every Reload that
-	// installs a new current bumps it, and BeginLiveFetch hands out a
-	// per-instance token that ReapplyLive honors. A slower fetch that
-	// returns after a newer one (or after a Reload, whose carryLive
-	// only knows the before snapshot) applies its listing only when
-	// its token is still current, so stale responses can neither be
+	// generation counts successful holder swaps plus live-fetch
+	// applications: every Reload that installs a new current and every
+	// ReapplyLive that lands a listing bumps it. A fetch captures the
+	// registry before the request and mints its apply token only when it
+	// has a listing to publish, so a failed fetch never supersedes a
+	// successful concurrent one, and a stale response can neither be
 	// lost on a detached registry nor overwrite a newer listing.
 	generation uint64
 	liveTokens map[string]uint64
-}
-
-// liveTokenLocked mints the next fetch token for instance. The caller
-// must hold at least the read lock; BeginLiveFetch takes it.
-func (h *ProviderRegistry) liveTokenLocked(instance string) uint64 {
-	h.generation++
-	if h.liveTokens == nil {
-		h.liveTokens = map[string]uint64{}
-	}
-	h.liveTokens[instance] = h.generation
-	return h.generation
 }
 
 // NewProviderRegistry returns a holder that loads through load. Nothing is
@@ -98,14 +87,30 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 	return h.current
 }
 
-// Current returns the held registry with a fetch token for instance: a
-// live fetch captures both before the request and hands them to
-// ReapplyLive after, so a concurrent Reload cannot strand the listing on
-// a detached object and a superseded fetch cannot overwrite a newer one.
-func (h *ProviderRegistry) Current(instance string) (*registry.Registry, uint64) {
+// Current returns the held registry a live fetch runs against. The
+// apply token is minted separately by ClaimLiveApply once the fetch has
+// a listing to publish, so a failed fetch never supersedes a successful
+// concurrent one.
+func (h *ProviderRegistry) Current() *registry.Registry {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.current
+}
+
+// ClaimLiveApply mints the apply token for instance's just-fetched
+// listing. Call it after the request succeeds, immediately before
+// ReapplyLive: any newer claim (a concurrent fetch that finished first,
+// or a Reload, which bumps the generation on swap) supersedes this one,
+// and ReapplyLive then discards it.
+func (h *ProviderRegistry) ClaimLiveApply(instance string) uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.current, h.liveTokenLocked(instance)
+	h.generation++
+	if h.liveTokens == nil {
+		h.liveTokens = map[string]uint64{}
+	}
+	h.liveTokens[instance] = h.generation
+	return h.generation
 }
 
 // ReapplyLive applies rows fetched under token tok to the current
