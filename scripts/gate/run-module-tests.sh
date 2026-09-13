@@ -356,6 +356,15 @@ stop_recorded_package_list_groups() {
 				continue
 			fi
 		fi
+		if [ "${recorded#survivor:}" != "$recorded" ]; then
+			# Already taken SIGTERM and SIGKILL with a full grace each, and seen
+			# alive after both. Repeating that here would cost two more graces to
+			# learn what is already known, so the record is left standing where
+			# whoever runs next on this host can read it.
+			printf 'run-module-tests.sh: process group %s was still alive after SIGTERM and SIGKILL; its record is kept at %s.\n' \
+				"${recorded#survivor:}" "$pgid_file" >&2
+			continue
+		fi
 		if [ "${recorded#pid:}" != "$recorded" ]; then
 			# A pid, not a group: the attempt had not split when it wrote this,
 			# so it is in the runner's own group and nothing here may signal that
@@ -464,14 +473,17 @@ package_list_path() {
 	esac
 }
 package_list_retry_path() { printf '%s.retries' "$(package_list_path "$1")"; }
-# Where an attempt records itself: created empty by the parent before the fork,
-# written by the child as `pid:N` before it splits and rewritten as `pgid:N`
+# Where an attempt records itself, and what became of it: created empty by the
+# parent before the fork, written by the child as `pid:N` before it splits and
+# rewritten as `pgid:N`
 # once it has, and removed when the attempt is reaped. The two spellings are not
 # decoration. The number is the same either way, but a pid in the runner's own
 # group and a group of the attempt's own are opposite things to a cleanup: the
 # first must be signalled by pid, and reading it as a group finds no members and
 # throws the record away while the attempt is still about to run. An empty one
-# means an attempt is spawning.
+# means an attempt is spawning, and `survivor:N` one that took SIGTERM and
+# SIGKILL and was still there afterwards — a record kept deliberately, for the
+# next person on the host, and not signalled again.
 # That group is the one thing the runner's signal cleanup cannot otherwise
 # reach: the attempt is deliberately in a group of its own, so a signal aimed at
 # the runner's group never touches it, and once the wave subshell holding it
@@ -704,20 +716,22 @@ run_bounded_package_list() {
 					# uninterruptible sleep, which is exactly the stalled-volume case
 					# this bound exists for, and waiting on it would replace the bound
 					# with an indefinite hang. Name what is known instead and fail.
+					# One rule for both answers: what has not been shown to have
+					# stopped keeps its record, and the line below says where that
+					# record is. A group seen alive after SIGKILL is the case where
+					# the name matters most — it is the only thing that tells whoever
+					# runs next on this host what is holding the cache locks.
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					if [ "$stop_status" -eq 2 ]; then
-						# Nobody could look, so the record is all anyone has and it
-						# stays — the same rule the cleanup follows for a listing
-						# that will not run.
 						printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: %s Not retrying, because a retry that cannot see the previous attempt would race it. Its record is kept at %s.\n' \
 							"$attempt" "$package_list_stop_reason" "$(package_list_pgid_path "$module")" >&2
 					else
-						printf 'run-module-tests.sh: attempt %s would not stop: %s Not retrying, and not waiting on it.\n' \
-							"$attempt" "$package_list_stop_reason" >&2
-						# The line above names what survived, so the record buys
-						# nothing the reader does not already have and would cost
-						# the EXIT cleanup two more graces.
-						rm -f "$(package_list_pgid_path "$module")"
+						# Marked as what it is, so the EXIT cleanup keeps the record
+						# without spending two more graces re-signalling a group this
+						# attempt has already taken SIGTERM and SIGKILL to.
+						printf 'survivor:%s' "$list_pid" >"$(package_list_pgid_path "$module")"
+						printf 'run-module-tests.sh: attempt %s would not stop: %s Not retrying, and not waiting on it. Its record is kept at %s.\n' \
+							"$attempt" "$package_list_stop_reason" "$(package_list_pgid_path "$module")" >&2
 					fi
 					return 1
 				fi
