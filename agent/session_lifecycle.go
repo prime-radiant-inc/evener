@@ -1732,6 +1732,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
+		// The same admission rule the drain loop applies before a turn, applied
+		// before every round after the first: an input does not stop being
+		// admitted once it has started. A record this input already made can
+		// stop the writer mid-input -- a tool-result line that landed partially
+		// is the ordinary way -- and every round behind it would make another
+		// model request and another batch of tool executions whose results the
+		// transcript already refuses, leaving work that exists in memory and
+		// nowhere else. Round 0 is not re-checked: the drain loop's gate and
+		// this input's own user-input record already stand in front of it.
+		if round > 0 {
+			if err := s.refuseTurnOnPoisonedTranscript(ctx); err != nil {
+				return "", progressed, err
+			}
+		}
 		roundStart := s.sclock().Now()
 		// Snapshot the pending-ask count before this round's tool calls run, so
 		// the delivery check below can compute the per-round delta (spec §5.1):

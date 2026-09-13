@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -1455,5 +1456,48 @@ func TestTurnWhoseOwnInputPoisonedTheTranscriptNeverRuns(t *testing.T) {
 	}
 	if got := sess.clientMutations.snapshot().AcceptedTurns; got != before {
 		t.Fatalf("durable accepted turns = %d, want the %d the returned claim restores", got, before)
+	}
+}
+
+// TestPoisonedToolResultStopsTheInputBeforeTheNextRound: the poisoned-writer
+// rule refuses a turn at admission, but an input does not stop being admitted
+// after its first round. A tool-result record that lands partially stops the
+// writer mid-input, and every round behind it -- another model request, another
+// batch of tool executions, their results -- is then work whose every record is
+// lost, run against a transcript that already refuses them. The rule has to
+// hold before each subsequent round of the same input, not only before the
+// first.
+func TestPoisonedToolResultStopsTheInputBeforeTheNextRound(t *testing.T) {
+	var requests atomic.Int32
+	steps := make([]func(llm.Request) llm.Response, 3)
+	steps[0] = func(llm.Request) llm.Response { requests.Add(1); return finalResponse("ok") }
+	steps[2] = func(llm.Request) llm.Response { requests.Add(1); return finalResponse("must never run") }
+	sess := newTestSessionForEnvctx(t, withSteps(steps...))
+	sendOneUserInput(t, sess, "first") // settles the environment block
+
+	fs := attachEnvironmentFailureFS(t, sess)
+	steps[1] = func(llm.Request) llm.Response {
+		requests.Add(1)
+		// Past the durable assistant record, onto the buffered tool-results
+		// one: that write stops partway and poisons the writer.
+		armEnvironmentPartialWriteAfter(fs, 1)
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "running a tool"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:        "call_1",
+				Name:      "glob",
+				Arguments: json.RawMessage(`{"pattern":"*.go","path":"."}`),
+				Type:      "function",
+			}},
+		}}}
+	}
+	drainPendingEvents(sess)
+
+	_, err := sess.ProcessInput(t.Context(), "its tool result poisons the writer", nil)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("input whose tool result poisoned the writer = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("model requests = %d, want 2 (the first turn and the poisoning round): no round may run behind a transcript that refuses its records", got)
 	}
 }
