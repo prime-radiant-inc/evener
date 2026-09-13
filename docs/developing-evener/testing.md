@@ -83,6 +83,21 @@ here (vite-cache digest, tmux palette capture, auth stopwatch, composer
 projection refresh) turned out to be an awaitable completion nobody was
 awaiting, and zero were fixed by widening a timeout.
 
+### The gate's bounded package list
+
+`scripts/gate/run-module-tests.sh` enumerates each module's packages through
+`evener-dev bounded-list`, which bounds every `go list` attempt
+(`EVENER_PACKAGE_LIST_TIMEOUT`, 60s) and retries one that hit the bound
+(`EVENER_PACKAGE_LIST_ATTEMPTS`, 3). This is the tripwire bound of rule 2, not
+a widened deadline: `go list` blocks forever when the configured Go caches sit
+on a stalled volume, which reaches CI as a job-level timeout with no
+diagnostic. The retry is there because one attempt cannot tell a stalled volume
+from a cold, loaded runner, and a killed attempt leaves the caches warmer for
+the next. Only a timeout is retried -- a `go list` that exits non-zero has
+decided something about the package list itself. The helper stops the whole
+`go list` process group, because a surviving compiler keeps holding the build
+and module cache locks every later run on that host needs.
+
 ## Destructive Operations and the Tooling Test Estate
 
 Four standing rules (Jesse, 2026-08-17), set after a shell test suite's

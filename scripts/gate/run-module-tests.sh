@@ -155,13 +155,21 @@ export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(gate_budget 6
 # user-lowered GOMAXPROCS. The three budgets above only ever tighten values
 # this script already passed.
 
-# Root discovery is normally quick, but it can block forever when the configured
-# Go caches live on a stalled volume. Keep that failure bounded without changing
-# cache configuration: the operator gets the configured cache paths and an exact
-# repair/retry command instead. This must be a positive integer in seconds.
-ROOT_PACKAGE_LIST_TIMEOUT=${EVENER_ROOT_PACKAGE_LIST_TIMEOUT:-30}
-if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+# Package discovery is normally quick, but it can block forever when the
+# configured Go caches live on a stalled volume. Keep that failure bounded
+# without changing cache configuration: the operator gets the configured cache
+# paths and an exact repair/retry command instead. A single attempt cannot tell
+# a stalled volume from a cold, loaded runner, and a killed attempt leaves the
+# caches warmer for the next one, so the bound is per attempt. Both must be
+# positive integers, the timeout in seconds.
+PACKAGE_LIST_TIMEOUT=${EVENER_PACKAGE_LIST_TIMEOUT:-60}
+if [[ ! "$PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'run-module-tests.sh: EVENER_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$PACKAGE_LIST_TIMEOUT" >&2
+	exit 2
+fi
+PACKAGE_LIST_ATTEMPTS=${EVENER_PACKAGE_LIST_ATTEMPTS:-3}
+if [[ ! "$PACKAGE_LIST_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'run-module-tests.sh: EVENER_PACKAGE_LIST_ATTEMPTS must be a positive integer (got %q)\n' "$PACKAGE_LIST_ATTEMPTS" >&2
 	exit 2
 fi
 
@@ -211,21 +219,6 @@ process_descendants() {
 		process_descendants "$child"
 		printf '%s\n' "$child"
 	done
-}
-
-stop_process_tree() {
-	local pid="$1" descendant
-	local -a descendants=()
-	for descendant in $(process_descendants "$pid"); do
-		descendants+=("$descendant")
-	done
-	if [ "${#descendants[@]}" -gt 0 ]; then
-		for descendant in "${descendants[@]}"; do
-			[ -n "$descendant" ] && kill -TERM "$descendant" 2>/dev/null || :
-		done
-	fi
-	kill -TERM "$pid" 2>/dev/null || :
-	wait "$pid" 2>/dev/null || :
 }
 
 stop_children() {
@@ -285,42 +278,43 @@ failed_modules=()
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
-root_package_list_timeout_diagnostic() {
-	local package_list_log="$1" worktree gocache gomodcache
+package_list_diagnostic() {
+	local module="$1" package_list_log="$2" worktree gocache gomodcache
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
-	printf 'run-module-tests.sh: go list ./... timed out after %ss.\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
-	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
+	printf 'run-module-tests.sh: could not list the packages of module %s.\n' "$module" >&2
+	printf 'run-module-tests.sh: worktree/module: %s (%s)\n' "$worktree" "$module" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
 	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list_log" >&2
-	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
+	printf 'run-module-tests.sh: if the list timed out, repair the configured caches and retry:\n' >&2
 	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
 		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
 }
 
-run_root_package_list() {
-	local package_list="$1" package_list_stderr list_pid started_at list_status
+# run_package_list MODULE OUTFILE — write MODULE's package list to OUTFILE.
+#
+# The enumeration runs under `evener-dev bounded-list`, which bounds each
+# attempt, retries one that hit the bound, and stops the `go list` process
+# group rather than just the process it started: `go list` forks compilers, and
+# a survivor goes on holding the build and module cache locks that every later
+# run on this host needs.
+run_package_list() {
+	local module="$1" package_list="$2" package_list_stderr status=0
+	local -a list_cmd=(go list ./...)
+	# -C is how a module other than the one holding evener-dev gets enumerated:
+	# bounded-list runs where it was started, and that is the repo root.
+	[ "$module" = "." ] || list_cmd=(go list -C "$module" ./...)
 	package_list_stderr="${package_list}.stderr"
-	( go list ./... >"$package_list" 2>"$package_list_stderr" ) &
-	list_pid="$!"
-	started_at=$SECONDS
-	while kill -0 "$list_pid" 2>/dev/null; do
-		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
-			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic "$package_list_stderr"
-			return 1
-		fi
-		sleep 0.1
-	done
-	if wait "$list_pid"; then
-		return 0
-	else
-		list_status=$?
+	(cd "$script_dir/../.." && go run ./cmd/evener-dev/bin dev bounded-list \
+		-timeout "${PACKAGE_LIST_TIMEOUT}s" -attempts "$PACKAGE_LIST_ATTEMPTS" \
+		-- "${list_cmd[@]}") >"$package_list" 2>"$package_list_stderr" || status=$?
+	if [ "$status" -ne 0 ]; then
 		cat "$package_list_stderr" >&2
-		return "$list_status"
+		package_list_diagnostic "$module" "$package_list_stderr"
 	fi
+	return "$status"
 }
 
 run_module() {
@@ -332,7 +326,7 @@ run_module() {
 		local -a packages=()
 		local pkg package_list
 		package_list="$logdir/root.packages"
-		run_root_package_list "$package_list" || return $?
+		run_package_list . "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
@@ -369,10 +363,12 @@ run_module() {
 		# zero-vs-nonzero is read below, so nothing here depends on them.
 		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
 		local subpkgs=()
-		local pkg
+		local pkg package_list
+		package_list="$logdir/agent.packages"
+		run_package_list agent "$package_list" || return $?
 		while IFS= read -r pkg; do
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
-		done < <(go list ./...)
+		done <"$package_list"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
