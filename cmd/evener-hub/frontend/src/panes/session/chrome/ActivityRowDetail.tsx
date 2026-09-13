@@ -27,6 +27,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { Markdown } from "../../../widgets/markdown";
 import { formatQuietAge, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
+import { useTreeNow } from "./treeNow";
 
 const CLASS = {
   detailStrip: requireClass(styles.detailStrip, "activitypanel.module.css", "detailStrip"),
@@ -351,8 +352,16 @@ export function ActivityRowDetail({
 // sentence, and - for a clock-driven watch with retained instants - the
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
-export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now: number }): JSX.Element {
+//
+// It is the one watch surface that reads the tree clock: a caller with its own
+// ticking clock (the pane chrome) passes `now`, and the standalone pane passes
+// nothing and falls back to the tree's live context. Reading it HERE, rather
+// than in the row, is what keeps a collapsed watch row from re-rendering on
+// every tick with identical output.
+export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?: number }): JSX.Element {
   const { watch } = row;
+  const contextNow = useTreeNow();
+  const effectiveNow = now ?? contextNow;
   const note = watch.note?.trim();
   const leadNote = note !== undefined && note.length > WATCH_NOTE_LEAD_BUDGET ? note : undefined;
   return (
@@ -363,10 +372,10 @@ export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now: 
         </p>
       ) : null}
       <p className={CLASS.watchFacts} data-testid="watch-facts">
-        {watchFacts(watch, now)}
+        {watchFacts(watch, effectiveNow)}
       </p>
       {watchIsScheduled(watch) ? (
-        <ActivityWatchTimeline watch={watch} now={now} />
+        <ActivityWatchTimeline watch={watch} now={effectiveNow} />
       ) : (
         <p className={CLASS.watchNoSchedule} data-testid="watch-no-schedule">
           {WATCH_NO_SCHEDULE_LINE}

@@ -12,7 +12,6 @@ import {
   watchName,
 } from "@evener/appwire-client";
 import {
-  createContext,
   Fragment,
   forwardRef,
   type KeyboardEvent,
@@ -44,6 +43,7 @@ import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
 import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
+import { TreeNowContext } from "./treeNow";
 
 export interface ActivityTreeProps {
   tree: ActivityTreeData;
@@ -292,12 +292,6 @@ function collectContinuations(
   return strips;
 }
 
-// TreeNowContext carries the live rows' ticking clock. TreeTickProvider is
-// the only setInterval in this file, and only context consumers (the live
-// meta cluster and live detail strips) re-render on each tick: memoized rows
-// and the tree chrome never subscribe, so a tick touches live leaves only.
-const TreeNowContext = createContext<number>(0);
-
 function TreeTickProvider({ live, children }: { live: boolean; children: ReactNode }): ReactNode {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -523,11 +517,12 @@ function WatchRowView({
   registerRowRef,
 }: WatchRowViewProps): ReactNode {
   const name = `Watch: ${watchName(row.watch)}`;
-  // A caller with its own ticking clock (the pane chrome) passes `now`; the
-  // standalone pane passes nothing and shares the tree's own live tick, so no
-  // second clock is installed on a surface that already has none.
-  const contextNow = useContext(TreeNowContext);
-  const effectiveNow = now ?? contextNow;
+  // The row itself takes no clock: its meta is cadence plus delivery count or
+  // armed state, all snapshot data. A caller with its own ticking clock (the
+  // pane chrome) passes `now`, and the standalone pane passes nothing; either
+  // way only the open detail below reads the clock (from its `now` prop or the
+  // tree's own live context), so a collapsed watch row never re-renders on a
+  // tick. See ActivityWatchDetail.
   return (
     <Fragment>
       <div
@@ -562,7 +557,7 @@ function WatchRowView({
         <span className={CLASS.denseName}>{watchName(row.watch)}</span>
         <span className={CLASS.denseMeta}>{watchMeta(row.watch)}</span>
       </div>
-      {detailOpen && <ActivityWatchDetail row={row} now={effectiveNow} />}
+      {detailOpen && <ActivityWatchDetail row={row} now={now} />}
     </Fragment>
   );
 }

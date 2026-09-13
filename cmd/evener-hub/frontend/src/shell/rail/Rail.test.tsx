@@ -1343,6 +1343,32 @@ describe("resource-backed Rail", () => {
     expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
+  test("a watch row is passive: keyboard activation persists no expansion override", () => {
+    window.history.replaceState({}, "", "/");
+    // A session starts collapsed, so expand it first to render its watch row.
+    const watched = summary({
+      title: "Watched",
+      watches: [{ id: "w1", source: "self", deliveries: 0, created_at: "2026-09-12T19:00:00Z", active: true }],
+    });
+    installState([sectionResource("live", [watched])]);
+    render(<Rail />);
+
+    const sessionRow = screen.getByRole("treeitem", { name: /watched/i });
+    act(() => sessionRow.focus());
+    fireEvent.keyDown(sessionRow, { key: "ArrowRight" });
+    expect(sessionRow.getAttribute("aria-expanded")).toBe("true");
+
+    const watchRow = screen.getByRole("treeitem", { name: /watch:/i });
+    act(() => watchRow.focus());
+    // A watch row is a leaf with nothing to disclose, so neither the
+    // activation key nor the expand chord may persist an override for it.
+    fireEvent.keyDown(watchRow, { key: "ArrowRight" });
+    fireEvent.keyDown(watchRow, { key: "Enter" });
+
+    const persisted: Record<string, unknown> = JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "{}");
+    const watchOverrides = Object.keys(persisted).filter((id) => id.startsWith("watch:"));
+    expect(watchOverrides).toEqual([]);
+  });
   test("routes rename through the rendered session menu and dialog", async () => {
     installState([sectionResource("live", [summary({ title: "Rename me", rename: true })])]);
     const client = new FakeClient();
