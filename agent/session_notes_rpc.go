@@ -82,6 +82,10 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 		lookup.Record = s.clientMutations.snapshot().Journal[clientMutationID]
 	}
 	if lookup.Record.OperationState == clientMutationOperationApplied || lookup.Record.OperationState == clientMutationOperationTerminal {
+		// The commit landed (a post-rename error still reports it through the
+		// store), so the canonical note is now readable. Publish before the
+		// emission so the emitted snapshot and every reader agree on it.
+		s.publishCommittedHumanNoteLocked()
 		s.reflectDurableClientSteering()
 		s.wakeForPendingSteering()
 		if changed {
@@ -199,7 +203,7 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	defer s.notesUpdateMu.Unlock()
 	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
-	removed := s.removeSessionURL(id)
+	removed := s.stageSessionURLRemove(id)
 	if !removed {
 		s.metaSaveMu.Unlock()
 		if lookup.Record.AttemptGeneration > 1 {
@@ -211,6 +215,9 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 				lookup.Lease.Release()
 				return false, err
 			}
+			// The removal's metadata write landed on the earlier attempt, so
+			// publish the store as committed before announcing the removal.
+			s.publishCommittedNotesLocked()
 			// The removal's announcement belongs to the removal, not to the
 			// crash: re-emit the current list so the projector converges on
 			// the post-removal state the success journal records (G2).
@@ -240,6 +247,9 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 		return false, err
 	}
 	s.metaSaveMu.Unlock()
+	// Publish only after the save returned nil: a reader that already saw the
+	// pre-removal list must never see it retracted by a failed write.
+	s.publishCommittedNotesLocked()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(s.snapshotSessionURLsLocked()))
 	return s.applyUrlsRemoveResult(lookup.Lease, outerID)
 }
@@ -264,13 +274,16 @@ func (s *Session) restoreSessionURLsLocked(urls []schema.SessionURL) {
 // the resulting snapshot as one serialized unit under notesUpdateMu, so
 // concurrent mutations publish in store order (G1). The emission runs
 // without Session.mu (emit re-acquires it). On a persistence failure the
-// store rolls back and the caller reports the error with no emission.
+// store rolls back and the caller reports the error with no emission. The
+// committed notes cut is published after the save returns nil, so readers
+// keep seeing the previous value while the save is in flight and after it
+// fails.
 func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed bool, human, agent string, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
 	s.metaSaveMu.Lock()
 	_, prevAgent := s.notesSnapshot()
-	stored, changed = s.setAgentNote(note)
+	stored, changed = s.stageAgentNote(note)
 	if err = s.persistNotesMetaLocked(); err != nil {
 		s.mu.Lock()
 		s.agentNote = prevAgent
@@ -279,6 +292,10 @@ func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed
 		return stored, changed, "", "", err
 	}
 	s.metaSaveMu.Unlock()
+	// Publish only after the save returned nil: readers must never observe a
+	// staged value whose save later fails, and the failure branch above never
+	// publishes at all.
+	s.publishCommittedNotesLocked()
 	if !changed {
 		human, agentNote := s.notesSnapshot()
 		return stored, false, human, agentNote, nil
@@ -293,13 +310,13 @@ func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed
 // concurrent URL mutations publish in store order (G1). The emission runs
 // without Session.mu (emit re-acquires it). On a persistence failure the
 // store rolls back to the pre-add list and the caller reports the error
-// with no emission.
+// with no emission, and the published committed cut is left untouched.
 func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry schema.SessionURL, urls []schema.SessionURL, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
 	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
-	entry, err = s.addSessionURL(rawURL, label)
+	entry, err = s.stageSessionURLAdd(rawURL, label)
 	if err != nil {
 		s.metaSaveMu.Unlock()
 		return schema.SessionURL{}, nil, err
@@ -310,6 +327,9 @@ func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry sch
 		return schema.SessionURL{}, nil, err
 	}
 	s.metaSaveMu.Unlock()
+	// Publish only after the save returned nil; the failure branch above
+	// restores the live list without touching the published cut.
+	s.publishCommittedNotesLocked()
 	urls = s.snapshotSessionURLsLocked()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 	return entry, urls, nil
@@ -320,13 +340,14 @@ func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry sch
 // notesUpdateMu, so concurrent URL mutations publish in store order (G1).
 // The emission runs without Session.mu (emit re-acquires it). On a
 // persistence failure the store rolls back to the pre-removal list and the
-// caller reports the error with no emission.
+// caller reports the error with no emission, and the published committed cut
+// is left untouched.
 func (s *Session) mutateSessionURLRemoveSerialized(id string) (removed bool, urls []schema.SessionURL, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
 	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
-	removed = s.removeSessionURL(id)
+	removed = s.stageSessionURLRemove(id)
 	if !removed {
 		s.metaSaveMu.Unlock()
 		return false, nil, nil
@@ -337,6 +358,9 @@ func (s *Session) mutateSessionURLRemoveSerialized(id string) (removed bool, url
 		return false, nil, err
 	}
 	s.metaSaveMu.Unlock()
+	// Publish only after the save returned nil; a failed removal restores the
+	// live list and leaves the published cut on the previous committed value.
+	s.publishCommittedNotesLocked()
 	urls = s.snapshotSessionURLsLocked()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 	return true, urls, nil
@@ -382,7 +406,7 @@ func (s *Session) SessionURLsForTest() []schema.SessionURL {
 	return append([]schema.SessionURL(nil), s.sessionURLs...)
 }
 
-// notesSnapshot reads the human and agent notes under s.mu.
+// notesSnapshot reads the committed human and agent notes.
 func (s *Session) notesSnapshot() (human, agentNote string) {
 	human, agentNote, _ = s.notesSnapshotAll()
 	return human, agentNote
@@ -608,19 +632,119 @@ func formatNotesLinkLine(u schema.SessionURL) string {
 	return "Link: " + base
 }
 
-// notesSnapshotAll reads human note, agent note, and URL list together.
+// committedNotesState is one committed notes cut: every notes value a reader
+// may observe, installed together through Session.notesCommitted.
+//
+// The human note carries no presence flag. Every reader surface (Meta,
+// notesSnapshot, notesSnapshotAll, the projection renderer) collapses
+// "authority not established" and "saved clear" to "", exactly as the reads did
+// before this cut existed, so no consumer distinguishes them;
+// ReadCanonicalHumanNote still reports presence from disk for callers that act
+// on it.
+type committedNotesState struct {
+	human         string
+	agent         string
+	urls          []schema.SessionURL
+	everProjected bool
+}
+
+// committedNotesBaseLocked builds the next published cut from the live store,
+// carrying the previously published human note forward unless humanOverride is
+// non-nil. Callers hold notesUpdateMu (construction is single-threaded and runs
+// before the session is shared), which serializes every publisher, so the
+// carried value cannot move underneath them.
+func (s *Session) committedNotesBaseLocked(humanOverride *string) committedNotesState {
+	s.mu.Lock()
+	next := committedNotesState{
+		agent:         s.agentNote,
+		urls:          append([]schema.SessionURL(nil), s.sessionURLs...),
+		everProjected: s.notesEverProjected,
+	}
+	s.mu.Unlock()
+	if published := s.notesCommitted.Load(); published != nil {
+		next.human = published.human
+	}
+	if humanOverride != nil {
+		next.human = *humanOverride
+	}
+	return next
+}
+
+// publishCommittedNotesLocked publishes the live store as the committed cut.
+// Callers hold notesUpdateMu and call it only at a durability point: after a
+// notes mutator's metadata save returned nil, or when a projection records the
+// ever-projected flag. The failure paths (a rolled-back mutation, a rolled-back
+// URL removal) never call it, so a value a reader observed is never retracted;
+// restoreSessionURLsLocked deliberately has no publish of its own.
+func (s *Session) publishCommittedNotesLocked() {
+	next := s.committedNotesBaseLocked(nil)
+	s.notesCommitted.Store(&next)
+}
+
+// publishCommittedHumanNoteLocked publishes the mutation store's committed
+// canonical human note as the cut's human field, carrying the agent note, URL
+// list, and ever-projected flag forward. SetHumanNote is the only writer of the
+// committed human note, and every notes publisher holds notesUpdateMu, so the
+// carried fields cannot move underneath this publish.
+func (s *Session) publishCommittedHumanNoteLocked() {
+	human := ""
+	if s.clientMutations != nil {
+		human = s.clientMutations.committedHumanNote()
+	}
+	next := s.committedNotesBaseLocked(&human)
+	s.notesCommitted.Store(&next)
+}
+
+// seedCommittedNotes installs the first published cut during session
+// construction: the restored (or empty) live store plus the mutation store's
+// committed human note. It runs before the session serves any reader, so it
+// needs no publisher lock.
+func (s *Session) seedCommittedNotes() {
+	human := ""
+	if s.clientMutations != nil {
+		human = s.clientMutations.committedHumanNote()
+	}
+	next := s.committedNotesBaseLocked(&human)
+	s.notesCommitted.Store(&next)
+}
+
+// notesLiveSnapshot reads the notes store as staged: the live agent note, URL
+// list, and ever-projected flag, plus the mutation store's committed human
+// note. The metadata write uses it, because that write is the durability point
+// for a mutation whose value is still staged; readers take the published
+// committed cut instead (notesProjectionSnapshot).
+func (s *Session) notesLiveSnapshot() (human, agent string, urls []schema.SessionURL, everProjected bool) {
+	s.mu.Lock()
+	agent, everProjected = s.agentNote, s.notesEverProjected
+	urls = append([]schema.SessionURL(nil), s.sessionURLs...)
+	s.mu.Unlock()
+	if s.clientMutations != nil {
+		human = s.clientMutations.committedHumanNote()
+	}
+	return human, agent, urls, everProjected
+}
+
+// notesSnapshotAll reads the committed human note, agent note, and URL list as
+// one cut.
 func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.SessionURL) {
 	human, agent, urls, _ = s.notesProjectionSnapshot()
 	return human, agent, urls
 }
 
-// notesProjectionSnapshot reads the agent note, URL list, and ever-projected
-// flag under s.mu, then the canonical human note under clientMutations'
-// stateMu. The human note is owned by a different lock, so this is not one
-// atomic cut of all four: notesContextBlock's callers hold notesUpdateMu across
-// the render-compare-record unit, and that is what keeps a notes mutation from
-// landing between the emptiness check and the cleared-marker decision.
+// notesProjectionSnapshot returns one committed notes cut: the human note,
+// agent note, URL list, and ever-projected flag all come from a single atomic
+// load of the published cut, so a concurrent mutation can no longer make the
+// result a mix of pre- and post-mutation values — and a mutation that is still
+// inside its metadata save is not visible at all until that save lands.
+//
+// The fallback covers a session that was never built through NewSession or
+// RestoreSessionFromMeta: tests construct &Session{} directly and seed the live
+// fields, and those sessions have no published cut. It reads the live store
+// exactly as every reader did before the cut existed.
 func (s *Session) notesProjectionSnapshot() (human, agent string, urls []schema.SessionURL, everProjected bool) {
+	if published := s.notesCommitted.Load(); published != nil {
+		return published.human, published.agent, append([]schema.SessionURL(nil), published.urls...), published.everProjected
+	}
 	s.mu.Lock()
 	agent, everProjected = s.agentNote, s.notesEverProjected
 	urls = append([]schema.SessionURL(nil), s.sessionURLs...)
@@ -682,6 +806,10 @@ func (s *Session) maybeAppendNotesContext() {
 	body := llm.User(block)
 	modelBody := llm.User(modelBlock)
 	s.mu.Unlock()
+	// The ever-projected transition is part of the committed cut: readers use
+	// it to decide whether an empty store renders the explicit cleared marker,
+	// so publish it before the turn that records the projection.
+	s.publishCommittedNotesLocked()
 	s.appendTurnWithTranscriptMessage(turn, modelBody, body)
 }
 

@@ -181,8 +181,19 @@ func normalizeNote(text string) string {
 	return collapsed
 }
 
-// setAgentNote normalizes and clamps the agent whiteboard.
+// setAgentNote normalizes and clamps the agent whiteboard and publishes the
+// resulting committed notes cut. It is the direct-commit entry point; the
+// serialized notes mutators write through stageAgentNote instead, because their
+// value is not committed until their metadata save lands.
 func (s *Session) setAgentNote(note string) (stored string, changed bool) {
+	stored, changed = s.stageAgentNote(note)
+	s.publishStandaloneNotesCommit()
+	return stored, changed
+}
+
+// stageAgentNote is setAgentNote's live-store write alone: no publication, for
+// a mutator that owns the commit point and already holds notesUpdateMu.
+func (s *Session) stageAgentNote(note string) (stored string, changed bool) {
 	normalized := normalizeNote(note)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -193,12 +204,26 @@ func (s *Session) setAgentNote(note string) (stored string, changed bool) {
 	return normalized, true
 }
 
-// addSessionURL validates url plus label, canonicalizes the URL, and appends
-// it to the session list. A re-add of an existing canonical URL updates the
-// label and returns the existing entry (id, addedBy, addedAt unchanged).
-// It performs no fetch. The caller persists (maybeAutoSave) and emits
-// EventUrlsUpdated after a successful add.
+// addSessionURL validates url plus label, canonicalizes the URL, appends it to
+// the session list, and publishes the resulting committed notes cut. It is the
+// direct-commit entry point (AddSessionURLForTest and the notes tests); the
+// serialized notes mutators stage through stageSessionURLAdd and publish only
+// after their metadata save lands.
 func (s *Session) addSessionURL(rawURL, label string) (schema.SessionURL, error) {
+	entry, err := s.stageSessionURLAdd(rawURL, label)
+	if err != nil {
+		return schema.SessionURL{}, err
+	}
+	s.publishStandaloneNotesCommit()
+	return entry, nil
+}
+
+// stageSessionURLAdd is addSessionURL's live-store write alone: no
+// publication, for a mutator that owns the commit point. A re-add of an
+// existing canonical URL updates the label and returns the existing entry (id,
+// addedBy, addedAt unchanged). It performs no fetch. The mutator persists
+// (maybeAutoSave) and emits EventUrlsUpdated after a successful add.
+func (s *Session) stageSessionURLAdd(rawURL, label string) (schema.SessionURL, error) {
 	cwd := s.notesCWD()
 	canonical, err := canonicalSessionURL(rawURL, cwd)
 	if err != nil {
@@ -234,8 +259,22 @@ func (s *Session) addSessionURL(rawURL, label string) (schema.SessionURL, error)
 	return entry, nil
 }
 
-// removeSessionURL deletes the entry with id, reporting whether one was found.
+// removeSessionURL deletes the entry with id, reporting whether one was found,
+// and publishes the resulting committed notes cut when one was removed. It is
+// the direct-commit entry point; the serialized notes mutators stage through
+// stageSessionURLRemove instead.
 func (s *Session) removeSessionURL(id string) bool {
+	removed := s.stageSessionURLRemove(id)
+	if removed {
+		s.publishStandaloneNotesCommit()
+	}
+	return removed
+}
+
+// stageSessionURLRemove is removeSessionURL's live-store write alone: no
+// publication, for a mutator that owns the commit point and already holds
+// notesUpdateMu.
+func (s *Session) stageSessionURLRemove(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.sessionURLs {
@@ -245,6 +284,18 @@ func (s *Session) removeSessionURL(id string) bool {
 		}
 	}
 	return false
+}
+
+// publishStandaloneNotesCommit publishes the live store after a direct-commit
+// write (setAgentNote, addSessionURL, removeSessionURL — the store helpers the
+// tests and AddSessionURLForTest call). The serialized notes mutators stage
+// their write and hold notesUpdateMu until their metadata save has published,
+// so taking the lock here serializes this publish with them and never publishes
+// a staged value.
+func (s *Session) publishStandaloneNotesCommit() {
+	s.notesUpdateMu.Lock()
+	defer s.notesUpdateMu.Unlock()
+	s.publishCommittedNotesLocked()
 }
 
 // notesCWD returns the session's working directory for bare-path resolution,
