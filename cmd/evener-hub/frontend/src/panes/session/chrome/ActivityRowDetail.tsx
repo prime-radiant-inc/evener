@@ -6,6 +6,7 @@
 // passes the row plus its ticking `now` straight through.
 import { Fragment, type JSX, useEffect, useState } from "react";
 import { type ActivityDelegateRow, type ActivityJobRow, activityDelegateState } from "../../../protocol/activityRows";
+import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
@@ -13,7 +14,6 @@ import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { Markdown } from "../../../widgets/markdown";
-import { formatClockTime, splitMandate } from "../transcript/messages/format";
 import { formatQuietAge, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 
