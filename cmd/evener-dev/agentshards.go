@@ -295,11 +295,18 @@ func runShards(cfg shardsConfig) int {
 	var costs []testCost
 	if !cfg.noSurvey {
 		surveyLog := filepath.Join(logdir, "survey.log")
+		cacheHit := false
 		if !cfg.resurvey && fileHasContent(cachedSurvey) {
-			if data, err := os.ReadFile(cachedSurvey); err == nil {
+			if data, err := os.ReadFile(cachedSurvey); err == nil && cfg.surveyCoversTestSet(data, listOut) {
 				_ = os.WriteFile(surveyLog, data, 0o644)
+				cacheHit = true
 			}
-		} else {
+			// An unreadable cache, or one measuring only part of the current
+			// test set, is no cache at all: survey. The shared cache is
+			// written by concurrent gate runs, so a nonempty file can be a
+			// partial write caught mid-flight.
+		}
+		if !cacheHit {
 			_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: surveying test costs (one-time for this test set)")
 			args := surveyArgs(cfg.surveyParallel, cfg.skip, slices.Contains(cfg.flags, "-short"))
 			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, args...); err != nil {
@@ -313,7 +320,7 @@ func runShards(cfg shardsConfig) int {
 			}
 			if cachedSurvey != "" {
 				if data, err := os.ReadFile(surveyLog); err == nil {
-					_ = os.WriteFile(cachedSurvey, data, 0o644)
+					_ = writeFileAtomic(cachedSurvey, data)
 				}
 			}
 		}
@@ -463,6 +470,68 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string) string {
 		return ""
 	}
 	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut)+".log")
+}
+
+// surveyCoversTestSet reports whether a cached survey accounts for every test
+// this run must shard. The cache is keyed by test-set identity and written by
+// concurrent gate runs; a nonempty file can be a partial write caught
+// mid-flight, in which case accepting it would pack shards over the subset it
+// measured and still report green while the rest run in no shard. Tests the
+// survey deliberately skips (the -test.skip regex) are exempt: they draw no
+// cost line by design.
+func (cfg shardsConfig) surveyCoversTestSet(data []byte, listOut string) bool {
+	have := map[string]bool{}
+	for _, tc := range parseSurvey(string(data)) {
+		have[tc.name] = true
+	}
+	var skip *regexp.Regexp
+	if cfg.skip != "" {
+		skip, _ = regexp.Compile(cfg.skip)
+	}
+	for _, tc := range equalWeights(listOut) {
+		if skip != nil && skip.MatchString(tc.name) {
+			continue
+		}
+		if !have[tc.name] {
+			return false
+		}
+	}
+	return true
+}
+
+// writeFileAtomic replaces path with data by writing a uniquely named temp
+// file in the same directory and renaming it into place. A reader sharing the
+// path — the survey cache is shared across concurrent gate runs — therefore
+// only ever observes a complete prior survey or a complete new one, never a
+// truncated in-place write.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	// CreateTemp's files are 0o600; the cache was written 0o644.
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	tmpName = ""
+	return nil
 }
 
 // runToLog runs a child in its own process group with both output streams in
