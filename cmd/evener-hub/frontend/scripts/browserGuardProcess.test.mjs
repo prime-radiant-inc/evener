@@ -157,9 +157,15 @@ test("starts concurrent guards on Vite-owned ports and reaps their listeners", a
 
 test("aborts Vite startup and removes its owned profile", async () => {
   const controller = new AbortController();
-  const profilePrefix = `browser-guard-abort-${randomUUID()}-`;
+  // The profile lives under the short guard root (issue #1141), not the ambient
+  // TMPDIR, and a long prefix is trimmed to fit the socket budget -- so the
+  // directory is located by the stable leading marker rather than the full
+  // prefix.
+  const profileMarker = "browser-guard-abort-";
+  const profilePrefix = `${profileMarker}${randomUUID()}-`;
   const children = [];
   let profileDir;
+  const profileRoot = browserGuardProcess.chromeProfileRoot();
   await assert.rejects(
     startBrowserGuard({
       frontend: process.cwd(),
@@ -167,9 +173,9 @@ test("aborts Vite startup and removes its owned profile", async () => {
       chromeBinary: "/fake/chrome",
       signal: controller.signal,
       spawnProcess(command, args, options) {
-        const entry = readdirSync(tmpdir()).find((name) => name.startsWith(profilePrefix));
+        const entry = readdirSync(profileRoot).find((name) => name.startsWith(profileMarker));
         assert.ok(entry, "startup must own a profile before launching its child");
-        profileDir = path.join(tmpdir(), entry);
+        profileDir = path.join(profileRoot, entry);
         const child = new FakeChild(command, args, options);
         child.kill = (signal) => {
           child.signals.push(signal);
@@ -1180,7 +1186,12 @@ for (const scenario of [
       return true;
     };
     const controller = new AbortController();
-    const profilePrefix = `browser-guard-failure-${randomUUID()}-`;
+    // Located by the stable leading marker under the short guard root, since a
+    // long prefix is trimmed and the profile no longer lives under TMPDIR
+    // (issue #1141).
+    const profileMarker = "browser-guard-failure-";
+    const profilePrefix = `${profileMarker}${randomUUID()}-`;
+    const profileRoot = browserGuardProcess.chromeProfileRoot();
     const stderr = "fixture-vite-startup-stderr";
     let profileDir;
     let spawnCount = 0;
@@ -1195,9 +1206,9 @@ for (const scenario of [
       signal: controller.signal,
       spawnProcess() {
         spawnCount++;
-        const entry = readdirSync(tmpdir()).find((name) => name.startsWith(profilePrefix));
+        const entry = readdirSync(profileRoot).find((name) => name.startsWith(profileMarker));
         assert.ok(entry, "startup must create its owned profile");
-        profileDir = path.join(tmpdir(), entry);
+        profileDir = path.join(profileRoot, entry);
         return vite;
       },
     });
@@ -1586,4 +1597,93 @@ test("a Chrome launch failure does not abort the wait for a Vite that is still c
   children[0].exit();
   await cleanup;
   assert.equal(existsSync(guard.profileDir), false);
+});
+
+// Issue #1141: Chrome derives <user-data-dir>/com.google.Chrome.XXXXXX/
+// SingletonSocket and binds it with AF_UNIX. sun_path holds 108 bytes including
+// the NUL, so the usable path is 107 bytes; a longer one makes Chrome abort with
+// "Socket path too long" before DevTools is ready. Minting the profile under a
+// nested agent-sandbox TMPDIR crossed that limit for every guard.
+const LONG_AMBIENT_TMPDIR = `/tmp/evener-sandbox-3905550766/${"nested-scratch/".repeat(8)}`;
+
+test("selects a Chrome profile root that is independent of a long ambient TMPDIR (#1141)", () => {
+  assert.ok(Buffer.byteLength(LONG_AMBIENT_TMPDIR) > 107, "fixture TMPDIR must itself be long");
+
+  const root = browserGuardProcess.chromeProfileRoot({
+    ambient: LONG_AMBIENT_TMPDIR,
+    // A sandbox that exposes its long scratch and a short /tmp.
+    exists: (candidate) => candidate === "/tmp",
+  });
+  assert.equal(root, "/tmp");
+  assert.ok(!root.startsWith(LONG_AMBIENT_TMPDIR), "the profile root must not derive from the ambient TMPDIR");
+
+  const profilePrefix = "transcriptscrollguard-chrome-";
+  const minted = browserGuardProcess.createChromeProfileDir(profilePrefix, {
+    ambient: LONG_AMBIENT_TMPDIR,
+    exists: (candidate) => candidate === "/tmp",
+  });
+  try {
+    assert.ok(minted.startsWith(`${root}${path.sep}`), `profile ${minted} must sit under the short root`);
+    assert.ok(!minted.startsWith(LONG_AMBIENT_TMPDIR), "the profile must not sit under the ambient TMPDIR");
+    assert.ok(minted.includes(profilePrefix), "the caller's prefix must remain the directory's leading component");
+    const socket = browserGuardProcess.chromeSingletonSocketPath(minted);
+    assert.ok(
+      Buffer.byteLength(socket) <= browserGuardProcess.CHROME_SOCKET_PATH_LIMIT,
+      `socket path ${socket} (${Buffer.byteLength(socket)} bytes) must fit ${browserGuardProcess.CHROME_SOCKET_PATH_LIMIT} bytes`,
+    );
+  } finally {
+    rmSync(minted, { recursive: true, force: true });
+  }
+
+  // The pre-fix derivation -- the profile directly under the ambient TMPDIR --
+  // is what overflows, so this pins that the test would catch a regression.
+  const oversized = browserGuardProcess.chromeSingletonSocketPath(
+    path.join(LONG_AMBIENT_TMPDIR, `${profilePrefix}XXXXXX`),
+  );
+  assert.ok(
+    Buffer.byteLength(oversized) > browserGuardProcess.CHROME_SOCKET_PATH_LIMIT,
+    "fixture must reproduce the overflow the fix removes",
+  );
+});
+
+test("points Chrome's temp directory at the short profile so its singleton socket fits (#1141)", () => {
+  const profileDir = "/tmp/transcriptscrollguard-chrome-AbC123";
+  const env = browserGuardProcess.chromeProfileEnvironment(profileDir, {
+    TMPDIR: LONG_AMBIENT_TMPDIR,
+    PATH: "/usr/bin",
+  });
+  // Chrome mints its socket directory under TMPDIR, so inheriting the long
+  // ambient value is exactly the overflow; it must be replaced.
+  assert.equal(env.TMPDIR, profileDir);
+  assert.equal(env.PATH, "/usr/bin");
+  assert.ok(
+    Buffer.byteLength(browserGuardProcess.chromeSingletonSocketPath(env.TMPDIR)) <=
+      browserGuardProcess.CHROME_SOCKET_PATH_LIMIT,
+  );
+});
+
+test("a Chrome launch under a long ambient TMPDIR gets a --user-data-dir whose socket fits (#1141)", async (context) => {
+  const originalTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = LONG_AMBIENT_TMPDIR;
+  context.after(() => {
+    if (originalTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmpdir;
+  });
+
+  const profilePrefix = "transcriptscrollguard-chrome-";
+  const { guard, children } = await startFakeGuard({ profilePrefix });
+  reapOnTeardown(context, guard, children);
+
+  const userDataDirArg = children[1].args.find((arg) => arg.startsWith("--user-data-dir="));
+  assert.ok(userDataDirArg, "Chrome must be launched with a private profile");
+  const profileDir = userDataDirArg.slice("--user-data-dir=".length);
+  assert.ok(!profileDir.startsWith(LONG_AMBIENT_TMPDIR), `profile ${profileDir} must not sit under the ambient TMPDIR`);
+  // Chrome's singleton socket directory is created under its TMPDIR, not under
+  // --user-data-dir, so the child's environment must carry the short root too.
+  assert.equal(children[1].options.env?.TMPDIR, profileDir);
+  const socket = browserGuardProcess.chromeSingletonSocketPath(profileDir);
+  assert.ok(
+    Buffer.byteLength(socket) <= browserGuardProcess.CHROME_SOCKET_PATH_LIMIT,
+    `Chrome's derived socket path ${socket} (${Buffer.byteLength(socket)} bytes) must fit ${browserGuardProcess.CHROME_SOCKET_PATH_LIMIT} bytes`,
+  );
 });

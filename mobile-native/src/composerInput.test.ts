@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { translateAttachmentMarkers } from "../../cmd/evener-hub/frontend/src/stores/attachmentMarkers";
+import { translateAttachmentMarkers } from "../../cmd/evener-hub/frontend/src/protocol/attachmentMarkers";
 import {
   buildComposerInput,
   buildInput,

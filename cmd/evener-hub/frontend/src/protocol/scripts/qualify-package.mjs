@@ -39,9 +39,11 @@ async function qualify() {
     "transport",
     "types.gen",
     "askAnswers",
+    "attachmentMarkers",
     "activityData",
     "activityList",
     "activityMerge",
+    "activityRows",
     "itemFailure",
     "jobOutput",
     "model",
@@ -50,6 +52,8 @@ async function qualify() {
     "sessionErrors",
     "stableDelegate",
     "docContent",
+    "submitRouting",
+    "displayFormat",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -75,6 +79,7 @@ async function qualify() {
     "sessionActionHeadline",
     "rpcURLFromLocation",
     "composeAskAnswers",
+    "translateAttachmentMarkers",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
     "STEERING_KINDS",
@@ -91,6 +96,10 @@ async function qualify() {
     "ActivityList",
     "fenceRootSession",
     "graftContinuationTree",
+    "foldRowID",
+    "jobIsFailed",
+    "activityDelegateState",
+    "buildActivityRows",
     "hasItemFailure",
     "hasErrorText",
     "hasFailureStatus",
@@ -116,6 +125,18 @@ async function qualify() {
     "DocFileError",
     "docFileRawURL",
     "docImageURL",
+    "decideSubmitRoute",
+    "decideSteerRoute",
+    "isTurnActive",
+    "formatTokenCount",
+    "formatDurationMs",
+    "formatCharCount",
+    "formatClockTime",
+    "formatClockTimeSeconds",
+    "formatElapsed",
+    "firstLine",
+    "splitMandate",
+    "plainQuoteLine",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -124,8 +145,11 @@ async function qualify() {
     "AppwireClientLike",
     "WebSocketLike",
     "AskAnswerItem",
+    "MarkerAttachment",
+    "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
+    "ActivityRow",
     "ItemFailureSignals",
     "JobLogTail",
     "ThreadModel",
@@ -133,6 +157,8 @@ async function qualify() {
     "SendQueueAvailability",
     "StableDelegateState",
     "DocFileContent",
+    "SubmitRoute",
+    "SteerRoute",
   ];
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
@@ -140,6 +166,7 @@ async function qualify() {
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
+assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.equal(new client.WireError("nope", -32000).code, -32000);
 assert.equal(client.errorText(new Error("boom")), "boom");
 assert.equal(client.errorKind(new Error("boom")), "unknown");
@@ -163,6 +190,10 @@ assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
 assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
 assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
+assert.equal(client.foldRowID("session:thread"), "session:thread:inactive-fold");
+assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
+assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
+assert.equal(client.activityDelegateState({ kind: "delegate", type: "task", child: session }).failed, false);
 assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
 assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
 assert.equal(client.hasErrorText({ error: "  " }), false);
@@ -177,6 +208,18 @@ assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
+assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
+assert.equal(client.isTurnActive("active", "turn_1"), true);
+assert.equal(client.formatTokenCount(41200), "41k");
+assert.equal(client.formatDurationMs(1500), "1.5s");
+assert.equal(client.formatCharCount(2500), "2.5k chars");
+assert.equal(client.formatClockTime(undefined), undefined);
+assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
+assert.equal(client.formatElapsed(65000), "1m05s");
+assert.equal(client.firstLine("\\n  hello  \\n", 20), "hello");
+assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest: "rest" });
+assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 `;
