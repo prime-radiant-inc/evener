@@ -4,9 +4,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   collectedUnder,
+  describeAppImports,
   describeDifference,
   describeProofRun,
   pickProofFile,
+  sourceFilesOnDisk,
   testFilesOnDisk,
 } from "./package-test-files.mjs";
 
@@ -72,21 +74,59 @@ test("pickProofFile returns nothing when no test imports vitest", () => {
 test("describeProofRun is silent on a passing run of the named file", () => {
   const file = path.join(dir, "a.test.ts");
   const report = { numTotalTests: 3, numFailedTests: 0, testResults: [{ name: file }] };
-  assert.equal(describeProofRun(report, file), "");
+  assert.equal(describeProofRun(report, file, dir), "");
 });
 
 test("describeProofRun rejects a report that never ran the file", () => {
   const file = path.join(dir, "a.test.ts");
   const report = { numTotalTests: 3, numFailedTests: 0, testResults: [{ name: path.join(dir, "other.test.ts") }] };
-  assert.match(describeProofRun(report, file), /was not executed/);
+  assert.match(describeProofRun(report, file, dir), /was not executed/);
 });
 
 test("describeProofRun rejects a collected file that executed no tests", () => {
   const file = path.join(dir, "a.test.ts");
-  assert.match(describeProofRun({ numTotalTests: 0, numFailedTests: 0, testResults: [{ name: file }] }, file), /ran no tests/);
+  assert.match(describeProofRun({ numTotalTests: 0, numFailedTests: 0, testResults: [{ name: file }] }, file, dir), /ran no tests/);
 });
 
 test("describeProofRun reports failing tests", () => {
   const file = path.join(dir, "a.test.ts");
-  assert.match(describeProofRun({ numTotalTests: 3, numFailedTests: 2, testResults: [{ name: file }] }, file), /2 failing test/);
+  assert.match(describeProofRun({ numTotalTests: 3, numFailedTests: 2, testResults: [{ name: file }] }, file, dir), /2 failing test/);
+});
+
+test("describeProofRun matches a file the reporter named through a different prefix", () => {
+  const file = path.join(dir, "a.test.ts");
+  const viaSymlink = path.join(dir, "sub", "..", "a.test.ts");
+  assert.equal(describeProofRun({ numTotalTests: 1, numFailedTests: 0, testResults: [{ name: viaSymlink }] }, file, dir), "");
+});
+
+test("describeAppImports is silent when the package keeps to itself", () => {
+  const files = [path.join(dir, "reducer.ts")];
+  const sources = { [files[0]]: 'import { x } from "./model";\n' };
+  assert.equal(describeAppImports(files, (file) => sources[file], dir), "");
+});
+
+test("describeAppImports names every line that reaches into the app", () => {
+  const files = [path.join(dir, "a.test.ts"), path.join(dir, "b.ts")];
+  const sources = {
+    [files[0]]: 'import Session from "../../cmd/evener-hub/frontend/src/panes/session/Session";\n',
+    [files[1]]: 'import type { T } from "../../cmd/evener-hub/frontend/src/shell/palette/commands";\n',
+  };
+  const message = describeAppImports(files, (file) => sources[file], dir);
+  assert.match(message, /must not import from the app/);
+  assert.match(message, /a\.test\.ts: import Session/);
+  assert.match(message, /b\.ts: import type/);
+});
+
+test("describeAppImports does not fire on a comment that merely names the app path", () => {
+  const files = [path.join(dir, "a.ts")];
+  const sources = { [files[0]]: "// mirrors cmd/evener-hub/frontend/src/stores/threads.ts\n" };
+  assert.equal(describeAppImports(files, (file) => sources[file], dir), "");
+});
+
+test("sourceFilesOnDisk sees the package's non-test sources, not only its tests", () => {
+  const real = fileURLToPath(new URL("../../../../appwire-client/typescript", import.meta.url));
+  const found = sourceFilesOnDisk(real);
+  assert(found.some((file) => file.endsWith("reducer.ts")));
+  assert(found.some((file) => file.endsWith("reducer.test.ts")));
+  assert(!found.some((file) => file.includes(`${path.sep}node_modules${path.sep}`)));
 });

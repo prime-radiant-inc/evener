@@ -1,6 +1,6 @@
 // Wave-4 token-flood benchmark: correctness half (the timing/growth-curve
-// profile lives in tokenFlood.bench.ts, `vitest bench` only - see that
-// file's own header comment for why the split). The wave plan's binding
+// profile lives in appwire-client/typescript/tokenFlood.bench.ts, `vitest
+// bench` only - see that file's own header comment for why the split). The wave plan's binding
 // gate (docs/superpowers/plans/2026-07-20-webui-rewrite-wave4-transcript.md):
 // "recorded 10k-delta stream replayed through the store; frame budget
 // documented, no dropped-chunk correctness failures." This file asserts the
@@ -10,20 +10,16 @@
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { flushPendingTurnsProjectionForTests } from "../../cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore";
-import Session from "../../cmd/evener-hub/frontend/src/panes/session/Session";
-import {
-  type ItemRenderProps,
-  ignoringTurn,
-  registerItemRenderer,
-} from "../../cmd/evener-hub/frontend/src/panes/session/transcript/types";
-import { ClientProvider } from "../../cmd/evener-hub/frontend/src/shell/clientContext";
-import { connectionStore } from "../../cmd/evener-hub/frontend/src/stores/connection";
-import { resetThreadsStoreForTests } from "../../cmd/evener-hub/frontend/src/stores/threads";
-import { applyNotification } from "./reducer";
-import { FakeClient } from "./testing/fakeClient";
-import { buildFloodChunks, buildFloodStream, hydrateFloodModel } from "./testing/tokenFlood";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "./types.gen";
+import { applyNotification } from "../../protocol/reducer";
+import { FakeClient } from "../../protocol/testing/fakeClient";
+import { buildFloodChunks, buildFloodStream, hydrateFloodModel } from "../../protocol/testing/tokenFlood";
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
+import { ClientProvider } from "../../shell/clientContext";
+import { connectionStore } from "../../stores/connection";
+import { resetThreadsStoreForTests } from "../../stores/threads";
+import { flushPendingTurnsProjectionForTests } from "./composer/queue/pendingTurnsStore";
+import Session from "./Session";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./transcript/types";
 
 const FLOOD_SIZE = 10_000;
 
