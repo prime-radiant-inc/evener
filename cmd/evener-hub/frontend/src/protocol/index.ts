@@ -6,6 +6,7 @@ export type {
   ActivityDisclosureState,
   ActivityEntry,
   ActivityJob,
+  ActivityNodeLike,
   ActivitySessionNode,
   ActivityShellEntry,
   ActivityTree,
