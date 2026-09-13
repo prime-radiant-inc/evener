@@ -1044,6 +1044,44 @@ test("clicking a queued row's Edit button restores its full text into an empty c
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
 });
 
+test("clicking Edit on a queued entry whose daemon skillNames slot is null restores the text and still cancels it", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      // A plain queued entry has no skill selection, and the daemon emits a JSON
+      // null slot for it (`slices.Clone(nil)` with no custom marshaler) rather
+      // than an absent field. The restore path must tolerate that shape: the
+      // other strip-edit tests seed no `skillNames` at all, or a non-empty
+      // selection, so neither exercises it.
+      queue: {
+        revision: 0,
+        depth: 1,
+        ids: ["q1"],
+        texts: ["plain queued text"],
+        preview: ["plain queued text"],
+        skillNames: [null] as unknown as string[][],
+      },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: "plain queued text",
+  }));
+
+  await user.click(screen.getByRole("button", { name: /edit message/i }));
+
+  expect((textarea() as HTMLTextAreaElement).value).toBe("plain queued text");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+});
+
 test("clicking Edit appends the restored text after a blank line when the composer already has typed text", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {

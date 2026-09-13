@@ -1045,7 +1045,7 @@ export function Composer({ ref }: ComposerProps) {
   ): void {
     const merged = mergeDraftText(textRef.current, restoredText);
     textEditor.write(merged, merged.length);
-    if (restoredSkillNames !== undefined && restoredSkillNames.length > 0) {
+    if (restoredSkillNames && restoredSkillNames.length > 0) {
       let selections = skillNamesRef.current;
       for (const name of restoredSkillNames) {
         selections = addSkillSelection(selections, name);
