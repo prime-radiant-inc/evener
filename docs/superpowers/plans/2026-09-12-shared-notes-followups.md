@@ -90,3 +90,35 @@ Fix with item 8, which needs an atomically published notes snapshot that readers
 `Meta()` cannot simply take `notesUpdateMu`: the mutators hold it across the meta.json persistence I/O
 that the sampling path exists to stay off. Raised in roborev round 18 and deferred by Jesse's ruling
 alongside item 8.
+
+## 10. Doubly-encoded framing references reach the model copy (Medium, security)
+
+`agent/session_notes_rpc.go` (`notesAngleBracketReference`, used by `neutralizeNotesFraming`) — the
+pattern `&(?:amp;)?(?:#|lt|gt)` reaches exactly one `amp;` layer, so `&amp;amp;lt;` matches nowhere and
+passes through into the model-facing copy; repeated entity decoding re-arms it into `<`, which is what
+the framing escape exists to prevent. Item 11 constrains the same pattern from the other side, so the
+two need one design: parse a complete character reference with a terminator, follow nested `amp;` layers
+to whatever depth appears, and decide what the model copy should hold when the resolved value is an
+angle bracket. Note that escaping the leading `&` only buys one more decode layer rather than closing
+the class; closing it means canonicalizing the copy, which changes what the model reads.
+
+## 11. Framing neutralizer rewrites innocent references (Low)
+
+`agent/session_notes_rpc.go` (`neutralizeNotesFraming`) — the reference match requires no terminator or
+validity check, so text such as a URL query containing `&lt` is rewritten in the model copy while
+`notes_read` and the UI keep the original, and the model reasons over text the user never sees. Require
+the full reference shape before escaping the `&`. Design with item 10, not as a separate patch.
+
+## 12. `conversationSignals` counts injected notes context as conversation (Low)
+
+`agent/session_init.go:2050` — the loop excludes `TurnHookCompleted` and `TurnEnvironment` but not
+`schema.TurnNotesContext`, so a session whose first history turn is `NOTES_CONTEXT` is classified as
+already carrying a conversation. Exclude it and cover the case behaviourally.
+
+## 13. Past-session roster decodes a whole mutation snapshot per entry (Low, performance)
+
+`cmd/evener-hub/app_threadread.go` (`pastEntryThreadForList`, via `agent.ReadCanonicalHumanNote`) — the
+canonical human-note read loads and JSON-decodes the session's entire client-mutation snapshot once per
+past entry inside the roster-building loop, adding O(past sessions × journal size) synchronous I/O and
+decoding to every past-session listing. Expose a lightweight reader that decodes only the human note, or
+memoize the canonical note alongside the existing per-entry caches.
