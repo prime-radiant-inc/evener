@@ -125,6 +125,16 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 		// turn's next record. The fragment is one record of a turn that is
 		// over; the assistant belongs to the turn that is still running, so it
 		// must not join the fragment.
+		// The reviewer's combination: a fragment for an EARLIER turn, then
+		// metadata owned by the turn that is still running, then its next
+		// record. The timing record's group is the running turn's own, so the
+		// assistant belongs in it — and both projections have to say so.
+		{"metadata for the running turn resumes it", []schema.Turn{
+			record(schema.TurnAssistant, "assistant", ""),
+			record(schema.TurnContextCompaction, "layer", "turn_other"),
+			record(schema.TurnRoundTimings, "timing", "turn_active"),
+			record(schema.TurnAssistant, "next", ""),
+		}, []string{"turn_active", "turn_other", "turn_active"}},
 		// A round's timing record is metadata about a round that is over,
 		// exactly like the compaction record below it: arriving late it names
 		// its own turn and takes nothing with it.

@@ -164,10 +164,17 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 			break
 		}
 		// A fragment opens a group for its own owner and leaves the
-		// continuation target where it was; a carrier takes the flow.
+		// continuation target where it was; a carrier takes the flow. The
+		// exception is a fragment owned by the turn that IS the target —
+		// metadata for the running turn, landing after another turn's
+		// fragment interrupted it — which is that turn resuming, so the
+		// group it opens becomes where the turn's next record goes. The
+		// index scan reaches the same answer by id: the target and the open
+		// group are both this owner, so nothing there has to move.
 		a.turns = append(a.turns, groupedTurn{turnID: owner})
 		a.open = true
-		if !startsFragmentGroup(kind, true, owner) {
+		resumesTarget := a.continuation >= 0 && a.turns[a.continuation].turnID == owner
+		if resumesTarget || !startsFragmentGroup(kind, true, owner) {
 			a.continuation = len(a.turns) - 1
 		}
 	case continuesLogicalTurn(kind) && a.open && len(a.turns) > 0:
