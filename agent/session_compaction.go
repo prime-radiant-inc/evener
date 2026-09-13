@@ -647,20 +647,21 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// recorded after the fold). Write errors are carried into flush, where
 	// emitting is safe again.
 	var compactionTurnWriteErrs []error
-	// compactionTurnWithheld marks the markers commitTranscriptsLocked did not
-	// write at all because the replay tail failed. A nil write error would
-	// otherwise read as "written" in flush, which publishes the marker's event
-	// and its post-write effects — a compaction announced with no durable
-	// anchor behind it.
-	var compactionTurnWithheld []bool
-	// markerLanded answers, once, whether this fold has an anchor in the
-	// transcript: false when the anchor was withheld and false when its own
-	// write failed, which are the same absence reached two ways. Every effect
-	// that DESCRIBES the marker — its event, the session name, the fold's
-	// steering, the transcript reminder — is gated on this one answer rather
-	// than re-deriving it. A fold that writes no marker at all leaves it true:
-	// nothing is missing, so nothing it publishes is unbacked.
-	markerLanded := true
+	// compactionTurnLanded reports, per pending compaction turn, whether that
+	// record is in the transcript: false for one withheld with the anchor, and
+	// false for one whose own write failed — the same absence reached two
+	// ways. A fold writes as many as two markers, a checkpoint and a summary,
+	// and they land independently, so each one's effects follow its OWN
+	// result. A nil write error alone would read as "written" for a record
+	// nobody wrote.
+	var compactionTurnLanded []bool
+	// foldAnchored reports whether a reader coming back finds an anchor for
+	// this fold: the last marker that landed is the one ResumeHistory stops
+	// at, so any marker landing is enough, and a fold that writes no marker
+	// has nothing missing. The fold's own steering and its transcript reminder
+	// describe the compaction that anchor represents, so they follow this
+	// rather than any single marker.
+	foldAnchored := true
 	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
 	// anchor is false when a replay copy could not be written: the fold's own
@@ -677,21 +678,25 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			compactionEventWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
-		compactionTurnWithheld = make([]bool, len(pendingCompactionTurns))
+		compactionTurnLanded = make([]bool, len(pendingCompactionTurns))
+		sawMarker, landedMarker := false, false
 		for i, turn := range pendingCompactionTurns {
 			// Only the anchor is withheld, and the anchor is exactly the
 			// kinds writesCompactionMarker counts — the same predicate, so
 			// the two cannot drift into disagreeing about what a marker is.
-			if !anchor && isSessionNameCompactionTurn(turn) {
-				compactionTurnWithheld[i] = true
-				markerLanded = false
+			marker := isSessionNameCompactionTurn(turn)
+			sawMarker = sawMarker || marker
+			if !anchor && marker {
 				continue
 			}
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
-			if compactionTurnWriteErrs[i] != nil && isSessionNameCompactionTurn(turn) {
-				markerLanded = false
+			if compactionTurnWriteErrs[i] != nil {
+				continue
 			}
+			compactionTurnLanded[i] = true
+			landedMarker = landedMarker || marker
 		}
+		foldAnchored = !sawMarker || landedMarker
 		// The fold's own steering goes with the anchor. A resume that finds no
 		// anchor drops the fold's copies and keeps everything else, so
 		// steering describing a compaction that resume cannot see is stale
@@ -699,7 +704,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		// again. An un-anchored fold leaves nothing of itself durable except
 		// the tagged copies every reader already drops, whether the anchor was
 		// withheld or its write failed.
-		if markerLanded {
+		if foldAnchored {
 			steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 		}
 	}
@@ -747,19 +752,20 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			s.emit(events.EventContextCompaction, event)
 		}
 		for i, turn := range pendingCompactionTurns {
-			// A marker the transcript never received announces nothing and
+			// A record the transcript never received announces nothing and
 			// triggers nothing: its event, the session namer and the task-list
-			// steering all describe an anchor that is not there.
-			if !markerLanded {
+			// steering all describe something that is not there. Its sibling,
+			// if that one landed, is unaffected.
+			if !compactionTurnLanded[i] {
 				s.reportCompactionTranscriptAppend(compactionTurnWriteErrs[i])
 				continue
 			}
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
 		}
-		if markerLanded {
+		if foldAnchored {
 			s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
 		}
-		if artifactProduced && !superseded && markerLanded {
+		if artifactProduced && !superseded && foldAnchored {
 			// The reminder points a reader at the transcript for the detail
 			// this fold compacted away; with no anchor there is nothing there
 			// to point at.

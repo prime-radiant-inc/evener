@@ -2329,3 +2329,154 @@ func TestFoldPublication_FailedMarkerWritePublishesNoCompactionEffects(t *testin
 		}
 	}
 }
+
+// failCheckpointWriteFS fails only the CHECKPOINT line, so the fold's other
+// marker — its summary — lands. Nothing lands partway: the write transfers no
+// bytes, the writer stays usable, and the fold carries on.
+type failCheckpointWriteFS struct {
+	afero.Fs
+	failed atomic.Bool
+}
+
+func (fs *failCheckpointWriteFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &failCheckpointWriteFile{File: file, fs: fs}, nil
+}
+
+func (fs *failCheckpointWriteFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &failCheckpointWriteFile{File: file, fs: fs}, nil
+}
+
+type failCheckpointWriteFile struct {
+	afero.File
+	fs *failCheckpointWriteFS
+}
+
+func (file *failCheckpointWriteFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"CHECKPOINT"`)) {
+		file.fs.failed.Store(true)
+		return 0, errors.New("injected checkpoint write failure")
+	}
+	return file.File.Write(p)
+}
+
+// A fold writes two markers, and they land independently. One answer for the
+// whole fold suppresses the effects of a marker that IS in the transcript —
+// the compaction a returning reader will anchor on — leaving the session
+// unnamed and its guidance unsent for a compaction that really happened.
+func TestFoldPublication_MarkersLandIndependently(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "markers-land-apart-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failCheckpointWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12)
+	s.setPinnedNote("REMEMBER: the API signature")
+
+	var nameMu sync.Mutex
+	var namedTexts []string
+	s.nameSessionFromTextFunc = func(_ context.Context, _, text string) error {
+		nameMu.Lock()
+		namedTexts = append(namedTexts, text)
+		nameMu.Unlock()
+		return nil
+	}
+	var eventMu sync.Mutex
+	var compactionTurns []events.CompactionTurnData
+	var steering []events.SteeringInjectedData
+	const flushDrained = "fold flush drained"
+	drained := make(chan struct{})
+	var drainOnce sync.Once
+	go func() {
+		for event := range s.Events() {
+			switch data := event.Data.(type) {
+			case events.WarningData:
+				if data.Message == flushDrained {
+					drainOnce.Do(func() { close(drained) })
+				}
+			case events.CompactionTurnData:
+				eventMu.Lock()
+				compactionTurns = append(compactionTurns, data)
+				eventMu.Unlock()
+			case events.SteeringInjectedData:
+				eventMu.Lock()
+				steering = append(steering, data)
+				eventMu.Unlock()
+			}
+		}
+	}()
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no checkpoint write was attempted, so nothing failed")
+	}
+	if writer.Poisoned() {
+		t.Fatal("test setup: the injected failure poisoned the writer")
+	}
+	s.emit(events.EventWarning, events.WarningData{Message: flushDrained})
+	// TRIPWIRE: the sentinel is behind the flush's own events on one in-process
+	// channel.
+	awaitWithin(t, 10*time.Second, "the fold flush's events reaching the reader", func() {
+		<-drained
+	})
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	summaries, checkpoints, steeringEntries := 0, 0, 0
+	for _, entry := range data.Entries {
+		switch entry.Turn.Kind {
+		case schema.TurnSummary:
+			summaries++
+		case schema.TurnCheckpoint:
+			checkpoints++
+		case schema.TurnSteering:
+			steeringEntries++
+		}
+	}
+	if summaries != 1 || checkpoints != 0 {
+		t.Fatalf("test setup: transcript holds %d summaries and %d checkpoints, want the summary alone", summaries, checkpoints)
+	}
+
+	eventMu.Lock()
+	turns := append([]events.CompactionTurnData(nil), compactionTurns...)
+	injected := append([]events.SteeringInjectedData(nil), steering...)
+	eventMu.Unlock()
+	kinds := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		kinds = append(kinds, turn.Kind)
+	}
+	if len(kinds) != 1 || kinds[0] != string(schema.TurnSummary) {
+		t.Fatalf("compaction-turn events = %v, want the summary's alone: the checkpoint is not in the transcript and the summary is", kinds)
+	}
+	nameMu.Lock()
+	named := append([]string(nil), namedTexts...)
+	nameMu.Unlock()
+	if len(named) != 1 {
+		t.Fatalf("the session was named from %d text(s): %#v; the marker that landed names it, and only that one", len(named), named)
+	}
+	if len(injected) != 1 {
+		t.Fatalf("steering events = %d, want the fold's own: it has a durable anchor, whichever marker provided it", len(injected))
+	}
+	if steeringEntries != 1 {
+		t.Fatalf("steering entries in the transcript = %d, want 1 — the reload has to agree with the live stream", steeringEntries)
+	}
+}
