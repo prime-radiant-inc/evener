@@ -514,7 +514,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		// credential save, and left under a name a later edit can point at a
 		// scheme that does read it.
 		if auth, ok := c.instanceAuthScheme(name); ok && auth == registry.AuthNone {
-			return appwire.InvalidParams(fmt.Sprintf("%s authenticates without a credential: it reads no API key, so a stored one would be a credential nothing sends", name))
+			return appwire.InvalidParams(name + " authenticates without a credential: it reads no API key, so a stored one would be a credential nothing sends")
 		}
 		// A name that is neither keeps the key where nothing reads it: the pane
 		// only offers this write for a row its listing had, so a name that no
