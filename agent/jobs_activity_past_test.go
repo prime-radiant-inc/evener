@@ -513,23 +513,38 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 	if depth > activityMaxNewDepth {
 		t.Fatalf("loaded chain %d levels deep, want at most activityMaxNewDepth=%d", depth, activityMaxNewDepth)
 	}
-	// The delegate at the depth boundary must report an honest
-	// Truncated+Continuation branch — the same shape projection's own
-	// work-unit exhaustion already produces — not a generic "child
-	// session unavailable" branch error, which is what a load phase that
-	// leaves snapshot.Children unpopulated for a depth-skipped child
-	// causes projection to fall back to.
+	// The delegate at the depth boundary reports an honest truncated branch
+	// that says where to read the rest — not a generic "child session
+	// unavailable" branch error, and not a continuation: a depth-truncated
+	// token would name that child as a fresh root at position 0, which is
+	// the page a request for the child returns anyway, and this page never
+	// loaded that child's journals to fence one with.
 	if stoppedAt == nil {
 		t.Fatal("chain never reached a depth-truncated delegate")
 	}
 	if stoppedAt.Branch.Error != "" {
-		t.Fatalf("depth-boundary delegate branch.Error = %q, want empty (a placeholder child, not a load error)", stoppedAt.Branch.Error)
+		t.Fatalf("depth-boundary delegate branch.Error = %q, want empty (the bound is not a failure)", stoppedAt.Branch.Error)
 	}
 	if !stoppedAt.Branch.Truncated {
 		t.Fatalf("depth-boundary delegate branch.Truncated = false, want true")
 	}
-	if stoppedAt.Branch.Continuation == "" {
-		t.Fatal("depth-boundary delegate branch.Continuation is empty, want the token markActivityDelegateTruncated mints (whether a resubmitted depth continuation makes further progress is a separate question this test does not cover)")
+	if stoppedAt.Branch.Continuation != "" {
+		t.Fatalf("depth-boundary delegate offers a continuation (%q); the bound hands the reader the session to request instead", stoppedAt.Branch.Continuation)
+	}
+	if len(stoppedAt.Diagnostics) == 0 || !strings.Contains(stoppedAt.Diagnostics[0], stoppedAt.ChildSessionID) {
+		t.Fatalf("depth-boundary delegate diagnostics = %q, want one naming the session to request", stoppedAt.Diagnostics)
+	}
+	// And what that diagnostic tells the reader to do returns the page it
+	// promises: the child rendered from its own top, with its own budget.
+	direct, err := LoadSessionJobActivityTree(context.Background(), stateDir, stoppedAt.ChildSessionID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("requesting %s directly, as the diagnostic says to: %v", stoppedAt.ChildSessionID, err)
+	}
+	if direct.Root.SessionID != stoppedAt.ChildSessionID {
+		t.Fatalf("direct request returned session %q, want %q", direct.Root.SessionID, stoppedAt.ChildSessionID)
+	}
+	if len(direct.Root.Entries) == 0 {
+		t.Fatalf("direct request for %s returned no entries; the diagnostic promises the page the bound withheld", stoppedAt.ChildSessionID)
 	}
 }
 
@@ -637,83 +652,6 @@ func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildre
 	}
 	if !found {
 		t.Fatalf("target's own child entries = %+v, want to find job %q -- the child was loaded as an empty placeholder instead of its real content", targetDelegate.Child.Entries, wantJobID)
-	}
-}
-
-// TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable
-// asserts a depth-boundary continuation can actually be resubmitted.
-// Depth truncation mints a continuation whose Path names the
-// depth-boundary delegate ITSELF (so a resume can treat it as a fresh
-// depth-0 root, the same pattern work-budget truncation uses), meaning
-// the minted Path is exactly depth+1 hops long when it fires at depth ==
-// activityMaxNewDepth, i.e. activityMaxNewDepth+1 hops --
-// decodeActivityContinuation must accept a path that long, not reject it
-// as too long and turn a legitimately-minted boundary continuation into
-// an end-to-end dead end.
-func TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable(t *testing.T) {
-	stateDir := t.TempDir()
-	started := time.Unix(700, 0).UTC()
-
-	const chainLen = activityMaxNewDepth + 5
-	sessionIDs := make([]string, chainLen)
-	for i := range sessionIDs {
-		sessionIDs[i] = fmt.Sprintf("depthboundarychain%d", i)
-	}
-	var descriptors []delegatestore.Descriptor
-	for i, id := range sessionIDs {
-		s1cov_writeJobLog(t, stateDir, id,
-			jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id, Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started},
-		)
-		if i == 0 {
-			savePastActivityMeta(t, stateDir, id, "Root")
-		} else {
-			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
-		}
-		if i+1 < len(sessionIDs) {
-			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
-		}
-	}
-	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
-
-	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{})
-	if err != nil {
-		t.Fatalf("LoadSessionJobActivityTree: %v", err)
-	}
-
-	// Descend to the depth-truncated delegate (BoundsRecursionDepth already
-	// proves this chain produces exactly one, at the depth boundary) and
-	// grab its minted continuation.
-	session := first.Root
-	var boundaryToken string
-	for {
-		var delegate *appwire.JobActivityDelegate
-		for i := range session.Entries {
-			if session.Entries[i].Delegate != nil {
-				delegate = session.Entries[i].Delegate
-			}
-		}
-		if delegate == nil {
-			t.Fatal("chain never reached a depth-truncated delegate")
-		}
-		if delegate.Child == nil {
-			if delegate.Branch.Continuation == "" {
-				t.Fatal("depth-boundary delegate has no continuation to submit")
-			}
-			boundaryToken = delegate.Branch.Continuation
-			break
-		}
-		session = *delegate.Child
-	}
-
-	// The actual regression: decodeActivityContinuation must accept the
-	// Path depth truncation legitimately mints, not reject it as
-	// too-long.
-	second, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{Continuation: boundaryToken})
-	if err != nil {
-		t.Fatalf("LoadSessionJobActivityTree (resumed with the depth-boundary continuation): %v -- a continuation depth truncation legitimately mints must be submittable", err)
-	}
-	if len(second.Root.Entries) == 0 {
-		t.Fatalf("resumed tree has no entries, want the boundary delegate's own rendered content")
 	}
 }
 

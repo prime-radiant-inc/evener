@@ -25,16 +25,13 @@ const (
 	activityMaxTokenBytes   = 16 << 10
 	activityContinuationV1  = 1
 	// activityMaxContinuationPathLength bounds a client-supplied
-	// continuation's Path — deliberately activityMaxNewDepth+1, not
-	// activityMaxNewDepth: depth truncation fires when a delegate's own
-	// depth reaches
-	// activityMaxNewDepth, and the continuation it mints
-	// (markActivityDelegateTruncated, via projectStableActivityDelegate)
-	// names that delegate ITSELF as the path's last hop — the same
-	// "resume treats the named node as a fresh depth-0 root" pattern
-	// work-budget truncation uses — so the longest Path projection ever
-	// legitimately emits is activityMaxNewDepth+1 hops, not
-	// activityMaxNewDepth.
+	// continuation's Path at activityMaxNewDepth+1 rather than
+	// activityMaxNewDepth. Projection itself now emits at most
+	// activityMaxNewDepth hops — the depth bound reports the session to
+	// request instead of minting a token one hop past it — so the extra hop
+	// is slack, kept because tokens minted by an earlier build carry it and
+	// rejecting them on length would say "malformed" where the honest
+	// answer is whatever the generation check has to say.
 	activityMaxContinuationPathLength = activityMaxNewDepth + 1
 	// activitySkippedEntrySuffix completes a named skip diagnostic;
 	// activitySkippedEntryShortMessage is what a page falls back to when it
@@ -415,43 +412,11 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 		// Mirrors activityMaxNewDepth/activityMaxWorkUnits here so a wide or
 		// deep tree can't force unbounded loading (file opens, recursion,
 		// decoding) before projection's own budget ever gets a chance to
-		// apply. The two limits need different treatment on the wire,
-		// though: dropping a depth-truncated child with no marker at all
-		// would hide the truncation instead of reporting it:
-		//
-		//   - Depth: projectStableActivityDelegate dereferences
-		//     snapshot.Children[childID] BEFORE its own depth check runs, so
-		//     leaving the entry unset here surfaces as a generic "child
-		//     session unavailable" branch error instead of the honest,
-		//     continuation-bearing Truncated projection's depth-truncation
-		//     already knows how to produce (markActivityDelegateTruncated).
-		//     A placeholder child — present, but with nothing loaded under
-		//     it — lets projection's own check run and do that correctly.
-		//   - Work-unit exhaustion: projectActivitySessionAt's delegate loop
-		//     consumes a unit and checks it BEFORE ever dereferencing
-		//     snapshot.Children, so leaving the entry unset there already
-		//     reaches projection's identical exhaustion point on this same,
-		//     now-smaller tree — no placeholder needed.
+		// apply. Past the bound nothing is loaded and nothing stands in for
+		// the child: projection decides the branch is truncated before it
+		// reaches for one, and reports the session to request instead of a
+		// token it could not fence (projectStableActivityDelegate).
 		if depth >= cache.budget.maxDepth {
-			// Ref must equal descriptor.TranscriptRef, not a hard-coded local
-			// ref: projectStableActivityDelegate validates child.Ref !=
-			// descriptor.TranscriptRef before its own
-			// depth check runs, so a placeholder built from a different ref
-			// shape than the descriptor's own would mismatch and fall into
-			// "child link does not match loaded session" instead of the
-			// honest depth-truncation branch. activityChildSessionForStable
-			// above already rejects a non-local TranscriptRef outright, so
-			// today row.descriptor.TranscriptRef is always
-			// encodeRef("", childID) too — this keeps the placeholder
-			// correct by construction rather than by that coincidence.
-			snapshot.Children[childID] = &activitySessionSnapshot{
-				SessionID:       childID,
-				Ref:             row.descriptor.TranscriptRef,
-				LiveJobs:        map[string]*jobstore.JobRecord{},
-				StableDelegates: map[string]delegateSnapshot{},
-				Children:        map[string]*activitySessionSnapshot{},
-				Errors:          map[string]error{},
-			}
 			continue
 		}
 		if !activityConsumeWorkUnit(cache.budget, 1) {
@@ -1100,6 +1065,17 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		appendActivityBranchError(&delegate.Branch, err.Error())
 		return delegate
 	}
+	if budget != nil && budget.bounded && depth >= budget.maxDepth {
+		// The bound stops here, and the branch says so and says where to
+		// read it. A continuation would carry nothing a request for the
+		// child itself does not: a depth-truncated token names that child as
+		// a fresh root at position 0, so the page it fetches is the page a
+		// direct request fetches — with generations this page cannot
+		// honestly name, since nothing here loaded that child's journals.
+		delegate.Branch.Truncated = true
+		delegate.Diagnostics = append(delegate.Diagnostics, fmt.Sprintf("depth limit reached; request session %q directly", childID))
+		return delegate
+	}
 	child := snapshot.Children[childID]
 	if child == nil {
 		appendActivityBranchError(&delegate.Branch, fmt.Sprintf("child session %q unavailable", childID))
@@ -1114,13 +1090,6 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		delegate.Usage = &usage
 	}
 	childPath := appendActivityPath(path, row.id)
-	if budget != nil && budget.bounded && depth >= budget.maxDepth {
-		// The child's OWN generations: a resume checks the token against
-		// the generations of the session it names, not the page root's —
-		// see markActivityDelegateTruncated.
-		markActivityDelegateTruncated(&delegate, budget, child.SessionID, childPath, child.JobsEpoch, child.DelegatesEpoch)
-		return delegate
-	}
 	projectedChild := projectActivitySessionAt(*child, budget, depth+1, childPath, resumeIndex)
 	delegate.Child = &projectedChild
 	return delegate
@@ -1210,30 +1179,6 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 			SessionID:      sessionID,
 			Path:           append([]string(nil), path...),
 			ResumeIndex:    resumeIndex,
-			JobsEpoch:      jobsEpoch,
-			DelegatesEpoch: delegatesEpoch,
-			Revision:       budget.revision,
-		})
-	}
-}
-
-// markActivityDelegateTruncated mints a depth-truncated delegate's
-// continuation. jobsEpoch and delegatesEpoch are the TARGET session's own
-// generations, carried the same way markActivitySessionTruncated carries
-// them: a resume checks the token against the generations of the session it
-// names, so without them that check could never detect a rewrite that raced
-// the truncation.
-func markActivityDelegateTruncated(delegate *appwire.JobActivityDelegate, budget *activityBudget, sessionID string, path []string, jobsEpoch, delegatesEpoch uint64) {
-	if delegate == nil {
-		return
-	}
-	delegate.Branch.Truncated = true
-	if budget != nil && budget.rootID != "" {
-		delegate.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:        activityContinuationV1,
-			RootID:         budget.rootID,
-			SessionID:      sessionID,
-			Path:           append([]string(nil), path...),
 			JobsEpoch:      jobsEpoch,
 			DelegatesEpoch: delegatesEpoch,
 			Revision:       budget.revision,

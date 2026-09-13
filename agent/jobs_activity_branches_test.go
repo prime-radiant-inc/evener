@@ -263,29 +263,34 @@ func TestProjectStableActivityDelegate_ChildUnavailable(t *testing.T) {
 	}
 }
 
+// TestProjectStableActivityDelegate_DepthTruncated asserts the shape the
+// depth bound reports: truncated, no continuation, and a diagnostic naming the
+// session to request. A token here would name that child as a fresh root at
+// position 0 — the page a direct request returns — while claiming generations
+// this page never loaded the child's journals to read.
 func TestProjectStableActivityDelegate_DepthTruncated(t *testing.T) {
 	t.Parallel()
 	row := stableActivitySnapshot("dlg_1", "root", "child", "inspect")
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
-		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
+		// Nothing under the bound is loaded, so there is no child entry.
+		Children: map[string]*activitySessionSnapshot{},
 	}
 	budget := newBoundedActivityBudget("root", time.Unix(1, 0).UTC(), 0)
-	// maxDepth is 32; set depth to 32 so the child is truncated. The path must
-	// not contain the delegate id yet: appendActivityPath adds row.id inside
-	// the projection, and decodeActivityContinuation rejects duplicate hops.
+	// maxDepth is 32; depth 32 is the bound.
 	delegate := projectStableActivityDelegate(snap, row, budget, 32, nil, 0)
-	if !delegate.Branch.Truncated || delegate.Branch.Continuation == "" {
-		t.Fatalf("expected truncation, got %+v", delegate.Branch)
+	if !delegate.Branch.Truncated {
+		t.Fatalf("expected a truncated branch, got %+v", delegate.Branch)
 	}
-	// The continuation should be decodable for the right root.
-	cont, err := decodeActivityContinuation(delegate.Branch.Continuation, "root")
-	if err != nil {
-		t.Fatalf("continuation decode: %v", err)
+	if delegate.Branch.Continuation != "" {
+		t.Fatalf("branch offers a continuation (%q); the bound reports the session to request instead", delegate.Branch.Continuation)
 	}
-	if cont.SessionID != "child" {
-		t.Errorf("continuation session = %q, want child", cont.SessionID)
+	if delegate.Branch.Error != "" {
+		t.Fatalf("branch error = %q, want none: the bound is not a failure", delegate.Branch.Error)
+	}
+	if len(delegate.Diagnostics) != 1 || !strings.Contains(delegate.Diagnostics[0], `"child"`) {
+		t.Fatalf("diagnostics = %q, want one naming the child session to request", delegate.Diagnostics)
 	}
 }
 
@@ -727,36 +732,6 @@ func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 	}
 	if cont.Revision != 17 {
 		t.Fatalf("Revision = %d, want 17 (the root's live-clock revision at mint time)", cont.Revision)
-	}
-}
-
-// TestMarkActivityDelegateTruncated_EmbedsEpochsInContinuation asserts
-// markActivityDelegateTruncated mints a continuation carrying the
-// truncated delegate's own JobsEpoch and the shared root's
-// DelegatesEpoch (not the zero value), plus the root's live-clock
-// Revision (budget.revision): all three let a resumed continuation's
-// staleness check detect a rewrite or live mutation that raced the
-// truncation.
-func TestMarkActivityDelegateTruncated_EmbedsEpochsInContinuation(t *testing.T) {
-	t.Parallel()
-	delegate := &appwire.JobActivityDelegate{DelegateID: "dlg_1"}
-	budget := newBoundedActivityBudget("root", time.Unix(1, 0).UTC(), 17)
-	markActivityDelegateTruncated(delegate, budget, "child", []string{"dlg_1"}, 42, 9)
-	if delegate.Branch.Continuation == "" {
-		t.Fatal("expected a continuation token")
-	}
-	cont, err := decodeActivityContinuation(delegate.Branch.Continuation, "root")
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if cont.JobsEpoch != 42 {
-		t.Fatalf("JobsEpoch = %d, want 42", cont.JobsEpoch)
-	}
-	if cont.DelegatesEpoch != 9 {
-		t.Fatalf("DelegatesEpoch = %d, want 9", cont.DelegatesEpoch)
-	}
-	if cont.Revision != 17 {
-		t.Fatalf("Revision = %d, want 17 (the budget's live-clock revision at mint time)", cont.Revision)
 	}
 }
 
