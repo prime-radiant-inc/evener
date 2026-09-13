@@ -80,6 +80,64 @@ test("archived incompatible residents remain visible and cannot safely retire", 
   expect(isDisabled(within(row).getByRole("button", { name: "Force stop" }))).toBe(false);
 });
 
+// ─── I-1: Row shows identity.ref ─────────────────────────────────────────────
+
+test("row displays identity.ref under the daemon name", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Ref display daemon",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+        canRetire: true,
+        canForceStop: true,
+      },
+    ],
+  }));
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Ref display daemon/ });
+  // identity.ref must be visible in the row (in addition to the name)
+  expect(within(row).getByText(IDENTITY_FIXTURE.ref)).toBeTruthy();
+});
+
+// ─── I-2: List-snapshot blockers visible before any retire attempt ────────────
+
+test("list-snapshot lifecycle blockers are shown in the row before any retire attempt", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Pre-blocked daemon",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: {
+          phase: "resident",
+          timeoutMillis: 3600000,
+          blockers: [{ category: "turn", sessionId: "session-xyz" }],
+        },
+        canRetire: false,
+        canForceStop: true,
+      },
+    ],
+  }));
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Pre-blocked daemon/ });
+  // Blocker from the list snapshot must be visible without attempting retire
+  expect(within(row).getByText(/session-xyz/)).toBeTruthy();
+});
+
 // ─── Polling: no further calls after unmount ──────────────────────────────────
 
 test("polling stops after unmount: no further calls after unmount", async () => {
@@ -192,10 +250,12 @@ describe("force-stop dialog", () => {
     // Dialog must be visible and accessible
     const dialog = screen.getByRole("dialog");
     expect(dialog).toBeTruthy();
-    // Dialog must name the root ref or PID
-    expect(dialog.textContent).toMatch(/101|local:resident-fixture/);
-    // Dialog must warn about interrupted work/watches
-    expect(dialog.textContent).toMatch(/work|watches|interrupt/i);
+    // Both PID and root ref must appear in the dialog — not just one of the two
+    expect(dialog.textContent).toContain("101");
+    expect(dialog.textContent).toContain("local:resident-fixture");
+    // Interruption warning must specifically mention being interrupted (not a
+    // loose OR that matches any single word)
+    expect(dialog.textContent).toContain("interrupted");
   });
 
   test("cancelling force-stop dialog sends no RPC", async () => {
@@ -384,6 +444,79 @@ describe("force-stop dialog", () => {
     // Clean up: resolve the forceStop so the test doesn't leak async work
     resolveForceStop();
   });
+
+  // ─── I-3: Force-stop RPC failure shows error in row ──────────────────────
+
+  test("force-stop RPC failure displays a friendly error in the row", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/daemon/list", () => ({
+      defaultTimeoutMillis: 3600000,
+      daemons: [
+        {
+          identity: IDENTITY_FIXTURE,
+          name: "ForceStop error daemon",
+          protocol: "evener-appwire-v5",
+          compatibility: "compatible",
+          archived: false,
+          probeState: "current",
+          lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+          canRetire: true,
+          canForceStop: true,
+        },
+      ],
+    }));
+    fake.on("evener/thread/forceStop", () => {
+      throw new Error("network error");
+    });
+    const user = userEvent.setup();
+    render(<HubResidents />);
+
+    const row = await screen.findByRole("row", { name: /ForceStop error daemon/ });
+    await user.click(within(row).getByRole("button", { name: "Force stop" }));
+
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Force stop" }));
+
+    // A friendly error must appear in the row (role="alert" for announcements)
+    const updatedRow = await screen.findByRole("row", { name: /ForceStop error daemon/ });
+    expect(updatedRow.querySelector("[role='alert']")).toBeTruthy();
+    expect(updatedRow.textContent).toContain("Something went wrong");
+  });
+});
+
+// ─── I-3: Retire RPC failure shows error in row ───────────────────────────────
+
+test("retire RPC failure displays a friendly error in the row", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Retire error daemon",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+        canRetire: true,
+        canForceStop: true,
+      },
+    ],
+  }));
+  fake.on("evener/daemon/retire", () => {
+    throw new Error("network error");
+  });
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Retire error daemon/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+
+  // A friendly error must appear in the row after the RPC fails
+  const updatedRow = await screen.findByRole("row", { name: /Retire error daemon/ });
+  expect(updatedRow.querySelector("[role='alert']")).toBeTruthy();
+  expect(updatedRow.textContent).toContain("Something went wrong");
 });
 
 // ─── Timeout rendering ────────────────────────────────────────────────────────
@@ -462,10 +595,19 @@ test("both the Hub default timeout and the row's effective timeout are displayed
 
   await screen.findByRole("row", { name: /Timeout display/ });
 
-  // Hub default timeout must appear somewhere in the component
-  expect(screen.getByText(/1h|3600/)).toBeTruthy();
-  // Row's effective timeout must appear
-  expect(screen.getByRole("row", { name: /Timeout display/ }).textContent).toMatch(/2m|120/);
+  // Hub default timeout must appear formatted as "1h" — not as raw millis.
+  // The meta paragraph also carries the future-launch scope note.
+  const metaText = screen.getByText(/Hub default idle timeout/).textContent ?? "";
+  expect(metaText).toContain("1h");
+  expect(metaText).not.toContain("3600000");
+
+  // M-5: Future-launch scope sentence must accompany the default timeout.
+  expect(metaText).toContain("future spawns");
+
+  // Row's effective timeout must appear formatted as "2m" — not as raw millis.
+  // Follow the exact-cell pattern from the special-string assertions above.
+  const cells = within(screen.getByRole("row", { name: /Timeout display/ })).getAllByRole("cell");
+  expect(cells[3]!.textContent).toBe("2m");
 });
 
 // ─── Accepted:true shows "retiring" ──────────────────────────────────────────
@@ -550,4 +692,98 @@ test("fresh retire refusal displays returned blockers without removing the row",
   await screen.findByRole("row", { name: /Blocked resident/ });
   // Blocker category must be shown
   expect(screen.getByText(/turn/)).toBeTruthy();
+  // I-2: sessionId must be shown alongside the category (e.g. "turn (session-abc)")
+  expect(screen.getByText(/session-abc/)).toBeTruthy();
+});
+
+// ─── M-6: Stale retire-refusal blockers clear on lifecycle change ─────────────
+
+test("retire refusal blockers clear when a newer snapshot changes the row lifecycle", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Lifecycle changing",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+        canRetire: true,
+        canForceStop: true,
+      },
+    ],
+  }));
+  fake.on("evener/daemon/retire", () => ({
+    accepted: false,
+    lifecycle: {
+      phase: "resident",
+      timeoutMillis: 3600000,
+      blockers: [{ category: "turn", sessionId: "session-abc" }],
+    },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  // Retire is refused; blockers must appear
+  const row = await screen.findByRole("row", { name: /Lifecycle changing/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+  await screen.findByText(/session-abc/);
+
+  // Simulate a new snapshot where the daemon's lifecycle phase has changed
+  // (e.g., an external retire happened between polls).
+  await act(async () => {
+    fake.on("evener/daemon/list", () => ({
+      defaultTimeoutMillis: 3600000,
+      daemons: [
+        {
+          identity: IDENTITY_FIXTURE,
+          name: "Lifecycle changing",
+          protocol: "evener-appwire-v5",
+          compatibility: "compatible",
+          archived: false,
+          probeState: "current",
+          lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] }, // phase changed
+          canRetire: false,
+          canForceStop: true,
+        },
+      ],
+    }));
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+
+  // Blockers from the old refusal must have been cleared
+  expect(screen.queryByText(/session-abc/)).toBeNull();
+});
+
+// ─── M-9: Keyboard focus reachability ────────────────────────────────────────
+
+test("Retire now button is keyboard-focusable", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Focus target",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+        canRetire: true,
+        canForceStop: true,
+      },
+    ],
+  }));
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Focus target/ });
+  const retireBtn = within(row).getByRole("button", { name: "Retire now" });
+
+  // Programmatic focus must land on the button (keyboard reachability)
+  retireBtn.focus();
+  expect(document.activeElement).toBe(retireBtn);
 });

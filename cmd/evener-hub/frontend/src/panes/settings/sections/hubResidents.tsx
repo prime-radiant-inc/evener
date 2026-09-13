@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { friendlyErrorMessage } from "../../../protocol/errors";
-import type { DaemonIdentity, DaemonResident, DaemonRetireResponse } from "../../../protocol/types.gen";
+import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "../../../protocol/types.gen";
 import { daemonResidentsStore, useDaemonResidentsStore } from "../../../stores/daemonResidents";
 import { Button, ConfirmDialog, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -63,6 +63,14 @@ function effectiveTimeout(daemon: DaemonResident): string {
   return formatTimeout(daemon.lifecycle.timeoutMillis);
 }
 
+// formatBlocker formats a DaemonBlocker for display. sessionId or delegateId
+// is included alongside the category so the operator can identify the blocking
+// entity (e.g. "turn (session-abc)" or "delegate (dlg-xyz)").
+function formatBlocker(b: DaemonBlocker): string {
+  const id = b.sessionId ?? b.delegateId;
+  return id ? `${b.category} (${id})` : b.category;
+}
+
 /**
  * Settings → Hub → Discovered resident daemons.
  *
@@ -87,6 +95,10 @@ export function HubResidents() {
   // reflects the updated phase.
   const [retireResults, setRetireResults] = useState<Map<string, DaemonRetireResponse>>(() => new Map());
 
+  // Action error tracking: per-row friendly error message from a failed
+  // retire or force-stop RPC.
+  const [actionErrors, setActionErrors] = useState<Map<string, string>>(() => new Map());
+
   // Polling lifetime: owned by this component, not the store.
   useEffect(() => {
     void daemonResidentsStore.getState().refresh();
@@ -96,7 +108,35 @@ export function HubResidents() {
     return () => clearInterval(id);
   }, []);
 
+  // Clear stale retireResults when a newer successful snapshot changes a row's
+  // lifecycle phase (plan line 1244: "preserve until a newer successful snapshot").
+  // Uses the functional-update form so retireResults is not a dependency.
+  useEffect(() => {
+    if (!data) return;
+    const daemonMap = new Map(data.daemons.map((d) => [d.identity.generation, d]));
+    setRetireResults((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Map(prev);
+      for (const [gen, result] of prev) {
+        const daemon = daemonMap.get(gen);
+        // Clear if the daemon left the list, or its lifecycle phase changed.
+        if (!daemon || daemon.lifecycle?.phase !== result.lifecycle.phase) {
+          next.delete(gen);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [data]); // retireResults intentionally omitted — read via functional-update prev
+
   const handleRetire = useCallback(async (identity: DaemonIdentity) => {
+    // Clear any previous action error for this row before starting.
+    setActionErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(identity.generation);
+      return next;
+    });
     try {
       const result = await daemonResidentsStore.getState().retire(identity);
       setRetireResults((prev) => {
@@ -104,16 +144,39 @@ export function HubResidents() {
         next.set(identity.generation, result);
         return next;
       });
-    } catch {
-      // The store records loading/error state; nothing additional to surface here.
+    } catch (err: unknown) {
+      // Retire RPCs propagate errors directly; surface via friendly message in
+      // the row. The store's error field tracks only refresh failures.
+      setActionErrors((prev) => {
+        const next = new Map(prev);
+        next.set(identity.generation, friendlyErrorMessage(err));
+        return next;
+      });
     }
   }, []);
 
-  const handleForceStopConfirm = useCallback(() => {
+  const handleForceStopConfirm = useCallback(async () => {
     const identity = confirmForceStop;
     if (!identity) return;
     setConfirmForceStop(null);
-    void daemonResidentsStore.getState().forceStop(identity);
+    // Clear any previous action error for this row before starting.
+    setActionErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(identity.generation);
+      return next;
+    });
+    try {
+      await daemonResidentsStore.getState().forceStop(identity);
+    } catch (err: unknown) {
+      // A CodeConflict (stale identity fenced by the Hub) or network failure
+      // is surfaced via friendly message in the row. The Hub-side fence
+      // prevents any unsafe action even on a conflict.
+      setActionErrors((prev) => {
+        const next = new Map(prev);
+        next.set(identity.generation, friendlyErrorMessage(err));
+        return next;
+      });
+    }
   }, [confirmForceStop]);
 
   const headingId = "hub-residents-heading";
@@ -129,9 +192,14 @@ export function HubResidents() {
         idle resident; force stop signals the process immediately.
       </p>
 
-      {/* Hub default idle timeout — always shown when data is available. */}
+      {/* Hub default idle timeout with future-launch scope note — shown when
+          data is available. The timeout governs future spawns and resumes;
+          currently-running daemons keep their per-row effective timeout. */}
       {data !== null && (
-        <p className={CLASS.meta}>Hub default idle timeout: {formatTimeout(data.defaultTimeoutMillis)}</p>
+        <p className={CLASS.meta}>
+          Hub default idle timeout: {formatTimeout(data.defaultTimeoutMillis)}. Applies to future spawns and resumes;
+          running daemons keep their effective timeout.
+        </p>
       )}
 
       {/* Stale-data indicator: shown when the last refresh failed but old
@@ -168,6 +236,7 @@ export function HubResidents() {
               {data.daemons.map((daemon) => {
                 const retireResult = retireResults.get(daemon.identity.generation);
                 const isPending = pending.has(daemon.identity.generation);
+                const actionError = actionErrors.get(daemon.identity.generation);
 
                 // Display phase: prefer the retire-response lifecycle when
                 // Accepted:true — the daemon is retiring and the server has
@@ -175,12 +244,18 @@ export function HubResidents() {
                 const displayPhase =
                   retireResult?.accepted === true ? retireResult.lifecycle.phase : (daemon.lifecycle?.phase ?? "—");
 
+                // List-snapshot blockers from the current probe result.
+                const snapshotBlockers = daemon.lifecycle?.blockers ?? [];
+
                 return (
-                  // aria-label is the row's accessible name, used by the
-                  // rendered-row test to find it by daemon name.
-                  <tr key={daemon.identity.generation} aria-label={daemon.name}>
+                  // aria-label includes identity.ref so rows sharing a display
+                  // name remain distinguishable by accessible name.
+                  <tr key={daemon.identity.generation} aria-label={`${daemon.name} ${daemon.identity.ref}`}>
                     <td>
                       <div>{daemon.name}</div>
+                      {/* Root reference — shown under the name per spec. Two
+                          daemons sharing a name are distinguished by their ref. */}
+                      <div className={CLASS.meta}>{daemon.identity.ref}</div>
                       {daemon.archived && <div className={CLASS.archived}>archived</div>}
                     </td>
                     <td>
@@ -215,12 +290,29 @@ export function HubResidents() {
                         >
                           Force stop
                         </Button>
+                        {/* List-snapshot blockers — visible before any retire attempt
+                            so the operator can see why a row is not retirable. */}
+                        {snapshotBlockers.length > 0 && (
+                          <div className={CLASS.blockers}>
+                            {"Blocked by: "}
+                            {snapshotBlockers.map(formatBlocker).join(", ")}
+                          </div>
+                        )}
                         {/* Retire refusal blockers — shown when the most-recent
-                            retire returned Accepted:false */}
+                            retire returned Accepted:false. Cleared by the useEffect
+                            when a newer snapshot changes this row's lifecycle. */}
                         {retireResult !== undefined && !retireResult.accepted && (
                           <div className={CLASS.blockers}>
-                            Blocked by:{" "}
-                            {retireResult.lifecycle.blockers.map((b) => b.category).join(", ") || "unknown reason"}
+                            {"Blocked by: "}
+                            {retireResult.lifecycle.blockers.map(formatBlocker).join(", ") || "unknown reason"}
+                          </div>
+                        )}
+                        {/* Per-row action error — shown when a retire or force-stop
+                            RPC fails. role="alert" for immediate screen-reader
+                            announcement. */}
+                        {actionError !== undefined && (
+                          <div className={CLASS.errorBanner} role="alert">
+                            {actionError}
                           </div>
                         )}
                       </div>
@@ -242,7 +334,7 @@ export function HubResidents() {
         title="Force stop daemon?"
         confirmLabel="Force stop"
         busy={confirmForceStop !== null && pending.has(confirmForceStop.generation)}
-        onConfirm={handleForceStopConfirm}
+        onConfirm={() => void handleForceStopConfirm()}
         onCancel={() => setConfirmForceStop(null)}
       >
         {confirmForceStop !== null && (
