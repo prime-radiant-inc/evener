@@ -982,7 +982,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 			// delegate's lifetime.
 			invocationID, err := s.mintSkillOperationID()
 			if err != nil {
-				continue
+				// Persisting the operation identity is not a skill-resolution
+				// failure: continuing here starts the delegate WITHOUT the
+				// configured role preloads, silently, so the parent must see it.
+				return nil, fmt.Errorf("persisting the skill operation identity for role preload %q: %w", skillName, err)
 			}
 			batch, err := s.prepareSkillActivations(ctx, []skillInvocation{{
 				Name: skillName, Route: "role_preload",

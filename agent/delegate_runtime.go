@@ -1750,7 +1750,10 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 			// provenance for the delegate's lifetime.
 			invocationID, err := s.mintSkillOperationID()
 			if err != nil {
-				continue
+				// As in prepareSubagentRunFromSelection: a persistence failure is
+				// not a resolution failure, and continuing would commit a
+				// descriptor whose role preloads are silently missing.
+				return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("persisting the skill operation identity for role preload %q: %w", name, err)
 			}
 			batch, err := s.prepareSkillActivations(ctx, []skillInvocation{{
 				Name: name, Route: "role_preload",
