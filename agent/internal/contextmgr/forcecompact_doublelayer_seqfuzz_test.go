@@ -283,7 +283,7 @@ func (m *doubleLayerModel) compact(rt *rapid.T, step int) {
 	// I1/I5, Layer-1-isolated: checked against c1 (Layer 1's own output on
 	// `before`) BEFORE ForceCompact runs both layers. Layer 2 fires in nearly
 	// every case Layer 1 also does (both gate on the same
-	// attentionTransparentTurnCount vs preserveRecent comparison), and Layer 2
+	// contextTurnCount vs preserveRecent comparison), and Layer 2
 	// unconditionally replaces *history with its own re-cut result — so a
 	// Layer-1-only regression (checkpoint() growing history, or dropping
 	// tracked content) is invisible to the length check in the outer test loop

@@ -973,6 +973,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if strings.TrimSpace(text) == "" {
 			text = apptranscript.ImagePlaceholder(len(images))
 		}
+		if data.OwningTurnID != "" {
+			// Fold publication can outlive its turn. Use the ordinary item
+			// lifecycle, which carries an owner, so closed turns keep their
+			// durable steering without requiring an active-turn fallback.
+			item := appwire.ThreadItem{
+				Type: "steering", ID: p.nextItemID("steering"), TurnID: data.OwningTurnID,
+				Text: text, Images: images, Source: data.Source, SteeringKind: data.Kind,
+				ClientMutationID: data.ClientMutationID, Status: appwire.TurnStatusCompleted,
+			}
+			if !event.Timestamp.IsZero() {
+				startedAt := event.Timestamp.UnixMilli()
+				item.StartedAt = &startedAt
+			}
+			return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID, Ref: p.ref, TurnID: data.OwningTurnID, Item: item,
+			})}
+		}
 		params := map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -1002,7 +1019,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventCompactionTurn:
 		p.clearSkillCandidate()
 		data := eventData[events.CompactionTurnData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindCompaction, apptranscript.CompactionDescription(data.Kind), data.Text)
+		return p.ownedSystemAnnouncementItem(data.OwningTurnID, appwire.ThreadItemEventKindCompaction, apptranscript.CompactionDescription(data.Kind), data.Text, nil, nil)
 	case events.EventTurnLimit:
 		p.clearSkillCandidate()
 		data := eventData[events.TurnLimitData](event.Data)
@@ -1046,7 +1063,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventContextCompaction:
 		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
+		return p.ownedSystemAnnouncementItem(data.OwningTurnID, appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data), nil)
 	case events.EventPluginLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PluginLoadedData](event.Data)
@@ -1057,7 +1074,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventHookEnd:
 		p.clearSkillCandidate()
 		data := eventData[events.HookEndData](event.Data)
-		return p.systemAnnouncementWithExitCode(appwire.ThreadItemEventKindHookCompleted, "Hook", hookEndAnnouncement(data), data.ExitCode)
+		return p.systemAnnouncementWithExitCode(data.OwningTurnID, appwire.ThreadItemEventKindHookCompleted, "Hook", hookEndAnnouncement(data), data.ExitCode)
 	case events.EventForkSummary:
 		p.clearSkillCandidate()
 		data := eventData[events.ForkSummaryData](event.Data)
@@ -1069,7 +1086,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventRoundTimings:
 		p.clearSkillCandidate()
 		data := eventData[events.RoundTimings](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindRoundTimings, "Round timings", roundTimingsAnnouncement(data), roundTimingsRaw(data))
+		// The durable owner wins over the running turn: a round's timing is
+		// published as that round ends, and the turn can be over by then.
+		return p.ownedSystemAnnouncementItem(data.OwningTurnID, appwire.ThreadItemEventKindRoundTimings, "Round timings", roundTimingsAnnouncement(data), roundTimingsRaw(data), nil)
 	case events.EventQueueChanged:
 		p.clearSkillCandidate()
 		data := eventData[events.QueueChangedData](event.Data)
@@ -1565,12 +1584,27 @@ func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind appwire.ThreadIt
 // process; the web splits "show every hook exit" from "show clean exits only"
 // on this number rather than re-parsing the "... exit N" prose, so a reworded
 // announcement can never change which lines a reader has chosen to see.
-func (p *AppEventProjector) systemAnnouncementWithExitCode(eventKind appwire.ThreadItemEventKind, description, text string, exitCode int) []AppNotification {
+func (p *AppEventProjector) systemAnnouncementWithExitCode(owner string, eventKind appwire.ThreadItemEventKind, description, text string, exitCode int) []AppNotification {
 	code := int64(exitCode)
-	return p.systemAnnouncementItem(eventKind, description, text, nil, &code)
+	return p.ownedSystemAnnouncementItem(owner, eventKind, description, text, nil, &code)
 }
 
 func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
+	return p.ownedSystemAnnouncementItem("", eventKind, description, text, raw, exitCode)
+}
+
+// compactionGapTurnIDPrefix marks an owner a compaction fold minted for itself
+// because it staged with no turn running (the agent package mints it as
+// compactionGapIDPrefix; the literal is repeated rather than shared because
+// this is not a wire contract and the two modules do not otherwise couple).
+//
+// Such a group is owner-only: the fold's records are the whole of it, and no
+// turn lifecycle will ever arrive to close it, because no turn ran.
+const compactionGapTurnIDPrefix = "turn_compaction_"
+
+// An explicitly owned announcement can arrive after its turn finishes. Keep
+// that durable owner without changing the currently running turn's lifecycle.
+func (p *AppEventProjector) ownedSystemAnnouncementItem(owner string, eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
 	description = strings.TrimSpace(description)
 	text = strings.TrimSpace(text)
 	if text == "" && eventKind != appwire.ThreadItemEventKindPluginLoaded {
@@ -1579,7 +1613,10 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemE
 	if description == "" && text == "" {
 		return nil
 	}
-	turnID := p.activeTurnID
+	turnID := owner
+	if turnID == "" {
+		turnID = p.activeTurnID
+	}
 	if turnID == "" {
 		turnID = p.preTurnAnnouncementTurnID()
 	}
@@ -1594,7 +1631,21 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemE
 		EventKind:   eventKind,
 		ExitCode:    exitCode,
 	}
-	if p.activeTurnID == "" {
+	// A gap group is over the moment its records are published, and the two
+	// gaps reach that conclusion differently.
+	//
+	// The ownerless gap IS "nothing is running": the announcement belongs to
+	// whatever lull the projector is in, so the conjunct is the whole test and
+	// stays exactly as it was.
+	//
+	// A compaction-gap owner carries the conclusion in the id itself. The fold
+	// took that name at stage time precisely because no turn was running, and
+	// no turn will ever run under it — but the records are emitted later, in
+	// the fold's flush, and nothing orders that flush against a turn the
+	// client accepts meanwhile. Gating on what is running NOW would leave the
+	// group InProgress live, against Completed cold, for the ordering the
+	// session never promised.
+	if (owner == "" && p.activeTurnID == "") || strings.HasPrefix(owner, compactionGapTurnIDPrefix) {
 		// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
 			"threadId": p.threadID,
@@ -1706,7 +1757,7 @@ func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
 		data.EstTokensBefore == 0 && data.EstTokensAfter == 0 {
 		return nil
 	}
-	raw, err := marshalContextCompaction(map[string]any{"compaction": data})
+	raw, err := marshalContextCompaction(map[string]any{"compaction": data.Compaction()})
 	if err != nil {
 		return nil
 	}
@@ -1714,20 +1765,7 @@ func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
 }
 
 func contextCompactionAnnouncement(data events.ContextCompactionData) string {
-	var lines []string
-	if strings.TrimSpace(data.Layer) != "" {
-		lines = append(lines, "Layer: "+strings.TrimSpace(data.Layer))
-	}
-	if data.TurnsBefore > 0 || data.TurnsAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Turns: %d -> %d", data.TurnsBefore, data.TurnsAfter))
-	}
-	if data.EstTokensBefore > 0 || data.EstTokensAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Estimated tokens: %d -> %d", data.EstTokensBefore, data.EstTokensAfter))
-	}
-	if len(lines) == 0 {
-		return "Context compaction ran"
-	}
-	return strings.Join(lines, "\n")
+	return data.Compaction().Announcement()
 }
 
 func pluginLoadedRaw(data events.PluginLoadedData) json.RawMessage {
@@ -1884,20 +1922,7 @@ func roundTimingsRaw(data events.RoundTimings) json.RawMessage {
 }
 
 func roundTimingsAnnouncement(data events.RoundTimings) string {
-	parts := []string{
-		fmt.Sprintf("Round %d", data.Round),
-		"total=" + data.TotalRound.String(),
-		"llm=" + data.LLMCall.String(),
-		"context=" + data.ContextMgmt.String(),
-		"tools=" + data.ToolExec.String(),
-		"prompt=" + data.SystemPrompt.String(),
-		"history=" + data.HistoryExpand.String(),
-		"tool_defs=" + data.ToolDefs.String(),
-		"persistence=" + data.Persistence.String(),
-		"after_action=" + data.AfterAction.String(),
-		"overhead=" + data.LoopOverhead.String(),
-	}
-	return strings.Join(parts, " ")
+	return data.Timings().Announcement()
 }
 
 func fallbackLabel(value, fallback string) string {

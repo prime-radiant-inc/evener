@@ -78,6 +78,13 @@ delivery IDs, so native attention replay would be invalid. Omitting these privat
 records also keeps them out of model prompts and preserves pending tool rounds.
 The report counts them in `historical_attention_records`.
 
+Round timings and context-compaction layers are handled by the same rule. They
+describe the session's presentation rather than its conversation, and the
+archive keeps their prose without the measurements it describes, so rebuilding
+them would announce timings the reconstruction never measured and a shrink this
+transcript never performed. They stay in `source-snapshot.json` and are counted
+in `historical_presentational_records`.
+
 Review `report.json` and inspect the staged history before installation:
 
 ```sh

@@ -55,28 +55,32 @@ func TestDelegateQuietAttentionContent(t *testing.T) {
 	}
 }
 
-// TestDelegateInputWasPreseededCov covers delegateInputWasPreseeded
-// (lines 767-770).
-func TestDelegateInputWasPreseededCov(t *testing.T) {
+// TestDelegatePreseededTurnIDCov covers delegatePreseededTurnID.
+func TestDelegatePreseededTurnIDCov(t *testing.T) {
 	t.Parallel()
-	// No context value: returns false.
-	if delegateInputWasPreseeded(context.Background(), "sess1", "hello") {
+	// No context value: reports absent.
+	if _, ok := delegatePreseededTurnID(context.Background(), "sess1", "hello"); ok {
 		t.Fatal("expected false for background context")
 	}
-	// Matching context value: returns true.
+	// Matching context value: reports present, with the stamped id.
 	ctx := context.WithValue(context.Background(), delegatePreseededInputContextKey{}, delegatePreseededInput{
 		sessionID: "sess1",
 		input:     "hello",
+		turnID:    "turn_direct_cov2",
 	})
-	if !delegateInputWasPreseeded(ctx, "sess1", "hello") {
+	turnID, ok := delegatePreseededTurnID(ctx, "sess1", "hello")
+	if !ok {
 		t.Fatal("expected true for matching preseeded input")
 	}
-	// Mismatched session ID: returns false.
-	if delegateInputWasPreseeded(ctx, "sess2", "hello") {
+	if turnID != "turn_direct_cov2" {
+		t.Fatalf("matching preseeded turn id = %q, want the id the preseed stamped", turnID)
+	}
+	// Mismatched session ID: reports absent.
+	if _, ok := delegatePreseededTurnID(ctx, "sess2", "hello"); ok {
 		t.Fatal("expected false for mismatched session ID")
 	}
-	// Mismatched input: returns false.
-	if delegateInputWasPreseeded(ctx, "sess1", "world") {
+	// Mismatched input: reports absent.
+	if _, ok := delegatePreseededTurnID(ctx, "sess1", "world"); ok {
 		t.Fatal("expected false for mismatched input")
 	}
 }

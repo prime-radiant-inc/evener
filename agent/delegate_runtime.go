@@ -56,6 +56,10 @@ type delegateRunLeaseContextKey struct{}
 type delegatePreseededInput struct {
 	sessionID string
 	input     string
+	// turnID is the identity preseedInput minted for the entry it wrote, so
+	// the run that later executes that input names the same turn on its
+	// USER_INPUT event as the entry carries.
+	turnID string
 }
 
 type delegatePreseededInputContextKey struct{}
@@ -1053,9 +1057,14 @@ func (c *delegateTreeController) stableDelegateOwnerRuntime(lease delegateLease)
 	return parent.runtime
 }
 
-func delegateInputWasPreseeded(ctx context.Context, sessionID, input string) bool {
+// delegatePreseededTurnID reports the identity minted for a preseeded delegate
+// input, and whether ctx carries a preseed for this session and input at all.
+func delegatePreseededTurnID(ctx context.Context, sessionID, input string) (string, bool) {
 	preseeded, ok := ctx.Value(delegatePreseededInputContextKey{}).(delegatePreseededInput)
-	return ok && preseeded.sessionID == sessionID && preseeded.input == input
+	if !ok || preseeded.sessionID != sessionID || preseeded.input != input {
+		return "", false
+	}
+	return preseeded.turnID, true
 }
 
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
@@ -1174,7 +1183,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		s.sendersWG.Done()
 		return runtime.failStableSendStart(ctx, started, delegateID, waiter, maxWaitMS, err)
 	}
-	if err := runtime.preseedInput(sub.sess, message, started.transcriptPath); err != nil {
+	preseedTurnID, err := runtime.preseedInput(sub.sess, message, started.transcriptPath)
+	if err != nil {
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, delegatePermanentStartFailure(err, "input_persist_failed"))
 		s.sendersWG.Done()
 		return runtime.stableSendFailureOutcome(ctx, started, waiter, maxWaitMS, plans, errors.Join(err, completeErr))
@@ -1194,7 +1204,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	}
 	runCtx, runCancel := context.WithCancel(started.ctx)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
-	runCtx = context.WithValue(runCtx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: sub.sess.id, input: message})
+	runCtx = context.WithValue(runCtx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: sub.sess.id, input: message, turnID: preseedTurnID})
 	sub.mu.Lock()
 	sub.fatalRunGated = false
 	resetSubagentForRunLocked(sub, runCancel, started.startedAt)
@@ -1562,7 +1572,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err != nil {
 		return createResult(runtime.failAdoptedStart(started, isolation, prepared, err, "input_admission_failed"))
 	}
-	preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath)
+	preseedTurnID, preseedErr := runtime.preseedInput(prepared.sub.sess, task, started.transcriptPath)
 	if preseedErr != nil {
 		finish := delegatePermanentStartFailure(preseedErr, "input_persist_failed")
 		plans, completeErr := s.delegateController.CompleteStartInput(claim, false, finish)
@@ -1574,6 +1584,11 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		runtime.retainAdoptedWithoutLaunch(prepared)
 		return createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, preseedErr))
 	}
+	// The run context was built before the entry was written, so the identity
+	// the preseed minted for it is only known now. This is the path's only
+	// preseed stamp, and it is written before the launch below: the run reads
+	// it to name its USER_INPUT event after the entry it already wrote.
+	prepared.runCtx = context.WithValue(prepared.runCtx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: prepared.sub.id, input: prepared.input, turnID: preseedTurnID})
 	plans, err := s.delegateController.CompleteStartInput(claim, true, delegateFinish{})
 	s.delegateController.emitDelegateUpdates(plans)
 	if err != nil {
@@ -1917,7 +1932,9 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 	prepared.runCancel()
 	runContext, runCancel := context.WithCancel(started.ctx)
 	runContext = context.WithValue(runContext, delegateRunLeaseContextKey{}, started.lease)
-	runContext = context.WithValue(runContext, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: prepared.sub.id, input: prepared.input})
+	// No preseed stamp here: the entry this turn runs on has not been written
+	// yet, so its identity does not exist. create stamps it once preseedInput
+	// returns the id, which is before the only launch on this path.
 	prepared.runCtx = runContext
 	prepared.runCancel = runCancel
 	prepared.sub.mu.Lock()
@@ -2176,31 +2193,52 @@ func (runtime delegateRuntime) adopt(prepared *preparedSubagentRun) error {
 	return nil
 }
 
-func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPath string) error {
+// preseedInput writes the delegate's opening input to the child's transcript
+// before the run that executes it exists, and returns the identity it minted
+// for that turn. It mints only — the run adopts the id rather than naming the
+// turn again:
+// acceptUserInput's own naming is skipped for a preseeded input (the entry is
+// already written), so without carrying it the entry and the USER_INPUT event
+// would name the same turn differently and the cold and live projections would
+// follow them apart.
+func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPath string) (string, error) {
 	if err := child.maybeAppendEnvironmentContext(); err != nil {
-		return fmt.Errorf("append environment context: %w", err)
+		return "", fmt.Errorf("append environment context: %w", err)
 	}
 	message := buildUserInputMessage(input, nil)
 	if observer := child.cfg.testOnly.delegateInitialInputAppend; observer != nil {
 		observer(child)
 	}
-	if err := child.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, message, message); err != nil {
-		return err
+	turn := schema.NewTurn(schema.TurnUserInput, message)
+	// Minted, not adopted: this turn does not begin until the run starts and
+	// adopts the id off the preseed context value. Every return below can
+	// fail, and those paths retain the child without a run.
+	turn.StableTurnID = mintDirectTurnID()
+	if err := child.appendDurableTurn(turn, turn); err != nil {
+		return "", err
 	}
 	data, err := readStrictChildTranscript(transcriptPath, child.ID(), child.strictTranscriptMaxLineBytes)
 	if err != nil {
-		return fmt.Errorf("read back child input transcript: %w", err)
+		return "", fmt.Errorf("read back child input transcript: %w", err)
 	}
 	for _, entry := range slices.Backward(data.Entries) {
-		turn := entry.Turn
-		if turn.Kind == schema.TurnUserInput {
-			if turn.Message.Text() != input {
-				return errors.New("read back child input transcript: latest user input differs")
+		persisted := entry.Turn
+		if persisted.Kind == schema.TurnUserInput {
+			if persisted.Message.Text() != input {
+				return "", errors.New("read back child input transcript: latest user input differs")
 			}
-			return nil
+			// Text alone does not identify the entry this call wrote: a
+			// delegate is routinely re-sent the same instruction, so a write
+			// that silently did nothing would leave an older entry as the
+			// newest and pass. The id is what makes the read-back proof, and
+			// it is the id the run adopts.
+			if persisted.StableTurnID != turn.StableTurnID {
+				return "", fmt.Errorf("read back child input transcript: latest user input carries turn id %q, not the one just written", persisted.StableTurnID)
+			}
+			return turn.StableTurnID, nil
 		}
 	}
-	return errors.New("read back child input transcript: user input is absent")
+	return "", errors.New("read back child input transcript: user input is absent")
 }
 
 func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, isolation delegateIsolation, prepared *preparedSubagentRun, controllerAttached bool, constructionErr error, reason string) delegateResult {

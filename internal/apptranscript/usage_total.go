@@ -87,7 +87,9 @@ func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwi
 			// worse than reporting none, so surface it.
 			return fmt.Errorf("decode transcript entry usage: %w", err)
 		}
-		accumulated.add(record.Turn.Usage)
+		if countsTowardTotals(record.Turn.ContextReplay) {
+			accumulated.add(record.Turn.Usage)
+		}
 		return nil
 	}); err != nil {
 		return nil, err
@@ -126,6 +128,8 @@ func (a *usageAccumulator) total() *appwire.EvenerUsage {
 type usageOnlyEntry struct {
 	Turn struct {
 		Usage llm.Usage `json:"usage"`
+		// ContextReplay marks a fold's copy of a turn already in this file.
+		ContextReplay bool `json:"context_replay,omitempty"`
 	} `json:"turn"`
 }
 

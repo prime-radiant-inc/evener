@@ -604,3 +604,26 @@ func TestPendingCoordinator_DispatchIsAsync_NoDeadlock(t *testing.T) {
 		t.Fatal("TryReconcile blocked — send is not being dispatched asynchronously")
 	}
 }
+
+// An optimistic steer placeholder retires when the daemon confirms the steer.
+// Owned steering confirms as a thread item now, so matching only the legacy
+// evener/steering/injected method leaves the placeholder spinning forever.
+func TestReconcilePendingFromNotification_OwnedSteeringItem(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	msgs := make(chan tea.Msg, 8)
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p.Register(appwire.MethodTurnSteer, "stay focused", "")
+	drainMessages(msgs, 1, 100*time.Millisecond)
+
+	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"item": appwire.ThreadItem{Type: "steering", TurnID: "turn_m1", Text: "stay focused"},
+	}).Notification)
+
+	got := drainMessages(msgs, 1, 100*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
+	}
+	if _, ok := got[0].(pendingpkg.PendingConfirmedMsg); !ok {
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -563,8 +564,8 @@ func TestFoldPublication_ConcurrentAppendTranscriptEntryLandsAfterCompactionMark
 // fold runs lands its entry before the later compaction marker, and
 // publishFoldedHistory merges it into live history past the fold result --
 // since ResumeHistory anchors on the LAST marker, the publication transaction
-// must leave merged-back turns durably represented after the fold's marker or
-// they vanish on restart.
+// must leave merged-back turns durably represented inside the fold's own run,
+// which its marker claims, or they vanish on restart.
 func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
@@ -603,7 +604,7 @@ func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	}
 	resumed := ResumeHistory(data.Entries)
 	if indexOfTurnText(resumed, concurrentText) < 0 {
-		t.Fatal("a turn recorded during the fold survives in live history but is missing from the resumed history -- merged-back turns must be durably represented after the compaction marker")
+		t.Fatal("a turn recorded during the fold survives in live history but is missing from the resumed history -- merged-back turns must be durably represented inside the fold's own run")
 	}
 	count := 0
 	for _, rt := range resumed {
@@ -854,8 +855,8 @@ func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
 // the rewrite against attention-turn resurrection:
 // removeUnverifiedDelegateAttentionTurn (which takes only s.mu) can delete a
 // merged-back attention turn between publish and the merged-tail rewrite, and
-// a rewrite that persisted it after the marker would resurrect, on resume, a
-// turn whose durability verification had FAILED. Attention turns
+// a rewrite that persisted it inside the fold's run would resurrect, on
+// resume, a turn whose durability verification had FAILED. Attention turns
 // enter live history without a session-transcript pair (their durability is
 // owned by the attention transcript machinery and their restart path is the
 // attention re-fold), so the rewrite must never manufacture
@@ -1274,7 +1275,7 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn
 		commit.publishedRevision = s.historyRevision
 		s.mu.Unlock()
 		s.attentionMu.Lock()
-		commit.commitTranscriptsLocked()
+		commit.commitTranscriptsLocked(true)
 		s.attentionMu.Unlock()
 		commit.flush()
 	}
@@ -1892,12 +1893,12 @@ func (file *syncSnapshotFile) Sync() error {
 
 // TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync
 // pins the durability of the merged-tail rewrite: a turn appended DURABLY
-// while a fold runs has its only durable entry before the compaction marker,
-// which ResumeHistory discards, so the post-marker rewrite is the entry a
-// restart depends on — and it must be durable before the publication counts
-// as persisted. A crash after the marker's fsync but before a later sync
-// covers the rewrite must not lose a turn the session already promised was
-// durable.
+// while a fold runs has its original entry outside the fold's run, which
+// ResumeHistory discards once that fold's marker anchors, so the rewrite's
+// tagged copy is the entry a restart depends on — and it must be durable
+// before the publication counts as persisted. A crash that leaves the fold's
+// marker in the fsynced transcript must not lose a turn the session already
+// promised was durable.
 func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
@@ -1961,6 +1962,370 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 		t.Fatal("test setup: the compaction marker did not reach the durable transcript")
 	}
 	if indexOfTurnText(ResumeHistory(data.Entries), durableText) < 0 {
-		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite after the compaction marker was not durable, and the pre-marker durable entry is the one ResumeHistory discards")
+		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite's tagged copy was not durable, and the original entry outside the fold's run is the one ResumeHistory discards")
+	}
+}
+
+// failReplayCopyWriteFS fails the durable write of a fold's replay copies and
+// lets every other record through, which is the transient failure the
+// publication has to survive without lying about what is on disk.
+type failReplayCopyWriteFS struct {
+	afero.Fs
+	failed atomic.Bool
+}
+
+func (fs *failReplayCopyWriteFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &failReplayCopyWriteFile{File: file, fs: fs}, nil
+}
+
+func (fs *failReplayCopyWriteFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &failReplayCopyWriteFile{File: file, fs: fs}, nil
+}
+
+type failReplayCopyWriteFile struct {
+	afero.File
+	fs *failReplayCopyWriteFS
+}
+
+func (file *failReplayCopyWriteFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"context_replay":true`)) {
+		file.fs.failed.Store(true)
+		return 0, errors.New("injected replay-copy write failure")
+	}
+	return file.File.Write(p)
+}
+
+// TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor pins the publication
+// against a half-written run. The marker is what makes ResumeHistory discard
+// everything before it, and the copies are what carries the turns recorded
+// during the fold past it — so a marker written when a copy could not be is an
+// anchor that discards originals it has nothing to replace. The fold stays
+// published in memory; what must not happen is a durable anchor claiming a run
+// that is not there.
+func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "failed-copy-write-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failReplayCopyWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+	// A pinned note gives this fold steering of its own to inject, which is
+	// what the durability assertion below is about.
+	s.setPinnedNote("REMEMBER: the API signature")
+
+	// A withheld anchor must take the fold's post-write effects with it: the
+	// session namer is reached through this seam, so a suppressed marker never
+	// arrives here.
+	var nameMu sync.Mutex
+	var namedTexts []string
+	s.nameSessionFromTextFunc = func(_ context.Context, _, text string) error {
+		nameMu.Lock()
+		namedTexts = append(namedTexts, text)
+		nameMu.Unlock()
+		return nil
+	}
+
+	// The reader is a goroutine; the fold returning orders nothing against it
+	// having consumed the warning. Closing this once it has recorded one is
+	// the completion the assertion awaits.
+	var warnings []string
+	var warningsMu sync.Mutex
+	var compactionTurns []events.CompactionTurnData
+	unanchoredWarned := make(chan struct{})
+	var warnOnce sync.Once
+	// The flush's events are queued on this channel before the sentinel the
+	// test emits after Compact returns, so seeing the sentinel proves every
+	// event the flush published has already been read. That is what makes the
+	// negative assertions below sound rather than merely early.
+	const flushDrained = "fold flush drained"
+	drained := make(chan struct{})
+	var drainOnce sync.Once
+	go func() {
+		for event := range s.Events() {
+			switch data := event.Data.(type) {
+			case events.WarningData:
+				if data.Message == flushDrained {
+					drainOnce.Do(func() { close(drained) })
+					continue
+				}
+				warningsMu.Lock()
+				warnings = append(warnings, data.Message)
+				warningsMu.Unlock()
+				if strings.Contains(data.Message, "not anchored") {
+					warnOnce.Do(func() { close(unanchoredWarned) })
+				}
+			case events.CompactionTurnData:
+				warningsMu.Lock()
+				compactionTurns = append(compactionTurns, data)
+				warningsMu.Unlock()
+			}
+		}
+	}()
+
+	compactErr := make(chan error, 1)
+	go func() { compactErr <- s.Compact(context.Background()) }()
+	<-entered
+
+	const concurrentText = "turn recorded while the fold was running"
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(concurrentText))
+	s.recordTurn(turn, turn)
+
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no replay copy write was attempted, so nothing failed")
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary {
+			t.Fatalf("a %s anchored a fold whose replay copies could not be written; every original before it is discarded with nothing to replace them", entry.Turn.Kind)
+		}
+	}
+	resumed := ResumeHistory(data.Entries)
+	seen := 0
+	for _, rt := range resumed {
+		if rt.Message.Text() == concurrentText {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("the turn recorded during the fold appears %d times in the resumed history, want exactly once", seen)
+	}
+	// Nothing anchored, so nothing was discarded: the transcript's earliest
+	// record is still the start of the resumed history.
+	earliest := ""
+	for _, entry := range data.Entries {
+		if !entry.Turn.ContextReplay {
+			earliest = entry.Turn.Message.Text()
+			break
+		}
+	}
+	if earliest == "" {
+		t.Fatal("test setup: the transcript holds no record to resume from")
+	}
+	if indexOfTurnText(resumed, earliest) < 0 {
+		t.Fatalf("the transcript's earliest record %q was discarded even though no marker anchored the fold", earliest)
+	}
+	// TRIPWIRE: scripted in-process adapter and an in-memory reader, no real
+	// I/O; only fires if the warning is never emitted at all.
+	awaitWithin(t, 10*time.Second, "the un-anchored fold's warning reaching the reader", func() {
+		<-unanchoredWarned
+	})
+	warningsMu.Lock()
+	got := append([]string(nil), warnings...)
+	warningsMu.Unlock()
+	anchored := false
+	for _, message := range got {
+		if strings.Contains(message, "not anchored") {
+			anchored = true
+		}
+	}
+	if !anchored {
+		t.Fatalf("no warning said the fold was left un-anchored on disk: %q", got)
+	}
+
+	s.emit(events.EventWarning, events.WarningData{Message: flushDrained})
+	// TRIPWIRE: the sentinel is behind the flush's own events on one in-process
+	// channel; only a reader that stopped entirely fails to reach it.
+	awaitWithin(t, 10*time.Second, "the fold flush's events reaching the reader", func() {
+		<-drained
+	})
+	warningsMu.Lock()
+	turns := append([]events.CompactionTurnData(nil), compactionTurns...)
+	warningsMu.Unlock()
+	if len(turns) != 0 {
+		t.Fatalf("a fold whose marker was withheld published %d compaction-turn event(s): %#v; a client would show a compaction the transcript does not anchor", len(turns), turns)
+	}
+	nameMu.Lock()
+	named := append([]string(nil), namedTexts...)
+	nameMu.Unlock()
+	if len(named) != 0 {
+		t.Fatalf("a fold whose marker was withheld named the session from %d text(s): %#v; the post-write effects belong to an anchor that was never written", len(named), named)
+	}
+
+	// The fold really did inject steering — otherwise the durability
+	// assertion below proves nothing.
+	if countSteering(currentHistory(t, s), noteHandoffPrefix) != 1 {
+		t.Fatalf("test setup: the fold injected no note-handoff steering: %#v", currentHistory(t, s))
+	}
+	// A resume finds no anchor, so it drops the fold's copies and keeps
+	// everything else. Steering that describes a compaction the resumed
+	// history cannot see is stale guidance, and duplicate guidance once the
+	// retry injects it again — so an un-anchored fold leaves none of it behind.
+	for _, turn := range ResumeHistory(data.Entries) {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), noteHandoffPrefix) {
+			t.Fatalf("steering from a fold that never anchored survives a restart: %q", turn.Message.Text())
+		}
+	}
+}
+
+// failMarkerWriteFS fails exactly the fold's marker line, transferring no
+// bytes, which is the writer's unpoisoned failure arm: nothing landed, the file
+// and the position are as they were, and the writer stays usable
+// (agent/transcript/transcript.go's poisonLandedBytesLocked). So the fold sees
+// an error for a marker nobody can read, with no poison to stop anything.
+type failMarkerWriteFS struct {
+	afero.Fs
+	failed atomic.Bool
+}
+
+func (fs *failMarkerWriteFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &failMarkerWriteFile{File: file, fs: fs}, nil
+}
+
+func (fs *failMarkerWriteFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &failMarkerWriteFile{File: file, fs: fs}, nil
+}
+
+type failMarkerWriteFile struct {
+	afero.File
+	fs *failMarkerWriteFS
+}
+
+func (file *failMarkerWriteFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"SUMMARY"`)) || bytes.Contains(p, []byte(`"kind":"CHECKPOINT"`)) {
+		file.fs.failed.Store(true)
+		return 0, errors.New("injected marker write failure")
+	}
+	return file.File.Write(p)
+}
+
+// A marker whose own write fails leaves the transcript with no anchor, exactly
+// like one the fold withheld — and unlike a poisoned writer, nothing else stops
+// the fold, so the effects that describe that marker would run against a
+// transcript no reload can read it from.
+func TestFoldPublication_FailedMarkerWritePublishesNoCompactionEffects(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "failed-marker-write-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failMarkerWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12)
+	// A pinned note gives this fold steering of its own, which is the other
+	// half of what a marker that never landed must not publish.
+	s.setPinnedNote("REMEMBER: the API signature")
+
+	var nameMu sync.Mutex
+	var namedTexts []string
+	s.nameSessionFromTextFunc = func(_ context.Context, _, text string) error {
+		nameMu.Lock()
+		namedTexts = append(namedTexts, text)
+		nameMu.Unlock()
+		return nil
+	}
+	var eventMu sync.Mutex
+	var compactionTurns []events.CompactionTurnData
+	var steering []events.SteeringInjectedData
+	const flushDrained = "fold flush drained"
+	drained := make(chan struct{})
+	var drainOnce sync.Once
+	go func() {
+		for event := range s.Events() {
+			switch data := event.Data.(type) {
+			case events.WarningData:
+				if data.Message == flushDrained {
+					drainOnce.Do(func() { close(drained) })
+				}
+			case events.CompactionTurnData:
+				eventMu.Lock()
+				compactionTurns = append(compactionTurns, data)
+				eventMu.Unlock()
+			case events.SteeringInjectedData:
+				eventMu.Lock()
+				steering = append(steering, data)
+				eventMu.Unlock()
+			}
+		}
+	}()
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no marker write was attempted, so nothing failed")
+	}
+	if writer.Poisoned() {
+		t.Fatal("test setup: the injected failure poisoned the writer, so this is the poisoned path, not the unpoisoned one")
+	}
+
+	s.emit(events.EventWarning, events.WarningData{Message: flushDrained})
+	// TRIPWIRE: the sentinel is behind the flush's own events on one in-process
+	// channel; only a reader that stopped entirely fails to reach it.
+	awaitWithin(t, 10*time.Second, "the fold flush's events reaching the reader", func() {
+		<-drained
+	})
+	eventMu.Lock()
+	turns := append([]events.CompactionTurnData(nil), compactionTurns...)
+	eventMu.Unlock()
+	if len(turns) != 0 {
+		t.Fatalf("a fold whose marker write failed published %d compaction-turn event(s): %#v", len(turns), turns)
+	}
+	nameMu.Lock()
+	named := append([]string(nil), namedTexts...)
+	nameMu.Unlock()
+	if len(named) != 0 {
+		t.Fatalf("a fold whose marker write failed named the session from %d text(s): %#v", len(named), named)
+	}
+	eventMu.Lock()
+	injected := append([]events.SteeringInjectedData(nil), steering...)
+	eventMu.Unlock()
+	if len(injected) != 0 {
+		t.Fatalf("a fold whose marker write failed published %d steering event(s): %#v; the compaction they describe is not in the transcript", len(injected), injected)
+	}
+	// And the same absence after a reload: the guidance describes a
+	// compaction a returning reader cannot find.
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnSteering {
+			t.Fatalf("a fold whose marker write failed left steering in the transcript: %q", entry.Turn.Message.Text())
+		}
 	}
 }

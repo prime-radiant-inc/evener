@@ -336,6 +336,25 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Status:               appwire.TurnStatusCompleted,
 			EventKind:            appwire.ThreadItemEventKindCompaction,
 		}}
+	case schema.TurnContextCompaction:
+		if turn.ContextCompaction == nil {
+			return nil
+		}
+		var raw json.RawMessage
+		if *turn.ContextCompaction != (schema.ContextCompaction{}) {
+			raw, _ = json.Marshal(map[string]any{"compaction": *turn.ContextCompaction})
+		}
+		return []appwire.ThreadItem{{
+			Type:                 "systemMessage",
+			ID:                   fmt.Sprintf("item_context_compaction_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Description:          "Context compaction",
+			Text:                 turn.ContextCompaction.Announcement(),
+			Status:               appwire.TurnStatusCompleted,
+			EventKind:            appwire.ThreadItemEventKindContextCompaction,
+			Raw:                  raw,
+		}}
 	case schema.TurnModelSwitch:
 		text := strings.TrimSpace(turn.Message.Text())
 		if text == "" {
@@ -418,6 +437,22 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			item.ExitCode = &code
 		}
 		return []appwire.ThreadItem{item}
+	case schema.TurnRoundTimings:
+		if turn.RoundTimings == nil {
+			return nil
+		}
+		raw, _ := json.Marshal(map[string]any{"roundTimings": *turn.RoundTimings})
+		return []appwire.ThreadItem{{
+			Type:                 "systemMessage",
+			ID:                   fmt.Sprintf("item_round_timings_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Description:          "Round timings",
+			Text:                 turn.RoundTimings.Announcement(),
+			Status:               appwire.TurnStatusCompleted,
+			EventKind:            appwire.ThreadItemEventKindRoundTimings,
+			Raw:                  raw,
+		}}
 	case schema.TurnUserInput:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
 		return []appwire.ThreadItem{{
@@ -705,7 +740,7 @@ func ItemTurnProjectionFromFile(path string, maxLineBytes int, project EntryProj
 }
 
 func itemTurnProjectionFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
-	var acc logicalTurnAccumulator
+	acc := newLogicalTurnAccumulator()
 	entryIndex := 0
 	header, err := scanSemanticTranscriptContext(ctx, path, maxLineBytes, func(raw json.RawMessage) error {
 		entry, decodeErr := transcript.DecodeEntry(raw)
@@ -751,7 +786,7 @@ func itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int
 // ItemTurnProjectionFromFile. The header and entries must come from the same
 // transcript.
 func ItemTurnProjectionFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) (ItemTurnProjection, error) {
-	var acc logicalTurnAccumulator
+	acc := newLogicalTurnAccumulator()
 	for i := range entries {
 		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
 	}

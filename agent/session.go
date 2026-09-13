@@ -348,6 +348,7 @@ type Session struct {
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
+	directTurnID                  string        // logical-turn id of the turn EXECUTING right now when no client mutation named it: a bare ProcessInput caller's input, a goal continuation or notification wake whose mintRunningTurnID was refused (turnNameUnserved for every session no daemon serves, turnNameHeld beside an accepted-but-unstarted mutation), or a delegate input whose preseed minted the id when it wrote the entry. Set by nameTurnItself, or by adoptSelfMintedTurnID for a name minted before the run began. Names the turn on its persisted entry and its opening event, and activeTurnOwner reports it — ahead of a held ActiveTurnID — for everything published while it runs, so the live and cold projections group them identically instead of each falling back to its own turn_%d numbering. Cleared at the turn's end. Guarded by mu.
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
 	persistedAppendLog            []schema.Turn // persisted transcript forms of the append/write pairs since the last fold publication, in append order — the exact forms publishFoldTransaction re-appends after its markers. Pruned wholesale by each successful publication. Guarded by mu.
 	persistedAppendLogBase        int           // count of pair appends already pruned from persistedAppendLog by fold publications; base+len(log) is the total pair-append count a fold snapshot captures as snapAppends. Guarded by mu.
@@ -1894,10 +1895,17 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
+	return s.appendDurableTurn(t, persistedTurn)
+}
+
+// appendDurableTurn is appendTurnWithDurableTranscriptMessage for a caller
+// that built the turn itself — the delegate preseed, which stamps the turn's
+// own identity before it is written.
+func (s *Session) appendDurableTurn(live, persisted schema.Turn) error {
 	err := s.appendTurnAfterTranscriptWrite(
-		persistedTurn,
-		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
-		func() { s.history = append(s.history, t) },
+		persisted,
+		func() error { return s.writeTranscriptDurableLocked(persisted) },
+		func() { s.history = append(s.history, live) },
 	)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})

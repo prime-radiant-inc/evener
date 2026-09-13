@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -393,6 +394,7 @@ type SteeringInjectedData struct {
 	Images           []UserInputImage `json:"images,omitempty"`
 	ClientMutationID string           `json:"client_mutation_id,omitempty"`
 	StableTurnID     string           `json:"stable_turn_id,omitempty"`
+	OwningTurnID     string           `json:"owning_turn_id,omitempty"`
 	// Source carries the steering provenance: SteeringSourceUser for
 	// human-sent steering, empty for daemon/system steering. Optional and
 	// additive; absent means system.
@@ -543,6 +545,7 @@ type SkillActivatedData struct {
 
 // ContextCompactionData is the payload for an EventContextCompaction event.
 type ContextCompactionData struct {
+	OwningTurnID    string `json:"owning_turn_id,omitempty"`
 	Layer           string `json:"layer,omitempty"`
 	TurnsBefore     int    `json:"turns_before,omitempty"`
 	TurnsAfter      int    `json:"turns_after,omitempty"`
@@ -550,10 +553,19 @@ type ContextCompactionData struct {
 	EstTokensAfter  int    `json:"est_tokens_after,omitempty"`
 }
 
+// Compaction returns the layer measurements independently of its live owner.
+func (d ContextCompactionData) Compaction() schema.ContextCompaction {
+	return schema.ContextCompaction{
+		Layer: d.Layer, TurnsBefore: d.TurnsBefore, TurnsAfter: d.TurnsAfter,
+		EstTokensBefore: d.EstTokensBefore, EstTokensAfter: d.EstTokensAfter,
+	}
+}
+
 // CompactionTurnData is the payload for an EventCompactionTurn event.
 type CompactionTurnData struct {
-	Kind string `json:"kind"`
-	Text string `json:"text"`
+	Kind         string `json:"kind"`
+	Text         string `json:"text"`
+	OwningTurnID string `json:"owning_turn_id,omitempty"`
 }
 
 // WarningCodeDelegateAbandonedByDrain identifies a drain abandonment warning.
@@ -745,12 +757,13 @@ type HookStartData struct {
 
 // HookEndData is the payload for an EventHookEnd event.
 type HookEndData struct {
-	Event      string `json:"event"`
-	HookType   string `json:"hook_type"`
-	Matcher    string `json:"matcher"`
-	PluginName string `json:"plugin_name"`
-	ExitCode   int    `json:"exit_code"`
-	DurationMS int64  `json:"duration_ms"`
+	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	Event        string `json:"event"`
+	HookType     string `json:"hook_type"`
+	Matcher      string `json:"matcher"`
+	PluginName   string `json:"plugin_name"`
+	ExitCode     int    `json:"exit_code"`
+	DurationMS   int64  `json:"duration_ms"`
 }
 
 // ForkSummaryData is the payload for an EventForkSummary event.

@@ -2013,8 +2013,8 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 // conversationSignals reports the two numbers the re-injection detector weighs,
 // read together under one lock so they describe the same instant.
 //
-// The turn count is conversation only, excluding hook execution records and
-// environment context saved before the user's first input. It answers
+// The turn count excludes hook execution records, environment context,
+// and presentational timing and compaction metadata. It answers
 // "does this session already carry a conversation?" — the question the detector asks — with a number no hook
 // dispatch can inflate. modelResponses is guarded by the same mutex (see the
 // field's documentation on Session), and the detector reaches it on the drain
@@ -2026,7 +2026,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		if t.Kind != schema.TurnHookCompleted && t.Kind != schema.TurnEnvironment {
+		if t.Kind != schema.TurnHookCompleted && t.Kind != schema.TurnEnvironment && t.Kind != schema.TurnRoundTimings && t.Kind != schema.TurnContextCompaction {
 			historyTurns++
 		}
 	}

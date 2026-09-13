@@ -65,6 +65,19 @@ func settledKinds(turns []schema.Turn) []schema.TurnKind {
 	return kinds
 }
 
+// settledConversationKinds excludes durable presentational compaction
+// markers from the settlement shape. They are transcript/replay metadata and
+// must not change the salvage contract's model-facing turn sequence.
+func settledConversationKinds(turns []schema.Turn) []schema.TurnKind {
+	var kinds []schema.TurnKind
+	for _, kind := range settledKinds(turns) {
+		if kind != schema.TurnContextCompaction {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
+}
+
 func sessionHistory(s *Session) []schema.Turn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -561,8 +574,8 @@ func TestSettlement_ContextLengthTerminalKeepsPrimarySalvage(t *testing.T) {
 	sess.Close()
 
 	want := []schema.TurnKind{schema.TurnAssistant, schema.TurnSteering, schema.TurnFailure}
-	assertKinds(t, "history", settledKinds(hist), want)
-	assertKinds(t, "transcript", settledKinds(transcriptTurns(t, tpath)), want)
+	assertKinds(t, "history", settledConversationKinds(hist), want)
+	assertKinds(t, "transcript", settledConversationKinds(transcriptTurns(t, tpath)), want)
 	if got := hist[len(hist)-3].Message.Text(); got != draft {
 		t.Errorf("salvaged turn carried %d bytes, want the primary group's %d-byte draft", len(got), len(draft))
 	}

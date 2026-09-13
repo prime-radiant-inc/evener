@@ -61,6 +61,13 @@ const (
 	// attention item. Provider projection excludes it; generic presentation may
 	// retain the marker while hiding its private metadata.
 	TurnAttentionResolution TurnKind = "ATTENTION_RESOLUTION"
+	// TurnRoundTimings records the completed round's presentational timing
+	// breakdown. It is retained in semantic history for transcript parity but
+	// excluded from provider history.
+	TurnRoundTimings TurnKind = "ROUND_TIMINGS"
+	// TurnContextCompaction records one context-management layer for replay.
+	// It is presentational and excluded from provider history.
+	TurnContextCompaction TurnKind = "CONTEXT_COMPACTION"
 )
 
 // AttentionResolutionInfo identifies one durable attention item and its
@@ -70,6 +77,58 @@ type AttentionResolutionInfo struct {
 	AttentionID      string `json:"attention_id"`
 	Disposition      string `json:"disposition"`
 	ResumeGeneration uint64 `json:"resume_generation,omitempty"`
+}
+
+// RoundTimings is the persisted counterpart of the live round timing
+// event. Durations remain nanoseconds in JSON, matching time.Duration's
+// existing event representation.
+type RoundTimings struct {
+	Round         int           `json:"round"`
+	SystemPrompt  time.Duration `json:"system_prompt_ns"`
+	ContextMgmt   time.Duration `json:"context_mgmt_ns"`
+	HistoryExpand time.Duration `json:"history_expand_ns"`
+	ToolDefs      time.Duration `json:"tool_defs_ns"`
+	LLMCall       time.Duration `json:"llm_call_ns"`
+	ToolExec      time.Duration `json:"tool_exec_ns"`
+	Persistence   time.Duration `json:"persistence_ns"`
+	AfterAction   time.Duration `json:"after_action_ns"`
+	LoopOverhead  time.Duration `json:"loop_overhead_ns"`
+	TotalRound    time.Duration `json:"total_round_ns"`
+}
+
+// ContextCompaction is the persisted counterpart of the live compaction
+// event. Its fields mirror events.ContextCompactionData without coupling the
+// transcript schema to the event package.
+type ContextCompaction struct {
+	Layer           string `json:"layer,omitempty"`
+	TurnsBefore     int    `json:"turns_before,omitempty"`
+	TurnsAfter      int    `json:"turns_after,omitempty"`
+	EstTokensBefore int    `json:"est_tokens_before,omitempty"`
+	EstTokensAfter  int    `json:"est_tokens_after,omitempty"`
+}
+
+// Announcement renders the stable presentational text for a compaction layer.
+func (c ContextCompaction) Announcement() string {
+	var lines []string
+	if strings.TrimSpace(c.Layer) != "" {
+		lines = append(lines, "Layer: "+strings.TrimSpace(c.Layer))
+	}
+	if c.TurnsBefore > 0 || c.TurnsAfter > 0 {
+		lines = append(lines, fmt.Sprintf("Turns: %d -> %d", c.TurnsBefore, c.TurnsAfter))
+	}
+	if c.EstTokensBefore > 0 || c.EstTokensAfter > 0 {
+		lines = append(lines, fmt.Sprintf("Estimated tokens: %d -> %d", c.EstTokensBefore, c.EstTokensAfter))
+	}
+	if len(lines) == 0 {
+		return "Context compaction ran"
+	}
+	return strings.Join(lines, "\n")
+}
+
+// Announcement is the stable presentational text shared by live and cold
+// projections.
+func (t RoundTimings) Announcement() string {
+	return fmt.Sprintf("Round %d total=%s llm=%s context=%s tools=%s prompt=%s history=%s tool_defs=%s persistence=%s after_action=%s overhead=%s", t.Round, t.TotalRound, t.LLMCall, t.ContextMgmt, t.ToolExec, t.SystemPrompt, t.HistoryExpand, t.ToolDefs, t.Persistence, t.AfterAction, t.LoopOverhead)
 }
 
 // DelegateDeliveryCommit records which exact tool call durably received one
@@ -192,12 +251,25 @@ type Turn struct {
 	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
-	// recovery for both client input and daemon goal continuations.
+	// recovery for client input, daemon goal continuations, and an input turn
+	// that arrived with no client-mutation reservation and named itself.
 	ClientMutationID string `json:"client_mutation_id,omitempty"`
 	StableTurnID     string `json:"stable_turn_id,omitempty"`
-	// OwningTurnID identifies the logical turn that owns an ordinary steering
+	// OwningTurnID identifies the logical turn that owns a steering or timing
 	// entry. It differs from StableTurnID, which identifies the client mutation.
 	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	// ContextReplay marks a copy appended around compaction solely to restore
+	// model context. Its original transcript entry already owns the UI item.
+	ContextReplay bool `json:"context_replay,omitempty"`
+	// CompactionFoldID names the fold that wrote this record: its markers, the
+	// context-compaction records and injected steering around them, and the
+	// ContextReplay copies of the turns recorded while it ran. The copies go
+	// down BEFORE the markers so a crash between the two writes cannot leave
+	// an anchor that has discarded the originals with nothing to replace them,
+	// and this is what tells resume which copies the anchor it found is
+	// entitled to keep. Empty on every record written before the tag existed,
+	// where the copies follow their marker instead and need no claim.
+	CompactionFoldID string `json:"compaction_fold_id,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`
@@ -206,6 +278,10 @@ type Turn struct {
 	Hook *HookInfo `json:"hook,omitempty"`
 	// ModelSwitch carries resolved identities on TurnModelSwitch turns.
 	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
+	// RoundTimings carries the detail of one completed presentational round.
+	RoundTimings *RoundTimings `json:"round_timings,omitempty"`
+	// ContextCompaction carries one persisted compaction layer for replay.
+	ContextCompaction *ContextCompaction `json:"context_compaction,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`

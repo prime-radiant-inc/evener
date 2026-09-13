@@ -25,6 +25,29 @@ var errBareTextWithoutResultTool = errors.New("model returned bare text without 
 var errEmptyResponseExhausted = errors.New("model returned empty response")
 var errStreamUnavailable = errors.New("stream unavailable")
 
+// persistAndEmitRoundTimings commits the presentational timing record before
+// publishing its live event, so the live item always has a durable counterpart.
+func (s *Session) persistAndEmitRoundTimings(timings events.RoundTimings) {
+	payload := timings.Timings()
+	turn := schema.NewTurn(schema.TurnRoundTimings, llm.System(payload.Announcement()))
+	turn.RoundTimings = &payload
+	// One read of the active turn names both publications. The event carried
+	// no owner before, so the projector resolved it from whatever turn was
+	// running when the event arrived — which a timing published as its turn
+	// ends can miss, grouping the round elsewhere than the transcript does.
+	turn.OwningTurnID = s.activeTurnOwner()
+	timings.OwningTurnID = turn.OwningTurnID
+	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptDurableLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return
+	}
+	s.emit(events.EventRoundTimings, timings)
+}
+
 type sessionLifecycleFaultsKey struct{}
 
 func sessionLifecycleFault(ctx context.Context, point string) error {
@@ -1107,6 +1130,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
 					s.appendSteeringTurn(interruptMsg, events.SteeringKindInterrupted)
 				}
+				// The interrupted turn's last record is written; the name it
+				// minted for itself ends with it.
+				s.endSelfMintedTurn()
 				if emitEnd {
 					s.emit(events.EventSessionEnd, events.SessionEndData{
 						Reason:      "interrupted",
@@ -1589,7 +1615,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// the name and releasing it; the closure reads the variable at unwind
 	// time, so this one defer covers whichever branch below does the minting.
 	var runningTurnID string
-	defer func() { s.releaseRunningTurnID(runningTurnID) }()
+	defer func() {
+		s.releaseRunningTurnID(runningTurnID)
+		// The self-minted name ends with the turn, on every path out of here
+		// — including a return between the mint and the run. The one turn
+		// that keeps it past this point is one that ENDED in cancellation: its
+		// marker is written by ProcessInput's loop after this returns, and it
+		// belongs to the turn it interrupted. A turn that finished its work
+		// while its context happened to be cancelled writes no marker, so
+		// asking the context alone would leave the name standing with nothing
+		// left to claim it.
+		if !selfMintedNameOutlivesTurn(ctx, err) {
+			s.endSelfMintedTurn()
+		}
+	}()
 
 	if kind == EntryNotification {
 		// Take the name first, and in ONE atomic take-or-refuse against the
@@ -1665,6 +1704,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", false, nil
 		}
+		if runningTurnID == "" {
+			// Unserved, the one case the stand-down above deliberately skips:
+			// nothing can name this wake and nothing else will deliver it, so
+			// it names itself rather than opening its turn anonymous.
+			runningTurnID = s.nameTurnItself()
+		}
 		// Named: drop any backoff this session accumulated standing down.
 		s.resetRunningTurnNameRetry()
 		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
@@ -1679,9 +1724,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// A continuation is named here because acceptContinuationInput cannot
 	// refuse. A notification wake took its name above, before it consumed any
 	// wake state, so that a wake it cannot name stands down while standing
-	// down is still free.
+	// down is still free — a continuation has no such option, so a refused
+	// mint (turnNameUnserved for every session no daemon serves, or a held
+	// slot or unhealthy store) falls back to naming itself rather than running
+	// anonymous.
 	if kind == EntryContinuation {
-		runningTurnID, _ = s.mintRunningTurnID()
+		if runningTurnID, _ = s.mintRunningTurnID(); runningTurnID == "" {
+			runningTurnID = s.nameTurnItself()
+		}
 	}
 
 	if kind == EntryContinuation {
@@ -1889,7 +1939,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count pause_turn as a tool round.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(events.EventRoundTimings, timings)
+			s.persistAndEmitRoundTimings(timings)
 			continue
 		}
 
@@ -1938,7 +1988,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count empty/bare-text retries as tool rounds.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(events.EventRoundTimings, timings)
+			s.persistAndEmitRoundTimings(timings)
 			continue
 		}
 
@@ -2002,7 +2052,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Emit round timings before checking result delivery.
 		timings.TotalRound = time.Since(roundStart)
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
-		s.emit(events.EventRoundTimings, timings)
+		s.persistAndEmitRoundTimings(timings)
 
 		// communicate sets the flag, or this round posted question(s) (spec
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
@@ -2155,7 +2205,8 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.turns++
 	s.mu.Unlock()
 
-	preseededInput := delegateInputWasPreseeded(ctx, s.id, input) && len(images) == 0 && queuedIdentity.ClientMutationID == ""
+	preseedTurnID, preseeded := delegatePreseededTurnID(ctx, s.id, input)
+	preseededInput := preseeded && len(images) == 0 && queuedIdentity.ClientMutationID == ""
 	if !preseededInput {
 		if err := s.maybeAppendEnvironmentContext(); err != nil {
 			if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
@@ -2181,9 +2232,26 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	}
 	s.mu.Unlock()
 
+	stableTurnID := queuedIdentity.StableTurnID
 	if queuedIdentity.ClientMutationID == "" {
-		if !preseededInput {
-			if err := s.appendUserInputTurnRefusingPoison(schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))); err != nil {
+		if preseededInput {
+			// The preseed already wrote this turn's entry, under the identity
+			// it minted then. Adopt that name rather than minting a second
+			// one: the event below and everything published during the run
+			// must name the turn the entry already names.
+			stableTurnID = preseedTurnID
+			s.adoptSelfMintedTurnID(preseedTurnID)
+		} else {
+			// Nothing outside the session named this turn, so it names
+			// itself: the id rides the persisted entry and the USER_INPUT
+			// event below, and activeTurnOwner reports it for everything
+			// published while the turn runs. Without it the live projector
+			// and the transcript projection each invent a turn_%d of their
+			// own and disagree about every item's transcript key.
+			turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+			turn.StableTurnID = s.nameTurnItself()
+			stableTurnID = turn.StableTurnID
+			if err := s.appendUserInputTurnRefusingPoison(turn); err != nil {
 				if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
 					return errors.Join(err, returnErr)
 				}
@@ -2232,7 +2300,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		Text:             input,
 		Images:           userInputImagesFromAttachments(images),
 		ClientMutationID: queuedIdentity.ClientMutationID,
-		StableTurnID:     queuedIdentity.StableTurnID,
+		StableTurnID:     stableTurnID,
 		Turn:             userInputTurn,
 	})
 	s.launchInitialPromptNamer(s.sessionCtx, input)
@@ -2315,10 +2383,13 @@ func (s *Session) acceptDelegateAttentionInput() {
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
 // acceptNotificationInput decides whether this wake has anything to deliver and
-// prepares it. turnID is the name processOneInput already took for the turn --
-// empty only for a session no daemon serves, which needs no name. The caller
-// stands down before reaching here when a served session could not be named, so
-// every wake that gets this far can address its own turn.
+// prepares it. turnID is the name processOneInput already took for the turn and
+// is never empty: a served session that could not be named stands down before
+// reaching here, and an unserved one -- where the refusal is unconditional --
+// names the turn itself instead, so the live and cold projections still agree
+// on what this wake's records belong to. Only the served name is a durable
+// reservation; a self-minted one is not an id the mutation preconditions
+// accept, which costs nothing on a session no client can address anyway.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
 	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
@@ -2384,7 +2455,9 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// came after would leave that content attributed to the turn before it.
 	s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
 	if reminder != "" {
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
+		// turnID is the owner appendSteeringTurnDurablyForOwner stamped on the
+		// reminder's entry above.
+		s.announceSteeringTurn(turnID, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
 
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)

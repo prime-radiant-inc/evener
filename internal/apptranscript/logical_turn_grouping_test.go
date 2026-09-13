@@ -3,6 +3,7 @@ package apptranscript
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -143,6 +144,28 @@ func keysForTurns(turns []appwire.Turn) []string {
 		keys = append(keys, keysFor(turn)...)
 	}
 	return keys
+}
+
+func TestItemReadersHonorRoundTimingOwner(t *testing.T) {
+	if recordStartsGroup(schema.TurnRoundTimings, true, false, "turn_m10", "turn_m10") {
+		t.Fatal("owned round timing started a new logical group")
+	}
+	timing := schema.NewTurn(schema.TurnRoundTimings, llm.System("Round 1 total=1s"))
+	timing.StableTurnID = "timing_m1"
+	timing.OwningTurnID = "turn_m10"
+	timing.RoundTimings = &schema.RoundTimings{Round: 1, TotalRound: time.Second}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("question"), StableTurnID: "turn_m10"}},
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")}},
+		{Kind: "entry", Seq: 3, Turn: timing},
+	}
+	turns, err := ItemTurnsFromEntries(transcript.Header{}, entries, sequentialTestProjector())
+	if err != nil {
+		t.Fatalf("ItemTurnsFromEntries: %v", err)
+	}
+	if got := turnIDs(turns); !reflect.DeepEqual(got, []string{"turn_m10"}) {
+		t.Fatalf("round timing turn ids = %v, want [turn_m10]", got)
+	}
 }
 
 func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {

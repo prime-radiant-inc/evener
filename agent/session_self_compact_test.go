@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -107,7 +108,7 @@ func TestRunPreCompactHook_HandsOffNoteBeforeObjective(t *testing.T) {
 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
 
 	hist := makeSteeringSeed(4)
-	_, commit := s.runPreCompactHook(context.Background(), &hist)
+	_, commit := s.runPreCompactHook(context.Background(), &hist, "")
 
 	noteIdx := indexOfSteering(hist, noteHandoffPrefix)
 	goalIdx := indexOfSteering(hist, "Ship the feature")
@@ -141,12 +142,12 @@ func TestRunPreCompactHook_HandoffIsOneShot(t *testing.T) {
 	s := newTestSession(t)
 	s.setPinnedNote("REMEMBER: do X")
 	hist := makeSteeringSeed(4)
-	_, commit := s.runPreCompactHook(context.Background(), &hist)
+	_, commit := s.runPreCompactHook(context.Background(), &hist, "")
 	if commit == nil {
 		t.Fatal("expected a non-nil commit from the first pass")
 	}
 	commit()
-	_, commit = s.runPreCompactHook(context.Background(), &hist)
+	_, commit = s.runPreCompactHook(context.Background(), &hist, "")
 	if commit != nil {
 		t.Fatal("second pass found no pinned note (already committed-cleared) — expected a nil commit, nothing to defer")
 	}
@@ -170,7 +171,7 @@ func TestRunPreCompactHook_StampsEachSourceItsOwnKind(t *testing.T) {
 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
 
 	hist := makeSteeringSeed(4)
-	records, _ := s.runPreCompactHook(context.Background(), &hist)
+	records, _ := s.runPreCompactHook(context.Background(), &hist, "")
 
 	if got := kindOfSteeringRecord(records, noteHandoffPrefix); got != events.SteeringKindNoteHandoff {
 		t.Errorf("note handoff kind = %q, want %q", got, events.SteeringKindNoteHandoff)
@@ -199,7 +200,7 @@ func TestRunPreCompactHook_PersistsKindOnTheTurn(t *testing.T) {
 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
 
 	hist := makeSteeringSeed(4)
-	s.runPreCompactHook(context.Background(), &hist)
+	s.runPreCompactHook(context.Background(), &hist, "")
 
 	noteIdx := indexOfSteering(hist, noteHandoffPrefix)
 	goalIdx := indexOfSteering(hist, "Ship the feature")
@@ -232,7 +233,7 @@ func TestRunPreCompactHook_PluginModelContextKeepsPrecompactHookKind(t *testing.
 	s.hookRunner = runner
 
 	hist := makeSteeringSeed(2)
-	records, _ := s.runPreCompactHook(context.Background(), &hist)
+	records, _ := s.runPreCompactHook(context.Background(), &hist, "")
 
 	if got := kindOfSteeringRecord(records, "plugin context"); got != events.SteeringKindPrecompactHook {
 		t.Errorf("plugin ModelContext kind = %q, want %q", got, events.SteeringKindPrecompactHook)
@@ -1107,4 +1108,49 @@ func TestMaybeElicitNoteBeforeCompaction_SkipsWhenNoteAlreadySet(t *testing.T) {
 // exact model steps are not perturbed by the default-on elicitation call.
 func muteNoteElicitation(s *Session) {
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
+}
+
+// The fold's injected steering is published twice, like every other record
+// this series touched: the entry, then the event. A write that failed leaves
+// the entry out of the transcript, so announcing the steering shows a client a
+// line a reload cannot reproduce — and the owner it carries names a group the
+// transcript does not have.
+//
+// The model is the one consumer that keeps it either way: the fold appended
+// these records to live history before it published, so the steering reaches
+// the next model request whatever the transcript did. That is a divergence the
+// warning reports and a reload resolves by not replaying it; announcing it
+// would only add a second consumer that cannot.
+func TestSteeringRecords_FailedWriteAnnouncesNothing(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.appendCompactionTurn = func(schema.Turn) error { return errors.New("injected steering write failure") }
+	})
+	hist := makeSteeringSeed(2)
+	records := appendSteeringMessagesToHistory(&hist, []preCompactMessage{
+		{text: "guidance the transcript will refuse", kind: events.SteeringKindPrecompactHook},
+	})
+	if len(records) != 1 {
+		t.Fatalf("test setup: staged %d steering records, want 1", len(records))
+	}
+
+	s.flushSteeringTurnRecords(records)
+
+	s.Close()
+	injected, warnings := 0, 0
+	for event := range s.Events() {
+		switch event.Kind {
+		case events.EventSteeringInjected:
+			injected++
+		case events.EventWarning:
+			warnings++
+		}
+	}
+	if injected != 0 {
+		t.Fatalf("steering events after a failed write = %d, want 0: the entry is not in the transcript, so no reader can get this line back", injected)
+	}
+	if warnings != 1 {
+		t.Fatalf("warnings after a failed write = %d, want the failure reported exactly once", warnings)
+	}
 }

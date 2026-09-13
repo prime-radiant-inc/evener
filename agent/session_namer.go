@@ -434,6 +434,13 @@ func (s *Session) nameSessionFromCompactionTurnGated(ctx context.Context, turn s
 	return s.nameSessionFromTextGated(ctx, sessionNameSourceCompaction, text, publishedRevision)
 }
 
+// isSessionNameCompactionTurn reports the artifact kinds a compaction names the
+// session from. Two things outside naming read the same answer, so narrowing it
+// for a naming reason changes resume: publishFoldTransaction writes its replay
+// tail only when one of these landed (session_compaction.go), and ResumeHistory
+// anchors on exactly these kinds (transcript_read.go). All three must agree —
+// a kind that stops counting here stops anchoring there, and the tail it would
+// have carried past a marker goes unwritten.
 func isSessionNameCompactionTurn(turn schema.Turn) bool {
 	return turn.Kind == schema.TurnSummary || turn.Kind == schema.TurnCheckpoint
 }
@@ -478,8 +485,19 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // fold published cannot finish later and overwrite the newer fold's name.
 func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool, publishedRevision int) {
 	s.reportCompactionTranscriptAppend(writeErr)
+	if writeErr != nil {
+		// The marker is not in the transcript, and not every failed append
+		// poisons the writer — a write that transferred no bytes leaves it
+		// usable (agent/transcript's poisonLandedBytesLocked), so nothing else
+		// stops this fold. Everything below describes that marker: the event
+		// announcing it, the name derived from it, the task-list steering the
+		// compaction justifies. Publishing them against a transcript that has
+		// no anchor is the divergence the withheld-marker rule already
+		// refuses; a failed write is the same absence, arrived at differently.
+		return
+	}
 	if isSessionNameCompactionTurn(t) {
-		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text(), OwningTurnID: t.OwningTurnID})
 	}
 	if superseded {
 		return

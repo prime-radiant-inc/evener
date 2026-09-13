@@ -851,6 +851,14 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 		fmt.Fprintf(b, "\n## Turn %d — Hook\n", seq)
 		writeCompactNote(b, "Hook", e.Turn, wantFullTurn(opt, seq))
 
+	case schema.TurnRoundTimings:
+		fmt.Fprintf(b, "\n## Turn %d — Round timings\n", seq)
+		writeCompactNote(b, "Round timings", e.Turn, wantFullTurn(opt, seq))
+
+	case schema.TurnContextCompaction:
+		fmt.Fprintf(b, "\n## Turn %d — Context compaction\n", seq)
+		writeCompactNote(b, "Context compaction", e.Turn, wantFullTurn(opt, seq))
+
 	case schema.TurnAttentionResolution:
 		// Resolution markers are durable private correlation records. They are
 		// transparent to the public conversation and its tool-round structure.

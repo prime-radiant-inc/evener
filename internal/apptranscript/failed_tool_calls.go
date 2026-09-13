@@ -107,7 +107,7 @@ func scanFailedToolCalls(path string, maxLineBytes int, fromEntryOrdinal int) (i
 			// reporting none, so surface it.
 			return fmt.Errorf("decode transcript entry tool calls: %w", err)
 		}
-		count += tallyFailedToolCalls(record.Turn.Message.Content, ordinal >= fromEntryOrdinal, toolNames)
+		count += tallyFailedToolCalls(record.Turn.Message.Content, ordinal >= fromEntryOrdinal && countsTowardTotals(record.Turn.ContextReplay), toolNames)
 		return nil
 	}); err != nil {
 		return 0, err
@@ -134,6 +134,18 @@ func failedToolResult(result *failedToolCallResult, toolNames map[string]string)
 // answer a call the inherited prefix announced — and, when counting, counts
 // the failing results. Shared by scanFailedToolCalls and scanDerivedTotals so
 // the two scans apply one rule.
+// countsTowardTotals reports whether an entry's own measurements belong in a
+// session's aggregate figures. A compaction fold re-appends the turns recorded
+// while it ran as ContextReplay copies so the anchor does not discard them, and
+// the originals stay in the same file: counting a copy's tokens or its failed
+// results reports the same work twice, and the overcount grows with every fold.
+// The copies are still SCANNED — a call one announces can answer a later result
+// whose own record omits its name — they just add nothing of their own. One
+// rule, consulted by every aggregate scan in this package.
+func countsTowardTotals(contextReplay bool) bool {
+	return !contextReplay
+}
+
 func tallyFailedToolCalls(parts []toolScanPart, counting bool, toolNames map[string]string) int {
 	count := 0
 	for _, part := range parts {
@@ -155,6 +167,8 @@ func tallyFailedToolCalls(parts []toolScanPart, counting bool, toolNames map[str
 // (including inline image bytes) per line.
 type failedToolCallEntry struct {
 	Turn struct {
+		// ContextReplay marks a fold's copy of a turn already in this file.
+		ContextReplay bool `json:"context_replay,omitempty"`
 		// No turn kind: the content parts are the discriminator this needs.
 		// Tool calls and tool results only ever appear on the assistant and
 		// tool-result kinds, so matching on the part itself is both narrower
