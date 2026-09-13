@@ -922,6 +922,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
 	s.initEnvContext(meta.EnvContext)
+	// The environment turn is durable before meta.EnvContext is checkpointed.
+	// Replay only the effective resumed history, not folded transcript prefix
+	// entries. Starting from zero also honors a compaction boundary: a retained
+	// post-compaction environment block is a full snapshot, while an absent one
+	// means the next turn must emit a fresh full block even if meta is stale.
+	s.envTracker = envctx.NewTracker(envctx.State{})
+	s.envContextState = nil
+	for _, turn := range resumeHistory {
+		if turn.Kind == schema.TurnEnvironment && s.envTracker.ReplayBlock(turn.Message.Text()) {
+			state := s.envTracker.State()
+			s.envContextState = &state
+		}
+	}
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
@@ -1159,7 +1172,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// path can append. Restored history and the durable identity index stay
 	// on the pre-recovery list on purpose: the recovered turns enter
 	// s.history directly (recordClientMutationFailure appends them itself).
-	if err := s.recoverClientMutationFailures(); err != nil {
+	if err := s.recoverClientMutationFailures(false); err != nil {
 		return nil, fmt.Errorf("recover client mutation failures: %w", err)
 	}
 	if err := s.recoverClientMutationInterrupt(); err != nil {
@@ -2000,9 +2013,9 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 // conversationSignals reports the two numbers the re-injection detector weighs,
 // read together under one lock so they describe the same instant.
 //
-// The turn count is conversation only, excluding the HOOK_COMPLETED records
-// that report a hook ran. It answers "does this session already carry a
-// conversation?" — the question the detector asks — with a number no hook
+// The turn count is conversation only, excluding hook execution records and
+// environment context saved before the user's first input. It answers
+// "does this session already carry a conversation?" — the question the detector asks — with a number no hook
 // dispatch can inflate. modelResponses is guarded by the same mutex (see the
 // field's documentation on Session), and the detector reaches it on the drain
 // path, where steering turns append from other goroutines.
@@ -2013,7 +2026,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		if t.Kind != schema.TurnHookCompleted {
+		if t.Kind != schema.TurnHookCompleted && t.Kind != schema.TurnEnvironment {
 			historyTurns++
 		}
 	}

@@ -18,6 +18,7 @@ const run = (command, args, cwd) =>
     stdio: ["ignore", "pipe", "pipe"],
   });
 async function qualify() {
+  const packageManifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
   const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", consumerDir], packageDir))[0];
   const tarball = join(consumerDir, packed.filename);
   run(
@@ -49,25 +50,11 @@ async function qualify() {
     "stableDelegate",
     "docContent",
   ];
-  // A module can be built, packed and listed here and still be unreachable: the
-  // files list only decides what tsc emits, and the export checks below name
-  // identifiers, not modules. The installed entry point's own declarations are
-  // the honest record of what it re-exports, so require a re-export specifier
-  // for every shipped module. A module nothing exports fails right here.
-  const indexDeclarations = readFileSync(
-    join(consumerDir, "node_modules/@evener/appwire-client/dist/index.d.ts"),
-    "utf8",
-  );
-  for (const module of shippedModules)
-    assert(
-      module === "index" || indexDeclarations.includes(`from "./${module}"`),
-      `shipped module unreachable from the entry point: ${module}`,
-    );
-  // Every runtime export of the package entry point. All four generated
-  // consumer programs are built from this one list, so an export the entry
-  // point stops providing fails here instead of in somebody's consumer.
-  // Whether each shipped MODULE is reachable at all is the check above.
-  const runtimeExports = [
+  // Every runtime export of the package root. The root's generated consumer
+  // programs are built from this one list, so an export the entry point stops
+  // providing fails here instead of in somebody's consumer. Whether each
+  // shipped MODULE is reachable at all is the reachability check below.
+  const rootValues = [
     "AppwireClient",
     "APPWIRE_PROTOCOL_VERSION",
     "ConnectionClosedError",
@@ -131,7 +118,7 @@ async function qualify() {
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
-  const typeExports = [
+  const rootTypes = [
     "AppwireClientOptions",
     "AppwireClientLike",
     "WebSocketLike",
@@ -149,7 +136,7 @@ async function qualify() {
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.
-  const smokeCalls = `assert.equal(typeof client.AppwireClient, "function");
+  const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
 assert.equal(new client.WireError("nope", -32000).code, -32000);
@@ -192,29 +179,130 @@ assert.equal(client.docFileRawURL("s", "p"), "/doc/file?format=raw&session=s&pat
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 `;
-  const presenceLoop = `for (const name of ${JSON.stringify(runtimeExports)}) assert(name in client, \`missing export \${name}\`);\n`;
-  writeFileSync(
-    join(consumerDir, "esm.mts"),
-    `import {
-${runtimeExports.map((name) => `  ${name},`).join("\n")}
-} from "@evener/appwire-client";
+  // The qualification manifest: every specifier package.json publishes, and the
+  // names the package promises at each one. A subpath with no entry here is not
+  // qualified, whatever the exports map claims, so the two must agree. An
+  // in-repo-only path alias is therefore unlistable: nothing in the tarball
+  // backs it, and the apps' own typecheck is what validates it.
+  const packageExports = {
+    ".": {
+      values: rootValues,
+      types: rootTypes,
+      // A typed construction for the specifiers that offer one, so the
+      // declaration checks prove more than that the names resolve.
+      esmTypeUses: `const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
+      cjsTypeUses: `const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;`,
+      smoke: rootSmokeCalls,
+    },
+    // The doc-pane data layer, published as its own specifier because
+    // readDocFile is not a root export: it needs a fetch, and a consumer that
+    // wants to substitute one (or spy on the module) needs a real subpath to
+    // import, which a root re-export cannot give it.
+    "./docContent": {
+      values: ["DOC_FILE_MAX_BYTES", "DocFileError", "docFileRawURL", "docImageURL", "readDocFile"],
+      types: ["DocFetch", "DocFileContent", "DocFileErrorKind", "DocResponseLike"],
+      esmTypeUses: `const read: (session: string, path: string, fetchDoc: DocFetch) => Promise<DocFileContent> = readDocFile;
+const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
+      cjsTypeUses: `const read: client.DocFetch = async (url: string) => {
+  void url;
+  throw new client.DocFileError("error", 500);
+}; void read;`,
+      // The URL builders and the size cap are the whole callable surface here:
+      // readDocFile needs a fetch, and qualification makes no requests, so it
+      // is checked for presence and its behavior is covered by unit tests.
+      smoke: `assert.equal(client.docFileRawURL("s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.docImageURL("s", "p"), "/doc/image?session=s&path=p");
+assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
+assert.equal(typeof client.readDocFile, "function");
+`,
+    },
+  };
+  const publishedSpecifiers = Object.keys(packageManifest.exports);
+  for (const specifier of publishedSpecifiers)
+    assert(packageExports[specifier], `published specifier is not qualified: no manifest entry for ${specifier}`);
+  for (const [specifier, surface] of Object.entries(packageExports)) {
+    assert(
+      publishedSpecifiers.includes(specifier),
+      `qualification manifest names ${specifier}, which package.json does not export`,
+    );
+    assert(
+      Array.isArray(surface.values) && Array.isArray(surface.types),
+      `qualification manifest entry ${specifier} needs both a value and a type name list`,
+    );
+  }
+  // A module can be built, packed and listed here and still be unreachable: the
+  // files list only decides what tsc emits, and the export checks below name
+  // identifiers, not modules. Each published specifier's own installed
+  // declarations are the honest record of what it re-exports, so a shipped
+  // module qualifies by being some specifier's entry or by being re-exported
+  // from one. A module no published specifier reaches fails right here.
+  const reachableModules = new Set();
+  for (const specifier of publishedSpecifiers) {
+    const declarations = packageManifest.exports[specifier].types;
+    const entryModule = shippedModules.find((module) => declarations === `./dist/${module}.d.ts`);
+    assert(entryModule, `${specifier} publishes declarations no shipped module emits: ${declarations}`);
+    reachableModules.add(entryModule);
+    const text = readFileSync(join(consumerDir, "node_modules", packageManifest.name, declarations), "utf8");
+    for (const module of shippedModules) if (text.includes(`from "./${module}"`)) reachableModules.add(module);
+  }
+  for (const module of shippedModules)
+    assert(reachableModules.has(module), `shipped module unreachable from every published specifier: ${module}`);
+  // One ESM declaration consumer, one CommonJS declaration consumer and one
+  // runtime presence check in each module form, per published specifier.
+  const declarationConsumers = [];
+  const runtimeConsumers = [];
+  const consumerNames = new Set();
+  for (const [specifier, surface] of Object.entries(packageExports)) {
+    const moduleSpecifier = `${packageManifest.name}${specifier.slice(1)}`;
+    // The specifier itself, reversibly encoded: "./foo-bar" and "./foo/bar" are
+    // different specifiers and must not write over each other's programs.
+    const slug = specifier === "." ? "root" : `sub-${encodeURIComponent(specifier.slice(2))}`;
+    const presenceLoop = `for (const name of ${JSON.stringify(surface.values)}) assert(name in client, \`missing export \${name} from ${moduleSpecifier}\`);\n`;
+    const esmConsumer = `esm-${slug}.mts`;
+    const commonjsConsumer = `commonjs-${slug}.cts`;
+    const esmRuntime = `runtime-${slug}.mjs`;
+    const commonjsRuntime = `runtime-${slug}.cjs`;
+    for (const consumer of [esmConsumer, commonjsConsumer, esmRuntime, commonjsRuntime]) {
+      assert(!consumerNames.has(consumer), `two specifiers generate the same consumer program: ${consumer}`);
+      consumerNames.add(consumer);
+    }
+    declarationConsumers.push(esmConsumer, commonjsConsumer);
+    runtimeConsumers.push(esmRuntime, commonjsRuntime);
+    writeFileSync(
+      join(consumerDir, esmConsumer),
+      `import {
+${surface.values.map((name) => `  ${name},`).join("\n")}
+} from "${moduleSpecifier}";
 import type {
-${typeExports.map((name) => `  ${name},`).join("\n")}
-} from "@evener/appwire-client";
-const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
-const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;
-declare const shipped: [${typeExports.join(", ")}]; void shipped;
-${runtimeExports.map((name) => `void ${name};`).join("\n")}
+${surface.types.map((name) => `  ${name},`).join("\n")}
+} from "${moduleSpecifier}";
+${surface.esmTypeUses ?? ""}
+declare const shipped: [${surface.types.join(", ")}]; void shipped;
+${surface.values.map((name) => `void ${name};`).join("\n")}
 `,
-  );
-  writeFileSync(
-    join(consumerDir, "commonjs.cts"),
-    `import client = require("@evener/appwire-client");
-const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;
-declare const shipped: [${typeExports.map((name) => `client.${name}`).join(", ")}]; void shipped;
-${runtimeExports.map((name) => `void client.${name};`).join("\n")}
+    );
+    writeFileSync(
+      join(consumerDir, commonjsConsumer),
+      `import client = require("${moduleSpecifier}");
+${surface.cjsTypeUses ?? ""}
+declare const shipped: [${surface.types.map((name) => `client.${name}`).join(", ")}]; void shipped;
+${surface.values.map((name) => `void client.${name};`).join("\n")}
 `,
-  );
+    );
+    writeFileSync(
+      join(consumerDir, esmRuntime),
+      `import assert from "node:assert/strict";
+import * as client from "${moduleSpecifier}";
+${presenceLoop}${surface.smoke ?? ""}`,
+    );
+    writeFileSync(
+      join(consumerDir, commonjsRuntime),
+      `const assert = require("node:assert/strict");
+const client = require("${moduleSpecifier}");
+${presenceLoop}${surface.smoke ?? ""}`,
+    );
+  }
   run(
     resolve(packageDir, "node_modules/.bin/tsc"),
     [
@@ -226,25 +314,11 @@ ${runtimeExports.map((name) => `void client.${name};`).join("\n")}
       "NodeNext",
       "--target",
       "ES2022",
-      "esm.mts",
-      "commonjs.cts",
+      ...declarationConsumers,
     ],
     consumerDir,
   );
-  writeFileSync(
-    join(consumerDir, "esm-runtime.mjs"),
-    `import assert from "node:assert/strict";
-import * as client from "@evener/appwire-client";
-${presenceLoop}${smokeCalls}`,
-  );
-  writeFileSync(
-    join(consumerDir, "commonjs-runtime.cjs"),
-    `const assert = require("node:assert/strict");
-const client = require("@evener/appwire-client");
-${presenceLoop}${smokeCalls}`,
-  );
-  run(process.execPath, [join(consumerDir, "esm-runtime.mjs")], consumerDir);
-  run(process.execPath, [join(consumerDir, "commonjs-runtime.cjs")], consumerDir);
+  for (const consumer of runtimeConsumers) run(process.execPath, [join(consumerDir, consumer)], consumerDir);
   const listing = run("tar", ["-tzf", tarball], consumerDir);
   for (const expected of [
     ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),

@@ -8,17 +8,23 @@ and the user-facing message helpers every failure display goes through, the
 pure question formatter, the thread view model and its notification reducer,
 the activity tree parser, merge and disclosure rules, the job log tail parser,
 the send/queue availability table, the stable delegate status rule, and the
-doc-pane URL builders.
+doc-pane URL builders. The doc-pane data layer is published at the
+`./docContent` subpath as well, where `readDocFile` takes the host's fetch:
+the package issues no request of its own and names no credentials policy.
 
 Build and qualify from this directory with `npm run qualification`. The runner
-packs the package, installs that tarball into a temporary consumer, checks ESM
-and CommonJS TypeScript resolution, runs both runtime import forms, calls at
-least one export of every shipped module on a trivial input, and checks the
-tarball contains each shipped module and no source files or dependencies. It also runs the
-installed inspection and discovery examples against a scripted local WebSocket
-server, verifying the handshake, read-only requests, structured readback, and
-private output file. The qualification command is run with the repository's
-configured Node 22 runtime.
+packs the package, installs that tarball into a temporary consumer, and then,
+for every specifier the `exports` map publishes, checks ESM and CommonJS
+TypeScript resolution and runs both runtime import forms against the names that
+specifier promises. A subpath with no entry in the runner's qualification
+manifest is not qualified, so the manifest and the `exports` map must name the
+same specifiers. The runner also calls at least one export of every shipped
+module on a trivial input, and checks the tarball contains each shipped module
+and no source files or dependencies. It also runs the installed inspection and
+discovery examples against a scripted local WebSocket server, verifying the
+handshake, read-only requests, structured readback, and private output file.
+The qualification command is run with the repository's configured Node 22
+runtime.
 
 Applications own credentials, caches, transcript storage, subscriptions, and
 mutation reconciliation. Connection loss during a mutation leaves its outcome
