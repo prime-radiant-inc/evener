@@ -749,6 +749,7 @@ run_bounded_package_list() {
 						printf 'run-module-tests.sh: could not promote %s to %s\n' "$attempt_list" "$package_list" >&2
 						return 1
 					fi
+					require_packages "$module" "$(grep -c . "$package_list")" || return 1
 					return 0
 				else
 					# Read inside the else branch: once the `if` compound
@@ -797,6 +798,7 @@ run_bounded_package_list() {
 				printf 'run-module-tests.sh: could not promote %s to %s\n' "$attempt_list" "$package_list" >&2
 				return 1
 			fi
+			require_packages "$module" "$(grep -c . "$package_list")" || return 1
 			return 0
 		else
 			list_status=$?
@@ -815,10 +817,10 @@ run_bounded_package_list() {
 #
 # Nothing to test is not a pass: an empty list reaches `go test` as no package
 # arguments at all, which tests the current directory or nothing and reports
-# success either way. Every branch below filters its list differently — the root
-# module drops the fuzz-coverage commands, the sharded agent path drops its own
-# top-level package — so the check belongs after each filter, and the sentence
-# it prints belongs in one place.
+# success either way. The enumeration calls this on the list it produces, so
+# every module inherits it whatever it does next — the sharded agent path had no
+# check of its own. The branches that filter their list call it again on what is
+# left, since a filter can empty a list the enumeration had filled.
 require_packages() {
 	[ "$2" -gt 0 ] && return 0
 	printf 'run-module-tests.sh: %s: go list ./... returned no test packages\n' "$1" >&2
