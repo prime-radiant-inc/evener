@@ -305,8 +305,8 @@ through D21–D24 and the directory is deleted at the end of D24.
 every row above, so the headline and the phases cannot drift apart again. The
 tables carry 71 rows, six of them withdrawn phase-B rows that contribute
 nothing — so **65 rows of work**, and **64 real PRs**, because B1b landed inside
-B1 rather than on its own. **Seven have landed** (A1, A2, A3b, A3c, A5, B1
-carrying B1b, B3b), so **57 remain**.
+B1 rather than on its own. **Eight have landed** (A1, A2, A3b, A3c, A3d, A5,
+B1 carrying B1b, B3b), so **56 remain**.
 
 Phase A 8 PRs / 2,820 lines. Phase B 210, the sum of its three live rows of 9
 (all three landed). Phase C 26 / 8,550. Phase D 28 / 18,110. Each subtotal is its own rows added up, not an estimate.
@@ -344,12 +344,13 @@ C or D has started.
 | B1 | #1189 | **merged** as `27503c07d` — the two predicates were identical; surfaced B1b |
 | A3b | #1206 | **merged** as `99fa1882f` — twelve root error exports; `chunkViewBackingForTests` and `readDocFile` deliberately excluded, which is why A3c/A3d exist |
 | A3c | #1207 | **merged** as `2a8163eb0` — the qualification manifest is per specifier, not only at the root |
-| A3d | #1209 | open (`e086afcd2` plus a merge of main) — `./docContent` published; `readDocFile` takes a required `DocFetch`; browser adapter at `panes/doc/browserDocFetch.ts` |
+| A3d | #1209 | **merged** as `f39aa2c83` — `./docContent` published; `readDocFile` takes a required `DocFetch`; browser adapter at `panes/doc/browserDocFetch.ts`, wired at `DocPane.tsx:49` |
 | B3b | #1203 | **merged** as `4da382482` — native's two `projectUsage` copies collapsed to one |
 | B1b | #1190, #1197 | **done** — landed inside B1 (`27503c07d`); both issues closed |
 
-A3 and A4 are unstarted; A3d is open as #1209. Nothing in phase C can land until
-the package has a name both apps can import. A3b and A3c landed ahead of them.
+A3 and A4 are the only unstarted phase-A rows, and nothing in phase C can land
+until the package has a name both apps can import. A3b, A3c and A3d landed ahead
+of them.
 
 B7 was executed and stopped as NEEDS_CONTEXT; that triggered a grep re-audit of
 every DUPLICATED row and every 2-consumer claim at `f2599d1ed`. Six phase-B rows
