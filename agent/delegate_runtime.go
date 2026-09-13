@@ -1127,8 +1127,10 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			// notify, driveChildIfNotStopGated, which returns early on the claim,
 			// so that wake is DROPPED. The run about to launch would have drained
 			// the child's queue, but this exit did not hand a run over (the claim
-			// is still held here), so re-drive the child's undelivered attention
-			// or the dropped notification can sit undriven forever. The hand-off
+			// is still held here), so re-drive the child's queued notifications and
+			// watch sends or the dropped wake can sit undriven forever. Stable
+			// delegate attention is refused the same way and re-driven separately.
+			// The hand-off
 			// path clears committedClaimHeld before this defer runs, so it never
 			// re-drives: the handed-over run drains the queue itself, and
 			// re-driving there would launch the second turn this claim prevents.
@@ -1137,6 +1139,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			// hand-off, start-input failure), and send holds no lock here, so the
 			// sweep cannot re-enter one it already holds.
 			s.driveChildrenWithUndeliveredAttention()
+			s.driveChildrenWithPendingDelegateAttention()
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
@@ -1210,13 +1213,11 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// failure exit below.
 	//
 	// The id-keyed childCommittedSendStart claim, taken in send immediately after
-	// CommitStart, already covers the pre-resolve stretch (CommitStart through
-	// restoreIdleForSend and the admitReconstructed/AttachRuntime leg). This
-	// per-child flag only has to cover what follows: from the point
-	// restoreIdleForSend has produced the child through the hand-off to the run.
-	// The one stretch no claim covers is the handful of instructions between
-	// CommitStart returning and the id-keyed claim being taken, which does no
-	// blocking work.
+	// ReserveStart and before CommitStart, already covers the pre-resolve stretch
+	// (the commit itself, restoreIdleForSend, and the
+	// admitReconstructed/AttachRuntime leg). This per-child flag only has to cover
+	// what follows: from the point restoreIdleForSend has produced the child
+	// through the hand-off to the run.
 	sub.mu.Lock()
 	blocked := sub.running || sub.driving
 	if !blocked {

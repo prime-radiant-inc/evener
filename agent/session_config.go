@@ -318,11 +318,11 @@ type testConfig struct {
 	// point and assert the committed start refuses a second turn.
 	delegateSendStartCommitted func(*subagent)
 	// delegateSendStartClaimed observes the committed send start at the earliest
-	// point in the window: immediately after CommitStart, when the id-keyed claim
-	// has been taken but restoreIdleForSend has NOT yet resolved the child. It
-	// receives the child SESSION id the claim is keyed by. Tests use it to drive
-	// the child before it is resolved and assert the id-keyed claim refuses a
-	// second turn.
+	// point in the window: immediately after ReserveStart and before CommitStart,
+	// when the id-keyed claim has been taken but restoreIdleForSend has NOT yet
+	// resolved the child. It receives the child SESSION id the claim is keyed by.
+	// Tests use it to drive the child before it is resolved and assert the
+	// id-keyed claim refuses a second turn.
 	delegateSendStartClaimed func(childSessionID string)
 	// delegateDeliveryCommitsTaken observes the tool-result boundary after inline
 	// delivery commits leave the pending map and before any transcript write.

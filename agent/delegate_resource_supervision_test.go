@@ -420,6 +420,96 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 	}
 }
 
+// TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAttention
+// pins the stable-delegate-attention half of the deferred-wake regression the
+// id-keyed committed-send-start claim introduced (#940). Attention wakes do not
+// travel the notification path: an armed attention reaches
+// driveStableDelegateAttention through the child's notify, and the claim makes
+// that return early. So attention armed while the claim is held is dropped
+// exactly like a queued notification, and driveChildrenWithUndeliveredAttention
+// does not see it. When the send FAILS after taking the claim -- here its start
+// reservation is aborted before the commit -- no run is handed over, and unless
+// the rollback also re-drives pending stable attention the armed attention sits
+// undriven forever.
+//
+// This test is load-bearing for that fix: with the rollback's attention re-drive
+// removed, the attention armed while the claim was held is never driven and the
+// child never runs a second turn.
+func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedAttention(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	var mu sync.Mutex
+	var claimSeen, wakeDropped bool
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateSendStartClaimed = func(childSessionID string) {
+			candidate := root.subagents.get(childSessionID)
+			if candidate == nil || candidate.sess == nil {
+				return
+			}
+			// A stable attention is armed with the claim held: arming notifies,
+			// the child's notify runs driveStableDelegateAttention, and the claim
+			// refuses it, leaving the attention pending and undriven.
+			armStableSupervisionAttention(t, candidate, "attention:redrive-dropped-wake", "inspect before the drive is admitted")
+			pending, err := candidate.sess.pendingDelegateAttentionIDs()
+			if err != nil {
+				t.Errorf("inspect armed attention: %v", err)
+			}
+			mu.Lock()
+			claimSeen = true
+			wakeDropped = root.childCommittedSendStart(childSessionID) && len(pending) > 0
+			mu.Unlock()
+			// Fail the send after the claim: abort the in-flight reservation so
+			// the commit below cannot hand a run over.
+			abortStableDelegateStartReservation(root, fixture.delegateID)
+		}
+	})
+
+	warmRequests := supervisionRequestCount(fixture.adapter)
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "must not launch", 1000)
+	if outcome.result.Err == nil {
+		t.Fatalf("aborted committed send start = %#v, want refusal", outcome.result)
+	}
+
+	mu.Lock()
+	seen, dropped := claimSeen, wakeDropped
+	mu.Unlock()
+	if !seen {
+		t.Fatal("the committed send start claim was never observed")
+	}
+	if !dropped {
+		t.Fatal("the claim did not leave the armed attention undriven")
+	}
+
+	// The rollback's attention re-drive is now the only thing that can drive the
+	// armed attention. TRIPWIRE: the rollback re-drive and the drive turn it
+	// launches are served by the scripted in-process adapter, so the attention
+	// drains in milliseconds; this bound only fires on the regression this test
+	// pins.
+	waitForCondition(t, 10*time.Second, "dropped attention redriven after the rollback", func() bool {
+		return supervisionRequestCount(fixture.adapter) > warmRequests
+	})
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	pending, err := sub.sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("inspect pending attention after rollback re-drive: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("child attention pending after rollback re-drive = %v, want none", pending)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != warmRequests+1 {
+		t.Fatalf("provider requests = %d, want warm plus one attention-drive turn", got)
+	}
+}
+
 // abortStableDelegateStartReservation aborts the delegate's outstanding start
 // reservation from inside a test seam, forcing the in-flight send down a
 // non-handoff exit after it has taken the committed-send-start claim.

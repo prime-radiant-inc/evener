@@ -4923,6 +4923,30 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 	s.renderUnreachableChildPendings(live)
 }
 
+// driveChildrenWithPendingDelegateAttention re-drives the stable delegate
+// attention a held committed-send-start claim refused (#940). Stable attention
+// wakes do not travel the notification path driveChildrenWithUndeliveredAttention
+// sweeps: they are stored on the child's transcript/controller and driven by
+// driveStableDelegateAttention, reached through the child's notify
+// (driveChildIfNotStopGated), which the claim makes return early. So attention
+// armed while the claim was held is DROPPED exactly like a queued notification
+// and, on a send that does not hand a run over, must be re-driven by the
+// rollback. The gates match driveChildrenWithUndeliveredAttention, including
+// childCommittedSendStart so a child whose own send still holds the claim is not
+// raced: the rollback releases its claim before calling this.
+func (s *Session) driveChildrenWithPendingDelegateAttention() {
+	if s == nil || s.delegateController == nil {
+		return
+	}
+	for _, sub := range s.liveDirectSubagents() {
+		child := sub.sess
+		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) || s.childCommittedSendStart(child.id) {
+			continue
+		}
+		s.driveStableDelegateAttention(sub)
+	}
+}
+
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
 // (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
