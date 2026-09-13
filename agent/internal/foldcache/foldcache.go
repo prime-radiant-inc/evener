@@ -607,6 +607,24 @@ func (c *Cache[T]) finishFlight(flightKey string) {
 }
 
 // Stats returns a snapshot of this cache's counters.
+// Epoch reports the generation Get would attach to path's next fold, without
+// folding anything: the generation this cache recorded for the path, and 0
+// for a path it has never folded — which is exactly what a first fold
+// assigns, since there is no prior state for it to have discarded. A caller
+// that has to name a path's generation WITHOUT paying for its fold (the
+// activity tree's depth-truncated children) gets the same number the fold
+// would have produced, unless the file is found rewritten in between — in
+// which case the fold's number is higher and the mismatch is the true
+// answer, not a false one.
+func (c *Cache[T]) Epoch(path string) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st := c.epochStates[path]; st != nil {
+		return st.epoch
+	}
+	return 0
+}
+
 func (c *Cache[T]) Stats() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -444,11 +444,20 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			// today row.descriptor.TranscriptRef is always
 			// encodeRef("", childID) too — this keeps the placeholder
 			// correct by construction rather than by that coincidence.
+			// The generations come along even though nothing is loaded:
+			// the depth-truncation continuation minted from this placeholder
+			// names the child, and a resume checks it against what the
+			// child's OWN load reports. Minting zeros for a session that
+			// folds real ones refuses a token nobody invalidated, which is
+			// this branch made unreadable past the limit.
+			placeholderJobs, placeholderDelegates := activityPlaceholderEpochs(loc, loaded, childID)
 			snapshot.Children[childID] = &activitySessionSnapshot{
 				SessionID:       childID,
 				Ref:             row.descriptor.TranscriptRef,
 				LiveJobs:        map[string]*jobstore.JobRecord{},
 				StableDelegates: map[string]delegateSnapshot{},
+				JobsEpoch:       placeholderJobs,
+				DelegatesEpoch:  placeholderDelegates,
 				Children:        map[string]*activitySessionSnapshot{},
 				Errors:          map[string]error{},
 			}
@@ -626,6 +635,27 @@ func liveActivitySessionLabel(s *Session) string {
 	}
 	s.mu.Unlock()
 	return activitySessionLabel(schema.SessionMeta{ID: id, Name: name, OriginalPrompt: prompt})
+}
+
+// activityPlaceholderEpochs reports the fold-cache generations childID's own
+// load would report, without paying for that load. A LIVE child folds neither
+// journal and reports zeros; a historical one reports what this process last
+// recorded for its jobs journal and for the delegates journal of the root its
+// metadata names — the same two numbers its own load derives, since a
+// never-folded path's generation is 0 and that is what its first fold
+// assigns. A journal actually rewritten between this read and that fold
+// raises the fold's number, and the resulting mismatch is the true answer.
+func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoadedBase, childID string) (jobs, delegates uint64) {
+	childLoc, err := resolveActivityChildByID(loc, loaded, childID)
+	if err != nil || childLoc.live != nil {
+		return 0, 0
+	}
+	stateDir := strings.TrimSpace(childLoc.stateDir)
+	if stateDir == "" {
+		return 0, 0
+	}
+	meta, _ := schema.LoadSessionMeta(stateDir, childID)
+	return currentHistoricalJobsEpoch(stateDir, childID), currentHistoricalDelegatesEpoch(stateDir, activityRootIDFromMeta(childID, meta))
 }
 
 func resolveActivityChildByID(parent activitySessionLocator, loaded activityLoadedBase, childID string) (activitySessionLocator, error) {

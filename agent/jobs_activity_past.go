@@ -489,6 +489,20 @@ func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, ro
 	return rows, diagnostics, nil
 }
 
+// currentHistoricalJobsEpoch and currentHistoricalDelegatesEpoch report the
+// generation each fold cache would attach to its next fold of these journals,
+// without folding them (foldcache.Cache.Epoch). They exist for the one caller
+// that must name a session's generations while deliberately not loading it —
+// a depth-truncated child, whose continuation is still checked against the
+// generations its own load reports.
+func currentHistoricalJobsEpoch(stateDir, sessionID string) uint64 {
+	return historicalJobFoldCache.Epoch(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
+}
+
+func currentHistoricalDelegatesEpoch(stateDir, rootSessionID string) uint64 {
+	return historicalDelegateFoldCache.Epoch(filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl"))
+}
+
 func activityRootIDFromMeta(sessionID string, meta schema.SessionMeta) string {
 	if rootID := strings.TrimSpace(meta.JobTreeRootSessionID); rootID != "" {
 		return rootID

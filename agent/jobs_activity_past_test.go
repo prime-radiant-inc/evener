@@ -1732,3 +1732,129 @@ func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *t
 		}
 	}
 }
+
+// depthChainFixture writes a delegate chain longer than the depth bound, all
+// under one root's shared delegate journal, and returns the chain's session
+// IDs. The node at the bound is the one projection truncates, and the
+// continuation it mints is what the tests below follow.
+func depthChainFixture(t *testing.T, stateDir, prefix string) []string {
+	t.Helper()
+	started := time.Unix(800, 0).UTC()
+	sessionIDs := make([]string, activityMaxNewDepth+5)
+	for i := range sessionIDs {
+		sessionIDs[i] = fmt.Sprintf("%s%d", prefix, i)
+	}
+	var descriptors []delegatestore.Descriptor
+	for i, id := range sessionIDs {
+		s1cov_writeJobLog(t, stateDir, id, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id,
+			Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started,
+		})
+		if i == 0 {
+			savePastActivityMeta(t, stateDir, id, "Root")
+		} else {
+			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
+		}
+		if i+1 < len(sessionIDs) {
+			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
+		}
+	}
+	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+	return sessionIDs
+}
+
+// depthBoundaryContinuation walks tree to the delegate the depth bound
+// truncated and returns its continuation.
+func depthBoundaryContinuation(t *testing.T, tree appwire.JobActivityTree) string {
+	t.Helper()
+	session := tree.Root
+	for {
+		var delegate *appwire.JobActivityDelegate
+		for i := range session.Entries {
+			if session.Entries[i].Delegate != nil {
+				delegate = session.Entries[i].Delegate
+			}
+		}
+		if delegate == nil {
+			t.Fatal("walked the chain without finding a truncated delegate")
+		}
+		if delegate.Child == nil {
+			if delegate.Branch.Continuation == "" {
+				t.Fatalf("depth-truncated delegate %q has no continuation: %+v", delegate.DelegateID, delegate.Branch)
+			}
+			return delegate.Branch.Continuation
+		}
+		session = *delegate.Child
+	}
+}
+
+// TestLoadSessionJobActivityTree_DepthContinuationResumesIntoAnUntouchedChild
+// pins that the depth bound stays readable. The truncated child is never
+// loaded, so the continuation minted for it has to name the generations its
+// own load will report rather than zeros: the shared delegate journal it
+// folds has a real generation as soon as anything rewrote it, and comparing
+// that against a minted zero refuses a token nobody invalidated, leaving
+// everything past the bound unreachable.
+func TestLoadSessionJobActivityTree_DepthContinuationResumesIntoAnUntouchedChild(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionIDs := depthChainFixture(t, stateDir, "depthresume")
+	rootID := sessionIDs[0]
+
+	// Warm the caches, then rewrite the shared delegate journal in place so
+	// its generation is past zero before the page below is minted.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	rewritten := time.Unix(3_000_000, 0)
+	if err := os.Chtimes(filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"), rewritten, rewritten); err != nil {
+		t.Fatalf("restamp the delegate journal: %v", err)
+	}
+
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	token := depthBoundaryContinuation(t, tree)
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err != nil {
+		t.Fatalf("depth continuation into an untouched child was rejected: %v", err)
+	}
+}
+
+// TestLoadSessionJobActivityTree_DepthContinuationRefusedAfterTheChildIsRewritten
+// is the other half: naming the generations must not become a rubber stamp.
+// A child whose own journal is rewritten between mint and resume is exactly
+// what a ResumeIndex cannot be applied across.
+func TestLoadSessionJobActivityTree_DepthContinuationRefusedAfterTheChildIsRewritten(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionIDs := depthChainFixture(t, stateDir, "depthrefuse")
+	rootID := sessionIDs[0]
+
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	token := depthBoundaryContinuation(t, tree)
+	cont, err := decodeActivityContinuation(token, rootID)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// A generation only moves for a fold that had to be discarded, so the
+	// child's journal has to have been folded once for its rewrite to be
+	// visible at all: a request rooted at the child itself does that, the
+	// same way any other reader of that session would have.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, cont.SessionID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("fold the child: %v", err)
+	}
+
+	rewritten := time.Unix(4_000_000, 0)
+	childJobs := filepath.Join(jobsDir(stateDir, cont.SessionID), "jobs.jsonl")
+	if err := os.Chtimes(childJobs, rewritten, rewritten); err != nil {
+		t.Fatalf("restamp the child journal: %v", err)
+	}
+
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+		t.Fatal("resumed into a depth-truncated child whose journal was rewritten; want the continuation refused")
+	} else if !strings.Contains(err.Error(), "underlying journal changed") {
+		t.Fatalf("error = %v, want a journal-changed staleness error", err)
+	}
+}
