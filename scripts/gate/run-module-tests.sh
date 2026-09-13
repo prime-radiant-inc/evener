@@ -26,8 +26,8 @@
 #
 # Every `go list ./...` this script runs to enumerate a module's packages — the
 # root module's, and the agent module's subpackage list — is bounded:
-# EVENER_ROOT_PACKAGE_LIST_TIMEOUT
-# seconds per attempt (default 60) over EVENER_ROOT_PACKAGE_LIST_ATTEMPTS
+# EVENER_PACKAGE_LIST_TIMEOUT
+# seconds per attempt (default 60) over EVENER_PACKAGE_LIST_ATTEMPTS
 # attempts (default 3), a timed-out attempt being the only one retried. Raise
 # the per-attempt budget on a host slower than that; the failure diagnostic
 # names both knobs. A timed-out attempt is stopped by process group, SIGTERM
@@ -190,19 +190,19 @@ export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(gate_budget 6
 # ceiling. An attempt that times out and whose group then dies cleanly costs
 # TIMEOUT plus the second of backoff before the next one, so exhausting the
 # attempts at the defaults below is 3 x 60s + 2 x 1s = 182s. A group that will
-# not die costs up to two stop graces on top (ROOT_PACKAGE_LIST_STOP_GRACE for
+# not die costs up to two stop graces on top (PACKAGE_LIST_STOP_GRACE for
 # SIGTERM, then the same for SIGKILL) and ends the run on that attempt instead
 # of retrying: 60s + 10s = 70s if it happens on the first attempt, 192s if it
 # happens on the last. Nothing reaches the sum of both, because the two cases
 # are alternatives.
-ROOT_PACKAGE_LIST_TIMEOUT=${EVENER_ROOT_PACKAGE_LIST_TIMEOUT:-60}
-if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+PACKAGE_LIST_TIMEOUT=${EVENER_PACKAGE_LIST_TIMEOUT:-60}
+if [[ ! "$PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'run-module-tests.sh: EVENER_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$PACKAGE_LIST_TIMEOUT" >&2
 	exit 2
 fi
-ROOT_PACKAGE_LIST_ATTEMPTS=${EVENER_ROOT_PACKAGE_LIST_ATTEMPTS:-3}
-if [[ ! "$ROOT_PACKAGE_LIST_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
-	printf 'run-module-tests.sh: EVENER_ROOT_PACKAGE_LIST_ATTEMPTS must be a positive integer (got %q)\n' "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
+PACKAGE_LIST_ATTEMPTS=${EVENER_PACKAGE_LIST_ATTEMPTS:-3}
+if [[ ! "$PACKAGE_LIST_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'run-module-tests.sh: EVENER_PACKAGE_LIST_ATTEMPTS must be a positive integer (got %q)\n' "$PACKAGE_LIST_ATTEMPTS" >&2
 	exit 2
 fi
 # Seconds to wait for a stopped attempt's process group to empty after each of
@@ -210,7 +210,7 @@ fi
 # reaches the end of either wait, so the ordinary stop costs milliseconds. Not
 # an environment knob: nothing a caller does should be able to shorten the
 # window that proves the attempt is gone.
-ROOT_PACKAGE_LIST_STOP_GRACE=5
+PACKAGE_LIST_STOP_GRACE=5
 
 # The gate's test-selection surface lives in one shared file so the coverage
 # ratchet can measure exactly what this gate proves; see gate-surface-lib.sh.
@@ -323,7 +323,7 @@ stop_recorded_package_list_groups() {
 			# wait is the stop's own grace, for the same reason: it is how long
 			# this script is willing to spend proving an attempt is not running.
 			waited=0
-			while [ "$waited" -lt "$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))" ]; do
+			while [ "$waited" -lt "$((PACKAGE_LIST_STOP_GRACE * 10))" ]; do
 				sleep 0.1
 				recorded="$(cat "$pgid_file" 2>/dev/null)"
 				[ -n "$recorded" ] && break
@@ -380,7 +380,7 @@ stop_recorded_package_list_groups() {
 		# writing a package list and holding Go's cache locks with no name left for
 		# them.
 		stop_status=0
-		stop_pgroup "$recorded" "$ROOT_PACKAGE_LIST_STOP_GRACE" || stop_status=$?
+		stop_pgroup "$recorded" "$PACKAGE_LIST_STOP_GRACE" || stop_status=$?
 		if [ "$stop_status" -eq 0 ]; then
 			rm -f "$pgid_file"
 			continue
@@ -465,12 +465,12 @@ package_list_timeout_diagnostic() {
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
-	if [ "$attempts_made" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
+	if [ "$attempts_made" -ge "$PACKAGE_LIST_ATTEMPTS" ]; then
 		printf 'run-module-tests.sh: go list ./... timed out after %ss on each of %s attempts.\n' \
-			"$ROOT_PACKAGE_LIST_TIMEOUT" "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
+			"$PACKAGE_LIST_TIMEOUT" "$PACKAGE_LIST_ATTEMPTS" >&2
 	else
 		printf 'run-module-tests.sh: go list ./... timed out after %ss on attempt %s of %s.\n' \
-			"$ROOT_PACKAGE_LIST_TIMEOUT" "$attempts_made" "$ROOT_PACKAGE_LIST_ATTEMPTS" >&2
+			"$PACKAGE_LIST_TIMEOUT" "$attempts_made" "$PACKAGE_LIST_ATTEMPTS" >&2
 	fi
 	printf 'run-module-tests.sh: worktree/module: %s (%s)\n' "$worktree" "$module" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
@@ -493,8 +493,8 @@ package_list_timeout_diagnostic() {
 	printf '  cd %q && GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
 		"$repo_root" "$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
 	printf 'run-module-tests.sh: or give a slow host more room per attempt:\n' >&2
-	printf '  cd %q && EVENER_ROOT_PACKAGE_LIST_TIMEOUT=%s scripts/gate/run-module-tests.sh -short -count=1\n' \
-		"$repo_root" "$((ROOT_PACKAGE_LIST_TIMEOUT * 2))" >&2
+	printf '  cd %q && EVENER_PACKAGE_LIST_TIMEOUT=%s scripts/gate/run-module-tests.sh -short -count=1\n' \
+		"$repo_root" "$((PACKAGE_LIST_TIMEOUT * 2))" >&2
 }
 
 # package_list_escalate PID — the last thing to do for an attempt nothing can
@@ -511,7 +511,7 @@ package_list_escalate() {
 	local pid="$1"
 	kill -TERM -- -"$pid" 2>/dev/null || :
 	kill -TERM "$pid" 2>/dev/null || :
-	sleep "$ROOT_PACKAGE_LIST_STOP_GRACE"
+	sleep "$PACKAGE_LIST_STOP_GRACE"
 	kill -KILL -- -"$pid" 2>/dev/null || :
 	kill -KILL "$pid" 2>/dev/null || :
 }
@@ -564,7 +564,7 @@ stop_package_list_attempt() {
 		if [ -z "$live" ]; then
 			return 3
 		fi
-		stop_pgroup "$pid" "$ROOT_PACKAGE_LIST_STOP_GRACE" || status=$?
+		stop_pgroup "$pid" "$PACKAGE_LIST_STOP_GRACE" || status=$?
 	elif [ -n "$runner_pgid" ] && [ "$pgid" = "$runner_pgid" ]; then
 		# Recorded itself, not split yet: still in the runner's own group, so
 		# the pid is the only aim there is. It has to be taken now — left alone
@@ -572,7 +572,7 @@ stop_package_list_attempt() {
 		# it, because the cleanup's group probe finds that group empty while the
 		# pid is still the runner's. It has spawned nothing yet either, since it
 		# becomes `go` only at the exec after the split.
-		stop_pid "$pid" "$ROOT_PACKAGE_LIST_STOP_GRACE" || status=$?
+		stop_pid "$pid" "$PACKAGE_LIST_STOP_GRACE" || status=$?
 		if [ "$status" -eq 2 ]; then
 			package_list_escalate "$pid"
 			package_list_stop_reason="$listing_failed"
@@ -580,7 +580,7 @@ stop_package_list_attempt() {
 		fi
 		if [ "$status" -ne 0 ]; then
 			package_list_stop_reason="$(printf 'pid %s had not split into a group of its own and did not go after SIGTERM and SIGKILL with %ss of grace each.' \
-				"$pid" "$ROOT_PACKAGE_LIST_STOP_GRACE")"
+				"$pid" "$PACKAGE_LIST_STOP_GRACE")"
 			return 1
 		fi
 		# The group read above is a snapshot and the attempt splits off the
@@ -593,7 +593,7 @@ stop_package_list_attempt() {
 			return 2
 		fi
 		if [ -n "$live" ]; then
-			stop_pgroup "$pid" "$ROOT_PACKAGE_LIST_STOP_GRACE" || status=$?
+			stop_pgroup "$pid" "$PACKAGE_LIST_STOP_GRACE" || status=$?
 		fi
 	else
 		# No group here this script may aim at, and every fallback is worse than
@@ -614,7 +614,7 @@ stop_package_list_attempt() {
 		;;
 	esac
 	package_list_stop_reason="$(printf 'process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each.' \
-		"$pid" "$(pgroup_survivor_report "$pid")" "$ROOT_PACKAGE_LIST_STOP_GRACE")"
+		"$pid" "$(pgroup_survivor_report "$pid")" "$PACKAGE_LIST_STOP_GRACE")"
 	return 1
 }
 
@@ -647,7 +647,7 @@ run_bounded_package_list() {
 		# attempt keeps writing to the file it opened, which no later attempt
 		# names and nothing ever reads.
 		attempt_list="${package_list}.attempt${attempt}"
-		printf '=== go list ./... attempt %s of %s ===\n' "$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" >>"$package_list_stderr"
+		printf '=== go list ./... attempt %s of %s ===\n' "$attempt" "$PACKAGE_LIST_ATTEMPTS" >>"$package_list_stderr"
 		# The attempt is spawned into its own process group so that
 		# stop_pgroup can stop it as one. perl's setpgrp(0, 0)
 		# does that inside the child, between fork and exec, where this shell
@@ -694,7 +694,7 @@ run_bounded_package_list() {
 		list_pid="$!"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
-			if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
+			if [ $((SECONDS - started_at)) -ge "$PACKAGE_LIST_TIMEOUT" ]; then
 				if ! kill -0 "$list_pid" 2>/dev/null; then
 					# It finished inside the last poll interval. Nothing to
 					# stop; take the completion path below.
@@ -766,7 +766,7 @@ run_bounded_package_list() {
 						return "$list_status"
 						;;
 				esac
-				if [ "$attempt" -ge "$ROOT_PACKAGE_LIST_ATTEMPTS" ]; then
+				if [ "$attempt" -ge "$PACKAGE_LIST_ATTEMPTS" ]; then
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
 					return 1
 				fi
@@ -774,7 +774,7 @@ run_bounded_package_list() {
 				# and the copy the report replays are the same string to grep
 				# for.
 				printf 'run-module-tests.sh: %s: go list ./... attempt %s of %s timed out after %ss; retrying.\n' \
-					"$module" "$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" "$ROOT_PACKAGE_LIST_TIMEOUT" \
+					"$module" "$attempt" "$PACKAGE_LIST_ATTEMPTS" "$PACKAGE_LIST_TIMEOUT" \
 					| tee -a "$(package_list_retry_path "$module")" >&2
 				sleep 1
 				attempt=$((attempt + 1))

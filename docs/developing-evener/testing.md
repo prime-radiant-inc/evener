@@ -319,8 +319,8 @@ module's subpackage enumeration goes through the same bound, for the same
 reason: it reads the same caches, and it runs after the root bound has already
 been reported, where an unbounded hang is exactly what that bound cannot help
 with. The bound is a
-tripwire on a stall, not a budget for the work: `EVENER_ROOT_PACKAGE_LIST_TIMEOUT`
-seconds per attempt (default 60) over `EVENER_ROOT_PACKAGE_LIST_ATTEMPTS`
+tripwire on a stall, not a budget for the work: `EVENER_PACKAGE_LIST_TIMEOUT`
+seconds per attempt (default 60) over `EVENER_PACKAGE_LIST_ATTEMPTS`
 attempts (default 3, one second apart), so a run that never lists its packages
 fails rather than hanging. What that costs has two cases, not one ceiling: when
 each timed-out attempt's process group dies cleanly, exhausting the attempts is
