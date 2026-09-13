@@ -903,7 +903,7 @@ func TestCache_SameSizeRewriteKeepingItsTailBumpsTheGeneration(t *testing.T) {
 	// 64 the probe reads -- byte-identical.
 	rewritten := make([]int, len(original))
 	copy(rewritten, original)
-	for i := 0; i < 18; i++ {
+	for i := range 18 {
 		rewritten[i] = 99
 	}
 	writeLines(t, path, rewritten)
