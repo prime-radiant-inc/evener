@@ -240,8 +240,134 @@ export function chromeProfileIsolationArgs(platform = process.platform) {
 export function chromeProfileEnvironment(profileDir, environment = process.env) {
   return {
     ...environment,
+    // Chrome's process singleton creates its socket directory under the temp
+    // directory, so the launcher's long scratch TMPDIR would push the derived
+    // SingletonSocket path past sun_path (issue #1141). The profile is already
+    // minted under a short root and bounded so this derived path fits; pointing
+    // TMPDIR at it keeps every socket Chrome binds short and reaps them with the
+    // profile.
+    TMPDIR: profileDir,
     BREAKPAD_DUMP_LOCATION: path.join(profileDir, "Crashpad"),
   };
+}
+
+// Chrome's process singleton mints a socket directory under the TEMP DIRECTORY
+// (base::GetTempDir(), i.e. $TMPDIR) named <branding>.<6 random chars> and binds
+// SingletonSocket inside it, and it also puts a SingletonSocket in the profile.
+// AF_UNIX's sun_path is 108 bytes including the terminating NUL, so the usable
+// path is 107 bytes; a longer one makes Chrome abort with "Socket path too long"
+// before DevTools is up (issue #1141). A guard run whose scratch TMPDIR is a
+// nested agent-sandbox path overflows that budget. Both halves of the fix live
+// here: the profile is minted under a short root chosen independently of the
+// ambient TMPDIR, and Chrome is launched with TMPDIR pointed at that short
+// profile (chromeProfileEnvironment) so its temp socket directory lands there
+// too. createChromeProfileDir bounds the profile so the derived socket path
+// always fits.
+export const CHROME_SOCKET_PATH_LIMIT = 107;
+// The branding component for a Google Chrome build. A Chromium build names its
+// singleton directory org.chromium.Chromium instead (4 bytes longer), which
+// only bites when a caller's prefix is trimmed to the very last byte under a
+// long ambient TMPDIR.
+const CHROME_SINGLETON_SUFFIX = "/com.google.Chrome.XXXXXX/SingletonSocket";
+// Node's mkdtemp appends this many random characters to its prefix.
+const CHROME_PROFILE_RANDOM_CHARS = 6;
+
+export function chromeSingletonSocketPath(profileDir) {
+  return `${profileDir}${CHROME_SINGLETON_SUFFIX}`;
+}
+
+// Candidate roots, most preferred first. /private/tmp precedes /tmp so macOS
+// resolves to the canonical short root rather than the long /var/folders/...
+// path os.tmpdir() returns. The ambient TMPDIR is last: it is only used when no
+// short root is usable, and only when the derived socket path still fits.
+export function chromeProfileRootCandidates({ platform = process.platform, ambient = tmpdir() } = {}) {
+  if (platform === "win32") return [ambient];
+  return [...new Set(["/private/tmp", "/tmp", "/var/tmp", ambient])];
+}
+
+function maxProfilePrefixBytes(root, socketLimit) {
+  return (
+    socketLimit -
+    Buffer.byteLength(root) -
+    // path separator between the root and the profile directory
+    1 -
+    CHROME_PROFILE_RANDOM_CHARS -
+    Buffer.byteLength(CHROME_SINGLETON_SUFFIX)
+  );
+}
+
+// The base directory a Chrome profile should be minted under, independent of a
+// long ambient TMPDIR. Pure path selection: the caller may inject `exists`.
+export function chromeProfileRoot({
+  platform = process.platform,
+  ambient = tmpdir(),
+  socketLimit = CHROME_SOCKET_PATH_LIMIT,
+  exists = existsSync,
+} = {}) {
+  const candidates = chromeProfileRootCandidates({ platform, ambient });
+  for (const root of candidates) {
+    if (platform !== "win32" && maxProfilePrefixBytes(root, socketLimit) <= 0) continue;
+    if (platform !== "win32" && !exists(root)) continue;
+    return root;
+  }
+  return ambient;
+}
+
+function trimToByteBudget(text, budget) {
+  if (Buffer.byteLength(text) <= budget) return text;
+  let end = text.length;
+  while (end > 0 && Buffer.byteLength(text.slice(0, end)) > budget) end -= 1;
+  return text.slice(0, end);
+}
+
+// Mint the private profile Chrome is pointed at with --user-data-dir. The
+// caller's prefix stays the directory's leading component (callers and tests use
+// it to identify the run) but is trimmed when it would push the derived socket
+// path past the limit -- the invariant is that the path Chrome binds always
+// fits, whatever the ambient TMPDIR. Each candidate root is tried in order so an
+// unwritable /tmp still falls through; failure to fit any root is fatal.
+export function createChromeProfileDir(
+  profilePrefix,
+  {
+    platform = process.platform,
+    ambient = tmpdir(),
+    socketLimit = CHROME_SOCKET_PATH_LIMIT,
+    makeTempDir = mkdtempSync,
+    exists = existsSync,
+  } = {},
+) {
+  const candidates = chromeProfileRootCandidates({ platform, ambient });
+  let lastError = null;
+  for (const root of candidates) {
+    if (platform !== "win32" && !exists(root)) continue;
+    // win32 has no sun_path to fit, so keep the caller's whole identifying
+    // prefix there; this matches the win32 exemptions on the existence check
+    // below and on the fit check after mkdtemp.
+    const prefix =
+      platform === "win32"
+        ? profilePrefix
+        : trimToByteBudget(profilePrefix, maxProfilePrefixBytes(root, socketLimit));
+    let dir;
+    try {
+      // Keep a trailing separator when the prefix was trimmed away so mkdtemp
+      // appends its random characters INSIDE the root rather than beside it.
+      const template = `${root.replace(/[\\/]+$/, "")}${path.sep}${prefix}`;
+      dir = makeTempDir(template);
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+    if (platform === "win32" || Buffer.byteLength(chromeSingletonSocketPath(dir)) <= socketLimit) {
+      return dir;
+    }
+    rmSync(dir, { recursive: true, force: true });
+    lastError = new Error(
+      `profile ${dir} would put Chrome's singleton socket past the ${socketLimit}-byte sun_path limit`,
+    );
+  }
+  throw new Error(
+    `could not mint a Chrome profile whose socket path fits ${socketLimit} bytes (tried ${candidates.join(", ")}): ${lastError?.message ?? "no usable root"}`,
+  );
 }
 
 function childHasExited(child) {
@@ -790,7 +916,7 @@ export async function startBrowserGuard({
   const resolvedChrome = chromeBinary ?? findChrome();
   const vitePort = 0;
   let actualVitePort = vitePort;
-  const profileDir = mkdtempSync(path.join(tmpdir(), profilePrefix));
+  const profileDir = createChromeProfileDir(profilePrefix);
   let vite = null;
   let chrome = null;
   let viteErr = "";
