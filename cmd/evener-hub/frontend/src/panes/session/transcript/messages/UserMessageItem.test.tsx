@@ -211,8 +211,9 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
 });
 
 // Option B restores the 2026-07-30 chat bubble for the user's own words:
-// an --accent-bg wash hugging the content with the tail corner toward the
-// avatar. Serif prose stays; only the containment returns.
+// an --accent-bg wash hugging the content (corners uniformly 4px under the
+// editorial scale, so no distinct tail renders). Serif prose stays; only
+// the containment returns.
 test("the user reading surface is an accent bubble hugging its content column", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");

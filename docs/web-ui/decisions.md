@@ -15,7 +15,9 @@ with serif prose kept for both speakers.
 
 **User messages** get the exact pre-editorial bubble back
 (`usermessageitem.module.css`): `--accent-bg` fill, `fit-content` hug,
-tail corner toward the avatar, `space-2/space-3` padding. Known tension,
+`space-2/space-3` padding. The corners are uniformly 4px under the editorial
+radius scale, so the pre-editorial chat tail toward the avatar does not
+render as a distinct shape (roborev PR 1260). Known tension,
 accepted: accent means focus/selection/links under editorial law, not
 "user". If that reuse bothers later, the fallback is a neutral wash keeping
 this same geometry.

@@ -10,6 +10,10 @@ function turn(id: string, items: ItemModel[]): TurnModel {
   return { id, items, status: "completed" } as TurnModel;
 }
 
+function liveTurn(id: string, items: ItemModel[]): TurnModel {
+  return { id, items, status: "inProgress" } as TurnModel;
+}
+
 test("last text-bearing agent message before the next user message closes the exchange", () => {
   const closers = exchangeClosersFor([
     turn("t1", [item("u1", "userMessage"), item("a1", "agentMessage"), item("a2", "agentMessage")]),
@@ -110,6 +114,26 @@ test("an in-progress item before the last prose still suppresses: the wash means
       item("c1", "commandExecution", { status: "inProgress" }),
       item("a1", "agentMessage"),
     ]),
+  ]);
+  expect(closers.size).toBe(0);
+});
+
+test("a streaming agentMessage (inProgress, no settled text yet) never closes", () => {
+  const closers = exchangeClosersFor([
+    turn("t1", [item("u1", "userMessage"), item("a1", "agentMessage", { status: "inProgress", text: "" })]),
+  ]);
+  expect(closers.size).toBe(0);
+});
+
+test("a live turn whose items are all settled still suppresses: the next item has not started", () => {
+  const closers = exchangeClosersFor([liveTurn("t1", [item("u1", "userMessage"), item("a1", "agentMessage")])]);
+  expect(closers.size).toBe(0);
+});
+
+test("a completed turn followed by a live continuation closes nothing", () => {
+  const closers = exchangeClosersFor([
+    turn("t1", [item("u1", "userMessage"), item("a1", "agentMessage")]),
+    liveTurn("t2", [item("c1", "commandExecution", { status: "inProgress" })]),
   ]);
   expect(closers.size).toBe(0);
 });

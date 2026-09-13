@@ -45,6 +45,13 @@ export function exchangeClosersFor(turns: TurnModel[]): ReadonlySet<string> {
         if (item.text) pending = item.id;
       }
     }
+    // A live turn suppresses the close even when none of its items is
+    // individually in-progress: between item/completed and the next
+    // item/started the turn is still working, and closing there would paint
+    // the wash only to clear it on the next item (roborev PR 1260).
+    // Evaluated after the item scan so a turn that OPENS the exchange
+    // mid-turn still counts as live work.
+    if (turn.status === "inProgress" && inExchange) exchangeLive = true;
   }
   flush();
 
