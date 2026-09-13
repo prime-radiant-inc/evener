@@ -1,4 +1,4 @@
-import type { CommandDescriptor } from "../../protocol/types.gen";
+import type { CommandDescriptor } from "./types.gen";
 
 // slashCommandInvocation is the one place that decides what a user actually
 // types to invoke a catalog command: a plugin-sourced command with a known
@@ -6,8 +6,8 @@ import type { CommandDescriptor } from "../../protocol/types.gen";
 // only resolves the FIRST plugin registering that name - see app_rpc.go's
 // own dispatch), everything else (user commands, and plugin commands
 // without a pluginName, e.g. a stub catalog entry in a test) is unambiguous
-// as bare "/name". Shared verbatim by catalogCommands below (what the
-// palette's activateCommand inserts, via the stored field on Command) and
+// as bare "/name". Shared verbatim by the palette's catalogCommands (what
+// its activateCommand inserts, via the stored field on Command) and
 // composer/Composer.tsx's commitSlashCompletion (the inline "/" menu's
 // insert) - a single source of truth for the qualification rule, so the two
 // insertion paths can never drift back out of sync the way they did before

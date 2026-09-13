@@ -54,6 +54,8 @@ async function qualify() {
     "docContent",
     "submitRouting",
     "displayFormat",
+    "toolCallText",
+    "catalogCommands",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -137,6 +139,19 @@ async function qualify() {
     "firstLine",
     "splitMandate",
     "plainQuoteLine",
+    "clip",
+    "clipJobID",
+    "tailSlice",
+    "tailFold",
+    "formatToolDuration",
+    "formatByteCount",
+    "lineCount",
+    "parseArgs",
+    "parseJSONObject",
+    "trailingBracketFooter",
+    "str",
+    "slashCommandInvocation",
+    "visibleCatalogCommands",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -220,8 +235,21 @@ assert.equal(client.formatElapsed(65000), "1m05s");
 assert.equal(client.firstLine("\\n  hello  \\n", 20), "hello");
 assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest: "rest" });
 assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
+assert.equal(client.slashCommandInvocation({ name: "plan", source: "plugin", pluginName: "acme" }), "/acme:plan");
+assert.deepEqual(client.visibleCatalogCommands([{ name: "plan", source: "plugin", pluginName: "acme" }], new Set()), []);
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
+assert.equal(client.clip("hello", 3), "hel\u2026");
+assert.equal(client.clipJobID("job"), "job");
+assert.equal(client.tailSlice("hello", 2), "lo");
+assert.equal(client.tailFold("hello", 99), "hello");
+assert.equal(client.formatToolDuration(0), "1ms");
+assert.equal(client.formatByteCount(1), "1 byte");
+assert.equal(client.lineCount("a\\nb\\n"), 2);
+assert.deepEqual(client.parseArgs("not json"), {});
+assert.equal(client.parseJSONObject("[]"), undefined);
+assert.equal(client.trailingBracketFooter("done [exit 0]"), "exit 0");
+assert.equal(client.str({ path: "/tmp" }, "path"), "/tmp");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

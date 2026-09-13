@@ -21,13 +21,13 @@
 
 import { useRef } from "react";
 import type { ItemModel } from "../../../../protocol/model";
+import { parseArgs, str, trailingBracketFooter } from "../../../../protocol/toolCallText";
 import { useThreadsStore } from "../../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps, ToolSummaryContext } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { parseArgs, str, trailingBracketFooter } from "./helpers";
 
 const TAIL_MAX_CHARS = 8000;
 
