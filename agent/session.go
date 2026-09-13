@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -61,12 +62,32 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 // removes an entry rather than starting or finishing a job: a delegate
 // appearing shifts its owner's sorted delegate list, and a live continuation
 // minted before it must be refused rather than applied to a list that moved
-// under it.
+// under it. The move is only in memory until persistJobTreeShapeChange runs,
+// which is why the two are separate: this one is called while the delegate
+// tree's own lock is held.
 func (s *Session) noteJobTreeShapeChange() {
 	if s == nil {
 		return
 	}
-	s.jobActivityClock.nextRevision()
+	if _, _, ok := s.jobActivityClock.nextRevision(); ok {
+		s.jobTreeShapeUnsaved.Store(true)
+	}
+}
+
+// persistJobTreeShapeChange writes the session's metadata when a shape change
+// has moved the activity clock since the last save, the same way
+// emitWithJobTreeRevision persists the moves a job start or finish makes.
+// Without it a restart restores the revision from before the delegate
+// appeared, and a continuation minted against the older list is accepted
+// against the newer one. It runs off the delegate tree's lock: the save takes
+// the session's own locks, which must never be waited on from behind that one.
+func (s *Session) persistJobTreeShapeChange() {
+	if s == nil {
+		return
+	}
+	if s.jobTreeShapeUnsaved.CompareAndSwap(true, false) {
+		s.maybeAutoSave()
+	}
 }
 
 func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bool) {
@@ -233,6 +254,11 @@ type Session struct {
 	// before mu by maybeAutoSave, preventing an older snapshot from waiting behind
 	// and then overwriting a newer save from another goroutine.
 	metaSaveMu sync.Mutex
+
+	// jobTreeShapeUnsaved records that the activity clock moved for a change
+	// in the tree's shape (a delegate created) whose new revision has not
+	// reached the session's metadata yet — see noteJobTreeShapeChange.
+	jobTreeShapeUnsaved atomic.Bool
 	// goalUpdateMu serializes each goal-store mutation with the GOAL_UPDATED event
 	// that announces it. It is always acquired before mu; emit runs after mu is
 	// released, so observers see mutation order without event emission under mu.

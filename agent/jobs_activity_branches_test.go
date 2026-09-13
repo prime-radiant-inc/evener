@@ -1334,3 +1334,45 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 		t.Fatalf("error = %v, want a live-session-changed staleness error", err)
 	}
 }
+
+// TestJobTreeShapeChange_SurvivesARestart pins that the revision a delegate
+// creation moves reaches the session's metadata. The live fence is only worth
+// the durability of the number behind it: a restart restores the clock from
+// the last saved revision, so a move that never reached disk lets a
+// continuation minted against the old delegate list be accepted against the
+// new one — the very reordering the fence exists to catch.
+func TestJobTreeShapeChange_SurvivesARestart(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir}),
+		withoutGitSnapshot(),
+	)
+	s.maybeAutoSave()
+	before := activityCurrentRootRevision(s.jobActivityClock)
+
+	// What appending a delegate_created event does, and what the commit that
+	// appended it does once it is off the delegate tree's lock.
+	s.noteJobTreeShapeChange()
+	moved := activityCurrentRootRevision(s.jobActivityClock)
+	if moved <= before {
+		t.Fatalf("revision = %d, want it past %d", moved, before)
+	}
+	s.persistJobTreeShapeChange()
+
+	meta, err := schema.LoadSessionMeta(stateDir, s.ID())
+	if err != nil {
+		t.Fatalf("load meta: %v", err)
+	}
+	if meta.JobTreeRevision < moved {
+		t.Fatalf("persisted JobTreeRevision = %d, want at least %d -- a restart would restore a revision from before the delegate appeared and accept a continuation minted against the old list", meta.JobTreeRevision, moved)
+	}
+
+	// A restore reads that number back, so the continuation minted before the
+	// delegate appeared stays refused.
+	restored := newJobActivityClock(s.ID())
+	restored.ensureAtLeast(meta.JobTreeRevision)
+	if activityCurrentRootRevision(restored) < moved {
+		t.Fatalf("restored revision = %d, want at least %d", activityCurrentRootRevision(restored), moved)
+	}
+}
