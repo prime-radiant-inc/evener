@@ -64,7 +64,10 @@ test-native: test-native-bundle
 ##   tree; no device, simulator, packager, hub, or provider. Runs with a
 ##   private process home and temporary root and passes --clear, so the
 ##   verdict never comes from a warm Metro cache. ~9s on a developer Mac;
-##   EVENER_NATIVE_BUNDLE_TIMEOUT (default 600s) bounds a hung bundler.
+##   EVENER_NATIVE_BUNDLE_TIMEOUT (default 600s) bounds a hung bundler and
+##   EVENER_NATIVE_BUNDLE_STOP_GRACE (default 5s) bounds the stop that
+##   follows. Every exit path, interrupts included, stops the bundler's whole
+##   process group.
 ## fails-when: Metro cannot resolve a module, the bundle or Hermes step fails,
 ##   or the run exceeds the timeout.
 test-native-bundle:
