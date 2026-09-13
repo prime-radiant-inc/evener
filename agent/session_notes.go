@@ -153,7 +153,9 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 			if value == nil {
 				return "", false, nil
 			}
-			return *value, true, nil
+			// The roster renders what this returns and never goes through a
+			// Session, so the load-path strip has to happen here too.
+			return stripNoteControls(*value), true, nil
 		}
 		if err := skipValue(); err != nil {
 			return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
@@ -184,20 +186,48 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 // terminals (the TUI details drawer, the transcript's human-note echo, the notes
 // tool output).
 func normalizeNote(text string) string {
-	if strings.ContainsFunc(text, isNoteControl) {
-		text = strings.Map(func(r rune) rune {
-			if isNoteControl(r) {
-				return -1
-			}
-			return r
-		}, text)
-	}
+	text = stripNoteControls(text)
 	collapsed := strings.Join(strings.Fields(text), " ")
 	runes := []rune(collapsed)
 	if len(runes) > sessionNoteMaxRunes {
 		collapsed = string(runes[:sessionNoteMaxRunes])
 	}
 	return collapsed
+}
+
+// stripNoteControls removes every non-whitespace control character from text
+// bound for stored notes state or a terminal, leaving the whitespace controls
+// to the caller's collapse. It is the write-path rule and the load-path rule in
+// one place: values persisted before the strip existed are normalized when they
+// are read back again (the restore path, the mutation-snapshot load, and the
+// roster's own reader), so a legacy note cannot reach a terminal.
+func stripNoteControls(text string) string {
+	if !strings.ContainsFunc(text, isNoteControl) {
+		return text
+	}
+	return strings.Map(func(r rune) rune {
+		if isNoteControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+// sanitizeRestoredURLs normalizes a persisted URL list on load. Labels are note
+// text and are normalized like one, and a URL's own control characters are
+// stripped: canonicalSessionURL refuses such input today, so only rows written
+// before that check can carry any.
+func sanitizeRestoredURLs(urls []schema.SessionURL) []schema.SessionURL {
+	if len(urls) == 0 {
+		return nil
+	}
+	sanitized := make([]schema.SessionURL, 0, len(urls))
+	for _, entry := range urls {
+		entry.URL = stripNoteControls(entry.URL)
+		entry.Label = normalizeNote(entry.Label)
+		sanitized = append(sanitized, entry)
+	}
+	return sanitized
 }
 
 // isNoteControl reports whether r is a control character the whitespace collapse

@@ -1031,8 +1031,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
 	s.pinnedNote = meta.PinnedNote
-	s.agentNote = meta.AgentNote
-	s.sessionURLs = append([]schema.SessionURL(nil), meta.SessionURLs...)
+	// Legacy values predate the write-path control strip: a note or URL label
+	// persisted then can still drive a terminal through the details drawer, the
+	// model copy or the tool output. Normalizing at the load boundary closes
+	// that for resumed sessions, and the next metadata save persists the cleaned
+	// values.
+	s.agentNote = normalizeNote(meta.AgentNote)
+	s.sessionURLs = sanitizeRestoredURLs(meta.SessionURLs)
 	// Seed the notes-projection record from the raw form captured above, so the
 	// change-gated projection (maybeAppendNotesContext) does not re-emit a
 	// snapshot the model already saw: the last NOTES_CONTEXT turn in the resumed

@@ -49,6 +49,14 @@ func loadClientMutationSnapshotFS(fs afero.Fs, stateDir, sessionID string) (clie
 	if err != nil {
 		return clientMutationSnapshot{}, err
 	}
+	// A note written before the write-path control strip can still carry
+	// terminal controls. Normalizing at load covers every reader of the
+	// authority at once (the session's store, the published committed cut, and
+	// ReadCanonicalHumanNote), and the next commit persists the cleaned value.
+	if snapshot.HumanNote != nil {
+		cleaned := stripNoteControls(*snapshot.HumanNote)
+		snapshot.HumanNote = &cleaned
+	}
 	forgetRunningTurnNoOneOwns(&snapshot)
 	return snapshot, nil
 }
