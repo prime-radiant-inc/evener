@@ -202,7 +202,12 @@ while :; do
 	attempt_pid=$!
 	attempt_status=0
 	wait "$attempt_pid" || attempt_status=$?
+	# Reaped, so both names for it go now, before the backoff below gives a
+	# signal somewhere to land. A record left holding `pgid:N` for an attempt
+	# that has been collected names whatever the kernel gives that number to
+	# next, and the trap would aim a SIGTERM and a SIGKILL at it.
 	attempt_pid=""
+	rm -f "$attempt_record"
 	if [ "$attempt_status" -eq 0 ]; then
 		cat "$attempt_log" >&2
 		break
