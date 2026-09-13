@@ -7345,6 +7345,14 @@ func (s *relayLifecycleSource) GoalSet(context.Context, appwire.GoalSetParams) (
 	return appwire.GoalSetResponse{}, appwire.Unavailable("relay lifecycle source does not set goals")
 }
 
+func (s *relayLifecycleSource) NotesHumanSet(context.Context, appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	return appwire.NotesHumanSetResponse{}, appwire.Unavailable("relay lifecycle source does not set notes")
+}
+
+func (s *relayLifecycleSource) UrlsRemove(context.Context, appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	return appwire.UrlsRemoveResponse{}, appwire.Unavailable("relay lifecycle source does not remove urls")
+}
+
 func (s *relayLifecycleSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return appwire.ThreadClearResponse{}, appwire.Unavailable("relay lifecycle source does not clear threads")
 }
@@ -11899,6 +11907,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerThreadNameSet,
 		appwire.MethodThreadReasoningEffortSet,
 		appwire.MethodGoalSet,
+		appwire.MethodNotesHumanSet,
+		appwire.MethodUrlsRemove,
 		appwire.MethodEvenerAuthStatus,
 		appwire.MethodEvenerAuthTest,
 		appwire.MethodEvenerAuthLoginStart,
@@ -12123,5 +12133,123 @@ func TestHubRPCSavedDelegateReadDoesNotClaimMutationAuthority(t *testing.T) {
 				t.Fatalf("saved delegate status=%q mutation authority=%v", response.Thread.Status.Type, response.Thread.Evener.MutationStateAuthoritative)
 			}
 		})
+	}
+}
+
+// TestHubRPCNotesHumanSetGatedByCapability pins the shared-notes pre-flight
+// gate (goal/set's TestHubRPCGoalSetGatedByCapability precedent): a source
+// whose ThreadRead reports caps without SharedNotes must have notes/human/set
+// rejected with a structured Unavailable BEFORE the call reaches the source.
+func TestHubRPCNotesHumanSetGatedByCapability(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	notesReached := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Evener: appwire.EvenerThread{
+				Ref:          "local:th_1",
+				Capabilities: appwire.ThreadCapabilities{Send: true}, // no SharedNotes
+			},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodNotesHumanSet, func(_ context.Context, _ appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+		notesReached = true
+		return appwire.NotesHumanSetResponse{Note: "x"}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       106,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.NotesHumanSet(context.Background(), appwire.NotesHumanSetParams{Ref: "local:th_1", ClientMutationID: "m1", ExpectedInstanceID: "sess_1", Note: "hi"})
+	if err == nil {
+		t.Fatal("NotesHumanSet succeeded despite missing SharedNotes capability")
+	}
+	if notesReached {
+		t.Fatal("gated notes/human/set still reached the source")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("wire=%+v", wire)
+	}
+}
+
+// TestHubRPCUrlsRemoveGatedByCapability pins the same pre-flight gate for
+// urls/remove.
+func TestHubRPCUrlsRemoveGatedByCapability(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	removeReached := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Evener: appwire.EvenerThread{
+				Ref:          "local:th_1",
+				Capabilities: appwire.ThreadCapabilities{Send: true}, // no SharedNotes
+			},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodUrlsRemove, func(_ context.Context, _ appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+		removeReached = true
+		return appwire.UrlsRemoveResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       106,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.UrlsRemove(context.Background(), appwire.UrlsRemoveParams{Ref: "local:th_1", ClientMutationID: "m1", ExpectedInstanceID: "sess_1", ID: "u1"})
+	if err == nil {
+		t.Fatal("UrlsRemove succeeded despite missing SharedNotes capability")
+	}
+	if removeReached {
+		t.Fatal("gated urls/remove still reached the source")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("wire=%+v", wire)
 	}
 }

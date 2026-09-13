@@ -126,6 +126,7 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -512,6 +513,7 @@ test("ordinary Send empty form no-op leaves another control focused", async () =
 });
 
 test("an unconfirmed storage commit stays visible and repeated Steer clicks cannot duplicate it", async () => {
+  const consoleError = vi.spyOn(console, "error");
   const fake = await mountComposer("ref_a");
   let deliveryObserved: (() => void) | undefined;
   const delivered = new Promise<void>((resolve) => {
@@ -565,6 +567,7 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
   expect(screen.queryByRole("status", { name: "Message storage" })).toBeNull();
   await act(async () => delivered);
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
+  expect(consoleError).not.toHaveBeenCalled();
 });
 
 test("a cancelled storage stall keeps the draft, reports the problem, and allows one safe retry", async () => {

@@ -96,6 +96,7 @@ const COLD_CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: false,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -116,6 +117,7 @@ function daemonCapabilities(active: boolean): ThreadCapabilities {
     changeVisionModel: true,
     queue: active,
     goal: true,
+    sharedNotes: true,
     rename: true,
   };
 }
