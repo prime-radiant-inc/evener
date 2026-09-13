@@ -114,6 +114,15 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 			record(schema.TurnUserInput, "turn_next", ""),
 			record(schema.TurnContextCompaction, "layer", "turn_active"),
 		}, []string{"turn_active", "turn_next", "turn_active"}},
+		// The reviewer's sequence: the fragment above, and then the running
+		// turn's next record. The fragment is one record of a turn that is
+		// over; the assistant belongs to the turn that is still running, so it
+		// must not join the fragment.
+		{"a continuation after a late fragment belongs to the running turn", []schema.Turn{
+			record(schema.TurnUserInput, "turn_next", ""),
+			record(schema.TurnContextCompaction, "layer", "turn_active"),
+			record(schema.TurnAssistant, "assistant", ""),
+		}, []string{"turn_active", "turn_next", "turn_active", "turn_next"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

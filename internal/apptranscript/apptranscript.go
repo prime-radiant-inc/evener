@@ -740,7 +740,7 @@ func ItemTurnProjectionFromFile(path string, maxLineBytes int, project EntryProj
 }
 
 func itemTurnProjectionFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
-	var acc logicalTurnAccumulator
+	acc := newLogicalTurnAccumulator()
 	entryIndex := 0
 	header, err := scanSemanticTranscriptContext(ctx, path, maxLineBytes, func(raw json.RawMessage) error {
 		entry, decodeErr := transcript.DecodeEntry(raw)
@@ -786,7 +786,7 @@ func itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int
 // ItemTurnProjectionFromFile. The header and entries must come from the same
 // transcript.
 func ItemTurnProjectionFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) (ItemTurnProjection, error) {
-	var acc logicalTurnAccumulator
+	acc := newLogicalTurnAccumulator()
 	for i := range entries {
 		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
 	}

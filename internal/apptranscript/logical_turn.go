@@ -111,6 +111,33 @@ type groupedTurn struct {
 type logicalTurnAccumulator struct {
 	turns []groupedTurn
 	open  bool
+	// continuation indexes the group an UNOWNED continuation belongs to: the
+	// one an opener started, and the one the running turn keeps writing into.
+	// A late owned fragment — a metadata record for a turn that is already
+	// over, arriving after the next turn opened — starts a group of its own
+	// without becoming that target, so the assistant or tool record that
+	// follows it still belongs to the turn that is running. -1 when no group
+	// is taking continuations (nothing opened yet, or a standalone closed the
+	// flow).
+	continuation int
+}
+
+// startsFragmentGroup reports that this record opens a group for a turn other
+// than the one in flight and does not take the flow with it: owned METADATA —
+// a checkpoint, a summary, a context-compaction record, a hook completion —
+// describing a turn that is already over. A kind that continues a logical turn
+// is excluded on purpose: a delayed steering carrier opens its group AND owns
+// what follows it (TestItemReadersHonorSteeringOwner pins that), while a late
+// metadata record owns only itself. The scan-side index mirrors this rule
+// (turn_index.go).
+func startsFragmentGroup(kind schema.TurnKind, startsGroup bool, owningTurnID string) bool {
+	return startsGroup && owningTurnID != "" && ownedLogicalTurnKind(kind) && !continuesLogicalTurn(kind)
+}
+
+// newLogicalTurnAccumulator starts a scan with no continuation target: the
+// zero value would name group 0 before any group exists.
+func newLogicalTurnAccumulator() logicalTurnAccumulator {
+	return logicalTurnAccumulator{continuation: -1}
 }
 
 // appendEntry buffers one scanned entry with its projected items (which may
@@ -123,21 +150,40 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
 		a.open = true
+		a.continuation = len(a.turns) - 1
 	case ownedLogicalTurnKind(kind) && owner != "" && entry.GoalContinuation == nil:
 		if a.open && len(a.turns) > 0 && a.turns[len(a.turns)-1].turnID == owner {
 			a.open = true
 			break
 		}
+		// A fragment opens a group for its own owner and leaves the
+		// continuation target where it was; a carrier takes the flow.
 		a.turns = append(a.turns, groupedTurn{turnID: owner})
 		a.open = true
+		if !startsFragmentGroup(kind, true, owner) {
+			a.continuation = len(a.turns) - 1
+		}
 	case continuesLogicalTurn(kind) && a.open && len(a.turns) > 0:
-		// Join the open group.
+		if a.continuation >= 0 && a.continuation != len(a.turns)-1 {
+			// A fragment sits between the running turn's group and this
+			// record. Resume that turn in a group of its own rather than
+			// extending the fragment, which belongs to a turn that is over.
+			a.turns = append(a.turns, groupedTurn{turnID: a.turns[a.continuation].turnID})
+			a.continuation = len(a.turns) - 1
+		}
+		// Join the group the running turn is writing into.
 	default:
 		// Standalone kind, or a continuation with no open group: its own
 		// group. A standalone closes it; a stray continuation stays open for
 		// later continuations.
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
 		a.open = continuesLogicalTurn(kind)
+		// A stray continuation becomes the target itself; a standalone record
+		// closes the flow, so nothing continues until an opener runs again.
+		a.continuation = -1
+		if a.open {
+			a.continuation = len(a.turns) - 1
+		}
 	}
 	last := &a.turns[len(a.turns)-1]
 	last.entries = append(last.entries, entry)
