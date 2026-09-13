@@ -10,7 +10,7 @@
 // §6.1).
 //
 // This alone is not sufficient for the live, in-flight-submission case -
-// see askDock/reconcileBatches.ts's own comment for why a purely
+// see protocol/reconcileBatches.ts's own comment for why a purely
 // positional signal can't tell "my own reply's echo" apart from "a
 // sibling ask_user call that happened to land first" during the network
 // round-trip of sending an answer. reconcileBatches layers stateful

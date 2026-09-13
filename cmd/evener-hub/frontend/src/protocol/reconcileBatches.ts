@@ -9,8 +9,9 @@
 // appended to the SAME transcript by two independent, unordered wire events.
 // Position alone can't tell "my own reply landed, resolving everything
 // before it" apart from "a new question arrived that has nothing to do with
-// my in-flight send" when the two race - see askDockStore.ts's own comment
-// for the concrete interleaving this protects against.
+// my in-flight send" when the two race - see the web dock's own
+// askDock/askDockStore.ts comment for the concrete interleaving this
+// protects against.
 //
 // The fix is identity, not position: once a batch is marked `sending`, its
 // own questions are frozen and immune to the live-set signal entirely
@@ -29,7 +30,7 @@
 // include its questions at all (the foreign reply moved the transcript
 // boundary past them) - membership comparisons below use `.key`, but the
 // data itself is never re-derived from a live scan once a batch holds it.
-import type { AskQuestionRef } from "../../../../protocol/deriveAskQuestions";
+import type { AskQuestionRef } from "./deriveAskQuestions";
 
 export interface AskBatch {
   id: string;
