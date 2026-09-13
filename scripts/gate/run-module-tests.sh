@@ -696,11 +696,11 @@ package_list_build_flags() {
 		# caller's own spelling would mean two spellings to keep matching.
 		normalised="$(go_flag "$flag")"
 		case "$normalised" in
-		-tags | -mod | -modfile | -overlay | -pgo | -compiler)
+		-tags | -mod | -modfile | -overlay | -pgo | -compiler | -p)
 			printf '%s\n' "$normalised"
 			expect_value=1
 			;;
-		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -compiler=* | -trimpath | -race | -msan | -asan | -race=* | -msan=* | -asan=*)
+		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -compiler=* | -p=* | -trimpath | -race | -msan | -asan | -race=* | -msan=* | -asan=*)
 			printf '%s\n' "$normalised"
 			;;
 		*)
@@ -709,7 +709,7 @@ package_list_build_flags() {
 			# which this cannot import; #1247 is where the two become one.
 			name="${normalised%%=*}"
 			case "$name" in
-			-run | -skip | -bench | -benchtime | -count | -timeout | -cpu | -parallel | -p | -coverprofile | -coverpkg | -outputdir | -exec | -o | -fuzz | -fuzztime | -fuzzminimizetime | -cpuprofile | -memprofile | -blockprofile | -mutexprofile | -trace | -gocoverdir | -shuffle)
+			-run | -skip | -bench | -benchtime | -count | -timeout | -cpu | -parallel | -coverprofile | -coverpkg | -outputdir | -exec | -o | -fuzz | -fuzztime | -fuzzminimizetime | -cpuprofile | -memprofile | -blockprofile | -mutexprofile | -trace | -gocoverdir | -shuffle)
 				[ "$normalised" = "$name" ] && drop_value=1
 				;;
 			esac
