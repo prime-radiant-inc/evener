@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"sort"
 	"strings"
@@ -35,6 +36,11 @@ const (
 	// legitimately emits is activityMaxNewDepth+1 hops, not
 	// activityMaxNewDepth.
 	activityMaxContinuationPathLength = activityMaxNewDepth + 1
+	// activitySkippedEntrySuffix completes a named skip diagnostic;
+	// activitySkippedEntryShortMessage is what a page falls back to when it
+	// cannot fit the name — see skipActivityTrimmedEntryWithinLimit.
+	activitySkippedEntrySuffix       = " is too large to render in one response and was skipped"
+	activitySkippedEntryShortMessage = "one entry was too large to render and was skipped"
 )
 
 // activityContinuation is a real, checked cursor position: resuming from
@@ -1390,22 +1396,18 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegate
 		if !dropped.unrepresentable {
 			continue
 		}
-		// The skip is measured with the sentence it writes and the token it
-		// advances: both are bytes the client receives, so a page that only
-		// fits once the entry is gone can still be pushed back over by its
-		// own explanation. Where that happens the page cannot afford to say
-		// anything, and trimming carries on.
-		beforeSkip := dropped.session.Branch
-		skipActivityTrimmedEntry(dropped, rootID, delegatesEpoch, jobsEpochs, revision)
 		recomputeActivitySession(&tree.Root)
-		skipped, err := json.Marshal(tree)
+		without, err := json.Marshal(tree)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
-		if len(skipped) <= activityMaxEncodedBytes {
-			return tree, nil
+		if len(without) > activityMaxEncodedBytes {
+			continue
 		}
-		dropped.session.Branch = beforeSkip
+		if err := skipActivityTrimmedEntryWithinLimit(&tree, dropped, rootID, delegatesEpoch, jobsEpochs, revision); err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		return tree, nil
 	}
 }
 
@@ -1442,7 +1444,39 @@ func skipActivityTrimmedEntry(dropped activityTrimmedEntry, rootID string, deleg
 		return
 	}
 	mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
-	appendActivityBranchError(&dropped.session.Branch, dropped.ref+" is too large to render in one response and was skipped")
+	appendActivityBranchError(&dropped.session.Branch, dropped.ref+activitySkippedEntrySuffix)
+}
+
+// skipActivityTrimmedEntryWithinLimit advances past an entry no page can
+// carry, keeping the most informative diagnostic the page can still encode:
+// the message and the advanced token are bytes the client receives like any
+// other, and a page that fits only without its explanation still has to
+// advance — a token that stands still is the one failure a client cannot
+// recover from, and losing the sentence costs far less than losing everything
+// behind the entry.
+func skipActivityTrimmedEntryWithinLimit(tree *appwire.JobActivityTree, dropped activityTrimmedEntry, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) error {
+	beforeSkip := dropped.session.Branch
+	for _, message := range []string{dropped.ref + activitySkippedEntrySuffix, activitySkippedEntryShortMessage} {
+		dropped.session.Branch = beforeSkip
+		mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
+		appendActivityBranchError(&dropped.session.Branch, message)
+		recomputeActivitySession(&tree.Root)
+		raw, err := json.Marshal(*tree)
+		if err != nil {
+			return err
+		}
+		if len(raw) <= activityMaxEncodedBytes {
+			return nil
+		}
+	}
+	// No room for any of it: advance anyway, and report the omission where it
+	// costs the page nothing.
+	dropped.session.Branch = beforeSkip
+	mintActivityTrimContinuation(dropped, rootID, dropped.index+1, delegatesEpoch, jobsEpochs, revision)
+	recomputeActivitySession(&tree.Root)
+	slog.Warn("activity page skipped an entry it had no room to report",
+		"entry", dropped.ref, "session", dropped.session.SessionID)
+	return nil
 }
 
 func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, resumeIndex int, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) {

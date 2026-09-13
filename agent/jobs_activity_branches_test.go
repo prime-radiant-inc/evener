@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -515,7 +517,13 @@ func TestTrimActivityTreeToFit_EnvelopeTooLargeLeavesConsistentCounts(t *testing
 // sentence explaining why it is gone — and a response over the limit is the
 // one thing the whole trim exists to prevent.
 func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the silent tier warns through the default logger, which
+	// this test swaps out to keep the run's output pristine and to read what
+	// was reported.
+	var logged bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(restore) })
 	// What the trim leaves behind once the page's only entry is gone: no
 	// entries, truncated, one continuation token.
 	shape := appwire.JobActivityTree{Root: appwire.JobActivitySession{
@@ -530,9 +538,9 @@ func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Pad the label until that entry-less page sits a few bytes under the
-	// cap — far closer than the skip's own message is long.
-	label := strings.Repeat("p", activityMaxEncodedBytes-len(entryless)-8)
+	// Pad the label until that entry-less page sits just under the cap: room
+	// for the advanced token, none for the shortest sentence explaining it.
+	label := strings.Repeat("p", activityMaxEncodedBytes-len(entryless)-32)
 	tree := appwire.JobActivityTree{Root: appwire.JobActivitySession{
 		SessionID: "root", Ref: "local:root", Label: label,
 		Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{
@@ -550,6 +558,18 @@ func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
 	}
 	if len(raw) > activityMaxEncodedBytes {
 		t.Fatalf("trimmed response is %d bytes, %d over the %d-byte limit -- a skip has to be measured with the diagnostic it writes", len(raw), len(raw)-activityMaxEncodedBytes, activityMaxEncodedBytes)
+	}
+	// Having no room for the explanation is not a reason to hand back a token
+	// that produces this same page forever.
+	cont, err := decodeActivityContinuation(got.Root.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode continuation: %v", err)
+	}
+	if cont.ResumeIndex != 1 {
+		t.Fatalf("ResumeIndex = %d, want 1 -- the entry fits no page, so the token has to advance past it whether or not the page can say so", cont.ResumeIndex)
+	}
+	if !strings.Contains(logged.String(), "job_huge") {
+		t.Fatalf("server log %q does not name the entry the page could not report", logged.String())
 	}
 }
 
