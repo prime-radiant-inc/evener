@@ -101,7 +101,7 @@ func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (der
 			// worse than reporting none, so surface it.
 			return fmt.Errorf("decode transcript entry derived totals: %w", err)
 		}
-		counting := ordinal >= fromEntryOrdinal
+		counting := ordinal >= fromEntryOrdinal && countsTowardTotals(record.Turn.ContextReplay)
 		if counting {
 			accumulated.add(record.Turn.Usage)
 		}
@@ -125,6 +125,8 @@ type derivedTotalsEntry struct {
 	Turn struct {
 		Usage   llm.Usage       `json:"usage"`
 		Message toolScanMessage `json:"message"`
+		// ContextReplay marks a fold's copy of a turn already in this file.
+		ContextReplay bool `json:"context_replay,omitempty"`
 	} `json:"turn"`
 }
 
