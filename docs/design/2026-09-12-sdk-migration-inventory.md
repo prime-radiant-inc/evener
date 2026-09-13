@@ -20,13 +20,15 @@ apply the same fallback. A pair that merely occupies the same conceptual slot �
 "both compute usage", "both fold runs" — is two different rules, and is recorded
 as PLATFORM-ONLY or single-consumer PACKAGE CANDIDATE instead. A row is
 PACKAGE CANDIDATE (2 consumers) only if `git grep "frontend/src/<module>\""
-origin/main -- mobile-native` returns at least one hit; all 33 such rows were
-re-checked this way and all 33 hold. Line counts are non-test lines at the stated
+origin/main -- mobile-native` returns at least one hit; all 34 such rows were
+re-checked this way and all 34 hold. Line counts are non-test lines at the stated
 commit. Where I am unsure I say so in the row.
 
 ## 0. What the package actually is today
 
-Five facts that change the shape of the whole migration.
+Five facts that change the shape of the whole migration. Facts 1, 2 and 5
+describe the package **as it stood at `92561dbe3`, before A1**; each carries its
+post-A1 value inline, measured at `3bf357337`. Facts 3 and 4 hold as written.
 
 1. **The shipped package was six files, not sixteen** — until A1.
    `protocol/tsconfig.build.json:13` lists
@@ -39,8 +41,9 @@ Five facts that change the shape of the whole migration.
    merged to main as `f2599d1ed`:** the build `files` list now carries all
    sixteen, `docContent.ts` included, with only `readDocFile` held off
    `index.ts` until C24. §5's "In tarball?" column reflects the post-A1 state.
-2. **`index.ts` carries nine export statements and eleven runtime exports**
-   (`protocol/index.ts:1-9`): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
+2. **`index.ts` carried nine export statements and eleven runtime exports**
+   before A1 (`protocol/index.ts:1-9` at `92561dbe3`; all sixteen modules export
+   through it now, so size new work off the current file, not this list): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
    `ConnectionClosedError`, `RequestTimeoutError`, `WireError`,
    `rpcURLFromLocation`, `composeAskAnswers`, `METHOD_NAMES`,
    `NOTIFICATION_NAMES`, `STEERING_KINDS`, `THREAD_ITEM_EVENT_KINDS`, plus the
@@ -65,12 +68,13 @@ Five facts that change the shape of the whole migration.
    (`cmd/evener-hub/frontend/package.json` and `mobile-native/package.json`
    both depend on `zustand ^5`). A shared *state* core cannot keep the
    zero-dependency property and use zustand.
-5. **The qualification runner hard-codes the export list four times.**
-   `protocol/scripts/qualify-package.mjs` writes four consumer files —
-   `esm.mts` (line 29), `commonjs.cts` (51), `esm-runtime.mjs` (76) and
-   `commonjs-runtime.cjs` (85) — each naming all eleven runtime exports
-   literally. Any new export or subpath has to be added to all four in the same
-   change. The list should be derived from one shared manifest instead.
+5. **The qualification runner hard-coded the export list four times** — and no
+   longer does. Before A1 it wrote four consumer files each naming all eleven
+   runtime exports literally. **A1 fixed this the way this document asked:** at
+   `3bf357337` one shared `runtimeExports` array (`qualify-package.mjs:69`)
+   feeds all four writes — `esm.mts` (:163), `commonjs.cts` (:177),
+   `esm-runtime.mjs` (:201), `commonjs-runtime.cjs` (:207). A new export is
+   added in one place; a new *subpath* still needs all four write sites touched.
 
 The unexpected finding: **the native app already imports 30+ web frontend
 modules by relative path.** `mobile-native` reaches into
@@ -332,13 +336,14 @@ Rows cover 32 web `stores/` modules, 49 rows for web modules outside `stores/`
 
 ## Since this was written
 
-Recorded 2026-09-12, after the first execution PRs. Statuses are as observed;
-re-query before acting.
+Recorded 2026-09-12, refreshed after round 6; statuses observed at
+`3bf357337`. Re-query before acting.
 
 | Plan PR | GitHub | State | What it changed here |
 | --- | --- | --- | --- |
-| A1 | #1184 | open (head `038851d7f`) | Ships **all ten** unpacked modules, `docContent.ts` included (`files` goes 6 → 16) — the earlier plan held the whole module back; the PR shipped it and split it at the entry point instead. `docFileRawURL`, `docImageURL`, `DOC_FILE_MAX_BYTES` and `DocFileError` are exported and qualified (`qualify-package.mjs:110-111,155`); `readDocFile` is deliberately absent from `index.ts`, with the reason written there, because it hardcodes a relative URL and the browser `fetch` global. So C24 owns the port and the re-export, not the move. The runner also smoke-calls every other shipped module |
-| A2 | #1188 | open | `protocol/clientLike.ts` declares `AppwireClientLike`, exported from `index.ts` and in the build `files`. 25 importers rewritten, `FakeClient` imports left alone — §0 fact 3 above is corrected to match |
+| A1 | #1184 | **merged** as `f2599d1ed` | Shipped **all ten** unpacked modules, `docContent.ts` included (`files` goes 6 → 16) — the earlier plan held the whole module back; the PR shipped it and split it at the entry point instead. `docFileRawURL`, `docImageURL`, `DOC_FILE_MAX_BYTES` and `DocFileError` are exported and qualified (`qualify-package.mjs:110-111,155`); `readDocFile` is deliberately absent from `index.ts`, with the reason written there, because it hardcodes a relative URL and the browser `fetch` global. So C24 owns the port and the re-export, not the move. The runner also smoke-calls every other shipped module |
+| A2 | #1188 | **merged** as `3bf357337` | `protocol/clientLike.ts` declares `AppwireClientLike`, exported from `index.ts` and in the build `files`. 25 importers rewritten, `FakeClient` imports left alone — §0 fact 3 above is corrected to match |
 | A5 | #1186 | **merged** (`2245f9715`) | Deleted the dead `mobile/src/dev/conversationFixtures.ts`, which takes `mobile/src` from the 7,615 lines tabulated in §4 down to 6,841 and made `mobile-native` typecheck every file under `mobile/src`, so the gap that hid it is closed too |
+| B3b | #1203 | **merged** as `4da382482` | Native's two `projectUsage` copies collapsed to one; that row's duplication is closed |
 | B1 | #1189 | open | `protocol/itemFailure.ts`; the web and native predicates were byte-identical in behavior. Surfaced the third predicate now recorded above |
 | — | #1190 | open issue | The `toolRenderers.ts:189` divergence |
