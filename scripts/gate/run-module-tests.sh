@@ -270,9 +270,11 @@ keep_failed_logs=0
 # The runner's own process group, read once. An attempt that has recorded itself
 # but not yet split reports this group rather than one of its own, and telling
 # those two apart is what says whether the attempt may be signalled by pid.
-runner_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')"
+runner_pgid="$(pid_pgroup $$)"
 # Set by stop_package_list_attempt: why it could not show an attempt stopped.
 package_list_stop_reason=""
+# What every bounded attempt is spawned under, and what its record says it is.
+PACKAGE_LIST_MARKER=go
 # A signal can arrive while a stream is running through /usr/bin/time and a
 # shell subshell, so the job PID alone is not enough to stop the actual test
 # process. Keep every stream job here and snapshot its descendants on exit.
@@ -337,131 +339,23 @@ stop_children() {
 # stalled `go list` was left running with ppid 1, holding the GOCACHE and
 # GOMODCACHE locks that every later run on the host needs.
 stop_recorded_package_list_groups() {
-	local pgid_file recorded members stop_status marker ownership
+	local pgid_file status
 	[ -n "$logdir" ] || return 0
-	# A record is dropped only once it has been acted on: a file removed before
-	# the probe takes the only name anyone had for a survivor with it, and a
-	# probe that cannot run is exactly when that name is worth keeping — the
-	# retained logs then say which group was left holding Go's cache locks.
 	for pgid_file in "$logdir"/*.pgid; do
 		[ -e "$pgid_file" ] || continue
-		recorded="$(cat "$pgid_file" 2>/dev/null)"
-		if [ -z "$recorded" ]; then
-			# An attempt caught mid-spawn: the file is created before the fork
-			# and filled in by the child before it splits, so waiting for the pid
-			# is the only way to reach what that child is about to become.
-			# Nothing else can name it — it has no group of its own yet, and a
-			# descendant walk that missed the fork will not find it either. The
-			# wait is the stop's own grace, for the same reason: it is how long
-			# this script is willing to spend proving an attempt is not running.
-			if ! recorded="$(pgroup_record_value "$pgid_file" "$PACKAGE_LIST_STOP_GRACE")"; then
-				# Still nothing, and the record cannot be dropped on the strength
-				# of a signal that may never have been sent: this cleanup also
-				# runs from the plain EXIT trap of a run that merely failed,
-				# where nothing was signalled to anything. A child that was only
-				# slow to record itself would be forgotten here and then split
-				# off and run `go list` untracked. Nothing here can name it —
-				# that is what the empty record means — so what is left is to
-				# keep the record and say so, in the logs a failed run retains.
-				printf 'run-module-tests.sh: the attempt recorded at %s never named its process group, so it cannot be shown to have stopped. Its record is kept.\n' \
-					"$pgid_file" >&2
-				continue
-			fi
-		fi
-		if [ "${recorded#survivor:}" != "$recorded" ]; then
-			# Already taken SIGTERM and SIGKILL with a full grace each, and seen
-			# alive after both. Repeating that here would cost two more graces to
-			# learn what is already known, so the record is left standing where
-			# whoever runs next on this host can read it.
-			printf 'run-module-tests.sh: process group %s was still alive after SIGTERM and SIGKILL; its record is kept at %s.\n' \
-				"${recorded#survivor:}" "$pgid_file" >&2
-			continue
-		fi
-		marker="${recorded##*:}"
-		recorded="${recorded%:*}"
-		if [ "${recorded#pid:}" != "$recorded" ]; then
-			# A pid, not a group: the attempt had not split when it wrote this,
-			# so it is in the runner's own group and nothing here may signal that
-			# group. The deadline's own decision covers exactly this — pid stop,
-			# then the group it may have formed since — so it is asked to make it.
-			#
-			# Here the marker does answer, and it is the one place it can: a pid
-			# names one process, and one process either carries the marker or is
-			# somebody the kernel has since given the number to. Unknown is not a
-			# licence to signal, so it keeps the record and says so.
-			ownership=0
-			pid_owned_by "${recorded#pid:}" "$marker" || ownership=$?
-			if [ "$ownership" -eq 1 ]; then
-				rm -f "$pgid_file"
-				continue
-			fi
-			if [ "$ownership" -ne 0 ]; then
-				printf 'run-module-tests.sh: the attempt recorded at %s could not be shown to have stopped: the process listing that says whether pid %s is still this attempt would not run. Its record is kept.\n' \
-					"$pgid_file" "${recorded#pid:}" >&2
-				continue
-			fi
-			stop_status=0
-			stop_package_list_attempt "${recorded#pid:}" || stop_status=$?
-			if [ "$stop_status" -eq 0 ] || [ "$stop_status" -eq 3 ]; then
-				rm -f "$pgid_file"
-			else
-				printf 'run-module-tests.sh: the attempt recorded at %s could not be shown to have stopped: %s Its record is kept.\n' \
-					"$pgid_file" "$package_list_stop_reason" >&2
-			fi
-			continue
-		fi
-		recorded="${recorded#pgid:}"
-		# Survivors are asked about first, and they decide. The marker cannot
-		# speak for a whole group: `go list` spawns compilers and a child outlives
-		# its parent, so a group whose marked process has exited still holds
-		# children with the cache locks — and asking the marker first read that as
-		# somebody else's group and dropped the record without stopping them.
-		# Anything alive under this number gets stopped; the number is refused
-		# outright by the library if it is 0, this runner's own group, or its
-		# session, which is what keeps "stop whatever is there" safe.
-		# What is recorded is a group, so ask about the group rather than
-		# about its leader alone: `go list` can exit with a child of the
-		# attempt still running in it, and a leader-only check would leave
-		# that child writing its package list and holding Go's cache locks.
-		# A probe that cannot run knows nothing about the group, and blind is
-		# the one state in which -PID could name a stranger, so it is left.
-		if ! members="$(pgroup_survivors "$recorded")"; then
-			# Nothing can be seen, and saying nothing is how a `go list` is left
-			# holding the cache locks: the deadline gives a blind probe a blind
-			# signal, and this is the same probe failing at the last moment anyone
-			# is looking. The record stays, because blind is exactly when the only
-			# name for the group is worth keeping.
-			escalate_blind "$recorded" "$PACKAGE_LIST_STOP_GRACE"
-			printf 'run-module-tests.sh: process group %s could not be shown to have stopped: the process listing that answers whether it is empty would not run. It has been signalled blind; its record is kept at %s.\n' \
-				"$recorded" "$pgid_file" >&2
-			continue
-		fi
-		if [ -z "$members" ]; then
-			rm -f "$pgid_file"
-			continue
-		fi
-		# Live members settle ownership on their own, and nothing the leader is
-		# doing can overrule them. A process group exists for as long as it has a
-		# member, and its number stays reserved for that whole time, so a group
-		# numbered as this record with anything alive in it is this attempt's —
-		# whether the leader is a zombie, already reaped, or a pid the kernel has
-		# since handed to a process in some other group. Asking the leader instead
-		# threw the record away on that last reading and left `go list`'s children
-		# writing a package list and holding Go's cache locks with no name left for
-		# them.
-		stop_status=0
-		stop_pgroup "$recorded" "$PACKAGE_LIST_STOP_GRACE" || stop_status=$?
-		if [ "$stop_status" -eq 0 ]; then
-			rm -f "$pgid_file"
-			continue
-		fi
-		# The stop could not show the group empty, so the record stays for the
-		# same reason a failed probe keeps it: it is the only name for whatever is
-		# still holding Go's cache locks, and this is the last moment anyone is
-		# looking. Said out loud too, because the retained logs are where the next
-		# person on this host starts.
-		printf 'run-module-tests.sh: process group %s could not be shown to have stopped; it still holds %s. Its record is kept at %s.\n' \
-			"$recorded" "$(pgroup_survivor_report "$recorded")" "$pgid_file" >&2
+		status=0
+		stop_recorded_job "$pgid_file" "$PACKAGE_LIST_STOP_GRACE" "$PACKAGE_LIST_MARKER" || status=$?
+		case "$status" in
+		0) ;;
+		1)
+			printf 'run-module-tests.sh: the attempt recorded at %s: %s\n' \
+				"$pgid_file" "$pgroup_stop_reason" >&2
+			;;
+		*)
+			printf 'run-module-tests.sh: the attempt recorded at %s could not be shown to have stopped: %s Its record is kept.\n' \
+				"$pgid_file" "$pgroup_stop_reason" >&2
+			;;
+		esac
 	done
 }
 
@@ -596,7 +490,7 @@ stop_package_list_attempt() {
 	# Read the group only for a process just confirmed alive: the child sets its
 	# own group after the fork, so a read taken at spawn time races it and would
 	# report the runner's group — the one group nothing here may ever signal.
-	pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+	pgid="$(pid_pgroup "$pid")"
 	# An unreadable group is ambiguous, and the ambiguity is a race: the attempt
 	# can exit and be reaped between the caller's liveness check and this read,
 	# and then `ps` reports nothing for a process that finished rather than one
@@ -783,12 +677,12 @@ run_bounded_package_list() {
 		# Word-split deliberately, as everywhere else the flags are passed on.
 		# shellcheck disable=SC2086
 		perl -e "$PGROUP_SPAWN_PERL" \
-			-- "$(package_list_pgid_path "$module")" go \
+			-- "$(package_list_pgid_path "$module")" "$PACKAGE_LIST_MARKER" \
 			go list $build_flags ./... >"$attempt_list" 2>>"$package_list_stderr" &
 		list_pid="$!"
 		# Said from this side too, so no instant passes with an attempt running
 		# and a record that names nothing.
-		pgroup_record_spawned "$(package_list_pgid_path "$module")" "$list_pid" go
+		pgroup_record_spawned "$(package_list_pgid_path "$module")" "$list_pid" "$PACKAGE_LIST_MARKER"
 		started_at=$SECONDS
 		while kill -0 "$list_pid" 2>/dev/null; do
 			if [ $((SECONDS - started_at)) -ge "$PACKAGE_LIST_TIMEOUT" ]; then
@@ -822,7 +716,7 @@ run_bounded_package_list() {
 						# Marked as what it is, so the EXIT cleanup keeps the record
 						# without spending two more graces re-signalling a group this
 						# attempt has already taken SIGTERM and SIGKILL to.
-						printf 'survivor:%s' "$list_pid" >"$(package_list_pgid_path "$module")"
+						pgroup_record_survivor "$(package_list_pgid_path "$module")" "$list_pid"
 						printf 'run-module-tests.sh: attempt %s would not stop: %s Not retrying, and not waiting on it. Its record is kept at %s.\n' \
 							"$attempt" "$package_list_stop_reason" "$(package_list_pgid_path "$module")" >&2
 					fi

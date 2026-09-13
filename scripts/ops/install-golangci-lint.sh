@@ -78,6 +78,8 @@ bindir="$(go env GOPATH)/bin"
 attempt_scratch=""
 attempt_pid=""
 attempt_record=""
+# What every attempt is spawned under, and what its record says it is.
+attempt_marker=install-golangci-lint-attempt
 # Set when a stop could not be shown to have worked: the scratch and the record
 # in it then stay, whatever else runs afterwards.
 attempt_unconfirmed=0
@@ -97,104 +99,36 @@ attempt_stop_grace=5
 # signal handler that called it, so the group is probed under a bounded grace
 # and an unstoppable one is named rather than waited on.
 stop_attempt() {
-	local stop_status=0 members target="$attempt_pid" recorded marker ownership
-	if [ -z "$target" ] && [ -n "$attempt_record" ] && [ -e "$attempt_record" ]; then
-		# The spawn records itself, and this is why: between the fork and the
-		# shell's own `attempt_pid=$!` there is an attempt running that this
-		# variable does not know about, and a signal arriving there would find
-		# nothing to stop. The record is created before the fork and filled in by
-		# the child before it splits, so waiting on it is waiting for the pid the
-		# shell has not been given yet.
-		if recorded="$(pgroup_record_value "$attempt_record" "$attempt_stop_grace")"; then
-			marker="${recorded##*:}"
-			recorded="${recorded%:*}"
-			target="${recorded#p*:}"
-			# Only while the number still names this attempt: a pid read from
-			# a file is a number the kernel may have handed on since. The
-			# probes answer in three states and all three matter — `!` would
-			# have folded "the listing would not run" into "somebody else's"
-			# and reported a clean stop over a pipeline nobody had looked at.
-			ownership=0
-			pgroup_owned_by "$target" "$marker" || ownership=$?
-			if [ "$ownership" -eq 1 ]; then
-				ownership=0
-				pid_owned_by "$target" "$marker" || ownership=$?
-			fi
-			case "$ownership" in
-			0) ;;
-			1)
-				# Positively somebody else's: nothing here to stop.
-				return 0
-				;;
-			*)
-				printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: the process listing that says whether %s is still this attempt would not run.\n' \
-					"$target" >&2
-				return 1
-				;;
-			esac
-		else
-			printf 'install-golangci-lint.sh: an install attempt was spawned but never named itself, so it cannot be shown to have stopped.\n' >&2
-			return 1
-		fi
-	fi
-	[ -n "$target" ] || return 0
-	if pid_leads_pgroup "$target"; then
-		stop_pgroup "$target" "$attempt_stop_grace" || stop_status=$?
-	else
-		# The number is not a group of this script's making: either the child
-		# has not run its setpgrp yet, or it has gone and the kernel has given
-		# the number to somebody else. `kill -- -PID` would name that somebody
-		# in the second case, so the child itself is what gets stopped — and
-		# then the group it may have formed in the meantime is asked about,
-		# because the split can land between the question and the signal.
-		stop_pid "$target" "$attempt_stop_grace" || stop_status=$?
-		if [ "$stop_status" -eq 0 ]; then
-			if ! members="$(pgroup_survivors "$target")"; then
-				stop_status=2
-			elif [ -n "$members" ]; then
-				stop_pgroup "$target" "$attempt_stop_grace" || stop_status=$?
-			fi
-		fi
-	fi
-	if [ "$stop_status" -eq 2 ]; then
-		# Nothing could be seen, so nothing here can say the pipeline stopped —
-		# and leaving it at that leaves curl and the upstream installer running,
-		# writing into the Go bin directory after this script has gone. Signal
-		# blind and say so, which is what the gate does with the same answer.
-		escalate_blind "$target" "$attempt_stop_grace"
-		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: the process listing that answers whether group %s is empty would not run. It has been signalled blind, and not waited on.\n' \
-			"$target" >&2
+	local status=0
+	[ -n "$attempt_record" ] || return 0
+	stop_recorded_job "$attempt_record" "$attempt_stop_grace" "$attempt_marker" || status=$?
+	if [ "$status" -ne 0 ]; then
+		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: %s Not waiting on it.\n' \
+			"$pgroup_stop_reason" >&2
 		attempt_pid=""
 		return 1
 	fi
-	if [ "$stop_status" -ne 0 ]; then
-		printf 'install-golangci-lint.sh: the install attempt would not stop; process group %s still holds %s. Not waiting on it.\n' \
-			"$target" "$(pgroup_survivor_report "$target")" >&2
-		attempt_pid=""
-		return 1
-	fi
-	# The group is empty, so this reap cannot block: the leader is a zombie or
-	# already collected, and bash keeps a reaped job's status either way. Only a
-	# pid this shell was actually handed can be waited on.
+	# Nothing of it is left, so this reap cannot block: the leader is a zombie
+	# or already collected, and bash keeps a reaped job's status either way.
+	# Only a pid this shell was handed can be waited on.
 	[ -n "$attempt_pid" ] && wait "$attempt_pid" 2>/dev/null || :
 	attempt_pid=""
+	return 0
 }
+
 # finish_cleanup — stop the attempt, then remove the scratch if and only if the
 # stop could be shown to have worked.
 #
-# A scratch deleted over a group that may still be running takes the record with
-# it, and that record is the only name anyone has for what is holding the Go bin
-# directory open. The same rule the gate follows with its own records: what
-# cannot be shown to have stopped keeps its name, and is said out loud.
+# A scratch deleted over a pipeline that may still be running takes the record
+# with it, and that record is the only name anyone has for what is holding the
+# Go bin directory open. Once unconfirmed, always unconfirmed: a signal trap and
+# then the EXIT trap both run this, and the second pass must not read "nothing
+# left to try" as "nothing was left running".
 finish_cleanup() {
 	if [ "$attempt_unconfirmed" -eq 0 ] && stop_attempt; then
 		scratch_rm
 		return 0
 	fi
-	# Said once and remembered: a signal trap and then the EXIT trap both run
-	# this, and the second pass can only repeat a stop already given up on,
-	# including its grace — and must not mistake "nothing left to try" for
-	# "nothing was left running" and delete the scratch after all.
 	if [ "$attempt_unconfirmed" -eq 0 ]; then
 		attempt_unconfirmed=1
 		attempt_record=""
@@ -251,13 +185,13 @@ while :; do
 		exit 1
 	fi
 	perl -e "$PGROUP_SPAWN_PERL" \
-		-- "$attempt_record" install-golangci-lint-attempt \
+		-- "$attempt_record" "$attempt_marker" \
 		bash -c 'set -o pipefail; curl -sSfL --connect-timeout 10 --max-time 60 "$1" | sh -s -- -b "$2" "$3"' \
 		install-golangci-lint-attempt "$installer_url" "$bindir" "v$version" 2>"$attempt_log" &
 	attempt_pid=$!
 	# Said from this side too: between the fork and this line the attempt is
 	# running under a record that names nothing.
-	pgroup_record_spawned "$attempt_record" "$attempt_pid" install-golangci-lint-attempt
+	pgroup_record_spawned "$attempt_record" "$attempt_pid" "$attempt_marker"
 	attempt_status=0
 	wait "$attempt_pid" || attempt_status=$?
 	# Reaped, so both names for it go now, before the backoff below gives a

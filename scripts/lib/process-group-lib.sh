@@ -231,6 +231,117 @@ pid_owned_by() {
 	return 1
 }
 
+# pid_pgroup PID — print the process group PID is in, or nothing when that
+# cannot be read. The one place this library parses `ps` for a group number.
+pid_pgroup() {
+	ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+# pgroup_record_survivor RECORD PGID — mark a record as a group that took
+# SIGTERM and SIGKILL and was still there. Kept for whoever runs next, and never
+# signalled again by this library.
+pgroup_record_survivor() {
+	printf 'survivor:%s' "$2" >"$1.survivor.tmp" || return 1
+	mv "$1.survivor.tmp" "$1"
+}
+
+# stop_recorded_job RECORD GRACE MARKER — stop whatever RECORD names, and say
+# what happened. The whole state table lives here, so no caller has to know it:
+#
+#   (no file)        nothing to do
+#   (empty)          wait GRACE for the spawn to name itself, then decide
+#   pid:N:MARKER     one process, in the caller own group: the marker can answer
+#                    for it, so it decides, and then the group N may have become
+#                    is stopped too
+#   pgid:N:MARKER    a group of the job own: survivors decide — anything alive
+#                    under N is stopped, because the marker cannot speak for a
+#                    child whose parent carried it
+#   survivor:N       already given SIGTERM and SIGKILL and still there: kept,
+#                    and nothing is signalled again
+#
+# Exit status, which is also what happens to the record:
+#   0  stopped, or nothing of it was running — the record is removed
+#   1  the number is not this job any more — the record is removed
+#   2  it cannot be shown to have stopped — the record is kept
+#   3  the record already says the group survived both signals — kept, untouched
+# The sentence to print is left in pgroup_stop_reason for statuses 1 to 3.
+stop_recorded_job() {
+	local record="$1" grace="$2" marker="$3"
+	local value number recorded_marker members status=0
+	pgroup_stop_reason=""
+	[ -e "$record" ] || return 0
+	if ! value="$(pgroup_record_value "$record" "$grace")"; then
+		pgroup_stop_reason="the job never named itself, so nothing here can aim at it."
+		return 2
+	fi
+	case "$value" in
+	survivor:*)
+		pgroup_stop_reason="$(printf 'process group %s was still there after SIGTERM and SIGKILL; it has not been signalled again.' "${value#survivor:}")"
+		return 3
+		;;
+	pid:* | pgid:*) ;;
+	*)
+		pgroup_stop_reason="$(printf 'the record reads %s, which is not a state this library writes.' "$value")"
+		return 2
+		;;
+	esac
+	number="${value#*:}"
+	number="${number%%:*}"
+	recorded_marker="${value##*:}"
+	if [ -n "$marker" ] && [ "$recorded_marker" != "$marker" ]; then
+		pgroup_stop_reason="$(printf 'the record was written for %s, not %s, so it names somebody else job.' "$recorded_marker" "$marker")"
+		rm -f "$record"
+		return 1
+	fi
+	if [ "${value#pid:}" != "$value" ]; then
+		# A pid names one process, which is the only thing the marker can
+		# answer for: it either carries it or the kernel has given the number
+		# to somebody else since.
+		pid_owned_by "$number" "$recorded_marker" || status=$?
+		if [ "$status" -eq 1 ]; then
+			rm -f "$record"
+			return 1
+		fi
+		if [ "$status" -ne 0 ]; then
+			pgroup_stop_reason="$(printf 'the process listing that says whether pid %s is still this job would not run.' "$number")"
+			return 2
+		fi
+		status=0
+		stop_pid "$number" "$grace" || status=$?
+		if [ "$status" -ne 0 ]; then
+			pgroup_stop_reason="$(printf 'pid %s did not go after SIGTERM and SIGKILL with %ss of grace each.' "$number" "$grace")"
+			return 2
+		fi
+	fi
+	# Whatever the record said, the number may be a group by now: a job splits
+	# the instant after it is forked, and a group outlives the process that made
+	# it. Survivors decide from here.
+	if ! members="$(pgroup_survivors "$number")"; then
+		escalate_blind "$number" "$grace"
+		pgroup_stop_reason="$(printf 'the process listing that says whether group %s is empty would not run; it has been signalled blind.' "$number")"
+		return 2
+	fi
+	if [ -z "$members" ]; then
+		rm -f "$record"
+		return 0
+	fi
+	status=0
+	stop_pgroup "$number" "$grace" || status=$?
+	case "$status" in
+	0)
+		rm -f "$record"
+		return 0
+		;;
+	1)
+		pgroup_record_survivor "$record" "$number"
+		pgroup_stop_reason="$(printf 'process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each.' "$number" "$(pgroup_survivor_report "$number")" "$grace")"
+		return 2
+		;;
+	esac
+	pgroup_stop_reason="$(printf 'process group %s cannot be shown to have stopped: the process listing would not run.' "$number")"
+	return 2
+}
+
 # escalate_blind PID GRACE — the last thing to do for a job nothing can see:
 # SIGTERM, GRACE seconds, then SIGKILL, to the group the pid may lead and to the
 # pid itself.
