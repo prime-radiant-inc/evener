@@ -8,10 +8,12 @@ were deliberately left out of it.
 
 Closed on `shared-notes-followups` (PR #1249) unless noted; hashes are on that branch.
 
-- **1** — fixed in `99fb9b8089`, hardened in `0ce49e706`: the per-row Remove button is disabled
-  while its request is in flight, and the handler checks a synchronous ref so two clicks inside one
-  tick still fire a single request. The second half of the finding — treating an entry already
-  absent from `model.sessionUrls` as a successful removal — is not implemented; see the item below.
+- **1** — fixed in `99fb9b8089`, hardened in `0ce49e706` and `01d2c0782`: the per-row Remove button
+  is disabled while its request is pending, the handler checks a synchronous ref so two clicks
+  inside one tick fire a single request, and the row stays pending until the `evener/urls/updated`
+  push removes the entry from `model.sessionUrls` (a failed request releases it so a retry still
+  reaches the wire). The finding's other half — treating an entry already absent from
+  `model.sessionUrls` as a successful removal — is still not implemented; see the item below.
 - **2, 7** — fixed in `24a4a433c3` (merged in `fe3c249fc0`): the delayed save samples the instance
   identity inside `save()` after hydration, so a rotation the client has already observed saves
   against the current instance. The daemon's `ExpectedInstanceID` fence remains the authority.
@@ -24,8 +26,11 @@ Closed on `shared-notes-followups` (PR #1249) unless noted; hashes are on that b
   URL label lose them while whitespace controls still collapse to one space (stripping after the
   collapse left a double space where a control sat between two spaces); raw URLs carrying any
   control rune are refused before parsing, because `url.Parse` accepts a C1 rune and keeps it
-  verbatim in `RawQuery`; and both unknown-id error echoes quote the id. Write-path fix: text
-  persisted before it is not re-sanitized.
+  verbatim in `RawQuery`; and both unknown-id error echoes quote the id. Values persisted before the
+  strip are normalized on the way back in rather than left alone:
+  `283157eaa` covers restored notes, the snapshot's canonical human note and the roster read, and
+  `20a5a9592` adds the full strip for restored URLs and entry ids, a replayed response note, and the
+  model copy of a persisted NOTES_CONTEXT turn.
 - **6** — closed without a code change; see the note on the item below.
 - **8, 9** — fixed in `a30b1ab8e3` (merged in `80747e1a0`): readers take one atomic load of a
   published committed notes cut (human note, agent note, URL list, ever-projected flag), and a
