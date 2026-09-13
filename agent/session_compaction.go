@@ -914,7 +914,15 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) [
 func (s *Session) emitSteeringTurnRecords(records []steeringTurnRecord, errs []error) {
 	for i, record := range records {
 		if i < len(errs) && errs[i] != nil {
+			// Write, then announce — and a write that failed announces
+			// nothing. The entry is not in the transcript, so the line a
+			// client would show here is one no reload reproduces, under an
+			// owner naming a group the transcript does not have. The model
+			// still sees this steering: the fold appended it to live history
+			// before publishing, which the warning reports and a reload
+			// resolves by not replaying it.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", errs[i])})
+			continue
 		}
 		s.announceSteeringTurn(record.turn.OwningTurnID, events.SteeringInjectedData{Text: record.text, Kind: record.kind})
 	}
