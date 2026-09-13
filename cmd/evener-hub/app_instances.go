@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
@@ -322,12 +323,26 @@ const endpointFingerprintKeyFile = "endpoint-fingerprint.key"
 
 var (
 	endpointFingerprintKeyMu    sync.Mutex
-	endpointFingerprintKeyCache = map[string][]byte{}
+	endpointFingerprintKeyCache = map[string]endpointFingerprintKeyEntry{}
 	// endpointFingerprintKeyOwner is the uid a key file has to belong to. A
 	// real uid cannot be varied the way the check needs to be exercised, so it
 	// is a seam in the same sense as the auth store's file operations.
 	endpointFingerprintKeyOwner = os.Getuid
 )
+
+// endpointFingerprintKeyEntry is a cached key with the file identity it was read
+// from, so the cache can tell that the file has been rotated under it.
+type endpointFingerprintKeyEntry struct {
+	key       []byte
+	signature endpointFingerprintKeySignature
+}
+
+// endpointFingerprintKeySignature is the key file as the reader found it: its
+// size and modification time, which a rotation changes.
+type endpointFingerprintKeySignature struct {
+	size    int64
+	modTime time.Time
+}
 
 // endpointFingerprintKey returns the key the endpoint fingerprints are keyed
 // with, creating it under stateDir on first use. It is machine-local, 0600, and
@@ -335,17 +350,29 @@ var (
 // that can neither be read nor created yields nil, and the caller then omits
 // the fingerprint. Only successes are cached, so a state root that becomes
 // writable later starts serving fingerprints again.
+//
+// A cached key is revalidated against its file on every use. Rotation is the
+// answer to a key that may have leaked (readEndpointFingerprintKey refuses a
+// file it did not write safely), and an operator rotating or deleting the file
+// has to see that take effect in a running hub, not only after a restart.
 func endpointFingerprintKey(stateDir string) []byte {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
 		return nil
 	}
+	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
 	endpointFingerprintKeyMu.Lock()
 	defer endpointFingerprintKeyMu.Unlock()
-	if key, ok := endpointFingerprintKeyCache[stateDir]; ok {
-		return key
+	if entry, ok := endpointFingerprintKeyCache[stateDir]; ok {
+		// The file's own size and time are what say it is still the file this
+		// key came from. A rewrite that preserved both would need the access to
+		// the state root that can read the key outright, which the validation
+		// below refuses to make easier.
+		if signature, err := endpointFingerprintKeyFileSignature(path); err == nil && signature == entry.signature {
+			return entry.key
+		}
+		delete(endpointFingerprintKeyCache, stateDir)
 	}
-	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
 	key, err := readEndpointFingerprintKey(path)
 	if err != nil {
 		key, err = repairEndpointFingerprintKey(path)
@@ -356,8 +383,22 @@ func endpointFingerprintKey(stateDir string) []byte {
 	if len(key) == 0 {
 		return nil
 	}
-	endpointFingerprintKeyCache[stateDir] = key
+	signature, err := endpointFingerprintKeyFileSignature(path)
+	if err != nil {
+		return nil
+	}
+	endpointFingerprintKeyCache[stateDir] = endpointFingerprintKeyEntry{key: key, signature: signature}
 	return key
+}
+
+// endpointFingerprintKeyFileSignature identifies the key file as the reader saw
+// it, Lstat so a symlink at the path is judged as itself here too.
+func endpointFingerprintKeyFileSignature(path string) (endpointFingerprintKeySignature, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return endpointFingerprintKeySignature{}, err
+	}
+	return endpointFingerprintKeySignature{size: info.Size(), modTime: info.ModTime()}, nil
 }
 
 // readEndpointFingerprintKey returns the key at path, refusing a file this hub

@@ -1901,6 +1901,42 @@ func TestInstances_EndpointFingerprintRotatesAKeyThatIsNotItsOwn(t *testing.T) {
 	}
 }
 
+// Rotation is the answer to a key that may have leaked, so it has to take effect
+// in a running hub: a cached key is revalidated against its file, and a key file
+// an operator replaces (a fresh, longer value here, so the signature differs even
+// if the timestamps tie) stops keying digests immediately. A key file that is
+// deleted is rotated rather than kept, so the next use writes a fresh one.
+func TestInstances_EndpointFingerprintFollowsARotatedKeyFile(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if first == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	if err := os.WriteFile(keyPath, []byte("a-rotated-key-an-operator-just-put-here"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	second := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if second == first {
+		t.Fatal("the fingerprint still came from the cached key after the key file was replaced")
+	}
+
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatalf("Remove(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	third := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if third == "" || third == second {
+		t.Fatal("a deleted key file was not replaced by a fresh one")
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("Stat(%s) after the rotation: %v", endpointFingerprintKeyFile, err)
+	}
+}
+
 // A key file that is there but empty is a corrupt one, and treating it as "no
 // key" would fail the endpoint-change protection open without a word. The hub
 // replaces it, so the listing keeps serving fingerprints a client can compare.

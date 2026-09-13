@@ -3652,6 +3652,68 @@ test("provider onboarding on an unmanaged harness does not require a model", asy
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
 
+test("an unmanaged harness whose hub resolves no default model still starts", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/unmanaged-no-default");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/unmanaged-no-default", JSON.stringify({ harness: "external" }));
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      // No Evener default model, but a resolved effort so the readout settling
+      // on "high (default)" proves the resolve response has been applied.
+      effective: { model: "", reasoningEffort: "high" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await waitFor(() => expect(effortReadout().textContent).toBe("high (default)"));
+
+  // The unmanaged harness carries its own model, so the hub's missing Evener
+  // default must not become a requirement of this pane: no "Choose a model",
+  // no requirement note, Start live.
+  expect(modelTrigger().textContent).not.toContain("Choose a model");
+  expect(modelValue().textContent).toBe("(default)");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("an unmanaged harness is never auto-filled by the uncredentialed-default fallback", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/unmanaged-fallback");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/unmanaged-fallback", JSON.stringify({ harness: "external" }));
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      // openai is absent from model/list, so the fallback would otherwise
+      // replace the untouched Model with the first launchable Evener model.
+      effective: { model: "openai/gpt-5.5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  // The fallback must not run for an unmanaged harness: Model stays untouched
+  // and the chip keeps naming the resolved default instead of the first
+  // launchable Evener model.
+  await waitFor(() => expect(modelValue().textContent).toBe("openai/gpt-5.5 (default)"));
+  expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
+
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  if (!start) throw new Error("start was not issued");
+  expect((start.params as ThreadStartParams).model).not.toBe("anthropic/claude-sonnet-4-5");
+});
+
 test("an Advanced-options model override after onboarding satisfies the requirement", async () => {
   const user = userEvent.setup();
   let saved = false;

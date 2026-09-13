@@ -586,9 +586,10 @@ function SpawnForm({
   // pane would submit - requiring a choice there would disable Start, and
   // label the chip "Choose a model", over a model nothing launches with.
   const modelRequired =
+    usesEvenerModels &&
     model === "" &&
     advancedModel === "" &&
-    (noDefaultModel || (usesEvenerModels && providerChoiceScopes.current.has(`${harness}\0${cwd}`)));
+    (noDefaultModel || providerChoiceScopes.current.has(`${harness}\0${cwd}`));
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
@@ -914,7 +915,16 @@ function SpawnForm({
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
           const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
           const fallback = models[0];
-          if (!defaultCredentialed && fallback && !providerChoiceScopes.current.has(`${harness}\0${cwd}`)) {
+          // Only a harness whose model comes from Evener's providers may have
+          // its untouched Model substituted: an unmanaged harness carries its
+          // own model, so writing a qualified Evener "provider/model" here
+          // would overwrite what it actually launches with.
+          if (
+            usesEvenerModels &&
+            !defaultCredentialed &&
+            fallback &&
+            !providerChoiceScopes.current.has(`${harness}\0${cwd}`)
+          ) {
             setModel(`${fallback.provider}/${fallback.model}`);
           }
         },
@@ -929,7 +939,7 @@ function SpawnForm({
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, draft, advancedOverrides, resolveConfig, loadModels, setModel, harness]);
+  }, [cwd, draft, advancedOverrides, resolveConfig, loadModels, setModel, harness, usesEvenerModels]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, schema.ts's
