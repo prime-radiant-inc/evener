@@ -891,7 +891,7 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 	// First deterministically, on a quiet file: a fold lands exactly between
 	// Epoch's two readings.
 	interleaved := 0
-	epochInterleave = func() {
+	c.epochInterleave = func() {
 		interleaved++
 		writeLines(t, path, []int{7, 8, 9, 10})
 		if _, err := c.Get(ctx, path, extend); err != nil {
@@ -899,7 +899,7 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 		}
 	}
 	named, err := c.Epoch(path)
-	epochInterleave = nil
+	c.epochInterleave = nil
 	if err != nil {
 		t.Fatalf("naming across an interleaved fold: %v", err)
 	}

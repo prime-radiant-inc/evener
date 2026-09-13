@@ -173,6 +173,12 @@ type Cache[T any] struct {
 	// see epochState's doc comment.
 	epochStates map[string]*epochState
 
+	// epochInterleave runs between Epoch's two readings when set, for the
+	// test that proves those readings cannot describe different moments. It
+	// is set only by this package's own tests, before the cache is shared,
+	// and is nil everywhere else.
+	epochInterleave func()
+
 	flights map[string]struct{}
 	group   singleflight.Group
 
@@ -591,12 +597,6 @@ func (c *Cache[T]) finishFlight(flightKey string) {
 	delete(c.flights, flightKey)
 }
 
-// epochInterleave runs between Epoch's two readings when set. It exists for
-// the test that proves those readings cannot describe different moments: a
-// fold landing in this window must not let one be judged against the other in
-// the direction that invents a rewrite. Nil in every build but that test.
-var epochInterleave func()
-
 // Epoch reports the generation Get would attach to path right now, without
 // folding it, for a caller that must name a path's generation WITHOUT paying
 // for its fold (the activity tree's depth-truncated children). A path that is
@@ -625,9 +625,10 @@ func (c *Cache[T]) Epoch(path string) (uint64, error) {
 	// that mismatch is a true one.
 	c.mu.Lock()
 	st := c.epochStates[path]
+	interleave := c.epochInterleave
 	c.mu.Unlock()
-	if epochInterleave != nil {
-		epochInterleave()
+	if interleave != nil {
+		interleave()
 	}
 	info, err := os.Stat(path)
 	if err != nil {
