@@ -8,7 +8,7 @@
 // one, and nothing else in the tree pins the suite's file count. This compares
 // what Vitest collects under the package against what is on disk there.
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,7 +57,17 @@ export function describeDifference(onDisk, collected, dir) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const listed = spawnSync("npx", ["vitest", "list", "--filesOnly"], { cwd: frontend, encoding: "utf8" });
+  // The LOCAL binary, never `npx`: with node_modules missing or stale, npx
+  // falls back to the npm cache or the registry and a default gate must make
+  // no network request. scripts/web/web-preflight.sh guards the same hazard
+  // by asking ./node_modules/.bin/tsc for its version rather than a bare or
+  // npx `tsc`, which resolves to the unrelated tsc@2.0.4 package.
+  const vitestBin = path.join(frontend, "node_modules", ".bin", "vitest");
+  if (!existsSync(vitestBin)) {
+    console.error(`${vitestBin} is missing - run npm ci in cmd/evener-hub/frontend`);
+    process.exit(1);
+  }
+  const listed = spawnSync(vitestBin, ["list", "--filesOnly"], { cwd: frontend, encoding: "utf8" });
   if (listed.status !== 0) {
     console.error(`vitest list failed (exit ${listed.status}):\n${listed.stderr ?? ""}`);
     process.exit(1);
