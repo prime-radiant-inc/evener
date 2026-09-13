@@ -722,6 +722,14 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
 	}
 
+	// Read the authored layer before anything is deleted: this is a pure read,
+	// so a failure here leaves nothing to undo, and it happens inside c.mu, so
+	// the layer it returns is still the one this removal edits.
+	l, _, err := c.read()
+	if err != nil {
+		return err
+	}
+
 	// Held exclusively across the credential cleanup, the providers.toml write
 	// and the reload that follows it, the way a rename holds it across its
 	// check and re-key (see hubAuthController.credMu). A credential writer
@@ -739,14 +747,18 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// so the caller can retry it. The reverse order would report a deletion
 	// that only half happened and leave the credential under a name nothing
 	// curates - invisible until a later instance of that name inherits it.
+	// What the cleanup is about to delete is captured first, because the
+	// write below can still fail: it leaves [providers.<name>] in place and
+	// tells the caller the removal failed, so the instance the caller still
+	// has must still authenticate. Capture and restore both sit inside this
+	// held lock, so no writer can slip between them.
+	storedKey, hasStoredKey := c.auth.creds.Get(name)
+	oauthRecord, hasOAuth := c.capturedOAuthRecord(name)
+
 	if err := c.removeCredentials(name); err != nil {
 		return err
 	}
 
-	l, _, err := c.read()
-	if err != nil {
-		return err
-	}
 	delete(l.Providers, name)
 	// A `default` naming the instance just removed would fail the next load,
 	// so it goes with it; the ranking of §5.1 picks the replacement.
@@ -754,9 +766,45 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		l.Default = ""
 	}
 	if err := c.writeLoadable(l); err != nil {
-		return err
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthRecord, hasOAuth, err)
 	}
 	return c.reg.Reload()
+}
+
+// capturedOAuthRecord reads the OAuth record a removal's cleanup is about to
+// unlink, so a failure on the config side can write it back. A missing record
+// is (zero, false); a record that is present but unreadable (corrupt) is also
+// false - nothing can write those bytes back - so the removal proceeds and the
+// restore's error, if it comes to that, says the record could not be restored.
+func (c *hubInstancesController) capturedOAuthRecord(name string) (authopenai.AuthRecord, bool) {
+	record, err := c.auth.loadAuth(c.auth.stateDir, name)
+	if err != nil {
+		return authopenai.AuthRecord{}, false
+	}
+	return record, true
+}
+
+// restoreFailedRemoval puts back what the cleanup deleted after a failure that
+// left the instance authored, and folds whatever it could not restore into the
+// error the caller sees: the removal did not happen, so the instance must
+// still authenticate, and a caller told only that the removal failed would
+// have no way to know that it did not.
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, record authopenai.AuthRecord, hasOAuth bool, cause error) error {
+	var problems []string
+	if hasStoredKey {
+		if err := c.auth.setCredential(name, storedKey); err != nil {
+			problems = append(problems, fmt.Sprintf("its stored key could not be restored (%v)", err))
+		}
+	}
+	if hasOAuth {
+		if err := c.auth.saveAuth(c.auth.stateDir, name, record); err != nil {
+			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
+		}
+	}
+	if len(problems) == 0 {
+		return cause
+	}
+	return fmt.Errorf("%w; the instance is still configured, but %s", cause, strings.Join(problems, " and "))
 }
 
 // removeCredentials deletes the credential layers filed under a name whose

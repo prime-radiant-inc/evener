@@ -719,6 +719,83 @@ func TestInstances_RemoveFailsWhenTheOAuthRecordCannotBeDeleted(t *testing.T) {
 	}
 }
 
+// The other side of the same rule: a removal that fails before it can write
+// the config must not have deleted anything. The instance is still authored,
+// so it still resolves, and its credential has to still be there - a caller
+// told the removal failed would otherwise be holding an instance that quietly
+// lost its key.
+func TestInstances_RemoveKeepsCredentialsWhenTheConfigCannotBeRead(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := os.WriteFile(f.tomlPath, []byte("this is not toml\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the config read failure")
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("the failed removal deleted the stored key: %q", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the failed removal deleted the OAuth record: %v", loadErr)
+	}
+}
+
+// TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails: the write
+// happens after the cleanup, so a failure there would otherwise leave the
+// instance authored with its credential already durable-deleted. The path is
+// swapped for a directory from inside a cleanup seam, which is what makes the
+// rename-based write fail without depending on permissions or uid; it stands
+// in for any write that cannot land (a full disk, a read-only config root).
+func TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the config write failure")
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the failed removal to have restored it", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", loadErr)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
+		t.Fatal("the instance left the registry even though the removal failed")
+	}
+}
+
 func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}); err != nil {
