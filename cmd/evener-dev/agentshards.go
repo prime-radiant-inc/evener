@@ -274,10 +274,15 @@ func runShards(cfg shardsConfig) int {
 	// The build gets the caller's build flags: a -race run has to compile a
 	// race-detector binary, and a -tags run has to compile the files that tag
 	// selects, or the shards test something the caller did not ask for.
-	buildFlags, extraFlags := splitFlags(cfg.flags)
-	buildArgs := append([]string{"test", "-c"}, buildFlags...)
+	parsed, err := parseFlags(cfg.flags)
+	if err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		return 1
+	}
+	extraFlags := parsed.test
+	buildArgs := append([]string{"test", "-c"}, parsed.build...)
 	buildArgs = append(buildArgs, "-o", build, ".")
-	if err := cfg.runToLog(in, buildLog, cfg.agentDir, "go", buildArgs...); err != nil {
+	if err = cfg.runToLog(in, buildLog, cfg.agentDir, "go", buildArgs...); err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
 		}
@@ -313,7 +318,7 @@ func runShards(cfg shardsConfig) int {
 		}
 		if !cacheHit {
 			_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: surveying test costs (one-time for this test set)")
-			args := surveyArgs(cfg.surveyParallel, cfg.skip, hasShortFlag(cfg.flags))
+			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short)
 			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
