@@ -38,6 +38,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 					PendingAsk:    item.PendingAsk,
 					RunningJobs:   item.RunningJobs,
 					CompletedJobs: item.CompletedJobs,
+					Watches:       item.Watches,
 				}
 				entries = append(entries, entry)
 				// In-process descendants are addressed as their own AppWire

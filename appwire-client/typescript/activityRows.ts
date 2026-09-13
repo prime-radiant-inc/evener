@@ -178,13 +178,14 @@ function deliveryCountLabel(count: number): string {
 // earned or its armed state. Never a next-fire or countdown - the runtime
 // keeps no such instant.
 export function watchMeta(watch: NavigationWatchSummary): string {
-  const kind = watchKind(watch);
   // Every configured trigger source is named, not just the one watchKind
-  // happens to pick: a watch with both an output match and a progress cadence
-  // is both, and saying only "on output" would hide half its schedule.
+  // happens to pick: a watch can carry an output match, an event trigger, and a
+  // clock cadence at once, and naming only the first would hide the rest.
+  // Derive each condition from its own wire field rather than from watchKind,
+  // which collapses a multi-trigger watch to a single kind.
   const conditions: string[] = [];
-  if (kind === "output") conditions.push("on output");
-  else if (kind === "event") conditions.push("on event");
+  if ((watch.output_match ?? "").trim() !== "") conditions.push("on output");
+  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) conditions.push("on event");
   conditions.push(...clockCadenceLabels(watch));
   const suffix = watch.deliveries > 0 ? deliveryCountLabel(watch.deliveries) : armedState(watch);
   return [...conditions, suffix].filter((part) => part !== "").join(" · ");
