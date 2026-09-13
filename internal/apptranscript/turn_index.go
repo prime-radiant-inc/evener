@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 18
+	turnIndexVersion        = 19
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -1837,6 +1837,16 @@ func continuationGroupState(index turnIndexDisk) string {
 	for i := index.recordCount() - 1; i >= 0; i-- {
 		record := index.recordAt(i)
 		kind := record.TurnKind
+		if !record.GroupOpen {
+			// A standalone closed the flow here, and nothing across it
+			// continues — the full read's accumulator drops its target on the
+			// same record. This is asked BEFORE the kind, because a record's
+			// persisted TurnID is never empty (persistedTurnID falls back to
+			// turn_<index>), so an UNOWNED record of an owned kind would
+			// otherwise read as a fragment and be walked past, reaching back
+			// to an opener the checkpoint between them ended.
+			return ""
+		}
 		owner := ""
 		if ownedLogicalTurnKind(kind) && !record.GoalContinuation {
 			owner = record.TurnID

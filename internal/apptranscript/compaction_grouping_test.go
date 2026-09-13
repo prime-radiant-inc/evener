@@ -125,6 +125,16 @@ func TestCompactionOwnershipAcrossIncrementalItemReaders(t *testing.T) {
 		// turn's next record. The fragment is one record of a turn that is
 		// over; the assistant belongs to the turn that is still running, so it
 		// must not join the fragment.
+		// A standalone ends the flow, and nothing across it continues: the
+		// timing record that follows opens its own group and the assistant
+		// belongs there, with no reach back to the opener before the
+		// checkpoint. The bounded reader has to reconstruct that from the
+		// records alone when it resumes.
+		{"a standalone before a late fragment ends the flow", []schema.Turn{
+			record(schema.TurnCheckpoint, "boundary", ""),
+			record(schema.TurnRoundTimings, "timing", "turn_other"),
+			record(schema.TurnAssistant, "assistant", ""),
+		}, []string{"turn_active", "boundary", "turn_other"}},
 		// The reviewer's combination: a fragment for an EARLIER turn, then
 		// metadata owned by the turn that is still running, then its next
 		// record. The timing record's group is the running turn's own, so the
