@@ -242,6 +242,19 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 root_skip="$fuzz_test_skip"
 
 flags="$*"
+# go_flag FLAG — a caller's flag in the one spelling the rest of this script
+# reads. Go's flag package takes `--tags` and `-tags` as the same flag, so a
+# reader that knows only one of them refuses nothing and forwards nothing: `--C`
+# walked past the refusal below, and `--race` was dropped from the enumeration
+# while `go test` built with it. One leading dash is stripped here and nowhere
+# else, so both readers see the same word.
+go_flag() {
+	case "$1" in
+	--?*) printf '%s' "${1#-}" ;;
+	*) printf '%s' "$1" ;;
+	esac
+}
+
 # Refused rather than forwarded: -C changes directory before the command runs,
 # and every module here is enumerated and tested from its own directory.
 #
@@ -250,7 +263,7 @@ flags="$*"
 # in the working directory — and a file called `-C` there made this refuse a run
 # that never asked for one.
 for flag in "$@"; do
-	case "$flag" in
+	case "$(go_flag "$flag")" in
 	-C | -C=*)
 		printf 'run-module-tests.sh: -C is not supported here. Each module is enumerated and tested from its own directory, and a -C would move both commands somewhere this runner does not expect. Run the gate from the repository root instead.\n' >&2
 		exit 2
@@ -586,7 +599,8 @@ stop_package_list_attempt() {
 #
 # The list is the build flags `go help build` documents on the pinned toolchain
 # that can change which packages exist: -tags, -mod, -modfile, -overlay, -pgo,
-# -trimpath, and the three sanitiser flags. -race, -msan and -asan belong there
+# -compiler, -trimpath, and the three sanitiser flags. -compiler chooses gc or
+# gccgo, and the two disagree about what builds. -race, -msan and -asan belong there
 # because each sets a build tag of its own — `race`, `msan`, `asan` — so a file
 # behind `//go:build race` exists for `go test -race` and not for a `go list`
 # without it, and the gate would hand `go test` a list missing those packages.
@@ -601,20 +615,24 @@ stop_package_list_attempt() {
 # -race, -p and -parallel, so nothing here is forwarded in practice; the rule is
 # what keeps the two commands agreeing when that changes.
 package_list_build_flags() {
-	local flag out="" expect_value=0
+	local flag normalised out="" expect_value=0
 	for flag in "$@"; do
 		if [ "$expect_value" -eq 1 ]; then
 			out="$out $flag"
 			expect_value=0
 			continue
 		fi
-		case "$flag" in
-		-tags | -mod | -modfile | -overlay | -pgo)
-			out="$out $flag"
+		# Forwarded in the spelling `go list` will be given, which is the
+		# normalised one: go reads --tags and -tags alike, and passing on the
+		# caller's own spelling would mean two spellings to keep matching.
+		normalised="$(go_flag "$flag")"
+		case "$normalised" in
+		-tags | -mod | -modfile | -overlay | -pgo | -compiler)
+			out="$out $normalised"
 			expect_value=1
 			;;
-		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -trimpath | -race | -msan | -asan | -race=* | -msan=* | -asan=*)
-			out="$out $flag"
+		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -compiler=* | -trimpath | -race | -msan | -asan | -race=* | -msan=* | -asan=*)
+			out="$out $normalised"
 			;;
 		esac
 	done
