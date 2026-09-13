@@ -89,11 +89,24 @@ refactor also single-sourced the gutter geometry: `--speaker-avatar-size: 24px
 consumed via `var()` everywhere (the avatar tile default is pinned to it by a
 contract test in `widgets/speakeravatar/speakeravatar.test.tsx`).
 
+**Amended 2026-09-13 (steer-indent fix, PR #1261, commit `4e441b95`):** a
+steer the human typed mid-turn (appwire's `STEERING` entry with
+`steering_source=user`) renders through the SAME `UserMessageView` a prompt
+uses, avatar column included. Classifying it as a run row therefore composed
+the two indents - `.runContent`'s 34px gutter PLUS the view's own 24px tile +
+10px gap = 68px - so the steer's text sat one full gutter right of every run
+row around it (and its avatar sat on the content edge rather than in the
+gutter). It is a **speaker** row now. The one steer kind that stays a run row
+is `human-note`, which the renderer routes to the labeled divider; a divider's
+rail icon pulls into the gutter with a negative margin that only exists under
+`.runContent`, so unwrapping it would pull the icon out of the column.
+
 | Item / chrome | Class | Why |
 |---|---|---|
 | userMessage | speaker | header = avatar + `You` + time; text in the content column of the same flex row |
 | agentMessage at exchange opener | speaker | header = avatar + `Agent` + `model · time` |
-| everything else in a turn — agentMessage mid-exchange, reasoning, commandExecution + clusters, steering (incl. notification cards), systemMessage, warning, unknown future types | run | one kind of row, indented with the run, no exceptions (the 2026-07-29 consistency fix) |
+| user-sourced steer (`steering` with `source: "user"`, any kind except `human-note`) | speaker | renders the `userMessage` view, avatar header included: its own content column IS the gutter arithmetic, so it must not also take the run's |
+| everything else in a turn — agentMessage mid-exchange, reasoning, commandExecution + clusters, daemon steering (incl. notification cards) and the `human-note` steer that renders the divider, systemMessage, warning, unknown future types | run | one kind of row, indented with the run, no exceptions (the 2026-07-29 consistency fix) |
 | TurnSeparator, SeenDivider, TurnFailureEndCap | (not items) | transcript chrome, rendered by TurnBlock directly, outside the role map |
 
 ## Footprint
