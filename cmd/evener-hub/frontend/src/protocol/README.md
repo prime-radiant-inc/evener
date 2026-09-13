@@ -8,7 +8,9 @@ and the user-facing message helpers every failure display goes through, the
 pure question formatter, the thread view model and its notification reducer,
 the activity tree parser, merge and disclosure rules, the job log tail parser,
 the send/queue availability table, the stable delegate status rule, and the
-doc-pane URL builders.
+doc-pane URL builders. The doc-pane data layer is published at the
+`./docContent` subpath as well, where `readDocFile` takes the host's fetch:
+the package issues no request of its own and names no credentials policy.
 
 Build and qualify from this directory with `npm run qualification`. The runner
 packs the package, installs that tarball into a temporary consumer, and then,

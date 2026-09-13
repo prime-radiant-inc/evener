@@ -11,6 +11,7 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { Chip, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Markdown } from "../../widgets/markdown";
+import { browserDocFetch } from "./browserDocFetch";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 import styles from "./docpane.module.css";
 import type { DocParams } from "./openDoc";
@@ -45,7 +46,7 @@ function DocFileView({ session, path }: { session: string; path: string }) {
   useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
-    readDocFile(session, path).then(
+    readDocFile(session, path, browserDocFetch).then(
       (content) => {
         if (!cancelled) setState({ status: "ok", content });
       },

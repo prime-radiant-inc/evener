@@ -195,6 +195,28 @@ const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
       cjsTypeUses: `const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;`,
       smoke: rootSmokeCalls,
     },
+    // The doc-pane data layer, published as its own specifier because
+    // readDocFile is not a root export: it needs a fetch, and a consumer that
+    // wants to substitute one (or spy on the module) needs a real subpath to
+    // import, which a root re-export cannot give it.
+    "./docContent": {
+      values: ["DOC_FILE_MAX_BYTES", "DocFileError", "docFileRawURL", "docImageURL", "readDocFile"],
+      types: ["DocFetch", "DocFileContent", "DocFileErrorKind", "DocResponseLike"],
+      esmTypeUses: `const read: (session: string, path: string, fetchDoc: DocFetch) => Promise<DocFileContent> = readDocFile;
+const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
+      cjsTypeUses: `const read: client.DocFetch = async (url: string) => {
+  void url;
+  throw new client.DocFileError("error", 500);
+}; void read;`,
+      // The URL builders and the size cap are the whole callable surface here:
+      // readDocFile needs a fetch, and qualification makes no requests, so it
+      // is checked for presence and its behavior is covered by unit tests.
+      smoke: `assert.equal(client.docFileRawURL("s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.docImageURL("s", "p"), "/doc/image?session=s&path=p");
+assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
+assert.equal(typeof client.readDocFile, "function");
+`,
+    },
   };
   const publishedSpecifiers = Object.keys(packageManifest.exports);
   for (const specifier of publishedSpecifiers)
