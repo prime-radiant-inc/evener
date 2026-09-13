@@ -882,3 +882,40 @@ func navigationDepth(rows []hubapi.NavigationSessionSummary) int {
 	visit(rows, 1)
 	return maxDepth
 }
+
+// TestCloneNavigationLiveEntriesOwnsWatches proves the navigation-input clone
+// deep-copies each live entry's watch list. Without the Watches line the clone
+// shares the roster's backing slices, so mutating the original's delivery
+// instants (or appending a watch) would reach the cloned projection.
+func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
+	original := []hubcore.LiveEntry{{
+		Watches: []appwire.EvenerWatchInfo{{
+			ID:            "w1",
+			Source:        "self",
+			Cadence:       []appwire.EvenerWatchCadence{{Kind: "every", Seconds: 10}},
+			Events:        []string{"assistant.tool"},
+			DeliveryTimes: []string{"1970-01-01T00:16:40Z"},
+			Active:        true,
+		}},
+	}}
+	clone := cloneNavigationLiveEntries(original)
+
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, original)
+	}
+	original[0].Watches[0].DeliveryTimes[0] = "mutated"
+	original[0].Watches[0].Cadence[0].Kind = "mutated"
+	original[0].Watches[0].Events[0] = "mutated"
+	if clone[0].Watches[0].DeliveryTimes[0] != "1970-01-01T00:16:40Z" ||
+		clone[0].Watches[0].Cadence[0].Kind != "every" ||
+		clone[0].Watches[0].Events[0] != "assistant.tool" {
+		t.Fatalf("clone watch changed through the original: %+v", clone[0].Watches[0])
+	}
+	original[0].Watches = append(original[0].Watches, appwire.EvenerWatchInfo{ID: "w2"})
+	if len(clone[0].Watches) != 1 {
+		t.Fatalf("appending to the original's watches changed the clone: %d rows", len(clone[0].Watches))
+	}
+	if cloneNavigationLiveEntries(nil) != nil {
+		t.Fatal("cloneNavigationLiveEntries(nil) must stay nil")
+	}
+}
