@@ -29,6 +29,7 @@
     "sendQueueAvailability.ts",
     "sessionErrors.ts",
     "stableDelegate.ts",
-    "docContent.ts"
+    "docContent.ts",
+    "toolCallText.ts"
   ]
 }

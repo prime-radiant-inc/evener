@@ -4,6 +4,7 @@
 // owning stable delegate projection exists, it supplies the hydrated state.
 import { useEffect } from "react";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
+import { parseJSONObject, str } from "../../../../protocol/toolCallText";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
@@ -16,7 +17,6 @@ import { formatElapsed, plainQuoteLine } from "../messages/format";
 import { statedIntentOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { parseJSONObject, str } from "./helpers";
 import {
   effectiveRowKind,
   resolveRowKey,

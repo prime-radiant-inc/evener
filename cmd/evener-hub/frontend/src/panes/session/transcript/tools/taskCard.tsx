@@ -35,11 +35,11 @@
 // changes-only card, not a full-plan disclosure; the sidebar remains the
 // full-plan view), not because the data is unavailable.
 import type { ItemModel } from "../../../../protocol/model";
+import { parseArgs, str } from "../../../../protocol/toolCallText";
 import { Meter } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { parseArgs, str } from "./helpers";
 import { TaskCheck, type TaskTouch } from "./taskCheck";
 import styles from "./taskcard.module.css";
 import { autoStartedTask, parseTaskState, taskLabel } from "./taskData";

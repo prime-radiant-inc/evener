@@ -16,7 +16,7 @@
 // JSON, not a value this file controls the shape of.
 
 import type { ItemModel, ThreadModel } from "../../protocol/model";
-import { parseArgs } from "./transcript/tools/helpers";
+import { parseArgs } from "../../protocol/toolCallText";
 
 export interface AskUserOption {
   label: string;

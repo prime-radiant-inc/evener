@@ -8,8 +8,9 @@
 // text and failed-row treatment generically; a domain-specific body uses
 // item.raw only when its producer state is stable and materially improves the
 // display.
+
+import { clip, tailFold, tailSlice } from "../../../../protocol/toolCallText";
 import { CodeBlock } from "../../../../widgets";
-import { clip, tailFold, tailSlice } from "./helpers";
 
 interface OutputBodyProps {
   item: { output?: string };
