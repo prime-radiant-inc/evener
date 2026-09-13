@@ -105,9 +105,22 @@ const SESSION_OPTIONAL = [
   "omitted_descendants",
   "running_jobs",
   "completed_jobs",
+  "watches",
 ];
 const JOB_REQUIRED = ["job_id", "job_type", "status"];
 const JOB_OPTIONAL = ["command", "task", "reason", "intent", "full_command"];
+const WATCH_REQUIRED = ["id", "source", "deliveries", "created_at", "active"];
+const WATCH_OPTIONAL = [
+  "target",
+  "send_to",
+  "note",
+  "cadence",
+  "output_match",
+  "events",
+  "wildcard_events",
+  "delivery_times",
+  "end_reason",
+];
 const PROJECT_REQUIRED = ["key", "name", "session_count"];
 const PROJECT_OPTIONAL = [
   "working_dir",
@@ -137,6 +150,34 @@ function jobValue(value: unknown): boolean {
   );
 }
 
+const watchCadenceValue = (value: unknown): boolean =>
+  exactKeys(value, ["kind"], ["seconds"]) &&
+  identity(value.kind) &&
+  optional(value.seconds, (item) => typeof item === "number" && Number.isFinite(item) && item >= 0);
+
+function watchValue(value: unknown): boolean {
+  return (
+    exactKeys(value, WATCH_REQUIRED, WATCH_OPTIONAL) &&
+    identity(value.id) &&
+    identity(value.source) &&
+    count(value.deliveries) &&
+    rfc3339Timestamp(value.created_at) &&
+    bool(value.active) &&
+    optional(value.target, (item) => boundedString(item, 512)) &&
+    optional(value.send_to, (item) => boundedString(item, 512)) &&
+    optional(value.note, (item) => boundedString(item, 512)) &&
+    optional(value.cadence, (item) => Array.isArray(item) && item.every(watchCadenceValue)) &&
+    optional(value.output_match, (item) => boundedString(item, 512)) &&
+    optional(value.events, (item) => Array.isArray(item) && item.every((event) => boundedString(event, 512))) &&
+    optional(value.wildcard_events, bool) &&
+    optional(
+      value.delivery_times,
+      (item) => Array.isArray(item) && item.every((instant) => rfc3339Timestamp(instant)),
+    ) &&
+    optional(value.end_reason, (item) => boundedString(item, 512))
+  );
+}
+
 function sessionValue(value: unknown): value is Record<string, unknown> {
   return (
     exactKeys(value, SESSION_REQUIRED, SESSION_OPTIONAL) &&
@@ -160,7 +201,8 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.more_subagents, count) &&
     optional(value.omitted_descendants, count) &&
     optional(value.running_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
-    optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue))
+    optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
+    optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue))
   );
 }
 
