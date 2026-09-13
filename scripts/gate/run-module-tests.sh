@@ -244,7 +244,12 @@ root_skip="$fuzz_test_skip"
 flags="$*"
 # Refused rather than forwarded: -C changes directory before the command runs,
 # and every module here is enumerated and tested from its own directory.
-for flag in $flags; do
+#
+# The arguments themselves, not the string they were joined into. `$flags`
+# re-split is subject to globbing, so `-run '*'` becomes the names of whatever is
+# in the working directory — and a file called `-C` there made this refuse a run
+# that never asked for one.
+for flag in "$@"; do
 	case "$flag" in
 	-C | -C=*)
 		printf 'run-module-tests.sh: -C is not supported here. Each module is enumerated and tested from its own directory, and a -C would move both commands somewhere this runner does not expect. Run the gate from the repository root instead.\n' >&2
