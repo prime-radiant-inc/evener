@@ -175,7 +175,7 @@ migration has to place.
 | `panes/session/composer/submitRouting.ts` (50) | send/queue/steer/drain routing decision | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | reads `protocol/sendQueueAvailability` (also unpacked) |
 | `panes/session/composer/attachments/limits.ts` (29) | 8 files / 8 MiB attachment caps | none | native imports this file (5 sites) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/composer/attachments/textareaMarkers.ts` (60) | `[image N]` marker splicing | none | native imports this file (2 sites) | PACKAGE CANDIDATE (2 consumers) | none |
-| `panes/session/composer/askDock/deriveAskQuestions.ts` (95) | Positional "which asks are live" snapshot | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | reads `ThreadModel`, and pulls two modules with it: `:20-21` imports `panes/session/askShared.ts` (151), which at `:19` imports `parseAskUserQuestions`'s dependency `panes/session/transcript/tools/helpers.ts` (138, no imports of its own — pure). All three cross the boundary together |
+| `panes/session/composer/askDock/deriveAskQuestions.ts` (95) | Positional "which asks are live" snapshot | none | native's only import is `questionBatches.ts:1`, `import type { AskQuestionRef }` — **type-only**, which the direct-import rule in §1 does not count, so this is **single-consumer at run time**. Native's own copy of the rule lives on in `mobile/src/conversation/project.ts:182-256`, which says so itself: "Mirrors parseAskUserQuestions (protocol/askShared.ts)" at `:183` and "Mirrors liveAskQuestions" at `:259` | PACKAGE CANDIDATE — co-moved by C11b (#1232) because `askShared.ts`, a real two-consumer module, imports it; the move is in the package and the web uses it at run time, so it is not harmful and is not being reverted. Plan row D22 owns deleting native's copy | reads `ThreadModel`, and pulls two modules with it: `:20-21` imports `panes/session/askShared.ts` (151), which at `:19` imports `parseAskUserQuestions`'s dependency `panes/session/transcript/tools/helpers.ts` (138, no imports of its own — pure). All three cross the boundary together |
 | `panes/session/composer/askDock/reconcileBatches.ts` (76) | Stateful in-flight ask-batch reconciliation | none | native imports this file (2 sites) via `questionBatches.ts` (63) | PACKAGE CANDIDATE (2 consumers) | none |
 | `panes/session/composer/askDock/askDockStore.ts` (440) | Per-ref answering dock bookkeeping | none | `mobile-native/src/questionBatches.ts` + approval screens | DUPLICATED | subscribes to `threadsStore` at module load |
 | `panes/session/composer/queue/pendingTurnsStore.ts` (474) | Optimistic pending turns across outbox + model | none | `mobile/src/state/conversation.ts` queue half | DUPLICATED | imports `react`'s `act` at module scope (line 1) — that has to go before it can move |
@@ -338,7 +338,7 @@ later PR a place to land. Both have since been written — see "Delta since base
 | --- | --- |
 | SHARED ALREADY | 6 |
 | DUPLICATED | 33 |
-| PACKAGE CANDIDATE | 55 (of which **33** have two consumers by direct import; `sendQueueAvailability.ts` left that set in round 23 under the counting rule in §1) |
+| PACKAGE CANDIDATE | 55 (of which **32** have two consumers by direct import; `sendQueueAvailability.ts` left that set in round 23 and `deriveAskQuestions.ts` in round 26, both under the counting rule in §1) |
 | PLATFORM-ONLY | 13 |
 | dead code | 1 |
 | **Total rows** | **108** |
@@ -351,7 +351,7 @@ top-level modules plus the `testing/` directory): 32 + 49 + 10 + 17 = 108.
 ## Delta since baseline
 
 What has landed since `92561dbe3`, and what it does to the frozen tables above.
-Statuses observed at `31a5a4370`; re-query before acting.
+Statuses observed at `d7ff88653`; re-query before acting.
 
 | PR | Merged as | Effect on the baseline |
 | --- | --- | --- |
@@ -362,6 +362,8 @@ Statuses observed at `31a5a4370`; re-query before acting.
 | B3b #1203 | `4da382482` | Native's two `projectUsage` copies collapsed to one. That DUPLICATED row is closed; the count in §7 is the baseline count and is not decremented |
 | A3b #1206 | `99fa1882f` | Exports from the root the twelve `errors` helpers the apps import, which is what makes the plan's A4 rewrite compile. `chunkViewBackingForTests` and `readDocFile` are deliberately excluded |
 | A3c #1207 | `2a8163eb0` | The qualification manifest is per specifier rather than root-only, so a published subpath can be qualified at all — the prerequisite for the plan's A3d and C1 |
+| C9 #1234 | `d7ff88653` | `composer/slashCompletion.ts` → `protocol/slashCompletion.ts` |
+| C12 #1233 | `a0e594122` | `askDock/reconcileBatches.ts` → `protocol/reconcileBatches.ts` |
 | C5 #1229 | `31a5a4370` | `stores/composerInput.ts` → `protocol/composerInput.ts` |
 | C11b #1232 | `314281cd5` | `askShared.ts` and `deriveAskQuestions.ts` relocated into the package, completing C11 |
 | C15 #1230 | `0acebbb0d` | `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
