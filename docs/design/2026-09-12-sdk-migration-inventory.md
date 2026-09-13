@@ -359,7 +359,8 @@ top-level modules plus the `testing/` directory): 32 + 50 + 10 + 17 = 109.
 ## Delta since baseline
 
 What has landed since `92561dbe3`, and what it does to the frozen tables above.
-Statuses observed at `d7ff88653`; re-query before acting.
+Statuses observed at `eeff54b70` on 2026-09-13. **PR heads are cited as of this
+commit and go stale immediately** — merge SHAs are the stable reference.
 
 | PR | Merged as | Effect on the baseline |
 | --- | --- | --- |
@@ -383,7 +384,8 @@ Statuses observed at `d7ff88653`; re-query before acting.
 | C24 #1221 | `303053dfb` | `DocPort = { origin, fetch }`; `docFileRawURL`/`docImageURL` take the origin; adapters at `panes/doc/browserDocPort.ts` and `mobile-native/src/nativeDocPort.ts`. `docImageURL` stays a string builder, and native doc-image auth is `nativeDocImageSource` (`nativeDocPort.ts:26`) — shipped with no importer, because native has no doc pane; plan row D29 wires it |
 | A3d #1209 | `f39aa2c83` | Publishes `./docContent` as the package's second specifier and turns `readDocFile` into `readDocFile(session, path, fetchDoc)`, where `DocFetch` returns a `DocResponseLike` — the minimal `{ ok, status, headers.get, arrayBuffer }` a real `Response` satisfies. That is a deliberate host-independent API, not a runner constraint: `qualify-package.mjs:444-456` runs tsc with no `--lib`, so its declaration consumers default to `lib.es2022.full.d.ts` and do have DOM (an earlier draft of this row said otherwise). The web's adapter was `panes/doc/browserDocFetch.ts`; the root keeps the pure helpers. C24 (#1221) then renamed that adapter `panes/doc/browserDocPort.ts` and widened `DocFetch` into `DocPort = { origin, fetch }`, so today's signature is `readDocFile(session, path, port: DocPort)`. §3's `docContent` seam row is answered by the pair |
 
-A3 is **open as #1241** (`d32a1d479`), with residuals #1242, #1243 and #1244;
+A3 is **open as #1241** (head at the time of this commit `5062edf34`; round 3 in
+progress, which closes #1242), with residuals #1243 and #1244 outstanding;
 A4 is unstarted. What they block is narrower than an earlier draft
 of this document claimed: the package-name import rewrite and the directory
 move. Relocations into `protocol/` land without them, with consumers still on
