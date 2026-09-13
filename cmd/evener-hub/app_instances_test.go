@@ -1142,7 +1142,7 @@ func TestInstances_ListReportsTheFirstAuthoredAPIKeyEnv(t *testing.T) {
 	if !ok {
 		t.Fatal("the fixture registry has no groq instance")
 	}
-	got := f.ctl.entryFor(inst, &registry.Provider{APIKeyEnv: []string{"FIRST", "SECOND"}})
+	got := f.ctl.entryFor(f.ctl.reg.Get(), inst, &registry.Provider{APIKeyEnv: []string{"FIRST", "SECOND"}})
 	if got.APIKeyEnv != "FIRST" {
 		t.Fatalf("APIKeyEnv = %q, want FIRST", got.APIKeyEnv)
 	}

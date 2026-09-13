@@ -438,11 +438,17 @@ type LiveModelLister interface {
 // it, and every id the registry then knows for the instance is resolved and
 // filtered by the §5 visibility rule.
 func (c *Client) Models(ctx context.Context, instance string) (ModelListing, error) {
+	// Normalized once up front so the fetch, the apply, and the resolve
+	// all key the same instance: listLive normalizes internally too,
+	// but ApplyLive and resolveListing below must not run on the raw
+	// string (upper case, surrounding whitespace), or the listing is
+	// fetched and then silently dropped under the wrong key.
+	instance = normalizeProviderName(instance)
 	rows, live, err := c.listLive(ctx, instance)
 	if err != nil {
 		return ModelListing{}, err
 	}
-	if c.isOverride(normalizeProviderName(instance)) {
+	if c.isOverride(instance) {
 		// An override has no registry record behind it: its rows are
 		// returned as they came, never written anywhere.
 		return ModelListing{Live: true, Models: standaloneRows(instance, rows)}, nil

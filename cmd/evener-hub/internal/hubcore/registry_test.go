@@ -65,6 +65,36 @@ func TestProviderRegistryDegradesOnOldSchema(t *testing.T) {
 // a Reload) must not overwrite the newer listing. Tokens are claimed
 // once a fetch has a listing to publish, so a failed fetch never mints
 // one at all.
+func TestReapplyLiveDiscardsOutOfOrderFetch(t *testing.T) {
+	// Fetch A starts first but finishes last: its token was minted at
+	// request start, so the faster fetch B's apply supersedes it and A's
+	// stale listing must not overwrite B's newer one.
+	h := NewProviderRegistry(hermeticLoader)
+	if err := h.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if h.Get() == nil {
+		t.Fatal("holder has no registry after Reload")
+	}
+	slow := h.BeginLiveFetch("gw")
+	fast := h.BeginLiveFetch("gw")
+	h.ReapplyLive(fast, "gw", []registry.Model{{ID: "gpt-new"}})
+	h.ReapplyLive(slow, "gw", []registry.Model{{ID: "gpt-old"}})
+	got := h.Get().LiveModels("gw")
+	ids := make([]string, 0, len(got))
+	for _, m := range got {
+		ids = append(ids, m.ID)
+	}
+	for _, id := range ids {
+		if id == "gpt-old" {
+			t.Fatalf("live ids = %v, want out-of-order gpt-old discarded", ids)
+		}
+	}
+	if len(ids) == 0 {
+		t.Fatal("live ids empty, want gpt-new applied")
+	}
+}
+
 func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
 	h := NewProviderRegistry(hermeticLoader)
 	if err := h.Reload(); err != nil {
@@ -73,8 +103,8 @@ func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	stale := h.ClaimLiveApply("gw")
-	fresh := h.ClaimLiveApply("gw")
+	stale := h.BeginLiveFetch("gw")
+	fresh := h.BeginLiveFetch("gw")
 	h.ReapplyLive(fresh, "gw", []registry.Model{{ID: "gpt-new"}})
 	h.ReapplyLive(stale, "gw", []registry.Model{{ID: "gpt-old"}})
 	got := h.Get().LiveModels("gw")

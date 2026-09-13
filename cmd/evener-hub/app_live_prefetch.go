@@ -24,17 +24,18 @@ const instanceLiveListTimeout = 8 * time.Second
 // so later InstanceModels calls include the live ids. It is the shared
 // core behind the manual refresh RPC and the background prefetch below.
 // The fetch never writes the registry itself: ListLive returns the raw
-// rows and ReapplyLive publishes them only while this fetch's token is
-// current. A Reload landing mid-fetch swaps in a fresh object (whose
-// carryLive only knows the before snapshot); the re-apply carries the
-// listing forward instead of losing it on the detached registry. An
-// unsupported listing (ok == false) carries no live facts, so it applies
-// nothing.
+// rows and ReapplyLive publishes them only while this fetch's token —
+// minted at request start — is still current. A Reload landing mid-fetch
+// swaps in a fresh object (whose carryLive only knows the before
+// snapshot); the re-apply carries the listing forward instead of losing
+// it on the detached registry. An unsupported listing (ok == false)
+// carries no live facts, so it applies nothing.
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, name string) error {
 	reg := holder.Current()
 	if reg == nil {
 		return nil
 	}
+	tok := holder.BeginLiveFetch(name)
 	rows, ok, err := fetchInstanceLiveWith(ctx, cmdutil.NewRegistryClient(reg, ""), name)
 	if err != nil {
 		return err
@@ -42,7 +43,7 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 	if !ok {
 		return nil
 	}
-	holder.ReapplyLive(holder.ClaimLiveApply(name), name, rows)
+	holder.ReapplyLive(tok, name, rows)
 	return nil
 }
 
@@ -88,14 +89,15 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 		}
 		before := visibleModelIDs(reg, inst.Name)
 		wg.Go(func() {
+			// Minted at request start, so overlapping fetches for one
+			// instance stay ordered: a slower success loses to a newer
+			// begin, while a failed fetch spends nothing.
+			tok := holder.BeginLiveFetch(inst.Name)
 			rows, ok, err := fetchInstanceLiveWith(ctx, client, inst.Name)
 			if err != nil || !ok {
 				return
 			}
-			// Claimed after the fetch succeeds, so a failed fetch
-			// never supersedes a successful concurrent one — and a
-			// slower success still loses to a newer claim.
-			holder.ReapplyLive(holder.ClaimLiveApply(inst.Name), inst.Name, rows)
+			holder.ReapplyLive(tok, inst.Name, rows)
 			if !slices.Equal(before, visibleModelIDs(holder.Get(), inst.Name)) {
 				mu.Lock()
 				anyChanged = true

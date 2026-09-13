@@ -62,7 +62,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 					authored = &p
 				}
 			}
-			entries = append(entries, c.entryFor(inst, authored))
+			entries = append(entries, c.entryFor(r, inst, authored))
 		}
 		for _, id := range r.ProviderIDs() {
 			p, ok := r.Provider(id)
@@ -100,8 +100,11 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 // entryFor is the wire view of one instance: the registry's own description,
 // plus the credential status the auth controller derives for it, and the
 // credential fields from its authored entry — nil for an implicit instance,
-// which has no entry in providers.toml and so prefills neither.
-func (c *hubInstancesController) entryFor(inst registry.Instance, authored *registry.Provider) appwire.InstanceEntry {
+// which has no entry in providers.toml and so prefills neither. r is the
+// List snapshot the instance came from: the model inventory reads it too,
+// so one response never mixes instance metadata from one generation with
+// model rows from another across a concurrent reload.
+func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.Instance, authored *registry.Provider) appwire.InstanceEntry {
 	status := c.auth.instanceStatus(inst)
 	entry := appwire.InstanceEntry{
 		Name:               inst.Name,
@@ -124,7 +127,7 @@ func (c *hubInstancesController) entryFor(inst registry.Instance, authored *regi
 		StoredEmail:        status.StoredEmail,
 		CredentialRequired: inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
 		Warnings:           inst.Warnings,
-		Models:             instanceModels(c.reg.Get(), inst.Name),
+		Models:             instanceModels(r, inst.Name),
 	}
 	if authored != nil {
 		// api_key_env names an environment variable, and the loader takes

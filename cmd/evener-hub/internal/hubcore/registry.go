@@ -23,13 +23,14 @@ type ProviderRegistry struct {
 	mu      sync.RWMutex
 	current *registry.Registry
 	loadErr error
-	// generation counts successful holder swaps plus live-fetch
-	// applications: every Reload that installs a new current and every
-	// ReapplyLive that lands a listing bumps it. A fetch captures the
-	// registry before the request and mints its apply token only when it
-	// has a listing to publish, so a failed fetch never supersedes a
-	// successful concurrent one, and a stale response can neither be
-	// lost on a detached registry nor overwrite a newer listing.
+	// generation orders holder swaps and live fetches: every Reload
+	// that installs a new current and every BeginLiveFetch bumps it.
+	// A fetch mints its token at request start, so a slower fetch that
+	// returns after a newer one (or after a Reload, whose carryLive
+	// only knows the before snapshot) applies only while its token is
+	// still current. Tokens are claimed, never spent: only a fetch
+	// that actually has a listing calls ReapplyLive, so a failed fetch
+	// never supersedes a successful concurrent one.
 	generation uint64
 	liveTokens map[string]uint64
 }
@@ -87,22 +88,20 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 	return h.current
 }
 
-// Current returns the held registry a live fetch runs against. The
-// apply token is minted separately by ClaimLiveApply once the fetch has
-// a listing to publish, so a failed fetch never supersedes a successful
-// concurrent one.
+// Current returns the held registry a live fetch runs against.
 func (h *ProviderRegistry) Current() *registry.Registry {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.current
 }
 
-// ClaimLiveApply mints the apply token for instance's just-fetched
-// listing. Call it after the request succeeds, immediately before
-// ReapplyLive: any newer claim (a concurrent fetch that finished first,
-// or a Reload, which bumps the generation on swap) supersedes this one,
-// and ReapplyLive then discards it.
-func (h *ProviderRegistry) ClaimLiveApply(instance string) uint64 {
+// BeginLiveFetch mints instance's fetch token at request start. A fetch
+// that returns after a newer fetch for the same instance began — or
+// after a Reload swapped the registry — holds a stale token, and
+// ReapplyLive discards it. Minting at start (not at apply) is what
+// orders overlapping fetches; ReapplyLive staying claim-free is what
+// keeps a failed fetch from superseding a successful concurrent one.
+func (h *ProviderRegistry) BeginLiveFetch(instance string) uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.generation++
@@ -114,15 +113,16 @@ func (h *ProviderRegistry) ClaimLiveApply(instance string) uint64 {
 }
 
 // ReapplyLive applies rows fetched under token tok to the current
-// registry. Rows are the fetch's raw live snapshot — reg.LiveModels
-// after the request — so advertised capability facts survive the round
-// trip the way the direct ApplyLive inside the fetch does. The apply is
-// skipped when the token is stale: a Reload or a newer fetch for the
-// same instance already moved on (Reload's carryLive kept the before
-// snapshot; the newer fetch owns the after). A failed fetch never
-// reaches here, and an unsupported listing (Live == false) must not
-// either: its rows are catalog data, not a live listing, and applying
-// them would plant an empty snapshot over a real one.
+// registry. Rows are the fetch's raw live snapshot, so advertised
+// capability facts survive the round trip the way the direct ApplyLive
+// inside the fetch did. The apply is skipped when the token is stale: a
+// newer fetch for the same instance began after this one (or a Reload
+// swapped the registry, whose carryLive kept the before snapshot).
+// Only successful fetches with a listing reach here, so a failed fetch
+// never mints nor spends anything. An unsupported listing (Live ==
+// false) must not reach here either: its rows are catalog data, not a
+// live listing, and applying them would plant an empty snapshot over a
+// real one.
 func (h *ProviderRegistry) ReapplyLive(tok uint64, instance string, rows []registry.Model) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
