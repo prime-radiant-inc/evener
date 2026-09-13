@@ -42,6 +42,7 @@ async function qualify() {
     "activityData",
     "activityList",
     "activityMerge",
+    "activityRows",
     "itemFailure",
     "jobOutput",
     "model",
@@ -50,6 +51,7 @@ async function qualify() {
     "sessionErrors",
     "stableDelegate",
     "docContent",
+    "submitRouting",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -91,6 +93,10 @@ async function qualify() {
     "ActivityList",
     "fenceRootSession",
     "graftContinuationTree",
+    "foldRowID",
+    "jobIsFailed",
+    "activityDelegateState",
+    "buildActivityRows",
     "hasItemFailure",
     "hasErrorText",
     "hasFailureStatus",
@@ -116,6 +122,9 @@ async function qualify() {
     "DocFileError",
     "docFileRawURL",
     "docImageURL",
+    "decideSubmitRoute",
+    "decideSteerRoute",
+    "isTurnActive",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -124,8 +133,10 @@ async function qualify() {
     "AppwireClientLike",
     "WebSocketLike",
     "AskAnswerItem",
+    "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
+    "ActivityRow",
     "ItemFailureSignals",
     "JobLogTail",
     "ThreadModel",
@@ -133,6 +144,8 @@ async function qualify() {
     "SendQueueAvailability",
     "StableDelegateState",
     "DocFileContent",
+    "SubmitRoute",
+    "SteerRoute",
   ];
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
@@ -163,6 +176,10 @@ assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
 assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
 assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
+assert.equal(client.foldRowID("session:thread"), "session:thread:inactive-fold");
+assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
+assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
+assert.equal(client.activityDelegateState({ kind: "delegate", type: "task", child: session }).failed, false);
 assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
 assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
 assert.equal(client.hasErrorText({ error: "  " }), false);
@@ -177,6 +194,9 @@ assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
+assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
+assert.equal(client.isTurnActive("active", "turn_1"), true);
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 `;
