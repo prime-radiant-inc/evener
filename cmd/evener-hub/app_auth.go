@@ -763,7 +763,7 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 		return nil
 	}
 	if current := c.endpointFingerprintFor(name); current != asserted {
-		return appwire.Conflict(fmt.Sprintf("%s no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again", name))
+		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
 	}
 	return nil
 }
