@@ -135,3 +135,48 @@ func TestUnknownURLRemoveIDErrorCannotDriveATerminal(t *testing.T) {
 		}
 	}
 }
+
+// A URL is printed by terminals (the TUI details drawer and the notes tool
+// output) and sent to the model, so the stored URL must not be able to carry a
+// control sequence either. url.Parse only rejects ASCII controls; a C1 control
+// such as U+009B (CSI) is a multi-byte rune it accepts and keeps in RawQuery, so
+// the raw input has to be scanned before parsing rather than trusted to the
+// parser.
+func TestCanonicalSessionURLRejectsControlCharacters(t *testing.T) {
+	cases := map[string]string{
+		"C1 CSI in query": "https://x.test/y?q=\u009b31m",
+		"C1 CSI in path":  "https://x.test/\u009b31m",
+		"C1 OSC in query": "https://x.test/y?q=\u009d0;owned",
+		"BEL in query":    "https://x.test/y?q=\x07",
+		"DEL in path":     "https://x.test/y\x7f",
+		"escape in path":  "https://x.test/y\x1b[31m",
+		"bare file path":  "a\u009bb.md",
+		"file URL":        "file:///tmp/a\u009bb.md",
+		"control in host": "https://x.te\u009bst/",
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := canonicalSessionURL(in, "/tmp/proj")
+			if err == nil {
+				t.Fatalf("canonicalSessionURL(%q) = %q, want a control-character rejection", in, got)
+			}
+			for _, r := range err.Error() {
+				if unicode.IsControl(r) {
+					t.Fatalf("rejection error %q carries control rune %U", err.Error(), r)
+				}
+			}
+		})
+	}
+
+	// Percent-encoded bytes are ordinary text by the time they are stored, so a
+	// caller that means to name such a URL still can.
+	got, err := canonicalSessionURL("https://x.test/y?q=%C2%9B", "/tmp/proj")
+	if err != nil {
+		t.Fatalf("percent-encoded URL rejected: %v", err)
+	}
+	for _, r := range got {
+		if unicode.IsControl(r) {
+			t.Fatalf("canonicalSessionURL stored %q with control rune %U", got, r)
+		}
+	}
+}

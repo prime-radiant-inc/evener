@@ -320,6 +320,15 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 	if trimmed == "" {
 		return "", errors.New("urls/add: empty URL")
 	}
+	// A stored URL is printed by terminals (the TUI details drawer, the notes
+	// tool output) and sent to the model, so a control character in the raw
+	// input is refused rather than carried: url.Parse rejects ASCII controls but
+	// accepts a C1 control, and it keeps one in RawQuery verbatim, which is how
+	// a CSI introducer could reach a terminal from a stored link.
+	if idx := strings.IndexFunc(trimmed, unicode.IsControl); idx >= 0 {
+		control, _ := utf8.DecodeRuneInString(trimmed[idx:])
+		return "", fmt.Errorf("urls/add: URL contains the control character %q", control)
+	}
 	if utf8.RuneCountInString(trimmed) > sessionURLMaxLen {
 		return "", fmt.Errorf("urls/add: URL exceeds %d characters", sessionURLMaxLen)
 	}
