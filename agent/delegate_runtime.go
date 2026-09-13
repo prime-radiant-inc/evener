@@ -1152,7 +1152,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			})
 		}
 	}
-	// Take the drive claim across the WHOLE committed-start window, exactly as
+	// Take the drive claim for the committed-start window, exactly as
 	// driveStableDelegateAttention does (#932/#940). CommitStart has already
 	// consumed the reservation, but sub.running stays false through the restored
 	// side effects and the start-input mutation plans (BeginStartInput,
@@ -1167,6 +1167,12 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// flight on this idle child"; it is handed to the run under the same sub.mu
 	// hold that sets running and released by the deferred rollback on every
 	// failure exit below.
+	//
+	// The claim starts here, once restoreIdleForSend has produced the child to
+	// claim, so it does not cover CommitStart through restoreIdleForSend, nor the
+	// admitReconstructed/AttachRuntime leg on the restored path: a drive landing
+	// in that earlier stretch still reads an idle child. Closing it needs a claim
+	// keyed by delegate id, taken before the child is resolved.
 	sub.mu.Lock()
 	blocked := sub.running || sub.driving
 	if !blocked {
