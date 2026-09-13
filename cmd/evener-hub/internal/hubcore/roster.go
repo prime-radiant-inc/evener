@@ -53,7 +53,7 @@ type LiveEntry struct {
 	// so a tree rollup cannot count one watch twice. An older daemon omits the
 	// source field entirely, which lands here as an empty list.
 	Watches []appwire.EvenerWatchInfo
-	Project       identifier.Project // canonical identity resolved at hub ingestion, when available
+	Project identifier.Project // canonical identity resolved at hub ingestion, when available
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -347,8 +347,7 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 				_, _ = h.Write([]byte{1})
 			}
 			_, _ = h.Write([]byte{0})
-			deliveries := int64(watch.Deliveries)
-			_, _ = h.Write([]byte(strconv.FormatInt(deliveries, 10)))
+			_, _ = h.Write([]byte(strconv.Itoa(watch.Deliveries)))
 			_, _ = h.Write([]byte{0})
 			for _, cadence := range watch.Cadence {
 				_, _ = h.Write([]byte(cadence.Kind))

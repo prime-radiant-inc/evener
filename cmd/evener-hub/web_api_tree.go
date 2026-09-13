@@ -661,13 +661,10 @@ func diagnosticsJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJob
 // diagnosticsWatches returns a remote thread's own live-watch rows. A thread
 // with no diagnostics (old daemon, or one that listed nothing) and a
 // diagnostics that omits Watches both yield an empty list — absence is never
-// an error. It mirrors diagnosticsJobs: the rows are the daemon's bounded
-// watch inventory, so no additional hub-side cap is applied.
+// an error. It delegates to hubcore's shared projection so the local and remote
+// tree code cannot drift.
 func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
-	if diagnostics == nil {
-		return nil
-	}
-	return diagnostics.Watches
+	return hubcore.DiagnosticsWatches(diagnostics)
 }
 
 // appThreadTreeParentSessionID translates the remote thread lineage into the

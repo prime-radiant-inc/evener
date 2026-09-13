@@ -438,11 +438,11 @@ type TreeNode struct {
 	// Watches are this session's own live watches, carried from its daemon's
 	// diagnostics. Rows are never aggregated across sessions, so a receiver
 	// watch that two sessions can see is counted once per owning summary.
-	Watches       []appwire.EvenerWatchInfo
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	Age           string // pre-formatted "now", "2m", "3h", "5d"
-	Children      []TreeNode
+	Watches   []appwire.EvenerWatchInfo
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Age       string // pre-formatted "now", "2m", "3h", "5d"
+	Children  []TreeNode
 }
 
 // AgeString formats a duration since t as a human-readable string.
