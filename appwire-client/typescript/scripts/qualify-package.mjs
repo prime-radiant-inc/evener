@@ -35,7 +35,9 @@ async function qualify() {
   // in a bare Node consumer. The runner never calls readDocFile: a port implies
   // a request, and qualification makes none.
   const buildConfig = JSON.parse(readFileSync(join(packageDir, "tsconfig.build.json"), "utf8"));
-  const shippedModules = (buildConfig.files ?? []).filter((file) => file.endsWith(".ts")).map((file) => file.slice(0, -3));
+  const shippedModules = (buildConfig.files ?? [])
+    .filter((file) => file.endsWith(".ts"))
+    .map((file) => file.slice(0, -3));
   assert(shippedModules.includes("index"), "tsconfig.build.json must compile index.ts - it is the package root entry");
   assert(shippedModules.length > 1, "tsconfig.build.json lists no modules to qualify");
   // Every runtime export of the package root. The root's generated consumer
