@@ -1526,3 +1526,74 @@ probabilistic. The environment-specific `TMPDIR=/tmp/eb` requirement for the bro
 the operator-facing docs alongside Task 13's operator policy.
 
 Tasks 12 and 13: Task 13 remains. At this point plan tasks 1–12 of 13 are complete and accepted.
+
+### Task 13 — ACCEPTED (`431c09e1af`)
+
+The final plan task: a real launch/exit/resume process lifecycle end to end, plus operator policy. Delivered
+`431c09e1af1b341878033f23b184f2c0c7f27b50` (parent `4efcbe92a1`), 4 files, +2685/-4:
+`cmd/evener-hub/daemon_retirement_e2e_test.go` (new, 1991), `cmd/evener/serve_retirement_process_test.go`
+(new, 498), `cmd/evener-hub/spawn.go` (the launch seam, 23), `docs/daemon-idle-retirement.md` (new, 177).
+
+**What it proves.** `TestDaemonRetirementProcessHelper` is a `go test -c` test binary built into a
+fixture-owned path and invoked with `-test.run=^TestDaemonRetirementProcessHelper$`. The Hub seam replaces only
+the external executable invocation, with the real resolved argv/env, rendezvous, listeners, serve
+admission/release and the Hub discovery/resume algorithms left real. `newDaemonRetirementProcessFixture` owns
+private HOME/XDG roots, the Hub process, real daemon child handles, clock-control pipes and rendezvous roots.
+`assertSingleExecution` cross-checks three surfaces — the production mutation journal via `doctor.Mutations`,
+the transcript via the production schema decoders, and the fixture IPC provider invocations — so the
+exactly-once claim is not satisfied by fixture bookkeeping. All eleven required process tests plus Step 1's
+Hub-default expiry-and-resume test exist and pass.
+
+**Parent gates on the committed tree.** `(cd agent && go test -race . -run '^TestRetirement' -count=1 -v)`
+alone: exit 0, 275 PASS / 0 FAIL / 0 SKIP, no data race, `ok agent 69.313s`, including
+`TestRetirementPreservationNestedColdRestore`, `TestRetirementForeignSweepPreservesOccupiedLanes` and
+`TestRetirementSharedChildScratchBindingsRestore` in both sandbox modes. Canonical `env ROOT_FULL=1 make test`:
+exit 0, 8/8 modules (root 147.96s, agent 9.72s, llm 9.15s, auth, envvars, invariant, identifier, web 178.13s),
+239s wall, no FAIL and no SKIP. `env TMPDIR=/tmp/eb make test-web-browser`: exit 0, 6/6 guards PASS including
+`web-retirementguard`. Both of the writer's Step-2 RED logs were read directly and are genuine behavioral
+failures (the Hub→daemon timeout boundary arming 30m against the Hub default 1h; the launch boundary dying with
+`no tests to run`), not tautologies.
+
+**Review.** Independent adversarial review on a different model (`dlg_034NvojgDEDrFrv2zMlFor`,
+lunaroute/glm-5.3; the first attempt on openrouter-corp/anthropic/claude-sonnet-4.6 died on an HTTP 402 after
+consuming 90 314 of the 128 000 requested tokens and left nothing behind): **spec compliant, quality approved**,
+0 Critical, 0 Important, 0 real-defect Minors. It built `go test -overlay` sabotage probes and proved the two
+oracles that mattered regression-catching: a simulated second execution drove the invocation-count check RED
+(`scripted provider executions … = 2, want exactly 1`), and a terminal record appended at release drove the
+transcript byte-identity assertion RED. An incidental probe also produced real end-to-end evidence of the
+documented prepare-refusal semantics: corrupting the transcript before retirement made the daemon refuse to
+retire and stay resident rather than release an unvalidatable tree.
+
+**Two branch-level findings, neither Task 13's fault, both recorded for the remaining workflow.**
+
+1. **The branch's lint debt is its own.** `make merge-approval-gate` exits 2 in `lint-golangci` on 74 findings
+   (root 14, `agent` 60). The writer called them "pre-existing"; classified against `2664cc881d..HEAD`, 71 are in
+   files this branch added and 3 in files it modified, each inside a branch-added hunk, and none can exist on
+   `main`. The branch has never been pushed, so CI never enforced lint while the debt accumulated across Tasks
+   1–12. `golangci-lint 2.13.1` matches the pin, so this is not version drift, and it is not only cosmetic: two
+   unchecked `Close` errors, four `nilerr` in `agent/session_scratch_retention.go`, a staticcheck hit in
+   `app_daemons.go`, and two files not goimports-clean. Task 13's own two files have zero findings.
+2. **A pre-existing load-sensitive flake in a Task 8 test.** The parent's combined focused gate came back RED
+   once in four runs on `TestServeRetirementManualTimerSingleOwner/manual_first_blocks_the_timer`
+   (`cmd/evener/serve_retirement_test.go`, last touched by Task 8's `03d017a340`; Task 13 does not touch it),
+   and green 10/10 in isolation. From source it is a clean refusal and not a hang: `claim_consumed` fires at the
+   top of `consumeRetirementClaim` (`serve.go:786`) before any blocking call, and `TryClaim(manual=true)` returns
+   nil immediately when admitted work is in flight or evidence finds blockers (`retirement.go:259-264, 291`). The
+   daemon correctly declined to retire a session with unsettled work; the test asserts on the manual-retire path
+   right after `clk.awaitArm` without waiting for a settled state — the same missing precondition the Task 13
+   writer independently found and fixed in its own fixture.
+
+**Report-accuracy notes (record-only).** The writer's blanket claim that every wait is a pipe acknowledgement,
+a process exit or an event is inaccurate in the letter: `awaitReflected`
+(`daemon_retirement_e2e_test.go:730-753`) is a second 2 ms bounded condition-watch, on the durable mutation
+journal, undisclosed alongside `awaitSettled`. It is plan-compliant — the plan requires awaiting durable
+reflected journal state, which has no push event — and its 90 s tripwire errors out. Similarly, "only two
+substitutes" understates the helper's substitutions (`buildProfile` is also replaced, `ensureConfigDirs` and
+`seedMarketplaces` are no-ops, and the helper calls `runServeWithDeps` directly so `reclaimScratch` never runs);
+none touch the retirement lifecycle. Style notes: the plan's `awaitTurnSettled` is implemented as
+`waitTurnSettled`; `mutationReport` ignores its `mutationID` parameter; and the adapter's
+`len(req.Tools) == 0` turn/side-call discriminator is shape-coupled.
+
+Plan tasks 1–13 are now complete and accepted. The two branch-level findings above, plus the hardening list
+accumulated across every task, must be cleared before the branch merges — `make lint` remediation first, since
+it is what makes the canonical gate red. The branch is not merged, and no binary has been installed.
