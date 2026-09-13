@@ -327,10 +327,16 @@ stop_recorded_package_list_groups() {
 				waited=$((waited + 1))
 			done
 			if [ -z "$recorded" ]; then
-				# No attempt ever got as far as splitting off. Whatever the
-				# parent spawned is still in the runner's own group, which the
-				# signal that brought us here has already reached.
-				rm -f "$pgid_file"
+				# Still nothing, and the record cannot be dropped on the strength
+				# of a signal that may never have been sent: this cleanup also
+				# runs from the plain EXIT trap of a run that merely failed,
+				# where nothing was signalled to anything. A child that was only
+				# slow to record itself would be forgotten here and then split
+				# off and run `go list` untracked. Nothing here can name it —
+				# that is what the empty record means — so what is left is to
+				# keep the record and say so, in the logs a failed run retains.
+				printf 'run-module-tests.sh: the attempt recorded at %s never named its process group, so it cannot be shown to have stopped. Its record is kept.\n' \
+					"$pgid_file" >&2
 				continue
 			fi
 		fi
