@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,5 +146,80 @@ func TestGoalRestoreOnlyActive(t *testing.T) {
 	snap, ok := sess.getOrCreateGoalStore().Snapshot()
 	if !ok || snap.Status != goal.StatusActive || snap.Objective != "finish the migration" {
 		t.Fatalf("active goal must be restored, got %+v ok=%v", snap, ok)
+	}
+}
+
+// TestGoalErrorSystemTurnAppendedOnce pins the error-path visibility companion:
+// when terminateGoalOnError blocks an active goal, exactly one steering turn
+// records the stop in the transcript (and the live context), so a restored
+// session no longer shows a blocked goal whose transcript never says it
+// stopped. Before this, the block existed only in meta.json and the ephemeral
+// live event stream. The note rides the steering channel (user role), the same
+// channel the breaker note uses, so appwire's ProjectTurn carries it on reload.
+//
+// The user-interrupt and root-shutdown classes leave the goal active and must
+// append no note. The blocking cases assert the failing reason crosses into the
+// turn as data (the sentinel), not any particular wording.
+func TestGoalErrorSystemTurnAppendedOnce(t *testing.T) {
+	t.Parallel()
+
+	rootShutdownCtx := func() context.Context {
+		rootCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return WithQueuedInputDrainOnInterrupt(context.Background(), rootCtx)
+	}
+	userInterruptCtx := func() context.Context {
+		root := context.Background()
+		turnCtx, cancel := context.WithCancel(root)
+		marked := WithQueuedInputDrainOnInterrupt(turnCtx, root)
+		cancel()
+		return marked
+	}
+
+	const sentinel = "sentinel-provider-error-589"
+	tests := []struct {
+		name       string
+		ctx        context.Context
+		err        error
+		wantNotes  int
+		wantReason string
+	}{
+		{"provider error blocks", context.Background(), errors.New(sentinel), 1, sentinel},
+		{"deadline exceeded blocks", context.Background(), context.DeadlineExceeded, 1, ""},
+		{"user interrupt leaves active", userInterruptCtx(), context.Canceled, 0, ""},
+		{"root shutdown leaves active", rootShutdownCtx(), context.Canceled, 0, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sess, stop := newGateSession(t)
+			defer stop()
+
+			sess.getOrCreateGoalStore().Set("some objective", time.Now())
+			sess.terminateGoalOnError(tc.ctx, tc.err)
+
+			sess.mu.Lock()
+			var notes []schema.Turn
+			for _, turn := range sess.history {
+				if turn.Kind == schema.TurnSteering {
+					notes = append(notes, turn)
+				}
+			}
+			sess.mu.Unlock()
+
+			if len(notes) != tc.wantNotes {
+				t.Fatalf("steering turns in history = %d, want %d", len(notes), tc.wantNotes)
+			}
+			if tc.wantNotes == 0 {
+				return
+			}
+			if notes[0].Message.Role != llm.RoleUser {
+				t.Fatalf("steering note role = %q, want %q (appwire projection carries user steering)", notes[0].Message.Role, llm.RoleUser)
+			}
+			if tc.wantReason != "" && !strings.Contains(notes[0].Message.Text(), tc.wantReason) {
+				t.Fatalf("steering note does not carry the failing reason %q", tc.wantReason)
+			}
+		})
 	}
 }

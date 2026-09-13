@@ -417,6 +417,14 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 		return
 	}
 	if _, changed := s.setGoalTerminal(goal.StatusBlocked, err.Error()); changed {
+		// Record the block as a steering turn (user role, the channel the goal
+		// engine already speaks on): durable in the transcript and projected on
+		// reload. Without this a restored session shows a blocked goal whose
+		// transcript never says the goal stopped, and the only trace is the
+		// ephemeral EventGoalEnded plus the presentational TurnFailure.
+		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
+			"[goal-blocked-on-error] Goal blocked after a turn failed: %s. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
+			err.Error())))
 		s.reportGoalEnded()
 		// Persist the block: terminateGoalOnError runs after processOneInput's
 		// defer-save, so without this the goal is saved as still-active and would
