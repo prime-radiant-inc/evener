@@ -2599,6 +2599,16 @@ func (c *delegateTreeController) runtimeForDelegateOwner(row delegateSnapshot) *
 
 func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) ([]delegateDeliveryPlan, error) {
 	var deliveries []delegateDeliveryPlan
+	// Each Reconcile hands back a retirement-mutation lease, and bootstrap
+	// deliberately holds every one until this function returns. Collect them
+	// and release all on return — LIFO, as the per-iteration defers did —
+	// rather than deferring inside the loop.
+	var retirementReleases []func()
+	defer func() {
+		for _, retirementRelease := range slices.Backward(retirementReleases) {
+			retirementRelease()
+		}
+	}()
 	for {
 		evidence, err := collectDelegateReconcileEvidence(controller.stateDir, controller.ReconcileRequirements())
 		if err != nil {
@@ -2606,7 +2616,7 @@ func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) 
 		}
 		plans, err := controller.Reconcile(evidence)
 		if plans.retirementRelease != nil {
-			defer plans.retirementRelease()
+			retirementReleases = append(retirementReleases, plans.retirementRelease)
 		}
 		if err != nil {
 			return nil, err

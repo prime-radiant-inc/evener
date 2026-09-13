@@ -295,7 +295,7 @@ func TestRetirementTimerStatusTrafficLeavesDeadlineUnchanged(t *testing.T) {
 	}
 	clk.awaitArm(t)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_ = h.ctrl.Snapshot()
 	}
 	unborrow, err := h.ctrl.Borrow()

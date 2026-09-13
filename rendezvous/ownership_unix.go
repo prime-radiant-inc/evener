@@ -31,7 +31,7 @@ func withOwnershipLock(dir string, pid int, fn func() error) error {
 	if err != nil {
 		return fmt.Errorf("open ownership lock: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := ownershipFlock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("acquire ownership lock: %w", err)
 	}

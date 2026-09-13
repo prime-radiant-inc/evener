@@ -24,16 +24,16 @@ func installFlockProbe(t *testing.T) *flockProbe {
 		acquired: make(chan struct{}, 8),
 		permit:   make(chan struct{}),
 	}
-	real := ownershipFlock
+	prevFlock := ownershipFlock
 	ownershipFlock = func(fd int, how int) error {
-		err := real(fd, how)
+		err := prevFlock(fd, how)
 		if err == nil && how == syscall.LOCK_EX {
 			probe.acquired <- struct{}{}
 			<-probe.permit
 		}
 		return err
 	}
-	t.Cleanup(func() { ownershipFlock = real })
+	t.Cleanup(func() { ownershipFlock = prevFlock })
 	return probe
 }
 

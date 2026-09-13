@@ -225,7 +225,7 @@ func TestRetirementAutonomousAttentionRetryWake(t *testing.T) {
 func retirementAttentionRetryWake(t *testing.T, attachBefore bool) {
 	t.Helper()
 	clk := agenttest.NewFakeClock()
-	adapter := &retirementAttentionAdapter{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}}
+	adapter := &retirementAttentionAdapter{name: "openai"}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}), withAdapter(adapter))
 	var c *RetirementController
 	if attachBefore {
@@ -310,7 +310,7 @@ func retirementAttentionRetryWake(t *testing.T, attachBefore bool) {
 
 func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 	clk := agenttest.NewFakeClock()
-	adapter := &retirementAttentionAdapter{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}}
+	adapter := &retirementAttentionAdapter{name: "openai"}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}), withAdapter(adapter))
 	entered := []chan struct{}{make(chan struct{}), make(chan struct{})}
 	resume := []chan struct{}{make(chan struct{}), make(chan struct{})}
@@ -396,7 +396,7 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 
 func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 	clk := agenttest.NewFakeClock()
-	adapter := &retirementAttentionAdapter{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}}
+	adapter := &retirementAttentionAdapter{name: "openai"}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
 	var wakes atomic.Int32
@@ -473,7 +473,7 @@ func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 // source.
 func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	clk := agenttest.NewFakeClock()
-	adapter := &retirementAttentionAdapter{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}}
+	adapter := &retirementAttentionAdapter{name: "openai"}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
 	var wakes atomic.Int32
@@ -943,7 +943,7 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	copyWorktreeBaseRepo(t, mainRoot)
 	root := newSession(t, withDir(mainRoot), withConfig(cfg))
 	r := &wtRepo{s: root, mainRoot: mainRoot, stateDir: cfg.StateDir}
-	root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	root.client.Register(&retirementDelegateAdapter{name: "openai"})
 	result := root.createDelegate(t.Context(), delegateArgs{Task: "retained refused relock source", Isolation: "worktree"})
 	if result.Err != nil {
 		t.Fatal(result.Err)
@@ -1057,7 +1057,7 @@ func TestRetirementAutonomousReLock(t *testing.T) {
 			copyWorktreeBaseRepo(t, mainRoot)
 			root := newSession(t, withDir(mainRoot), withConfig(cfg))
 			r := &wtRepo{s: root, mainRoot: mainRoot, stateDir: cfg.StateDir}
-			root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+			root.client.Register(&retirementDelegateAdapter{name: "openai"})
 			result := root.createDelegate(t.Context(), delegateArgs{Task: "retained relock source", Isolation: "worktree"})
 			if result.Err != nil {
 				t.Fatal(result.Err)
@@ -1091,7 +1091,8 @@ func TestRetirementAutonomousReLock(t *testing.T) {
 					return next(args...)
 				}
 			}
-			if order == "claim-first" {
+			switch order {
+			case "claim-first":
 				claim, state, err := c.TryClaim(true)
 				if err != nil || claim == nil {
 					t.Fatalf("claim: %+v, %v", state, err)
@@ -1107,7 +1108,7 @@ func TestRetirementAutonomousReLock(t *testing.T) {
 					t.Fatal("refused relock changed original lane")
 				}
 				root.resumeReLockOwnLanes()
-			} else if order == "resume-first" {
+			case "resume-first":
 				go func() { defer close(done); root.resumeReLockOwnLanes() }()
 				defer func() { close(resume); <-done }()
 				select {
@@ -1120,7 +1121,7 @@ func TestRetirementAutonomousReLock(t *testing.T) {
 				assertRetirementEvidenceBlocked(t, c, "environment")
 				resume <- struct{}{}
 				<-done
-			} else {
+			default:
 				root.resumeReLockOwnLanes()
 				root.mu.Lock()
 				pending := slices.Clone(root.pendingReLock)
@@ -2978,7 +2979,7 @@ func TestRetirementSafetyColdJobWatchContent(t *testing.T) {
 	// Settle for real: materialize the original delegate through the restored
 	// root, let restore reconcile the crashed shell, and clear the original
 	// watch through the resident API.
-	client2.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	client2.Register(&retirementDelegateAdapter{name: "openai"})
 	outcome := (delegateRuntime{owner: root2}).send(t.Context(), d.DelegateID, "settle-original-cold-content", 0)
 	if outcome.result.Err != nil {
 		t.Fatal(outcome.result.Err)

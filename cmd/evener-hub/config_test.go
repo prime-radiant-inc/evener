@@ -457,7 +457,7 @@ exit 2
 	}
 	// The fake records one arg per line; each "serve" line starts a launch.
 	var launches [][]string
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if line == "serve" {
 			launches = append(launches, nil)
 			continue

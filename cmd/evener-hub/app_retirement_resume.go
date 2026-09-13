@@ -82,7 +82,7 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 		return appwire.LifecycleUnavailable("retiring")
 	}
 	if proc != nil {
-		defer proc.Close()
+		defer func() { _ = proc.Close() }()
 		if err := proc.Wait(ctx); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()

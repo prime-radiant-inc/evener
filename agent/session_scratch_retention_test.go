@@ -732,7 +732,7 @@ func TestRetirementAgedScratchRestoresAtOriginalPath(t *testing.T) {
 
 	// Daemon restart: resume the same root over the same state dir.
 	client := llm.NewClient()
-	client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	client.Register(&retirementDelegateAdapter{name: "openai"})
 	root2, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -766,7 +766,7 @@ func TestRetirementAgedScratchRestoresAtOriginalPath(t *testing.T) {
 	if rchild.envInfo.WorkingDir != child.envInfo.WorkingDir {
 		t.Fatalf("restored working dir = %q, want %q", rchild.envInfo.WorkingDir, child.envInfo.WorkingDir)
 	}
-	if got, wantPolicy := localEnvPolicyName(rchild.env.(execenv.ExecutionEnvironment)), localEnvPolicyName(child.env.(execenv.ExecutionEnvironment)); got != wantPolicy {
+	if got, wantPolicy := localEnvPolicyName(rchild.env), localEnvPolicyName(child.env); got != wantPolicy {
 		t.Fatalf("restored sandbox policy = %q, want %q", got, wantPolicy)
 	}
 	// Task state is reconstructible from the restored child.

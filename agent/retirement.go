@@ -11,10 +11,16 @@ import (
 	"primeradiant.com/evener/agent/internal/clock"
 )
 
-// RetirementClock, RetirementTimer and RetirementTicker expose the existing
-// injectable clock boundary to daemon callers.
+// RetirementClock exposes the existing injectable clock boundary to daemon
+// callers.
 type RetirementClock = clock.Clock
+
+// RetirementTimer exposes the existing injectable timer boundary to daemon
+// callers.
 type RetirementTimer = clock.Timer
+
+// RetirementTicker exposes the existing injectable ticker boundary to daemon
+// callers.
 type RetirementTicker = clock.Ticker
 
 // ErrRetirementUnavailable means the process admission fence is closed.

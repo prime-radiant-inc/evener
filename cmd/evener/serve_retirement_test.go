@@ -454,7 +454,7 @@ func TestServeRetirementStaleIdentityRefused(t *testing.T) {
 	stale := map[string]string{
 		"empty generation": "",
 		"started-at drift": fingerprint(func(e *rendezvous.Entry) { e.StartedAt = e.StartedAt.Add(time.Second) }),
-		"state-dir drift":  fingerprint(func(e *rendezvous.Entry) { e.StateDir = e.StateDir + "/other" }),
+		"state-dir drift":  fingerprint(func(e *rendezvous.Entry) { e.StateDir += "/other" }),
 		"address drift":    fingerprint(func(e *rendezvous.Entry) { e.Address = "127.0.0.1:1" }),
 	}
 	for name, generation := range stale {

@@ -103,8 +103,8 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 		if confirmed != nil && confirmed.SessionID != "" {
 			sessionID = confirmed.SessionID
 		}
-		switch {
-		case confirmed == nil:
+		switch confirmed {
+		case nil:
 			row.Compatibility = "unknown"
 			row.ProbeState = "unknown"
 		default:

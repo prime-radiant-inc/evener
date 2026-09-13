@@ -3,6 +3,7 @@ package execenv
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 
@@ -186,9 +187,7 @@ func cloneScratchBinding(binding sandbox.ScratchBinding) sandbox.ScratchBinding 
 	clone := binding
 	if binding.Slots != nil {
 		clone.Slots = make(map[string]sandbox.ScratchSlot, len(binding.Slots))
-		for kind, slot := range binding.Slots {
-			clone.Slots[kind] = slot
-		}
+		maps.Copy(clone.Slots, binding.Slots)
 	}
 	return clone
 }

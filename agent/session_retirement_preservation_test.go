@@ -607,7 +607,7 @@ func newRetirementPreservationFixture(t *testing.T) *retirementPreservationFixtu
 	t.Helper()
 	repo := newRetirementWorktreeRepo(t)
 	root := repo.s
-	root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	root.client.Register(&retirementDelegateAdapter{name: "openai"})
 	c, err := NewRetirementController(0, clock.Real())
 	if err != nil {
 		t.Fatal(err)
@@ -624,7 +624,7 @@ func newRetirementPreservationFixture(t *testing.T) *retirementPreservationFixtu
 	// call routed by the structural request SessionID. This is what actually
 	// reaches depth 2.
 	root.client.Register(&nestedDelegateAdapter{
-		fakeAdapter:      fakeAdapter{name: "openai"},
+		name:             "openai",
 		creatorSessionID: f.childIDs[0],
 		nestedTask:       "retirement-lane-two",
 	})
@@ -640,7 +640,7 @@ func newRetirementPreservationFixture(t *testing.T) *retirementPreservationFixtu
 	if _, err := root.ProcessInput(context.Background(), "drain-nested-notification", nil); err != nil {
 		t.Fatalf("drain nested notification: %v", err)
 	}
-	root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	root.client.Register(&retirementDelegateAdapter{name: "openai"})
 	secondID, secondChildID := f.nestedDelegateUnder(f.delegateIDs[0])
 	if secondID == "" {
 		t.Fatal("first delegate did not create a nested delegate")
@@ -803,12 +803,12 @@ func retirementPorcelain(t *testing.T, mainRoot string) string {
 func retirementLaneBlocks(t *testing.T, mainRoot string) map[string]string {
 	t.Helper()
 	blocks := map[string]string{}
-	for _, chunk := range strings.Split(retirementPorcelain(t, mainRoot), "\n\n") {
+	for chunk := range strings.SplitSeq(retirementPorcelain(t, mainRoot), "\n\n") {
 		trimmed := strings.TrimSpace(chunk)
 		if trimmed == "" {
 			continue
 		}
-		for _, line := range strings.Split(trimmed, "\n") {
+		for line := range strings.SplitSeq(trimmed, "\n") {
 			if path, ok := strings.CutPrefix(line, "worktree "); ok {
 				blocks[strings.TrimSpace(path)] = trimmed
 			}
@@ -872,7 +872,7 @@ func (f *retirementPreservationFixture) assertRestored() *Session {
 		f.t.Fatalf("load root meta: %v", err)
 	}
 	client := llm.NewClient()
-	client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	client.Register(&retirementDelegateAdapter{name: "openai"})
 	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(f.repo.mainRoot), meta, RestoreSessionConfig{StateDir: f.repo.stateDir})
 	if err != nil {
 		f.t.Fatalf("restore root: %v", err)
@@ -930,7 +930,7 @@ func (f *retirementPreservationFixture) coldSendThroughParent(restored *Session,
 		f.t.Fatalf("parent delegate %s was not restored before its child", parentID)
 	}
 	restored.client.Register(&nestedSendAdapter{
-		fakeAdapter:      fakeAdapter{name: "openai"},
+		name:             "openai",
 		senderSessionID:  senderChildID,
 		targetDelegateID: f.delegateIDs[i],
 	})
@@ -953,7 +953,7 @@ func (f *retirementPreservationFixture) coldSendThroughParent(restored *Session,
 	if _, err := restored.ProcessInput(context.Background(), "settle-nested-restore", nil); err != nil {
 		f.t.Fatalf("settle nested restore: %v", err)
 	}
-	restored.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	restored.client.Register(&retirementDelegateAdapter{name: "openai"})
 }
 
 // nestedSendAdapter is a scripted provider that has exactly one sender child
@@ -1068,7 +1068,7 @@ func TestRetirementPreservationNestedColdRestore(t *testing.T) {
 	f.foreignSweep()
 
 	restored := f.assertRestored()
-	defer restored.Close()
+	restored.Close()
 }
 
 // toleratedRetirementPrimaryAddition reports whether name is a legitimate
@@ -1103,7 +1103,7 @@ func TestRetirementForeignSweepPreservesOccupiedLanes(t *testing.T) {
 		}
 	}
 	restored := f.assertRestored()
-	defer restored.Close()
+	restored.Close()
 }
 
 // --- Task 6 fix round 2: plan 776-778, shared-child scratch bindings across a
@@ -1195,7 +1195,7 @@ func restoreSharedChildRoot(t *testing.T, repo *wtRepo, rootID string) *Session 
 		t.Fatalf("load root meta: %v", err)
 	}
 	client := llm.NewClient()
-	client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	client.Register(&retirementDelegateAdapter{name: "openai"})
 	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(repo.mainRoot), meta, RestoreSessionConfig{StateDir: repo.stateDir})
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -1273,7 +1273,6 @@ func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
 		{name: "unsandboxed"},
 		{name: "sandbox", sandboxed: true},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			retirementSharedChildScratchBindingsRestore(t, tc.sandboxed)
 		})
@@ -1284,7 +1283,7 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 	offPolicy := &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}
 	repo := newRetirementWorktreeRepo(t)
 	root := repo.s
-	root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	root.client.Register(&retirementDelegateAdapter{name: "openai"})
 	owner, ok := root.scratchRetentionOwner()
 	if !ok {
 		t.Fatal("root has no scratch retention owner")
@@ -1383,7 +1382,7 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 			t.Fatalf("reprovision E0's sandbox scratch: %v", err)
 		}
 	}
-	root.client.Register(&sharedChildScratchMintAdapter{fakeAdapter: fakeAdapter{name: "openai"}, childSessionID: res.ChildSessionID})
+	root.client.Register(&sharedChildScratchMintAdapter{name: "openai", childSessionID: res.ChildSessionID})
 	out := (delegateRuntime{owner: root}).send(context.Background(), res.DelegateID, "mint-shared-child-scratch", 0)
 	if out.result.Err != nil {
 		t.Fatalf("send real work to the shared child: %v", out.result.Err)

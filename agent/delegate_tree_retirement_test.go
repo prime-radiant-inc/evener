@@ -219,7 +219,7 @@ func (a *retirementDelegateAdapter) Complete(_ context.Context, req llm.Request)
 
 func retirementIdleDelegate(t *testing.T, root *Session) delegateResult {
 	t.Helper()
-	root.client.Register(&retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}})
+	root.client.Register(&retirementDelegateAdapter{name: "openai"})
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "idle-delegate-sentinel"})
 	if result.Err != nil {
 		t.Fatal(result.Err)
@@ -734,10 +734,10 @@ func retirementCreateListingBarrier(t *testing.T, beforeReservation bool) {
 		model = "gpt-4.1-nano"
 	}
 	var listing sync.Once
-	adapter := &retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai", liveModels: func(context.Context) ([]registry.Model, error) {
+	adapter := &retirementDelegateAdapter{name: "openai", liveModels: func(context.Context) ([]registry.Model, error) {
 		listing.Do(func() { close(entered); <-resume })
 		return listedModels(model), nil
-	}}}
+	}}
 	root.client = registryClient(t, map[string]registry.Provider{
 		"openai": {Base: "openai", APIKey: "fixture-key", Models: modelRows(root.currentProfile().Model(), "gpt-4.1-nano")},
 	}, adapter)
@@ -789,7 +789,7 @@ func retirementCreateListingBarrier(t *testing.T, beforeReservation bool) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled create blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
@@ -800,7 +800,7 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 	tree.mu.Lock()
 	generation := tree.durable[d.DelegateID].Generation
 	tree.mu.Unlock()
-	adapter := &retirementModelBarrier{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}, entered: make(chan struct{}), resume: make(chan struct{})}
+	adapter := &retirementModelBarrier{name: "openai", entered: make(chan struct{}), resume: make(chan struct{})}
 	var release sync.Once
 	defer release.Do(func() { close(adapter.resume) })
 	root.client.Register(adapter)
@@ -849,7 +849,7 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled descendant send blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
@@ -868,10 +868,10 @@ func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 	var listing, release sync.Once
 	defer release.Do(func() { close(resume) })
 	model := root.currentProfile().Model()
-	adapter := &retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai", liveModels: func(context.Context) ([]registry.Model, error) {
+	adapter := &retirementDelegateAdapter{name: "openai", liveModels: func(context.Context) ([]registry.Model, error) {
 		listing.Do(func() { close(entered); <-resume })
 		return listedModels(model), nil
-	}}}
+	}}
 	root.client = registryClient(t, map[string]registry.Provider{"openai": {Base: "openai", APIKey: "fixture-key", Models: modelRows(model)}}, adapter)
 	type restored struct {
 		sub *subagent
@@ -923,7 +923,7 @@ func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled reconstruction blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 func TestRetirementDelegateEvidenceLeafFirstExactPointers(t *testing.T) {
@@ -1067,7 +1067,7 @@ func TestRetirementDelegateCloseResumabilityReturnedOwner(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("applied closure blocks retirement: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 // Pause an actual read of fixture-owned persisted bytes. The original inode is
@@ -1201,7 +1201,7 @@ func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled acknowledgement blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
@@ -1276,7 +1276,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled attention source blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 // The eligibility direction of the same owner: while the original attention
@@ -1327,14 +1327,14 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled attention blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
-	adapter := &retirementModelBarrier{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}, entered: make(chan struct{}), resume: make(chan struct{})}
+	adapter := &retirementModelBarrier{name: "openai", entered: make(chan struct{}), resume: make(chan struct{})}
 	var release sync.Once
 	defer release.Do(func() { close(adapter.resume) })
 	root.client.Register(adapter)
@@ -1411,14 +1411,14 @@ func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled quiet source blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
-	adapter := &retirementModelBarrier{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}, entered: make(chan struct{}), resume: make(chan struct{})}
+	adapter := &retirementModelBarrier{name: "openai", entered: make(chan struct{}), resume: make(chan struct{})}
 	var release sync.Once
 	defer release.Do(func() { close(adapter.resume) })
 	root.client.Register(adapter)
@@ -1490,7 +1490,7 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("consumed root input blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
@@ -1499,7 +1499,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
 			defer root.Close()
 			d := retirementIdleDelegate(t, root)
-			adapter := &retirementModelBarrier{retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter: fakeAdapter{name: "openai"}}, entered: make(chan struct{}), resume: make(chan struct{})}
+			adapter := &retirementModelBarrier{name: "openai", entered: make(chan struct{}), resume: make(chan struct{})}
 			var release sync.Once
 			defer release.Do(func() { close(adapter.resume) })
 			root.client.Register(adapter)
@@ -1682,7 +1682,7 @@ func TestRetirementDelegateReconcileReturnedOwner(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled reconciliation blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }
 
 func retirementDelegateDurableState(t *testing.T, tree *delegateTreeController) []byte {
@@ -1782,5 +1782,5 @@ func TestRetirementDelegateStopAdmittedFirst(t *testing.T) {
 	if err != nil || claim == nil {
 		t.Fatalf("settled stop blocks: %+v %v", state, err)
 	}
-	defer c.Abort(claim, "")
+	c.Abort(claim, "")
 }

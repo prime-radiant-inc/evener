@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"os"
+	"slices"
 	"sort"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -109,8 +110,7 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 	exact := make(map[string]*Session)
 	descriptors := make(map[string]delegatestore.Descriptor)
 	var sessions []*Session
-	for i := len(ordered) - 1; i >= 0; i-- {
-		id := ordered[i]
+	for _, id := range slices.Backward(ordered) {
 		a := c.durable[id]
 		if a == nil {
 			block(id)

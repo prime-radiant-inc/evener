@@ -691,6 +691,16 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 	if stop == nil {
 		return nil
 	}
+	// Each Reconcile hands back a retirement-mutation lease, and the drain
+	// deliberately holds every one until it returns. Collect them and release
+	// all on return — LIFO, as the per-iteration defers did — rather than
+	// deferring inside the loop.
+	var retirementReleases []func()
+	defer func() {
+		for _, retirementRelease := range slices.Backward(retirementReleases) {
+			retirementRelease()
+		}
+	}()
 	for {
 		select {
 		case <-stop.done:
@@ -704,7 +714,7 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 		}
 		plans, err := c.Reconcile(evidence)
 		if plans.retirementRelease != nil {
-			defer plans.retirementRelease()
+			retirementReleases = append(retirementReleases, plans.retirementRelease)
 		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {

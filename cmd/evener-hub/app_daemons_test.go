@@ -296,7 +296,7 @@ func TestDaemonResidentInventoryRows(t *testing.T) {
 
 	probesBefore := probes.Load()
 	var response appwire.DaemonListResponse
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		var err error
 		response, err = client.DaemonList(t.Context(), appwire.DaemonListParams{})
 		if err != nil {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,7 +92,7 @@ func retirementJobJournal(path string) ([]jobstore.Event, error) {
 		return nil, fmt.Errorf("retirement job evidence: %w", err)
 	}
 	if !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("retirement job evidence is not a regular journal")
+		return nil, errors.New("retirement job evidence is not a regular journal")
 	}
 	events, offset, err := jobstore.ScanEventsFrom(context.Background(), path, 0, jobstore.ScanLimits{})
 	if err != nil {
@@ -102,7 +103,7 @@ func retirementJobJournal(path string) ([]jobstore.Event, error) {
 		return nil, fmt.Errorf("retirement job evidence: %w", err)
 	}
 	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) || offset != after.Size() {
-		return nil, fmt.Errorf("retirement job evidence is incomplete or changed during collection")
+		return nil, errors.New("retirement job evidence is incomplete or changed during collection")
 	}
 	return events, nil
 }

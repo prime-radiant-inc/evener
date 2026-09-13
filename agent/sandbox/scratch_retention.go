@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,9 +389,7 @@ func mergeScratchBindingSlots(manifest ScratchManifest, target ScratchBinding) S
 		merged = stored
 	}
 	slots := make(map[string]ScratchSlot, len(merged.Slots)+len(target.Slots))
-	for kind, slot := range merged.Slots {
-		slots[kind] = slot
-	}
+	maps.Copy(slots, merged.Slots)
 	merged.Slots = slots
 	for kind, slot := range target.Slots {
 		if slot.OwnsLease {

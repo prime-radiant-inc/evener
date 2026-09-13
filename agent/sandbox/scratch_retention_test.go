@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,9 +278,7 @@ func pinnedScratch(t *testing.T, base, workspace string, owner ScratchOwner, kin
 
 func retentionBinding(bindingID, ownerSessionID, workingDir string, slots map[string]ScratchSlot) ScratchBinding {
 	cloned := make(map[string]ScratchSlot, len(slots))
-	for kind, slot := range slots {
-		cloned[kind] = slot
-	}
+	maps.Copy(cloned, slots)
 	return ScratchBinding{BindingID: bindingID, OwnerSessionID: ownerSessionID, WorkingDir: workingDir, Slots: cloned}
 }
 

@@ -30,6 +30,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -178,11 +179,11 @@ func (s *retirementBrowserRelaySource) retire() {
 func (s *retirementBrowserRelaySource) ID() string { return "local" }
 
 func (s *retirementBrowserRelaySource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	return appwire.ThreadReadResponse{}, fmt.Errorf("ReadThread must not be used for a relay source")
+	return appwire.ThreadReadResponse{}, errors.New("ReadThread must not be used for a relay source")
 }
 
 func (s *retirementBrowserRelaySource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
-	return nil, fmt.Errorf("SubscribeThread must not be used for a relay source")
+	return nil, errors.New("SubscribeThread must not be used for a relay source")
 }
 
 // retryDraftText and retryDraftTurnID are the second scenario's contract: the

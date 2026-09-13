@@ -69,7 +69,9 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 	}
 	published, err := env.ScratchRetentionBinding()
 	if err != nil {
-		return nil
+		// SetScratchRetentionBinding just recorded the binding, so an unreadable
+		// read-back is an unreachable defensive branch, not an install failure.
+		return nil //nolint:nilerr // binding already installed; nothing to register
 	}
 	consumer := scratchConsumerPreservingRoles(manifest, sessionID, published.BindingID)
 	return sandbox.UpsertScratchBinding(owner, published, consumer)
@@ -122,7 +124,7 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 	sourceBinding, err := source.ScratchRetentionBinding()
 	if err != nil || sourceBinding.BindingID == "" {
 		// A source with no durable identity has nothing to hand over.
-		return nil
+		return nil //nolint:nilerr // no durable source identity is a no-op, not a failure
 	}
 	targetID, err := s.ensureScratchBindingID(target, owner, sessionID)
 	if err != nil {
@@ -142,7 +144,7 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 		}
 	}
 	moved := sourceBinding.Slots
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		manifest, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
 			return err
@@ -219,7 +221,7 @@ func (s *Session) inheritScratchRetentionBinding(target, source *execenv.LocalEx
 	}
 	binding, err := source.ScratchRetentionBinding()
 	if err != nil || binding.BindingID == "" {
-		return nil
+		return nil //nolint:nilerr // a source with no durable identity is a no-op
 	}
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -282,7 +284,9 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 	}
 	installed, err := env.ScratchRetentionBinding()
 	if err != nil {
-		return nil
+		// installScratchRetention already installed the binding above; the
+		// unreachable read-back failure leaves no consumer row to add.
+		return nil //nolint:nilerr // binding already installed; nothing to register
 	}
 	manifest, err := sandbox.LoadScratchRetention(owner)
 	if err != nil {

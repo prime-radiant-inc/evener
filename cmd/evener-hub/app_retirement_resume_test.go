@@ -291,11 +291,9 @@ func (f *retirementResumeFixture) buildReplacement(_ context.Context, _ hubcore.
 	// SubmitClientMutationStart): an accepted start only reserves the durable
 	// intent — without this wake the runner never claims or executes it.
 	sess.SetClientMutationStartWakeFunc(func() {
-		f.wakeWG.Add(1)
-		go func() {
-			defer f.wakeWG.Done()
+		f.wakeWG.Go(func() {
 			_, _, _ = sess.ProcessClientMutationStart(context.Background(), nil)
-		}()
+		})
 	})
 	f.eventsDrained = make(chan struct{})
 	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
@@ -349,7 +347,7 @@ func (f *retirementResumeFixture) params(clientMutationID, text string) appwire.
 	}
 }
 
-func (f *retirementResumeFixture) startAsync(client *appwire.Client, ctx context.Context, clientMutationID, text string) <-chan retirementStartResult {
+func (f *retirementResumeFixture) startAsync(ctx context.Context, client *appwire.Client, clientMutationID, text string) <-chan retirementStartResult {
 	done := make(chan retirementStartResult, 1)
 	go func() {
 		resp, err := client.TurnStart(ctx, f.params(clientMutationID, text))
@@ -361,7 +359,7 @@ func (f *retirementResumeFixture) startAsync(client *appwire.Client, ctx context
 // awaitWaitBehindOwner blocks until the hub is waiting on the retiring owner's
 // exit. A turn/start that returns first proves the hub surfaced the lifecycle
 // error to the caller instead of resolving the retirement.
-func (f *retirementResumeFixture) awaitWaitBehindOwner(t *testing.T, ctx context.Context, done <-chan retirementStartResult) {
+func (f *retirementResumeFixture) awaitWaitBehindOwner(ctx context.Context, t *testing.T, done <-chan retirementStartResult) {
 	t.Helper()
 	select {
 	case <-f.waitEntered:
@@ -386,7 +384,7 @@ func (f *retirementResumeFixture) confirmExit(t *testing.T) {
 	f.exitOnce.Do(func() { close(f.exit) })
 }
 
-func (f *retirementResumeFixture) awaitTurnEnd(t *testing.T, ctx context.Context) {
+func (f *retirementResumeFixture) awaitTurnEnd(ctx context.Context, t *testing.T) {
 	t.Helper()
 	select {
 	case <-f.turnEnded:
@@ -545,8 +543,8 @@ func TestRetirementResumeDoesNotReplaceLiveOwner(t *testing.T) {
 	rpcCtx, rpcCancel := context.WithCancel(ctx)
 	defer rpcCancel()
 
-	done := f.startAsync(client, rpcCtx, "live-owner-start", "hello")
-	f.awaitWaitBehindOwner(t, ctx, done)
+	done := f.startAsync(rpcCtx, client, "live-owner-start", "hello")
+	f.awaitWaitBehindOwner(ctx, t, done)
 	if got := f.launches.Load(); got != 0 {
 		t.Fatalf("replacement launches while the owner is alive = %d, want 0", got)
 	}
@@ -570,11 +568,11 @@ func TestRetirementResumeSameIDReplaysOneStableTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	doneFirst := f.startAsync(first, ctx, "shared-mutation", "send exactly once")
-	f.awaitWaitBehindOwner(t, ctx, doneFirst)
+	doneFirst := f.startAsync(ctx, first, "shared-mutation", "send exactly once")
+	f.awaitWaitBehindOwner(ctx, t, doneFirst)
 	// A second connection retries the same client mutation id behind the same
 	// unexited owner; the retry must not race a second daemon or a second turn.
-	doneSecond := f.startAsync(second, ctx, "shared-mutation", "send exactly once")
+	doneSecond := f.startAsync(ctx, second, "shared-mutation", "send exactly once")
 
 	f.confirmExit(t)
 	resultFirst, resultSecond := <-doneFirst, <-doneSecond
@@ -619,9 +617,9 @@ func TestRetirementResumeConcurrentDistinctIDsConflict(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	doneFirst := f.startAsync(first, ctx, "mutation-a", "first concurrent text")
-	f.awaitWaitBehindOwner(t, ctx, doneFirst)
-	doneSecond := f.startAsync(second, ctx, "mutation-b", "second concurrent text")
+	doneFirst := f.startAsync(ctx, first, "mutation-a", "first concurrent text")
+	f.awaitWaitBehindOwner(ctx, t, doneFirst)
+	doneSecond := f.startAsync(ctx, second, "mutation-b", "second concurrent text")
 
 	f.confirmExit(t)
 	// The winner's provider call is held open, so the loser provably meets an
@@ -677,7 +675,7 @@ func TestRetirementResumeConcurrentDistinctIDsConflict(t *testing.T) {
 	}
 
 	close(f.providerGate)
-	f.awaitTurnEnd(t, ctx)
+	f.awaitTurnEnd(ctx, t)
 	if got := f.launches.Load(); got != 1 {
 		t.Fatalf("replacement launches = %d, want 1", got)
 	}
@@ -692,8 +690,8 @@ func TestRetirementResumeSequentialDistinctIDsAccepted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	done := f.startAsync(client, ctx, "sequential-first", "first sequential text")
-	f.awaitWaitBehindOwner(t, ctx, done)
+	done := f.startAsync(ctx, client, "sequential-first", "first sequential text")
+	f.awaitWaitBehindOwner(ctx, t, done)
 	f.confirmExit(t)
 	first := <-done
 	if first.err != nil || first.resp.Receipt.Disposition != appwire.MutationDispositionApplied || first.resp.Turn.ID == "" {
@@ -715,7 +713,7 @@ func TestRetirementResumeSequentialDistinctIDsAccepted(t *testing.T) {
 		t.Fatalf("journal after first acceptance = %+v (present=%v), want stable turn %q with its payload; journal = %+v", record, ok, first.resp.Turn.ID, journal)
 	}
 	close(f.providerGate)
-	f.awaitTurnEnd(t, ctx)
+	f.awaitTurnEnd(ctx, t)
 
 	// The turn-ended event can precede the journal's terminal transition, which
 	// is what clears the session's active-turn fence
@@ -740,7 +738,7 @@ func TestRetirementResumeSequentialDistinctIDsAccepted(t *testing.T) {
 	if err != nil || second.Receipt.Disposition != appwire.MutationDispositionApplied || second.Turn.ID == "" || second.Turn.ID == first.resp.Turn.ID {
 		t.Fatalf("second sequential mutation: resp=%+v err=%v, want a distinct applied turn", second, err)
 	}
-	f.awaitTurnEnd(t, ctx)
+	f.awaitTurnEnd(ctx, t)
 
 	journal = f.journal(t)
 	firstRecord, firstOK := journal["sequential-first"]
@@ -794,7 +792,7 @@ func TestRetirementResumeFences(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 		defer cancel()
 
-		done := f.startAsync(client, ctx, "stale-epoch-start", "must not resume")
+		done := f.startAsync(ctx, client, "stale-epoch-start", "must not resume")
 		select {
 		case <-f.peerMutationEntered:
 		case <-ctx.Done():
@@ -855,7 +853,7 @@ func TestRetirementResumeFences(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 		defer cancel()
 
-		done := f.startAsync(client, ctx, "incompatible-start", "must not resume")
+		done := f.startAsync(ctx, client, "incompatible-start", "must not resume")
 		result := <-done
 		if result.err == nil {
 			t.Fatal("turn/start against an incompatible owner returned a nil error")
