@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -197,6 +198,19 @@ func ReadConfigFile(path string) (*Layer, bool, error) {
 // unknown keys — refuses the write, wrapped in ErrConfigUnloadable, instead
 // of landing a file whose reload fails and whose author is then locked out of
 // the corrective edit (spec §10, §11.3).
+//
+// A dotfiles-managed providers.toml is a symlink into a managed directory, so
+// the write resolves through the link first and lands the rename on its
+// target: renaming over the link path would replace the link with a regular
+// file and sever the managed copy that is the source of truth (issue #1040,
+// the same follow-the-symlink rule writeAgentsDoc already applies to
+// AGENTS.md; Jesse's ruling, 2026-09-07). Only a path with nothing at the end
+// of it — no file yet, or a link whose target is gone — falls back to the
+// path itself, so a first save creates the file where the config root says it
+// is and a broken link is replaced. A link that is there but unresolvable (a
+// loop, a directory along the way that cannot be searched) is a real target
+// this write cannot reach: renaming over it would sever the very link the rule
+// exists to keep, so it is refused.
 func WriteConfigFile(path string, l *Layer) error {
 	data, err := MarshalConfig(l)
 	if err != nil {
@@ -205,14 +219,22 @@ func WriteConfigFile(path string, l *Layer) error {
 	if _, err := ParseConfig(data); err != nil {
 		return fmt.Errorf("%w: %w", ErrConfigUnloadable, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	target := path
+	resolved, err := filepath.EvalSymlinks(path)
+	switch {
+	case err == nil:
+		target = resolved
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("providers.toml: resolve: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return fmt.Errorf("providers.toml: mkdir: %w", err)
 	}
-	tmp := path + ".tmp"
+	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("providers.toml: write: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("providers.toml: rename: %w", err)
 	}
