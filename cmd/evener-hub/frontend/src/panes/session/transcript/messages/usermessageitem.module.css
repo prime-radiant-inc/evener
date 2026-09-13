@@ -1,12 +1,14 @@
 /* The slack-lean speaker treatment for the user's own messages
  * (docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md, decisions
- * 1, 2, 5). No bubble, no right-alignment: the whole message is one flex row
- * - a 24px avatar tile beside a content column whose first line is the
- * speaker header (avatar + "You" + clock time, actions right-anchored) - so
- * speaker identity reads as structure, the way a chat app's avatar column
- * does. There is deliberately NO breakpoint in this file: the avatar stays
- * inline in the header row at every width; the responsive gutter media query
- * belongs to turnblock.module.css (decision 4).
+ * 1, 2, 5). No right-alignment: the whole message is one flex row - a 24px
+ * avatar tile beside a content column whose first line is the speaker header
+ * (avatar + "You" + clock time, actions right-anchored) - so speaker
+ * identity reads as structure, the way a chat app's avatar column does.
+ * The user's words keep the restored option-B accent bubble (see .body):
+ * header structure plus bubble containment, not header alone. There is
+ * deliberately NO breakpoint in this file: the avatar stays inline in the
+ * header row at every width; the responsive gutter media query belongs to
+ * turnblock.module.css (decision 4).
  *
  * Decision 5, recorded: the body text is --ink-hi, reversing the old
  * tiered-density demotion ("the user knows what they said", which muted it
@@ -111,12 +113,14 @@
 }
 
 /* The chat bubble (2026-07-30-transcript-chat-bubbles-design.md, decisions
- * 1-3): the user's own words sit in an accent wash - --accent-bg, the
- * existing token (15% --accent on --surface-1, both themes) - hugging the
- * content rather than spanning the column (width: fit-content + max-width,
- * so a one-word message gets a one-word bubble). The 4px corner is the one
- * TOWARD the avatar (top-left): the chat "tail"; the other corners take the
- * pane radius. */
+ * 1-3, restored by option B): the user's own words sit in an accent wash -
+ * --accent-bg, the existing token (15% --accent on --surface-1, both themes)
+ * - hugging the content rather than spanning the column (width: fit-content
+ * + max-width, so a one-word message gets a one-word bubble). The corners
+ * are uniformly --radius-control/--radius-pane, which both resolve to 4px
+ * under the editorial scale: the pre-editorial chat "tail" toward the avatar
+ * does not render as a distinct shape (roborev PR 1260). Serif prose stays;
+ * only the containment returns. */
 .body {
   display: flex;
   flex-direction: column;
@@ -125,7 +129,9 @@
   /* Bounded by the column (--session-measure on body), not a percentage of
    * the pane - see agentmessageitem.module.css's .bubble. */
   max-width: 100%;
-  padding: var(--space-1) 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-bg);
+  border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
 }
 
 .text {

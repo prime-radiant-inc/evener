@@ -20,6 +20,11 @@ export interface ItemRenderProps {
   // True on the first agentMessage item of an exchange, threaded from the
   // transcript exchange-openers set so renderers can show an eyebrow.
   opensExchange?: boolean;
+  // True on the last text-bearing agentMessage item of an exchange,
+  // threaded from the transcript exchange-closers set so the terminal
+  // message can carry its own treatment. Settled only: a live tail never
+  // closes, so the wash cannot flicker mid-stream.
+  closesExchange?: boolean;
   // The session's short model/provider label, threaded from Session.tsx.
   agentLabel?: string;
   // Context is threaded for memoized/custom renderers that prefer props; the
@@ -86,6 +91,7 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.live === next.live &&
     prev.sessionRef === next.sessionRef &&
     prev.opensExchange === next.opensExchange &&
+    prev.closesExchange === next.closesExchange &&
     prev.agentLabel === next.agentLabel &&
     prev.projectedSummary === next.projectedSummary &&
     prev.contentFree === next.contentFree &&
