@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
+import { nativeValueImports, PACKAGE_SPECIFIERS } from "./native-value-imports.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const consumerDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
@@ -439,6 +440,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
     consumerDir,
   );
   for (const consumer of runtimeConsumers) run(process.execPath, [join(consumerDir, consumer)], consumerDir);
+  runNativeResolveCheck();
   const listing = run("tar", ["-tzf", tarball], consumerDir);
   for (const expected of [
     ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),
@@ -588,6 +590,38 @@ ${presenceLoop}${surface.smoke ?? ""}`,
     await new Promise((resolveClose) => server.close(resolveClose));
   }
   console.log(`qualified ${packed.name}@${packed.version}: installed imports, declarations and read-only example`);
+}
+
+// The native trees import this package by name but declare no dependency on
+// it: they resolve the name through a repo alias onto TypeScript source, so
+// `make test-native` can be green while the installed tarball is missing an
+// export. resolve-check.mjs answers that question in the one place it can be
+// answered - a real consumer with the tarball in node_modules - and this is
+// where it runs. The two lists it names are checked against the native import
+// graph first, so the fixture cannot quietly fall behind what native imports.
+function runNativeResolveCheck() {
+  const fixture = "resolve-check.mjs";
+  const source = readFileSync(join(packageDir, "scripts", fixture), "utf8");
+  const declared = new Map();
+  for (const [specifier, constant] of [
+    [PACKAGE_SPECIFIERS[0], "ROOT_VALUES"],
+    [PACKAGE_SPECIFIERS[1], "DOC_CONTENT_VALUES"],
+  ]) {
+    const match = source.match(new RegExp(`^const ${constant} = (\\[[^;]*\\]);$`, "m"));
+    assert(match, `${fixture} no longer declares ${constant} as a plain array of string literals`);
+    // Biome formats the fixture and adds a trailing comma, which JSON rejects.
+    declared.set(specifier, JSON.parse(match[1].replace(/,(\s*])$/, "$1")).sort());
+  }
+  const imported = nativeValueImports(resolve(packageDir, "..", ".."));
+  for (const specifier of PACKAGE_SPECIFIERS) {
+    assert.deepEqual(
+      declared.get(specifier),
+      imported.get(specifier),
+      `${fixture}'s list for ${specifier} has drifted from what mobile-native and mobile/src import; update the fixture`,
+    );
+  }
+  copyFileSync(join(packageDir, "scripts", fixture), join(consumerDir, fixture));
+  run(process.execPath, [join(consumerDir, fixture)], consumerDir);
 }
 
 try {
