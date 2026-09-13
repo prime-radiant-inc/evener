@@ -72,6 +72,17 @@ function formatBlocker(b: DaemonBlocker): string {
 }
 
 /**
+ * The phase to show for one row. A retire response the Hub accepted wins: the
+ * daemon is retiring and the server has not yet removed it from the list.
+ * Otherwise fall back to the current probe, which still renders "—" while the
+ * probe is stale or unknown.
+ */
+function displayPhaseFor(daemon: DaemonResident, retireResult: DaemonRetireResponse | undefined): string {
+  if (retireResult?.accepted === true) return retireResult.lifecycle.phase;
+  return daemon.lifecycle?.phase ?? "—";
+}
+
+/**
  * Settings → Hub → Discovered resident daemons.
  *
  * Shows the Hub's current resident-daemon inventory. Refreshes every
@@ -238,11 +249,9 @@ export function HubResidents() {
                 const isPending = pending.has(daemon.identity.generation);
                 const actionError = actionErrors.get(daemon.identity.generation);
 
-                // Display phase: prefer the retire-response lifecycle when
-                // Accepted:true — the daemon is retiring and the server has
-                // not yet removed it from the list.
-                const displayPhase =
-                  retireResult?.accepted === true ? retireResult.lifecycle.phase : (daemon.lifecycle?.phase ?? "—");
+                // Display phase: prefer the retire-response lifecycle when the
+                // Hub accepted it (see displayPhaseFor).
+                const displayPhase = displayPhaseFor(daemon, retireResult);
 
                 // List-snapshot blockers from the current probe result.
                 const snapshotBlockers = daemon.lifecycle?.blockers ?? [];

@@ -789,19 +789,24 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	consumeRetirementClaim := func(ctx context.Context, claim *agent.RetirementClaim) error {
 		root := getSession()
 		retirementObserve("claim_consumed", root.ID())
-		if !rendezvous.StrongOwnershipAvailable() {
+		// Every failure before Commit must abort the claim, or it wedges in
+		// preparing and the daemon never retires and never recovers. This is
+		// deliberately NOT a defer: a failure at or after Commit must leave the
+		// process retiring, not abort it.
+		failBeforeCommit := func(err error) error {
 			_ = retirement.Abort(claim, "prepare_failed")
-			return errors.New("retirement requires strong rendezvous ownership, unavailable on this platform")
+			return err
+		}
+		if !rendezvous.StrongOwnershipAvailable() {
+			return failBeforeCommit(errors.New("retirement requires strong rendezvous ownership, unavailable on this platform"))
 		}
 		prepared, err := retirement.Prepare(ctx, claim)
 		if err != nil {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return fmt.Errorf("retirement preparation: %w", err)
+			return failBeforeCommit(fmt.Errorf("retirement preparation: %w", err))
 		}
 		retirementObserve("prepared", root.ID())
 		if !reserveRetirementExit(root) {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return errors.New("retirement exit is no longer owned by the prepared root")
+			return failBeforeCommit(errors.New("retirement exit is no longer owned by the prepared root"))
 		}
 		if err := retirement.Commit(claim); err != nil {
 			return fmt.Errorf("retirement commit: %w", err)
