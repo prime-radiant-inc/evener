@@ -50,6 +50,7 @@ async function qualify() {
     "sessionErrors",
     "stableDelegate",
     "docContent",
+    "submitRouting",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -116,6 +117,9 @@ async function qualify() {
     "DocFileError",
     "docFileRawURL",
     "docImageURL",
+    "decideSubmitRoute",
+    "decideSteerRoute",
+    "isTurnActive",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -133,6 +137,8 @@ async function qualify() {
     "SendQueueAvailability",
     "StableDelegateState",
     "DocFileContent",
+    "SubmitRoute",
+    "SteerRoute",
   ];
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
@@ -177,6 +183,9 @@ assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
+assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
+assert.equal(client.isTurnActive("active", "turn_1"), true);
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 `;

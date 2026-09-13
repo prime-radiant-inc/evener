@@ -89,6 +89,8 @@ export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
+export type { SteerRoute, SubmitRoute } from "./submitRouting";
+export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
