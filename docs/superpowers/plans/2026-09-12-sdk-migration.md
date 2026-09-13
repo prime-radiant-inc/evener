@@ -37,7 +37,8 @@ state-store extraction has been approved by this landing task."
    into the package "for later" adds a boundary and buys nothing. The 18
    single-consumer candidates in the inventory stay where they are until a
    second consumer arrives in the same PR. This is why phase C schedules 25
-   relocations, not 55. The phase-C table carries 26 rows: those 25, plus C24,
+   relocations, not 55. The phase-C table carries 27 rows: those 26 — C11 is two
+   PRs — plus C24,
    which is not a relocation but the doc adapters for a module #1184 already
    shipped and A3d already published. Three deliberate exceptions are labelled where they
    occur: `secureUUID.ts` (moves inside D26), `docContent.ts` (C24), and
@@ -101,7 +102,7 @@ valid; it runs immediately after B1.
 | B6 | ~~One queue reconciliation~~ — withdrawn | **WITHDRAWN.** Not a twin: `pendingReconcile.ts:111` `reconcilePendingEntries` matches outbox records against a `ThreadModel` across four states; `project.ts:759` `projectQueue` is a field copy of `Thread["evener"]["queue"]`. The native queue state that would be its twin is inside `state/conversation.ts` — D25's problem | n/a | 0 | — | Row kept so the B-numbers other rows cite stay stable |
 | B7 | ~~One liveness line and thread title~~ — withdrawn | **WITHDRAWN.** No native twin at all: `project.ts:715` passes `thread.status.type` through (pinned by `project.test.ts:1483,1493`) and `roster.ts:48-53` `classifyAttention` uses a different vocabulary. Web-side, `liveness.ts` exports React hooks and `threadTitle.ts:21-23` reads the navigation zustand singleton, so both are PLATFORM-ONLY and rule 7 keeps them put. Stopped mid-execution as NEEDS_CONTEXT — the finding that triggered the re-audit | n/a | 0 | — | Row kept so the B-numbers other rows cite stay stable |
 
-## Phase C — relocate modules both apps already import (26 rows: 25 relocations, plus C24)
+## Phase C — relocate modules both apps already import (27 rows: 26 relocations, plus C24)
 
 Every module here **except C24's** is already imported by the web and by
 `mobile-native` through a deep relative path (inventory §0); C24 relocates
@@ -132,7 +133,8 @@ plumbing.
 | C8 | `composer/attachments/limits.ts` (29) | ~90 | A4 | None |
 | C9 | `composer/slashCompletion.ts` (334) | ~400 | A4, **C15** | It imports `slashCommandInvocation` from `shell/palette/catalogCommands.ts:13`, which C15 moves; a package module cannot keep that relative import. Either take the C15 dependency (as ordered here) or co-move the one helper. Also carries a third-party port attributed to `cmd/evener-hub/frontend/LICENSES/beautiful-ui.txt` — which sits in the **web app's** tree, outside the package directory, and `package.json` `files` is `["dist", "README.md", "examples"]`, so a naive move publishes the code and strands the attribution. Shipping it means three edits in this same PR, not one: copy the license into the package directory, add it to `package.json` `files`, **and widen the qualification runner's tarball allowlist** (`qualify-package.mjs:325-340`), which today permits only `package/package.json`, `package/README.md`, `package/dist/*` and `package/examples/*` and asserts anything else is absent — so an unlisted license file fails the gate. **Decision: ship it.** The alternative, leaving `slashCompletion.ts` in the web tree, keeps a two-consumer module out of the package for a reason that is a one-line allowlist entry, and would leave `mobile-native` importing it relatively forever |
 | C10 | `composer/submitRouting.ts` (50) | ~110 | A1 (needs `sendQueueAvailability` shipped) | None |
-| C11 | `composer/askDock/deriveAskQuestions.ts` (95), **plus `panes/session/askShared.ts` (151) and `panes/session/transcript/tools/helpers.ts` (138)** | ~480 | A1 | `deriveAskQuestions.ts:20-21` imports `askShared.ts`, which at `:19` imports `parseArgs` from `tools/helpers.ts`. A package module cannot keep an app-relative import, so all three move together — the same failure the plan already documents for C9→C15. `helpers.ts` has no imports at all and is trivially portable; `askShared.ts` reads `ItemModel`/`ThreadModel`, which A1 ships. Extracting instead of co-moving is the alternative, but `parseAskUserQuestions` is the whole point of the import, so there is nothing smaller to extract |
+| C11a | `panes/session/transcript/tools/helpers.ts` (138) → `protocol/toolCallText.ts`, the pure half `askShared.ts` depends on | ~200 | A1 | Split out of C11 because the two halves have different risk: this one has no imports at all. **Open as #1225.** |
+| C11b | `composer/askDock/deriveAskQuestions.ts` (95) and `panes/session/askShared.ts` (151) | ~280 | C11a | `deriveAskQuestions.ts:20-21` imports `askShared.ts`, which at `:19` imports `parseArgs` from the module C11a moved, so these two travel together once C11a lands. `askShared.ts` reads `ItemModel`/`ThreadModel`, which A1 ships |
 | C12 | `composer/askDock/reconcileBatches.ts` (76) | ~140 | C11 | None. C11 having grown does not change this dependency |
 | C13 | `panes/session/chrome/activityRows.ts` (208) | ~270 | A1 | None |
 | C14 | `shell/rail/sessionState.ts` (41) | ~100 | A4 | None |
@@ -179,7 +181,7 @@ every phase-C and phase-D row must add the `shippedModules` entry by hand.
 
 | # | Store migrated | Native twin deleted | Lines | Deps | Risk |
 | --- | --- | --- | --- | --- | --- |
-| D1 | Command catalog: **the web adopts the native logic**, which is the superset — not a twin deletion | nothing; `mobile-native/src/commandCatalog.ts` becomes the shared module and keeps its behavior | ~450 | A4 | **Re-audited by grep at `303053dfb`, and the reviewer is right on all four counts.** `stores/commandCatalog.ts` (26 lines) issues one `evener/command/list` and stores the result. `mobile-native/src/commandCatalog.ts` (105) does four more things, every one of which is the contract this row must preserve: (a) reads session diagnostics — `thread/read` with `includeTurns: false`, then `evener.diagnostics`; (b) filters plugin commands the session cannot run, via `visibleCatalogCommands(commands, new Set(diagnostics.plugins.map(p => p.name)))`; (c) merges skills, via `mergeSlashCommands([], commands, diagnostics?.skills ?? [])`; (d) refreshes on `evener/plugin/updated` and on a ref-matched `evener/thread/resync`. Three more the review did not list and the row must also keep: per-ref scoping with a "Catalog belongs to another session" guard on a mismatched `evener.ref`, in-flight coalescing through a `dirty` re-run loop, and `Promise.allSettled` so one failed request does not discard the other. Pinned by `mobile-native/src/commandCatalog.test.ts` (the superset behaviour) and `stores/commandCatalog.test.ts` (the web store's surface, which becomes the adapter's contract per rule 4); `slashCompletion.test.ts` covers `mergeSlashCommands`. Estimate raised from ~250 to ~450: the web gains behaviour rather than losing code, and the palette needs rewiring to a per-ref catalog |
+| D1 | Command catalog: **the web adopts the native logic**, which is the superset — not a twin deletion | nothing; `mobile-native/src/commandCatalog.ts` becomes the shared module and keeps its behavior | ~450 | A4, **A2** | **Re-audited by grep at `303053dfb`, and the reviewer is right on all four counts.** `stores/commandCatalog.ts` (26 lines) issues one `evener/command/list` and stores the result. `mobile-native/src/commandCatalog.ts` (105) does four more things, every one of which is the contract this row must preserve: (a) reads session diagnostics — `thread/read` with `includeTurns: false`, then `evener.diagnostics`; (b) filters plugin commands the session cannot run, via `visibleCatalogCommands(commands, new Set(diagnostics.plugins.map(p => p.name)))`; (c) merges skills, via `mergeSlashCommands([], commands, diagnostics?.skills ?? [])`; (d) refreshes on `evener/plugin/updated` and on a ref-matched `evener/thread/resync`. Three more the review did not list and the row must also keep: per-ref scoping with a "Catalog belongs to another session" guard on a mismatched `evener.ref`, in-flight coalescing through a `dirty` re-run loop, and `Promise.allSettled` so one failed request does not discard the other. Pinned by `mobile-native/src/commandCatalog.test.ts` (the superset behaviour) and `stores/commandCatalog.test.ts` (the web store's surface, which becomes the adapter's contract per rule 4); `slashCompletion.test.ts` covers `mergeSlashCommands`. Estimate raised from ~250 to ~450: the web gains behaviour rather than losing code, and the palette needs rewiring to a per-ref catalog **Package-boundary port, decided after reading both interfaces:** the native module imports `ConversationClientLike` from `mobile/src/services/conversation`, which a package module cannot reach. The shared module takes a **narrow package-local interface**, not `AppwireClientLike`: the catalog calls exactly two members (`onNotification` at `commandCatalog.ts:39`, `request` at `:64,65`), while `AppwireClientLike` demands ten — `connect`, `onReady`, `onStateChange`, `retryNow`, `state` and `terminalReason` among them — none of which this module touches. The package already has the pattern: `activityList.ts:13` declares `ActivityClient` as a `Pick` of `AppwireClient` over just `request` and `onNotification`, so D1 declares `CommandCatalogClient` the same way. `AppwireClientLike` (A2, merged) satisfies it structurally, so both apps pass what they already hold and no adapter is needed; A2 is listed as a dependency because that is what makes the web side true. |
 | D2 | `stores/settingsOverview.ts` (122) | `hubOverview.ts` (71) | ~280 | A4 | Low. The store shape is pinned across three streams; the adapter keeps it |
 | D3 | `stores/tasksPanel.ts` (228) | `taskList.ts` (123) | ~400 | C25, D1 | Low-medium. Unsupported vs daemon-gone vs empty are three distinct states; collapsing any two is invisible to a shape-only test |
 | D4 | `stores/hubUpdate.ts` (244) | `hubUpgrade.ts` (263) | ~480 | A4 | Medium. The `/api/health` poll and `location.reload()` stay web-side, `expo` restart stays native-side; only check/apply move. Runtime risk: the socket drops mid-apply, which no unit test reproduces |
@@ -315,16 +317,16 @@ through D21–D24 and the directory is deleted at the end of D24.
 
 ## Honest total
 
-**64 PRs. Roughly 29,900 lines changed** — 29,890, summed from the Lines cell of
+**65 PRs. Roughly 29,900 lines changed** — 29,890, summed from the Lines cell of
 every row above, so the headline and the phases cannot drift apart again. The
-tables carry 71 rows, six of them withdrawn phase-B rows that contribute
-nothing — so **65 rows of work**, and **64 real PRs**, because B1b landed inside
-B1 rather than on its own. **Nine have landed** (A1, A2, A3b, A3c, A3d, A5,
-B1 carrying B1b, B3b, C24) and three are open (C10 #1222, C13 #1223, C11a), so
-**55 remain**.
+tables carry 72 rows, six of them withdrawn phase-B rows that contribute
+nothing — so **66 rows of work**, and **65 real PRs**, because B1b landed inside
+B1 rather than on its own. **Eleven have landed** (A1, A2, A3b, A3c, A3d, A5,
+B1 carrying B1b, B3b, C10, C13, C24), so **54 remain**, three of them in flight
+(C11a #1225, C6, C26).
 
 Phase A 8 PRs / 2,820 lines. Phase B 210, the sum of its three live rows of 9
-(all three landed). Phase C 26 / 8,550. Phase D 28 / 18,310. Each subtotal is its own rows added up, not an estimate.
+(all three landed). Phase C 27 / 8,550. Phase D 28 / 18,310. Each subtotal is its own rows added up, not an estimate.
 Phase B collapsed from 1,600 lines to 210 because the re-audit found six of its
 nine rows were not duplication at all, and B1b landed inside B1.
 
@@ -348,8 +350,7 @@ no phase-D PR deletes it, and on the evidence none should.
 
 ## Status as of 2026-09-12
 
-Observed at `f39aa2c83`, not assumed; re-query before acting. Nothing in phases
-C or D has started.
+Observed at `e2c77cc72`, not assumed; re-query before acting.
 
 | Plan PR | GitHub | State |
 | --- | --- | --- |
@@ -360,18 +361,24 @@ C or D has started.
 | A3b | #1206 | **merged** as `99fa1882f` — twelve root error exports; `chunkViewBackingForTests` and `readDocFile` deliberately excluded, which is why A3c/A3d exist |
 | A3c | #1207 | **merged** as `2a8163eb0` — the qualification manifest is per specifier, not only at the root |
 | C24 | #1221 | **merged** as `303053dfb` — `DocPort`, both adapters, `docImageURL` still a string builder |
-| C10 | #1222 | open — `submitRouting` → `protocol/submitRouting.ts` |
-| C13 | #1223 | open — `activityRows` → `protocol/activityRows.ts` |
-| C11a | in flight | open — `tools/helpers.ts` → `protocol/toolCallText.ts`, the first of two C11 PRs; the second moves `askShared.ts` and `deriveAskQuestions.ts` |
+| C10 | #1222 | **merged** as `ba4164649` — `submitRouting` → `protocol/submitRouting.ts` |
+| C13 | #1223 | **merged** as `e2c77cc72` — `activityRows` → `protocol/activityRows.ts` |
+| C11a | #1225 | open — `tools/helpers.ts` → `protocol/toolCallText.ts`; round 1 found stale comments and a main conflict |
+| C6 | — | open lane — `stores/attachmentMarkers.ts` → `protocol/attachmentMarkers.ts`, dispatched off `e2c77cc72` |
+| C26 | — | open lane — `messages/format.ts` → `protocol/displayFormat.ts`, dispatched off `e2c77cc72` |
 | — | #1224 | open issue — `shippedModules` arms the reachability assertion, so a `dist/` module missing from it passes silently |
 | A3d | #1209 | **merged** as `f39aa2c83` — `./docContent` published; `readDocFile` took a required `DocFetch`, since widened by C24 to a `DocPort`; browser adapter at `panes/doc/browserDocPort.ts` (named `browserDocFetch.ts` until C24 renamed it), wired at `DocPane.tsx:49` |
 | B3b | #1203 | **merged** as `4da382482` — native's two `projectUsage` copies collapsed to one |
 | B1b | #1190, #1197 | **done** — landed inside B1 (`27503c07d`); both issues closed |
 
-A3 and A4 are the only unstarted phase-A rows, and they block every phase-C
-**relocation** — nothing can move until the package has a name both apps can
-import. C24 was the exception — it relocates nothing and depended only on A1 and
-A3d — and it has landed as #1221. A3b, A3c and A3d landed ahead of A3.
+**What A3 and A4 actually block — corrected, because three relocations have now
+landed without them.** A3 moves the package directory and A4 rewrites imports to
+the package name; together they block the *package-name import rewrite* and the
+*directory move*, nothing else. A relocation into `protocol/` lands today with
+its consumers still on deep relative paths, which is exactly how C10 (#1222),
+C13 (#1223) and C24 (#1221) landed. **Read every phase-C `A4` in the Deps column
+as "consumers get the package-name import when A4 lands", not "cannot start".**
+A3b, A3c and A3d landed ahead of A3 for the same reason.
 
 B7 was executed and stopped as NEEDS_CONTEXT; that triggered a grep re-audit of
 every DUPLICATED row and every 2-consumer claim at `f2599d1ed`. Six phase-B rows
