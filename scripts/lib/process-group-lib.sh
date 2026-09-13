@@ -9,6 +9,21 @@
 #
 # Each stop takes its grace in seconds, because how long a caller will spend
 # proving a job is gone is the caller's business.
+#
+# What ownership of a group can be shown to be, and what it cannot. A marker only
+# the wrapper carries cannot identify a member: a job spawns children, and a child
+# outlives the process that carried the marker. Reading a member's environment
+# would identify every one of them, and macOS will not do it — `ps -E` prints no
+# environment for another process of this user, `/proc` does not exist, and
+# `ps -o sess=` is 0 for everything. So the rule is: anything alive under a
+# recorded number is stopped, unless the number has plainly been handed on, which
+# is the one thing that can be read — a leader whose pid is the number and which
+# started after the record was written. The residual, stated exactly: a number
+# reused after our group emptied, whose new leader has since exited too, leaving
+# descendants; those read as ours. Everything else is kept safe structurally by
+# pgroup_signalable, which refuses 0, 1, a non-number and the group this caller is
+# in. Its session check does nothing on macOS, where `ps -o sess=` is 0 for every
+# process; the other refusals are what it enforces.
 
 # pgroup_marker PREFIX — a token for one job, unique on the host.
 #
@@ -162,19 +177,6 @@ pgroup_survivor_report() {
 	printf '%s' "${report:-<none at the final probe>}"
 }
 
-# pid_leads_pgroup PID — 0 when the kernel says PID leads the group numbered
-# PID, 1 otherwise, including when that cannot be read.
-#
-# The one question that makes `kill -- -PID` safe. Before its setpgrp runs a
-# spawned child is still in its parent's group, and once it has gone the number
-# belongs to whoever the kernel hands it to next: a group signal aimed at it in
-# either state names a group the caller has no business touching.
-pid_leads_pgroup() {
-	local pid="$1" pgid
-	pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
-	[ -n "$pgid" ] && [ "$pgid" = "$pid" ]
-}
-
 # pgroup_signalable PGID — 0 when PGID is a group this caller may signal, 1 when
 # it is not, with the reason on stderr.
 #
@@ -235,32 +237,57 @@ pid_signalable() {
 	return 0
 }
 
-# pgroup_owned_by PGID MARKER — 0 when PGID holds a live member running MARKER,
-# 1 when it holds none, 2 when the process listing would not run.
+# pgroup_number_reused RECORD PGID — 0 when PGID now belongs to somebody else,
+# 1 when nothing says it does, 2 when that could not be read.
 #
-# The question every recorded number has to answer before it is signalled. A pid
-# and the group named after it outlive the job that held them, and the kernel
-# hands both to somebody else in time, so "is anything in group N" is not the
-# same as "is the job I recorded still in group N". MARKER is a word the job
-# carries on its command line, and the whole command line is searched for it, not
-# just the program name: measured, the installer's attempt runs as `bash -c ...
-# install-golangci-lint-attempt ...`, whose program name is `bash`, so a probe
-# reading the program name alone called a live attempt somebody else's.
-pgroup_owned_by() {
-	local pgid="$1" marker="$2" listing
-	if ! listing="$(ps -axo pid=,pgid=,state=,command= 2>/dev/null)" || [ -z "$listing" ]; then
-		return 2
-	fi
-	printf '%s\n' "$listing" |
-		awk -v pgid="$pgid" -v marker="$marker" '
-			$2 == pgid && $3 !~ /^[Zz]/ {
-				for (i = 4; i <= NF; i++) {
-					n = split($i, parts, "/")
-					if ($i == marker || parts[n] == marker) { found = 1 }
-				}
-			}
-			END { exit(found ? 0 : 1) }
-		'
+# The one reuse question this platform can answer. A group number is handed on
+# only after the group it named emptied, and a new group with that number needs a
+# new leader whose pid is the number, created after ours was. The record is
+# written when the group is made, so a leader that started later than the record
+# is not the one the record was written for.
+#
+# Elapsed time, not the absolute start time: `ps -o etime=` has the same fixed
+# [[dd-]hh:]mm:ss format on macOS and Linux, where `lstart=` is a locale-formatted
+# date whose parsing differs between BSD and GNU `date`. Two seconds of slack,
+# because both ends are whole seconds and the answer to prefer when they are close
+# is "ours": that costs a signal to a group pgroup_signalable has already refused
+# to aim anywhere dangerous, where the other way round abandons a live job holding
+# its locks.
+pgroup_number_reused() {
+	local record="$1" pgid="$2" elapsed recorded_at started days rest hours minutes seconds
+	elapsed="$(ps -o etime= -p "$pgid" 2>/dev/null | tr -d '[:space:]')"
+	[ -n "$elapsed" ] || return 1
+	recorded_at="$(pgroup_file_mtime "$record")"
+	[ -n "$recorded_at" ] || return 2
+	case "$elapsed" in
+	*-*)
+		days="${elapsed%%-*}"
+		rest="${elapsed#*-}"
+		;;
+	*)
+		days=0
+		rest="$elapsed"
+		;;
+	esac
+	seconds="${rest##*:}"
+	minutes="${rest%:*}"
+	case "$rest" in
+	*:*:*)
+		hours="${minutes%%:*}"
+		minutes="${minutes#*:}"
+		;;
+	*)
+		hours=0
+		;;
+	esac
+	started=$(( $(date +%s) - (10#$days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds) ))
+	[ "$started" -gt $((recorded_at + 2)) ]
+}
+
+# pgroup_file_mtime PATH — the file's modification time in seconds since the
+# epoch, in whichever spelling of `stat` the host has.
+pgroup_file_mtime() {
+	stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
 }
 
 # pid_owned_by PID MARKER — the same question about a single process, for a job
@@ -381,6 +408,20 @@ stop_recorded_job() {
 	if [ -z "$members" ]; then
 		pgroup_record_clear "$record"
 		return 0
+	fi
+	# Members, then — but are they ours? Per member the platform will not say;
+	# what it will say is whether the number has been handed on since the record
+	# was written, which is the only way it can stop being ours.
+	status=0
+	pgroup_number_reused "$record" "$number" || status=$?
+	if [ "$status" -eq 0 ]; then
+		pgroup_stop_reason="$(printf 'process group %s is led by a process that started after this record was written, so the number has been handed on.' "$number")"
+		pgroup_record_clear "$record"
+		return 1
+	fi
+	if [ "$status" -eq 2 ]; then
+		pgroup_stop_reason="$(printf 'whether process group %s is still this job could not be read.' "$number")"
+		return 2
 	fi
 	status=0
 	stop_pgroup "$number" "$grace" || status=$?
