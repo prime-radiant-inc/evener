@@ -74,3 +74,19 @@ sampling read a committed notes snapshot, reorder the save seam to persist-befor
 rollback repair; the last needs the client outbox semantics checked first, since a push that
 contradicts a pending optimistic mutation may be discarded. `cfg.testOnly.notesAutoSaveFault` makes
 the failure path deterministically testable.
+
+## 9. `notes_read` can return a non-atomic notes snapshot (Low)
+
+`agent/session_tools_notes.go:85` through `Session.notesSnapshotAll` and `notesProjectionSnapshot` — the
+read takes the agent note, the URL list, and `notesEverProjected` under `Session.mu`, then the canonical
+human note under the mutation store's `stateMu`, so it is not one atomic cut of the four. The function's
+own comment documents that gap and says callers holding `notesUpdateMu` are what keeps a mutation from
+landing inside the read, which is how `notesContextBlock` uses it; the `notes_read` tool is a caller
+that does not hold it, so a concurrent mutation can return one field from before it and another from
+after. Each returned value is internally valid, so the impact is a transient mixed read in an
+agent-facing text blob, not durability or display corruption.
+
+Fix with item 8, which needs an atomically published notes snapshot that readers take without blocking.
+`Meta()` cannot simply take `notesUpdateMu`: the mutators hold it across the meta.json persistence I/O
+that the sampling path exists to stay off. Raised in roborev round 18 and deferred by Jesse's ruling
+alongside item 8.
