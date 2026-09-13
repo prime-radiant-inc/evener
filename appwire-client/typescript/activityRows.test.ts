@@ -95,6 +95,32 @@ test("indexes completed entries hidden behind a collapsed fold", () => {
 
   expect(buildActivityRows(activityTree, new Set()).some((row) => row.id === `job:${TERMINAL_JOB_ID}`)).toBe(false);
   expect(indexActivityEntities(activityTree).has(TERMINAL_JOB_ID)).toBe(true);
+  expect(indexActivityEntities(activityTree).get(TERMINAL_JOB_ID)).toMatchObject({ parentRef: activityTree.root.ref });
+});
+
+test("indexed level-1 inactive row matches its fold-revealed panel row", () => {
+  const inactiveJob = shell("level-one-inactive", true) as ActivityShellEntry;
+  inactiveJob.job.transcriptRef = "job:level-one-inactive";
+  const activityTree = tree([inactiveJob]);
+  const panelRow = buildActivityRows(activityTree, new Set([foldRowID("session:sess_root")])).find(
+    (row) => row.id === "job:level-one-inactive",
+  );
+  const indexedRow = indexActivityEntities(activityTree).get("level-one-inactive");
+
+  if (panelRow?.kind !== "job" || indexedRow?.kind !== "job") throw new Error("expected level-1 inactive job rows");
+  expect({
+    id: indexedRow.id,
+    level: indexedRow.level,
+    defaultDetailOpen: indexedRow.defaultDetailOpen,
+    transcriptRef: indexedRow.transcriptRef,
+    parentRef: indexedRow.parentRef,
+  }).toEqual({
+    id: panelRow.id,
+    level: panelRow.level,
+    defaultDetailOpen: panelRow.defaultDetailOpen,
+    transcriptRef: panelRow.transcriptRef,
+    parentRef: panelRow.parentRef,
+  });
 });
 
 test("indexed rows match fully disclosed panel row fields deep in the tree", () => {
