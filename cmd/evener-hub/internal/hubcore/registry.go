@@ -24,11 +24,25 @@ type ProviderRegistry struct {
 	current *registry.Registry
 	loadErr error
 	// generation counts successful holder swaps: every Reload that
-	// installs a new current bumps it. Live fetches capture the holder
-	// alongside the registry pointer, so a fetch that returns against a
-	// detached registry can re-apply its listing to the current one
-	// instead of losing it.
+	// installs a new current bumps it, and BeginLiveFetch hands out a
+	// per-instance token that ReapplyLive honors. A slower fetch that
+	// returns after a newer one (or after a Reload, whose carryLive
+	// only knows the before snapshot) applies its listing only when
+	// its token is still current, so stale responses can neither be
+	// lost on a detached registry nor overwrite a newer listing.
 	generation uint64
+	liveTokens map[string]uint64
+}
+
+// liveTokenLocked mints the next fetch token for instance. The caller
+// must hold at least the read lock; BeginLiveFetch takes it.
+func (h *ProviderRegistry) liveTokenLocked(instance string) uint64 {
+	h.generation++
+	if h.liveTokens == nil {
+		h.liveTokens = map[string]uint64{}
+	}
+	h.liveTokens[instance] = h.generation
+	return h.generation
 }
 
 // NewProviderRegistry returns a holder that loads through load. Nothing is
@@ -84,33 +98,36 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 	return h.current
 }
 
-// Current returns the held registry with its generation: a live fetch
-// captures both before the request and hands them to ReapplyLive after,
-// so a concurrent Reload cannot strand the listing on a detached object.
-func (h *ProviderRegistry) Current() (*registry.Registry, uint64) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.current, h.generation
+// Current returns the held registry with a fetch token for instance: a
+// live fetch captures both before the request and hands them to
+// ReapplyLive after, so a concurrent Reload cannot strand the listing on
+// a detached object and a superseded fetch cannot overwrite a newer one.
+func (h *ProviderRegistry) Current(instance string) (*registry.Registry, uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.current, h.liveTokenLocked(instance)
 }
 
-// ReapplyLive applies rows fetched against generation gen to the current
-// registry: when no Reload landed in between it is the same object the
-// fetch already wrote, and ApplyLive re-filters idempotently; when a
-// reload did land, this carries the listing forward onto the fresh
-// object. Rows are the listing's resolved ids; ApplyLive keeps only
-// advertised facts per id, so the round trip holds exactly what the
-// holder would have kept had the fetch run against the fresh object.
-func (h *ProviderRegistry) ReapplyLive(gen uint64, instance string, rows []registry.Resolved) {
-	models := make([]registry.Model, 0, len(rows))
-	for _, row := range rows {
-		models = append(models, registry.Model{ID: row.ModelID})
-	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+// ReapplyLive applies rows fetched under token tok to the current
+// registry. Rows are the fetch's raw live snapshot — reg.LiveModels
+// after the request — so advertised capability facts survive the round
+// trip the way the direct ApplyLive inside the fetch does. The apply is
+// skipped when the token is stale: a Reload or a newer fetch for the
+// same instance already moved on (Reload's carryLive kept the before
+// snapshot; the newer fetch owns the after). A failed fetch never
+// reaches here, and an unsupported listing (Live == false) must not
+// either: its rows are catalog data, not a live listing, and applying
+// them would plant an empty snapshot over a real one.
+func (h *ProviderRegistry) ReapplyLive(tok uint64, instance string, rows []registry.Model) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.current == nil {
 		return
 	}
-	h.current.ApplyLive(instance, models)
+	if cur, ok := h.liveTokens[instance]; !ok || cur != tok {
+		return
+	}
+	h.current.ApplyLive(instance, rows)
 }
 
 // LoadError is the error from the last Reload, or nil when it succeeded.

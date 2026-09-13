@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -57,30 +58,60 @@ func TestInstances_RefreshModelsFetchesLiveIDs(t *testing.T) {
 }
 
 func TestInstances_RefreshModelsSurvivesConcurrentReload(t *testing.T) {
-	tomlPath := refreshGateway(t, `{"data":[{"id":"gpt-live"}]}`)
-	dir := filepath.Dir(tomlPath)
+	// The /models handler blocks until release closes: the refresh's fetch
+	// is in flight while the test lands a Reload, so the listing must be
+	// carried onto the fresh registry — with its advertised facts — not
+	// stranded on the detached one the fetch started against.
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = \"test-key\"\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
 	if err := ctl.reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	// A reload landing between the fetch and its apply must not strand
-	// the listing on the detached registry: the refresh re-applies to
-	// whatever the holder holds now.
-	resp, err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
-	if err != nil {
-		t.Fatalf("RefreshModels: %v", err)
+	type result struct {
+		resp appwire.InstanceListResponse
+		err  error
 	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
+		done <- result{resp, err}
+	}()
+	// Let the fetch reach the blocked handler before reloading. The
+	// handler holds the request open, so the reload cannot win the race
+	// against the fetch — it can only land mid-fetch, which is the
+	// interleaving under test.
+	time.Sleep(200 * time.Millisecond)
 	if err := ctl.reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	got := entry(t, resp, "gw")
-	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
-		t.Fatalf("entry models = %+v, want live gpt-live", got.Models)
+	close(release)
+	res := <-done
+	if res.err != nil {
+		t.Fatalf("RefreshModels: %v", res.err)
 	}
 	after := entry(t, ctl.List(), "gw")
 	if !slices.ContainsFunc(after.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
-		t.Fatalf("entry models after reload = %+v, want live gpt-live carried over", after.Models)
+		t.Fatalf("entry models after mid-fetch reload = %+v, want live gpt-live carried over", after.Models)
+	}
+	if got := res.resp; !slices.ContainsFunc(entry(t, got, "gw").Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
+		t.Fatalf("refresh response models = %+v, want live gpt-live", entry(t, got, "gw").Models)
 	}
 }
 

@@ -59,3 +59,31 @@ func TestProviderRegistryDegradesOnOldSchema(t *testing.T) {
 		t.Fatalf("diagnostics name the file that loaded: %s", diags)
 	}
 }
+
+// TestReapplyLiveDiscardsSupersededFetch proves the token contract: a
+// fetch that returns after a newer fetch for the same instance (or after
+// a Reload) must not overwrite the newer listing.
+func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
+	h := NewProviderRegistry(hermeticLoader)
+	if err := h.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	reg := h.Get()
+	if reg == nil {
+		t.Fatal("holder has no registry after Reload")
+	}
+	_, stale := h.Current("gw")
+	_, fresh := h.Current("gw")
+	h.ReapplyLive(fresh, "gw", []registry.Model{{ID: "gpt-new"}})
+	h.ReapplyLive(stale, "gw", []registry.Model{{ID: "gpt-old"}})
+	got := h.Get().LiveModels("gw")
+	ids := make([]string, 0, len(got))
+	for _, m := range got {
+		ids = append(ids, m.ID)
+	}
+	for _, id := range ids {
+		if id == "gpt-old" {
+			t.Fatalf("live ids = %v, want superseded gpt-old discarded", ids)
+		}
+	}
+}

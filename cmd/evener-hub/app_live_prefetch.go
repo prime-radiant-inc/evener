@@ -24,12 +24,13 @@ const instanceLiveListTimeout = 8 * time.Second
 // so later InstanceModels calls include the live ids. It is the shared
 // core behind the manual refresh RPC and the background prefetch below.
 // The fetch runs against the holder's current registry, then re-applies
-// the listing's resolved ids to whatever the holder holds now: a Reload
+// the raw live snapshot to whatever the holder holds now: a Reload
 // landing mid-fetch swaps in a fresh object (whose carryLive only knows
 // the before snapshot), and without the re-apply the successful fetch
-// would be silently lost on the detached registry.
+// would be silently lost on the detached registry. An unsupported
+// listing (Live == false) carries no live facts, so it applies nothing.
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, name string) error {
-	reg, gen := holder.Current()
+	reg, tok := holder.Current(name)
 	if reg == nil {
 		return nil
 	}
@@ -37,7 +38,10 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 	if err != nil {
 		return err
 	}
-	holder.ReapplyLive(gen, name, listing.Models)
+	if !listing.Live {
+		return nil
+	}
+	holder.ReapplyLive(tok, name, reg.LiveModels(name))
 	return nil
 }
 
@@ -68,9 +72,19 @@ func visibleModelIDs(reg *registry.Registry, name string) []string {
 // at least one instance's visible listing differs from its before snapshot,
 // so the caller broadcasts once per pass instead of per row.
 func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry, changed func()) {
-	reg, gen := holder.Current()
+	reg := holder.Get()
 	if reg == nil {
 		return
+	}
+	// Tokens are minted per instance up front so the pass's own
+	// concurrent fetches cannot supersede each other: every goroutine
+	// holds its instance's token for this pass.
+	toks := map[string]uint64{}
+	for _, inst := range reg.Instances() {
+		if inst.Hidden {
+			continue
+		}
+		_, toks[inst.Name] = holder.Current(inst.Name)
 	}
 	client := cmdutil.NewRegistryClient(reg, "")
 	var wg sync.WaitGroup
@@ -83,10 +97,10 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 		before := visibleModelIDs(reg, inst.Name)
 		wg.Go(func() {
 			listing, err := fetchInstanceLiveWith(ctx, client, inst.Name)
-			if err != nil {
+			if err != nil || !listing.Live {
 				return
 			}
-			holder.ReapplyLive(gen, inst.Name, listing.Models)
+			holder.ReapplyLive(toks[inst.Name], inst.Name, reg.LiveModels(inst.Name))
 			if !slices.Equal(before, visibleModelIDs(holder.Get(), inst.Name)) {
 				mu.Lock()
 				anyChanged = true
