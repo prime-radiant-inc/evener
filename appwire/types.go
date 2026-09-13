@@ -2872,9 +2872,9 @@ type InstanceEntry struct {
 	// Warnings are the registry's own notes about this instance, chiefly
 	// what is missing and how to supply it.
 	Warnings []string `json:"warnings,omitempty"`
-	// Models is the instance's exact catalog rows with their effective
-	// disabled state, for the sheet's per-model toggles. Empty for an
-	// instance with no catalog rows; live-only ids are never listed.
+	// Models is the instance's known models with their effective
+	// disabled state, for the sheet's per-model toggles: exact catalog
+	// rows plus cached live ids. Empty for an instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
 }
 

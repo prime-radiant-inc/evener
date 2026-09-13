@@ -1886,9 +1886,12 @@ credential-inheritance stop does not fire on an untouched URL; remove is
 refused). The appwire types
 change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `APIStyle` and gains `Base`, `Protocol`, `Surface`, `Vars`, `Auth`,
-`Implicit`, and `Models` — the instance's exact catalog rows with their
-effective disabled state (`InstanceModels`), which the sheet renders as one
-toggle per row driving `evener/instance/setModelDisabled`; its existing `BaseURL`, `IsDefault`, `HasStoredOAuth`,
+`Implicit`, and `Models` — the instance's known models (exact catalog rows
+plus cached live ids) with their effective disabled state
+(`InstanceModels`), which the sheet renders as one toggle per row driving
+`evener/instance/setModelDisabled`. Toggling a live-only id authors an
+exact config row, which precedes live lookup, so the exception takes
+effect; its existing `BaseURL`, `IsDefault`, `HasStoredOAuth`,
 `HasStoredFile`, `StoredEmail`, `CredentialRequired`, `ActiveSource`,
 `AuthModes`, and `EnvVar` stay, with `AuthModes` derived from
 `Transport.Auth` and `EnvVar` carrying the variable that actually resolved

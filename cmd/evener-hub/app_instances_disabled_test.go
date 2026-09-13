@@ -41,6 +41,30 @@ func TestInstances_SetModelDisabledWritesRowAndLists(t *testing.T) {
 	}
 }
 
+func TestInstances_SetModelDisabledLiveOnlyID(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"ANTHROPIC_API_KEY": "sk"})
+	writeMinimalProvidersToml(t, f.tomlPath)
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	f.ctl.reg.Get().ApplyLive("base", []registry.Model{{ID: "claude-live-new"}})
+	got := entry(t, f.ctl.List(), "base")
+	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "claude-live-new" && !m.Disabled }) {
+		t.Fatalf("entry models = %+v, want live-only id listed enabled", got.Models)
+	}
+	if err := f.ctl.SetModelDisabled(appwire.InstanceSetModelDisabledParams{Name: "base", Model: "claude-live-new", Disabled: true}); err != nil {
+		t.Fatalf("SetModelDisabled(live): %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "base")
+	if row, ok := p.Models["claude-live-new"]; !ok || !registry.BoolValue(row.Disabled) {
+		t.Fatalf("authored row = %+v, want live id disabled=true", row)
+	}
+	// The authored exact row precedes live lookup, so the toggle takes effect.
+	if _, err := f.ctl.reg.Get().Resolve("base/claude-live-new"); !errors.Is(err, registry.ErrModelDisabled) {
+		t.Fatalf("Resolve after live disable = %v, want ErrModelDisabled", err)
+	}
+}
+
 func TestInstances_SetModelDisabledRefusals(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	writeMinimalProvidersToml(t, f.tomlPath)

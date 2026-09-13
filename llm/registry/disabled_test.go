@@ -130,6 +130,32 @@ func TestInstanceModels_ReportsDisabledState(t *testing.T) {
 	}
 }
 
+func TestInstanceModels_IncludesLiveOnlyIDs(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n")
+	r.ApplyLive("anthropic", []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}})
+	models, err := r.InstanceModels("anthropic")
+	if err != nil {
+		t.Fatalf("InstanceModels: %v", err)
+	}
+	byID := map[string]InstanceModel{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	live, ok := byID["claude-live-new"]
+	if !ok {
+		t.Fatalf("live-only id missing from inventory: %+v", models)
+	}
+	if !live.Disabled {
+		t.Fatalf("live id caught by the user glob must flag disabled: %+v", live)
+	}
+	if _, ok := byID["embedding-thing"]; ok {
+		t.Fatalf("non-chat live id must not list: %+v", models)
+	}
+	if _, err := r.Resolve("anthropic/claude-live-new"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(live, glob-disabled) = %v, want ErrModelDisabled", err)
+	}
+}
+
 func TestMarshalConfig_RoundTripsDisabled(t *testing.T) {
 	l := &Layer{Tag: LayerConfig, Providers: map[string]Provider{
 		"work": {ID: "work", Base: "openai", Models: map[string]Model{

@@ -907,21 +907,23 @@ func recordMayDisable(rec *record, topGlobs map[string]map[string]Model) bool {
 	return false
 }
 
-// InstanceModels lists an instance's exact catalog rows with their effective
-// disabled state, sorted by id, for the Providers pane's per-model toggles.
-// Live-only ids are not listed: they have no row to author a disable on.
+// InstanceModels lists an instance's known models with their effective
+// disabled state, sorted by id, for the Providers pane's per-model toggles:
+// exact catalog rows plus cached live ids (the same set ModelIDs lists).
+// A toggle on a live-only id authors an exact config row, which precedes
+// live lookup, so the exception takes effect.
 func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	rec, ok := r.recordFor(instance)
 	if !ok {
 		return nil, fmt.Errorf("unknown instance %q", instance)
 	}
-	ids := exactRowIDs(rec)
+	ids := modelIDs(rec, r.LiveModels(instance))
 	out := make([]InstanceModel, 0, len(ids))
 	mayDisable := recordMayDisable(rec, r.topGlobs)
 	for _, id := range ids {
 		disabled := false
 		if mayDisable {
-			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"})
+			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, r.lookupRow(rec, id))
 		}
 		out = append(out, InstanceModel{ID: id, Disabled: disabled})
 	}

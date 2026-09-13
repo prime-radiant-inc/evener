@@ -782,7 +782,7 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 		return appwire.InvalidParams(err.Error())
 	}
 	if !slices.ContainsFunc(rows, func(m registry.InstanceModel) bool { return m.ID == model }) {
-		return appwire.InvalidParams(fmt.Sprintf("model %q is not a catalog row of instance %q", params.Model, name))
+		return appwire.InvalidParams(fmt.Sprintf("model %q is not a known model of instance %q", params.Model, name))
 	}
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so a toggle that parses fine but fails to load restores
