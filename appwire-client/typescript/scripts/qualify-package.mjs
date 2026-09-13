@@ -61,6 +61,7 @@ async function qualify() {
     "toolCallText",
     "catalogCommands",
     "slashCompletion",
+    "sharedNotesAvailability",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -134,6 +135,7 @@ async function qualify() {
     "isActionUnavailable",
     "isThreadNotFound",
     "stableDelegateDisplayStatus",
+    "canReadSharedNotes",
     "DOC_FILE_MAX_BYTES",
     "DocFileError",
     "docFileRawURL",
@@ -307,6 +309,10 @@ assert.deepEqual(client.spliceSlashCommand("say /rev", slashToken, "/acme:review
   text: "say /acme:review ",
   caret: 17,
 });
+assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }), true);
+assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
+assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
+assert.equal(client.canReadSharedNotes(undefined), false);
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
