@@ -305,7 +305,7 @@ stop_children() {
 # stalled `go list` was left running with ppid 1, holding the GOCACHE and
 # GOMODCACHE locks that every later run on the host needs.
 stop_recorded_package_list_groups() {
-	local pgid_file recorded members leader_pgid stop_status waited
+	local pgid_file recorded members stop_status waited
 	[ -n "$logdir" ] || return 0
 	# A record is dropped only once it has been acted on: a file removed before
 	# the probe takes the only name anyone had for a survivor with it, and a
@@ -370,17 +370,15 @@ stop_recorded_package_list_groups() {
 			rm -f "$pgid_file"
 			continue
 		fi
-		# Only signal a group the attempt still owns. A live group whose
-		# leader has gone can only be this attempt's, since the kernel keeps
-		# the number reserved while the group has members; a leader that is
-		# alive under some other group is a recycled pid, and -PID would then
-		# name a group this runner has no business signalling — and a record
-		# of someone else's pid is worth nothing to anyone, so it goes.
-		leader_pgid="$(ps -o pgid= -p "$recorded" 2>/dev/null | tr -d '[:space:]')"
-		if [ -n "$leader_pgid" ] && [ "$leader_pgid" != "$recorded" ]; then
-			rm -f "$pgid_file"
-			continue
-		fi
+		# Live members settle ownership on their own, and nothing the leader is
+		# doing can overrule them. A process group exists for as long as it has a
+		# member, and its number stays reserved for that whole time, so a group
+		# numbered as this record with anything alive in it is this attempt's —
+		# whether the leader is a zombie, already reaped, or a pid the kernel has
+		# since handed to a process in some other group. Asking the leader instead
+		# threw the record away on that last reading and left `go list`'s children
+		# writing a package list and holding Go's cache locks with no name left for
+		# them.
 		stop_status=0
 		stop_pgroup "$recorded" "$ROOT_PACKAGE_LIST_STOP_GRACE" || stop_status=$?
 		if [ "$stop_status" -eq 0 ]; then
