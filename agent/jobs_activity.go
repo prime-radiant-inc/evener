@@ -342,7 +342,21 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	// either epoch (see activityContinuation's doc comment), so this only
 	// ever rejects a resume whose underlying journal was rewritten or
 	// shrunk since — exactly the case ResumeIndex is unsafe to apply to.
-	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch {
+	//
+	// A LIVE root is exempt, because it cannot mint these at all:
+	// loadLiveActivityBase reads neither fold cache, so a live page carries
+	// zeros no matter what the session it points at folded. Comparing them
+	// against a closed child's real generations rejects a token minted
+	// moments earlier against journals nobody touched, which is the whole
+	// branch made unreachable. Revision fences a live resume instead: the
+	// root's clock is shared with every session spawned under it and moves
+	// on every job started or finished anywhere in that tree, so a change
+	// the daemon makes between mint and resume is caught below. What the
+	// exemption gives up is noticing a child's journal rewritten out of band
+	// mid-pagination — indistinguishable here from the zeros a live mint
+	// always carries, and the price of that branch being readable at all
+	// until a live page can mint each session's own generations.
+	if root.live == nil && (cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch) {
 		return nil, 0, 0, cache, errors.New("activity continuation is stale: the underlying journal changed; restart pagination without a continuation")
 	}
 	// A live root has no fold-cache epoch at all (jobsEpoch/delegatesEpoch

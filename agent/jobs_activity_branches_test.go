@@ -2,8 +2,11 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -1118,5 +1121,78 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 	}
 	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: encodeActivityContinuation(fresh)}); err != nil {
 		t.Fatalf("continuation minted against the current revision was rejected: %v", err)
+	}
+}
+
+// TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs pins
+// that a live root can page into a closed child. A live root reads neither
+// fold cache, so every generation it mints is zero; the child it points at is
+// read historically and reports the real generation of the journals it
+// folded. Comparing the two rejects a continuation minted seconds earlier
+// against journals nobody touched, and the branch becomes unreachable.
+func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	const delegateID = "dlg_live_epoch"
+	const childID = "childliveepoch"
+	descriptor := stableReadonlyDescriptor(s, delegateID)
+	descriptor.ChildSessionID = childID
+	descriptor.TranscriptRef = encodeRef("", childID)
+	started := time.Unix(10, 0).UTC()
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:                  "complete",
+		communicated:            true,
+		structuredResultPresent: true,
+		descriptor:              descriptor,
+		startedAt:               started,
+		latestActivityAt:        started.Add(time.Second),
+		endedAt:                 started.Add(2 * time.Second),
+	})
+	seedStableReadonlyFinish(t, s, delegateID, descriptor, started, finish, true)
+
+	// The child has exited: its activity loads through the fold caches the
+	// live root never touches.
+	childStarted := time.Unix(20, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: childStarted, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+		StartedAt: &childStarted, Description: "child shell",
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", s.ID(), 0)
+
+	// Warm the delegate fold cache, then restamp that journal so the child's
+	// next historical read reports a nonzero generation.
+	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm the fold caches: %v", err)
+	}
+	rewritten := time.Unix(1_000_000, 0)
+	if err := os.Chtimes(filepath.Join(jobsDir(stateDir, s.ID()), "delegates.jsonl"), rewritten, rewritten); err != nil {
+		t.Fatalf("restamp the delegate journal: %v", err)
+	}
+	childBase, err := loadHistoricalActivityBase(stateDir, childID, true, newHistoricalActivityCache(context.Background(), s.ID()))
+	if err != nil {
+		t.Fatalf("load the child historically: %v", err)
+	}
+	if childBase.snapshot.DelegatesEpoch == 0 {
+		t.Fatal("fixture did not move the delegate journal's generation; the mismatch under test cannot occur")
+	}
+
+	// What a size trim on the live root's page mints for the child: the
+	// child's own jobs generation, the live root's (zero) delegate
+	// generation, and the live revision.
+	token := encodeActivityContinuation(activityContinuation{
+		Version:   activityContinuationV1,
+		RootID:    s.ID(),
+		SessionID: childID,
+		Path:      []string{delegateID},
+		JobsEpoch: childBase.snapshot.JobsEpoch,
+		Revision:  activityCurrentRootRevision(s.jobActivityClock),
+	})
+	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err != nil {
+		t.Fatalf("live root's own continuation into its closed child was rejected: %v", err)
 	}
 }
