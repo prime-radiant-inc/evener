@@ -342,8 +342,8 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 			// it can report the size from before a write with the mtime from
 			// after it. mtime settles neither case (the classic
 			// jobstore.Store fileCursor residual is the same shape) — the
-			// tail probe below does, and bumping without asking it names a
-			// generation the next fold will not carry.
+			// tail probe and, when the tail survives but the mtime moved, a
+			// second stat below do.
 			sameSizeAmbiguous = true
 			sameSizeMtimeAgrees = st.mod.Equal(info.ModTime())
 		default: // info.Size() > st.size
@@ -395,26 +395,46 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 			var zero Result[T]
 			return zero, tailErr
 		}
-		if !match {
+		switch {
+		case !match:
 			epoch++
-		} else if sameSizeMtimeAgrees && element != nil {
-			if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
-				// Confirmed unchanged, and the cached value is still
-				// resident: a true hit reached via refresh instead of
-				// Get's own fast path (e.g. a concurrent evict/replace
-				// raced tryFastHit's own probe). Nothing to extend.
-				c.mu.Lock()
-				c.hits++
-				c.mu.Unlock()
-				return Result[T]{Value: e.value, Offset: e.offset, Epoch: epoch}, nil
+		case sameSizeMtimeAgrees:
+			if element != nil {
+				if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
+					// Confirmed unchanged, and the cached value is still
+					// resident: a true hit reached via refresh instead of
+					// Get's own fast path (e.g. a concurrent evict/replace
+					// raced tryFastHit's own probe). Nothing to extend.
+					c.mu.Lock()
+					c.hits++
+					c.mu.Unlock()
+					return Result[T]{Value: e.value, Offset: e.offset, Epoch: epoch}, nil
+				}
+			}
+			// The prefix survived and the mtime agrees, so the content is
+			// intact; only the cached value is gone (evicted or replaced).
+			// Reread it from zero without moving the generation.
+		default:
+			// The prefix survived but the mtime moved, which leaves two
+			// candidates the first stat cannot separate: a torn append (old
+			// size, new mtime) and a rewrite that landed on the same length
+			// and kept the bytes the probe reads — a journal rewritten with
+			// the same trailing record is exactly that, and accepting it
+			// would let an outstanding continuation resume into content that
+			// changed underneath its index. Stat again: the append that tore
+			// the first stat has completed by now and reports the larger
+			// size, while a rewrite still reports the same one.
+			fresh, statErr := os.Stat(path)
+			if statErr != nil {
+				var zero Result[T]
+				return zero, statErr
+			}
+			if fresh.Size() <= st.size {
+				epoch++
 			}
 		}
-		// The recorded prefix survived but there is nothing to return: the
-		// value was evicted, or the mtime disagreed and this length cannot
-		// be trusted because the file may have grown under a torn stat. A
-		// full reread is required either way, and the generation does not
-		// move, since the content this cache folded is confirmed intact.
-		// fromOffset stays 0 however this branch exits.
+		// fromOffset stays 0 however this branch exits: whatever the
+		// generation ends up being, the value has to be refolded from zero.
 	} else if growthAmbiguous {
 		match, tailErr := tailProbeMatches(path, st.offset, st.tail)
 		if tailErr != nil {

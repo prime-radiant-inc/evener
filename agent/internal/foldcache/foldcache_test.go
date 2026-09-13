@@ -868,3 +868,58 @@ func TestCache_TornAppendStatKeepsTheGeneration(t *testing.T) {
 		t.Fatalf("value = %+v, want the appended content read in full (1+2+3)", refreshed.Value)
 	}
 }
+
+// TestCache_SameSizeRewriteKeepingItsTailBumpsTheGeneration pins the other
+// half of the same-size rule. The tail probe alone cannot separate a torn
+// append from a rewrite that happens to land on the same length AND leave the
+// probed trailing bytes intact -- a journal rewritten at the same size with
+// the same last record is exactly that. Keeping the generation there accepts
+// an outstanding continuation whose ResumeIndex now points into content that
+// changed underneath it. A second stat settles it: a torn append has finished
+// by the time it is taken and reports the larger size, while a rewrite still
+// reports the same one.
+func TestCache_SameSizeRewriteKeepingItsTailBumpsTheGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	original := make([]int, 0, 40)
+	for v := 10; v < 50; v++ {
+		original = append(original, v)
+	}
+	writeLines(t, path, original)
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if folded.Value.sum != 1180 {
+		t.Fatalf("first fold summed %d, want 1180", folded.Value.sum)
+	}
+
+	// Same line count and same line width, so the same total size; only the
+	// leading lines change, which leaves the last 66 bytes -- more than the
+	// 64 the probe reads -- byte-identical.
+	rewritten := make([]int, len(original))
+	copy(rewritten, original)
+	for i := 0; i < 18; i++ {
+		rewritten[i] = 99
+	}
+	writeLines(t, path, rewritten)
+	stamp := time.Unix(1_000_000, 0)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after a same-size rewrite: %v", err)
+	}
+	if after.Epoch != folded.Epoch+1 {
+		t.Fatalf("generation = %d after a same-size rewrite that kept its trailing bytes, want %d -- the fold this cache held is gone, so a continuation keyed to it must not be accepted", after.Epoch, folded.Epoch+1)
+	}
+	if after.Value.sum != 2629 {
+		t.Fatalf("value = %+v, want the rewritten content read in full (sum 2629)", after.Value)
+	}
+}
