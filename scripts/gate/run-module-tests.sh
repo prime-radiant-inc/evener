@@ -259,26 +259,99 @@ go_flag() {
 	esac
 }
 
-# Refused rather than forwarded: -C changes directory before the command runs,
-# and every module here is enumerated and tested from its own directory.
+# flag_takes_value NAME — whether NAME's value is the next argument when it is
+# not written inline. Build flags and test flags alike: a value is a value, and
+# reading one as a flag is how `-run -race` became a build flag and `-run -short`
+# became short mode.
 #
-# The arguments themselves, not the string they were joined into. `$flags`
-# re-split is subject to globbing, so `-run '*'` becomes the names of whatever is
-# in the working directory — and a file called `-C` there made this refuse a run
-# that never asked for one.
-for flag in "$@"; do
-	case "$(go_flag "$flag")" in
-	-C | -C=*)
-		printf 'run-module-tests.sh: -C is not supported here. Each module is enumerated and tested from its own directory, and a -C would move both commands somewhere this runner does not expect. Run the gate from the repository root instead.\n' >&2
-		exit 2
+# The same set is written again in cmd/evener-dev/shardplan.go, which this cannot
+# import; #1247 is where the two become one.
+flag_takes_value() {
+	case "$1" in
+	-tags | -mod | -modfile | -overlay | -pgo | -compiler | -p | -gcflags | -ldflags | -asmflags | -installsuffix | -buildmode | -buildvcs | -gccgoflags | -pkgdir | -toolexec | -coverpkg | -covermode | -o | -exec)
+		return 0
+		;;
+	-run | -skip | -bench | -benchtime | -count | -timeout | -cpu | -parallel | -coverprofile | -outputdir | -fuzz | -fuzztime | -fuzzminimizetime | -cpuprofile | -memprofile | -blockprofile | -mutexprofile | -trace | -gocoverdir | -shuffle)
+		return 0
 		;;
 	esac
-done
-# module_test_flags MODULE — the flags `go test` gets for MODULE, one per line.
+	return 1
+}
+
+# flag_is_build NAME — whether NAME changes which packages exist, and so must be
+# given to the enumeration as well as to `go test`.
 #
-# One per line because a flag can carry a value with spaces or glob characters in
-# it, and every consumer here reads them back into an array. ROOT_FULL drops
-# -short for the root module and nothing else is filtered.
+# One set, matching cmd/evener-dev/shardplan.go's, which the Go table test pins
+# against this list in both directions.
+flag_is_build() {
+	case "$1" in
+	-tags | -mod | -modfile | -overlay | -pgo | -compiler | -p | -gcflags | -ldflags | -asmflags | -installsuffix)
+		return 0
+		;;
+	-race | -msan | -asan | -trimpath | -modcacherw | -a | -linkshared)
+		return 0
+		;;
+	esac
+	return 1
+}
+
+# classify_flags ARG... — walk a caller's arguments once and say what each one
+# is, one line per argument:
+#
+#   flag<TAB>NAME<TAB>RAW      a flag, NAME normalised, RAW as the caller wrote it
+#   value<TAB>NAME<TAB>RAW     the value of the NAME before it
+#   dangling<TAB>NAME<TAB>     a value-taking flag with nothing after it
+#
+# Every reader of a flag reads this and nothing else. Four of them used to walk
+# the arguments themselves and three of those did not know a value from a flag,
+# so `-run -short` was short mode and `-run -C` was a refused run.
+classify_flags() {
+	local raw normalised name expecting=""
+	for raw in "$@"; do
+		if [ -n "$expecting" ]; then
+			printf 'value\t%s\t%s\n' "$expecting" "$raw"
+			expecting=""
+			continue
+		fi
+		normalised="$(go_flag "$raw")"
+		name="${normalised%%=*}"
+		printf 'flag\t%s\t%s\n' "$name" "$raw"
+		case "$normalised" in
+		*=*) ;;
+		*) flag_takes_value "$name" && expecting="$name" ;;
+		esac
+	done
+	[ -n "$expecting" ] && printf 'dangling\t%s\t\n' "$expecting"
+	return 0
+}
+
+# The caller's arguments, classified once. Every decision below reads this.
+classified_flags="$(classify_flags ${flag_args[@]+"${flag_args[@]}"})"
+
+while IFS="$(printf '\t')" read -r kind name raw; do
+	[ -n "$kind" ] || continue
+	case "$kind" in
+	dangling)
+		printf 'run-module-tests.sh: %s was given with nothing after it, and its value decides what runs. Nothing was changed; give it a value or drop it.\n' \
+			"$name" >&2
+		exit 2
+		;;
+	flag)
+		# Refused rather than forwarded: -C changes directory before the command
+		# runs, and every module here is enumerated and tested from its own
+		# directory. A `-C` that is some other flag's value is a value, and this
+		# reads the classification rather than the raw arguments to tell them
+		# apart.
+		if [ "$name" = "-C" ]; then
+			printf 'run-module-tests.sh: -C is not supported here. Each module is enumerated and tested from its own directory, and a -C would move both commands somewhere this runner does not expect. Run the gate from the repository root instead.\n' >&2
+			exit 2
+		fi
+		;;
+	esac
+done <<EOF
+$classified_flags
+EOF
+
 # go_bool_value TOKEN — "true", "false" or nothing, for a boolean flag written
 # as `-name`, `--name`, `-name=value` or `--name=value`.
 #
@@ -314,27 +387,39 @@ go_bool_value() {
 #
 # One per line because a flag can carry a value with spaces or glob characters in
 # it, and every consumer here reads them back into an array. ROOT_FULL drops
-# -short for the root module — in every spelling that means true, and by the last
+# -short for the root module — in every spelling that means true, by the last
 # occurrence, which is the value go itself would use — and nothing else is
-# filtered.
+# filtered. Which words are flags and which are values comes from the one
+# classification, so a `-run -short` is a regex and not a short-mode run.
 module_test_flags() {
-	local m="$1" flag name effective="" full=0
+	local m="$1" kind name raw effective="" full=0 dropping=0
 	if [ "$m" = "." ] && [ "$ROOT_FULL" -ne 0 ]; then
 		full=1
-		for flag in ${flag_args[@]+"${flag_args[@]}"}; do
-			name="$(go_flag "$flag")"
-			name="${name%%=*}"
-			[ "$name" = "-short" ] && effective="$(go_bool_value "$flag")"
-		done
+		while IFS="$(printf '\t')" read -r kind name raw; do
+			[ "$kind" = "flag" ] && [ "$name" = "-short" ] && effective="$(go_bool_value "$raw")"
+		done <<EOF
+$classified_flags
+EOF
 	fi
-	for flag in ${flag_args[@]+"${flag_args[@]}"}; do
-		if [ "$full" -eq 1 ] && [ "$effective" = "true" ]; then
-			name="$(go_flag "$flag")"
-			name="${name%%=*}"
-			[ "$name" = "-short" ] && continue
-		fi
-		printf '%s\n' "$flag"
-	done
+	while IFS="$(printf '\t')" read -r kind name raw; do
+		[ -n "$kind" ] || continue
+		case "$kind" in
+		flag)
+			dropping=0
+			if [ "$full" -eq 1 ] && [ "$effective" = "true" ] && [ "$name" = "-short" ]; then
+				dropping=1
+				continue
+			fi
+			;;
+		value)
+			[ "$dropping" -eq 1 ] && continue
+			;;
+		*) continue ;;
+		esac
+		printf '%s\n' "$raw"
+	done <<EOF
+$classified_flags
+EOF
 }
 
 logdir=""
@@ -676,46 +761,29 @@ stop_package_list_attempt() {
 # -race, -p and -parallel, so nothing here is forwarded in practice; the rule is
 # what keeps the two commands agreeing when that changes.
 package_list_build_flags() {
-	local flag normalised name expect_value=0 drop_value=0
-	for flag in "$@"; do
-		if [ "$expect_value" -eq 1 ]; then
-			# A value, forwarded as the caller wrote it: it is data, and
-			# normalising it would rewrite a path or a regex.
-			printf '%s\n' "$flag"
-			expect_value=0
-			continue
-		fi
-		if [ "$drop_value" -eq 1 ]; then
-			# The value of a flag the enumeration does not want. Consumed so it
-			# cannot be read as a flag of its own: `-run -race` is a regex.
-			drop_value=0
-			continue
-		fi
-		# Forwarded in the spelling `go list` will be given, which is the
-		# normalised one: go reads --tags and -tags alike, and passing on the
-		# caller's own spelling would mean two spellings to keep matching.
-		normalised="$(go_flag "$flag")"
-		case "$normalised" in
-		-tags | -mod | -modfile | -overlay | -pgo | -compiler | -p)
-			printf '%s\n' "$normalised"
-			expect_value=1
+	local kind name raw keeping=0
+	while IFS="$(printf '\t')" read -r kind name raw; do
+		[ -n "$kind" ] || continue
+		case "$kind" in
+		flag)
+			keeping=0
+			if flag_is_build "$name"; then
+				keeping=1
+				# Forwarded in the spelling `go list` will be given: go reads
+				# --tags and -tags alike, and passing on the caller's own
+				# spelling would mean two spellings to keep matching.
+				printf '%s\n' "$(go_flag "$raw")"
+			fi
 			;;
-		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -compiler=* | -p=* | -trimpath | -race | -msan | -asan | -race=* | -msan=* | -asan=*)
-			printf '%s\n' "$normalised"
-			;;
-		*)
-			# The `go test` flags whose value is the next argument, consumed
-			# with it. The same list lives in cmd/evener-dev/shardplan.go,
-			# which this cannot import; #1247 is where the two become one.
-			name="${normalised%%=*}"
-			case "$name" in
-			-run | -skip | -bench | -benchtime | -count | -timeout | -cpu | -parallel | -coverprofile | -coverpkg | -outputdir | -exec | -o | -fuzz | -fuzztime | -fuzzminimizetime | -cpuprofile | -memprofile | -blockprofile | -mutexprofile | -trace | -gocoverdir | -shuffle)
-				[ "$normalised" = "$name" ] && drop_value=1
-				;;
-			esac
+		value)
+			# A value, as the caller wrote it: it is data, and normalising it
+			# would rewrite a path or a regex.
+			[ "$keeping" -eq 1 ] && printf '%s\n' "$raw"
 			;;
 		esac
-	done
+	done <<EOF
+$(classify_flags "$@")
+EOF
 }
 
 # run_bounded_package_list MODULE OUTPUT — enumerate MODULE's packages into
