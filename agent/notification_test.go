@@ -227,6 +227,14 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	if reminderOwner == "" || steeringOwner == "" || reminderOwner != steeringOwner || reminderOwner != owner {
 		t.Fatalf("durable owners reminder=%q steering=%q EventTurnStarted=%q", reminderOwner, steeringOwner, owner)
 	}
+	// The live event has to name the same owner the entry does. A projector
+	// that has to fall back to whatever turn is running groups this steering
+	// by the session's timing rather than by what the transcript recorded.
+	for _, injected := range recorder.steeringInjected() {
+		if injected.OwningTurnID != owner {
+			t.Fatalf("live steering %q (kind %q) is owned by %q, want the notification turn %q that owns its entry", injected.Text, injected.Kind, injected.OwningTurnID, owner)
+		}
+	}
 }
 
 // TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn pins the

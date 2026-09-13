@@ -375,24 +375,28 @@ func TestMissingDelegateRestoreInputReason(t *testing.T) {
 	}
 }
 
-func TestDelegateInputWasPreseeded(t *testing.T) {
+func TestDelegatePreseededTurnID(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	// No preseeded input in context.
-	if delegateInputWasPreseeded(ctx, "s1", "hello") {
+	if _, ok := delegatePreseededTurnID(ctx, "s1", "hello"); ok {
 		t.Error("empty context should not have preseeded input")
 	}
 	// With preseeded input matching.
-	ctxWithInput := context.WithValue(ctx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: "s1", input: "hello"})
-	if !delegateInputWasPreseeded(ctxWithInput, "s1", "hello") {
-		t.Error("matching preseeded input should return true")
+	ctxWithInput := context.WithValue(ctx, delegatePreseededInputContextKey{}, delegatePreseededInput{sessionID: "s1", input: "hello", turnID: "turn_direct_branches"})
+	turnID, ok := delegatePreseededTurnID(ctxWithInput, "s1", "hello")
+	if !ok {
+		t.Error("matching preseeded input should be reported present")
+	}
+	if turnID != "turn_direct_branches" {
+		t.Errorf("matching preseeded turn id = %q, want the id the preseed stamped", turnID)
 	}
 	// Non-matching session.
-	if delegateInputWasPreseeded(ctxWithInput, "s2", "hello") {
+	if _, ok := delegatePreseededTurnID(ctxWithInput, "s2", "hello"); ok {
 		t.Error("non-matching session should return false")
 	}
 	// Non-matching input.
-	if delegateInputWasPreseeded(ctxWithInput, "s1", "world") {
+	if _, ok := delegatePreseededTurnID(ctxWithInput, "s1", "world"); ok {
 		t.Error("non-matching input should return false")
 	}
 }

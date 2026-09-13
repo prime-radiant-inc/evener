@@ -28,7 +28,9 @@ import (
 //     may retry after a failure, and grouping it into the opener's turn keeps
 //     StampTurnFailure applied to that turn). A continuation with no open
 //     group (a transcript that starts mid-turn) starts its own group.
-//   - Every other kind (SYSTEM, ENVIRONMENT, CHECKPOINT, SUMMARY,
+//   - Explicitly owned context compaction, CHECKPOINT and SUMMARY records
+//     extend the owner's contiguous open group.
+//   - Every other kind (SYSTEM, ENVIRONMENT, unowned CHECKPOINT or SUMMARY,
 //     MODEL_SWITCH, HOOK_COMPLETED, ATTENTION_RESOLUTION) is its own logical
 //     turn, grouped with nothing, and CLOSES the open group. This matches live
 //     gap-turn semantics.
@@ -46,7 +48,16 @@ func opensLogicalTurn(kind schema.TurnKind, goalContinuation bool) bool {
 // turn (the entry the group's opener started).
 func continuesLogicalTurn(kind schema.TurnKind) bool {
 	switch kind {
-	case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnFailure, schema.TurnSteering:
+	case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnFailure, schema.TurnSteering, schema.TurnRoundTimings:
+		return true
+	default:
+		return false
+	}
+}
+
+func ownedLogicalTurnKind(kind schema.TurnKind) bool {
+	switch kind {
+	case schema.TurnSteering, schema.TurnRoundTimings, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnContextCompaction, schema.TurnHookCompleted:
 		return true
 	default:
 		return false
@@ -56,24 +67,24 @@ func continuesLogicalTurn(kind schema.TurnKind) bool {
 // groupOpenAfter reports whether the logical-turn group is open for
 // continuations once this kind has been appended: openers and continuations
 // leave a group open; standalone kinds close it.
-func groupOpenAfter(kind schema.TurnKind) bool {
-	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind)
+func groupOpenAfter(kind schema.TurnKind, owningTurnID string) bool {
+	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind) || ownedLogicalTurnKind(kind) && owningTurnID != ""
 }
 
 // recordStartsGroup reports whether a record of this kind starts a new
-// logical group given the kind of the record immediately before it ("" when
-// there is none). Openers always start a group; continuations join the open
+// logical group given whether the previous record left its group open.
+// Openers always start a group; continuations join the open
 // group (start one only when the previous record closed it); standalone kinds
 // always start — and close — their own group.
-func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool, owningTurnID, openTurnID string) bool {
+func recordStartsGroup(kind schema.TurnKind, previousOpen, goalContinuation bool, owningTurnID, openTurnID string) bool {
 	if opensLogicalTurn(kind, goalContinuation) {
 		return true
 	}
-	if kind == schema.TurnSteering && owningTurnID != "" {
-		return !groupOpenAfter(prevKind) || owningTurnID != openTurnID
+	if ownedLogicalTurnKind(kind) && owningTurnID != "" && !goalContinuation {
+		return !previousOpen || owningTurnID != openTurnID
 	}
 	if continuesLogicalTurn(kind) {
-		return !groupOpenAfter(prevKind)
+		return !previousOpen
 	}
 	return true
 }
@@ -100,6 +111,40 @@ type groupedTurn struct {
 type logicalTurnAccumulator struct {
 	turns []groupedTurn
 	open  bool
+	// continuation indexes the group an UNOWNED continuation belongs to: the
+	// one an opener started, and the one the running turn keeps writing into.
+	// A late owned fragment — a metadata record for a turn that is already
+	// over, arriving after the next turn opened — starts a group of its own
+	// without becoming that target, so the assistant or tool record that
+	// follows it still belongs to the turn that is running. -1 when no group
+	// is taking continuations (nothing opened yet, or a standalone closed the
+	// flow).
+	continuation int
+}
+
+// carriesTheFlow reports the one owned kind that takes the running turn with it
+// when it opens a group: steering. A delayed steering carrier is the turn's
+// next instruction, and what follows belongs to it —
+// TestItemReadersHonorSteeringOwner pins that. Every other owned kind
+// describes work rather than driving it.
+func carriesTheFlow(kind schema.TurnKind) bool {
+	return kind == schema.TurnSteering
+}
+
+// startsFragmentGroup reports that this record opens a group for a turn other
+// than the one in flight and does not take the flow with it: owned METADATA —
+// a checkpoint, a summary, a context-compaction record, a round's timings, a
+// hook completion — describing a turn that is already over. Such a record owns
+// only itself; the running turn's next record resumes the running turn. The
+// scan-side index mirrors this rule (turn_index.go).
+func startsFragmentGroup(kind schema.TurnKind, startsGroup bool, owningTurnID string) bool {
+	return startsGroup && owningTurnID != "" && ownedLogicalTurnKind(kind) && !carriesTheFlow(kind)
+}
+
+// newLogicalTurnAccumulator starts a scan with no continuation target: the
+// zero value would name group 0 before any group exists.
+func newLogicalTurnAccumulator() logicalTurnAccumulator {
+	return logicalTurnAccumulator{continuation: -1}
 }
 
 // appendEntry buffers one scanned entry with its projected items (which may
@@ -112,20 +157,47 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
 		a.open = true
-	case kind == schema.TurnSteering && owner != "":
+		a.continuation = len(a.turns) - 1
+	case ownedLogicalTurnKind(kind) && owner != "" && entry.GoalContinuation == nil:
 		if a.open && len(a.turns) > 0 && a.turns[len(a.turns)-1].turnID == owner {
+			a.open = true
 			break
 		}
+		// A fragment opens a group for its own owner and leaves the
+		// continuation target where it was; a carrier takes the flow. The
+		// exception is a fragment owned by the turn that IS the target —
+		// metadata for the running turn, landing after another turn's
+		// fragment interrupted it — which is that turn resuming, so the
+		// group it opens becomes where the turn's next record goes. The
+		// index scan reaches the same answer by id: the target and the open
+		// group are both this owner, so nothing there has to move.
 		a.turns = append(a.turns, groupedTurn{turnID: owner})
 		a.open = true
+		resumesTarget := a.continuation >= 0 && a.turns[a.continuation].turnID == owner
+		if resumesTarget || !startsFragmentGroup(kind, true, owner) {
+			a.continuation = len(a.turns) - 1
+		}
 	case continuesLogicalTurn(kind) && a.open && len(a.turns) > 0:
-		// Join the open group.
+		if a.continuation >= 0 && a.continuation != len(a.turns)-1 {
+			// A fragment sits between the running turn's group and this
+			// record. Resume that turn in a group of its own rather than
+			// extending the fragment, which belongs to a turn that is over.
+			a.turns = append(a.turns, groupedTurn{turnID: a.turns[a.continuation].turnID})
+			a.continuation = len(a.turns) - 1
+		}
+		// Join the group the running turn is writing into.
 	default:
 		// Standalone kind, or a continuation with no open group: its own
 		// group. A standalone closes it; a stray continuation stays open for
 		// later continuations.
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
 		a.open = continuesLogicalTurn(kind)
+		// A stray continuation becomes the target itself; a standalone record
+		// closes the flow, so nothing continues until an opener runs again.
+		a.continuation = -1
+		if a.open {
+			a.continuation = len(a.turns) - 1
+		}
 	}
 	last := &a.turns[len(a.turns)-1]
 	last.entries = append(last.entries, entry)
@@ -138,6 +210,9 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // its per-entry turn id (the per-entry contract unchanged) and buffers the
 // result for grouping.
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
+	if turn.ContextReplay {
+		return
+	}
 	turnID := persistedTurnID(turn, entryIndex)
 	var items []appwire.ThreadItem
 	if project != nil {

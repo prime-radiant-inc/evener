@@ -224,6 +224,32 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 			return
 		}
 		r.messages = append(r.messages, ChatMessage{Kind: MsgSystem, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID})
+	case "steering":
+		// Owned steering arrives as an item rather than as the legacy
+		// evener/steering/injected notification: the daemon stamps the owning
+		// turn on the steering turn it persists, and the projector routes an
+		// owned steering through the item lifecycle so a closed turn keeps its
+		// steering. Both halves of what the legacy handler does live here, so
+		// a history rebuild through MessagesFromThread renders the same thing
+		// the live stream did.
+		text := userMessageItemText(item)
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		if idx, ok := r.messageIndexByItemID(item.ID, MsgSteering, item.TurnID, turnIndex); ok {
+			r.messages[idx].Text = text
+			return
+		}
+		r.messages = append(r.messages, ChatMessage{Kind: MsgSteering, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, TranscriptEntryIndex: item.TranscriptEntryIndex, ItemID: item.ID})
+		// Tie every job notification in this steering to its rail row, so the
+		// run shows the result headline while the notification stays in the
+		// flow. One steering can name several jobs (issue #49).
+		for _, tie := range ParseJobNotificationHeadlines(text) {
+			if tie.JobID == "" {
+				continue
+			}
+			r.ApplyTieHeadline(tie.JobID, tie.Headline, tie.IsError)
+		}
 	case "userMessage":
 		text := userMessageItemText(item)
 		if strings.TrimSpace(text) != "" {

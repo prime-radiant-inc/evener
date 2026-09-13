@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"primeradiant.com/evener/agent/events"
 )
@@ -11,11 +15,19 @@ import (
 // and a queued message claimed off the input queue arrive already named — the
 // reservation before the turn runs is what makes them retry-safe across a
 // crash. Everything else — a goal continuation, a job or delegate
-// notification wake — is named here, so the id the daemon publishes is always
-// an id the mutation preconditions accept, and Steer, Send and Stop work on
-// every turn rather than only on the ones a client started.
+// notification wake, a bare ProcessInput caller's input — is named here.
 //
-// The id is minted, never adopted. An ActiveTurnID this call did not write
+// Two kinds of name come out of this file, and only one is durable.
+// mintRunningTurnID takes the durable slot, so the id the daemon publishes is
+// an id the mutation preconditions accept, and Steer, Send and Stop work on
+// every turn rather than only on the ones a client started. When it refuses —
+// unconditionally, for a session no daemon serves — nameTurnItself supplies an
+// in-memory name instead. That name is deliberately NOT a reservation and the
+// preconditions do not accept it: no client can address a turn on a session
+// nobody serves. It exists so the live and cold projections still agree on what
+// the turn's records belong to, which an anonymous turn breaks.
+//
+// The durable id is minted, never adopted. An ActiveTurnID this call did not write
 // belongs to a mutation that is about to run; taking it would let a Stop
 // aimed at that mutation cancel this turn instead, and mark a message the
 // user sent — and the session never ran — "interrupted".
@@ -109,6 +121,113 @@ func (s *Session) mintRunningTurnID() (string, turnNameRefusal) {
 	// The store took a write, so the next failure is news again.
 	s.clearStoreUnhealthyWarning()
 	return turnID, refusal
+}
+
+// directTurnIDPrefix marks a name a turn minted for ITSELF. Such a name never
+// enters the durable active-turn slot, so every durable operation keyed on
+// that slot must treat it as absent.
+const directTurnIDPrefix = "turn_direct_"
+
+// compactionGapIDPrefix marks the group an IDLE fold's records belong to. A
+// fold that stages with no turn running has no turn to own what it produces,
+// but it still produces one contiguous run of records, and both projections
+// have to put that run in one group. Live coalesces ownerless announcements on
+// a synthetic gap id it mints per gap; the transcript projection makes every
+// unowned record a standalone group of its own entry index. Persisting one id
+// for the fold is what makes them agree — it changes neither grouping rule, so
+// no index version moves, and it is the same shape the environment entry
+// already uses for a durable record that belongs to no turn.
+const compactionGapIDPrefix = "turn_compaction_"
+
+// mintCompactionGapID names one idle fold's records. Deliberately NOT recorded
+// as the session's direct turn: no turn is running, and a later record must
+// not be drawn into this fold's group.
+func mintCompactionGapID() string {
+	return compactionGapIDPrefix + ulid.Make().String()
+}
+
+// mintCompactionFoldID names one fold's footprint in the transcript. It is not
+// a turn id and never reaches a projection: it exists so a resume that anchors
+// on a marker can tell which replay copies that marker wrote, which is what
+// lets the copies be written before it.
+func mintCompactionFoldID() string {
+	return "fold_" + ulid.Make().String()
+}
+
+// selfMintedTurnID reports a name nameTurnItself produced.
+func selfMintedTurnID(turnID string) bool {
+	return strings.HasPrefix(turnID, directTurnIDPrefix)
+}
+
+// nameTurnItself gives a turn mintRunningTurnID declined to name an identity
+// of its own, and records it as the session's direct turn so activeTurnOwner
+// reports it for everything published while the turn runs.
+//
+// Without it the turn reaches the transcript and the live event stream
+// anonymous, and the two projections each invent a turn_%d from a different
+// counter — the transcript projection numbers by entry index, the live
+// projector by turns opened — so every item's transcript key changes across a
+// reload. The refusal is not rare: turnNameUnserved makes it unconditional for
+// a session no daemon serves, which is every one-shot run, every in-process
+// delegate, and every embedder driving Session directly.
+//
+// Minted in memory, like the environment entry's own id: the point of the
+// unserved refusal is that such a session pays no durable client-mutation
+// write per turn, and a name it needs only for its own projections must not
+// reintroduce one. The turn_direct_ prefix keeps it out of both the entry-index
+// namespace (turn_%d) and the client-mutation one (appwire.ClientMutationTurnID).
+func (s *Session) nameTurnItself() string {
+	turnID := mintDirectTurnID()
+	s.adoptSelfMintedTurnID(turnID)
+	return turnID
+}
+
+// mintDirectTurnID makes a name without adopting it, for a caller that needs
+// the id before the turn it names begins. The delegate preseed is the one such
+// caller: it stamps the id on the entry it writes, and the run that executes
+// that entry adopts it at start (acceptUserInput). Adopting at mint time
+// instead would leave the name set on a child whose preseed then failed —
+// those paths retain the runtime WITHOUT launching a run — and activeTurnOwner
+// prefers directTurnID, so every later record that child published would be
+// attributed to a turn that never ran.
+func mintDirectTurnID() string {
+	return directTurnIDPrefix + ulid.Make().String()
+}
+
+// adoptSelfMintedTurnID re-establishes a name minted for a turn that is only
+// now starting. The delegate preseed writes its turn's entry before the run
+// that executes it exists, so the executing turn adopts the name the entry
+// already carries rather than minting a second one.
+func (s *Session) adoptSelfMintedTurnID(turnID string) {
+	s.mu.Lock()
+	s.directTurnID = turnID
+	s.mu.Unlock()
+}
+
+// endSelfMintedTurn drops the name a turn minted for itself, once that turn's
+// LAST record is written. Every record published while it stands is claimed by
+// that turn — activeTurnOwner prefers it — so a name left behind is adopted by
+// the next turn's timing, hook and compaction records, and by anything a fold
+// writes while the session sits idle, grouping them under a turn that is over.
+//
+// The turn owns its own ending: processOneInput's unwind calls this for every
+// way a turn can finish, and an INTERRUPTED turn has one record still to write
+// — the marker saying it was cut short, appended by ProcessInput's loop — so
+// that path ends the name after writing it instead. Idempotent.
+// selfMintedNameOutlivesTurn reports whether the name a turn minted for itself
+// must stand past its unwind: only a turn that ENDED in cancellation, whose
+// interrupt marker ProcessInput's loop still has to write. The turn's outcome
+// decides it, never the context alone — a cancel landing between the last
+// round and this check leaves a turn that completed, writes no marker, and
+// would strand the name for the next turn's records to adopt.
+func selfMintedNameOutlivesTurn(ctx context.Context, err error) bool {
+	return err != nil && isTurnCancellation(ctx, err)
+}
+
+func (s *Session) endSelfMintedTurn() {
+	s.mu.Lock()
+	s.directTurnID = ""
+	s.mu.Unlock()
 }
 
 // warnStoreUnhealthyOnce reports a client-mutation-store failure at most once
@@ -252,7 +371,11 @@ const (
 // load and nowhere else. So the write is re-attempted rather than dropped
 // (kata fbmy).
 func (s *Session) releaseRunningTurnID(turnID string) turnNameReleaseResult {
-	if turnID == "" || s.clientMutations == nil {
+	// A self-minted name was never in the slot, and mutate() writes the
+	// snapshot whether or not its closure changed anything — so releasing one
+	// through the store would put back the per-turn durable write the unserved
+	// refusal exists to avoid.
+	if turnID == "" || selfMintedTurnID(turnID) || s.clientMutations == nil {
 		return turnNameReleaseNoop
 	}
 	clearing := false

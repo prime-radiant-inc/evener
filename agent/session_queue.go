@@ -988,14 +988,13 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
-	if s.clientMutations != nil {
-		// ActiveTurnID is the actual logical owner at delivery time. For an
-		// inline steer it is the already-running turn; for a carrier it is the
-		// carrier's reserved mutation turn. Both identities must be durable so
-		// replay can distinguish the two boundaries. System steering uses the
-		// same active turn when it is drained by a named daemon turn.
-		t.OwningTurnID = s.clientMutations.snapshot().ActiveTurnID
-	}
+	// The active owner is the actual logical owner at delivery time. For an
+	// inline steer it is the already-running turn; for a carrier it is the
+	// carrier's reserved mutation turn; for a turn nothing outside the session
+	// named it is the name that turn minted for itself. Both identities must
+	// be durable so replay can distinguish the two boundaries. System steering
+	// uses the same active turn when it is drained by a named daemon turn.
+	t.OwningTurnID = s.activeTurnOwner()
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
 			t,
@@ -1011,11 +1010,11 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
 			return true
 		}
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		s.announceSteeringTurn(t.OwningTurnID, steeringInjectedDataFromMessage(msg))
 		return true
 	}
 	s.recordTurn(t, t)
-	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	s.announceSteeringTurn(t.OwningTurnID, steeringInjectedDataFromMessage(msg))
 	return true
 }
 
@@ -1046,10 +1045,41 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 	t.SteeringKind = kind
 	t.OwningTurnID = s.activeTurnOwner()
 	s.recordTurn(t, t)
-	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
+	s.announceSteeringTurn(t.OwningTurnID, events.SteeringInjectedData{Text: text, Kind: kind})
 }
 
+// announceSteeringTurn publishes the live event for a steering turn that was
+// just persisted, carrying the SAME owner as the entry. The projector groups
+// an owned steering by that id and otherwise falls back to whatever turn is
+// running when the event arrives — a different turn than the transcript names
+// whenever delivery is delayed past the turn that produced it, or the session
+// is idle. One helper rather than a copy per producer, so a new producer
+// cannot omit the owner by forgetting it.
+func (s *Session) announceSteeringTurn(owningTurnID string, data events.SteeringInjectedData) {
+	data.OwningTurnID = owningTurnID
+	s.emit(events.EventSteeringInjected, data)
+}
+
+// activeTurnOwner names the logical turn anything published right now belongs
+// to: the turn that is EXECUTING, which is not always the one holding the
+// durable slot.
+//
+// A self-minted name means a turn is running right now under it
+// (nameTurnItself records it for exactly that turn's duration), so it wins.
+// The durable slot can meanwhile be held by a mutation that was accepted and
+// has not started -- a continuation whose mint was refused with turnNameHeld
+// runs beside exactly that -- and attributing the running turn's timings,
+// steering and compaction to the turn that is not running splits its own entry
+// from everything it produced. ActiveTurnID answers when no direct turn is
+// executing, which is every client-mutation turn: those never mint a name of
+// their own, so the slot is the executing turn there.
 func (s *Session) activeTurnOwner() string {
+	s.mu.Lock()
+	direct := s.directTurnID
+	s.mu.Unlock()
+	if direct != "" {
+		return direct
+	}
 	if s.clientMutations == nil {
 		return ""
 	}

@@ -76,7 +76,7 @@ func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int
 					removePending(part.ToolResult.ToolCallID)
 				}
 			}
-		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnSteering:
+		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnRoundTimings, schema.TurnContextCompaction, schema.TurnSteering:
 			// Presentational markers and client steering can legally be recorded
 			// while a tool is still running. Preserve their chronological order
 			// without treating the pending call as interrupted. expandHistory

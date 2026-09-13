@@ -21,9 +21,10 @@ type boundaryRecorder struct {
 	session *Session
 	drained chan struct{}
 
-	mu     sync.Mutex
-	kinds  []events.EventKind
-	starts []events.TurnStartedData
+	mu       sync.Mutex
+	kinds    []events.EventKind
+	starts   []events.TurnStartedData
+	steering []events.SteeringInjectedData
 }
 
 func serveAndRecord(t *testing.T, s *Session) *boundaryRecorder {
@@ -36,6 +37,11 @@ func serveAndRecord(t *testing.T, s *Session) *boundaryRecorder {
 		if ev.Kind == events.EventTurnStarted {
 			if data, ok := ev.Data.(events.TurnStartedData); ok {
 				rec.starts = append(rec.starts, data)
+			}
+		}
+		if ev.Kind == events.EventSteeringInjected {
+			if data, ok := ev.Data.(events.SteeringInjectedData); ok {
+				rec.steering = append(rec.steering, data)
 			}
 		}
 	}, func() { close(rec.drained) })
@@ -58,6 +64,15 @@ func (r *boundaryRecorder) snapshot() ([]events.EventKind, []events.TurnStartedD
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]events.EventKind(nil), r.kinds...), append([]events.TurnStartedData(nil), r.starts...)
+}
+
+// steeringInjected returns the steering payloads the stream carried. Call it
+// after snapshot(), whose close-and-drain is the ordering that makes the whole
+// stream visible.
+func (r *boundaryRecorder) steeringInjected() []events.SteeringInjectedData {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]events.SteeringInjectedData(nil), r.steering...)
 }
 
 // indexOf reports the position of the first event of kind k, or -1.

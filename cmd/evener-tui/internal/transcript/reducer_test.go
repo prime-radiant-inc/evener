@@ -1032,3 +1032,32 @@ func TestRemovePending(t *testing.T) {
 		t.Fatalf("after removing unknown: %+v", r.messages)
 	}
 }
+
+// Owned steering reaches this client as an ordinary thread item
+// (NotifyItemCompleted with type "steering"), not as the legacy
+// evener/steering/injected notification: the daemon stamps an owner on
+// essentially every steering turn now, and the projector routes an owned
+// steering through the item lifecycle. A reducer with no case for it drops the
+// steering entirely — live, and again for every history rebuild through
+// MessagesFromThread.
+func TestApplyThreadItem_SteeringRendersAndTiesItsJobHeadline(t *testing.T) {
+	r := NewTranscriptReducer(nil, nil, nil)
+	r.ApplyThreadItem(appwire.ThreadItem{Type: "steering", ID: "item_1", TurnID: "turn_m1", Text: "stay focused"}, 0, true)
+	if len(r.messages) != 1 || r.messages[0].Kind != MsgSteering || r.messages[0].Text != "stay focused" {
+		t.Fatalf("messages = %+v, want one MsgSteering carrying the steering text", r.messages)
+	}
+	if r.messages[0].TurnID != "turn_m1" {
+		t.Fatalf("steering TurnID = %q, want the owner the item carries", r.messages[0].TurnID)
+	}
+
+	// The job-notification tie is the other half of what the legacy handler
+	// did: the rail row has to pick up the result headline.
+	r = NewTranscriptReducer(nil, nil, nil)
+	r.ApplyEvenerJob(appwire.EvenerJobInfo{JobID: "job_T", JobType: "shell", Background: true, Status: "completed", TranscriptRef: "local:ct", Task: "port webhook"})
+	notification := `<job-notification job_id="job_T" event="completed" job_type="shell" description="" status="completed" reason="communicated" output_bytes="12" exit_code="0" transcript_ref="job:job_T">` + "\n" + `Job job_T completed.` + "\n" + `</job-notification>`
+	r.ApplyThreadItem(appwire.ThreadItem{Type: "steering", ID: "item_2", TurnID: "turn_m2", Text: notification}, 0, true)
+	runs := transcriptTools(r.messages)
+	if len(runs) == 0 || runs[0].Subagent == nil || runs[0].Subagent.Headline == "" {
+		t.Fatalf("job headline not tied from an owned steering item: %+v", runs)
+	}
+}

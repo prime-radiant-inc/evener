@@ -306,7 +306,18 @@ func (s *Session) recordTurnFailure(data events.ErrorData) {
 // — turning it on would reveal only hooks that ran afterwards, which is the
 // same "switch that governs nothing" complaint this fixes (kata qm9y).
 func (s *Session) emitHookCompleted(data events.HookEndData) {
-	s.emit(events.EventHookEnd, data)
+	// The run that dispatched the hook names the owner of the records it
+	// produces (hooks.WithRecordOwner) when the executing turn is not who they
+	// belong to: a fold's PreCompact hook is one of the fold's records, and
+	// the fold's goroutine can outlive the turn it staged under. Unowned, a
+	// HOOK_COMPLETED is not merely unlabelled — the transcript projection
+	// makes it its own logical turn and CLOSES the open group, so everything
+	// the fold writes after it lands in a different group than the live
+	// projector puts it in. Every other hook belongs to whatever turn is
+	// executing, as before.
+	if data.OwningTurnID == "" {
+		data.OwningTurnID = s.activeTurnOwner()
+	}
 	info := schema.HookInfo{
 		Event:      data.Event,
 		HookType:   data.HookType,
@@ -319,11 +330,42 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	// only turn text still show the hook.
 	turn := schema.NewTurn(schema.TurnHookCompleted, llm.System(info.Announcement()))
 	turn.Hook = &info
+	turn.OwningTurnID = data.OwningTurnID
 
+	// Write, then announce. The two publications are not atomic, so whichever
+	// goes second can be overtaken by a concurrently recorded round, and the
+	// live and durable projections then order this hook differently inside the
+	// turn. Writing first is the direction the live/cold ordering rule wants:
+	// the entry exists before anything is told about it, so the event can only
+	// follow it. A hook completing while a fold publication holds the
+	// transcript door therefore waits for that door before announcing, and its
+	// event lands after its entry — which is the ordering, not a delay to
+	// avoid.
+	//
+	// This is THIS producer's discipline. Nothing yet requires every producer
+	// to write before announcing, and until something does, a pairing that
+	// announces first can still interleave ahead of this one; issue #1150
+	// carries that rule.
+	//
 	// SessionStart hooks run inside initSessionState, before the transcript
-	// writer exists (kata d4es). recordTurn holds the turn until it does; no
-	// buffering is needed here.
-	s.recordTurn(turn, turn)
+	// writer exists (kata d4es). The write path holds the turn until it does;
+	// no buffering is needed here.
+	//
+	// A FAILED write announces nothing, and leaves nothing in the model
+	// history either: the live event is the only copy a watching client gets,
+	// so a completion published on a write that failed is one a reload cannot
+	// reproduce. appendTurnAfterTranscriptWrite is the shape the environment
+	// append already uses for that — the entry first, the history append only
+	// if it landed.
+	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return
+	}
+	s.emit(events.EventHookEnd, data)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the

@@ -199,7 +199,7 @@ func stceCompaction(t *testing.T) {
 		t.Fatal("nil context manager compact succeeded")
 	}
 	s.contextMgr = mgr
-	if records, _ := s.runPreCompactHook(context.Background(), nil); records != nil {
+	if records, _ := s.runPreCompactHook(context.Background(), nil, ""); records != nil {
 		t.Fatalf("nil history records = %#v", records)
 	}
 	history := []schema.Turn{}
@@ -219,7 +219,7 @@ func stceCompaction(t *testing.T) {
 	runner := hooks.NewRunner(hookClient, "gpt-5.2")
 	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "compact"})
 	s.hookRunner = runner
-	s.runPreCompactHook(context.Background(), &history)
+	s.runPreCompactHook(context.Background(), &history, "")
 
 	_, emit, flush, _ := s.compactionEmitFunc(context.Background(), &history)
 	emit(events.EventWarning, events.WarningData{Message: "unrelated"})
