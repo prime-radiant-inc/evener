@@ -99,6 +99,16 @@ describe("watchMeta", () => {
     expect(watchMeta(w)).toBe("on event · armed");
   });
 
+  test("an event watch's throttle and filter ride along with the event condition", () => {
+    const w = watch({
+      events: ["job.completed"],
+      cadence: [{ kind: "events", every: 3, filter: "status=error" }],
+      active: true,
+    });
+    // Without the cadence detail this reads as if it fires on every match.
+    expect(watchMeta(w)).toBe("on event every 3 where status=error · armed");
+  });
+
   test("a watch with an output match and a clock cadence names both", () => {
     const w = watch({
       target: "job_ab12",
@@ -182,6 +192,17 @@ describe("watchFacts", () => {
       deliveries: 2,
     });
     expect(watchFacts(w, NOW)).toBe(`Waiting on job.completed, job.failed · armed ${armedLabel()} ago · 2 deliveries`);
+  });
+
+  test("an event watch's throttle and filter do not read as firing on every match", () => {
+    const w = watch({
+      events: ["job.completed"],
+      cadence: [{ kind: "events", every: 3, filter: "status=error" }],
+      deliveries: 0,
+    });
+    expect(watchFacts(w, NOW)).toBe(
+      `Waiting on job.completed every 3 where status=error · armed ${armedLabel()} ago · no deliveries yet`,
+    );
   });
 
   test("a wildcard event watch reads as session events", () => {

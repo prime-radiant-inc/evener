@@ -328,6 +328,45 @@ func TestNavigationWatchCadenceCarriesEventEveryAndFilter(t *testing.T) {
 	}
 }
 
+// A watch's id and source are identity, not display text: the rail and the
+// panel derive row keys from watch.id. Truncating either with an ellipsis let
+// two distinct long ids collapse to the same label and collide, so both pass
+// through untouched while the display fields keep their label bound.
+func TestNavigationWatchProjectionKeepsIdentityUntruncated(t *testing.T) {
+	longID := "watch-" + strings.Repeat("a", maxNavigationLabelRunes) + "-alpha"
+	siblingID := "watch-" + strings.Repeat("a", maxNavigationLabelRunes) + "-bravo"
+	longSource := "source-" + strings.Repeat("s", maxNavigationLabelRunes) + "-end"
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{
+				{ID: longID, Source: longSource, CreatedAt: "2026-09-12T10:00:00Z"},
+				{ID: siblingID, Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
+			},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	watches := resource.Current.Sessions[0].Watches
+	if len(watches) != 2 {
+		t.Fatalf("watches = %+v, want two rows", watches)
+	}
+	if watches[0].ID != longID || watches[1].ID != siblingID {
+		t.Fatalf("watch ids = %q, %q, want both untruncated and distinct", watches[0].ID, watches[1].ID)
+	}
+	if watches[0].Source != longSource {
+		t.Fatalf("watch source = %q, want the untruncated source", watches[0].Source)
+	}
+}
+
 // validNavigationTimestamp must accept exactly what the web codec accepts. Both
 // read the same shared fixture list so the Go check cannot drift from the
 // codec's rfc3339Timestamp grammar.

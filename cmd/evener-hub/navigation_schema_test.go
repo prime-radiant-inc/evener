@@ -300,8 +300,65 @@ func TestNavigationTimestampParityFixturesMatchGoTime(t *testing.T) {
 			}
 			var value time.Time
 			err = json.Unmarshal(encoded, &value)
-			if got := err == nil; got != fixture.Valid {
-				t.Fatalf("time.Time accepted = %v, want %v (error %v)", got, fixture.Valid, err)
+			// The codec (and validNavigationTimestamp) deliberately reject an
+			// offset whose hour or minute exceeds 23:59, while Go's time.Time
+			// accepts it. Those fixtures carry valid:false to document the
+			// codec's stricter grammar, so they are the one place where the
+			// fixture and time.Time are expected to disagree.
+			want := fixture.Valid || fixtureZoneExceedsCodecBound(fixture.Value)
+			if got := err == nil; got != want {
+				t.Fatalf("time.Time accepted = %v, want %v (error %v)", got, want, err)
+			}
+		})
+	}
+}
+
+// fixtureZoneExceedsCodecBound reports whether value's +/-HH:MM offset is
+// outside the range the web codec accepts (hour <= 23 and minute <= 59).
+func fixtureZoneExceedsCodecBound(value string) bool {
+	if len(value) < 6 {
+		return false
+	}
+	zone := value[len(value)-6:]
+	if zone[0] != '+' && zone[0] != '-' {
+		return false
+	}
+	hour := int(zone[1]-'0')*10 + int(zone[2]-'0')
+	minute := int(zone[4]-'0')*10 + int(zone[5]-'0')
+	return hour > 23 || minute > 59
+}
+
+// The web codec validates a watch's delivery_times as strict RFC3339 and its
+// cadence seconds/every/filter shapes, and fails the whole snapshot on a
+// mismatch. The hub schema must apply the same rules before the value reaches
+// the client, so a malformed value can never poison a watch-carrying resource.
+func TestNavigationSessionValueValidatesWatchCadenceAndDeliveryTimes(t *testing.T) {
+	watch := func(cadence []hubapi.NavigationWatchCadence, times []string) hubapi.NavigationSessionSummary {
+		session := navigationSchemaSession("local:schema-session", "schema-session")
+		session.Watches = hubapi.NavigationArray[hubapi.NavigationWatchSummary]{{
+			ID: "watch-1", Source: "self", Deliveries: 1,
+			Cadence: cadence, DeliveryTimes: times,
+			CreatedAt: "2026-09-12T10:00:00Z", Active: true,
+		}}
+		return session
+	}
+	accepted := watch(
+		[]hubapi.NavigationWatchCadence{{Kind: "events", Every: 3, Filter: "status=error"}},
+		[]string{"2026-09-12T10:00:01Z"},
+	)
+	if !navigationSessionValueValid(accepted) {
+		t.Fatal("a well-formed watch cadence and delivery ring must be accepted")
+	}
+	tests := map[string]hubapi.NavigationSessionSummary{
+		"non-RFC3339 delivery instant": watch(nil, []string{"2026-09-12 10:00:01"}),
+		"negative cadence seconds":     watch([]hubapi.NavigationWatchCadence{{Kind: "every", Seconds: -1}}, nil),
+		"negative event every count":   watch([]hubapi.NavigationWatchCadence{{Kind: "events", Every: -1}}, nil),
+		"over-long event filter":       watch([]hubapi.NavigationWatchCadence{{Kind: "events", Filter: strings.Repeat("f", maxNavigationLabelRunes+1)}}, nil),
+	}
+	for name, session := range tests {
+		t.Run(name, func(t *testing.T) {
+			if navigationSessionValueValid(session) {
+				t.Fatalf("malformed watch value accepted: %+v", session.Watches)
 			}
 		})
 	}

@@ -709,6 +709,40 @@ func TestRosterFingerprintIncludesWatchDeliveryTimes(t *testing.T) {
 	}
 }
 
+// An event watch's every-Nth throttle and its filter change how often it fires,
+// so changing either must move the fingerprint or the sidebar keeps a row whose
+// cadence no longer matches the daemon. A daemon that reports the same watches
+// in another order has not changed anything.
+func TestRosterFingerprintIncludesEventCadenceEveryAndFilter(t *testing.T) {
+	watch := func(cadence appwire.EvenerWatchCadence) map[string]LiveEntry {
+		return map[string]LiveEntry{"parent": {Watches: []appwire.EvenerWatchInfo{{
+			ID: "watch-1", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true,
+			Cadence: []appwire.EvenerWatchCadence{cadence},
+		}}}}
+	}
+	base := watch(appwire.EvenerWatchCadence{Kind: "events"})
+	same := watch(appwire.EvenerWatchCadence{Kind: "events"})
+	throttled := watch(appwire.EvenerWatchCadence{Kind: "events", Every: 3})
+	filtered := watch(appwire.EvenerWatchCadence{Kind: "events", Filter: "status=error"})
+	if rosterFingerprint(base) != rosterFingerprint(same) {
+		t.Fatal("roster fingerprint must not change when the same cadence is reported")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(throttled) {
+		t.Fatal("roster fingerprint must change when only the event cadence every count changes")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(filtered) {
+		t.Fatal("roster fingerprint must change when only the event cadence filter changes")
+	}
+
+	a := appwire.EvenerWatchInfo{ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}
+	b := appwire.EvenerWatchInfo{ID: "watch-b", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}
+	forward := map[string]LiveEntry{"parent": {Watches: []appwire.EvenerWatchInfo{a, b}}}
+	reverse := map[string]LiveEntry{"parent": {Watches: []appwire.EvenerWatchInfo{b, a}}}
+	if rosterFingerprint(forward) != rosterFingerprint(reverse) {
+		t.Fatal("roster fingerprint must not change when a daemon lists the same watches in another order")
+	}
+}
+
 type overlappingRefreshProber struct {
 	calls         atomic.Int32
 	firstStarted  chan struct{}

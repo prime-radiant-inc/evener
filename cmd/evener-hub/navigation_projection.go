@@ -1250,8 +1250,13 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray
 			}
 		}
 		out = append(out, hubapi.NavigationWatchSummary{
-			ID:             truncateNavigationRunes(watch.ID, maxNavigationLabelRunes),
-			Source:         truncateNavigationRunes(watch.Source, maxNavigationLabelRunes),
+			// ID and Source are identity, not display text: the rail and the
+			// panel derive row keys from watch.id, and truncateNavigationRunes
+			// appends an ellipsis that can collapse two distinct long ids into
+			// the same label. navigationJobs leaves JobID/JobType/Status
+			// untruncated for the same reason; only display fields are bounded.
+			ID:             watch.ID,
+			Source:         watch.Source,
 			Target:         truncateNavigationRunes(watch.Target, maxNavigationLabelRunes),
 			SendTo:         truncateNavigationRunes(watch.SendTo, maxNavigationLabelRunes),
 			Note:           truncateNavigationRunes(watch.Note, maxNavigationLabelRunes),
@@ -1271,19 +1276,32 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) hubapi.NavigationArray
 
 // navigationTimestampPattern matches exactly the grammar the web codec's
 // rfc3339Timestamp accepts: a four-digit year, capital T, seconds, an optional
-// 1-9 digit fraction, and Z or a numeric offset. Go's time.Parse additionally
-// enforces the calendar/clock ranges, so together they reject the truncated
-// "…"-suffixed strings the label cap used to produce.
+// 1-9 digit fraction, and Z or a numeric offset. The offset's hour and minute
+// are captured so validNavigationTimestamp can bound them like the codec does.
+// Go's time.Parse additionally enforces the calendar/clock ranges, so together
+// they reject the truncated "…"-suffixed strings the label cap used to produce.
 var navigationTimestampPattern = regexp.MustCompile(
-	`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$`,
+	`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$`,
 )
 
 func validNavigationTimestamp(value string) bool {
-	if !navigationTimestampPattern.MatchString(value) {
+	match := navigationTimestampPattern.FindStringSubmatch(value)
+	if match == nil {
 		return false
 	}
-	_, err := time.Parse(time.RFC3339Nano, value)
-	return err == nil
+	if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+		return false
+	}
+	// The codec rejects an offset whose hour exceeds 23 or minute exceeds 59;
+	// Go's time.Parse accepts e.g. +24:00, so parity needs this explicit bound.
+	if match[1] != "" {
+		hour := int(match[1][0]-'0')*10 + int(match[1][1]-'0')
+		minute := int(match[2][0]-'0')*10 + int(match[2][1]-'0')
+		if hour > 23 || minute > 59 {
+			return false
+		}
+	}
+	return true
 }
 
 func (p navigationProjection) isLive(id, ref string) bool {

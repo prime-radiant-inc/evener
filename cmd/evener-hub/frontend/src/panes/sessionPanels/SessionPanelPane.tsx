@@ -33,9 +33,12 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
   const model = useThreadsStore((state) => state.threads.get(ref));
   // The standalone Activity pane reads the same navigation-fed watches the
   // pane footer's chrome does. It deliberately installs no clock of its own:
-  // watch detail falls back to the activity tree's own live tick (and a
-  // watch-only, live-row-free tree is static, exactly like every other row
-  // there) - the Details pane's NOW_TICK_MS clock stays Details-only.
+  // watch detail falls back to the activity tree's own live tick, which
+  // ActivityTree enables whenever the session carries watch rows - so a
+  // watch-only, live-row-free tree still ticks (pinned by ActivityTree's
+  // "a session whose only work is watches still runs the clock"). Do not drop
+  // that watch-row condition: without it a watch-only tree would freeze. The
+  // Details pane's NOW_TICK_MS clock stays Details-only.
   // Narrow subscription: selectSessionWatches keeps its result identity while
   // this session's watch content is unchanged, so the pane no longer re-renders
   // on every navigation update for any session.

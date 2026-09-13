@@ -354,6 +354,14 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 				_, _ = h.Write([]byte{0})
 				_, _ = h.Write([]byte(strconv.FormatFloat(cadence.Seconds, 'g', -1, 64)))
 				_, _ = h.Write([]byte{0})
+				// Every throttles an event watch and Filter narrows what it
+				// matches, so either changing must move the fingerprint or the
+				// sidebar keeps a row whose cadence no longer matches. Null
+				// separators keep the field boundary unambiguous.
+				_, _ = h.Write([]byte(strconv.Itoa(cadence.Every)))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(cadence.Filter))
+				_, _ = h.Write([]byte{0})
 			}
 			for _, event := range watch.Events {
 				_, _ = h.Write([]byte(event))
