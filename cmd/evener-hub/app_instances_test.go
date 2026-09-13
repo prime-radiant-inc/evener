@@ -872,6 +872,62 @@ func TestInstances_RemoveRestoresACorruptOAuthRecordWhenTheConfigWriteFails(t *t
 	}
 }
 
+// A reload failure is the last way a removal can fail after it has deleted
+// things. It drops the registry to implicit-only and refuses every instance
+// write until the file loads again, so leaving the removal in place would have
+// the file, the hub's view and every client's listing disagreeing about an
+// instance only some of them still have - with nothing but hand-editing the
+// file to get back. The removal rolls back instead.
+func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	// An entry that parses but cannot resolve an endpoint (#711: no base and
+	// no base_url of its own): the registry loaded before it appeared, so the
+	// removal still starts, and the layer the removal writes still carries it,
+	// so the reload that follows fails.
+	raw, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err = f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the reload failure")
+	}
+	// Pins the branch: a write-loadable refusal never carries this text, so a
+	// fixture that stopped parsing before the write would not pass as a
+	// reload-rollback test.
+	if !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the reload rollback", err)
+	}
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, still := l.Providers["work"]; !still {
+		t.Fatal("[providers.work] was not restored by the rollback")
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the rollback to have restored it", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record was not restored by the rollback: %v", loadErr)
+	}
+}
+
 func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}); err != nil {

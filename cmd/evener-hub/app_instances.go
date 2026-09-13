@@ -725,7 +725,14 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 
 	// Read the authored layer before anything is deleted: this is a pure read,
 	// so a failure here leaves nothing to undo, and it happens inside c.mu, so
-	// the layer it returns is still the one this removal edits.
+	// the layer it returns is still the one this removal edits. before is an
+	// independent parse of the same file - a fresh read sharing no maps with
+	// l - so the reload rollback below writes back exactly what was on disk
+	// before this call (Edit's own rollback input).
+	before, _, err := c.read()
+	if err != nil {
+		return err
+	}
 	l, _, err := c.read()
 	if err != nil {
 		return err
@@ -774,7 +781,24 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if err := c.writeLoadable(l); err != nil {
 		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err)
 	}
-	return c.reg.Reload()
+	if err := c.reg.Reload(); err != nil {
+		// writeLoadable's dry parse only checks the layer against the registry
+		// schema; Reload resolves it, so a config that parses can still fail to
+		// load (#711). A failed reload drops the registry to implicit-only and
+		// refuses every instance write until the file loads again, so leaving
+		// the removal in place would have the file, the hub's view and every
+		// client's listing disagreeing about an instance only some of them
+		// still have - with nothing but hand-editing the file to get back. Put
+		// the file and the credentials this call deleted back, the way Edit
+		// restores its file.
+		if restoreErr := c.write(before); restoreErr != nil {
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+		}
+		_ = c.reg.Reload() // best-effort: put the last-good registry view back
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			fmt.Errorf("removing %q was rolled back: %w", name, err))
+	}
+	return nil
 }
 
 // captureOAuthFile reads the OAuth state file a removal's cleanup is about to
