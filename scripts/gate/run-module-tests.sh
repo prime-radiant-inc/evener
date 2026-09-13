@@ -758,6 +758,17 @@ run_bounded_package_list() {
 							"$attempt" "$list_pid" "$ROOT_PACKAGE_LIST_STOP_GRACE" "$(package_list_pgid_path "$module")" >&2
 						return 1
 					fi
+					# The group read above is a snapshot, and the attempt splits off
+					# the instant after it: then the signal just sent took only the
+					# leader and left `go list`'s children in a group of their own,
+					# writing a package list and holding the cache locks while the
+					# next attempt starts. The pid is that group's number too, so ask
+					# whether one formed and stop it as a group if it did.
+					if ! live_members="$(package_list_group_survivors "$list_pid")"; then
+						stop_status=2
+					elif [ -n "$live_members" ]; then
+						stop_package_list_group "$list_pid" || stop_status=$?
+					fi
 				else
 					# There is no group here this script may aim at, and every
 					# fallback is worse than saying so. A descendant walk reads
