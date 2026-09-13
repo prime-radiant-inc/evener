@@ -122,9 +122,17 @@ func (c *RetirementController) AttachRoot(root *Session) error {
 
 // BeginMutation admits one operation without retaining a mutex across its work.
 // Nested operations get independent leases; cancellation may release each once.
+//
+// The category is a closed vocabulary rather than free text, because it reaches
+// the wire in RetirementSnapshot.Blockers: an unrecognized value is replaced
+// with "unsupported" instead of being echoed back. Every category a caller
+// actually passes must therefore be listed here, or its blocker reports as
+// unknown work.
 func (c *RetirementController) BeginMutation(sessionID, category string) (func(), error) {
 	switch category {
-	case "turn", "input", "autonomous", "question", "job", "watch", "delegate", "environment", "persistence", "admission", "unsupported":
+	case "turn", "input", "autonomous", "question", "job", "watch", "delegate",
+		"environment", "persistence", "admission", "notification",
+		"delegate_drive", "delegate_delivery", "delegate_restore", "unsupported":
 	default:
 		category = "unsupported"
 	}

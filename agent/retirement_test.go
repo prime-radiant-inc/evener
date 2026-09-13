@@ -579,3 +579,31 @@ func TestRetirementChangesAndEligibilityReset(t *testing.T) {
 		t.Fatal("root publication retained old interval")
 	}
 }
+
+// Every category a caller actually passes must survive into the blocker; an
+// unlisted value is reported as "unsupported", so a missing entry makes real
+// work read as unknown. Unknown values stay bounded, which
+// TestRetirementChangesAndEligibilityReset already pins with free text.
+func TestRetirementBeginMutationPreservesCallerCategories(t *testing.T) {
+	c, root := retirementTestController(t)
+	for _, category := range []string{
+		"turn", "input", "autonomous", "question", "job", "watch", "delegate",
+		"environment", "persistence", "admission", "notification",
+		"delegate_drive", "delegate_delivery", "delegate_restore",
+	} {
+		release, err := c.BeginMutation(root.ID(), category)
+		if err != nil {
+			t.Fatalf("BeginMutation(%q): %v", category, err)
+		}
+		var found bool
+		for _, blocker := range c.Snapshot().Blockers {
+			if blocker.Category == category && blocker.SessionID == root.ID() {
+				found = true
+			}
+		}
+		release()
+		if !found {
+			t.Fatalf("category %q was reported as unsupported instead of the real obligation", category)
+		}
+	}
+}
