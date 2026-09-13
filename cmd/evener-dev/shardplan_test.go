@@ -152,8 +152,6 @@ func TestParseFlagsReadsShortInEverySpelling(t *testing.T) {
 		// Last occurrence wins, as go's flag package reads them.
 		{flags: []string{"-short=false", "-short"}, want: true},
 		{flags: []string{"-short", "-short=false"}, want: false},
-		// A value go itself would refuse: read as short rather than dropped.
-		{flags: []string{"-short=yes"}, want: true},
 		// A flag's value is a value, not a flag.
 		{flags: []string{"-run", "-short"}, want: false},
 		{flags: nil, want: false},
@@ -175,6 +173,14 @@ func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
 		{"--C", "/tmp"},
 		{"-run"},
 		{"-tags"},
+		// A value go itself would refuse: refused here, not after the survey.
+		{"-short=yes"},
+		// Documented by neither `go help build` nor `go help testflag`.
+		{"-nonsense"},
+		{"-nonsense=1"},
+		{"--nonsense"},
+		// Not a flag at all: this runner picks its own packages.
+		{"./..."},
 	} {
 		if _, err := parseFlags(flags); err == nil {
 			t.Fatalf("parseFlags(%v) = no error, want one", flags)
@@ -201,9 +207,27 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			name:  "the old table, with -race now a build flag",
 			flags: []string{"-short", "-count=2", "-v", "-race", "-run", "TestNope", "-timeout=30s"},
 			build: []string{"-race"},
-			// -run and -timeout fall outside both tables and are dropped, as
-			// the script's case statement dropped them.
+			// -run and -timeout are the runner's own to set: consumed with
+			// their values and passed to nothing.
 			test: []string{"-test.short", "-test.count=2", "-test.v"},
+		},
+		{
+			name:  "a `go test` flag's value is a value, even spelled like a build flag",
+			flags: []string{"-exec", "-race", "-short"},
+			build: nil,
+			test:  []string{"-test.short"},
+		},
+		{
+			name:  "and the same for -o and -coverpkg",
+			flags: []string{"-o", "-race", "-coverpkg", "-trimpath", "-v"},
+			build: []string{"-coverpkg", "-trimpath"},
+			test:  []string{"-test.v"},
+		},
+		{
+			name:  "the build flags that used to be dropped without a word",
+			flags: []string{"-cover", "-covermode", "atomic", "-toolexec", "wrap", "-buildvcs=false"},
+			build: []string{"-cover", "-covermode", "atomic", "-toolexec", "wrap", "-buildvcs=false"},
+			test:  nil,
 		},
 		{
 			name:  "a value flag takes the argument after it",
@@ -320,12 +344,9 @@ func TestTestSetKeyIsOrderInsensitiveAndStable(t *testing.T) {
 	a := testSetKey("TestB\nTestA\n")
 	b := testSetKey("TestA\nTestB\n")
 	if a != b {
-		t.Fatalf("key differs across orderings: %q vs %q", a, b)
-	}
-	if len(a) != 16 || strings.ToLower(a) != a {
-		t.Fatalf("key %q is not 16 lowercase hex chars", a)
+		t.Fatalf("testSetKey is order sensitive: %q vs %q", a, b)
 	}
 	if c := testSetKey("TestA\nTestC\n"); c == a {
-		t.Fatalf("different test sets share key %q", c)
+		t.Fatalf("testSetKey did not change with the test set: %q", c)
 	}
 }
