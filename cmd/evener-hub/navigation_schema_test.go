@@ -349,11 +349,17 @@ func TestNavigationSessionValueValidatesWatchCadenceAndDeliveryTimes(t *testing.
 	if !navigationSessionValueValid(accepted) {
 		t.Fatal("a well-formed watch cadence and delivery ring must be accepted")
 	}
+	malformedCreatedAt := watch(nil, nil)
+	malformedCreatedAt.Watches[0].CreatedAt = "2026-09-12 10:00:00"
 	tests := map[string]hubapi.NavigationSessionSummary{
-		"non-RFC3339 delivery instant": watch(nil, []string{"2026-09-12 10:00:01"}),
-		"negative cadence seconds":     watch([]hubapi.NavigationWatchCadence{{Kind: "every", Seconds: -1}}, nil),
-		"negative event every count":   watch([]hubapi.NavigationWatchCadence{{Kind: "events", Every: -1}}, nil),
-		"over-long event filter":       watch([]hubapi.NavigationWatchCadence{{Kind: "events", Filter: strings.Repeat("f", maxNavigationLabelRunes+1)}}, nil),
+		"non-RFC3339 delivery instant":  watch(nil, []string{"2026-09-12 10:00:01"}),
+		"non-RFC3339 created at":        malformedCreatedAt,
+		"empty cadence kind":            watch([]hubapi.NavigationWatchCadence{{Kind: ""}}, nil),
+		"over-budget cadence kind":      watch([]hubapi.NavigationWatchCadence{{Kind: strings.Repeat("😀", maxNavigationIdentityBytes/len("😀")+1)}}, nil),
+		"negative cadence seconds":      watch([]hubapi.NavigationWatchCadence{{Kind: "every", Seconds: -1}}, nil),
+		"negative event every count":    watch([]hubapi.NavigationWatchCadence{{Kind: "events", Every: -1}}, nil),
+		"event every beyond safe range": watch([]hubapi.NavigationWatchCadence{{Kind: "events", Every: int(maxNavigationSafeInteger) + 1}}, nil),
+		"over-long event filter":        watch([]hubapi.NavigationWatchCadence{{Kind: "events", Filter: strings.Repeat("f", maxNavigationLabelRunes+1)}}, nil),
 	}
 	for name, session := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -361,6 +367,16 @@ func TestNavigationSessionValueValidatesWatchCadenceAndDeliveryTimes(t *testing.
 				t.Fatalf("malformed watch value accepted: %+v", session.Watches)
 			}
 		})
+	}
+	acceptedBoundary := watch(
+		[]hubapi.NavigationWatchCadence{{
+			Kind:  strings.Repeat("k", maxNavigationIdentityBytes),
+			Every: int(maxNavigationSafeInteger),
+		}},
+		nil,
+	)
+	if !navigationSessionValueValid(acceptedBoundary) {
+		t.Fatal("cadence values exactly on the codec bounds must be accepted")
 	}
 }
 
