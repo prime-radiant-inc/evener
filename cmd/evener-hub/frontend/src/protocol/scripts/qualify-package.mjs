@@ -60,6 +60,7 @@ async function qualify() {
     "displayFormat",
     "toolCallText",
     "catalogCommands",
+    "slashCompletion",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -162,6 +163,11 @@ async function qualify() {
     "str",
     "slashCommandInvocation",
     "visibleCatalogCommands",
+    "evaluateSlashLabel",
+    "filterSlashMenuItems",
+    "mergeSlashCommands",
+    "parseSlashToken",
+    "spliceSlashCommand",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -188,6 +194,8 @@ async function qualify() {
     "DocFileContent",
     "SubmitRoute",
     "SteerRoute",
+    "SlashToken",
+    "SlashMenuItem",
   ];
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
@@ -281,6 +289,24 @@ assert.deepEqual(client.parseArgs("not json"), {});
 assert.equal(client.parseJSONObject("[]"), undefined);
 assert.equal(client.trailingBracketFooter("done [exit 0]"), "exit 0");
 assert.equal(client.str({ path: "/tmp" }, "path"), "/tmp");
+const slashToken = client.parseSlashToken("say /rev", 8);
+assert.deepEqual(slashToken, { start: 4, end: 8, query: "rev" });
+assert.equal(client.parseSlashToken("say /rev\\nthen", 13), null);
+const slashItems = client.mergeSlashCommands(
+  [{ id: "goal", hint: "sets the session goal" }],
+  [{ name: "review", source: "plugin", pluginName: "acme" }],
+  [{ name: "writing", description: "writing skill" }],
+);
+assert.deepEqual(slashItems.map((item) => item.invocation), ["/goal", "/acme:review", "/writing"]);
+assert.deepEqual(
+  client.filterSlashMenuItems(slashItems, slashToken.query).map((item) => item.label),
+  ["review"],
+);
+assert.equal(client.evaluateSlashLabel("review", "rev").embedding.longestRun, 3);
+assert.deepEqual(client.spliceSlashCommand("say /rev", slashToken, "/acme:review"), {
+  text: "say /acme:review ",
+  caret: 17,
+});
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
@@ -440,6 +466,10 @@ ${presenceLoop}${surface.smoke ?? ""}`,
     "package/examples/discovery-cli.mjs",
     "package/examples/discovery-logic.mjs",
     "package/examples/private-output.mjs",
+    // The attribution slashCompletion.ts's port requires. It sits outside dist/
+    // and examples/, so it needs its own expectation here and its own clause in
+    // the allowlist below.
+    "package/LICENSES/beautiful-ui.txt",
   ])
     assert(listing.includes(`${expected}\n`), `missing ${expected}`);
   for (const entry of listing.trim().split("\n")) {
@@ -447,7 +477,8 @@ ${presenceLoop}${surface.smoke ?? ""}`,
       entry === "package/package.json" ||
         entry === "package/README.md" ||
         entry.startsWith("package/dist/") ||
-        entry.startsWith("package/examples/"),
+        entry.startsWith("package/examples/") ||
+        entry.startsWith("package/LICENSES/"),
       `unexpected shipped path ${entry}`,
     );
     assert(!entry.endsWith(".ts") || entry.endsWith(".d.ts"), `source leak ${entry}`);
