@@ -2032,6 +2032,9 @@ func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
 	}
 	s.attachTranscript(writer)
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+	// A pinned note gives this fold steering of its own to inject, which is
+	// what the durability assertion below is about.
+	s.setPinnedNote("REMEMBER: the API signature")
 
 	// A withheld anchor must take the fold's post-write effects with it: the
 	// session namer is reached through this seam, so a suppressed marker never
@@ -2167,5 +2170,20 @@ func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
 	nameMu.Unlock()
 	if len(named) != 0 {
 		t.Fatalf("a fold whose marker was withheld named the session from %d text(s): %#v; the post-write effects belong to an anchor that was never written", len(named), named)
+	}
+
+	// The fold really did inject steering — otherwise the durability
+	// assertion below proves nothing.
+	if countSteering(currentHistory(t, s), noteHandoffPrefix) != 1 {
+		t.Fatalf("test setup: the fold injected no note-handoff steering: %#v", currentHistory(t, s))
+	}
+	// A resume finds no anchor, so it drops the fold's copies and keeps
+	// everything else. Steering that describes a compaction the resumed
+	// history cannot see is stale guidance, and duplicate guidance once the
+	// retry injects it again — so an un-anchored fold leaves none of it behind.
+	for _, turn := range ResumeHistory(data.Entries) {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), noteHandoffPrefix) {
+			t.Fatalf("steering from a fold that never anchored survives a restart: %q", turn.Message.Text())
+		}
 	}
 }

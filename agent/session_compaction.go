@@ -609,6 +609,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	var compactionTurnWithheld []bool
 	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
+	// steeringWithheld reports that this fold's steering records were not
+	// written because its anchor was withheld, so flush announces none of them.
+	var steeringWithheld bool
 	// anchor is false when a replay copy could not be written: the fold's own
 	// records still land, but the marker that would discard everything before
 	// them does not. See publishFoldTransaction.
@@ -634,7 +637,16 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			}
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
-		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
+		// The fold's own steering goes with the anchor. A resume that finds no
+		// anchor drops the fold's copies and keeps everything else, so
+		// steering describing a compaction that resume cannot see is stale
+		// guidance — and duplicate guidance the moment the retry injects it
+		// again. An un-anchored fold leaves nothing of itself durable except
+		// the tagged copies every reader already drops.
+		steeringWithheld = !anchor
+		if anchor {
+			steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
+		}
 	}
 	commit := &foldCommit{foldID: foldID}
 	// Asked BEFORE anything is written, because the tail now goes down first:
@@ -688,7 +700,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			}
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
 		}
-		s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
+		if !steeringWithheld {
+			s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
+		}
 		if artifactProduced && !superseded {
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
 		}
