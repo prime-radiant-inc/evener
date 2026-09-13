@@ -1224,7 +1224,15 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// what follows: from the point restoreIdleForSend has produced the child
 	// through the hand-off to the run.
 	sub.mu.Lock()
-	blocked := sub.running || sub.driving
+	// The sibling drive guard in driveStableDelegateAttention also refuses a
+	// child whose finalizer is still running or whose worktree disposal holds
+	// the dispose gate. `running` goes false at the top of the run's finalize
+	// block, before FinishGeneration moves the aggregate back to idle and
+	// before finalizing is cleared, so a send landing in that window would
+	// otherwise pass this guard, set driving, and start a run concurrently with
+	// the in-flight finalizer (or the disposer that owns disposeGated). Read
+	// both under the same sub.mu hold as running/driving.
+	blocked := sub.running || sub.driving || sub.finalizing || sub.disposeGated
 	if !blocked {
 		sub.driving = true
 	}

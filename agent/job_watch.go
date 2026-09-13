@@ -4932,28 +4932,26 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 // would have drained the child's queue, but this exit handed no run over, so
 // the rollback must re-drive it. The claim only gated that child, so this is
 // scoped to childSessionID: a whole-tree sweep would re-drive unrelated
-// children and read every child's transcript fold on every failed send. The two
-// halves keep the broad sweeps' order -- notification attention first (and only
-// when the child has something queued), then stable delegate attention, which
-// checks its own pending inside the primitive.
+// children and read every child's transcript fold on every failed send.
+//
+// It delegates to the shared wake-edge driver driveChildIfNotStopGated so the
+// rollback order cannot drift from the wake edge: stable delegate attention
+// FIRST (its run drains the child's notification queue itself), and only the
+// notification turn when no attention is owed. The previous inline order drove
+// the notification turn first; when both were pending the notification drive
+// set sub.driving synchronously, the attention drive then refused on that flag,
+// and nothing retried it -- the armed attention stayed stranded. The claim is
+// released before this call, so driveChildIfNotStopGated's own childDriveGated
+// check is the same stop/fatal/drain gate every other drive reads.
 func (s *Session) redriveChildAfterSendStartRollback(childSessionID string) {
 	if s == nil || childSessionID == "" {
 		return
 	}
 	for _, sub := range s.liveDirectSubagents() {
-		child := sub.sess
-		if child.id != childSessionID {
+		if sub == nil || sub.sess == nil || sub.sess.id != childSessionID {
 			continue
 		}
-		if s.childDriveGated(child.id) {
-			return
-		}
-		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
-			if s.driveSubagentNotificationTurn(sub) {
-				s.settleDrivenChildForwardedPendings(child.id)
-			}
-		}
-		s.driveStableDelegateAttention(sub)
+		s.driveChildIfNotStopGated(sub)
 		return
 	}
 }
