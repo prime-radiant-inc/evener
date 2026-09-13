@@ -138,13 +138,61 @@ func TestNameRegexAnchorsAndEscapes(t *testing.T) {
 	}
 }
 
-func TestTranslateFlagsPortsTheTableVerbatim(t *testing.T) {
-	got := translateFlags([]string{"-short", "-count=2", "-v", "-race", "-run", "TestNope", "-timeout=30s"})
-	// -run and -timeout fall outside the table and are dropped — the
-	// script's wart, preserved.
-	want := []string{"-test.short", "-test.count=2", "-test.v", "-test.race"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("translateFlags = %v, want %v", got, want)
+func TestSplitFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags []string
+		build []string
+		test  []string
+	}{
+		{
+			name:  "the old table, with -race now a build flag",
+			flags: []string{"-short", "-count=2", "-v", "-race", "-run", "TestNope", "-timeout=30s"},
+			build: []string{"-race"},
+			// -run and -timeout fall outside both tables and are dropped, as
+			// the script's case statement dropped them.
+			test: []string{"-test.short", "-test.count=2", "-test.v"},
+		},
+		{
+			name:  "a value flag takes the argument after it",
+			flags: []string{"-tags", "integration", "-short"},
+			build: []string{"-tags", "integration"},
+			test:  []string{"-test.short"},
+		},
+		{
+			name:  "the inline spelling of the same flag",
+			flags: []string{"-tags=integration", "-count=1"},
+			build: []string{"-tags=integration"},
+			test:  []string{"-test.count=1"},
+		},
+		{
+			name:  "double dashes are the same flags",
+			flags: []string{"--race", "--tags=integration", "--short", "--count=3"},
+			build: []string{"-race", "-tags=integration"},
+			test:  []string{"-test.short", "-test.count=3"},
+		},
+		{
+			name:  "the sanitisers and trimpath build, they do not run",
+			flags: []string{"-msan", "-asan", "-trimpath", "-v"},
+			build: []string{"-msan", "-asan", "-trimpath"},
+			test:  []string{"-test.v"},
+		},
+		{
+			name:  "nothing at all",
+			flags: nil,
+			build: nil,
+			test:  nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build, test := splitFlags(tc.flags)
+			if !reflect.DeepEqual(build, tc.build) {
+				t.Fatalf("build flags = %v, want %v", build, tc.build)
+			}
+			if !reflect.DeepEqual(test, tc.test) {
+				t.Fatalf("test flags = %v, want %v", test, tc.test)
+			}
+		})
 	}
 }
 
