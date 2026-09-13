@@ -417,8 +417,9 @@ type ModelListing struct {
 	// fetches the listing but does not write it into the registry it shares
 	// with every other such client, so the rows below are the snapshot's.
 	Live bool
-	// Models are the visible rows — hidden rows and rows whose live layer
-	// says Tools = false are dropped (spec §5) — sorted by model id.
+	// Models are the visible rows — hidden rows, disabled rows (registry
+	// ErrModelDisabled), and rows whose live layer says Tools = false are
+	// dropped (spec §5) — sorted by model id.
 	Models []registry.Resolved
 }
 

@@ -999,6 +999,13 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
+		if err := instancesController.SetModelDisabled(params); err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		notifyInstanceUpdated(server)
+		return instancesController.List(), nil
+	})
 }
 
 // registerLaunchHandlers registers the evener/launch/* RPC handlers, routed to the

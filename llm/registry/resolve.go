@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -109,6 +110,11 @@ func StripDatedSuffix(id string) string {
 }
 
 const provAlias = "alias"
+
+// ErrModelDisabled marks a Resolve naming a model the config layer disabled:
+// the reference names a real row, but nothing may use it. Callers match it
+// with errors.Is to tell "disabled by the user" from "unknown" and "hidden".
+var ErrModelDisabled = errors.New("model is disabled in providers.toml")
 
 // ParseRef splits "instance/model" on the first slash (spec §7.1); a bare
 // model id yields an empty Instance.
@@ -424,6 +430,12 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	if row.AliasOf != "" {
 		target, same, err := r.resolveAliasTarget(rec, row.AliasOf)
 		if err != nil {
+			// A target the user disabled fails resolveOn with
+			// ErrModelDisabled; the alias inherits the block. Other
+			// resolution failures stay warnings (a dangling alias).
+			if errors.Is(err, ErrModelDisabled) {
+				return Resolved{}, fmt.Errorf("%s/%s: %w (alias of %s)", rec.name, ref.Model, ErrModelDisabled, row.AliasOf)
+			}
 			warnings = append(warnings, "dangling alias: "+err.Error())
 		} else {
 			seedFromAlias(&caps, &row, target, prov)
@@ -480,6 +492,9 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
 	seedFields(&caps, rowProto)
+	if BoolValue(row.Disabled) {
+		return Resolved{}, fmt.Errorf("%s/%s: %w (set by %s)", rec.name, ref.Model, ErrModelDisabled, prov["Disabled"])
+	}
 
 	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
@@ -634,6 +649,10 @@ func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) 
 	if len(src.Headers) > 0 {
 		row.Headers = mergeStringMap(row.Headers, src.Headers)
 	}
+	if src.Disabled != nil {
+		row.Disabled = clonePointer(src.Disabled)
+		prov["Disabled"] = tag
+	}
 	if src.Transport != nil {
 		if row.Transport == nil {
 			row.Transport = &Transport{}
@@ -783,10 +802,100 @@ func (r *Registry) FindModel(id string) []Ref {
 	var out []Ref
 	for _, inst := range r.rankedInstances() {
 		if hit := r.lookupRow(inst.rec, id); !hit.synthesized {
+			if r.modelDisabled(inst.rec, Ref{Instance: inst.name, Model: id}, hit) {
+				continue
+			}
 			out = append(out, Ref{Instance: inst.name, Model: id})
 		}
 	}
 	return out
+}
+
+// modelDisabled replays just the Disabled flag for a reference: every
+// matching glob in spec §4.1 order (target id then reference id, shorter
+// patterns first, later layers after earlier ones) then the exact row, so
+// the last writer wins — the same outcome resolveOn's full replay reaches.
+// A disabled alias target disables the alias too. Cheap enough for browse
+// paths like FindModel that must not pay for a full resolve per candidate.
+func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
+	if hit.rowID != "" {
+		aliasOf := rec.head.Models[hit.rowID].AliasOf
+		if aliasOf != "" {
+			if _, _, err := r.resolveAliasTarget(rec, aliasOf); err != nil && errors.Is(err, ErrModelDisabled) {
+				return true
+			}
+		}
+	}
+	var disabled *bool
+	track := func(m Model) {
+		if m.Disabled != nil {
+			disabled = m.Disabled
+		}
+	}
+	matchOrderedGlobs := func(rows map[string]Model, ids ...string) []Model {
+		var globs []string
+		for k := range rows {
+			if isGlob(k) {
+				globs = append(globs, k)
+			}
+		}
+		globs = sortGlobs(globs)
+		var out []Model
+		seen := map[string]bool{}
+		for _, id := range ids {
+			for _, g := range globs {
+				if !seen[g] && matchGlob(g, id) {
+					seen[g] = true
+					out = append(out, rows[g])
+				}
+			}
+		}
+		return out
+	}
+	altID := ""
+	if hit.rowID != "" && hit.rowID != ref.Model {
+		altID = hit.rowID
+	}
+	// Target-matching globs apply before reference-matching ones (spec
+	// §4.1), the same order applyGlobs replays.
+	refIDs := []string{ref.Model}
+	if altID != "" {
+		refIDs = []string{altID, ref.Model}
+	}
+	seenTag := map[string]bool{}
+	for _, layer := range rec.layers {
+		if !seenTag[layer.tag] {
+			seenTag[layer.tag] = true
+			for _, gr := range matchOrderedGlobs(r.topGlobs[layer.tag], refIDs...) {
+				track(gr)
+			}
+		}
+		for _, gr := range matchOrderedGlobs(layer.rows, refIDs...) {
+			track(gr)
+		}
+		if hit.rowID != "" {
+			if lr, ok := layer.rows[hit.rowID]; ok {
+				track(lr)
+			}
+		}
+	}
+	return BoolValue(disabled)
+}
+
+// InstanceModels lists an instance's exact catalog rows with their effective
+// disabled state, sorted by id, for the Providers pane's per-model toggles.
+// Live-only ids are not listed: they have no row to author a disable on.
+func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return nil, fmt.Errorf("unknown instance %q", instance)
+	}
+	ids := exactRowIDs(rec)
+	out := make([]InstanceModel, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, InstanceModel{ID: id, Disabled: r.modelDisabled(rec, Ref{Instance: instance, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"})})
+	}
+	return out, nil
 }
 
 // ModelIDs lists an instance's exact catalog rows plus its cached live ids,

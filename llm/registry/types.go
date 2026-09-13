@@ -76,6 +76,10 @@ type Model struct {
 	Caps      Caps              `json:"caps"`
 	Status    string            `json:"status,omitempty"`
 	Hidden    bool              `json:"hidden,omitempty"`
+	// Disabled is a user opt-out: a row the config layer disabled is hidden
+	// from every listing and fails Resolve. Nil means no layer set it; the
+	// last layer to set one wins.
+	Disabled *bool `json:"disabled,omitempty"`
 }
 
 // Transport says how to reach an endpoint (spec §4).
@@ -218,6 +222,14 @@ type Resolved struct {
 	// Synthesized is true when the reference matched no catalog row and no
 	// live id (spec §7.3): the row was made up from provider-level caps.
 	Synthesized bool `json:"synthesized,omitempty"`
+}
+
+// InstanceModel is one row of an instance's model inventory: the catalog id
+// and whether the config layer disabled it. The sheet behind the Providers
+// pane reads this to render per-model toggles.
+type InstanceModel struct {
+	ID       string `json:"id"`
+	Disabled bool   `json:"disabled"`
 }
 
 // Ref names an instance/model pair (spec §7).

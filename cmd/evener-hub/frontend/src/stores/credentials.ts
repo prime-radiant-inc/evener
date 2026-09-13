@@ -34,6 +34,7 @@ import type {
   InstanceEditParams,
   InstanceEntry,
   InstanceListResponse,
+  InstanceSetModelDisabledParams,
   ProviderDescriptor,
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
@@ -66,6 +67,9 @@ export interface CredentialsStoreState {
   edit(params: InstanceEditParams): Promise<boolean>;
   remove(name: string): Promise<void>;
   setDefault(name: string): Promise<void>;
+  // setModelDisabled flips one model row's disabled flag and applies the
+  // returned list, like setDefault: the sheet steers on the store's list.
+  setModelDisabled(params: InstanceSetModelDisabledParams): Promise<void>;
   // Auth mutations return the raw wire response and never touch
   // instances/availableProviders themselves - the caller (CredentialsSection)
   // re-fetches on success, matching the legacy's own "close editor +
@@ -169,6 +173,11 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
   async setDefault(name) {
     const client = requireClient();
     await applyMutation(() => client.request("evener/instance/setDefault", { name }));
+  },
+
+  async setModelDisabled(params) {
+    const client = requireClient();
+    await applyMutation(() => client.request("evener/instance/setModelDisabled", params));
   },
 
   async setApiKey(provider, value) {

@@ -576,6 +576,7 @@ export interface InstanceEntry {
   storedEmail?: string;
   credentialRequired: boolean;
   warnings?: string[];
+  models?: InstanceModelEntry[];
 }
 
 export interface InstanceListResponse {
@@ -586,12 +587,23 @@ export interface InstanceListResponse {
   writesRefused?: boolean;
 }
 
+export interface InstanceModelEntry {
+  id: string;
+  disabled?: boolean;
+}
+
 export interface InstanceRemoveParams {
   name: string;
 }
 
 export interface InstanceSetDefaultParams {
   name: string;
+}
+
+export interface InstanceSetModelDisabledParams {
+  name: string;
+  model: string;
+  disabled: boolean;
 }
 
 export interface ItemLifecycleParams {
@@ -2295,6 +2307,7 @@ export const METHOD_NAMES = [
   "evener/instance/edit",
   "evener/instance/remove",
   "evener/instance/setDefault",
+  "evener/instance/setModelDisabled",
   "evener/plugin/checkNow",
   "evener/plugin/preview",
   "evener/marketplace/list",
@@ -2490,6 +2503,7 @@ export interface MethodTypes {
   "evener/instance/edit": { params: InstanceEditParams; result: InstanceListResponse };
   "evener/instance/remove": { params: InstanceRemoveParams; result: InstanceListResponse };
   "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
+  "evener/instance/setModelDisabled": { params: InstanceSetModelDisabledParams; result: InstanceListResponse };
   "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
   "evener/plugin/preview": { params: PluginPreviewParams; result: PluginPreviewResponse };
   "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };

@@ -123,6 +123,7 @@ func (c *hubInstancesController) entryFor(inst registry.Instance, authored *regi
 		StoredEmail:        status.StoredEmail,
 		CredentialRequired: inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
 		Warnings:           inst.Warnings,
+		Models:             instanceModels(c.reg.Get(), inst.Name),
 	}
 	if authored != nil {
 		// api_key_env names an environment variable, and the loader takes
@@ -736,6 +737,83 @@ func describeImplicit(inst registry.Instance) string {
 	default:
 		return "credential source " + src
 	}
+}
+
+// instanceModels renders an instance's model inventory for the sheet's
+// per-model toggles. A registry that cannot list the instance yields no
+// rows rather than an error: the entry still describes the instance.
+func instanceModels(r *registry.Registry, name string) []appwire.InstanceModelEntry {
+	if r == nil {
+		return nil
+	}
+	models, err := r.InstanceModels(name)
+	if err != nil {
+		return nil
+	}
+	out := make([]appwire.InstanceModelEntry, 0, len(models))
+	for _, m := range models {
+		out = append(out, appwire.InstanceModelEntry{ID: m.ID, Disabled: m.Disabled})
+	}
+	return out
+}
+
+// SetModelDisabled flips one exact model row's disabled flag. It writes an
+// explicit bool on the row — authoring the row when the model exists only as
+// a curated entry — so the choice survives catalog refreshes. Refusals follow
+// Create's convention: the caller sent the bad name, so unknown instances,
+// glob ids, and unknown rows come back as appwire.InvalidParams.
+func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetModelDisabledParams) error {
+	if err := c.refuseWhenBroken(); err != nil {
+		return err
+	}
+	name := strings.TrimSpace(params.Name)
+	model := strings.TrimSpace(params.Model)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.reg.Get().Instance(name); !ok {
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+	}
+	if strings.Contains(model, "*") {
+		return appwire.InvalidParams(fmt.Sprintf("model %q is a glob: the sheet toggles exact rows only", params.Model))
+	}
+	rows, err := c.reg.Get().InstanceModels(name)
+	if err != nil {
+		return appwire.InvalidParams(err.Error())
+	}
+	var known bool
+	for _, m := range rows {
+		if m.ID == model {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return appwire.InvalidParams(fmt.Sprintf("model %q is not a catalog row of instance %q", params.Model, name))
+	}
+	l, _, err := c.read()
+	if err != nil {
+		return err
+	}
+	p, ok := l.Providers[name]
+	if !ok {
+		// An implicit instance has no authored entry; shadowing it carries
+		// the toggle alone, the way Edit shadows its own fields.
+		p = registry.Provider{ID: name}
+	}
+	if p.Models == nil {
+		p.Models = map[string]registry.Model{}
+	}
+	row := p.Models[model]
+	row.ID = model
+	disabled := params.Disabled
+	row.Disabled = &disabled
+	p.Models[model] = row
+	l.Providers[name] = p
+	if err := c.writeLoadable(l); err != nil {
+		return err
+	}
+	return c.reg.Reload()
 }
 
 // SetDefault records which instance a bare model reference resolves on. A

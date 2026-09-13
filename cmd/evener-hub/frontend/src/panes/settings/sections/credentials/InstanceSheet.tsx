@@ -32,7 +32,7 @@ import { errorText } from "../../../../protocol/errors";
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, useToasts } from "../../../../widgets";
+import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   credentialLayers,
@@ -456,6 +456,31 @@ export function InstanceSheet({
               fired in that window goes out against the name the write is
               moving away from - and the credential ones would recreate under
               it the orphan the rename just moved. */}
+          {(instance.models ?? []).length > 0 && (
+            <>
+              <h3>Models</h3>
+              <div className={CLASS.actionRows}>
+                {(instance.models ?? []).map((row) => (
+                  <div key={row.id} className={CLASS.fullRow}>
+                    <Switch
+                      label={row.id}
+                      checked={!row.disabled}
+                      disabled={busy || writesRefused}
+                      onChange={(checked) => {
+                        void credentialsStore
+                          .getState()
+                          .setModelDisabled({ name: instance.name, model: row.id, disabled: !checked })
+                          .then(
+                            () => toast.push("success", `${checked ? "Enabled" : "Disabled"} ${row.id}`),
+                            (err: unknown) => toast.push("error", `Model toggle failed: ${errorText(err)}`),
+                          );
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           <div className={CLASS.actionRows}>
             <div className={CLASS.fullRow}>
               <Button variant="quiet" onClick={onTestCredentials} disabled={busy || testCredentialsPending}>

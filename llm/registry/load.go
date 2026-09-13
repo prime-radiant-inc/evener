@@ -794,6 +794,9 @@ func foldModel(prev, src Model, presets map[string]Transport, where string) (Mod
 	if src.Protocol != "" || src.Transport != nil {
 		prev.Hidden = false
 	}
+	if src.Disabled != nil {
+		prev.Disabled = clonePointer(src.Disabled)
+	}
 	return prev, nil
 }
 
