@@ -3,7 +3,7 @@
 ## Status
 
 Approved in outline. Scope locked with Jesse on 2026-09-13, revised after
-design review (roborev job 9855):
+design reviews (roborev jobs 9855 and 9876):
 
 - **Entities:** shell jobs (`job_…`) and stable delegates (`dlg_…`) get a link
   plus a hover card; evener watches (`watch_…`) get a hover card only.
@@ -150,38 +150,74 @@ state the app already has or can already fetch.
 
 Sources are merged per entity id. Neither source outranks the other wholesale:
 
-- **Delegates.** Both the tree record and the live projection carry
-  `projectionRevision`. Keep the higher revision; on a tie prefer the live
-  `ThreadModel.delegates[]` record, which is the controller fold.
-- **Jobs.** The tree is the only structured source. A retained tree is
-  reusable only when `tree.revision === model.jobsTreeRevision`; otherwise the
-  index refetches. `evener/job/started`, `evener/job/finished`, and
-  `evener/jobs/treeUpdated` bump `jobsUpdatedAt`/`jobsTreeRevision` — they
-  invalidate the retained tree, they do not refresh it.
+- **Delegates.** `ActivityDelegate.projectionRevision` is optional on the tree
+  record; `EvenerDelegateInfo.projectionRevision` is required on the live
+  projection. Precedence: when both are numeric, keep the higher revision and
+  prefer the live `ThreadModel.delegates[]` record on a tie; when the tree
+  record lacks a revision, prefer the live projection; when the live model has
+  no such delegate, keep the tree record. A missing revision never drops a
+  record.
+- **Jobs.** The tree is the only structured source, and its freshness is not a
+  bare revision equality. See "Freshness tokens".
 - **Watches.** Ordered snapshots, last-present-wins; see "Watch snapshot
   ordering".
+
+### Freshness tokens
+
+The retained tree is reusable only when its fetch token still matches the
+model. A token is `(connectionGeneration, jobsUpdatedAt, jobsTreeRevision)`
+captured at fetch time. Revision equality alone is both too weak and too
+strong (`protocol/reducer.ts`, `stores/threads.ts`):
+
+- `evener/job/started` and `evener/job/finished` bump `jobsUpdatedAt` and leave
+  `jobsTreeRevision` untouched, so an equality test on `jobsTreeRevision` would
+  accept a tree that a job lifecycle already invalidated.
+- Hydration sets both fields to `null`, and `threadsStore.listJobs()` updates
+  neither, so a tree fetched before hydration would never satisfy
+  `tree.revision === model.jobsTreeRevision` and would be rejected forever.
+
+Rules:
+
+- Reuse a retained tree only when the model's `jobsUpdatedAt` and connection
+  generation equal the token's, and, when both `jobsTreeRevision` and the
+  tree's `revision` are non-null, those two are equal as well.
+- A null `jobsUpdatedAt` on the model means freshness is unknown. Unknown is
+  not fresh: mark the entry stale and make it eligible for a refetch under the
+  lazy-fetch rules, rather than accepting or perpetually rejecting it.
+- `evener/jobs/treeUpdated` bumps `jobsTreeRevision` (monotonic, ignoring
+  non-increasing revisions) and `jobsUpdatedAt`. Invalidations never refresh;
+  they only mark state for the next fetch.
 
 ### Refresh ownership and reconnect
 
 - The index owns its fetches. It never depends on the activity panel to fetch
-  for it, though it may read the panel's retained tree when that tree is
-  revision-fresh.
+  for it, though it may read the panel's retained tree when its freshness token
+  matches.
 - Every fetch carries a monotonic request ID; a response is applied only if it
   is still the newest for its ref and the connection generation is unchanged.
   This mirrors the existing request fencing in `stores/activitySummary.ts`.
 - One in-flight request per ref; a second request for the same ref joins it
   rather than issuing a duplicate.
+- Joining must not swallow a newer invalidation. Each fetch records the
+  invalidation token it was issued for; if a newer token arrives while it is in
+  flight, the entry is marked stale and exactly one follow-up fetch is queued
+  and issued after settlement. This mirrors `activitySummary.ts`'s `pendingBump`
+  drain and prevents an old response from publishing as newest after a job
+  finished mid-fetch.
 - On a connection generation change or reconnect, drop cached **foreign**
   trees and re-resolve. Foreign state must never be served across a generation
   boundary. Current-session state rehydrates through the normal thread path.
 
 ### Freshness: current session vs. foreign
 
-- **Current session** entities update live through the reducer and the
-  `jobsTreeRevision` bump, so their cards are current.
-- **Foreign** entities have no live push. They are refresh-on-fetch with a TTL
-  and are cleared on reconnect. A foreign card shows the fetch time and is
-  labeled as possibly stale.
+- **Current session** entities update live: `jobsUpdatedAt`/`jobsTreeRevision`
+  bumps and `delegates[]` patches flow through the reducer, so a card for a
+  current-session entity is current whenever its token matches.
+- **Foreign** entities have no live push. They are fetched on demand, carry a
+  TTL, and are cleared on reconnect or generation change. A foreign card shows
+  its fetch time and is labeled possibly stale.
+- When `jobsUpdatedAt` is null (pre-hydration), the entry is treated as stale
+  and re-resolved once the model hydrates, per "Freshness tokens".
 
 ## Normalized summary
 
@@ -196,8 +232,8 @@ type EntitySummary =
   output bytes, live flag.
 - `DelegateState`: lifecycle status, outcome, mandate (clamped), agent type,
   model, run start/end, quiet age, usage, resumable/attention.
-- `WatchState`: watching/ended/pending, condition, deliveries, source,
-  last-known snapshot flag.
+- `WatchState`: one of watching, pending, missing, ended, cleared, or terminal
+  catch-up; condition, deliveries, source, and a last-known snapshot flag.
 - `OpenTarget`: `{ ref: string; parentRef?: string }` — exactly what
   `openTranscript` takes.
 
@@ -209,14 +245,16 @@ no verified open target still renders a hover card and plain (unlinked) text;
 
 ### `EntityRef`
 
-`<EntityRef id={…} />` is the shared component for structured fields. It:
+`<EntityRef id={…} />` is the shared component for structured fields. It has
+exactly three rendering branches, and every surface uses whichever applies:
 
-- validates the id through `entityIds.ts`;
-- renders the id text as a button and, for jobs and delegates with an `open`
-  target, the standard `OpenButton` after it;
-- wraps the group in a hover-card trigger;
-- for watches, renders a focusable, non-opening trigger (see
-  "Accessibility") plus the hover card, with no `OpenButton`.
+1. **Unresolved** (invalid, unknown, or failed lookup): plain text. No card,
+   no link, no button.
+2. **Resolved, no open target** (a job or delegate without a verified owner,
+   and every watch): information-only. The id text is a focusable trigger with
+   a hover card and no open action.
+3. **Resolved with an open target** (job or delegate with a verified owner):
+   the id text is a button that opens, followed by the standard `OpenButton`.
 
 Accessible names stay specific ("Open job log", "Open delegate transcript"),
 matching the `OpenButton` contract.
@@ -250,19 +288,43 @@ item order — and let the latest snapshot win regardless of load order, so
 paging older history in never resurrects an older watching state over a newer
 ended one.
 
-Merge rules:
+Normalization must be **operation-aware**, because the four result shapes carry
+different fields (`agent/session_tools_jobs.go`, mirrored by `jobWatch.tsx`):
 
-- A later snapshot's present fields overwrite earlier ones; a missing field
-  never clears a present value.
-- A later terminal state (`watching:false` with `end_reason`, i.e. a clear or a
-  terminal catch-up) wins over any earlier create.
+- **create:** `watching:true`, `source`, and structured trigger fields
+  (`output_match`, `after_seconds`, `repeat_seconds`, `progress_interval_ms`,
+  `events`, `event_filter`), plus `note`, `watch_id`, and the
+  `replaced_existing`/`fired` markers. A terminal catch-up is a create mode
+  carrying `terminal_catchup:true`, `watching:false`, and `status`.
+- **clear:** `watching:false` with `watch_id` and a `replaced_existing` or
+  `fired` marker. It carries no `end_reason`.
+- **inspect:** `watching`, `source`, `condition`, `note`, `end_reason`,
+  `deliveries`, `created_at`. A miss is `{watch_id, watching:false}` with no
+  other marker.
+- **list:** `watches[]` / `recent_watches[]` of inspect-shaped rows.
+
+Classification uses the operation and the payload, not a single `end_reason`
+test. The display state is one of: watching, pending, missing, ended, cleared,
+terminal catch-up.
+
+Field presence is preserved before merging: an absent field stays absent and
+never clears a present one, and an absent `watching` is not coerced to `false`.
+The existing `normalizeRow` does coerce it and reads only inspect/list
+`condition`/`end_reason`, so it is insufficient as-is.
+
+Fold rules:
+
+- The latest positional snapshot wins; older snapshots never overwrite newer
+  ones.
+- Present fields overwrite; absent fields do not.
+- A later clear, terminal catch-up, or ended inspect wins over an earlier
+  create.
 - A later create carrying `replaced_existing` wins over an earlier create.
-- Snapshots from the same position are stable: the fold is deterministic and
-  idempotent.
+- The fold is deterministic and idempotent for equal positions.
 
-`jobWatch.tsx` already normalizes these rows (`WatchRow`, `normalizeRow`).
-Extract that pure normalizer to `src/protocol/watchRows.ts` and use it from
-both the renderer and `entityIndex`. Do not write a second parser.
+Extract this to `src/protocol/watchRows.ts` and use it from both
+`jobWatch.tsx` and `entityIndex`. The renderer's visible behavior must not
+change; the extraction is verified by `jobWatch`'s existing tests.
 
 ### Prose enhancement (agent Markdown)
 
@@ -337,12 +399,22 @@ already handles beside placement, pane dedup, and navigation context.
 
 ## Lazy fetch, caching, errors
 
-- **Trigger.** Fetch only when a rendered id is unresolved and a verified
-  owner ref is derivable. Never prefetch for ids that are not on screen.
-- **Dedup.** One in-flight request per ref; concurrent requests join.
-- **Cache.** Bounded LRU keyed by `ref` + tree revision. A foreign tree entry
-  is valid until evicted, its TTL expires, or the connection generation
-  changes.
+- **Discovery.** An unresolved job or delegate id on screen makes the current
+  session's tree eligible to load, because delegate ids carry no owner and
+  nested delegates are otherwise undiscoverable. Job ids additionally derive a
+  foreign owner (`local:<ownerSessionID>`).
+- **Refresh.** A resolved summary becomes eligible again when its freshness
+  token changes, its foreign TTL expires, or its negative-cache TTL expires.
+- **Dedup.** One in-flight request per ref; concurrent requests join it, and a
+  newer invalidation queues one follow-up fetch (see "Refresh ownership").
+- **Concurrency.** A global cap (start at 4) bounds requests across distinct
+  owner refs, with excess requests queued. Per-ref dedup alone does not bound a
+  transcript full of distinct owner ids.
+- **Cache.** Bounded LRU keyed by `ref` + freshness token. A foreign entry is
+  valid until evicted, its TTL expires, or the connection generation changes.
+- **Cancellation.** A fetch whose surface unmounts or is no longer visible is
+  abandoned and its result is not published. It may seed the cache only if its
+  token is still current.
 - **Negative cache.** A miss is remembered briefly (short TTL) and evicted
   under memory pressure, so a page full of unknown ids cannot produce a
   request per render.
@@ -362,15 +434,15 @@ storm from a transcript full of old ids.
 
 ## Accessibility and interaction
 
-- **Job and delegate.** The id button opens on Enter/Space. Both the id button
-  and the `OpenButton` are real focus targets and must each carry
-  `aria-describedby` pointing at the hover card while it is shown. Do not rely
-  on `Tooltip`'s single-child `cloneElement`; `EntityRef` wires the
-  association onto both controls explicitly.
-- **Watch.** The trigger is focusable and non-opening: a span with
-  `tabindex="0"` and `aria-describedby` pointing at the card. Focus reveals the
-  description, as `Tooltip` already does for its own triggers, and the trigger
-  introduces no open action.
+- **Branch 3 (navigable job or delegate).** The id button opens on
+  Enter/Space. Both the id button and the `OpenButton` are focus targets and
+  each carries `aria-describedby` pointing at the hover card while it is
+  shown. Do not rely on `Tooltip`'s single-child `cloneElement`; `EntityRef`
+  wires the association onto both controls explicitly.
+- **Branch 2 (information-only job, delegate, or watch).** The trigger is
+  focusable and non-opening: a span with `tabindex="0"` and
+  `aria-describedby` pointing at the card. Focus reveals the description, as
+  `Tooltip` already does for its own triggers, and introduces no open action.
 - Hidden on touch, where there is no hover, via the same CSS gate `Tooltip`
   uses.
 
@@ -396,25 +468,34 @@ matches.
 
 **Stage 2 — watch rows and index (`src/protocol/watchRows.ts`,
 `src/stores/entityIndex.ts` + tests).**
-Acceptance: job, delegate, and watch resolution from fixtures; delegate
-`projectionRevision` reconciliation; retained tree accepted only at the current
-`jobsTreeRevision`; cross-session job owner derivation; watch ordering by turn
-and item position, including older-history paging; last-present-wins field
-merge; request dedup and stale-response rejection; negative-cache behavior;
+Acceptance: operation-aware watch normalization for create, clear, inspect, and
+list, including terminal catch-up and the inspect-miss shape; field presence
+preserved (absent `watching` stays absent); job, delegate, and watch resolution
+from fixtures; delegate reconciliation when the tree record lacks a
+`projectionRevision`; retained tree accepted only on a matching freshness
+token, with a null `jobsUpdatedAt` treated as stale; an invalidation arriving
+during an outstanding fetch queues exactly one follow-up; cross-session job
+owner derivation; watch ordering by turn and item position, including
+older-history paging; request dedup, the global concurrency cap, unmount
+cancellation, and stale-response rejection; negative-cache behavior;
 `OpenTarget` values, including the no-verified-owner case.
 
 **Stage 3 — shared interaction (`src/widgets/hovercard/index.tsx`,
 `src/panes/session/transcript/EntityRef.tsx` + tests).**
-Acceptance: job/delegate render a link plus `OpenButton` and open the pane
-(assert against `workspaceStore`, as `agentFileLinks.test.tsx` does); click
-opens; watch renders a card with no button; `aria-describedby` lands on both
-job/delegate controls and on the watch trigger; card shows/hides on
-hover/focus/leave/blur and portals.
+Acceptance: the three branches render as specified: unresolved plain text;
+resolved-without-owner information-only (focusable, card, no button); resolved
+job/delegate link plus `OpenButton` that opens the pane (assert against
+`workspaceStore`, as `agentFileLinks.test.tsx` does). `aria-describedby` lands
+on both branch-3 controls and on every branch-2 trigger; the card shows/hides
+on hover/focus/leave/blur and portals.
 
 **Stage 4 — structured fields (`tools/jobTools.tsx`,
 `tools/delegateStatus.tsx`, `tools/jobWatch.tsx`).**
-Acceptance: each renderer links its id and resolves the right entity; watch
-rows use the full id as key and the clipped id as text.
+Acceptance: `jobTools` and `delegateStatus` render a branch-3 link when an open
+target exists and a branch-2 trigger otherwise, resolving the right entity;
+`jobWatch` rows are branch 2 only (never linked) and use the full id as the
+resolution key with the clipped id as display text. `jobWatch`'s existing tests
+still pass after the normalization extraction.
 
 **Stage 5 — prose enhancement, separate change (`EntityText.tsx`, then
 `messages/AgentMarkdown.tsx` and `messages/UserMessageItem.tsx`).**
