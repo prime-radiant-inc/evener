@@ -6,7 +6,7 @@ From the repository root, install the native and protocol dependencies and run t
 
 ```sh
 npm ci --prefix mobile-native
-npm ci --prefix cmd/evener-hub/frontend/src/protocol
+npm ci --prefix appwire-client/typescript
 make test-native test-api-package
 ```
 

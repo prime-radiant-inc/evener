@@ -187,7 +187,7 @@ lint-gofmt:
 ## fails-when: `make generate` exits nonzero, an expected output is no longer
 ##   tracked, or regenerated output differs from what is committed.
 lint-generated:
-	$(call run_quiet_lint,$(MAKE) generate && { outputs='docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md'; git ls-files --error-unmatch -- $$outputs >/dev/null && git diff --exit-code HEAD -- $$outputs || { echo "the paths above are untracked or differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
+	$(call run_quiet_lint,$(MAKE) generate && { outputs='docs/appwire-protocol.md appwire-client/typescript/types.gen.ts docs/developing-evener/README.md docs/developing-evener/building.md docs/developing-evener/testing.md docs/developing-evener/linting.md docs/developing-evener/fuzzing.md docs/developing-evener/coverage.md'; git ls-files --error-unmatch -- $$outputs >/dev/null && git diff --exit-code HEAD -- $$outputs || { echo "the paths above are untracked or differ from HEAD. make generate has already run; the fix is to commit that diff - it is either a regenerated table or a hand-written edit inside one of these files."; exit 1; }; })
 
 # lint-fuzz-registry wraps the SAME check as `make fuzz-registry-check`
 # (scripts/fuzz/fuzz-registry-check.sh) so a native/Rapid fuzz target that

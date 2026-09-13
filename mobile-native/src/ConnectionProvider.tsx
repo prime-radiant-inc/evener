@@ -13,8 +13,8 @@ import { AppState } from "react-native";
 import type {
 	AppwireClient,
 	ConnectionState,
-} from "../../cmd/evener-hub/frontend/src/protocol/client";
-import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
+} from "../../appwire-client/typescript/client";
+import type { WebSocketLike } from "../../appwire-client/typescript/transport";
 import {
 	createHubClient,
 	type HubInput,

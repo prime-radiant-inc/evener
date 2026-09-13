@@ -1,5 +1,5 @@
-import { AppwireClient } from "../../cmd/evener-hub/frontend/src/protocol/client";
-import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
+import { AppwireClient } from "../../appwire-client/typescript/client";
+import type { WebSocketLike } from "../../appwire-client/typescript/transport";
 
 export interface HubProfile {
 	id: string;

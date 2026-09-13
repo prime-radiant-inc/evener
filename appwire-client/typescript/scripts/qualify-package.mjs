@@ -26,42 +26,20 @@ async function qualify() {
     ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
     consumerDir,
   );
-  // Every module the package ships. docContent.ts is here too: it names no
-  // browser global at all - readDocFile takes the host's DocPort - so the
-  // module loads and its URL builders, size cap and error type run in a bare
-  // Node consumer. The runner never calls readDocFile: a port implies a
-  // request, and qualification makes none.
-  const shippedModules = [
-    "index",
-    "client",
-    "clientLike",
-    "errors",
-    "transport",
-    "types.gen",
-    "askAnswers",
-    "askShared",
-    "deriveAskQuestions",
-    "reconcileBatches",
-    "attachmentMarkers",
-    "composerInput",
-    "activityData",
-    "activityList",
-    "activityMerge",
-    "activityRows",
-    "itemFailure",
-    "jobOutput",
-    "model",
-    "reducer",
-    "sendQueueAvailability",
-    "sessionErrors",
-    "stableDelegate",
-    "docContent",
-    "submitRouting",
-    "displayFormat",
-    "toolCallText",
-    "catalogCommands",
-    "slashCompletion",
-  ];
+  // Every module the package ships, read off the build's own file list rather
+  // than restated here: the two were duplicates of each other, and a module
+  // added to the build and forgotten here was shipped without ever being
+  // reachability-checked (#1224). docContent.ts is in that list too, and is
+  // fine to load: it names no browser global at all - readDocFile takes the
+  // host's DocPort - so the module's URL builders, size cap and error type run
+  // in a bare Node consumer. The runner never calls readDocFile: a port implies
+  // a request, and qualification makes none.
+  const buildConfig = JSON.parse(readFileSync(join(packageDir, "tsconfig.build.json"), "utf8"));
+  const shippedModules = (buildConfig.files ?? [])
+    .filter((file) => file.endsWith(".ts"))
+    .map((file) => file.slice(0, -3));
+  assert(shippedModules.includes("index"), "tsconfig.build.json must compile index.ts - it is the package root entry");
+  assert(shippedModules.length > 1, "tsconfig.build.json lists no modules to qualify");
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
   // providing fails here instead of in somebody's consumer. Whether each
@@ -134,6 +112,7 @@ async function qualify() {
     "isActionUnavailable",
     "isThreadNotFound",
     "stableDelegateDisplayStatus",
+    "canReadSharedNotes",
     "DOC_FILE_MAX_BYTES",
     "DocFileError",
     "docFileRawURL",
@@ -307,6 +286,10 @@ assert.deepEqual(client.spliceSlashCommand("say /rev", slashToken, "/acme:review
   text: "say /acme:review ",
   caret: 17,
 });
+assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }), true);
+assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
+assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
+assert.equal(client.canReadSharedNotes(undefined), false);
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
