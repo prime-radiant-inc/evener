@@ -151,3 +151,36 @@ test("a failed-status turn without an error object never closes either", () => {
   const closers = exchangeClosersFor([failed, turn("t2", [item("u2", "userMessage")])]);
   expect(closers.size).toBe(0);
 });
+
+test("a failed continuation turn poisons the exchange: earlier prose never closes", () => {
+  const failedContinuation = turn("t2", [item("c1", "commandExecution", { status: "completed" })]);
+  failedContinuation.status = "interrupted";
+  const closers = exchangeClosersFor([
+    turn("t1", [item("u1", "userMessage"), item("a1", "agentMessage")]),
+    failedContinuation,
+    turn("t3", [item("u2", "userMessage")]),
+  ]);
+  expect(closers.size).toBe(0);
+});
+
+test("later good prose after a failed turn in the same exchange still never closes", () => {
+  const failed = turn("t1", [item("u1", "userMessage")]);
+  failed.status = "interrupted";
+  const closers = exchangeClosersFor([
+    failed,
+    turn("t2", [item("a2", "agentMessage")]),
+    turn("t3", [item("u2", "userMessage")]),
+  ]);
+  expect(closers.size).toBe(0);
+});
+
+test("the next user message starts a clean exchange after a poisoned one", () => {
+  const failedContinuation = turn("t2", [item("c1", "commandExecution", { status: "completed" })]);
+  failedContinuation.status = "interrupted";
+  const closers = exchangeClosersFor([
+    turn("t1", [item("u1", "userMessage"), item("a1", "agentMessage")]),
+    failedContinuation,
+    turn("t3", [item("u2", "userMessage"), item("a2", "agentMessage")]),
+  ]);
+  expect([...closers]).toEqual(["a2"]);
+});

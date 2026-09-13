@@ -17,12 +17,18 @@ export function exchangeClosersFor(turns: TurnModel[]): ReadonlySet<string> {
   // live turn later in the exchange all hold it off until everything
   // settles. Reset per exchange like pending.
   let exchangeLive = false;
+  // A failed or interrupted turn poisons its whole exchange: the exchange
+  // ended abnormally, so even earlier settled prose must not wear the
+  // concluded-work wash. Reset only when the next userMessage opens a new
+  // exchange (roborev PR 1260).
+  let exchangeFailed = false;
 
   const flush = () => {
-    if (pending !== undefined && !exchangeLive) closers.add(pending);
+    if (pending !== undefined && !exchangeLive && !exchangeFailed) closers.add(pending);
     pending = undefined;
     inExchange = false;
     exchangeLive = false;
+    exchangeFailed = false;
   };
 
   for (const turn of turns) {
@@ -54,6 +60,10 @@ export function exchangeClosersFor(turns: TurnModel[]): ReadonlySet<string> {
     // Evaluated after the item scan so a turn that OPENS the exchange
     // mid-turn still counts as live work.
     if (turn.status === "inProgress" && inExchange) exchangeLive = true;
+    // A failed or interrupted turn poisons the exchange it belongs to -
+    // evaluated after the scan for the same mid-turn-open reason. A failed
+    // turn before any exchange opens nothing, so it poisons nothing.
+    if (failed && inExchange) exchangeFailed = true;
   }
   flush();
 
