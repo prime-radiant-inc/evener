@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -449,6 +450,9 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	if !runnable {
 		return "", false, nil
 	}
+	if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
+		return "", false, err
+	}
 	if onRunnable != nil {
 		onRunnable(turnID)
 	}
@@ -458,6 +462,21 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	}
 	ctx = withQueuedClientMutation(ctx, claimed)
 	result, err := s.ProcessInputKind(ctx, claimed.Text, claimed.Images, EntryUserInput)
+	// The claim above spends a turn of the budget and the turn loop's gate can
+	// refuse after it, when poisoning lands in between. Give the claim back
+	// rather than leave it spent on a turn that never ran.
+	//
+	// Keyed on the poisoned error alone, deliberately. Every other
+	// pre-incorporation failure either unwinds where it happened or is reclaimed
+	// by startup recovery, and a wider key would return a claim whose turn is
+	// already recorded in the transcript — an incorporation marking that fails
+	// after the entry is durable would run the start twice.
+	if errors.Is(err, transcript.ErrWriterPoisoned) &&
+		!s.clientMutationUserTranscriptIncorporated(claimed.ClientMutationID, claimed.StableTurnID) {
+		if returnErr := s.returnClaimedClientMutationStart(claimed.ClientMutationID); returnErr != nil {
+			err = errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
+		}
+	}
 	return result, true, err
 }
 

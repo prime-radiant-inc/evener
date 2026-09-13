@@ -52,7 +52,13 @@ type AppEventProjector struct {
 	nextTurn       int
 	nextItem       int
 	reservedTurnID string
-	activeTurnID   string
+	// reservedTurnIDIsStable records that reservedTurnID came from outside the
+	// "turn_%d" sequence (a durable client-mutation id, or an environment
+	// entry's own id) rather than from ReserveTurnID. Such a turn still
+	// occupies an entry index in the cold projection, so startTurn spends a
+	// number for it; a reservation the counter minted already spent its own.
+	reservedTurnIDIsStable bool
+	activeTurnID           string
 	// anyTurnStarted records whether a REAL turn has ever started in this
 	// projector's life. It is the chronologically honest half of the prelude
 	// test in preTurnAnnouncementTurnID: nextTurn alone cannot answer "has
@@ -260,6 +266,26 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	}
 
 	switch event.Kind {
+	case events.EventEnvironment:
+		data := eventData[events.EnvironmentData](event.Data)
+		if strings.TrimSpace(data.Text) == "" {
+			return nil
+		}
+		// Environment context is a standalone saved turn, not a runnable
+		// work carrier. Close its group before the following user input.
+		reserved := p.reservedTurnID
+		wasRealTurnStarted := p.anyTurnStarted
+		p.reservedTurnID = ""
+		_, out := p.openTurn(data.TurnID, event.Timestamp)
+		// Environment context is persisted metadata, not a runnable turn. Keep
+		// prelude and reserved-turn state based on real work only.
+		p.anyTurnStarted = wasRealTurnStarted
+		out = append(out, p.systemAnnouncement(appwire.ThreadItemEventKindEnvironment, "Environment", data.Text)...)
+		out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
+		// The environment has its own durable identity and cannot consume
+		// the runnable identity already advertised for the following input.
+		p.reservedTurnID = reserved
+		return out
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
 		if data.TaskStoreOwnerSessionID != "" {
@@ -1989,6 +2015,7 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 	out := p.closeActiveTurn(appwire.TurnStatusCompleted)
 	if stableID != "" {
 		p.reservedTurnID = stableID
+		p.reservedTurnIDIsStable = true
 	}
 	turnID := p.startTurn()
 	return turnID, append(out, p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
@@ -2058,9 +2085,21 @@ func (p *AppEventProjector) resetProvisionalCommunicates() []AppNotification {
 }
 
 func (p *AppEventProjector) startTurn() string {
+	// Every started turn spends exactly one number, whatever it ends up being
+	// called. internal/apptranscript numbers a persisted turn by its ENTRY
+	// INDEX and falls back to "turn_%d" only for entries carrying no durable
+	// id, so a turn named by its own stable id still consumes an index there;
+	// skip it here and the next turn this projector names itself lands on a
+	// number the replay already gave to an earlier entry. A reservation the
+	// counter minted (ReserveTurnID) already spent its number, so only a
+	// stable id installed from outside the sequence spends one now.
 	if p.reservedTurnID != "" {
+		if p.reservedTurnIDIsStable {
+			p.nextTurn++
+		}
 		p.activeTurnID = p.reservedTurnID
 		p.reservedTurnID = ""
+		p.reservedTurnIDIsStable = false
 	} else {
 		p.nextTurn++
 		p.activeTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
@@ -2135,8 +2174,14 @@ func (p *AppEventProjector) ReserveTurnID() string {
 	if p.reservedTurnID != "" {
 		return p.reservedTurnID
 	}
+	// Spends the number at reservation time: the id is handed to a client
+	// before the turn runs, so it must not be mintable again -- a released
+	// reservation is never reissued (TestServerAppWireFailedDurableReplacement
+	// ReleasesOwnedGenericReservation), and an unrelated turn opening in
+	// between must not land on it.
 	p.nextTurn++
 	p.reservedTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
+	p.reservedTurnIDIsStable = false
 	return p.reservedTurnID
 }
 
@@ -2154,10 +2199,12 @@ func (p *AppEventProjector) ReserveStableTurnID(turnID string) {
 	if oldTurnID != "" {
 		p.activeTurnID = oldTurnID
 		p.reservedTurnID = ""
+		p.reservedTurnIDIsStable = false
 		p.pendingNotifications = append(p.pendingNotifications, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
 	}
 	p.activeTurnID = ""
 	p.reservedTurnID = turnID
+	p.reservedTurnIDIsStable = true
 }
 
 func (p *AppEventProjector) ReservedTurnID() string {
@@ -2167,6 +2214,7 @@ func (p *AppEventProjector) ReservedTurnID() string {
 func (p *AppEventProjector) ReleaseReservedTurnID(turnID string) {
 	if p.reservedTurnID == turnID {
 		p.reservedTurnID = ""
+		p.reservedTurnIDIsStable = false
 	}
 }
 

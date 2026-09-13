@@ -383,6 +383,12 @@ type testConfig struct {
 	// recordings in that window. Nil in production.
 	beforeFoldTranscriptCommit func()
 
+	// beforeEnvironmentEventPublish observes an environment append at the
+	// moment it is about to publish its live event, so a test can state where
+	// that publication sits relative to the transcript ordering boundary.
+	// Nil in production.
+	beforeEnvironmentEventPublish func()
+
 	// afterFoldSupersessionCheck observes a fold flush immediately after it
 	// has evaluated whether a newer publication supersedes it and before it
 	// runs its last-write-wins side effects. Tests use it only to place a

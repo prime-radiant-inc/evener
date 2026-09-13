@@ -589,8 +589,7 @@ func (s *Session) maybeAppendNotesContext() {
 // previously appended NOTES_CONTEXT turns, so the model loses whatever state
 // was last projected. Clearing forces the next maybeAppendNotesContext call
 // to re-emit the full current block rather than staying silent on state the
-// model can no longer see. Mirrors
-// resetEnvContextTrackerAfterCompaction's contract for ENVIRONMENT turns.
+// model can no longer see.
 func (s *Session) resetNotesProjectionAfterCompaction() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

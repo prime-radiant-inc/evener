@@ -821,6 +821,12 @@ type SessionURLData struct {
 	AddedAt int64  `json:"added_at,omitempty"`
 }
 
+// EnvironmentData is the payload for an EventEnvironment event.
+type EnvironmentData struct {
+	TurnID string `json:"turn_id"`
+	Text   string `json:"text"`
+}
+
 // TurnEndedData is the payload for an EventTurnEnded event.
 type TurnEndedData struct {
 	TurnDurationMS int64 `json:"turn_duration_ms"`

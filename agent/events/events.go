@@ -23,6 +23,8 @@ const (
 	EventSessionEnd EventKind = "SESSION_END"
 	// EventUserInput carries a user input turn.
 	EventUserInput EventKind = "USER_INPUT"
+	// EventEnvironment carries a persisted environment-context update.
+	EventEnvironment EventKind = "ENVIRONMENT"
 	// EventAssistantTextStart marks the start of an assistant text response.
 	EventAssistantTextStart EventKind = "ASSISTANT_TEXT_START"
 	// EventAssistantTextDelta carries an incremental chunk of assistant text.
