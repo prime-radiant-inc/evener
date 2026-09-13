@@ -882,6 +882,12 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodGoalSet, func(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 		return setGoalWithResume(ctx, cfg, sources, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodNotesHumanSet, func(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+		return setNotesHumanWithResume(ctx, cfg, sources, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodUrlsRemove, func(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+		return removeURLWithResume(ctx, cfg, sources, params)
+	})
 }
 
 // registerAuthHandlers registers the evener/auth/* RPC handlers, routed to the

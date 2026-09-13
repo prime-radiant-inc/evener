@@ -9,17 +9,25 @@ export interface SessionPanelParams {
   ref: string;
 }
 
-export type SessionPanelKind = "tasks" | "activity" | "details";
+export type SessionPanelKind = "tasks" | "activity" | "details" | "notes";
 
 /** The single title grammar shared by the pane registry and PaneScaffold. */
 export function sessionPanelTitle(kind: SessionPanelKind, ref: string, name?: string): string {
-  const label = kind === "tasks" ? "Tasks" : kind === "activity" ? "Activity" : "Details";
+  const label = kind === "tasks" ? "Tasks" : kind === "activity" ? "Activity" : kind === "notes" ? "Notes" : "Details";
   return `${label} · ${name || ref}`;
 }
 
 /** The workspace pane type each panel kind opens (SessionMenu, rail rows). */
-export function sessionPanelPaneType(kind: SessionPanelKind): "sessionTasks" | "sessionActivity" | "sessionDetails" {
-  return kind === "tasks" ? "sessionTasks" : kind === "activity" ? "sessionActivity" : "sessionDetails";
+export function sessionPanelPaneType(
+  kind: SessionPanelKind,
+): "sessionTasks" | "sessionActivity" | "sessionDetails" | "sessionNotes" {
+  return kind === "tasks"
+    ? "sessionTasks"
+    : kind === "activity"
+      ? "sessionActivity"
+      : kind === "notes"
+        ? "sessionNotes"
+        : "sessionDetails";
 }
 
 const pane = (kind: SessionPanelKind) =>
@@ -48,4 +56,10 @@ registerPane<SessionPanelParams>({
   id: "sessionDetails",
   title: panelTitle("details"),
   component: pane("details"),
+});
+
+registerPane<SessionPanelParams>({
+  id: "sessionNotes",
+  title: panelTitle("notes"),
+  component: pane("notes"),
 });

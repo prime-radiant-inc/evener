@@ -433,6 +433,25 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			Ref:      p.ref,
 			Goal:     state,
 		})}
+	case events.EventNotesUpdated:
+		data := eventData[events.NotesUpdatedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyEvenerNotesUpdated, appwire.NotesUpdatedParams{
+			ThreadID:  p.threadID,
+			Ref:       p.ref,
+			HumanNote: data.HumanNote,
+			AgentNote: data.AgentNote,
+		})}
+	case events.EventUrlsUpdated:
+		data := eventData[events.UrlsUpdatedData](event.Data)
+		urls := make([]appwire.SessionURL, 0, len(data.URLs))
+		for _, u := range data.URLs {
+			urls = append(urls, appwire.SessionURL{ID: u.ID, URL: u.URL, Label: u.Label, AddedBy: u.AddedBy, AddedAt: u.AddedAt})
+		}
+		return []AppNotification{p.notification(appwire.NotifyEvenerUrlsUpdated, appwire.UrlsUpdatedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			URLs:     urls,
+		})}
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
 		out := p.ensureTurn(event.Timestamp)

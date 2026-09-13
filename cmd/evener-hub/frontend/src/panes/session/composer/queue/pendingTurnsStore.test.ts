@@ -51,6 +51,7 @@ function thread(overrides: Partial<Thread> = {}): Thread {
         changeVisionModel: true,
         queue: true,
         goal: true,
+        sharedNotes: true,
         rename: true,
       },
       queue: { revision: 1 },

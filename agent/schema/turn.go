@@ -57,6 +57,13 @@ const (
 	// because it is only ever appended (never edited) it preserves
 	// provider prompt caches. UIs render it as harness chrome, not user speech.
 	TurnEnvironment TurnKind = "ENVIRONMENT"
+	// TurnNotesContext is a harness-injected shared-notes snapshot (human and
+	// agent whiteboards plus the session URL list). Like TurnEnvironment it IS
+	// model-bound: expandHistory passes its user-role message through, and it
+	// is only ever appended (never edited) so provider prompt caches survive.
+	// UIs render it as harness chrome, not user speech. The persisted note is
+	// the source of truth; each turn carries a fresh projection of it.
+	TurnNotesContext TurnKind = "NOTES_CONTEXT"
 	// TurnAttentionResolution records the terminal disposition of one durable
 	// attention item. Provider projection excludes it; generic presentation may
 	// retain the marker while hiding its private metadata.

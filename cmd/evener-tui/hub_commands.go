@@ -107,6 +107,21 @@ type hubGoalMsg struct {
 	err     error
 }
 
+// hubNotesMsg reports the result of a notes/human/set call. cleared
+// distinguishes the clear path (empty note) from setting a note; note carries
+// the stored (post-clamp) value the daemon converges on.
+type hubNotesMsg struct {
+	note    string
+	cleared bool
+	err     error
+}
+
+// hubURLRemoveMsg reports the result of a urls/remove call.
+type hubURLRemoveMsg struct {
+	id  string
+	err error
+}
+
 // hubForkMsg reports the result of a thread/fork call. aside distinguishes the
 // /aside tip-fork (side thread) from the divergent fork-from-turn flow so
 // failures are attributed to the right command.
@@ -1121,6 +1136,159 @@ func hubGoalStatusText(goal *appwire.GoalState) string {
 		return "No goal set. Use /goal <objective> to set one."
 	}
 	return fmt.Sprintf("Goal: %s %d", goal.Status, goal.Iterations)
+}
+
+// sendHubNotes issues notes/human/set to set (empty note ⇒ clear) the
+// session's human whiteboard. It mirrors sendHubGoal: a thin async command
+// that reports its result so the update loop can surface a system message.
+// The authoritative state arrives via the evener/notes/updated push.
+func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expectedInstanceID string) tea.Cmd {
+	mutationID, idErr := newClientMutationID()
+	cleared := strings.TrimSpace(note) == ""
+	return func() tea.Msg {
+		if idErr != nil {
+			return hubNotesMsg{cleared: cleared, err: idErr}
+		}
+		resp, err := client.NotesHumanSet(context.Background(), appwire.NotesHumanSetParams{
+			Ref:                ref.String(),
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: expectedInstanceID,
+			Note:               note,
+		})
+		return hubNotesMsg{note: resp.Note, cleared: cleared, err: err}
+	}
+}
+
+// sharedNotesDispatchRefusal returns the immediate refusal message for a
+// mutating shared-notes command on the cached session, or "" when dispatch may
+// proceed. It consults sharedNotesLiveAvailable — the predicate behind the
+// registry's Available hooks — so dispatch and availability cannot drift. A
+// source that does not advertise the capability says so; a session that only
+// cannot change notes keeps the command's existing session-level message.
+func (m *hubModel) sharedNotesDispatchRefusal(sessionMessage string) string {
+	ctx := hubCommandContext{mode: hubModeSession, caps: m.detail.Capabilities, live: m.detail.Live, state: m.detail.State}
+	if available, _ := sharedNotesLiveAvailable(ctx); available {
+		return ""
+	}
+	if !m.detail.Capabilities.SharedNotes {
+		return "This source does not advertise shared notes."
+	}
+	return sessionMessage
+}
+
+// runHubNotes dispatches the /notes command: a bare `clear` (any case)
+// clears the human note and anything else sets it as the note text —
+// including the literal word "clear" in any case, which needs an explicit
+// escape (`/notes "clear"`) since the bare word is reserved. Empty args show
+// usage instead of clearing: a palette-invoked /notes with no text must
+// never wipe the note (nor wake the agent with a steer for a clear nobody
+// asked for).
+func (m *hubModel) runHubNotes(args string) tea.Cmd {
+	if refusal := m.sharedNotesDispatchRefusal("Note editing is not available for this session."); refusal != "" {
+		m.addSessionSystem(refusal)
+		return nil
+	}
+	arg := strings.TrimSpace(args)
+	if arg == "" {
+		m.addSessionSystem(hubNotesUsage(m.detail))
+		return nil
+	}
+	ref, ok := m.currentRef()
+	if !ok {
+		m.addSessionSystem("Session ref is invalid.")
+		return nil
+	}
+	note := arg
+	if strings.EqualFold(arg, "clear") {
+		note = ""
+	} else if unquoted, ok := hubNotesUnquote(arg); ok {
+		note = unquoted
+	}
+	return sendHubNotes(m.client, ref, note, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
+}
+
+// hubNotesUnquote strips one pair of matching single or double quotes around
+// the reserved word (any case), so the bare-`clear` reservation keeps an
+// escape path for the literal word. Anything else passes through untouched:
+// quoting is an opt-in escape, not a string syntax — `/notes "hello world"`
+// sets the quotes verbatim.
+func hubNotesUnquote(arg string) (string, bool) {
+	trimmed := strings.TrimSpace(arg)
+	if len(trimmed) < 7 {
+		return "", false
+	}
+	for _, quote := range []string{`"`, `'`} {
+		if strings.HasPrefix(trimmed, quote) && strings.HasSuffix(trimmed, quote) && len(trimmed) >= 2 {
+			inner := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			if strings.EqualFold(inner, "clear") {
+				return inner, true
+			}
+		}
+	}
+	return "", false
+}
+
+// hubNotesIdleWakeWarning names the turn/steer cost of saving on an idle
+// session (design spec §Wire RPCs): the injected steering-carrier turn wakes
+// the session. hubNotesUsage appends it to the /notes usage output while the
+// session is live and idle, mirroring the web Details editor's own warning.
+const hubNotesIdleWakeWarning = "Saving will wake the agent."
+
+// hubNotesIdleWake reports whether the /notes idle warning applies: the
+// session is live AND its wire status is idle, mirroring the web Details
+// editor's live-plus-idle predicate.
+func hubNotesIdleWake(detail hubSessionDetail) bool {
+	return detail.Live && detail.State == appwire.ThreadStatusIdle
+}
+
+// hubNotesUsage renders the /notes usage line, plus the idle-wake warning
+// when the session is live and idle.
+func hubNotesUsage(detail hubSessionDetail) string {
+	usage := "Usage: /notes <text> or /notes clear"
+	if hubNotesIdleWake(detail) {
+		usage += "\n" + hubNotesIdleWakeWarning
+	}
+	return usage
+}
+
+// sendHubURLRemove issues urls/remove to remove one session URL list entry by
+// id. It mirrors sendHubNotes: a thin async command reporting its result so
+// the update loop can surface a system message. The authoritative list
+// arrives via the evener/urls/updated push.
+func sendHubURLRemove(client *appwire.Client, ref appwire.Ref, id string, expectedInstanceID string) tea.Cmd {
+	mutationID, idErr := newClientMutationID()
+	return func() tea.Msg {
+		if idErr != nil {
+			return hubURLRemoveMsg{id: id, err: idErr}
+		}
+		_, err := client.UrlsRemove(context.Background(), appwire.UrlsRemoveParams{
+			Ref:                ref.String(),
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: expectedInstanceID,
+			ID:                 id,
+		})
+		return hubURLRemoveMsg{id: id, err: err}
+	}
+}
+
+// runHubURLRemove dispatches the /url-remove command, which takes the URL
+// entry id to remove.
+func (m *hubModel) runHubURLRemove(args string) tea.Cmd {
+	if refusal := m.sharedNotesDispatchRefusal("URL removal is not available for this session."); refusal != "" {
+		m.addSessionSystem(refusal)
+		return nil
+	}
+	id := strings.TrimSpace(args)
+	if id == "" {
+		m.addSessionSystem("Usage: /url-remove <id>")
+		return nil
+	}
+	ref, ok := m.currentRef()
+	if !ok {
+		m.addSessionSystem("Session ref is invalid.")
+		return nil
+	}
+	return sendHubURLRemove(m.client, ref, id, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
 }
 
 func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) tea.Cmd {
