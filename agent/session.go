@@ -734,11 +734,21 @@ type Session struct {
 	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
 	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	// shared-notes state (human/agent whiteboards plus URL list)
-	agentNote           string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
-	sessionURLs         []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
-	pendingInstructions string              // compaction_instructions awaiting the round-tail force
-	forceRequested      bool                // a compact tool call is pending this round
-	nudgedSinceCompact  bool                // warning-nudge latch; reset on any compaction
+	agentNote   string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
+	sessionURLs []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
+	// notesCommitted is the last committed notes cut — human note, agent note,
+	// URL list, and ever-projected flag installed together. Readers (Meta, the
+	// projection snapshot, notes_read) take one atomic load, so they never
+	// straddle a mutation and never observe a value whose metadata save has not
+	// landed. Publishers store a new cut only at commit points: session
+	// construction/restore, after a notes mutation's metadata save returns nil,
+	// when SetHumanNote commits, and when a projection marks the store as ever
+	// projected. The live fields above remain the staging store for mutators;
+	// this pointer is the readers' view. The value is never mutated in place.
+	notesCommitted      atomic.Pointer[committedNotesState]
+	pendingInstructions string // compaction_instructions awaiting the round-tail force
+	forceRequested      bool   // a compact tool call is pending this round
+	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
 
 	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
 	// uses contextMgr.ElicitNote (Variant B of the forced-note mechanism — see
@@ -2166,7 +2176,13 @@ func (s *Session) autoSaveMetaLocked() error {
 }
 
 func (s *Session) saveSessionMetaLocked() error {
-	meta := s.Meta()
+	// The metadata write is the durability point for a notes mutation whose
+	// value is still staged in the live store, so persist the live store.
+	// Meta() reports the published committed cut to readers; handing that to
+	// this write would persist the pre-mutation notes and lose the mutation on
+	// the next restore.
+	human, agentNote, urls, _ := s.notesLiveSnapshot()
+	meta := s.metaWithNotes(human, agentNote, urls)
 	if fs := s.cfg.testOnly.metaFS; fs != nil {
 		return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
 	}

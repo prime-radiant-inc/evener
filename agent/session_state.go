@@ -102,9 +102,21 @@ func cumulativeUsageSnapshot(u llm.Usage) schema.CumulativeUsage {
 }
 
 // Meta returns the current session metadata without the conversation history.
+// Its notes fields are the published committed cut, so an envelope sample taken
+// while a notes mutation is mid-save sees the pre-mutation values instead of
+// the staged ones.
 func (s *Session) Meta() schema.SessionMeta {
+	human, agentNote, urls, _ := s.notesProjectionSnapshot()
+	return s.metaWithNotes(human, agentNote, urls)
+}
+
+// metaWithNotes is Meta with an explicit notes cut. Meta passes the published
+// committed cut; saveSessionMetaLocked passes the live staged store, because
+// that write is the durability point for a mutation whose value is still
+// staged — handing it the published cut would persist the pre-mutation value
+// and lose the mutation on the next restore.
+func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionURL) schema.SessionMeta {
 	originalPrompt := s.extractOriginalPrompt()
-	human, _ := s.notesSnapshot()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -165,8 +177,8 @@ func (s *Session) Meta() schema.SessionMeta {
 		Goal:                     s.goalSnapshotForMeta(),
 		PinnedNote:               s.pinnedNote,
 		HumanNote:                human,
-		AgentNote:                s.agentNote,
-		SessionURLs:              append([]schema.SessionURL(nil), s.sessionURLs...),
+		AgentNote:                agentNote,
+		SessionURLs:              append([]schema.SessionURL(nil), urls...),
 		WorktreePath:             s.worktreeCurrentPath,
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,

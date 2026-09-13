@@ -303,6 +303,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
+	// Publish the first committed notes cut before anything can read one: a
+	// fresh session's live store is empty, and its mutation store may already
+	// carry a canonical human note for a reserved session id.
+	s.seedCommittedNotes()
 	if inheritedContext != nil {
 		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
 		// The inherited prefix comes from the parent's transcript, which keeps the
@@ -1045,6 +1049,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.origin = meta.Origin
 
 	s.restoreDurableClientMutationQueues()
+	// Seed the published committed cut from the restored store: readers must
+	// see the restored notes (and the mutation store's canonical human note)
+	// without waiting for the next mutation to publish.
+	s.seedCommittedNotes()
 
 	// ask_user root-only gating (spec §7.1): a bare `serve --resume
 	// <delegate-id>` restores with an empty spawn carrier (spawn is json:"-",
