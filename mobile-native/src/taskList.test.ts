@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
-import type { AnyNotification } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import { WireError } from "../../appwire-client/typescript/errors";
+import type { AnyNotification } from "../../appwire-client/typescript/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { TaskList } from "./taskList";
 

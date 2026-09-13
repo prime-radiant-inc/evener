@@ -1,4 +1,4 @@
-import type { LaunchOption } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { LaunchOption } from "../../appwire-client/typescript/types.gen";
 export const scalarKinds = new Set([
   "text",
   "multilineText",

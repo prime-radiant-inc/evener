@@ -10,12 +10,16 @@
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/pendingTurnsStore";
-import Session from "../panes/session/Session";
-import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../panes/session/transcript/types";
-import { ClientProvider } from "../shell/clientContext";
-import { connectionStore } from "../stores/connection";
-import { resetThreadsStoreForTests } from "../stores/threads";
+import { flushPendingTurnsProjectionForTests } from "../../cmd/evener-hub/frontend/src/panes/session/composer/queue/pendingTurnsStore";
+import Session from "../../cmd/evener-hub/frontend/src/panes/session/Session";
+import {
+  type ItemRenderProps,
+  ignoringTurn,
+  registerItemRenderer,
+} from "../../cmd/evener-hub/frontend/src/panes/session/transcript/types";
+import { ClientProvider } from "../../cmd/evener-hub/frontend/src/shell/clientContext";
+import { connectionStore } from "../../cmd/evener-hub/frontend/src/stores/connection";
+import { resetThreadsStoreForTests } from "../../cmd/evener-hub/frontend/src/stores/threads";
 import { applyNotification } from "./reducer";
 import { FakeClient } from "./testing/fakeClient";
 import { buildFloodChunks, buildFloodStream, hydrateFloodModel } from "./testing/tokenFlood";

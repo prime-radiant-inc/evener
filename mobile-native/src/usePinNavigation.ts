@@ -7,7 +7,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
-import type { NavigationPinSectionDescriptor } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { NavigationPinSectionDescriptor } from "../../appwire-client/typescript/types.gen";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import { NavigationActions } from "./navigationActions";

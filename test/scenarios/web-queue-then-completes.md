@@ -125,7 +125,7 @@ rm -rf "$tmpdir"
   hovering. The strip's depth is what shows the effect.
 - **The queue window opens on the status flip alone.** Send/queue
   availability keys on `statusType === "active"` and deliberately does *not*
-  wait for `activeTurnId` (`protocol/sendQueueAvailability.ts` header) —
+  wait for `activeTurnId` (`appwire-client/typescript/sendQueueAvailability.ts` header) —
   unlike steer/interrupt, which need both. So a message typed in the gap
   between `thread/status/changed` and `turn/started` queues correctly instead
   of bouncing off the daemon as a conflict. Do not "fix" a card that queues

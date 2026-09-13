@@ -2,7 +2,7 @@ import type {
 	NavigationInvalidationTarget,
 	NavigationMutation,
 	NavigationReadParams,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import {
 	decodeNavigationResponse,
 	materializeNavigationResource,

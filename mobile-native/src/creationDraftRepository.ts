@@ -1,4 +1,4 @@
-import type { LaunchConfigLayer } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { LaunchConfigLayer } from "../../appwire-client/typescript/types.gen";
 import {
   type DraftImage,
   type DraftImageData,

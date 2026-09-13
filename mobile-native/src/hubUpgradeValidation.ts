@@ -1,7 +1,7 @@
 import type {
 	SettingsOverviewResponse,
 	UpgradeResponse,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 
 const requiredResponse = [
 	"release",

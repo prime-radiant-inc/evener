@@ -13,6 +13,13 @@ const hub = process.env.EVENER_HUB_ADDR ?? "http://127.0.0.1:9180";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// The AppWire TypeScript package lives at the repo root (appwire-client/typescript),
+// outside this app's source tree. Every resolver has to be told about it
+// separately - tsconfig paths for tsc, the alias below for Vite/Vitest, and
+// server.fs.allow for the dev server and the browser guards, which serve it
+// over /@fs/ and 403 anything outside the allow list.
+const appwirePackageDir = path.join(__dirname, "..", "..", "..", "appwire-client", "typescript");
+
 // dist/PLACEHOLDER is tracked in git so a fresh checkout's dist/ directory is
 // never empty even before the frontend has been built once: cmd/evener-hub
 // embeds it via `//go:embed all:frontend/dist`, which fails outright against
@@ -38,6 +45,26 @@ function restoreDistPlaceholder(): Plugin {
 export default defineConfig({
   plugins: [react(), restoreDistPlaceholder()],
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
+  // These mirror tsconfig.json's paths - tsconfig paths are invisible to Vite,
+  // so the alias is what the bundler, the dev server, Vitest and the five
+  // browser guards all resolve through. The targets are the package's
+  // TypeScript sources, never dist/: dist/ is gitignored and never built in a
+  // dev or test flow. An alias key also matches `<key>/<subpath>`, so the two
+  // specific entries have to come first or the root entry swallows them.
+  resolve: {
+    alias: {
+      "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/testing": path.join(appwirePackageDir, "testing"),
+      "@evener/appwire-client": path.join(appwirePackageDir, "index.ts"),
+      // Resolution runs from the importer, and the package's test files sit
+      // above a repo root with no node_modules, so their bare imports find
+      // nothing. tsconfig.json's paths name the same dependencies for the same
+      // reason. Only the ones those files actually import are listed: a new
+      // one fails loudly here rather than resolving to a second copy.
+      "@testing-library/react": path.join(__dirname, "node_modules", "@testing-library", "react"),
+      react: path.join(__dirname, "node_modules", "react"),
+    },
+  },
   server: {
     host: "127.0.0.1",
     fs: {
@@ -54,7 +81,7 @@ export default defineConfig({
       // second entry is the one addition, the shared install's real path.
       // In a normal (non-symlinked) checkout this resolves to the same
       // directory already covered by the first entry, so it's a no-op there.
-      allow: [searchForWorkspaceRoot(__dirname), fs.realpathSync(path.join(__dirname, "node_modules"))],
+      allow: [searchForWorkspaceRoot(__dirname), fs.realpathSync(path.join(__dirname, "node_modules")), appwirePackageDir],
     },
     proxy: {
       // changeOrigin + an explicit Origin header: the hub's same-origin
@@ -70,6 +97,17 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Vitest collects relative to its root - this config's directory - so the
+    // package's own test files, now at appwire-client/typescript/, fall
+    // outside the default glob and would silently stop running. The first
+    // entry restates that default; the second is the addition. They run here,
+    // not under the package's own gate, because they import `vitest`, `react`
+    // and `@testing-library/react` bare and load their .jsonl fixtures through
+    // Vite's `?raw`: this app's install already provides all of that, while
+    // giving the package its own dev dependencies would change what
+    // `npm ci --prefix appwire-client/typescript` fetches for the
+    // qualification gate, which needs only typescript and ws.
+    include: ["**/*.{test,spec}.?(c|m)[jt]s?(x)", "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],
@@ -103,25 +141,33 @@ export default defineConfig({
     hookTimeout: 60_000,
     coverage: {
       provider: "v8",
+      // The package sits outside this app's root, and v8 coverage drops such
+      // files silently without this - which would take ~45 well-tested source
+      // files out of the denominator and move the `web` floor for a reason
+      // that has nothing to do with how well anything is tested.
+      allowExternal: true,
       // Vitest reports only the files a test actually loaded, so a subsystem
       // with no test at all scores as ABSENT rather than as zero - the same
       // false green the Go side guards with its gap map. Naming the whole
       // source tree here puts every file in the denominator, so an untested
       // pane shows up as the 0% it is. (Vitest 4 removed `coverage.all`; an
       // explicit `include` is now the only lever for this.)
-      include: ["src/**/*.{ts,tsx}"],
+      include: ["src/**/*.{ts,tsx}", `${appwirePackageDir}/**/*.{ts,tsx}`],
       exclude: [
         "src/**/*.test.{ts,tsx}",
         "src/**/*.d.ts",
+        `${appwirePackageDir}/**/*.test.{ts,tsx}`,
         // Fixture and harness modules exist to feed tests, and scoring them
-        // measures the test rig rather than the app. src/protocol/testing holds
-        // the fake client, fake socket and stream harnesses the suites drive.
-        "src/protocol/fixtures/**",
-        "src/protocol/testing/**",
+        // measures the test rig rather than the app. The package's testing/
+        // directory holds the fake client, fake socket and stream harnesses
+        // the suites drive.
+        `${appwirePackageDir}/fixtures/**`,
+        `${appwirePackageDir}/testing/**`,
         "src/testSetup.ts",
         // A benchmark is not run by `vitest run`, so counting it only ever
         // reports 0% for code no test was ever meant to execute.
         "src/**/*.bench.ts",
+        `${appwirePackageDir}/**/*.bench.ts`,
         // The dev harness, gallery, and their standalone entry points back
         // the layout/overflow/spawn guard pages, not shipped runtime - the
         // same carve-out scripts/fuzzcov-ignore.txt grants dev-only tooling.

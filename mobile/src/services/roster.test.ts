@@ -15,7 +15,7 @@ import type {
   MethodTypes,
   Thread,
   ThreadListResponse,
-} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../../appwire-client/typescript/types.gen";
 import { createRosterService, type RosterEntry } from "./roster";
 
 // --- scripted fake client (records requests) --------------------------------

@@ -484,7 +484,7 @@ func TestAppTurnSnapshotReducesAssistantMessageReset(t *testing.T) {
 // authoritative state.
 //
 // The item shape must match the frontend reducer exactly
-// (cmd/evener-hub/frontend/src/protocol/reducer.ts:777-790), including the
+// (appwire-client/typescript/reducer.ts:777-790), including the
 // per-turn steering index in the ID, so a rejoin projects what the live pane
 // already rendered.
 func TestAppTurnSnapshotReducesSteeringIntoActiveTurn(t *testing.T) {

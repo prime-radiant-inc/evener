@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { LaunchOption } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { LaunchOption } from "../../appwire-client/typescript/types.gen";
 import { assertLaunchFieldCurrent, parseLaunchScalar } from "./launchScalar";
 
 const option = (kind: string): LaunchOption => ({

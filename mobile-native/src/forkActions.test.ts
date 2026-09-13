@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
-import type { Thread } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { Thread } from "../../appwire-client/typescript/types.gen";
 import {
 	type ConversationClientLike,
 	createConversationService,

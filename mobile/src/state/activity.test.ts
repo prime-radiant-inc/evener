@@ -30,7 +30,7 @@ import type {
   AnyNotification,
   Thread,
   ThreadCapabilities,
-} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../../appwire-client/typescript/types.gen";
 import type { MobileCapabilities } from "../conversation/model";
 import { type ActivityView, createActivityService } from "../services/activity";
 import {

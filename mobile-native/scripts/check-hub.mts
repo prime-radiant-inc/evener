@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import WebSocket from "ws";
 import { createHubClient } from "../src/connection";
 import { createConversationService } from "../../mobile/src/services/conversation";
-import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
+import type { WebSocketLike } from "../../appwire-client/typescript/transport";
 const [origin, tokenFile] = process.argv.slice(2);
 if (!origin || !tokenFile)
 	throw new Error("Usage: tsx scripts/check-hub.ts ORIGIN TOKEN_FILE");

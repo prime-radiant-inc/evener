@@ -6,7 +6,7 @@ import type {
   LaunchConfigLayer,
   LaunchConfigResolved,
   LaunchOption,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";

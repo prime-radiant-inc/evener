@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { SettingsOverviewResponse } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { SettingsOverviewResponse } from "../../appwire-client/typescript/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubOverview } from "./hubOverview";
 

@@ -12,7 +12,7 @@ Two controls reach it, and both must:
 - the composer's **Steer** button (and its Shift+Enter chord) whenever the
   queue is non-empty or attachments are staged — `decideSteerRoute` routes
   to `"drain"` *regardless of whether the composer has text*
-  (`protocol/submitRouting.ts:33-39`);
+  (`appwire-client/typescript/submitRouting.ts:33-39`);
 - the queue strip's **Steer queue now** button
   (`composer/queue/QueueStrip.tsx:279-284`).
 

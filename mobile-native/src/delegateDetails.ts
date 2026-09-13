@@ -1,4 +1,4 @@
-import type { ActivityDelegate } from "../../cmd/evener-hub/frontend/src/protocol/activityData";
+import type { ActivityDelegate } from "../../appwire-client/typescript/activityData";
 
 export interface DelegateTiming {
   startedAt?: string;

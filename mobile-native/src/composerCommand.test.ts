@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import {
   parseSlashToken,
   spliceSlashCommand,
-} from "../../cmd/evener-hub/frontend/src/protocol/slashCompletion";
+} from "../../appwire-client/typescript/slashCompletion";
 import { builtinComposerItems, composerCommand } from "./composerCommand";
 
 it.each([

@@ -2,7 +2,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useMemo } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { NavigationSessionSummary } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { NavigationSessionSummary } from "../../appwire-client/typescript/types.gen";
 import { NavigationPages } from "./navigationPages";
 import { PinCatalogList } from "./PinCatalogList";
 import { PageList } from "./ProjectsScreen";

@@ -1,5 +1,5 @@
-import type { AskQuestionRef } from "../../cmd/evener-hub/frontend/src/protocol/deriveAskQuestions";
-import { type AskBatch, reconcileBatches } from "../../cmd/evener-hub/frontend/src/protocol/reconcileBatches";
+import type { AskQuestionRef } from "../../appwire-client/typescript/deriveAskQuestions";
+import { type AskBatch, reconcileBatches } from "../../appwire-client/typescript/reconcileBatches";
 
 /** Own submissions by question identity, using the shared reconciliation. */
 export class QuestionBatches {

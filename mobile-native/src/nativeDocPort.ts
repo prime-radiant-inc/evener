@@ -1,7 +1,7 @@
 import {
   type DocPort,
   docImageURL,
-} from "../../cmd/evener-hub/frontend/src/protocol/docContent";
+} from "../../appwire-client/typescript/docContent";
 
 // The native doc seam. Two things the web gets for free have to be supplied
 // here: the hub's origin, because nothing on the device is served by the hub,

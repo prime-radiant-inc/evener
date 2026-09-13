@@ -71,7 +71,7 @@ jobs:
       - name: Install JavaScript dependencies
         run: |
           npm ci --prefix mobile-native
-          npm ci --prefix cmd/evener-hub/frontend/src/protocol
+          npm ci --prefix appwire-client/typescript
       - name: Run existing native and API gates
         run: make test-native test-api-package
       - name: Validate Apple build number
