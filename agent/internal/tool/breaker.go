@@ -207,14 +207,50 @@ func canonicalizeValue(v any, topLevel, dropDescription bool) any {
 
 // canonicalNumber folds a JSON number into a canonical Go representation so
 // equivalent literals (1, 1.0, 1e0) share a fingerprint.
+//
+// An integer literal that overflows int64 is returned as its exact json.Number
+// text rather than rounded through float64: ParseFloat is lossy above 2^53, so
+// two distinct integers would collapse to the same float and therefore the same
+// fingerprint, giving two different failing calls one shared failure run.
+// json.Number marshals as its raw literal, so the value stays exact and
+// distinct. The ParseInt path runs first, so every value that fits int64 keeps
+// its exact folded form, and the float path still serves literals that are not
+// integer-shaped.
 func canonicalNumber(n json.Number) any {
-	if i, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
+	s := n.String()
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i
 	}
-	if f, err := strconv.ParseFloat(n.String(), 64); err == nil {
+	if isIntegerLiteral(s) {
+		return n
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
 		return f
 	}
 	return n
+}
+
+// isIntegerLiteral reports whether s is an integer-shaped JSON number token: an
+// optional leading sign followed by one or more decimal digits and nothing
+// else. Such a token denotes an exact integer that may exceed int64, so it must
+// not be rounded through float64.
+func isIntegerLiteral(s string) bool {
+	if s == "" {
+		return false
+	}
+	i := 0
+	if s[0] == '+' || s[0] == '-' {
+		i++
+	}
+	if i == len(s) {
+		return false
+	}
+	for ; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // breakerThreshold is how many times a signature may produce the same answer
