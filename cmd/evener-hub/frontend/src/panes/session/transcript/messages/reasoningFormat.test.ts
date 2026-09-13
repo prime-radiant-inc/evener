@@ -1,6 +1,8 @@
 // @vitest-environment node
+
+import { chunkViewBackingForTests } from "@evener/appwire-client/testing/reducerHooks";
 import { expect, test } from "vitest";
-import { applyNotification, chunkViewBackingForTests } from "../../../../protocol/reducer";
+import { applyNotification } from "../../../../protocol/reducer";
 import { buildFloodChunks, hydrateFloodModel } from "../../../../protocol/testing/tokenFlood";
 import type { AnyNotification } from "../../../../protocol/types.gen";
 import {
