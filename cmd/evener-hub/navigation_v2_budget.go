@@ -176,6 +176,28 @@ func fitNavigationV2Snapshot(
 			candidate.Truncated = true
 			return candidate
 		})
+	case hubapi.NavigationSessionLocation:
+		// A deep-link location carries one session summary tree. Preserve the
+		// location envelope and its session; when the watch payload alone
+		// overflows the budget, shed delivery instants first and then whole watch
+		// rows, exactly as the session-row fitters do. Only an irreducible
+		// overflow (a session too large with no watch payload at all) drops the
+		// session, leaving the location response itself intact.
+		if value.Session == nil {
+			return hubapi.NavigationSnapshot{}, nil, navigationV2ResponseInvariantError{kind: key.Kind, bytes: initial.bytes, maxBytes: maxBytes}
+		}
+		original := cloneNavigationSummary(*value.Session)
+		return fitCandidates(navigationSummaryNodes(hubapi.NavigationArray[hubapi.NavigationSessionSummary]{original}), func(trim navigationWatchPayloadTrim, budget int) any {
+			candidate := value
+			if budget == 0 {
+				candidate.Session = nil
+				return candidate
+			}
+			rows := hubapi.NavigationArray[hubapi.NavigationSessionSummary]{cloneNavigationSummary(original)}
+			trimNavigationWatchPayloads(rows, trim)
+			candidate.Session = &rows[0]
+			return candidate
+		})
 	default:
 		return hubapi.NavigationSnapshot{}, nil, navigationV2ResponseInvariantError{kind: key.Kind, bytes: initial.bytes, maxBytes: maxBytes}
 	}

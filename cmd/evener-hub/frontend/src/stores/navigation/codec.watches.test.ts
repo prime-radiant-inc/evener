@@ -119,6 +119,35 @@ test("a session entity carrying watches decodes and materializes the watch list"
   expect(rows.map((row) => row.watch.note)).toEqual(["Poll the queue depth", "Hourly sweep"]);
 });
 
+test("an events cadence carrying its throttle and filter decodes and survives", () => {
+  const eventsWatch: NavigationWatchSummary = {
+    id: "watch_events",
+    source: "self",
+    target: "caller",
+    note: "Error watch",
+    cadence: [{ kind: "events", every: 3, filter: "tool_name=Bash, status=error" }],
+    deliveries: 0,
+    created_at: "2026-09-12T23:37:19.402124579Z",
+    active: true,
+  };
+  const decoded = decodeNavigationResponse(key, undefined, snapshotResponse(key, liveSnapshot(key, [eventsWatch])));
+  expect(decoded.status).toBe("snapshot");
+  if (decoded.status !== "snapshot") throw new Error("fixture is incomplete");
+
+  const normalized = {
+    key,
+    graph: normalizedGraphFromSnapshot(decoded.snapshot),
+    version: decoded.version,
+    presence: "present" as const,
+  };
+  const materialized = materializeNavigationResource(normalized) as {
+    sessions: Array<{ watches?: NavigationWatchSummary[] }>;
+  };
+  expect(materialized.sessions[0]?.watches?.[0]?.cadence).toEqual([
+    { kind: "events", every: 3, filter: "tool_name=Bash, status=error" },
+  ]);
+});
+
 test("a delta upserting a session with watches keeps the field", () => {
   const previous = {
     key,

@@ -151,9 +151,11 @@ function jobValue(value: unknown): boolean {
 }
 
 const watchCadenceValue = (value: unknown): boolean =>
-  exactKeys(value, ["kind"], ["seconds"]) &&
+  exactKeys(value, ["kind"], ["seconds", "every", "filter"]) &&
   identity(value.kind) &&
-  optional(value.seconds, (item) => typeof item === "number" && Number.isFinite(item) && item >= 0);
+  optional(value.seconds, (item) => typeof item === "number" && Number.isFinite(item) && item >= 0) &&
+  optional(value.every, count) &&
+  optional(value.filter, (item) => boundedString(item, 512));
 
 function watchValue(value: unknown): boolean {
   return (
