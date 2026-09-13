@@ -852,6 +852,21 @@ run_bounded_package_list() {
 	done
 }
 
+# require_packages MODULE COUNT — refuse to run a module whose enumeration left
+# nothing to test.
+#
+# Nothing to test is not a pass: an empty list reaches `go test` as no package
+# arguments at all, which tests the current directory or nothing and reports
+# success either way. Every branch below filters its list differently — the root
+# module drops the fuzz-coverage commands, the sharded agent path drops its own
+# top-level package — so the check belongs after each filter, and the sentence
+# it prints belongs in one place.
+require_packages() {
+	[ "$2" -gt 0 ] && return 0
+	printf 'run-module-tests.sh: %s: go list ./... returned no test packages\n' "$1" >&2
+	return 1
+}
+
 run_module() {
 	local m="$1" extra="$2" test_flags
 	test_flags="$(module_test_flags "$m")"
@@ -870,10 +885,7 @@ run_module() {
 			esac
 			packages+=("$pkg")
 		done <"$package_list"
-		if [ "${#packages[@]}" -eq 0 ]; then
-			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
-			return 1
-		fi
+		require_packages "$m" "${#packages[@]}" || return 1
 		# ROOT_FULL removes short mode through module_test_flags while retaining
 		# the regular Test/Example name filter. Fuzz-owned targets and sanity
 		# functions stay under the explicit make fuzz gate.
@@ -923,10 +935,7 @@ run_module() {
 			while IFS= read -r pkg; do
 				racepkgs+=("$pkg")
 			done <"$subpkg_list"
-			if [ "${#racepkgs[@]}" -eq 0 ]; then
-				printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
-				return 1
-			fi
+			require_packages "$m" "${#racepkgs[@]}" || return 1
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${racepkgs[@]}"
 			return
 		fi
@@ -955,10 +964,7 @@ run_module() {
 	while IFS= read -r pkg; do
 		pkgs+=("$pkg")
 	done <"$module_list"
-	if [ "${#pkgs[@]}" -eq 0 ]; then
-		printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
-		return 1
-	fi
+	require_packages "$m" "${#pkgs[@]}" || return 1
 	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${pkgs[@]}"
 }
 
