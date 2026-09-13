@@ -334,7 +334,7 @@ func TestFailureFingerprint_ShellDescriptionIsPresentationOnly(t *testing.T) {
 
 func TestFailureFingerprint_IsBoundedAndSecretFree(t *testing.T) {
 	const secret = "TOP-SECRET-CREDENTIAL"
-	got := fp("shell", fmt.Sprintf(`{"command":"echo %s","intent":"%s"}`, secret, secret))
+	got := fp("shell", fmt.Sprintf(`{"command":%q,"intent":%q}`, secret, secret))
 	if strings.Contains(got, secret) {
 		t.Fatalf("fingerprint leaked a secret value: %q", got)
 	}
