@@ -169,15 +169,37 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
     return () => unmountHumanNote(sessionRef, id);
   }, [sessionRef, live, model.capabilities.sharedNotes]);
 
+  // The urls/remove response is not the authority for a removal; the
+  // urls/updated push is, and it can land after the response. A row therefore
+  // stays pending until the model stops listing it (roborev found that clearing
+  // on the response left a window where a second click fired another request and
+  // reported the entry as already gone). A failed request releases the guard
+  // below instead, so the retry stays possible.
+  useEffect(() => {
+    if (removingURLsRef.current.size === 0) return;
+    const listed = new Set(model.sessionUrls.map((entry) => entry.id));
+    for (const id of [...removingURLsRef.current]) {
+      if (listed.has(id)) continue;
+      removingURLsRef.current.delete(id);
+      setRemovingURLs((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, [model.sessionUrls]);
+
   async function handleRemoveURL(url: SessionURL) {
     if (removingURLsRef.current.has(url.id)) return;
     removingURLsRef.current.add(url.id);
     setRemovingURLs((prev) => new Set(prev).add(url.id));
     try {
       await threadsStore.getState().removeURL(sessionRef, url.id);
+      // Success keeps the row pending; the effect above releases it once the
+      // model reflects the removal.
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't remove link", err));
-    } finally {
+      // The failure left the entry in place, so release the guard for a retry.
       removingURLsRef.current.delete(url.id);
       setRemovingURLs((prev) => {
         const next = new Set(prev);

@@ -839,6 +839,80 @@ test("two Remove clicks in the same tick fire one request", async () => {
   expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
 });
 
+test("a Remove click after the response but before the push stays ignored", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return answered.then(() => ({}));
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  const panel = render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(1));
+  release();
+  await act(async () => {
+    await answered;
+  });
+  // The RPC answer has been consumed, but the authoritative urls/updated push
+  // has not landed: the model still lists the entry, so the row must stay
+  // pending instead of firing again and reporting the entry as already gone.
+  await user.click(button);
+  expect(calls).toBe(1);
+  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+
+  // The push lands and the model drops the entry: the row disappears with it.
+  panel.rerender(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={{ ...model, sessionUrls: [] }} />
+      <Toast />
+    </>,
+  );
+  expect(screen.queryByTestId("shared-notes-url-remove-u1")).toBeNull();
+});
+
+test("a failed Remove clears the guard so a retry can fire", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  fake.on("urls/remove", () => {
+    calls += 1;
+    if (calls === 1) throw new WireError("link not found", -32004, { id: "u1" });
+    return Promise.resolve({});
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(1));
+  // The failure has to surface before the guard is expected to be released.
+  await waitFor(() => expect(screen.queryByText(/Couldn't remove link/i)).not.toBeNull());
+  // The failure left the entry in place, so the guard must have been released:
+  // the user's retry has to reach the wire.
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(2));
+});
+
 // --- save coalescing -------------------------------------------------------------
 
 test("reverting to the stored text during an in-flight save still persists the revert", async () => {
