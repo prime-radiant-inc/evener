@@ -913,6 +913,21 @@ func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "was rolled back") {
 		t.Fatalf("Remove = %v, want the reload rollback", err)
 	}
+	// The file the rollback put back is the same unresolvable one, so the reload
+	// this branch runs fails too and the registry stays on the implicit-only
+	// view a failed load leaves: instance writes are refused until the file
+	// loads (registry.go's WritesRefused, spec §10), and the pane's diagnostics
+	// already say so. That is the honest reading of a config that cannot be
+	// loaded - reinstating the registry's previous view would have the hub serve
+	// and rewrite a file it cannot read - but the failure has to say it: a
+	// caller told only that the removal "was rolled back" would read the hub as
+	// healthy.
+	if !strings.Contains(err.Error(), "does not load either") {
+		t.Fatalf("Remove = %v, want the rollback to name the config it could not load", err)
+	}
+	if !f.ctl.reg.WritesRefused() {
+		t.Fatal("the registry accepts instance writes over a config it cannot load")
+	}
 	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
 	if readErr != nil {
 		t.Fatalf("ReadConfigFile: %v", readErr)

@@ -579,8 +579,15 @@ function SpawnForm({
   // honest fallback - the resolved default may name a provider with no
   // credentials, and submitting it is a certain thread/start failure. A valid
   // /model invocation still bootstraps past this (slashModelBootstrap below).
+  // Only a harness whose model comes from Evener's providers has that choice
+  // to make: an unmanaged one (kind "external") carries its own model, so the
+  // connector its model chip opens neither supplies nor replaces what this
+  // pane would submit - requiring a choice there would disable Start, and
+  // label the chip "Choose a model", over a model nothing launches with.
   const modelRequired =
-    model === "" && advancedModel === "" && (noDefaultModel || providerChoiceScopes.current.has(`${harness}\0${cwd}`));
+    model === "" &&
+    advancedModel === "" &&
+    (noDefaultModel || (usesEvenerModels && providerChoiceScopes.current.has(`${harness}\0${cwd}`)));
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,

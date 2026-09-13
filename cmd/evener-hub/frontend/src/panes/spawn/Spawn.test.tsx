@@ -3441,6 +3441,39 @@ test("onboarding a second draft scope does not forget the first scope's explicit
   expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
 });
 
+test("provider onboarding on an unmanaged harness does not require a model", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=/tmp/unmanaged-draft");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/unmanaged-draft", JSON.stringify({ harness: "external" }));
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  // The external harness carries its own model through unmanaged, so the
+  // resolved default keeps the chip off the required state and Start live.
+  expect(modelTrigger().textContent).not.toContain("Choose a model");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+  await user.keyboard("{Escape}");
+
+  // Entering the connector and canceling it is not a model choice: the pane
+  // must not start demanding one for a harness whose model it never submits.
+  expect(modelTrigger().textContent).not.toContain("Choose a model");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+});
+
 test("an Advanced-options model override after onboarding satisfies the requirement", async () => {
   const user = userEvent.setup();
   let saved = false;

@@ -801,7 +801,24 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config")
 		}
-		_ = c.reg.Reload() // best-effort: put the last-good registry view back
+		// The file this rollback put back is the pre-removal one, and the reload
+		// that just failed read the file this call wrote - so if the config was
+		// already unresolvable before the removal (Remove's own guard reads the
+		// registry, which had not been reloaded since and so never saw the change
+		// that broke it), this reload fails on the very file the rollback
+		// restored. The registry stays on the implicit-only view a failed load
+		// leaves and refuses instance writes until the file loads (registry.go's
+		// WritesRefused, spec §10). Reinstating the previous registry view would
+		// instead have the hub serve and rewrite a config it cannot load, which
+		// is what that refusal exists to prevent - so the failure reports what is
+		// left: the rollback landed, and the config still does not load. A caller
+		// told only that the removal "was rolled back" would read the hub as
+		// healthy.
+		if reloadErr := c.reg.Reload(); reloadErr != nil {
+			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+				fmt.Errorf("removing %q was rolled back, but the config it restored does not load either, so instance writes stay refused until it does (%w)", name, reloadErr),
+				"the instance is still configured")
+		}
 		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
 	}
