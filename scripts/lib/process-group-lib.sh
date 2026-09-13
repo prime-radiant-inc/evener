@@ -109,7 +109,10 @@ PGROUP_SPAWN_PERL='
 pgroup_record_spawned() {
 	local path="$1" pid="$2" marker="$3"
 	printf 'pid:%s:%s' "$pid" "$marker" >"$path.spawned.tmp" || return 1
-	mv "$path.spawned.tmp" "$path.spawned"
+	# The rename is the half that makes the note readable; a caller that is told
+	# the note was written when it was not would spawn a job nothing can name.
+	mv "$path.spawned.tmp" "$path.spawned" || return 1
+	return 0
 }
 
 # pgroup_record_clear PATH — drop a record and everything written beside it.

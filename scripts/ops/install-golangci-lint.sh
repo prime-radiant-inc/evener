@@ -104,6 +104,14 @@ stop_attempt() {
 	local status=0
 	[ -n "$attempt_record" ] || return 0
 	stop_recorded_job "$attempt_record" "$attempt_stop_grace" "$attempt_marker_prefix" || status=$?
+	if [ "$status" -eq 1 ]; then
+		# Provably somebody else's number: there was nothing of this script left
+		# to stop, so the scratch may go with the rest.
+		printf 'install-golangci-lint.sh: the install attempt is no longer this run to stop: %s\n' \
+			"$pgroup_stop_reason" >&2
+		attempt_pid=""
+		return 0
+	fi
 	if [ "$status" -ne 0 ]; then
 		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped: %s Not waiting on it.\n' \
 			"$pgroup_stop_reason" >&2

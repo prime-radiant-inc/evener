@@ -608,7 +608,7 @@ package_list_build_flags() {
 			out="$out $flag"
 			expect_value=1
 			;;
-		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -trimpath | -race | -msan | -asan)
+		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -trimpath | -race | -msan | -asan | -race=* | -msan=* | -asan=*)
 			out="$out $flag"
 			;;
 		esac
