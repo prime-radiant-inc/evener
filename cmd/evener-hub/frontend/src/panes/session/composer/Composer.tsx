@@ -44,6 +44,7 @@ import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../prot
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
+import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import { workspaceStore } from "../../../shell/workspace";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
@@ -92,6 +93,10 @@ import { recordStoplessComposer } from "./stoplessComposer";
 
 export interface ComposerProps {
   ref: string;
+  // Whether this composer's pane is the workspace's focused one. Mount
+  // autofocus keys on it: a session loading into a background tab must never
+  // yank keyboard focus away from what the reader is doing.
+  focused: boolean;
 }
 
 const CLASS = {
@@ -156,7 +161,7 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // disagreeing about the same word.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
-export function Composer({ ref }: ComposerProps) {
+export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
   const submitting = useComposerSubmitting(ref);
@@ -685,6 +690,11 @@ export function Composer({ ref }: ComposerProps) {
     consumedComposerFocusIdRef.current = composerFocusRequest.id;
     consumeComposerFocus(ref);
   });
+
+  // Loading a session lands keyboard focus in its composer: writing the next
+  // message is what the pane is for. Mount-only, gated on the pane being
+  // focused at mount (see useMountAutofocus for the full rationale).
+  useMountAutofocus(textareaRef, focused);
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 

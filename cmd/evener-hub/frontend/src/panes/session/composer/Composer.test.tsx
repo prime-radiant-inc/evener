@@ -275,21 +275,29 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
   }
 }
 
-async function mountComposerWithHandle(ref: string, overrides: Partial<Thread> = {}) {
+async function mountComposerWithHandle(
+  ref: string,
+  overrides: Partial<Thread> = {},
+  options: { focused?: boolean } = {},
+) {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   const view = render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} />
+      <Composer ref={ref} focused={options.focused ?? false} />
     </ClientProvider>,
   );
   return { fake, ...view };
 }
 
-async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Promise<FakeClient> {
-  return (await mountComposerWithHandle(ref, overrides)).fake;
+async function mountComposer(
+  ref: string,
+  overrides: Partial<Thread> = {},
+  options: { focused?: boolean } = {},
+): Promise<FakeClient> {
+  return (await mountComposerWithHandle(ref, overrides, options)).fake;
 }
 
 function deferred<T>() {
@@ -799,6 +807,38 @@ function stopButton(): HTMLButtonElement {
 test("renders a textarea with an accessible name", async () => {
   await mountComposer("ref_a");
   expect(textarea()).toBeTruthy();
+});
+
+// --- mount autofocus ---------------------------------------------------------
+//
+// Loading a session into the browser UI should land keyboard focus in that
+// pane's composer, desktop only, and only when the pane itself is the
+// workspace's focused one - a session opening in a background tab must never
+// yank focus away from what the reader is doing.
+test("a focused pane focuses its composer on mount (desktop)", async () => {
+  await mountComposer("ref_a", {}, { focused: true });
+  await waitFor(() => expect(document.activeElement).toBe(textarea()));
+});
+
+test("an unfocused pane never focuses its composer on mount", async () => {
+  await mountComposer("ref_a", {}, { focused: false });
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
+  expect(document.activeElement).not.toBe(textarea());
+});
+
+test("a focused pane never focuses its composer on mount on mobile", async () => {
+  const restoreViewport = installMobileViewport();
+  try {
+    await mountComposer("ref_a", {}, { focused: true });
+    await act(async () => {
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(document.activeElement).not.toBe(textarea());
+  } finally {
+    restoreViewport();
+  }
 });
 
 test("restores a stored draft into the textarea on mount", async () => {
@@ -2270,7 +2310,7 @@ test.each([
     fireEvent.click(submitButton());
     await written;
     cleanup();
-    render(<Composer ref="ref_a" />);
+    render(<Composer ref="ref_a" focused={false} />);
     await waitFor(() => expect(textarea().value).toBe(submittedText));
     if (edit !== "unchanged") {
       fireEvent.change(textarea(), { target: { value: "new draft" } });
@@ -2381,7 +2421,7 @@ test.each([false, true])(
     }
     const firstInput = textarea();
     const firstButton = submitButton();
-    const second = render(<Composer ref="ref_a" />);
+    const second = render(<Composer ref="ref_a" focused={false} />);
     const secondInput = within(second.container).getByRole<HTMLTextAreaElement>("textbox");
     await flushPendingTurnsProjectionForTests();
     const transact = IDBDatabase.prototype.transaction;
@@ -2816,7 +2856,7 @@ test.each([
       await committed;
       if (remount) {
         cleanup();
-        render(<Composer ref="ref_a" />);
+        render(<Composer ref="ref_a" focused={false} />);
         fireEvent.change(textarea(), { target: { value: "" } });
         pastePngInto(textarea(), "replacement.png");
         await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());

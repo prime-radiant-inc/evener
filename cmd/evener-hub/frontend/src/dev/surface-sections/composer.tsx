@@ -139,11 +139,11 @@ export default function ComposerSurfaceSection() {
           <ThemeFlip>
             <div className={layout.paneFixture}>
               <p className={styles.rowLabel}>resting</p>
-              <Composer ref={RESTING_REF} />
+              <Composer ref={RESTING_REF} focused={false} />
             </div>
             <div className={layout.paneFixture}>
               <p className={styles.rowLabel}>drafted</p>
-              <Composer ref={DRAFTED_REF} />
+              <Composer ref={DRAFTED_REF} focused={false} />
             </div>
             <div className={layout.paneFixture}>
               <p className={styles.rowLabel}>ask pending (transcript trailing row)</p>
