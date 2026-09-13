@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/afero"
@@ -154,9 +155,25 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 }
 
 // normalizeNote collapses every run of whitespace (including newlines) to one
-// space and clamps to sessionNoteMaxRunes Unicode characters.
+// space, strips terminal control characters, and clamps to sessionNoteMaxRunes
+// Unicode characters.
+//
+// The strip runs after the collapse, so every control still in the text is one
+// the collapse could not consume — ESC, DEL, the C1 introducers. Those carry no
+// meaning as note content, and stored notes, labels, and URLs are printed by
+// terminals (the TUI details drawer, the transcript's human-note echo, the
+// notes tool output), so leaving them in would let note text drive the terminal
+// that displays it.
 func normalizeNote(text string) string {
 	collapsed := strings.Join(strings.Fields(text), " ")
+	if strings.ContainsFunc(collapsed, unicode.IsControl) {
+		collapsed = strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return -1
+			}
+			return r
+		}, collapsed)
+	}
 	runes := []rune(collapsed)
 	if len(runes) > sessionNoteMaxRunes {
 		collapsed = string(runes[:sessionNoteMaxRunes])

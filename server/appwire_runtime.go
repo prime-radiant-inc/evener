@@ -1838,7 +1838,9 @@ func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemov
 		return appwire.UrlsRemoveResponse{}, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 	}
 	if !removed {
-		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("no URL entry with id " + id)
+		// Caller-supplied and printed by terminals; %q escapes a control
+		// sequence instead of letting the terminal execute it.
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams(fmt.Sprintf("no URL entry with id %q", id))
 	}
 	return appwire.UrlsRemoveResponse{}, nil
 }

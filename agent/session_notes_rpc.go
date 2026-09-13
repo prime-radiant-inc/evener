@@ -158,7 +158,10 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	if err != nil {
 		return false, NormalizeClientMutationError(outerID, err)
 	}
-	unknown := appwire.InvalidParams("no URL entry with id " + id)
+	// The id is caller-supplied and this message is printed by terminals (the
+	// TUI renders RPC errors), so quote it: %q escapes any control sequence
+	// instead of handing the terminal something to execute.
+	unknown := appwire.InvalidParams(fmt.Sprintf("no URL entry with id %q", id))
 	s.notesUpdateMu.Lock()
 	urls := s.snapshotSessionURLsLocked()
 	lookup, err := s.clientMutations.reservePrepared(request, func(_ *clientMutationSnapshot, record *clientMutationRecord) error {
