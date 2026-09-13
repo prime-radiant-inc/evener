@@ -450,6 +450,19 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			// child's OWN load reports. Minting zeros for a session that
 			// folds real ones refuses a token nobody invalidated, which is
 			// this branch made unreadable past the limit.
+			//
+			// Naming them reads the child's metadata, so it is charged the
+			// same unit a loaded child pays before it is descended into, and
+			// it stops when a canceled request stops everything else. A
+			// budget with nothing left leaves this child out entirely rather
+			// than minting a continuation nobody paid for — the same
+			// exhaustion path a child one level shallower takes.
+			if err := cache.ctx.Err(); err != nil {
+				return nil, err
+			}
+			if !activityConsumeWorkUnit(cache.budget, 1) {
+				continue
+			}
 			placeholderJobs, placeholderDelegates := activityPlaceholderEpochs(loc, loaded, childID)
 			snapshot.Children[childID] = &activitySessionSnapshot{
 				SessionID:       childID,

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1856,5 +1857,83 @@ func TestLoadSessionJobActivityTree_DepthContinuationRefusedAfterTheChildIsRewri
 		t.Fatal("resumed into a depth-truncated child whose journal was rewritten; want the continuation refused")
 	} else if !strings.Contains(err.Error(), "underlying journal changed") {
 		t.Fatalf("error = %v, want a journal-changed staleness error", err)
+	}
+}
+
+// TestBuildActivityFullSnapshot_DepthPlaceholdersChargeTheWorkBudget pins that
+// naming a depth-truncated child's generations is paid for. That lookup reads
+// the child's metadata, so a wide boundary — one delegate per child at the
+// depth limit — would otherwise open files without limit, exactly what the
+// work budget exists to stop. A budget with nothing left leaves the child out
+// rather than minting a continuation nobody paid for.
+func TestBuildActivityFullSnapshot_DepthPlaceholdersChargeTheWorkBudget(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "budgetboundaryroot"
+	const boundaryChildren = 6
+	const affordable = 2
+	started := time.Unix(900, 0).UTC()
+
+	descriptors := make([]delegatestore.Descriptor, 0, boundaryChildren)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	for i := range boundaryChildren {
+		childID := fmt.Sprintf("budgetboundarychild%d", i)
+		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+		})
+		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, "next"))
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+
+	// The root itself sits AT the depth bound, so every one of its children is
+	// a placeholder, and the budget affords only some of them.
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	cache.budget.maxDepth = 0
+	cache.budget.maxWorkUnits = affordable
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	snapshot, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0)
+	if err != nil {
+		t.Fatalf("buildActivityFullSnapshot: %v", err)
+	}
+	if len(snapshot.Children) != affordable {
+		t.Fatalf("minted %d placeholders on a budget of %d units; naming a child's generations has to be charged like any other child visit", len(snapshot.Children), affordable)
+	}
+	if cache.budget.usedWork != affordable {
+		t.Fatalf("used %d work units for %d placeholders, want %d", cache.budget.usedWork, len(snapshot.Children), affordable)
+	}
+}
+
+// TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation pins the
+// other half: a canceled request must not go on opening files for children it
+// is only naming.
+func TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "cancelboundaryroot"
+	childID := "cancelboundarychild"
+	started := time.Unix(910, 0).UTC()
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cache := newHistoricalActivityCache(ctx, rootID)
+	cache.budget.maxDepth = 0
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	if _, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
