@@ -195,6 +195,19 @@ export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(gate_budget 6
 # of retrying: 60s + 10s = 70s if it happens on the first attempt, 192s if it
 # happens on the last. Nothing reaches the sum of both, because the two cases
 # are alternatives.
+# The knobs were EVENER_ROOT_PACKAGE_LIST_* until the agent module's enumeration
+# started going through the same bound. A run that still sets the old spelling
+# means to change the budget and would instead get the default, silently — and
+# the place that spelling is most likely to survive is a CI job or a script
+# someone copied from a diagnostic. Say so and stop; there is deliberately no
+# alias, so there is exactly one name for each of these.
+for stale_knob in EVENER_ROOT_PACKAGE_LIST_TIMEOUT EVENER_ROOT_PACKAGE_LIST_ATTEMPTS; do
+	if [ -n "${!stale_knob:-}" ]; then
+		printf 'run-module-tests.sh: %s is no longer read; the knobs are EVENER_PACKAGE_LIST_TIMEOUT and EVENER_PACKAGE_LIST_ATTEMPTS, because the bound is not the root module'"'"'s alone any more.\n' \
+			"$stale_knob" >&2
+		exit 2
+	fi
+done
 PACKAGE_LIST_TIMEOUT=${EVENER_PACKAGE_LIST_TIMEOUT:-60}
 if [[ ! "$PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$PACKAGE_LIST_TIMEOUT" >&2
