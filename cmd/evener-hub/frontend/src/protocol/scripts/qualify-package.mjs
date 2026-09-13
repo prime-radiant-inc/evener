@@ -43,6 +43,7 @@ async function qualify() {
     "deriveAskQuestions",
     "reconcileBatches",
     "attachmentMarkers",
+    "composerInput",
     "activityData",
     "activityList",
     "activityMerge",
@@ -89,6 +90,8 @@ async function qualify() {
     "liveAskQuestions",
     "reconcileBatches",
     "translateAttachmentMarkers",
+    "buildInput",
+    "buildComposerInput",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
     "STEERING_KINDS",
@@ -171,6 +174,7 @@ async function qualify() {
     "AskQuestionRef",
     "AskBatch",
     "MarkerAttachment",
+    "InputAttachment",
     "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
@@ -204,6 +208,11 @@ assert.equal(askBatches[0].questions[0].key, "ask1:0");
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
+assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
+assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
+  { type: "text", text: "(attached image 1: shot.png)go" },
+  { type: "image", mediaType: "image/png", data: "AA", name: "shot.png" },
+]);
 assert.equal(new client.WireError("nope", -32000).code, -32000);
 assert.equal(client.errorText(new Error("boom")), "boom");
 assert.equal(client.errorKind(new Error("boom")), "unknown");

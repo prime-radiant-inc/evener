@@ -46,6 +46,8 @@ export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommand
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
+export type { InputAttachment } from "./composerInput";
+export { buildComposerInput, buildInput } from "./composerInput";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export {

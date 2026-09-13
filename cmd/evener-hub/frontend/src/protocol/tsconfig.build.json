@@ -23,6 +23,7 @@
     "deriveAskQuestions.ts",
     "reconcileBatches.ts",
     "attachmentMarkers.ts",
+    "composerInput.ts",
     "activityData.ts",
     "activityRows.ts",
     "activityList.ts",
