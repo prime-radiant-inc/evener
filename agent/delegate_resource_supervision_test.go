@@ -336,6 +336,183 @@ func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t
 	}
 }
 
+// TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWake
+// pins the deferred-wake regression the id-keyed committed-send-start claim
+// introduced (#940). While the claim is held a wake-edge drive refuses, so a
+// child notification that arrives in the window is DROPPED: its notify runs
+// driveChildIfNotStopGated, which returns early on the claim, and nothing else
+// re-triggers the drive. On the hand-off path the run about to launch drains the
+// child's queue, so the drop is harmless. But when the send FAILS after taking
+// the claim -- here its start reservation is aborted before the commit -- no run
+// is handed over, and unless the non-handoff rollback re-drives the child's
+// undelivered attention the queued notification sits undriven forever.
+//
+// This test is load-bearing for that fix: with the rollback's re-drive removed,
+// the notification enqueued while the claim was held is never drained and the
+// child never runs a second turn.
+func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWake(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return finalResponse("drained notification") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	var mu sync.Mutex
+	var claimSeen, wakeDropped bool
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateSendStartClaimed = func(childSessionID string) {
+			candidate := root.subagents.get(childSessionID)
+			if candidate == nil || candidate.sess == nil {
+				return
+			}
+			// A child notification arrives with the claim held: enqueue it and
+			// fire the child's notify exactly as a real arrival would. The wake
+			// edge reads the claim and refuses, leaving the queue undelivered.
+			candidate.sess.enqueueJobNotification(jobNotification{
+				Kind:   jobNotificationKindWatch,
+				JobID:  "redrive-dropped-wake",
+				Status: jobNotificationEventWatch,
+			})
+			candidate.sess.notify()
+			mu.Lock()
+			claimSeen = true
+			wakeDropped = root.childCommittedSendStart(childSessionID) &&
+				root.subagents.get(childSessionID).sess.peekNotifications() > 0
+			mu.Unlock()
+			// Fail the send after the claim: abort the in-flight reservation so
+			// the commit below cannot hand a run over.
+			abortStableDelegateStartReservation(root, fixture.delegateID)
+		}
+	})
+
+	warmRequests := supervisionRequestCount(fixture.adapter)
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "must not launch", 1000)
+	if outcome.result.Err == nil {
+		t.Fatalf("aborted committed send start = %#v, want refusal", outcome.result)
+	}
+
+	mu.Lock()
+	seen, dropped := claimSeen, wakeDropped
+	mu.Unlock()
+	if !seen {
+		t.Fatal("the committed send start claim was never observed")
+	}
+	if !dropped {
+		t.Fatal("the claim did not leave the child's queued notification undelivered")
+	}
+
+	// The rollback's re-drive is now the only thing that can drain the queue.
+	// TRIPWIRE: the rollback re-drive and the drive turn it launches are served
+	// by the scripted in-process adapter, so the notification drains in
+	// milliseconds; this bound only fires on the regression this test pins.
+	waitForCondition(t, 10*time.Second, "dropped notification redriven after the rollback", func() bool {
+		return supervisionRequestCount(fixture.adapter) > warmRequests
+	})
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if pending := sub.sess.peekNotifications(); pending != 0 {
+		t.Fatalf("child notifications pending after rollback re-drive = %d, want 0", pending)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != warmRequests+1 {
+		t.Fatalf("provider requests = %d, want warm plus one notification-drive turn", got)
+	}
+}
+
+// abortStableDelegateStartReservation aborts the delegate's outstanding start
+// reservation from inside a test seam, forcing the in-flight send down a
+// non-handoff exit after it has taken the committed-send-start claim.
+func abortStableDelegateStartReservation(root *Session, delegateID string) {
+	c := root.delegateController
+	c.mu.Lock()
+	var receipt *delegateStartReservation
+	for _, record := range c.reservations {
+		if record != nil && record.delegateID == delegateID {
+			receipt = record.receipt
+			break
+		}
+	}
+	c.mu.Unlock()
+	if receipt != nil {
+		_ = c.AbortStart(receipt)
+	}
+}
+
+// TestDelegateResourceSupervision_CommittedSendStartContentionRefusesSecondSend
+// pins the contention path on the SAME child session id: while one send for the
+// delegate holds the committed-send-start window, a second send for that same
+// child must refuse busy and must not launch a second run. The second send is
+// issued from the first send's claim seam, so it lands with the first
+// reservation outstanding and the claim held.
+//
+// Reachability (#940): this is the reachable contention path. The
+// claimChildCommittedSendStart refusal branch in delegateRuntime.send is a
+// defensive guard that no public call sequence can enter:
+//   - ReserveStart refuses a second reservation for one delegateID
+//     (delegate_tree_start.go "for _, existing := range c.reservations"),
+//   - the run-started event moves the aggregate to PhaseRunning, so ReserveStart
+//     refuses again between CommitStart and the hand-off (fold.go PhaseRunning),
+//   - child session ids are minted uniquely per delegate
+//     (delegate_tree_start.go ReserveCreate "identifier.MustNewSessionID"), so
+//     two different delegates can never share the claim's key.
+//
+// The busy refusal asserted here is therefore produced by ReserveStart's
+// reservation guard, not by the claim branch. The claim branch is still correct
+// as defence in depth, but it cannot be driven from the public API.
+func TestDelegateResourceSupervision_CommittedSendStartContentionRefusesSecondSend(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response { return finalResponse("contended send result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	var mu sync.Mutex
+	var second sendMessageResult
+	var secondSeen bool
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateSendStartClaimed = func(string) {
+			mu.Lock()
+			defer mu.Unlock()
+			if secondSeen {
+				return
+			}
+			secondSeen = true
+			// A concurrent positive-wait send for the same child, landing with
+			// the first reservation outstanding. It must refuse busy rather than
+			// start a second run on this session.
+			second = (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "contending send", 1000).result
+		}
+	})
+
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "winning send", 0)
+	if outcome.result.Err != nil || outcome.result.Action != "started" {
+		t.Fatalf("winning send = %#v, want started", outcome.result)
+	}
+
+	mu.Lock()
+	seen := secondSeen
+	contended := second
+	mu.Unlock()
+	if !seen {
+		t.Fatal("the committed send start claim was never observed")
+	}
+	if !errors.Is(contended.Err, errDelegateTargetBusy) {
+		t.Fatalf("contending send error = %v, want target busy", contended.Err)
+	}
+	if contended.Action == "started" || contended.Action == "steered" {
+		t.Fatalf("contending send action = %q, want a busy refusal", contended.Action)
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	// Only the warm run and the winning send's run were launched.
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("provider requests = %d, want warm plus exactly one contended winner run", got)
+	}
+}
+
 func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {

@@ -1122,6 +1122,21 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	defer func() {
 		if committedClaimHeld {
 			s.releaseChildCommittedSendStart(committedChildID)
+			// The claim refused every wake-edge drive that landed while it was
+			// held -- a child notification arriving mid-window runs the child's
+			// notify, driveChildIfNotStopGated, which returns early on the claim,
+			// so that wake is DROPPED. The run about to launch would have drained
+			// the child's queue, but this exit did not hand a run over (the claim
+			// is still held here), so re-drive the child's undelivered attention
+			// or the dropped notification can sit undriven forever. The hand-off
+			// path clears committedClaimHeld before this defer runs, so it never
+			// re-drives: the handed-over run drains the queue itself, and
+			// re-driving there would launch the second turn this claim prevents.
+			// This runs from the deferred rollback after every failure exit
+			// (aborted reservation, failed commit, failed restore, blocked
+			// hand-off, start-input failure), and send holds no lock here, so the
+			// sweep cannot re-enter one it already holds.
+			s.driveChildrenWithUndeliveredAttention()
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
