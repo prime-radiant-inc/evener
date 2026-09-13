@@ -2145,7 +2145,11 @@ func TestActivityPlaceholderEpochs_MatchesTheLoaderOnADegradedDelegateJournal(t 
 	}
 	loaderEpoch := loaded.snapshot.DelegatesEpoch
 	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
-	_, placeholderEpoch, err := activityPlaceholderEpochs(loc, loaded, cache, childID)
+	childLoc, err := resolveActivityChildByID(loc, loaded, childID)
+	if err != nil {
+		t.Fatalf("resolve the child: %v", err)
+	}
+	_, placeholderEpoch, err := activityPlaceholderEpochs(childLoc, cache, childID)
 	if err != nil {
 		t.Fatalf("name the placeholder's generations: %v", err)
 	}

@@ -1489,3 +1489,68 @@ func TestJobTreeShapeChange_SurvivesARestart(t *testing.T) {
 		t.Fatalf("restored revision = %d, want at least %d", activityCurrentRootRevision(restored), moved)
 	}
 }
+
+// TestBuildActivityFullSnapshot_UnresolvableDepthBoundaryChildReportsTheError
+// pins that a depth-boundary child whose link cannot be resolved is reported
+// as the failure it is. A placeholder for it would carry a continuation whose
+// resume fails on that very same error, which is a page offered and then
+// withdrawn; the resolver's own message, reported once, is the honest answer.
+func TestBuildActivityFullSnapshot_UnresolvableDepthBoundaryChildReportsTheError(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	const delegateID = "dlg_unresolvable"
+	const childID = "unresolvablechild"
+	descriptor := stableReadonlyDescriptor(s, delegateID)
+	descriptor.ChildSessionID = childID
+	descriptor.TranscriptRef = encodeRef("", childID)
+	started := time.Unix(60, 0).UTC()
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:                  "complete",
+		communicated:            true,
+		structuredResultPresent: true,
+		descriptor:              descriptor,
+		startedAt:               started,
+		latestActivityAt:        started.Add(time.Second),
+		endedAt:                 started.Add(2 * time.Second),
+	})
+	seedStableReadonlyFinish(t, s, delegateID, descriptor, started, finish, true)
+
+	// A live root with no state directory to resolve a closed child against:
+	// resolveActivityChildByID fails, and at the depth bound that failure is
+	// all there is to say about this branch.
+	cache := newHistoricalActivityCache(context.Background(), s.ID())
+	cache.budget.maxDepth = 0
+	loc := activitySessionLocator{live: s, sessionID: s.ID()}
+	snapshot, err := buildActivityFullSnapshot(loc, map[string]bool{s.ID(): true}, false, cache, 0)
+	if err != nil {
+		t.Fatalf("buildActivityFullSnapshot: %v", err)
+	}
+	recorded := snapshot.Errors[childID]
+	if recorded == nil {
+		t.Fatalf("no error recorded for %q; a placeholder here mints a continuation that fails on resume for this same reason", childID)
+	}
+	if snapshot.Children[childID] != nil {
+		t.Fatalf("placeholder installed for a child that cannot be resolved: %+v", snapshot.Children[childID])
+	}
+
+	budget := newBoundedActivityBudget(s.ID(), time.Unix(100, 0).UTC(), 0)
+	budget.maxDepth = 0
+	projected := projectActivitySessionAt(*snapshot, budget, 0, nil, 0)
+	for _, entry := range projected.Entries {
+		if entry.Delegate == nil || entry.Delegate.DelegateID != delegateID {
+			continue
+		}
+		if !strings.Contains(entry.Delegate.Branch.Error, recorded.Error()) {
+			t.Fatalf("branch error = %q, want the resolver's own message %q", entry.Delegate.Branch.Error, recorded.Error())
+		}
+		if entry.Delegate.Branch.Continuation != "" {
+			t.Fatalf("branch offers a continuation that cannot be resumed: %q", entry.Delegate.Branch.Continuation)
+		}
+		return
+	}
+	t.Fatalf("delegate %q not projected", delegateID)
+}

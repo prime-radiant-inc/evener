@@ -475,7 +475,16 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			if !activityConsumeWorkUnit(cache.budget, 1) {
 				continue
 			}
-			placeholderJobs, placeholderDelegates, err := activityPlaceholderEpochs(loc, loaded, cache, childID)
+			// Resolved the same way a child one level shallower is, and a
+			// failure recorded the same way: projection reports it from
+			// snapshot.Errors rather than rendering a branch whose
+			// continuation would fail on the identical error at resume.
+			childLoc, err := resolveActivityChildByID(loc, loaded, childID)
+			if err != nil {
+				snapshot.Errors[childID] = err
+				continue
+			}
+			placeholderJobs, placeholderDelegates, err := activityPlaceholderEpochs(childLoc, cache, childID)
 			if err != nil {
 				return nil, err
 			}
@@ -665,22 +674,19 @@ func liveActivitySessionLabel(s *Session) string {
 	return activitySessionLabel(schema.SessionMeta{ID: id, Name: name, OriginalPrompt: prompt})
 }
 
-// activityPlaceholderEpochs reports the fold-cache generations childID's own
-// load would report, without paying for that load. A LIVE child folds neither
-// journal and reports zeros; a historical one reports what this process last
-// recorded for its jobs journal and for the delegates journal of the root its
-// metadata names — the same two numbers its own load derives, since a
+// activityPlaceholderEpochs reports the fold-cache generations the child at
+// childLoc would report from its own load, without paying for that load. A
+// LIVE child folds neither journal and reports zeros; a historical one
+// reports what this process last recorded for its jobs journal and for the
+// delegates journal of the root its metadata names — the same two numbers its own load derives, since a
 // never-folded path's generation is 0 and that is what its first fold
 // assigns. A journal actually rewritten between this read and that fold
 // raises the fold's number, and the resulting mismatch is the true answer.
-func activityPlaceholderEpochs(loc activitySessionLocator, loaded activityLoadedBase, cache *historicalActivityCache, childID string) (jobs, delegates uint64, err error) {
-	childLoc, err := resolveActivityChildByID(loc, loaded, childID)
-	if err != nil || childLoc.live != nil {
-		// An unresolvable link and a live child are answers, not failures of
-		// this lookup: the caller records the first per child
-		// (snapshot.Errors) and projection reports it from there, and the
-		// second folds nothing. Both name no generations.
-		return 0, 0, nil //nolint:nilerr // the caller records this per child; naming generations is neither possible nor needed here
+func activityPlaceholderEpochs(childLoc activitySessionLocator, cache *historicalActivityCache, childID string) (jobs, delegates uint64, err error) {
+	if childLoc.live != nil {
+		// A live child folds neither journal, so it has no generations to
+		// name — the same zeros loadLiveActivityBase reports for it.
+		return 0, 0, nil
 	}
 	stateDir := strings.TrimSpace(childLoc.stateDir)
 	if stateDir == "" {
