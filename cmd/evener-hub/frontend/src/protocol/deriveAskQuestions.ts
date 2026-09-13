@@ -10,15 +10,17 @@
 // §6.1).
 //
 // This alone is not sufficient for the live, in-flight-submission case -
-// see reconcileBatches.ts's own comment for why a purely positional signal
-// can't tell "my own reply's echo" apart from "a sibling ask_user call that
-// happened to land first" during the network round-trip of sending an
-// answer. reconcileBatches layers stateful batch-membership on top of the
-// list this function returns; this function's only job is "what does the
-// transcript say is live right now, ignoring any in-flight request."
-import type { ItemModel, ThreadModel } from "../../../../protocol/model";
-import type { AskUserOption } from "../../askShared";
-import { parseAskUserQuestions } from "../../askShared";
+// see askDock/reconcileBatches.ts's own comment for why a purely
+// positional signal can't tell "my own reply's echo" apart from "a
+// sibling ask_user call that happened to land first" during the network
+// round-trip of sending an answer. reconcileBatches layers stateful
+// batch-membership on top of the list this function returns; this
+// function's only job is "what does the transcript say is live right now,
+// ignoring any in-flight request."
+
+import type { AskUserOption } from "./askShared";
+import { parseAskUserQuestions } from "./askShared";
+import type { ItemModel, ThreadModel } from "./model";
 
 // AskQuestionRef is one flattened, individually-addressable question -
 // mirrors legacy's pendingAsk item shape (renderer.js:5832-5844). `key` is

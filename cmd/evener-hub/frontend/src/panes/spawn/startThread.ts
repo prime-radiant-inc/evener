@@ -4,8 +4,8 @@
 // prompt + cwd -> real session); T2 fills the rest (branch/access-mode ->
 // launchOverrides, the schema engine, sticky defaults).
 import type { AppwireClientLike } from "../../protocol/clientLike";
+import { buildComposerInput } from "../../protocol/composerInput";
 import type { LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
-import { buildComposerInput } from "../../stores/composerInput";
 import type { InputAttachment } from "../../stores/threads";
 import { mergeAccessModeSandbox } from "./accessMode";
 

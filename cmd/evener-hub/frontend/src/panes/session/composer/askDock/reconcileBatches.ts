@@ -1,17 +1,16 @@
 // reconcileBatches is the stateful half of the dock's multi-pending-set
 // bookkeeping (wave-5 plan T4: "late-arriving questions never swept into an
-// in-flight settlement"). deriveAskQuestions.ts's liveAskQuestions gives a
-// purely POSITIONAL snapshot of "what the transcript currently says is
-// live" - sufficient for cold attach and the common (nothing in flight)
+// in-flight settlement"). protocol/deriveAskQuestions.ts's liveAskQuestions
+// gives a purely POSITIONAL snapshot of "what the transcript currently says
+// is live" - sufficient for cold attach and the common (nothing in flight)
 // case, but not for the in-flight submission race: while our own composed
 // answer's turn/start round-trip is pending, its eventual echo (a fresh
 // userMessage item) and a SIBLING ask_user call's own ack are both being
-// appended to the SAME transcript by two independent, unordered wire
-// events. Position alone can't tell "my own reply landed, resolving
-// everything before it" apart from "a new question arrived that has
-// nothing to do with my in-flight send" when the two race - see
-// askDockStore.ts's own comment for the concrete interleaving this
-// protects against.
+// appended to the SAME transcript by two independent, unordered wire events.
+// Position alone can't tell "my own reply landed, resolving everything
+// before it" apart from "a new question arrived that has nothing to do with
+// my in-flight send" when the two race - see askDockStore.ts's own comment
+// for the concrete interleaving this protects against.
 //
 // The fix is identity, not position: once a batch is marked `sending`, its
 // own questions are frozen and immune to the live-set signal entirely
@@ -30,7 +29,7 @@
 // include its questions at all (the foreign reply moved the transcript
 // boundary past them) - membership comparisons below use `.key`, but the
 // data itself is never re-derived from a live scan once a batch holds it.
-import type { AskQuestionRef } from "./deriveAskQuestions";
+import type { AskQuestionRef } from "../../../../protocol/deriveAskQuestions";
 
 export interface AskBatch {
   id: string;

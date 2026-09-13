@@ -1,8 +1,8 @@
-import type { AskQuestionRef } from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/deriveAskQuestions";
 import {
   type AskBatch,
   reconcileBatches,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/reconcileBatches";
+import type { AskQuestionRef } from "../../cmd/evener-hub/frontend/src/protocol/deriveAskQuestions";
 
 /** Own submissions by question identity, using the current web reconciliation. */
 export class QuestionBatches {
