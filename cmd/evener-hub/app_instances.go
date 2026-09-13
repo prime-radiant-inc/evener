@@ -607,6 +607,13 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	// the entry's endpoint afterwards.
 	c.auth.credMu.Lock()
 	defer c.auth.credMu.Unlock()
+	// before is an independent parse from l below — a fresh read sharing no
+	// maps with it — so a create whose config parses but cannot load (#711) can
+	// be written back exactly as the file was, the way Edit restores its own.
+	before, _, err := c.read()
+	if err != nil {
+		return err
+	}
 	l, _, err := c.read()
 	if err != nil {
 		return err
@@ -632,7 +639,21 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	return c.reg.Reload()
+	if err := c.reg.Reload(); err != nil {
+		// writeLoadable's dry parse only checks the layer against the registry
+		// schema; Reload resolves it, so a config that parses can still fail to
+		// load - a protocol or transport the base does not offer, for instance.
+		// Leaving the entry in place would refuse every instance write until the
+		// file is fixed by hand, with the pane locked out of its own recovery,
+		// so the file this call just overwrote is restored instead and the
+		// refusal names what could not load.
+		if restoreErr := c.write(before); restoreErr != nil {
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+		}
+		_ = c.reg.Reload() // best-effort: put the last-good registry view back
+		return appwire.InvalidParams(fmt.Sprintf("instance %q cannot be loaded: %v", name, err))
+	}
+	return nil
 }
 
 // Edit applies the fields the form set, leaving every other authored key

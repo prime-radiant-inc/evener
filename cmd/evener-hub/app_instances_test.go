@@ -1010,6 +1010,59 @@ func TestInstances_RemoveRestoresACorruptOAuthRecordWhenTheConfigWriteFails(t *t
 	}
 }
 
+// A create whose config parses but cannot resolve is the hazard Edit's and
+// Remove's rollbacks exist for, one step earlier: the entry it just wrote would
+// stay in providers.toml while the registry sits on the implicit-only fallback
+// and refuses every instance write, leaving hand-editing the file as the only
+// way back. The create restores the file and reports what it could not load.
+func TestInstances_CreateRollsBackWhenTheReloadFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	before, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	// An entry that parses but cannot resolve an endpoint (#711: no base and no
+	// base_url of its own): the registry loaded before it appeared, so the
+	// create still starts, and the layer the create writes still carries it, so
+	// the reload that follows fails.
+	raw := append(slices.Clone(before), []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err = f.ctl.Create(appwire.InstanceCreateParams{Name: "second", Base: "openai"})
+	if err == nil {
+		t.Fatal("Create = nil, want the reload failure")
+	}
+	// Pins the branch: a write-loadable refusal never carries this text, so a
+	// fixture that stopped parsing before the write would not pass as a
+	// reload-rollback test.
+	if !strings.Contains(err.Error(), "cannot be loaded") {
+		t.Fatalf("Create = %v, want the create to name the config it could not load", err)
+	}
+	// The rollback re-serializes the layer, so the check is what the file holds,
+	// not its bytes: the entry this create wrote must be gone and everything it
+	// found must still be there.
+	after, _, err := registry.ReadConfigFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadConfigFile after the rollback: %v", err)
+	}
+	if _, ok := after.Providers["second"]; ok {
+		t.Fatal("the instance whose config cannot load is still in providers.toml")
+	}
+	for _, name := range []string{"work", "standalone"} {
+		if _, ok := after.Providers[name]; !ok {
+			t.Fatalf("the rollback lost the %q entry this create found", name)
+		}
+	}
+	if _, ok := f.ctl.reg.Get().Instance("second"); ok {
+		t.Fatal("the instance whose config cannot load still resolves")
+	}
+}
+
 // A reload failure is the last way a removal can fail after it has deleted
 // things. It drops the registry to implicit-only and refuses every instance
 // write until the file loads again, so leaving the removal in place would have
