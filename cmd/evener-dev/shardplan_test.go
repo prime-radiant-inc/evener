@@ -269,6 +269,12 @@ func TestSplitFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.count=1"},
 		},
 		{
+			name:  "-p is the build's parallelism, in both spellings",
+			flags: []string{"-p", "4", "--p=6", "-short"},
+			build: []string{"-p", "4", "-p=6"},
+			test:  []string{"-test.short"},
+		},
+		{
 			name:  "nothing at all",
 			flags: nil,
 			build: nil,

@@ -168,6 +168,9 @@ func hasShortFlag(flags []string) bool {
 // buildValueFlags take their value as the next argument; buildFlagPrefixes carry
 // it inline. Both change what gets compiled, so both belong to `go test -c`.
 var buildValueFlags = map[string]bool{
+	// -p is the build's own parallelism, which `go help build` documents with
+	// the rest of them; it belongs to `go test -c`, not to the shards.
+	"-p":    true,
 	"-tags": true, "-mod": true, "-modfile": true, "-overlay": true,
 	"-pgo": true, "-compiler": true, "-gcflags": true, "-ldflags": true,
 	"-asmflags": true, "-installsuffix": true,
@@ -185,7 +188,7 @@ var buildBareFlags = map[string]bool{
 var testValueFlags = map[string]bool{
 	"-run": true, "-skip": true, "-bench": true, "-benchtime": true,
 	"-count": true, "-timeout": true, "-cpu": true, "-parallel": true,
-	"-p": true, "-coverprofile": true, "-coverpkg": true, "-outputdir": true,
+	"-coverprofile": true, "-coverpkg": true, "-outputdir": true,
 	"-exec": true, "-o": true, "-fuzz": true, "-fuzztime": true,
 	"-fuzzminimizetime": true, "-cpuprofile": true, "-memprofile": true,
 	"-blockprofile": true, "-mutexprofile": true, "-trace": true,
