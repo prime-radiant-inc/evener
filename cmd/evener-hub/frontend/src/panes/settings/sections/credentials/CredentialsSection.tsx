@@ -22,9 +22,10 @@
 // value (a discriminated union), so opening a second editor always replaces
 // whatever was open, matching the legacy's own single module-level
 // `openEditor` variable - no per-row state, no dirty-check on replace.
+
+import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { friendlyErrorMessage } from "../../../../protocol/errors";
-import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";

@@ -1,8 +1,13 @@
+import type {
+  ActivityDelegate,
+  ActivityDelegateRow,
+  ActivityJob,
+  ActivityJobRow,
+  ActivitySessionNode,
+} from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "../../../protocol/activityData";
-import type { ActivityDelegateRow, ActivityJobRow } from "../../../protocol/activityRows";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { ActivityRowDetail } from "./ActivityRowDetail";

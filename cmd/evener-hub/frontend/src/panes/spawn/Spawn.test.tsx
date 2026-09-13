@@ -1,11 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { WireError } from "../../protocol/errors";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   AnyNotification,
   InstanceListResponse,
@@ -19,7 +14,12 @@ import type {
   ThreadCapabilities,
   ThreadStartParams,
   ThreadStartResponse,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { navigate } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";

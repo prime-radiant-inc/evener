@@ -4,9 +4,15 @@
 // for shell jobs with output - the tail of the job's log. Pure presentation
 // except the one output-tail fetch; ActivityTree owns the detailID state and
 // passes the row plus its ticking `now` straight through.
+
+import {
+  type ActivityDelegateRow,
+  type ActivityJobRow,
+  activityDelegateState,
+  formatClockTime,
+  splitMandate,
+} from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useState } from "react";
-import { type ActivityDelegateRow, type ActivityJobRow, activityDelegateState } from "../../../protocol/activityRows";
-import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";

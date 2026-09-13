@@ -27,9 +27,10 @@
 // Owns the one mutation it edits (evener/instance/edit); the section still
 // owns what every other action DOES (opening an editor, a confirm, or
 // calling the store), the same division of labor as before.
+
+import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
-import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, useToasts } from "../../../../widgets";

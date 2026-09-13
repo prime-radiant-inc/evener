@@ -1,5 +1,4 @@
-import type { ThreadModel } from "../../../../protocol/model";
-import type { InputItem, PendingMutation } from "../../../../protocol/types.gen";
+import type { InputItem, PendingMutation, ThreadModel } from "@evener/appwire-client";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 
 export type PendingMethod = "send" | "steer" | "queue" | "drain";

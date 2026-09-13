@@ -3,9 +3,10 @@
 // items. Wave 4 T1 ships the registry + the raw-output fallback; T3
 // registers the real per-tool descriptors (read/grep/ls/glob/shell/diff/
 // patch/web fetch+search/delegate/job_*/ask_user/sandbox escalation).
+
+import type { ItemModel, ThreadModel } from "@evener/appwire-client";
+import { hasItemFailure } from "@evener/appwire-client";
 import { type ComponentType, createElement, Fragment } from "react";
-import { hasItemFailure } from "../../../protocol/itemFailure";
-import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import type { ToolIconKind } from "../../../widgets";
 import { MCPToolArguments } from "./MCPToolArguments";
 import { RawToolOutput } from "./RawToolOutput";

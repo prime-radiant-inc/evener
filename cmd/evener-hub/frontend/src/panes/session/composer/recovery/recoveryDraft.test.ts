@@ -1,5 +1,5 @@
+import type { InputItem } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { InputItem } from "../../../../protocol/types.gen";
 import type { MutationAttachment, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recoveryDraft";

@@ -1,5 +1,5 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { useEffect } from "react";
-import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";

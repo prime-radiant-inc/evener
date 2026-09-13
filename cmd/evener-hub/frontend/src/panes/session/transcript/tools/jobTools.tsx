@@ -1,13 +1,6 @@
 // Descriptors for job_* and delegate_send follow-up calls.
-import type { ItemModel } from "../../../../protocol/model";
-import {
-  clip,
-  clipJobID,
-  parseArgs,
-  parseJSONObject,
-  str,
-  trailingBracketFooter,
-} from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { clip, clipJobID, parseArgs, parseJSONObject, str, trailingBracketFooter } from "@evener/appwire-client";
 import { CopyButton } from "../../../../widgets";
 import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";

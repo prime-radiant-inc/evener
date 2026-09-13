@@ -1,6 +1,6 @@
+import { docFileRawURL, docImageURL } from "@evener/appwire-client";
 import { type ReactPortal, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { docFileRawURL, docImageURL } from "../../../../protocol/docContent";
 import * as paneActions from "../../../../shell/paneActions";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Markdown } from "../../../../widgets/markdown";

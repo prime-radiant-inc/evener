@@ -22,10 +22,10 @@
 // composer is where you act on this session"; the command palette only
 // hands off to it - design-system.md §9) - so GoalControl below is the
 // goal chip + clear popover only.
+
+import type { NavigationSessionLocation } from "@evener/appwire-client";
+import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
 import { useRef, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
-import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";

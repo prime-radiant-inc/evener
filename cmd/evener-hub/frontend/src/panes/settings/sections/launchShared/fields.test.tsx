@@ -1,8 +1,8 @@
+import type { LaunchOption } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { LaunchOption } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";

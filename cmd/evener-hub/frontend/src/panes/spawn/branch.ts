@@ -1,4 +1,4 @@
-import type { AppwireClientLike } from "../../protocol/clientLike";
+import type { AppwireClientLike } from "@evener/appwire-client";
 
 // Branch/worktree HEAD auto-resolution (floor §1.7). The resolved HEAD ref
 // only fills the branch chip's DISPLAY - the branch value is never sent on the

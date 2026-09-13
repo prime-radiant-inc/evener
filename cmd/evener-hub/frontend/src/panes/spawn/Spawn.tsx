@@ -1,6 +1,18 @@
 // Session creation keeps the project directory above the prompt and the
 // less frequently changed launch settings below it. The directory picker
 // commits once, so browsing does not churn directory-dependent configuration.
+
+import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
+import {
+  filterSlashMenuItems,
+  friendlyLaunchErrorMessage,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  slashCommandInvocation,
+  spliceSlashCommand,
+} from "@evener/appwire-client";
 import {
   Component,
   type JSX,
@@ -16,17 +28,6 @@ import {
   useState,
 } from "react";
 import { useStore } from "zustand";
-import { slashCommandInvocation } from "../../protocol/catalogCommands";
-import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import {
-  filterSlashMenuItems,
-  mergeSlashCommands,
-  parseSlashToken,
-  type SlashMenuItem,
-  type SlashToken,
-  spliceSlashCommand,
-} from "../../protocol/slashCompletion";
-import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";

@@ -68,10 +68,10 @@
 // requestComposerFocus seam when the dock just emptied, or to the next
 // still-pending batch's entry control when it has not (the composer input
 // row is hidden/inert until the last batch resolves - Composer.tsx).
+
+import type { AskBatch, AskResolution } from "@evener/appwire-client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import type { AskResolution } from "../../../../protocol/askAnswers";
-import type { AskBatch } from "../../../../protocol/reconcileBatches";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { requestComposerFocus } from "../composerFocus";

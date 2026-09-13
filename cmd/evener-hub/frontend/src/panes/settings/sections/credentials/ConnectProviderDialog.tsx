@@ -1,6 +1,6 @@
+import type { AuthTestResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { friendlyErrorMessage } from "../../../../protocol/errors";
-import type { AuthTestResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, Skeleton, useToasts } from "../../../../widgets";

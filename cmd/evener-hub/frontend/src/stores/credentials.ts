@@ -17,12 +17,10 @@
 // (and this store passes through) only AuthStatusResponse/AuthDeviceStart
 // Response/AuthDevicePollResponse shapes, none of which carry the secret
 // itself (write-only fields on the wire).
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { errorText } from "../protocol/errors";
+
 import type {
   AnyNotification,
+  AppwireClientLike,
   AuthDevicePollResponse,
   AuthDeviceStartResponse,
   AuthLoginCompleteResponse,
@@ -35,7 +33,10 @@ import type {
   InstanceEntry,
   InstanceListResponse,
   ProviderDescriptor,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { connectionStore } from "./connection";
 
 function requireClient(): AppwireClientLike {

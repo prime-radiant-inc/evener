@@ -1,4 +1,4 @@
-import type { InputItem } from "../protocol/types.gen";
+import type { InputItem } from "@evener/appwire-client";
 import type {
   MutationAttachment,
   MutationIntent,

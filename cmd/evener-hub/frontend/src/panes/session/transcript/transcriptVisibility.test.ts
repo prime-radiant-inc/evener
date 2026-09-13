@@ -1,7 +1,7 @@
 // @vitest-environment node
 
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../protocol/model";
 import {
   isDormantTranscript,
   isItemVisible,

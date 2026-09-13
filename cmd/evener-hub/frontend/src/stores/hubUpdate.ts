@@ -11,11 +11,10 @@
 // Like settingsOverview.ts, this store reads connectionStore's current
 // client at call time and holds no subscription of its own.
 
+import type { AppwireClientLike, UpdateCheckResponse } from "@evener/appwire-client";
+import { ConnectionClosedError, friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { ConnectionClosedError, friendlyErrorMessage, WireError } from "../protocol/errors";
-import type { UpdateCheckResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 
 export type UpdateChannel = "release" | "snapshot";

@@ -1,7 +1,7 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../protocol/model";
 import { connectionStore } from "./connection";
 import {
   acknowledgeHumanNote,

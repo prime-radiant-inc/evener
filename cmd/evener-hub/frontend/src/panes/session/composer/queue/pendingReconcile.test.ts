@@ -1,6 +1,5 @@
+import type { PendingMutation, ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ThreadModel } from "../../../../protocol/model";
-import type { PendingMutation } from "../../../../protocol/types.gen";
 import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { reconcilePendingEntries } from "./pendingReconcile";
 

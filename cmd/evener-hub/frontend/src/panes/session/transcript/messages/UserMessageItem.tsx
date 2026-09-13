@@ -12,9 +12,9 @@
 // item/completed with no item/started leg), so unlike agentMessage/reasoning
 // there is no live/settled branch here at all.
 
+import type { ItemModel } from "@evener/appwire-client";
+import { sessionActionError } from "@evener/appwire-client";
 import { memo, type ReactNode, useState } from "react";
-import { sessionActionError } from "../../../../protocol/errors";
-import type { ItemModel } from "../../../../protocol/model";
 import { workspaceStore } from "../../../../shell/workspace";
 import { threadsStore } from "../../../../stores/threads";
 import { IconButton, useToasts } from "../../../../widgets";

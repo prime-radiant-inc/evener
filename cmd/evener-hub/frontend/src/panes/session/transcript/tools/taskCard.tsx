@@ -34,8 +34,8 @@
 // the 2026-07-15 plan trimmed those from the legacy card deliberately (a
 // changes-only card, not a full-plan disclosure; the sidebar remains the
 // full-plan view), not because the data is unavailable.
-import type { ItemModel } from "../../../../protocol/model";
-import { parseArgs, str } from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { parseArgs, str } from "@evener/appwire-client";
 import { Meter } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";

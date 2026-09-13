@@ -1,9 +1,9 @@
+import type { KeybindingsOverrides, KeybindingsRule } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { ACTIONS } from "../../keybindings/actions";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID, registerDefaultBindings } from "../../keybindings/defaults";
 import { keybindingsRegistry } from "../../keybindings/registry";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { KeybindingsOverrides, KeybindingsRule } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../stores/keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";

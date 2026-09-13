@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo, type ReactNode } from "react";
 import { afterEach, expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import { projectThread } from "../../../transcriptDisplay/projector";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";

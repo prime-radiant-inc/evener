@@ -1,11 +1,10 @@
+import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { activityPanelStore } from "../../../stores/activityPanel";
 import { activitySummaryStore } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";

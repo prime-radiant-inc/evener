@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
-import type { ItemModel } from "../../../../protocol/model";
+import type { ItemModel } from "@evener/appwire-client";
 
 afterEach(() => {
   cleanup();

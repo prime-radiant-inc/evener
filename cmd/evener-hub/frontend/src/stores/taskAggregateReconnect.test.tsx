@@ -1,8 +1,8 @@
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { TasksPanel } from "../panes/session/chrome/TasksPanel";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { resetThreadsStoreForTests, threadsStore, useThreadsStore } from "./threads";
 

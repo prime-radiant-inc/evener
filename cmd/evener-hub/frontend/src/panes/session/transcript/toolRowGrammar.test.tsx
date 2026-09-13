@@ -5,11 +5,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";

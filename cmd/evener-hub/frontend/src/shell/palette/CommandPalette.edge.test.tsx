@@ -12,10 +12,9 @@ import { act, cleanup, renderHook, screen, waitFor } from "@testing-library/reac
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
+import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
-import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
-import type { ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";

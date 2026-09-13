@@ -4,7 +4,7 @@
 // design.md §11.3): computing the credential display from InstanceEntry's
 // activeSource/credentialRequired/auth fields and the providerId grouping -
 // no rendering, no store access, easily unit-tested in isolation.
-import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
+import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
 
 const STORED_KEY_LABEL = "Configured via stored API key";
 const STORED_CREDENTIAL_JSON_LABEL = "Configured via stored credential JSON";

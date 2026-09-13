@@ -1,5 +1,4 @@
-import type { ItemModel } from "../../protocol/model";
-import type { EvenerDelegateInfo } from "../../protocol/types.gen";
+import type { EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
 import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
 
 /** Fixed wire-shaped collaborator examples; never seeded into a live store. */

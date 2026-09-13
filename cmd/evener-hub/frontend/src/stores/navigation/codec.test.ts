@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { NavigationSnapshot } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { NavigationSnapshot } from "../../protocol/types.gen";
 import {
   decodeNavigationResponse,
   materializeNavigationResource,

@@ -1,4 +1,4 @@
-import type { NavigationProjectSummary, NavigationSessionSummary } from "../../protocol/types.gen";
+import type { NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
 import { navigationStore } from "./store";
 import {
   canonicalResourceKey,

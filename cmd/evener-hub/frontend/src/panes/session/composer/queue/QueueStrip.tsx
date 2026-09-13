@@ -7,9 +7,10 @@
 // and pendingTurnsStore - Composer.tsx/Session.tsx are outside this manifest,
 // so mounting this inside Composer's own tree happens at the wave
 // integration merge (T6), not here.
+
+import type { InputItem } from "@evener/appwire-client";
+import { errorText, sessionActionError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
-import { errorText, sessionActionError } from "../../../../protocol/errors";
-import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";

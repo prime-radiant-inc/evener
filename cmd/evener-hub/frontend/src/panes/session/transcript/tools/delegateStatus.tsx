@@ -9,8 +9,9 @@
 // For a job_status call whose output isn't a delegate status (a shell job,
 // or malformed JSON), it falls back to HeadClippedOutputBody — the previous
 // behavior — so the renderer never regresses for non-delegate targets.
+
+import { formatClockTime, formatElapsed, splitMandate } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { formatClockTime, formatElapsed, splitMandate } from "../../../../protocol/displayFormat";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chip, type ChipTone, CopyButton, Disclosure, Markdown } from "../../../../widgets";
 import { scopedDisclosureId } from "../../../../widgets/disclosure/disclosureStore";

@@ -4,11 +4,10 @@
 // (toolRenderers.ts) by ItemModel.toolName, which pairs a raw-output default
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
+
+import type { ItemModel, ThreadModel } from "@evener/appwire-client";
+import { hasErrorText, parseArgs, parseJSONObject, stableDelegateDisplayStatus, str } from "@evener/appwire-client";
 import { memo, useId, useLayoutEffect, useState } from "react";
-import { hasErrorText } from "../../../protocol/itemFailure";
-import type { ItemModel, ThreadModel } from "../../../protocol/model";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import { parseArgs, parseJSONObject, str } from "../../../protocol/toolCallText";
 import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,

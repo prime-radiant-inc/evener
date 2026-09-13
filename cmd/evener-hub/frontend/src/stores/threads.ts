@@ -7,31 +7,36 @@
 // handlers to whatever client connectionStore currently holds, via a
 // connectionStore.subscribe() wired at module load (see rewireClient).
 
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { buildComposerInput, buildInput, type InputAttachment } from "../protocol/composerInput";
-import { ClientNotReadyError, isStaleCursorError, mutationErrorData, WireError } from "../protocol/errors";
-import type { ThreadModel } from "../protocol/model";
-import {
-  applyNotification,
-  collectAuthoritativeMutationIds,
-  hydrateThread,
-  mergeOlderItemPage,
-  notificationRoutingKey,
-  resolvePendingEscalation,
-} from "../protocol/reducer";
 import type {
   AnyNotification,
+  AppwireClientLike,
   GoalSetResponse,
   ModelListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
+  ThreadModel,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   UrlsRemoveResponse,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
+import {
+  applyNotification,
+  buildComposerInput,
+  buildInput,
+  ClientNotReadyError,
+  collectAuthoritativeMutationIds,
+  hydrateThread,
+  type InputAttachment,
+  isStaleCursorError,
+  mergeOlderItemPage,
+  mutationErrorData,
+  notificationRoutingKey,
+  resolvePendingEscalation,
+  WireError,
+} from "@evener/appwire-client";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
+import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectionStore } from "./connection";
@@ -50,7 +55,7 @@ import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 
-export type { InputAttachment } from "../protocol/composerInput";
+export type { InputAttachment } from "@evener/appwire-client";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
 // hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER

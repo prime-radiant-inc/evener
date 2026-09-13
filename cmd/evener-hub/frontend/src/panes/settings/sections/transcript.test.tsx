@@ -1,9 +1,9 @@
+import type { AnyNotification } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { WireError } from "../../../protocol/errors";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { AnyNotification } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import {
   initTranscriptDisplay,

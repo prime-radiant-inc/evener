@@ -34,9 +34,10 @@
 // (row hover, treeitem focus, open-menu, and the <900px touch fallback that
 // keeps the actions visible beside the occupant - in flow, not stacked -
 // with no hover to reveal them).
+
+import { canReadSharedNotes } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
 import { useThreadsStore } from "../../stores/threads";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";

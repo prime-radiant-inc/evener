@@ -11,7 +11,7 @@
 //   - the consumer additionally accepts an optional `useOverview` prop
 //     (defaulting to this function) so their own tests inject a fixture
 //     store without needing this module at all
-import type { SettingsOverviewResponse } from "../../../protocol/types.gen";
+import type { SettingsOverviewResponse } from "@evener/appwire-client";
 
 export interface SettingsOverviewStore {
   data: SettingsOverviewResponse | null;

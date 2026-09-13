@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { beforeEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import { resolveHeadBranch } from "./branch";
 
 describe("resolveHeadBranch (floor §1.7, evener/git/head)", () => {
