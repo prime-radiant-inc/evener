@@ -651,15 +651,35 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		ChangeModel:  true,
 		Shutdown:     true,
 		Goal:         true,
+		SharedNotes:  true,
 		Rename:       true,
 	}
 	caps.ChangeVisionModel = caps.ChangeModel
 	return caps
 }
 
+// readablePastCapabilities advertises what a session whose daemon is not
+// answering can still do: nothing mutating, but its saved shared notes stay
+// readable. The web derives editability from the store's write gate and the
+// daemon fences writes by admission, so advertising the read capability cannot
+// enable an edit.
+func readablePastCapabilities() appwire.ThreadCapabilities {
+	return appwire.ThreadCapabilities{SharedNotes: true}
+}
+
 func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry) (appwire.Thread, error) {
 	if err := ctx.Err(); err != nil {
 		return appwire.Thread{}, err
+	}
+	// A single unreadable or undecodable mutations journal must not fail the
+	// whole roster. Every sibling per-entry read in this function degrades
+	// instead (pastEntryCost returns nil, ownership errors are swallowed,
+	// mergePastMetadataForList tolerates non-ctx errors), so a corrupt journal
+	// reads as "no canonical note" here too.
+	if note, _, err := agent.ReadCanonicalHumanNote(entry.StateDir, entry.Meta.ID); err == nil {
+		entry.Meta.HumanNote = note
+	} else {
+		entry.Meta.HumanNote = ""
 	}
 	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
@@ -730,6 +750,9 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 			Kind:         kind,
 			Profile:      entry.Meta.ProfileID,
 			Goal:         persistedGoalState(entry.Meta.Goal),
+			HumanNote:    entry.Meta.HumanNote,
+			AgentNote:    entry.Meta.AgentNote,
+			SessionURLs:  persistedSessionURLs(entry.Meta.SessionURLs),
 			Capabilities: pastThreadCapabilities(),
 			WorkMillis:   entry.Meta.WorkMillis,
 			Usage:        cumulativeUsage,
@@ -743,10 +766,10 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		if !isDaemonDiscoveryError(ownershipErr) {
 			return appwire.Thread{}, ownershipErr
 		}
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+		thread.Evener.Capabilities = readablePastCapabilities()
 	} else if required {
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+		thread.Evener.Capabilities = readablePastCapabilities()
 	} else {
 		thread = applyHubForkCapability(cfg, thread)
 	}
@@ -896,6 +919,23 @@ func persistedGoalState(goal *schema.GoalSnapshot) *appwire.GoalState {
 		return nil
 	}
 	return &appwire.GoalState{Objective: goal.Objective, Status: goal.Status, Iterations: goal.Iterations}
+}
+
+// persistedSessionURLs projects a past session's stored shared-notes URL list
+// onto the wire, mirroring persistedGoalState's stored-state rule: nil/empty
+// stored state reads as an absent list, never as an invented empty one. The
+// copy keeps the past index's SessionMeta from aliasing the served snapshot
+// (appwire/clone.go's URL-slice deep copy covers the live clone path; this
+// covers the past projection path, which builds its own thread).
+func persistedSessionURLs(urls []schema.SessionURL) []appwire.SessionURL {
+	if len(urls) == 0 {
+		return nil
+	}
+	out := make([]appwire.SessionURL, 0, len(urls))
+	for _, u := range urls {
+		out = append(out, appwire.SessionURL{ID: u.ID, URL: u.URL, Label: u.Label, AddedBy: u.AddedBy, AddedAt: u.AddedAt})
+	}
+	return out
 }
 
 // pastTranscriptCache memoizes saved-transcript parsing by file identity. Past

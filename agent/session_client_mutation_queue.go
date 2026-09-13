@@ -942,7 +942,7 @@ func reserveClientMutationTurnID(snapshot *clientMutationSnapshot, record *clien
 // result rather than repeating the switch.
 func acceptedClientMutationProjection(method string) appwire.MutationProjectionState {
 	switch method {
-	case clientMutationMethodStart,
+	case clientMutationMethodNotesHumanSet, clientMutationMethodStart,
 		clientMutationMethodSteer,
 		clientMutationMethodQueue,
 		clientMutationMethodDrain,
@@ -1136,9 +1136,14 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 		}
 		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
 		client = append(client, steeringMessage{
-			Text:             queued.Text,
-			Images:           queued.Images,
-			Source:           events.SteeringSourceUser,
+			Text:   queued.Text,
+			Images: queued.Images,
+			Source: events.SteeringSourceUser,
+			// The kind survives the restart because it rode the durable
+			// journal record (see SteeringKind on clientMutationRecord),
+			// not the reflected in-memory entry. Plain user steering
+			// carries no stamp and keeps its empty kind.
+			Kind:             snapshot.Journal[id].SteeringKind,
 			ClientMutationID: id,
 			StableTurnID:     pending.TurnID,
 		})

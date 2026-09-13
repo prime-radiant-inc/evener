@@ -508,6 +508,22 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				s.appEnvelope.Goal = goalPatch(params)
 				s.appEnvelope.goalCarrierGeneration++
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
+			case appwire.NotesUpdatedParams:
+				// Direct typed carrier like GoalUpdatedParams above: the
+				// generation bump fences a sampled facetGoal assign taken
+				// before this carrier against overwriting it (threadEnvelope's
+				// notesCarrierGeneration, mirroring goalCarrierGeneration).
+				s.appEnvelope.HumanNote = params.HumanNote
+				s.appEnvelope.AgentNote = params.AgentNote
+				s.appEnvelope.notesCarrierGeneration++
+				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
+			case appwire.UrlsUpdatedParams:
+				// Fresh copy, nil-on-empty: the envelope owns its slices
+				// once written (threadEnvelope's rule), so the push's
+				// backing array must not alias the installed state.
+				s.appEnvelope.SessionURLs = append([]appwire.SessionURL(nil), params.URLs...)
+				s.appEnvelope.notesCarrierGeneration++
+				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})
 			}
@@ -733,6 +749,13 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				}
 			case appwire.GoalUpdatedParams:
 				projection.thread.Evener.Goal = goalPatch(params)
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
+			case appwire.NotesUpdatedParams:
+				projection.thread.Evener.HumanNote = params.HumanNote
+				projection.thread.Evener.AgentNote = params.AgentNote
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
+			case appwire.UrlsUpdatedParams:
+				projection.thread.Evener.SessionURLs = append([]appwire.SessionURL(nil), params.URLs...)
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: item.Params, snapshot: projection.turns})
@@ -1177,6 +1200,8 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnPromoteQueuedAsSteer, s.handleAppTurnPromoteQueuedAsSteer)
 	appserver.HandleTyped(router, appwire.MethodTurnCancelQueued, s.handleAppTurnCancelQueued)
 	appserver.HandleTyped(router, appwire.MethodGoalSet, s.handleAppGoalSet)
+	appserver.HandleTyped(router, appwire.MethodNotesHumanSet, s.handleAppNotesHumanSet)
+	appserver.HandleTyped(router, appwire.MethodUrlsRemove, s.handleAppUrlsRemove)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
@@ -1742,6 +1767,82 @@ func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParam
 	return appwire.GoalSetResponse{Started: started}, nil
 }
 
+// handleAppNotesHumanSet handles notes/human/set. The callback stores the
+// human's session whiteboard and returns the stored (post-clamp) value every
+// downstream consumer converges on. Like handleAppGoalSet it never emits
+// pushes directly: the callback emits EventNotesUpdated after its successful
+// store mutation, and the projector owns that event's push emission.
+func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
+	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
+	// The lock re-checks the root target via requireRootMutationIdentity
+	// (which calls requireRootMutationTarget), so the explicit call below is
+	// kept for the pre-lock shape errors it reports, not removed as a double
+	// check: both reject identically, and the post-lock recheck is what
+	// fences a clear that wins the race.
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.NotesHumanSetResponse{}, err
+	}
+	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	if err != nil {
+		return appwire.NotesHumanSetResponse{}, err
+	}
+	defer unlock()
+	s.mu.RLock()
+	fn := s.notesHumanSetFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.NotesHumanSetResponse{}, appwire.Unavailable("notes not available")
+	}
+	stored, err := fn(params.ClientMutationID, params.Note)
+	if err != nil {
+		return appwire.NotesHumanSetResponse{}, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	}
+	return stored, nil
+}
+
+// handleAppUrlsRemove handles urls/remove. The callback removes one URL list
+// entry by id; an unknown id is an InvalidParams error, not a silent no-op,
+// so a client acting on a stale list learns its entry is gone. Like
+// handleAppGoalSet it never emits pushes directly: the callback emits
+// EventUrlsUpdated after a successful removal, and the projector owns that
+// event's push emission.
+func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
+	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
+	// Same double-check contract as handleAppNotesHumanSet: the explicit
+	// requireRootMutationTarget stays for pre-lock shape errors while the
+	// lock's own requireRootMutationIdentity recheck fences a racing clear.
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.UrlsRemoveResponse{}, err
+	}
+	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	if err != nil {
+		return appwire.UrlsRemoveResponse{}, err
+	}
+	defer unlock()
+	// Trim once into a local: padded IDs must match on removal exactly as
+	// they validate and report, not diverge across the three uses.
+	id := strings.TrimSpace(params.ID)
+	if id == "" {
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("id is required")
+	}
+	s.mu.RLock()
+	fn := s.urlsRemoveFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.UrlsRemoveResponse{}, appwire.Unavailable("urls not available")
+	}
+	removed, err := fn(params.ClientMutationID, id)
+	if err != nil {
+		return appwire.UrlsRemoveResponse{}, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+	}
+	if !removed {
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("no URL entry with id " + id)
+	}
+	return appwire.UrlsRemoveResponse{}, nil
+}
+
 func (s *Server) handleAppThreadCompactStart(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.EmptyResponse{}, err
@@ -2242,6 +2343,9 @@ func (s *Server) appThreadLocked() appwire.Thread {
 	queue := envelope.Queue
 	pendingMutations := envelope.PendingMutations
 	goalState := envelope.Goal
+	humanNote := envelope.HumanNote
+	agentNote := envelope.AgentNote
+	sessionURLs := envelope.SessionURLs
 	taskAggregate := envelope.Tasks
 	workMillis := envelope.WorkMillis
 	usage := envelope.Usage
@@ -2284,6 +2388,9 @@ func (s *Server) appThreadLocked() appwire.Thread {
 			PendingMutations:      pendingMutations,
 			Tasks:                 taskAggregate,
 			Goal:                  goalState,
+			HumanNote:             humanNote,
+			AgentNote:             agentNote,
+			SessionURLs:           sessionURLs,
 			Usage:                 usage,
 			Cost:                  appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
 			WorkMillis:            workMillis,
@@ -2464,6 +2571,10 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// open. It is intentionally NOT gated on !active: a goal may be set
 		// mid-turn (it arms for the next continuation), unlike Send.
 		Goal: s.goalFunc != nil && !closed,
+		// SharedNotes is available whenever both notes verbs are wired and
+		// the session is open. Like Goal it is NOT gated on !active: a human
+		// save may land mid-turn (it steers the running turn), unlike Send.
+		SharedNotes: s.notesHumanSetFunc != nil && s.urlsRemoveFunc != nil && !closed,
 	}
 }
 

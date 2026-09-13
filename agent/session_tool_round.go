@@ -467,6 +467,16 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	}); abortErr != nil {
 		return false, abortErr
 	}
+	// Shared-notes refresh: a note event that landed mid-turn (a human save,
+	// an agent-note set, a URL add/remove) projects the new current state
+	// before the next round, so the following model call reads what the
+	// events already announced. maybeAppendNotesContext is append-only and
+	// renders nothing when the store is empty.
+	if abortErr := s.withResponseSideEffects(ctx, func() {
+		s.maybeAppendNotesContext()
+	}); abortErr != nil {
+		return false, abortErr
+	}
 	return yieldToObserverCallback, nil
 }
 

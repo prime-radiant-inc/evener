@@ -231,6 +231,7 @@ func TestReconstructScopesTurnIdentityAndSteeringProvenance(t *testing.T) {
 		{schema.TurnEnvironment, 2, "user", "", ""},
 		{schema.TurnCheckpoint, 2, "user", "", ""},
 		{schema.TurnSummary, 2, "user", "", ""},
+		{schema.TurnNotesContext, 2, "user", "", ""},
 		{schema.TurnSystem, 2, "user", "", ""},
 		{schema.TurnModelSwitch, 2, "user", "", ""},
 		{schema.TurnHookCompleted, 2, "user", "", ""},
@@ -557,7 +558,7 @@ func TestReconstructRejectsDuplicateHeaderFieldsBeforeStaging(t *testing.T) {
 }
 
 func TestReconstructRejectsResultsCrossingToolRoundBoundaries(t *testing.T) {
-	for _, kind := range []schema.TurnKind{schema.TurnUserInput, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnSystem, schema.TurnAssistant, schema.TurnModelSwitch, schema.TurnFailure} {
+	for _, kind := range []schema.TurnKind{schema.TurnUserInput, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnNotesContext, schema.TurnSystem, schema.TurnAssistant, schema.TurnModelSwitch, schema.TurnFailure} {
 		t.Run(string(kind), func(t *testing.T) {
 			source := reconstructionSourceFixture(t)
 			tool := source.Messages[4]

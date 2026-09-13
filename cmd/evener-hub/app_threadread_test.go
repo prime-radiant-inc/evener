@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
@@ -884,8 +885,12 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 }
 
 func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
+	sessionID := hubtest.SessionID(t)
 	entry := hubcore.PastEntry{
+		ID:       sessionID,
+		StateDir: t.TempDir(),
 		Meta: schema.SessionMeta{
+			ID:         sessionID,
 			WorkMillis: 5000,
 			CumulativeUsage: schema.CumulativeUsage{
 				InputTokens:  100,
@@ -921,8 +926,11 @@ func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
 	cfg := hubcore.WebConfig{Registry: pricingRegistry(t)}
 	usage := schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
 
+	pricedID := hubtest.SessionID(t)
 	priced := hubcore.PastEntry{
-		Meta: schema.SessionMeta{ProfileID: "anthropic", Model: "claude-opus-4-5", CumulativeUsage: usage},
+		ID:       pricedID,
+		StateDir: t.TempDir(),
+		Meta:     schema.SessionMeta{ID: pricedID, ProfileID: "anthropic", Model: "claude-opus-4-5", CumulativeUsage: usage},
 	}
 	thread := requirePastEntryThread(t, cfg, priced, false)
 	want := appwire.EstimateCost(costFor(cfg.Registry, "anthropic", "claude-opus-4-5"), thread.Evener.Usage)
@@ -936,13 +944,21 @@ func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
 		t.Fatalf("thread.Evener.Cost = %q, want ~$ prefix", thread.Evener.Cost)
 	}
 
-	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{ProfileID: "anthropic", Model: "claude-opus-4-5"}}
+	noUsageID := hubtest.SessionID(t)
+	noUsage := hubcore.PastEntry{
+		ID:       noUsageID,
+		StateDir: t.TempDir(),
+		Meta:     schema.SessionMeta{ID: noUsageID, ProfileID: "anthropic", Model: "claude-opus-4-5"},
+	}
 	if got := requirePastEntryThread(t, cfg, noUsage, false); got.Evener.Cost != "" {
 		t.Fatalf("no-usage thread.Evener.Cost = %q, want \"\" (absent)", got.Evener.Cost)
 	}
 
+	unknownInstanceID := hubtest.SessionID(t)
 	unknownInstance := hubcore.PastEntry{
-		Meta: schema.SessionMeta{ProfileID: "no-such-instance", Model: "claude-opus-4-5", CumulativeUsage: usage},
+		ID:       unknownInstanceID,
+		StateDir: t.TempDir(),
+		Meta:     schema.SessionMeta{ID: unknownInstanceID, ProfileID: "no-such-instance", Model: "claude-opus-4-5", CumulativeUsage: usage},
 	}
 	if got := requirePastEntryThread(t, cfg, unknownInstance, false); got.Evener.Cost != "" {
 		t.Fatalf("unresolvable-reference thread.Evener.Cost = %q, want \"\" (absent, not ~$0.00)", got.Evener.Cost)
@@ -1167,6 +1183,7 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		ChangeVisionModel: true,
 		Shutdown:          true,
 		Goal:              true,
+		SharedNotes:       true,
 		Rename:            true,
 		// Steer, Interrupt, Queue stay false: turn-in-flight controls with no
 		// active turn on a cold exited session.

@@ -34,6 +34,7 @@ const CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -193,6 +194,29 @@ afterEach(() => {
 });
 
 describe("visibility", () => {
+  test.each(["rejected", "blockedUnknown"])(
+    "notes %s recovery never offers composer message editing",
+    async (state) => {
+      const fake = connectFakeClient();
+      await hydrate(fake, "ref_a");
+      const storage = new MutationOutboxIndexedDB();
+      const note = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        method: "notes/human/set",
+        payload: { ref: "ref_a", note: "note sentinel" },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      if (state === "rejected") await storage.transferToRecovery(note.clientMutationId, "rejected", "note refusal");
+      else await storage.markUnknown(note.clientMutationId, "blockedUnknown");
+      await refreshPendingTurnsProjection("ref_a");
+      renderStrip(defaultProps());
+      expect(screen.queryByText(/queued messages/i)).toBeNull();
+      expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();
+      storage.close();
+    },
+  );
+
   // Queries for the "Queued messages" heading specifically, not a bare
   // `section` selector - <Toast/> (rendered alongside the strip in every
   // test via renderStrip) also mounts its own <section>, which a generic
