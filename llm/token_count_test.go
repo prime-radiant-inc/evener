@@ -62,6 +62,40 @@ func TestEstimateMessagesInputTokens_ExcludesNonReplayableThinking(t *testing.T)
 	}
 }
 
+// The replayed payload is the encrypted blob itself, not the part's display
+// text: the Responses adapter sends encrypted_content (plus the summary and id)
+// and ignores Text. A blob-only part must therefore still be billed, and the
+// estimate must grow with the blob.
+func TestEstimateMessagesInputTokens_BillsReplayedEncryptedBlob(t *testing.T) {
+	big := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: strings.Repeat("b", 400)}},
+	}}}
+	small := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: "b"}},
+	}}}
+	got := EstimateMessagesInputTokens(big).Tokens
+	if got == 0 {
+		t.Fatalf("blob-only thinking estimate = 0, want the replayed blob billed")
+	}
+	if smallTokens := EstimateMessagesInputTokens(small).Tokens; smallTokens >= got {
+		t.Fatalf("estimate did not grow with the blob: %d vs %d", smallTokens, got)
+	}
+}
+
+// Redacted thinking replays only its text payload: anthropic/request.go emits
+// "data": Text and never the signature, so a signature must not be billed.
+func TestEstimateMessagesInputTokens_RedactedThinkingBillsTextOnly(t *testing.T) {
+	withSig := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentRedThinking, Thinking: &ThinkingData{Text: "redacted", Signature: strings.Repeat("s", 400)}},
+	}}}
+	textOnly := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentRedThinking, Thinking: &ThinkingData{Text: "redacted"}},
+	}}}
+	if a, b := EstimateMessagesInputTokens(withSig).Tokens, EstimateMessagesInputTokens(textOnly).Tokens; a != b {
+		t.Fatalf("redacted signature changed the estimate: %d vs %d", a, b)
+	}
+}
+
 type countAdapter struct {
 	name string
 	got  Request
