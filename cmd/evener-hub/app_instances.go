@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
-	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -722,6 +721,28 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if inst.Implicit {
 		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
 	}
+
+	// Held exclusively across the credential cleanup, the providers.toml write
+	// and the reload that follows it, the way a rename holds it across its
+	// check and re-key (see hubAuthController.credMu). A credential writer
+	// already in flight finishes first, and the cleanup below removes whatever
+	// it wrote; one that starts afterwards reads the reloaded registry, where
+	// this instance no longer exists. Holding only the read side left a writer
+	// that had already passed its checks free to store a key after the
+	// cleanup, leaving a credential behind under a name the removal had just
+	// deleted.
+	c.auth.credMu.Lock()
+	defer c.auth.credMu.Unlock()
+
+	// Credentials first, then the authored entry: a cleanup that cannot
+	// complete fails the removal while the instance and its name still exist,
+	// so the caller can retry it. The reverse order would report a deletion
+	// that only half happened and leave the credential under a name nothing
+	// curates - invisible until a later instance of that name inherits it.
+	if err := c.removeCredentials(name); err != nil {
+		return err
+	}
+
 	l, _, err := c.read()
 	if err != nil {
 		return err
@@ -735,24 +756,25 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-
-	// A credential write like any other, so it takes the read side of the
-	// lock a rename holds exclusively (hubAuthController.credMu). Edit is
-	// already excluded from here by c.mu; the lock is what keeps one rule
-	// for every path that removes a credential.
-	if err := c.auth.credentialWrite(func() error {
-		// Clear stored credentials (ignore errors for missing entries).
-		_ = c.auth.creds.Clear(name)
-		// DeleteAuth already ignores not-found.
-		_, err := authopenai.DeleteAuth(c.auth.stateDir, name)
-		return err
-	}); err != nil {
-		// Best-effort: the instance is already gone from providers.toml, so
-		// an OAuth state file that would not delete is logged rather than
-		// failing the removal.
-		fmt.Fprintf(os.Stderr, "[hub] remove %s: delete OAuth state: %v\n", name, err)
-	}
 	return c.reg.Reload()
+}
+
+// removeCredentials deletes the credential layers filed under a name whose
+// instance is being removed: the stored key and the OAuth record. Both go
+// through the controller's seams, like every other path that removes a
+// credential (Logout, ApiKeyClear), and neither failure is tolerated - a
+// credential left behind sits under a name nothing curates, and a later
+// instance holding that name would inherit it. A missing entry is not a
+// failure: Store.Clear deletes and persists, and DeleteAuth reports not-found
+// as (false, nil).
+func (c *hubInstancesController) removeCredentials(name string) error {
+	if err := c.auth.clearCredential(name); err != nil {
+		return fmt.Errorf("remove %s: clear stored credential: %w", name, err)
+	}
+	if _, err := c.auth.deleteAuth(c.auth.stateDir, name); err != nil {
+		return fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
+	}
+	return nil
 }
 
 // describeImplicit names what makes an implicit instance exist, so the remove

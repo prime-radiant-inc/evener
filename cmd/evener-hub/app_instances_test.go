@@ -657,6 +657,68 @@ func TestInstances_RemoveDeletesEntryStoreKeyAndOAuthRecord(t *testing.T) {
 	}
 }
 
+// A removal that cannot clean up the credentials filed under the name must not
+// report success: a stored key or OAuth record left behind sits under a name
+// nothing curates, and the next instance to hold that name inherits it. The
+// failed cleanup also has to leave the removal itself undone, so the caller
+// can retry it rather than being told a deletion happened that did not.
+func TestInstances_RemoveFailsWhenTheStoredCredentialCannotBeCleared(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	f.ctl.auth.clearCredential = func(string) error { return errors.New("clear refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil || !strings.Contains(err.Error(), "clear refused") {
+		t.Fatalf("Remove = %v, want the stored-key cleanup failure", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want it retained by the failed removal", v)
+	}
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, still := l.Providers["work"]; !still {
+		t.Fatal("[providers.work] was removed even though its credential could not be cleared")
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
+		t.Fatal("the registry no longer resolves work after a failed removal")
+	}
+}
+
+func TestInstances_RemoveFailsWhenTheOAuthRecordCannotBeDeleted(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	f.ctl.auth.deleteAuth = func(string, string) (bool, error) { return false, errors.New("delete refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil || !strings.Contains(err.Error(), "delete refused") {
+		t.Fatalf("Remove = %v, want the OAuth-record cleanup failure", err)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record did not survive the failed removal: %v", loadErr)
+	}
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, still := l.Providers["work"]; !still {
+		t.Fatal("[providers.work] was removed even though its OAuth record could not be deleted")
+	}
+}
+
 func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}); err != nil {
@@ -729,6 +791,97 @@ base = "anthropic"
 	}
 	if v, _ := f.store.Get("openai"); v != "sk-stored" {
 		t.Fatalf("the credential of the instance now under the name was deleted: openai = %q", v)
+	}
+}
+
+// TestInstances_RemoveWaitsForAnInFlightCredentialWrite pins the other half of
+// the removal's atomicity: the credential cleanup, the providers.toml write
+// and the reload are one step against credential writers. Holding the read
+// side is what an in-flight evener/auth/apiKey/set does, and a removal that
+// runs through it clears the store before the writer has written, leaving the
+// key behind under a name it just deleted.
+func TestInstances_RemoveWaitsForAnInFlightCredentialWrite(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	f.ctl.auth.credMu.RLock()
+	done := make(chan error, 1)
+	go func() { done <- f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}) }()
+	select {
+	case err := <-done:
+		f.ctl.auth.credMu.RUnlock()
+		t.Fatalf("the removal ran through a credential write still in flight (err = %v)", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	f.ctl.auth.credMu.RUnlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the removal never finished after the credential write released the lock")
+	}
+	if v, ok := f.store.Get("work"); ok || v != "" {
+		t.Fatalf("credential remains after Remove: value=%q present=%v", v, ok)
+	}
+}
+
+// The race the lock exists for, end to end: a credential write that starts
+// before the removal (it has already read the registry and passed its checks)
+// must not leave its key behind. The removal holds the credential lock
+// exclusively, so the write lands first and the cleanup that follows it
+// removes what it wrote.
+func TestInstances_RemoveClearsACredentialItsRacerWrote(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	originalSet := f.ctl.auth.setCredential
+	setEntered := make(chan struct{})
+	releaseSet := make(chan struct{})
+	f.ctl.auth.setCredential = func(name, value string) error {
+		close(setEntered)
+		<-releaseSet
+		return originalSet(name, value)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-race"})
+		writeDone <- err
+	}()
+	<-setEntered
+
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}) }()
+	// Only so the removal has reached the credential lock: what the test
+	// asserts does not depend on the wait.
+	time.Sleep(100 * time.Millisecond)
+	close(releaseSet)
+
+	if err := <-writeDone; err != nil {
+		t.Fatalf("ApiKeySet: %v", err)
+	}
+	select {
+	case err := <-removeDone:
+		if err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Remove never finished after the credential write completed")
+	}
+	if v, ok := f.store.Get("work"); ok || v != "" {
+		t.Fatalf("a credential written across the removal survived it: value=%q present=%v", v, ok)
+	}
+	if _, still := f.ctl.reg.Get().Instance("work"); still {
+		t.Fatal("the removed instance still resolves")
 	}
 }
 
