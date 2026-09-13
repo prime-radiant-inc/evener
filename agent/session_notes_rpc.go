@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -404,36 +405,49 @@ func (s *Session) notesContextBlockForModel() string {
 	return escapeNotesContextBlock(s.renderNotesContextBlock())
 }
 
-// notesFramingNeutralizer neutralizes every sequence that could forge the block's
-// framing or terminate it from inside. Literal angle brackets cannot survive, so no
-// tag variant is reachable, and the entity spellings of the framing tokens are
-// escaped in turn so they cannot be decoded back into one. Every other byte passes
-// through untouched: html.EscapeString would also rewrite "&" and the quote
-// characters, handing the model a URL like "...?a=1&amp;b=2" that neither
-// notes_read nor the UI would ever show it.
-var notesFramingNeutralizer = strings.NewReplacer(
-	"&lt;", "&amp;lt;",
-	"&gt;", "&amp;gt;",
-	"<", "&lt;",
-	">", "&gt;",
-)
+// notesAngleBracketReference matches the start of every character reference that
+// decodes to an angle bracket: a numeric reference ("&#60;", "&#060;", "&#x3c;",
+// "&#X3C;") or a named lt/gt reference. HTML named references are
+// case-insensitive, so "&LT;" and "&Lt;" have to be caught alongside "&lt;". The
+// optional "amp;" covers the same reference behind one more encoding layer.
+var notesAngleBracketReference = regexp.MustCompile(`(?i)&(?:amp;)?(?:#|lt|gt)`)
+
+// notesAngleBrackets escapes the literal spelling of the two framing characters.
+var notesAngleBrackets = strings.NewReplacer("<", "&lt;", ">", "&gt;")
+
+// neutralizeNotesFraming removes every way content could forge the block's framing
+// or terminate it from inside: the literal angle brackets, and the character
+// references that decode back into them. Every other byte passes through untouched
+// — html.EscapeString would also rewrite "&" and the quote characters, handing the
+// model a URL like "...?a=1&amp;b=2" that neither notes_read nor the UI would ever
+// show it.
+func neutralizeNotesFraming(content string) string {
+	// References first: escaping their "&" leaves nothing that decodes to an angle
+	// bracket. This runs before the literal pass so its own "&lt;" output is not
+	// escaped a second time.
+	content = notesAngleBracketReference.ReplaceAllStringFunc(content, func(match string) string {
+		return "&amp;" + match[1:]
+	})
+	return notesAngleBrackets.Replace(content)
+}
 
 // escapeNotesContextBlock returns the model-facing copy of a rendered
 // shared-notes block. It is the single definition of the framing-escape contract:
 // the renderer applies it to the live copy, and every path that puts a persisted
 // (raw) block back into model context applies it to that turn — a restored
 // transcript turn or a forked delegate's inherited prefix. The framing tags sit at
-// fixed ends of the block and the content between them is neutralized, so the block
-// can be neither terminated nor re-opened from inside. Text that is not a rendered
-// block is neutralized whole rather than passed through raw.
+// fixed ends of the block and the content between them is neutralized (see
+// neutralizeNotesFraming), so the block can be neither terminated nor re-opened
+// from inside. Text that is not a rendered block is neutralized whole rather than
+// passed through raw.
 func escapeNotesContextBlock(block string) string {
 	inner, ok := strings.CutPrefix(block, notesBlockOpen)
 	if ok {
 		if body, closed := strings.CutSuffix(inner, notesBlockClose); closed {
-			return notesBlockOpen + notesFramingNeutralizer.Replace(body) + notesBlockClose
+			return notesBlockOpen + neutralizeNotesFraming(body) + notesBlockClose
 		}
 	}
-	return notesFramingNeutralizer.Replace(block)
+	return neutralizeNotesFraming(block)
 }
 
 func (s *Session) renderNotesContextBlock() string {
