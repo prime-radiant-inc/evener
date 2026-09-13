@@ -121,8 +121,6 @@ export function blurHumanNote(ref: string, owner: symbol): void {
   if (!draft?.dirty || draft.focusOwners.size || draft.timer !== undefined) return;
   if (draft.submitted?.generation === draft.generation && draft.submitted.state === "submitting") return;
   const state = threadsStore.getState();
-  const model = state.threads.get(ref) ?? state.watchedThreads.get(ref);
-  const expectedInstanceId = model?.instanceId ?? model?.threadId ?? "";
   const retained = state.ensureThread(ref).then(
     () => null,
     (error: unknown) => ({ error }),
@@ -151,6 +149,14 @@ export function blurHumanNote(ref: string, owner: symbol): void {
         await retryBlockedMutation(current.submitted.id);
         return;
       }
+      // The daemon's ExpectedInstanceID check is the authority on session
+      // staleness; this path asserts the client's freshest knowledge of the
+      // instance. Capturing at blur time would refuse a hydration or rotation
+      // the client has already observed (threads.ts's client pre-check reads
+      // this same store), while a genuine race still reaches the daemon fence.
+      const live = threadsStore.getState();
+      const model = live.threads.get(ref) ?? live.watchedThreads.get(ref);
+      const expectedInstanceId = model?.instanceId ?? model?.threadId ?? "";
       await threadsStore.getState().setHumanNote(ref, current.text, expectedInstanceId, (record) => {
         const latest = get(ref);
         if (latest)

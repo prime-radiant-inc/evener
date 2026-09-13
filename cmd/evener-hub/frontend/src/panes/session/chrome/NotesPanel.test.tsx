@@ -216,35 +216,69 @@ test("clean focused editors accept authoritative store updates without a write",
   expect(seen).toHaveLength(0);
 });
 
-test.each(["ended", "capability", "instance"])(
-  "deadline rechecks %s without changing the original fence",
-  async (loss) => {
-    const { fake, user } = clockClient();
-    const model = testModel({ instanceId: "original-instance" });
-    threadsStore.setState({ threads: new Map([[model.ref, model]]) });
-    await threadsStore.getState().ensureThread(model.ref);
-    const seen: unknown[] = [];
-    fake.on("notes/human/set", (params) => {
-      seen.push(params);
-      return noteResponse(params);
-    });
-    render(<LivePanel sessionRef={model.ref} />);
-    await user.type(editor(), "retained sentinel");
-    await user.tab();
-    const changed =
-      loss === "ended"
-        ? { ...model, status: { type: "ended" as const } }
-        : loss === "capability"
-          ? { ...model, capabilities: { ...model.capabilities, sharedNotes: false } }
-          : { ...model, instanceId: "replacement-instance" };
-    act(() => threadsStore.setState({ threads: new Map([[model.ref, changed]]) }));
-    await advance(10_000);
-    expect(seen).toHaveLength(0);
-    act(() => threadsStore.setState({ threads: new Map([[model.ref, model]]) }));
-    expect(editor().value).toBe("retained sentinel");
-    expect(screen.getByTestId("shared-notes-error")).toBeTruthy();
-  },
-);
+test.each(["ended", "capability"])("deadline rechecks %s without changing the original fence", async (loss) => {
+  const { fake, user } = clockClient();
+  const model = testModel({ instanceId: "original-instance" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await threadsStore.getState().ensureThread(model.ref);
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    return noteResponse(params);
+  });
+  render(<LivePanel sessionRef={model.ref} />);
+  await user.type(editor(), "retained sentinel");
+  await user.tab();
+  const changed =
+    loss === "ended"
+      ? { ...model, status: { type: "ended" as const } }
+      : { ...model, capabilities: { ...model.capabilities, sharedNotes: false } };
+  act(() => threadsStore.setState({ threads: new Map([[model.ref, changed]]) }));
+  await advance(10_000);
+  expect(seen).toHaveLength(0);
+  act(() => threadsStore.setState({ threads: new Map([[model.ref, model]]) }));
+  expect(editor().value).toBe("retained sentinel");
+  expect(screen.getByTestId("shared-notes-error")).toBeTruthy();
+});
+
+// A rotation the client has observed is not a refusal: the drafts path asserts
+// the tracked model's identity at send time, and the daemon's own
+// ExpectedInstanceID fence is what rejects a write aimed at a session instance
+// the client does not know about. A blur-time capture would refuse this
+// saveable rotation.
+test("an observed instance rotation at the deadline saves against the current instance", async () => {
+  const { fake, user } = clockClient();
+  const model = testModel({ instanceId: "original-instance" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await threadsStore.getState().ensureThread(model.ref);
+  const seen: unknown[] = [];
+  let submittedResolve!: () => void;
+  const submitted = new Promise<void>((resolve) => {
+    submittedResolve = resolve;
+  });
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    submittedResolve();
+    return noteResponse(params);
+  });
+  render(<LivePanel sessionRef={model.ref} />);
+  await user.type(editor(), "rotated sentinel");
+  await user.tab();
+  act(() =>
+    threadsStore.setState({ threads: new Map([[model.ref, { ...model, instanceId: "replacement-instance" }]]) }),
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+    await submitted;
+  });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({
+    ref: model.ref,
+    note: "rotated sentinel",
+    expectedInstanceId: "replacement-instance",
+  });
+  expect(screen.queryByTestId("shared-notes-error")).toBeNull();
+});
 
 test("a definite refusal stays visible and keeps its draft across close and reopen", async () => {
   const { fake, user } = clockClient();
