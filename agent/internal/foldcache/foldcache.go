@@ -470,8 +470,23 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 		return Result[T]{}, tailErr
 	}
 
+	// The recorded size describes the content this fold consumed, which is
+	// why it cannot simply be the stat's. A torn stat reports the size from
+	// before an append while extend goes on to read the whole larger file,
+	// and recording that smaller number leaves offset ahead of size -- a
+	// state no honest file produces, and one the next stat reads as growth,
+	// resuming from an offset the file has already reached and never seeing
+	// a rewrite underneath it. Taking the larger of the two keeps the
+	// stat's own number wherever it is the bigger one, which is what makes
+	// a file that grew after the stat (rather than during it) still read as
+	// growth on the next look instead of as an unchanged length.
+	recordedSize := info.Size()
+	if offset > recordedSize {
+		recordedSize = offset
+	}
+
 	c.mu.Lock()
-	c.epochStates[path] = &epochState{size: info.Size(), mod: info.ModTime(), offset: offset, tail: tail, epoch: epoch}
+	c.epochStates[path] = &epochState{size: recordedSize, mod: info.ModTime(), offset: offset, tail: tail, epoch: epoch}
 	c.publishLocked(path, entry[T]{path: path, value: value, offset: offset, valid: true})
 	c.mu.Unlock()
 	return Result[T]{Value: value, Offset: offset, Epoch: epoch}, nil

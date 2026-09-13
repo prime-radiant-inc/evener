@@ -923,3 +923,86 @@ func TestCache_SameSizeRewriteKeepingItsTailBumpsTheGeneration(t *testing.T) {
 		t.Fatalf("value = %+v, want the rewritten content read in full (sum 2629)", after.Value)
 	}
 }
+
+// TestCache_TornStatAppendRecordsTheSizeItActuallyFolded pins what a torn
+// stat leaves behind. The fold reads the whole appended file, so the state
+// this cache publishes has to describe the content it consumed -- recording
+// the pre-append size the torn stat reported leaves offset ahead of size,
+// which no honest file can produce. The next stat then reads as growth, the
+// growth path trusts the surviving tail and resumes from an offset the file
+// has already reached, and a same-size rewrite underneath is served from the
+// stale fold with its generation intact.
+func TestCache_TornStatAppendRecordsTheSizeItActuallyFolded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	original := make([]int, 0, 40)
+	for v := 10; v < 50; v++ {
+		original = append(original, v)
+	}
+	writeLines(t, path, original)
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	if st == nil {
+		t.Fatal("no state recorded for a folded path")
+	}
+
+	appended := make([]int, 0, 10)
+	for v := 50; v < 60; v++ {
+		appended = append(appended, v)
+	}
+	appendLines(t, path, appended)
+	current, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := tornStatInfo{FileInfo: current, size: st.size, mod: current.ModTime().Add(time.Second)}
+	tornResult, err := c.refresh(ctx, path, torn, extend)
+	if err != nil {
+		t.Fatalf("refresh on a torn stat: %v", err)
+	}
+	if tornResult.Epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a torn append stat, want it to stay at %d", tornResult.Epoch, folded.Epoch)
+	}
+	if tornResult.Value.sum != 1725 {
+		t.Fatalf("torn-stat fold = %+v, want the whole appended file (sum 1725)", tornResult.Value)
+	}
+
+	// A rewrite at the size the file really has, changing only lines before
+	// the probed window. The recorded state has to see this as a rewrite;
+	// if it still believes the pre-append size, it sees growth instead,
+	// resumes from an offset the file already reached, and reads nothing.
+	rewritten := make([]int, 0, 50)
+	for i := range 50 {
+		if i < 28 {
+			rewritten = append(rewritten, 99)
+			continue
+		}
+		rewritten = append(rewritten, 10+i)
+	}
+	writeLines(t, path, rewritten)
+	stamp := time.Unix(1_000_000, 0)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after the rewrite: %v", err)
+	}
+	if after.Value.sum != 3839 {
+		t.Fatalf("value = %+v, want the rewritten content read in full (sum 3839) -- a fold resumed past the end of the new file reads none of it", after.Value)
+	}
+	if after.Epoch != tornResult.Epoch+1 {
+		t.Fatalf("generation = %d after a same-size rewrite following a torn stat, want %d", after.Epoch, tornResult.Epoch+1)
+	}
+}
