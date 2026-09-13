@@ -849,10 +849,11 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 // to the endpoint the flow was started for. The flow's own exchange is a
 // browser round trip long, and an edit that re-points base_url keeps the auth
 // scheme the completion re-checks, so the scheme alone cannot say that the
-// record would land where the user signed in. An empty capture (the hub had no
-// key to digest with when the flow started) or an empty current value (it has
-// none now) is not a refusal: the hub cannot name a destination the user was
-// not shown.
+// record would land where the user signed in. Only an empty capture (the hub
+// had no key to digest with when the flow started, so the user was shown no
+// endpoint) bypasses the check: a capture the hub can no longer resolve a
+// current value for fails closed, the rule verifyEndpointFingerprint states for
+// a write.
 func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
 	if started == "" {
 		return nil

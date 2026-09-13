@@ -3553,6 +3553,78 @@ test("entering onboarding for one draft scope does not suppress the fallback for
   await waitFor(() => expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5"));
 });
 
+// A fallback the pane picked on its own is not a choice: it came from whatever
+// model a provider listed while this pane had no credentialed default. Entering
+// provider setup is exactly when that pick stops describing what to launch: the
+// user is going to connect a provider, and keeping the stale pick would leave the model
+// reading as chosen and start with a model from a provider that may still have no
+// credential (roborev round 41).
+test("entering provider setup drops a model the pane auto-selected for that scope", async () => {
+  const user = userEvent.setup();
+  // The first scope resolves a credentialed default, so nothing auto-fills while
+  // the pane settles. The working-directory switch starts a scope whose default
+  // is uncredentialed, which is when the fallback picks a model for the scope.
+  let defaultModel = "anthropic/claude-opus-4";
+  const fake = readyClient((f) => {
+    f.on("evener/instance/list", () => ({
+      instances: [],
+      availableProviders: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          protocol: "openai-chat",
+          auth: "bearer",
+          implicit: true,
+          authModes: ["apiKey"],
+          setup: {
+            name: "openai",
+            providerId: "openai",
+            protocol: "openai-chat",
+            auth: "bearer",
+            implicit: true,
+            isDefault: false,
+            activeSource: "none",
+            hasStoredOAuth: false,
+            credentialRequired: true,
+            authModes: ["apiKey"],
+            baseUrl: "https://provider.example/v1",
+          },
+        },
+      ],
+    }));
+    f.on("model/list", () => ({
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+        { provider: "anthropic", model: "claude-opus-4", displayName: "anthropic/claude-opus-4" },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: defaultModel },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  defaultModel = "openai/gpt-5.5"; // openai has no credentials in this fixture
+  await setWorkingDir(user, "/tmp/stale-model-draft");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  // The fallback picked a model the user never chose.
+  await waitFor(() => expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5"));
+
+  await user.click(screen.getByRole("button", { name: "Connect provider" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+
+  expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
+  const start = await screen.findByRole("button", { name: "Start" });
+  expect((start as HTMLButtonElement).disabled).toBe(true);
+});
+
 test("onboarding a second draft scope does not forget the first scope's explicit choice", async () => {
   const user = userEvent.setup();
   // Both scopes start with a credentialed default so nothing auto-fills while

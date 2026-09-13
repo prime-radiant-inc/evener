@@ -258,14 +258,30 @@ function SpawnForm({
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
+  // The model the resolve effect below auto-selected for a draft scope, keyed by
+  // that scope: it was picked from whatever model some provider listed while
+  // this pane had no credentialed default, so it is not a choice the user made.
+  // A draft switch must not make one scope's fallback look like another's.
+  const autoSelectedModels = useRef(new Map<string, string>());
   // Entering onboarding records the draft's own scope; the fallback below is
   // suppressed for exactly that harness+directory. A later scope in the same
   // pane mount still gets its own default, and a connection-driven re-render -
   // which never changes the draft scope - cannot clear the choice.
   const openProviderSetup = useCallback(() => {
-    providerChoiceScopes.current.add(`${harness}\0${cwd}`);
+    const scope = `${harness}\0${cwd}`;
+    providerChoiceScopes.current.add(scope);
+    // A model this pane auto-selected for the scope stops describing what to
+    // launch the moment the user goes to connect a provider: leaving it would
+    // keep the model from reading as required and start with a pick from a
+    // provider that may still have no credential, instead of asking for the
+    // provider being connected. Only that auto-selected value is dropped, so an
+    // explicit choice (which the fallback never overwrote) survives.
+    if (autoSelectedModels.current.get(scope) === modelRef.current) {
+      autoSelectedModels.current.delete(scope);
+      setModel("");
+    }
     setConnectingProvider(true);
-  }, [harness, cwd]);
+  }, [harness, cwd, setModel]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
   // Scoped by cwd so a draft switch can never show the previous project's
   // branch while the new HEAD request is in flight - or indefinitely after it
@@ -925,7 +941,10 @@ function SpawnForm({
             fallback &&
             !providerChoiceScopes.current.has(`${harness}\0${cwd}`)
           ) {
-            setModel(`${fallback.provider}/${fallback.model}`);
+            const picked = `${fallback.provider}/${fallback.model}`;
+            autoSelectedModels.current.set(`${harness}\0${cwd}`, picked);
+            setModel(picked);
+          } (fix(web,hub): clear an auto-selected model when provider setup opens, correct the flow-endpoint doc)
           }
         },
         () => {
