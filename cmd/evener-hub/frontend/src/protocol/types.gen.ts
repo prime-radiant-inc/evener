@@ -592,6 +592,10 @@ export interface InstanceModelEntry {
   disabled?: boolean;
 }
 
+export interface InstanceRefreshModelsParams {
+  name: string;
+}
+
 export interface InstanceRemoveParams {
   name: string;
 }
@@ -2308,6 +2312,7 @@ export const METHOD_NAMES = [
   "evener/instance/remove",
   "evener/instance/setDefault",
   "evener/instance/setModelDisabled",
+  "evener/instance/refreshModels",
   "evener/plugin/checkNow",
   "evener/plugin/preview",
   "evener/marketplace/list",
@@ -2504,6 +2509,7 @@ export interface MethodTypes {
   "evener/instance/remove": { params: InstanceRemoveParams; result: InstanceListResponse };
   "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
   "evener/instance/setModelDisabled": { params: InstanceSetModelDisabledParams; result: InstanceListResponse };
+  "evener/instance/refreshModels": { params: InstanceRefreshModelsParams; result: InstanceListResponse };
   "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
   "evener/plugin/preview": { params: PluginPreviewParams; result: PluginPreviewResponse };
   "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };

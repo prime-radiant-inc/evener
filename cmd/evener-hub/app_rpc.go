@@ -1006,6 +1006,14 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+		resp, err := instancesController.RefreshModels(ctx, params)
+		if err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		notifyInstanceUpdated(server)
+		return resp, nil
+	})
 }
 
 // registerLaunchHandlers registers the evener/launch/* RPC handlers, routed to the

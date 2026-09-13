@@ -93,6 +93,11 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
+  // Live-model refresh for the open sheet: the registry inventory behind
+  // the Models toggles only knows live ids after a fetch, so opening a
+  // sheet triggers one. Keyed by instance name; a refresh for a sheet
+  // since closed still lands in the store, which is the desired outcome.
+  const [modelsRefreshing, setModelsRefreshing] = useState<string | null>(null);
   const previousInstances = useRef(instances);
   const instanceVersion = useRef(0);
   if (previousInstances.current !== instances) {
@@ -111,6 +116,26 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // handshake finishes, and credentialsStore.fetch() requires a connected
   // client (throws otherwise) - see that hook's own doc comment.
   useConnectedEffect(fetch, [fetch]);
+
+  // A sheet shows live ids only after a fetch, so opening one refreshes
+  // that instance. Failures toast and keep the catalog rows: the toggles
+  // still work on what the registry knows.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh on selection change only; instances/toast are stable
+  useEffect(() => {
+    if (selectedInstance === null) return;
+    const name = selectedInstance;
+    setModelsRefreshing(name);
+    void credentialsStore
+      .getState()
+      .refreshModels(name)
+      .then(
+        () => {},
+        (err: unknown) => toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`),
+      )
+      .finally(() => {
+        setModelsRefreshing((current) => (current === name ? null : current));
+      });
+  }, [selectedInstance]);
 
   // handleOAuthStart is shared by the sheet's "Sign in…"/"Refresh OAuth"
   // action and the device editor's "Start again" - always begins with
@@ -287,6 +312,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         onToggleModel={(model, disabled) => {
           if (selectedInstance !== null) void handleToggleModel(selectedInstance, model, disabled);
         }}
+        modelsRefreshing={selectedInstance !== null && modelsRefreshing === selectedInstance}
         onTestCredentials={() => {
           if (selectedInstance !== null) void handleTestCredentials(selectedInstance);
         }}

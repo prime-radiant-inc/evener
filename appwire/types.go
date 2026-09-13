@@ -108,6 +108,7 @@ const (
 	MethodEvenerInstanceRemove           = "evener/instance/remove"
 	MethodEvenerInstanceSetDefault       = "evener/instance/setDefault"
 	MethodEvenerInstanceSetModelDisabled = "evener/instance/setModelDisabled"
+	MethodEvenerInstanceRefreshModels    = "evener/instance/refreshModels"
 	MethodEvenerPluginCheckNow           = "evener/plugin/checkNow"
 	MethodEvenerPluginPreview            = "evener/plugin/preview"
 	MethodEvenerMarketplaceList          = "evener/marketplace/list"
@@ -2979,6 +2980,13 @@ type InstanceRemoveParams struct {
 
 // InstanceSetDefaultParams is the params for evener/instance/setDefault.
 type InstanceSetDefaultParams struct {
+	Name string `json:"name"`
+}
+
+// InstanceRefreshModelsParams is the params for
+// evener/instance/refreshModels: fetch the instance's live listing, then
+// answer with the updated list (exact catalog rows plus cached live ids).
+type InstanceRefreshModelsParams struct {
 	Name string `json:"name"`
 }
 

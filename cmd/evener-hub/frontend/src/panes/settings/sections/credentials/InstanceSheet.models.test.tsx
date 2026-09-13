@@ -74,4 +74,16 @@ describe("model toggles", () => {
     render(<InstanceSheet name="work" {...handlers()} />);
     expect(screen.queryByText("Models")).toBeNull();
   });
+
+  test("shows a refreshing note while a live refresh is in flight", () => {
+    credentialsStore.setState({ instances: [entry()], availableProviders: [] });
+    render(<InstanceSheet name="work" {...handlers()} modelsRefreshing />);
+    expect(screen.getByText("Refreshing live models…")).toBeTruthy();
+  });
+
+  test("no refreshing note once the refresh lands", () => {
+    credentialsStore.setState({ instances: [entry()], availableProviders: [] });
+    render(<InstanceSheet name="work" {...handlers()} />);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
 });

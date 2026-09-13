@@ -595,6 +595,52 @@ describe("set default", () => {
   });
 });
 
+describe("model live refresh on sheet open", () => {
+  test("opening a sheet fetches live models and merges the inventory", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/refreshModels", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return {
+        instances: [{ ...WORK, models: [...(WORK.models ?? []), { id: "claude-live-new" }] }],
+        availableProviders: [],
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/refreshModels")).toBe(true));
+    await within(inspector).findByRole("switch", { name: "claude-live-new" });
+  });
+
+  test("a refresh failure toasts and keeps the catalog rows", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/refreshModels", () => {
+      throw new Error("boom");
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await screen.findByText("Live refresh failed: Something went wrong.");
+    expect(screen.queryByText(/boom/)).toBeNull();
+    // Catalog rows from the list fetch still render.
+    within(inspector).getByRole("switch", { name: "claude-opus-4-6" });
+  });
+});
+
 describe("model toggles", () => {
   test("flipping a switch calls setModelDisabled and applies the returned list", async () => {
     const fake = connectFakeClient();

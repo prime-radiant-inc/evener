@@ -92,6 +92,9 @@ export interface InstanceSheetProps {
   /** Flips one model row's disabled flag; owned by the section like every
    * other non-edit action. */
   onToggleModel: (model: string, disabled: boolean) => void;
+  /** A live-model refresh is in flight for this sheet: the Models section
+   * says so while the catalog rows stay interactive. */
+  modelsRefreshing?: boolean;
   testCredentialsPending?: boolean;
   testCredentialsResult?: AuthTestResponse;
   /** Disables Save/Remove/make default while providers.toml cannot be
@@ -114,6 +117,7 @@ export function InstanceSheet({
   onSetDefault,
   onTestCredentials,
   onToggleModel,
+  modelsRefreshing = false,
   testCredentialsPending = false,
   testCredentialsResult,
   writesRefused = false,
@@ -466,6 +470,7 @@ export function InstanceSheet({
           {models.length > 0 && (
             <>
               <h3>Models</h3>
+              {modelsRefreshing && <p role="status">Refreshing live models…</p>}
               <div className={CLASS.actionRows}>
                 {models.map((row) => (
                   <div key={row.id} className={CLASS.fullRow}>

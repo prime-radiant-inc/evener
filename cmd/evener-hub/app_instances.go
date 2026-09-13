@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -10,10 +11,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -755,6 +758,33 @@ func instanceModels(r *registry.Registry, name string) []appwire.InstanceModelEn
 		out = append(out, appwire.InstanceModelEntry{ID: m.ID, Disabled: m.Disabled})
 	}
 	return out
+}
+
+// instanceLiveListTimeout bounds one instance's live /models fetch, the
+// same per-instance budget launch-check and the model picker use.
+const instanceLiveListTimeout = 8 * time.Second
+
+// RefreshModels fetches one instance's live listing into the held registry,
+// then answers with the updated list. It is a read: no file is written, so
+// it stays available while writes are refused. A failed fetch is an error,
+// not a catalog-only list — the sheet keeps its catalog rows and toasts
+// the failure.
+func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+	reg := c.reg.Get()
+	if reg == nil {
+		return appwire.InstanceListResponse{}, errors.New("providers.toml cannot be read: the provider registry has not loaded")
+	}
+	name := strings.TrimSpace(params.Name)
+	if _, ok := reg.Instance(name); !ok {
+		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, instanceLiveListTimeout)
+	defer cancel()
+	client := cmdutil.NewRegistryClient(reg, "")
+	if _, err := client.Models(fetchCtx, name); err != nil {
+		return appwire.InstanceListResponse{}, err
+	}
+	return c.List(), nil
 }
 
 // SetModelDisabled flips one exact model row's disabled flag. It writes an
