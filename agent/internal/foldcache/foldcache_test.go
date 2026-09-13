@@ -899,7 +899,14 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 		t.Fatalf("Epoch named generation %d across an interleaved fold while the next fold carried %d", named, folded.Epoch)
 	}
 
-	// Then under concurrency, with folds and rewrites happening throughout.
+	// Then under concurrency: folds racing Epoch while the file grows the way
+	// these journals grow, by appending. Rewrites stay in the deterministic
+	// half above on purpose — a truncate-then-write is not atomic, so a stat
+	// landing inside one sees a file shorter than the completed content the
+	// next fold reads, and naming a generation from that torn moment is the
+	// conservative answer rather than the invented one this asserts against.
+	// The writer never touches t: a helper's t.Fatal from this goroutine
+	// would race the test's own failure and its cleanup.
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	wg.Go(func() {
@@ -909,9 +916,13 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 				return
 			default:
 			}
-			// Folds, and now and then a rewrite for them to discover.
-			if i%3 == 0 {
-				writeLines(t, path, []int{i, i + 1, i + 2})
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				return
+			}
+			_, writeErr := f.WriteString(itoa(i) + "\n")
+			if closeErr := f.Close(); writeErr != nil || closeErr != nil {
+				return
 			}
 			if _, err := c.Get(ctx, path, extend); err != nil {
 				return
