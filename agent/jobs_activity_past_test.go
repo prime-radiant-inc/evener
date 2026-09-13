@@ -1908,9 +1908,19 @@ func TestBuildActivityFullSnapshot_DepthPlaceholdersChargeTheWorkBudget(t *testi
 	}
 }
 
-// TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation pins the
-// other half: a canceled request must not go on opening files for children it
-// is only naming.
+// TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation pins that
+// a canceled request stops rather than going on to open files for children it
+// is only naming. The cancellation lands from inside the root's own delegate
+// scan, as late in the load as any seam allows.
+//
+// It does not isolate the placeholder loop's own ctx guard, and no test
+// through these seams can: foldcache.Get runs its fold detached and then
+// selects on the caller's ctx, so a cancellation that arrives during ANY read
+// the base load makes is reported by that read before the placeholder loop is
+// reached. Deleting the guard leaves this test green — checked by hand. The
+// guard stays as the loop's own answer for a cancellation that arrives with
+// no read left to report it; if it should go instead, that is a call to make
+// deliberately, not by leaving it untested.
 func TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "cancelboundaryroot"
@@ -1929,12 +1939,20 @@ func TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation(t *testin
 	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
+	original := scanDelegateJournal
+	scanDelegateJournal = func(scanCtx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		events, offset, diagnostics, err := original(scanCtx, path, fromOffset, limits)
+		cancel()
+		return events, offset, diagnostics, err
+	}
+	defer func() { scanDelegateJournal = original }()
+
 	cache := newHistoricalActivityCache(ctx, rootID)
 	cache.budget.maxDepth = 0
 	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
 	if _, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0); !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want context.Canceled", err)
+		t.Fatalf("err = %v, want context.Canceled from the placeholder loop", err)
 	}
 }
 
