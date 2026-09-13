@@ -9,7 +9,7 @@
 // DevHarness.module.css and kata j3t1.
 import { useEffect, useState } from "react";
 import { AppwireClient } from "../protocol/client";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import type { AppwireClientLike } from "../protocol/clientLike";
 import { rpcURLFromLocation } from "../protocol/transport";
 import type { Thread } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";

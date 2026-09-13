@@ -12,6 +12,10 @@ import type { MobileApproval } from "./model";
 // text here; the sanitizer (markdown.ts) is the only place assistant Markdown
 // is interpreted, and that runs downstream of this projection.
 
+import {
+  hasItemFailure,
+  isInProgressStatus,
+} from "../../../cmd/evener-hub/frontend/src/protocol/itemFailure";
 import type {
   EvenerUsage,
   InputItem,
@@ -102,29 +106,6 @@ function isSystemMessage(item: ThreadItem): boolean {
   return item.type === "systemMessage";
 }
 
-// A settled command/tool item is a failure when the tool result itself
-// carried a non-blank error message, OR the item's own status settled as
-// failed/interrupted, OR the process behind it exited nonzero. The daemon
-// never fabricates exitCode as 0 (appwire/types.go's ThreadItem.ExitCode
-// doc), so a defined nonzero value is an honest signal even when Error is
-// empty (e.g. `make test` failing with no denial/exception). This mirrors
-// the web frontend's hasItemFailure/hasFailureStatus/isNonZeroExit predicate
-// (cmd/evener-hub/frontend/src/transcriptDisplay/projector.ts:118-130)
-// exactly, so native and web classify the same settled command the same way.
-export function toolCallFailed(item: ThreadItem): boolean {
-  if (item.error !== undefined && item.error.trim() !== "") return true;
-  if (item.status === "failed" || item.status === "interrupted") return true;
-  return typeof item.exitCode === "number" && item.exitCode !== 0;
-}
-
-// The wire sends "inProgress" for a still-executing turn or item, never
-// "running" — turn and item active-status checks share this predicate
-// (exported so state/conversation.ts's item checks can reuse it too) so
-// they cannot drift apart.
-export function isInProgressStatus(status: string | undefined): boolean {
-  return status === "inProgress";
-}
-
 // A live item can arrive without any status of its own while the turn that
 // contains it is still running — a sparse running tool/reasoning row would
 // otherwise read as settled. Such an item is active exactly when its turn
@@ -147,7 +128,7 @@ export function activityState(
   item: ThreadItem,
   turnStatus: string | undefined,
 ): ActivityState {
-  if (toolCallFailed(item)) return "failed";
+  if (hasItemFailure(item)) return "failed";
   if (isActiveItem(item, turnStatus)) return "running";
   return "completed";
 }
@@ -287,7 +268,7 @@ function pendingAskUserIds(turns: readonly Turn[]): Set<string> {
     if (
       isAskUser(item) &&
       item.status === "completed" &&
-      !toolCallFailed(item) &&
+      !hasItemFailure(item) &&
       parseAskUserQuestions(item) !== undefined
     ) {
       pending.add(item.id);
@@ -400,7 +381,7 @@ function projectItem(
   // label. callId is preserved exactly for diagnostics disclosure.
   if (isCommandExecution(item)) {
     const attachments = projectItemAttachments(item);
-    const failed = toolCallFailed(item);
+    const failed = hasItemFailure(item);
     const family = failed ? `failed:${item.id}` : "tool";
     return {
       kind: "activity",
@@ -771,7 +752,11 @@ export function projectQueue(queue: Thread["evener"]["queue"]): MobileQueue {
   };
 }
 
-function projectUsage(evener: Thread["evener"]): MobileUsage {
+// projectUsage copies EvenerThread's usage aggregate and context fields into
+// MobileUsage. Values are passed straight through: an absent wire field stays
+// undefined rather than becoming a 0 that would read as a real measurement.
+// Shared with the activity service, which adds only durationMs on top.
+export function projectUsage(evener: Thread["evener"]): MobileUsage {
   const usage: EvenerUsage | undefined = evener.usage;
   return {
     inputTokens: usage?.inputTokens,
