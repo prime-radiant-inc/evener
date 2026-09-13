@@ -138,6 +138,25 @@ func TestNameRegexAnchorsAndEscapes(t *testing.T) {
 	}
 }
 
+func TestHasShortFlagReadsEverySpelling(t *testing.T) {
+	for _, tc := range []struct {
+		flags []string
+		want  bool
+	}{
+		{flags: []string{"-short"}, want: true},
+		{flags: []string{"--short"}, want: true},
+		{flags: []string{"-short=true"}, want: true},
+		{flags: []string{"--short=true"}, want: true},
+		{flags: []string{"-short=false"}, want: false},
+		{flags: []string{"-count=1", "-v"}, want: false},
+		{flags: nil, want: false},
+	} {
+		if got := hasShortFlag(tc.flags); got != tc.want {
+			t.Fatalf("hasShortFlag(%v) = %v, want %v", tc.flags, got, tc.want)
+		}
+	}
+}
+
 func TestSplitFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -176,6 +195,41 @@ func TestSplitFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			flags: []string{"-msan", "-asan", "-trimpath", "-v"},
 			build: []string{"-msan", "-asan", "-trimpath"},
 			test:  []string{"-test.v"},
+		},
+		{
+			// The shell's forwarded set, in both spellings, since the two
+			// tables have to agree until #1247 makes them one.
+			name: "every build flag the shell forwards, inline value form",
+			flags: []string{
+				"-tags=a", "-mod=mod", "-modfile=go.mod", "-overlay=o.json",
+				"-pgo=off", "-compiler=gc", "-trimpath", "-race=true",
+				"-msan=true", "-asan=true",
+			},
+			build: []string{
+				"-tags=a", "-mod=mod", "-modfile=go.mod", "-overlay=o.json",
+				"-pgo=off", "-compiler=gc", "-trimpath", "-race=true",
+				"-msan=true", "-asan=true",
+			},
+			test: nil,
+		},
+		{
+			name: "the same set with double dashes",
+			flags: []string{
+				"--tags=a", "--mod=mod", "--modfile=go.mod", "--overlay=o.json",
+				"--pgo=off", "--compiler=gc", "--trimpath", "--race=true",
+				"--msan=true", "--asan=true",
+			},
+			build: []string{
+				"-tags=a", "-mod=mod", "-modfile=go.mod", "-overlay=o.json",
+				"-pgo=off", "-compiler=gc", "-trimpath", "-race=true",
+				"-msan=true", "-asan=true",
+			},
+			test: nil,
+		},
+		{
+			name:  "the =true spelling of a test flag keeps its value",
+			flags: []string{"-short=true", "-v=false", "--short=true"},
+			test:  []string{"-test.short=true", "-test.v=false", "-test.short=true"},
 		},
 		{
 			name:  "nothing at all",

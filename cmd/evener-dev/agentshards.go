@@ -49,7 +49,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -314,7 +313,7 @@ func runShards(cfg shardsConfig) int {
 		}
 		if !cacheHit {
 			_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: surveying test costs (one-time for this test set)")
-			args := surveyArgs(cfg.surveyParallel, cfg.skip, slices.Contains(cfg.flags, "-short"))
+			args := surveyArgs(cfg.surveyParallel, cfg.skip, hasShortFlag(cfg.flags))
 			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
