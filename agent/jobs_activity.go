@@ -430,14 +430,13 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 		// though: dropping a depth-truncated child with no marker at all
 		// would hide the truncation instead of reporting it:
 		//
-		//   - Depth: projectStableActivityDelegate dereferences
-		//     snapshot.Children[childID] BEFORE its own depth check runs, so
-		//     leaving the entry unset here surfaces as a generic "child
-		//     session unavailable" branch error instead of the honest,
-		//     continuation-bearing Truncated projection's depth-truncation
-		//     already knows how to produce (markActivityDelegateTruncated).
-		//     A placeholder child — present, but with nothing loaded under
-		//     it — lets projection's own check run and do that correctly.
+		//   - Depth: projectStableActivityDelegate decides truncation before
+		//     it reaches for snapshot.Children[childID], so a child left
+		//     unset here still reports the honest, continuation-bearing
+		//     Truncated branch (markActivityDelegateTruncated) rather than a
+		//     generic "child session unavailable". A placeholder is still
+		//     what carries that child's fold generations into the token, so
+		//     one is left here whenever the budget affords naming them.
 		//   - Work-unit exhaustion: projectActivitySessionAt's delegate loop
 		//     consumes a unit and checks it BEFORE ever dereferencing
 		//     snapshot.Children, so leaving the entry unset there already
@@ -465,9 +464,11 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			// Naming them reads the child's metadata, so it is charged the
 			// same unit a loaded child pays before it is descended into, and
 			// it stops when a canceled request stops everything else. A
-			// budget with nothing left leaves this child out entirely rather
-			// than minting a continuation nobody paid for — the same
-			// exhaustion path a child one level shallower takes.
+			// budget with nothing left leaves no placeholder for this child;
+			// projection still reports the branch as truncated with a
+			// continuation (projectStableActivityDelegate decides that
+			// before it reaches for the child), and that token simply names
+			// no generations.
 			if err := cache.ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -1154,6 +1155,26 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		appendActivityBranchError(&delegate.Branch, err.Error())
 		return delegate
 	}
+	childPath := appendActivityPath(path, row.id)
+	if budget != nil && budget.bounded && depth >= budget.maxDepth {
+		// Decided before the child is touched, because at the bound there
+		// may be nothing to touch: the load leaves a placeholder there
+		// rather than a session, and when its own budget ran out before it
+		// could even name that child's generations it leaves nothing at all.
+		// The honest answer is the same either way — a truncated branch with
+		// a continuation — and reaching for the child first would turn the
+		// second case into "child session unavailable" with no way forward.
+		// The child's OWN generations when they were named; none when they
+		// were not, in which case the token names none and the resume
+		// refuses it once, which the client answers by restarting (see
+		// activityContinuation).
+		var jobsEpoch, delegatesEpoch uint64
+		if child := snapshot.Children[childID]; child != nil {
+			jobsEpoch, delegatesEpoch = child.JobsEpoch, child.DelegatesEpoch
+		}
+		markActivityDelegateTruncated(&delegate, budget, childID, childPath, jobsEpoch, delegatesEpoch)
+		return delegate
+	}
 	child := snapshot.Children[childID]
 	if child == nil {
 		appendActivityBranchError(&delegate.Branch, fmt.Sprintf("child session %q unavailable", childID))
@@ -1166,14 +1187,6 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	if delegate.Usage == nil && child.Usage != nil {
 		usage := *child.Usage
 		delegate.Usage = &usage
-	}
-	childPath := appendActivityPath(path, row.id)
-	if budget != nil && budget.bounded && depth >= budget.maxDepth {
-		// The child's OWN generations: a resume checks the token against
-		// the generations of the session it names, not the page root's —
-		// see markActivityDelegateTruncated.
-		markActivityDelegateTruncated(&delegate, budget, child.SessionID, childPath, child.JobsEpoch, child.DelegatesEpoch)
-		return delegate
 	}
 	projectedChild := projectActivitySessionAt(*child, budget, depth+1, childPath, resumeIndex)
 	delegate.Child = &projectedChild

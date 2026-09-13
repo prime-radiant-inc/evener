@@ -1996,3 +1996,77 @@ func TestLoadSessionJobActivityTree_DepthContinuationAfterTheChildWasAlreadyRewr
 		t.Fatalf("continuation minted after the rewrite was rejected: %v", err)
 	}
 }
+
+// TestProjectStableActivityDelegate_DepthBoundaryTruncatesWithoutTheChild pins
+// that the depth bound reports a truncated branch whether or not the load left
+// a placeholder behind. A load budget that runs out at the boundary leaves no
+// placeholder at all, and reaching for the child before deciding turns that
+// into "child session unavailable" with nothing to continue to — the branch
+// becomes a dead end rather than a page the client can ask for.
+func TestProjectStableActivityDelegate_DepthBoundaryTruncatesWithoutTheChild(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "boundarytruncroot"
+	const boundaryChildren = 4
+	const affordable = 1
+	started := time.Unix(920, 0).UTC()
+
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	descriptors := make([]delegatestore.Descriptor, 0, boundaryChildren)
+	for i := range boundaryChildren {
+		childID := fmt.Sprintf("boundarytruncchild%d", i)
+		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+		})
+		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, "next"))
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+
+	// The root sits AT the bound and the budget affords naming one child's
+	// generations, so the rest have no placeholder.
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	cache.budget.maxDepth = 0
+	cache.budget.maxWorkUnits = affordable
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	snapshot, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0)
+	if err != nil {
+		t.Fatalf("buildActivityFullSnapshot: %v", err)
+	}
+	if len(snapshot.Children) != affordable {
+		t.Fatalf("fixture left %d placeholders, want %d — the case under test is the children with none", len(snapshot.Children), affordable)
+	}
+
+	budget := newBoundedActivityBudget(rootID, time.Unix(1000, 0).UTC(), 0)
+	budget.maxDepth = 0
+	projected := projectActivitySessionAt(*snapshot, budget, 0, nil, 0)
+	delegates := 0
+	var token string
+	for _, entry := range projected.Entries {
+		if entry.Delegate == nil {
+			continue
+		}
+		delegates++
+		if entry.Delegate.Branch.Error != "" {
+			t.Fatalf("delegate %q reports %q instead of a truncated branch", entry.Delegate.DelegateID, entry.Delegate.Branch.Error)
+		}
+		if !entry.Delegate.Branch.Truncated || entry.Delegate.Branch.Continuation == "" {
+			t.Fatalf("delegate %q branch = %+v, want truncated with a continuation", entry.Delegate.DelegateID, entry.Delegate.Branch)
+		}
+		token = entry.Delegate.Branch.Continuation
+	}
+	if delegates != boundaryChildren {
+		t.Fatalf("projected %d delegates, want %d", delegates, boundaryChildren)
+	}
+
+	// The token is usable: these journals were never rewritten, so the
+	// generations it names — none, for a child the budget never reached —
+	// are the ones its own load reports.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err != nil {
+		t.Fatalf("resuming a depth-boundary continuation minted without a placeholder: %v", err)
+	}
+}
