@@ -1,10 +1,7 @@
-import {
-  type AskBatch,
-  reconcileBatches,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/reconcileBatches";
 import type { AskQuestionRef } from "../../cmd/evener-hub/frontend/src/protocol/deriveAskQuestions";
+import { type AskBatch, reconcileBatches } from "../../cmd/evener-hub/frontend/src/protocol/reconcileBatches";
 
-/** Own submissions by question identity, using the current web reconciliation. */
+/** Own submissions by question identity, using the shared reconciliation. */
 export class QuestionBatches {
   private batches: AskBatch[] = [];
   private excluded = new Set<string>();

@@ -30,11 +30,11 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { AskBatch } from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/reconcileBatches";
 import {
 	parseSlashToken,
 	spliceSlashCommand,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
+import type { AskBatch } from "../../cmd/evener-hub/frontend/src/protocol/reconcileBatches";
 import { humanizeState } from "../../cmd/evener-hub/frontend/src/shell/rail/sessionState";
 import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import { createConversationService } from "../../mobile/src/services/conversation";

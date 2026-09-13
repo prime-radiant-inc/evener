@@ -41,6 +41,7 @@ async function qualify() {
     "askAnswers",
     "askShared",
     "deriveAskQuestions",
+    "reconcileBatches",
     "attachmentMarkers",
     "activityData",
     "activityList",
@@ -86,6 +87,7 @@ async function qualify() {
     "parseAskUserQuestions",
     "answeredAskUserSuffix",
     "liveAskQuestions",
+    "reconcileBatches",
     "translateAttachmentMarkers",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
@@ -167,6 +169,7 @@ async function qualify() {
     "AskAnswerItem",
     "AskUserQuestion",
     "AskQuestionRef",
+    "AskBatch",
     "MarkerAttachment",
     "ActivityNodeLike",
     "ActivityTree",
@@ -195,6 +198,9 @@ const askItem = {
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
 assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
+assert.equal(askBatches[0].id, "batch1");
+assert.equal(askBatches[0].questions[0].key, "ask1:0");
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");

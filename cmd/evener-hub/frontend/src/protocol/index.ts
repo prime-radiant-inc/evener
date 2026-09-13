@@ -95,6 +95,8 @@ export type {
   TurnModel,
 } from "./model";
 export { SYSTEM_PRELUDE_TURN_ID } from "./model";
+export type { AskBatch } from "./reconcileBatches";
+export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";
 // chunkViewBackingForTests is deliberately absent: it reports the reducer's
 // internal chunk storage so a test can assert the view never copies it, which
