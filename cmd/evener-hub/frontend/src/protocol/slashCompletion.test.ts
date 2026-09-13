@@ -1,6 +1,5 @@
 import { expect, test } from "vitest";
-import type { CommandDescriptor } from "../../../protocol/types.gen";
-import type { ScopedCommand } from "../../../shell/palette/commands";
+import type { ScopedCommand } from "../shell/palette/commands";
 import {
   evaluateSlashLabel,
   filterSlashMenuItems,
@@ -9,6 +8,7 @@ import {
   type SlashMenuItem,
   spliceSlashCommand,
 } from "./slashCompletion";
+import type { CommandDescriptor } from "./types.gen";
 
 // --- parseSlashToken ---------------------------------------------------
 //

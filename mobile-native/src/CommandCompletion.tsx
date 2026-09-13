@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
 import {
   filterSlashMenuItems,
   type SlashMenuItem,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
+} from "../../cmd/evener-hub/frontend/src/protocol/slashCompletion";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { CommandCatalog } from "./commandCatalog";

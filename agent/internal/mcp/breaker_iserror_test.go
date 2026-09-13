@@ -84,7 +84,7 @@ func TestMCPBreaker_IsErrorFailuresParkAtThird(t *testing.T) {
 	if !third.IsError {
 		t.Fatalf("call 3: IsError=false, output=%q", third.Output)
 	}
-	want := "evener did not execute this call: s__probe with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
+	want := "evener did not execute this call: s__probe with equivalent arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
 	if !strings.HasPrefix(third.Output, want) {
 		t.Errorf("call 3 park text = %q, want prefix %q", third.Output, want)
 	}
