@@ -7,12 +7,25 @@ output freshness, compile floors, and the repo secret scan. `make lint` is
 `secret-scan`. Every one of them is required CI.
 
 `golangci-lint` and `gitleaks` are the only external tools the gate needs;
-`make tools` installs the CI-pinned versions from `.tool-versions`. They
-behave differently when absent: a missing `golangci-lint` fails the gate
-outright, while a missing local `gitleaks` warns and returns zero — CI sets
+`make tools` installs the CI-pinned versions from `.tool-versions`. It needs
+`perl` on `PATH` to do it: each install attempt is exec'd through perl's
+`setpgrp(0, 0)` so the whole `curl | sh` pipeline can be stopped as a process
+group, which is what keeps a cancelled install from leaving curl and the
+upstream installer writing into the Go bin directory afterwards. There is no
+fallback and no unbounded path; a missing perl fails `make tools-golangci` by
+name. macOS and the CI image both have it, and the test gate's runner requires
+it for the same reason (see [testing.md](testing.md)). The
+golangci-lint install makes up to three attempts (two retries) with 5s then 10s
+of backoff, and bounds each fetch of the upstream installer at 10s to connect
+and 60s in total, so those fetches and their backoff cannot exceed about 195s.
+That is the whole bound: the release download the upstream installer performs
+with its own curl takes no options from this script, so a stall there is
+unbounded and `make tools-golangci` as a whole has no ceiling. They behave
+differently when absent: a missing `golangci-lint` fails the gate outright,
+while a missing local `gitleaks` warns and returns zero — CI sets
 `EVENER_GITLEAKS_REQUIRED=1` so absence there is a failure rather than a
-silent skip. Read that local warning as a limitation, never as evidence that a
-scan ran and found nothing — the same applies to `make fuzz-corpus-scan`,
+silent skip. Read that local warning as a limitation, never as evidence that
+a scan ran and found nothing — the same applies to `make fuzz-corpus-scan`,
 which points the same tool at the committed fuzz corpora.
 
 ## Why two tagged lint passes exist

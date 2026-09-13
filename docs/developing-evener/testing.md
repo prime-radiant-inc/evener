@@ -312,6 +312,51 @@ the evidence that produced the failure remains available. Standard reusable
 caches outside the owned roots are audited separately rather than claimed as
 temporary cleanup.
 
+Every module's packages are enumerated with `go list ./...` before its tests
+run, and that step is bounded because it can block forever when the configured
+Go caches sit on a stalled volume. Each module goes through the same bound and
+is handed the resulting list, so no module discovers its own packages inside
+`go test ./...`, where the same caches are read with no bound at all — an
+unbounded hang there is exactly what the bound cannot help with. The bound is a
+tripwire on a stall, not a budget for the work: `EVENER_PACKAGE_LIST_TIMEOUT`
+seconds per attempt (default 60) over `EVENER_PACKAGE_LIST_ATTEMPTS`
+attempts (default 3, one second apart), so a run that never lists its packages
+fails rather than hanging. What that costs has two cases, not one ceiling: when
+each timed-out attempt's process group dies cleanly, exhausting the attempts is
+3 x 60s + 2 x 1s = 182s; when a group will not die, the run ends on that
+attempt instead of retrying, after at most two five-second stop graces — 70s if
+it happens on the first attempt, 192s if on the last. Only a timed-out attempt
+is retried; a `go list` that exits non-zero has decided something about the
+package list itself and is reported at once. The timeout diagnostic names
+the effective GOCACHE and GOMODCACHE, the retained stderr log covering every
+attempt, the cache-repair command, and the per-attempt knob — a host merely
+slower than the budget needs the last of those, not the cache repair.
+
+A retry only makes sense if the attempt it replaces is really gone. Each
+attempt runs in its own process group and a timed-out one is stopped by group
+— SIGTERM, then SIGKILL after five seconds — and reaped before the next
+starts; a group that outlives both fails the run rather than being retried,
+because a survivor would still hold Go's build and module cache locks. That
+failure names the surviving pids and does **not** wait on them: SIGKILL never
+lands on a process in uninterruptible sleep, which is the stalled-volume case
+the bound exists for, so waiting would trade the bound for an indefinite hang.
+Liveness is read from `ps` states rather than from `kill -0` on the group, so
+a leader the shell has not reaped yet — a zombie, and still a group member —
+cannot make a clean kill look like a survivor. Each attempt also writes its
+own package list, and only a completed attempt's is promoted to the file the
+rest of the runner reads, so nothing a stopped attempt is still writing can
+reach the run.
+
+The process group is made by the spawn: each attempt is `exec`'d through
+`perl`'s `setpgrp(0, 0)`, so the child is its own group leader before it
+becomes `go`. `setsid(1)` would do the same and is not on macOS. `set -m`
+would do it too, but only by turning bash job control on for the whole
+runner, where `run_wave`'s background jobs, the `active_pids` bookkeeping and
+the cleanup traps all depend on the current semantics — so it is not used, and
+no `set -m` appears in the script. The runner therefore needs `perl` on `PATH`
+for any run that schedules a module, since every module's enumeration goes
+through it, and says so by name before that module's first attempt spawns.
+
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
 browser-specific gate in its web job.

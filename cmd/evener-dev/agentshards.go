@@ -272,7 +272,13 @@ func runShards(cfg shardsConfig) int {
 	// Build the test binary once; every shard runs it.
 	build := filepath.Join(logdir, "agent.test")
 	buildLog := filepath.Join(logdir, "build.log")
-	if err := cfg.runToLog(in, buildLog, cfg.agentDir, "go", "test", "-c", "-o", build, "."); err != nil {
+	// The build gets the caller's build flags: a -race run has to compile a
+	// race-detector binary, and a -tags run has to compile the files that tag
+	// selects, or the shards test something the caller did not ask for.
+	buildFlags, extraFlags := splitFlags(cfg.flags)
+	buildArgs := append([]string{"test", "-c"}, buildFlags...)
+	buildArgs = append(buildArgs, "-o", build, ".")
+	if err := cfg.runToLog(in, buildLog, cfg.agentDir, "go", buildArgs...); err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
 		}
@@ -358,7 +364,6 @@ func runShards(cfg shardsConfig) int {
 	// Launch every shard, each waited by its own goroutine so its reported
 	// wall time is its OWN clock (the script measured with /usr/bin/time -p
 	// inside each invocation); results are still reported in shard order.
-	extraFlags := translateFlags(cfg.flags)
 	type shardResult struct {
 		err     error
 		seconds float64
