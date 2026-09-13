@@ -341,12 +341,21 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 }
 
 func TestTestSetKeyIsOrderInsensitiveAndStable(t *testing.T) {
-	a := testSetKey("TestB\nTestA\n")
-	b := testSetKey("TestA\nTestB\n")
+	a := testSetKey("TestB\nTestA\n", parsedFlags{})
+	b := testSetKey("TestA\nTestB\n", parsedFlags{})
 	if a != b {
 		t.Fatalf("testSetKey is order sensitive: %q vs %q", a, b)
 	}
-	if c := testSetKey("TestA\nTestC\n"); c == a {
+	if c := testSetKey("TestA\nTestC\n", parsedFlags{}); c == a {
 		t.Fatalf("testSetKey did not change with the test set: %q", c)
+	}
+	// The survey measures costs, and the build is what the costs are of.
+	race := testSetKey("TestA\nTestB\n", parsedFlags{build: []string{"-race"}})
+	if race == a {
+		t.Fatalf("a -race survey shares the plain build's key: %q", race)
+	}
+	short := testSetKey("TestA\nTestB\n", parsedFlags{short: true})
+	if short == a || short == race {
+		t.Fatalf("a short-mode survey shares another key: %q", short)
 	}
 }

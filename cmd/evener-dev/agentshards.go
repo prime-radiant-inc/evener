@@ -300,7 +300,7 @@ func runShards(cfg shardsConfig) int {
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
-	cachedSurvey := cfg.cachedSurveyPath(listOut)
+	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed)
 
 	var costs []testCost
 	if !cfg.noSurvey {
@@ -466,7 +466,7 @@ var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
 // cachedSurveyPath resolves the survey cache file for this test set, or ""
 // when there is nowhere to cache. Cache trouble is never fatal — it only
 // costs the next run a survey.
-func (cfg shardsConfig) cachedSurveyPath(listOut string) string {
+func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags) string {
 	cacheDir := cfg.cacheDir
 	if cacheDir == "" {
 		out, err := exec.CommandContext(context.Background(), "go", "env", "GOCACHE").Output()
@@ -478,7 +478,7 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string) string {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut)+".log")
+	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed)+".log")
 }
 
 // surveyCoversTestSet reports whether a cached survey accounts for every test

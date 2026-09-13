@@ -62,7 +62,7 @@ func TestCachedSurveyPathWithGOCACHE(t *testing.T) {
 	if len(strings.TrimSpace(string(gocache))) == 0 {
 		t.Skip("GOCACHE is empty")
 	}
-	got := cfg.cachedSurveyPath("TestA\nTestB\n")
+	got := cfg.cachedSurveyPath("TestA\nTestB\n", parsedFlags{})
 	if got == "" {
 		t.Fatalf("cachedSurveyPath with default GOCACHE should not be empty")
 	}

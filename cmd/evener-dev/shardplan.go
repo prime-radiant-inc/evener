@@ -287,13 +287,22 @@ func parseFlags(flags []string) (parsedFlags, error) {
 	return out, nil
 }
 
-// testSetKey is the survey cache key: the identity of the sorted test list.
-// Add, rename, or remove a test and the key changes; otherwise every run
-// reuses the cached survey and pays nothing.
-func testSetKey(listOutput string) string {
+// testSetKey is the survey cache key: the identity of the sorted test list
+// together with the build the survey measured and whether it ran short. Add,
+// rename, or remove a test and the key changes; otherwise every run reuses the
+// cached survey and pays nothing.
+//
+// The build belongs in the key because the survey is a cost measurement and
+// the build decides the costs: a -race binary is several times slower than a
+// plain one, and a survey taken from one would pack the other's shards from
+// numbers that never applied. Short mode does the same on a smaller scale, by
+// changing which tests run at all.
+func testSetKey(listOutput string, parsed parsedFlags) string {
 	lines := strings.Split(strings.TrimRight(listOutput, "\n"), "\n")
 	sort.Strings(lines)
-	payload := strings.Join(lines, "\n") + "\n"
+	payload := strings.Join(lines, "\n") + "\n" +
+		"build\x00" + strings.Join(parsed.build, "\x00") + "\n" +
+		"short\x00" + strconv.FormatBool(parsed.short) + "\n"
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])[:16]
 }
