@@ -11,8 +11,9 @@
 // session-scoped BUILT-INS merged with the plugin catalog, mergeSlashCommands'
 // own doc comment) - this component itself has no notion of which source a
 // row came from beyond rendering its already-resolved label/hint/invocation.
+
+import type { SlashMenuItem } from "../../../protocol/slashCompletion";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import type { SlashMenuItem } from "./slashCompletion";
 import styles from "./slashcompletionmenu.module.css";
 
 const CLASS = {

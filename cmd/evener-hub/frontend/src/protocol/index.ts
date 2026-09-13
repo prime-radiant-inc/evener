@@ -97,6 +97,8 @@ export type {
   TurnModel,
 } from "./model";
 export { SYSTEM_PRELUDE_TURN_ID } from "./model";
+export type { AskBatch } from "./reconcileBatches";
+export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";
 // chunkViewBackingForTests is deliberately absent: it reports the reducer's
 // internal chunk storage so a test can assert the view never copies it, which
@@ -117,6 +119,20 @@ export {
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+export type {
+  SlashEmbedding,
+  SlashMatchEvaluation,
+  SlashMenuItem,
+  SlashSpliceResult,
+  SlashToken,
+} from "./slashCompletion";
+export {
+  evaluateSlashLabel,
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  spliceSlashCommand,
+} from "./slashCompletion";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";

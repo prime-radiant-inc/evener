@@ -21,6 +21,7 @@
     "askAnswers.ts",
     "askShared.ts",
     "deriveAskQuestions.ts",
+    "reconcileBatches.ts",
     "attachmentMarkers.ts",
     "composerInput.ts",
     "activityData.ts",
@@ -38,6 +39,7 @@
     "submitRouting.ts",
     "displayFormat.ts",
     "toolCallText.ts",
-    "catalogCommands.ts"
+    "catalogCommands.ts",
+    "slashCompletion.ts"
   ]
 }
