@@ -485,7 +485,18 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 				continue
 			}
 			placeholderJobs, placeholderDelegates, err := activityPlaceholderEpochs(childLoc, cache, childID)
-			if err != nil {
+			var childJournalErr activityChildJournalError
+			switch {
+			case errors.As(err, &childJournalErr):
+				// This child's own journal could not be read, which stops
+				// the load a resume would have to do: report it as this
+				// child's failure rather than paging to a branch whose
+				// resume dies on the same file.
+				snapshot.Errors[childID] = childJournalErr.err
+				continue
+			case err != nil:
+				// Anything else — the shared delegate index, a canceled
+				// request — is a failure of this traversal, not of one child.
 				return nil, err
 			}
 			snapshot.Children[childID] = &activitySessionSnapshot{
@@ -674,6 +685,16 @@ func liveActivitySessionLabel(s *Session) string {
 	return activitySessionLabel(schema.SessionMeta{ID: id, Name: name, OriginalPrompt: prompt})
 }
 
+// activityChildJournalError marks a failure to read the CHILD's own journal,
+// which is that child's problem and is reported on its branch. Everything else
+// this lookup can fail on — the delegate index shared by the traversal, a
+// canceled request — belongs to the load, and fails it.
+type activityChildJournalError struct{ err error }
+
+func (e activityChildJournalError) Error() string { return e.err.Error() }
+
+func (e activityChildJournalError) Unwrap() error { return e.err }
+
 // activityPlaceholderEpochs reports the fold-cache generations the child at
 // childLoc would report from its own load, without paying for that load. A
 // LIVE child folds neither journal and reports zeros; a historical one
@@ -706,7 +727,11 @@ func activityPlaceholderEpochs(childLoc activitySessionLocator, cache *historica
 		// against a number nobody read.
 		return 0, 0, err
 	}
-	return currentHistoricalJobsEpoch(stateDir, childID), index.epoch, nil
+	jobsEpoch, err := currentHistoricalJobsEpoch(stateDir, childID)
+	if err != nil {
+		return 0, 0, activityChildJournalError{err: err}
+	}
+	return jobsEpoch, index.epoch, nil
 }
 
 func resolveActivityChildByID(parent activitySessionLocator, loaded activityLoadedBase, childID string) (activitySessionLocator, error) {

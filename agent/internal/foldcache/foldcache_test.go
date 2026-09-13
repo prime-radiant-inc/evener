@@ -829,7 +829,11 @@ func TestCache_EpochAgreesWithGetAcrossDeletionAndRecreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
 	}
-	if got := c.Epoch(path); got != folded.Epoch {
+	got, err := c.Epoch(path)
+	if err != nil {
+		t.Fatalf("Epoch after a fold: %v", err)
+	}
+	if got != folded.Epoch {
 		t.Fatalf("Epoch = %d after a fold reporting %d", got, folded.Epoch)
 	}
 
@@ -840,8 +844,12 @@ func TestCache_EpochAgreesWithGetAcrossDeletionAndRecreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get on deleted file: %v", err)
 	}
-	if got := c.Epoch(path); got != missing.Epoch {
-		t.Fatalf("Epoch = %d for a deleted path while Get reports %d -- a continuation minted from one and checked against the other is refused for a file that is simply gone", got, missing.Epoch)
+	gone, err := c.Epoch(path)
+	if err != nil {
+		t.Fatalf("Epoch for a deleted path: %v -- a path that is simply gone is an answer, not a failure", err)
+	}
+	if gone != missing.Epoch {
+		t.Fatalf("Epoch = %d for a deleted path while Get reports %d -- a continuation minted from one and checked against the other is refused for a file that is simply gone", gone, missing.Epoch)
 	}
 
 	writeLines(t, path, []int{100, 200, 300})
@@ -849,8 +857,12 @@ func TestCache_EpochAgreesWithGetAcrossDeletionAndRecreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get on recreated file: %v", err)
 	}
-	if got := c.Epoch(path); got != recreated.Epoch {
-		t.Fatalf("Epoch = %d for a recreated path while Get reports %d", got, recreated.Epoch)
+	back, err := c.Epoch(path)
+	if err != nil {
+		t.Fatalf("Epoch for a recreated path: %v", err)
+	}
+	if back != recreated.Epoch {
+		t.Fatalf("Epoch = %d for a recreated path while Get reports %d", back, recreated.Epoch)
 	}
 	if recreated.Epoch <= folded.Epoch {
 		t.Fatalf("recreated epoch (%d) did not advance past the pre-deletion epoch (%d)", recreated.Epoch, folded.Epoch)
@@ -886,8 +898,11 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 			t.Errorf("interleaved fold: %v", err)
 		}
 	}
-	named := c.Epoch(path)
+	named, err := c.Epoch(path)
 	epochInterleave = nil
+	if err != nil {
+		t.Fatalf("naming across an interleaved fold: %v", err)
+	}
 	folded, err := c.Get(ctx, path, extend)
 	if err != nil {
 		t.Fatalf("fold after the interleaved naming: %v", err)
@@ -931,7 +946,10 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 	})
 
 	for range 200 {
-		named := c.Epoch(path)
+		named, err := c.Epoch(path)
+		if err != nil {
+			t.Fatalf("naming during the sweep: %v", err)
+		}
 		folded, err := c.Get(ctx, path, extend)
 		if err != nil {
 			t.Fatalf("fold after naming: %v", err)
@@ -942,4 +960,37 @@ func TestCache_EpochNeverExceedsTheNextFoldsGeneration(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// TestCache_EpochSeparatesAMissingPathFromAnUnreadableOne pins which failures
+// Epoch answers and which it reports. A path that is not there has no
+// generation to discard, which is what its first fold would assign — an
+// answer. A path that cannot be read at all is not an answer: naming a
+// generation for it promises a fold that will fail, and whatever is built on
+// that name breaks later instead of here.
+func TestCache_EpochSeparatesAMissingPathFromAnUnreadableOne(t *testing.T) {
+	dir := t.TempDir()
+	c := New[intsFold](8)
+
+	missing := filepath.Join(dir, "not-yet.txt")
+	epoch, err := c.Epoch(missing)
+	if err != nil {
+		t.Fatalf("Epoch for a path that does not exist: %v, want generation 0 and no error", err)
+	}
+	if epoch != 0 {
+		t.Fatalf("Epoch = %d for a path that does not exist, want 0", epoch)
+	}
+
+	// A regular file standing where a directory would have to be: stating
+	// anything under it fails with something that is not "does not exist".
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unreadable := filepath.Join(blocker, "nums.txt")
+	if _, err := c.Epoch(unreadable); err == nil {
+		t.Fatal("Epoch answered for a path it could not stat; a generation named there is a fold promised and not kept")
+	} else if os.IsNotExist(err) {
+		t.Fatalf("Epoch = %v, want the stat's own failure rather than a missing-path answer", err)
+	}
 }

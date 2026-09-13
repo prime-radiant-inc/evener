@@ -2126,7 +2126,11 @@ func TestActivityPlaceholderEpochs_MatchesTheLoaderOnADegradedDelegateJournal(t 
 	if err := os.Chtimes(delegatesPath, rewritten, rewritten); err != nil {
 		t.Fatalf("restamp: %v", err)
 	}
-	if cached := historicalDelegateFoldCache.Epoch(delegatesPath); cached == 0 {
+	cached, err := historicalDelegateFoldCache.Epoch(delegatesPath)
+	if err != nil {
+		t.Fatalf("read the cache's generation: %v", err)
+	}
+	if cached == 0 {
 		t.Fatal("fixture did not move the cache's own generation; the mismatch under test cannot occur")
 	}
 
@@ -2222,4 +2226,67 @@ func TestBuildActivityFullSnapshot_PlaceholderLookupFailuresSurface(t *testing.T
 			t.Fatalf("err = %v, want context.Canceled", err)
 		}
 	})
+}
+
+// TestBuildActivityFullSnapshot_UnreadableBoundaryChildJournalReportsTheError
+// pins that a depth-boundary child whose journal cannot be read is reported
+// rather than paged. Naming a generation there would promise a fold that
+// fails, so the continuation minted from it hands the reader a page whose
+// resume dies on the same unreadable file. A journal that is simply absent is
+// a different thing: that is generation 0 and a branch the reader can follow.
+func TestBuildActivityFullSnapshot_UnreadableBoundaryChildJournalReportsTheError(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "unreadableboundaryroot"
+	childID := "unreadableboundarychild"
+	started := time.Unix(960, 0).UTC()
+
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "next"))
+
+	// A regular file where the child's jobs directory would be, so its
+	// journal cannot be stated at all — and the failure is not "not there".
+	childJobsDir := jobsDir(stateDir, childID)
+	if err := os.MkdirAll(filepath.Dir(childJobsDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(childJobsDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	cache.budget.maxDepth = 0
+	loc := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	snapshot, err := buildActivityFullSnapshot(loc, map[string]bool{rootID: true}, false, cache, 0)
+	if err != nil {
+		t.Fatalf("buildActivityFullSnapshot: %v", err)
+	}
+	recorded := snapshot.Errors[childID]
+	if recorded == nil {
+		t.Fatalf("no error recorded for %q; a placeholder here mints a continuation whose resume dies on the same unreadable journal", childID)
+	}
+	if snapshot.Children[childID] != nil {
+		t.Fatalf("placeholder installed for a child whose journal cannot be read: %+v", snapshot.Children[childID])
+	}
+
+	budget := newBoundedActivityBudget(rootID, time.Unix(1000, 0).UTC(), 0)
+	budget.maxDepth = 0
+	projected := projectActivitySessionAt(*snapshot, budget, 0, nil, 0)
+	for _, entry := range projected.Entries {
+		if entry.Delegate == nil {
+			continue
+		}
+		if entry.Delegate.Branch.Error == "" {
+			t.Fatalf("delegate %q reports no error for an unreadable child", entry.Delegate.DelegateID)
+		}
+		if entry.Delegate.Branch.Continuation != "" {
+			t.Fatalf("delegate %q offers a continuation whose resume cannot work: %q", entry.Delegate.DelegateID, entry.Delegate.Branch.Continuation)
+		}
+		return
+	}
+	t.Fatal("the delegate was not projected")
 }

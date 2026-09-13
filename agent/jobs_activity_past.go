@@ -494,10 +494,13 @@ func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, ro
 // (foldcache.Cache.Epoch). It exists for the one caller that must name a
 // session's generations while deliberately not loading it — a depth-truncated
 // child, whose continuation is still checked against the generations its own
-// load reports. The delegates side has no such helper on purpose: that
+// load reports. A journal that is not there answers 0; anything else that
+// stops it being read is returned, because naming a generation for a journal
+// nobody can read mints a continuation that fails at resume instead.
+// The delegates side has no such helper on purpose: that
 // generation comes from historicalActivityCache.rootDelegates, the index the
 // loader itself reads, so the two cannot disagree about a degraded journal.
-func currentHistoricalJobsEpoch(stateDir, sessionID string) uint64 {
+func currentHistoricalJobsEpoch(stateDir, sessionID string) (uint64, error) {
 	return historicalJobFoldCache.Epoch(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
 }
 

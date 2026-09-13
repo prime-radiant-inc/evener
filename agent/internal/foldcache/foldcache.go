@@ -594,7 +594,11 @@ var epochInterleave func()
 
 // Epoch reports the generation Get would attach to path right now, without
 // folding it, for a caller that must name a path's generation WITHOUT paying
-// for its fold (the activity tree's depth-truncated children). It runs the
+// for its fold (the activity tree's depth-truncated children). A path that is
+// not there answers 0, the generation its first fold assigns; every other
+// failure to read the file or its tail probe is returned, because a name for
+// a journal nobody can read is a promise broken later rather than here. It
+// runs the
 // same freshness step Get runs (freshnessOf) against the same recorded
 // state, so a file already rewritten is named at its NEW generation rather
 // than the one the last fold carried — naming the old one would refuse a
@@ -605,7 +609,7 @@ var epochInterleave func()
 // tombstone kept for the content that used to be there. A file rewritten
 // between this call and the fold raises the fold's generation past this one,
 // and that mismatch is a true answer, not a false one.
-func (c *Cache[T]) Epoch(path string) uint64 {
+func (c *Cache[T]) Epoch(path string) (uint64, error) {
 	// State first, file second, and never the other way round: a fold that
 	// lands between the two steps would otherwise leave stale file
 	// information to be judged against newer state, and that comparison
@@ -622,19 +626,23 @@ func (c *Cache[T]) Epoch(path string) uint64 {
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return 0
-	}
-	fresh, probeErr := freshnessOf(path, info, st)
-	if probeErr != nil {
-		// The probe could not be read, so the file itself is unreadable and
-		// the fold that follows will fail on it. The recorded generation is
-		// the only answer left, and the failure surfaces there, not here.
-		if st != nil {
-			return st.epoch
+		if os.IsNotExist(err) {
+			// A journal that is not there yet has no generation to discard,
+			// which is the same answer its first fold assigns — and the same
+			// zero Get reports for it.
+			return 0, nil
 		}
-		return 0
+		return 0, err
 	}
-	return fresh.epoch
+	fresh, err := freshnessOf(path, info, st)
+	if err != nil {
+		// The probe could not be read, so the fold that follows would fail on
+		// this file too. Answering with the recorded generation would name a
+		// number for a journal nobody can read, and whatever is built on that
+		// name fails later instead of here.
+		return 0, err
+	}
+	return fresh.epoch, nil
 }
 
 // Stats returns a snapshot of this cache's counters.
