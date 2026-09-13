@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -213,6 +214,16 @@ func (s *Session) adoptSelfMintedTurnID(turnID string) {
 // way a turn can finish, and an INTERRUPTED turn has one record still to write
 // — the marker saying it was cut short, appended by ProcessInput's loop — so
 // that path ends the name after writing it instead. Idempotent.
+// selfMintedNameOutlivesTurn reports whether the name a turn minted for itself
+// must stand past its unwind: only a turn that ENDED in cancellation, whose
+// interrupt marker ProcessInput's loop still has to write. The turn's outcome
+// decides it, never the context alone — a cancel landing between the last
+// round and this check leaves a turn that completed, writes no marker, and
+// would strand the name for the next turn's records to adopt.
+func selfMintedNameOutlivesTurn(ctx context.Context, err error) bool {
+	return err != nil && isTurnCancellation(ctx, err)
+}
+
 func (s *Session) endSelfMintedTurn() {
 	s.mu.Lock()
 	s.directTurnID = ""

@@ -1619,10 +1619,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.releaseRunningTurnID(runningTurnID)
 		// The self-minted name ends with the turn, on every path out of here
 		// — including a return between the mint and the run. The one turn
-		// that keeps it past this point is an interrupted one: its marker is
-		// written by ProcessInput's loop after this returns, and it belongs to
-		// the turn it interrupted.
-		if !isTurnCancellation(ctx, err) {
+		// that keeps it past this point is one that ENDED in cancellation: its
+		// marker is written by ProcessInput's loop after this returns, and it
+		// belongs to the turn it interrupted. A turn that finished its work
+		// while its context happened to be cancelled writes no marker, so
+		// asking the context alone would leave the name standing with nothing
+		// left to claim it.
+		if !selfMintedNameOutlivesTurn(ctx, err) {
 			s.endSelfMintedTurn()
 		}
 	}()

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -179,5 +180,33 @@ func TestInterruptMarkerBelongsToTheInterruptedTurn(t *testing.T) {
 	}
 	if strings.TrimSpace(owner) == "" {
 		t.Fatal("unreachable")
+	}
+}
+
+// Whether the name outlives the turn is a question about how the turn ENDED,
+// not about the context it ran under. A context can be cancelled while the
+// turn completes anyway — a cancel landing between the last round and the
+// unwind — and such a turn writes no interrupt marker, so nothing would ever
+// claim the name it left standing. The end-to-end race cannot be forced
+// through the public path, so the rule is pinned where it is decided.
+func TestSelfMintedNameOutlivesOnlyAnInterruptedTurn(t *testing.T) {
+	t.Parallel()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	live := context.Background()
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{"finished under a cancelled context", cancelled, nil, false},
+		{"cancelled mid-turn", cancelled, context.Canceled, true},
+		{"failed for another reason", live, errors.New("provider exploded"), false},
+		{"finished cleanly", live, nil, false},
+	} {
+		if got := selfMintedNameOutlivesTurn(tc.ctx, tc.err); got != tc.want {
+			t.Errorf("%s: name outlives the turn = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
