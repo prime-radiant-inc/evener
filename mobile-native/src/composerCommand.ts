@@ -8,7 +8,7 @@ import {
   effortLabel,
   effortOptionLevels,
 } from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
-import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
+import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/protocol/composerInput";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
   ConversationClearActions,

@@ -36,7 +36,7 @@ import {
 	spliceSlashCommand,
 } from "../../cmd/evener-hub/frontend/src/protocol/slashCompletion";
 import { humanizeState } from "../../cmd/evener-hub/frontend/src/shell/rail/sessionState";
-import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
+import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/protocol/composerInput";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
