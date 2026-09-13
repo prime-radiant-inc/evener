@@ -683,6 +683,11 @@ stop_package_list_attempt() {
 # -timeout, -short, -parallel, -p, -coverprofile) belong to `go test` alone and
 # `go list` rejects several of them.
 #
+# The list is the build flags `go help build` documents on the pinned toolchain
+# that can change which packages exist: -tags, -mod, -modfile, -overlay, -pgo,
+# -trimpath. `-workfile` is not among them — go1.27.0 has no such flag, and
+# forwarding it would have made every enumeration fail on a caller who passed it.
+#
 # `-C` is not on the list and is refused at startup instead: it changes directory
 # before the command runs, and this runner has already changed into the module's
 # own directory to enumerate and test it, so honouring a caller's `-C` would move
@@ -699,11 +704,11 @@ package_list_build_flags() {
 			continue
 		fi
 		case "$flag" in
-		-tags | -mod | -modfile | -overlay | -pgo | -workfile)
+		-tags | -mod | -modfile | -overlay | -pgo)
 			out="$out $flag"
 			expect_value=1
 			;;
-		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -workfile=* | -trimpath)
+		-tags=* | -mod=* | -modfile=* | -overlay=* | -pgo=* | -trimpath)
 			out="$out $flag"
 			;;
 		esac
