@@ -177,10 +177,10 @@ func TestBreakerDispatch_SuccessClearsOnlyMatchingRun(t *testing.T) {
 		t.Fatalf("setup invocations = %d, want 5", fake.calls)
 	}
 
-	if streak, _, _ := r.breaker.check("read_transcript", []byte(`{"transcript_ref":"job:job_a"}`)); streak != 1 {
+	if streak, _, _ := r.breaker.check(newDispatchKey("read_transcript", []byte(`{"transcript_ref":"job:job_a"}`))); streak != 1 {
 		t.Fatalf("A's run after its own success = %d, want 1", streak)
 	}
-	if streak, _, _ := r.breaker.check("read_transcript", []byte(`{"transcript_ref":"job:job_b"}`)); streak != 2 {
+	if streak, _, _ := r.breaker.check(newDispatchKey("read_transcript", []byte(`{"transcript_ref":"job:job_b"}`))); streak != 2 {
 		t.Fatalf("B's run was altered by A's success: streak = %d, want 2", streak)
 	}
 
@@ -339,6 +339,24 @@ func TestFailureFingerprint_MeaningfulChangesAreDistinct(t *testing.T) {
 		if fp("read_transcript", c[0]) == fp("read_transcript", c[1]) {
 			t.Errorf("meaningful change %s -> %s collapsed", c[0], c[1])
 		}
+	}
+}
+
+// A root null body dispatches as an empty argument object: registry.executeCall
+// unmarshals it to a nil map and normalizes that to map[string]any{}, the same
+// effective call as a zero-length body. Its fingerprint must therefore match
+// "{}" rather than the literal null. A null nested inside an object or array
+// reaches the handler as a real value and stays distinct from the key being
+// absent.
+func TestFailureFingerprint_RootNullIsAnEmptyArgumentObject(t *testing.T) {
+	if got, want := fp("read_transcript", "null"), fp("read_transcript", "{}"); got != want {
+		t.Errorf("root null fingerprint = %q, want the empty-object fingerprint %q", got, want)
+	}
+	if fp("read_transcript", "null") != fp("read_transcript", "") {
+		t.Errorf("root null must fingerprint the same as the empty body")
+	}
+	if nested := fp("task_list", `{"update":[{"id":1,"value":null}]}`); nested == fp("task_list", `{"update":[{"id":1}]}`) {
+		t.Errorf("a nested null must stay distinct from the key being absent")
 	}
 }
 
