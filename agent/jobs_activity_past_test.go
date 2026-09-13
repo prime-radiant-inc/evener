@@ -1937,3 +1937,44 @@ func TestBuildActivityFullSnapshot_DepthPlaceholdersStopOnCancellation(t *testin
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
+
+// TestLoadSessionJobActivityTree_DepthContinuationAfterTheChildWasAlreadyRewritten
+// pins that naming a depth-truncated child's generations names the CURRENT
+// one. The number a fold last carried is not the number the next fold will:
+// a child folded earlier and rewritten since is one generation behind in the
+// cache until something looks at the file again. Minting that stale number
+// means the first resume discovers the rewrite, moves the generation, and
+// refuses a continuation that was minted after the rewrite — the false
+// rejection this whole series exists to remove.
+func TestLoadSessionJobActivityTree_DepthContinuationAfterTheChildWasAlreadyRewritten(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionIDs := depthChainFixture(t, stateDir, "depthstale")
+	rootID := sessionIDs[0]
+
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	cont, err := decodeActivityContinuation(depthBoundaryContinuation(t, tree), rootID)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The truncated child is folded by some other reader, then its journal is
+	// rewritten — both BEFORE the page that mints its continuation.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, cont.SessionID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("fold the child: %v", err)
+	}
+	rewritten := time.Unix(5_000_000, 0)
+	if err := os.Chtimes(filepath.Join(jobsDir(stateDir, cont.SessionID), "jobs.jsonl"), rewritten, rewritten); err != nil {
+		t.Fatalf("restamp the child journal: %v", err)
+	}
+
+	minted, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("page after the rewrite: %v", err)
+	}
+	token := depthBoundaryContinuation(t, minted)
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err != nil {
+		t.Fatalf("continuation minted after the rewrite was rejected: %v", err)
+	}
+}
