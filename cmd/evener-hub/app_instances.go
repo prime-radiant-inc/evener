@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -747,16 +748,21 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// so the caller can retry it. The reverse order would report a deletion
 	// that only half happened and leave the credential under a name nothing
 	// curates - invisible until a later instance of that name inherits it.
-	// What the cleanup is about to delete is captured first, because the
-	// write below can still fail: it leaves [providers.<name>] in place and
-	// tells the caller the removal failed, so the instance the caller still
-	// has must still authenticate. Capture and restore both sit inside this
-	// held lock, so no writer can slip between them.
+	// What the cleanup is about to delete is captured first, because either
+	// half of it can still fail - the cleanup itself, or the write below -
+	// and both leave [providers.<name>] in place and tell the caller the
+	// removal failed, so the instance the caller still has must still
+	// authenticate. Capture and restore both sit inside this held lock, so no
+	// writer can slip between them.
 	storedKey, hasStoredKey := c.auth.creds.Get(name)
-	oauthRecord, hasOAuth := c.capturedOAuthRecord(name)
-
-	if err := c.removeCredentials(name); err != nil {
+	oauthBytes, hasOAuth, err := c.captureOAuthFile(name)
+	if err != nil {
 		return err
+	}
+
+	removed, err := c.removeCredentials(name)
+	if err != nil {
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err)
 	}
 
 	delete(l.Providers, name)
@@ -766,30 +772,37 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		l.Default = ""
 	}
 	if err := c.writeLoadable(l); err != nil {
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthRecord, hasOAuth, err)
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err)
 	}
 	return c.reg.Reload()
 }
 
-// capturedOAuthRecord reads the OAuth record a removal's cleanup is about to
-// unlink, so a failure on the config side can write it back. A missing record
-// is (zero, false); a record that is present but unreadable (corrupt) is also
-// false - nothing can write those bytes back - so the removal proceeds and the
-// restore's error, if it comes to that, says the record could not be restored.
-func (c *hubInstancesController) capturedOAuthRecord(name string) (authopenai.AuthRecord, bool) {
-	record, err := c.auth.loadAuth(c.auth.stateDir, name)
-	if err != nil {
-		return authopenai.AuthRecord{}, false
+// captureOAuthFile reads the OAuth state file a removal's cleanup is about to
+// unlink, so a later failure can write those bytes back. It captures the raw
+// bytes rather than the parsed record because DeleteAuth deletes by path: a
+// record the hub cannot parse (corrupt) or validate is one it will still
+// delete, and only the bytes can put it back. A missing file is (nil, false,
+// nil); one that exists but cannot be read is refused here, before anything is
+// deleted, because the removal cannot promise to restore what it cannot read.
+func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, error) {
+	raw, err := os.ReadFile(authopenai.AuthFilePath(c.auth.stateDir, name))
+	if err == nil {
+		return raw, true, nil
 	}
-	return record, true
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
 }
 
 // restoreFailedRemoval puts back what the cleanup deleted after a failure that
 // left the instance authored, and folds whatever it could not restore into the
 // error the caller sees: the removal did not happen, so the instance must
 // still authenticate, and a caller told only that the removal failed would
-// have no way to know that it did not.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, record authopenai.AuthRecord, hasOAuth bool, cause error) error {
+// have no way to know that it did not. Its callers pass only the layers the
+// failure actually deleted, so this never rewrites - and never reports a
+// failure to rewrite - a credential that is still where it was.
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error) error {
 	var problems []string
 	if hasStoredKey {
 		if err := c.auth.setCredential(name, storedKey); err != nil {
@@ -797,7 +810,7 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		}
 	}
 	if hasOAuth {
-		if err := c.auth.saveAuth(c.auth.stateDir, name, record); err != nil {
+		if err := writeAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
 			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
 		}
 	}
@@ -805,6 +818,25 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		return cause
 	}
 	return fmt.Errorf("%w; the instance is still configured, but %s", cause, strings.Join(problems, " and "))
+}
+
+// writeAuthFile puts an OAuth state file back exactly as it was: 0600 like
+// SaveAuth writes, and synced, because what it restores is a credential file
+// whose loss is the reason it exists.
+func writeAuthFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // removeCredentials deletes the credential layers filed under a name whose
@@ -815,14 +847,30 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 // instance holding that name would inherit it. A missing entry is not a
 // failure: Store.Clear deletes and persists, and DeleteAuth reports not-found
 // as (false, nil).
-func (c *hubInstancesController) removeCredentials(name string) error {
+//
+// It reports which layers it actually deleted even when it fails, because its
+// caller restores exactly those: Store.Clear puts its own entry back when the
+// persist fails (nothing deleted), while a failed DeleteAuth leaves its file
+// in place - rewriting either would be a false alarm on a disk that is already
+// refusing writes.
+func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
+	var deleted deletedCredentials
 	if err := c.auth.clearCredential(name); err != nil {
-		return fmt.Errorf("remove %s: clear stored credential: %w", name, err)
+		return deleted, fmt.Errorf("remove %s: clear stored credential: %w", name, err)
 	}
+	deleted.storedKey = true
 	if _, err := c.auth.deleteAuth(c.auth.stateDir, name); err != nil {
-		return fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
+		return deleted, fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
 	}
-	return nil
+	deleted.oauthRecord = true
+	return deleted, nil
+}
+
+// deletedCredentials names which credential layers a removal's cleanup
+// actually removed, so a restore rewrites only those.
+type deletedCredentials struct {
+	storedKey   bool
+	oauthRecord bool
 }
 
 // describeImplicit names what makes an implicit instance exist, so the remove

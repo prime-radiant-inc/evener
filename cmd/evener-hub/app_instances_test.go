@@ -7,6 +7,7 @@ package hub
 // and environment, so nothing here reads the developer's machine.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -793,6 +794,81 @@ func TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails(t *testing.T
 	}
 	if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
 		t.Fatal("the instance left the registry even though the removal failed")
+	}
+}
+
+// The cleanup is two destructive steps, so its own failure has the same
+// asymmetry the config write has: the stored key is deleted before the OAuth
+// record is even attempted, and a failure on the second step leaves the
+// instance authored with the key already durable-gone. A retry cannot recover
+// it - creds.Get is empty by then - so the failed removal has to put it back.
+func TestInstances_RemoveRestoresTheStoredKeyWhenTheOAuthRecordCannotBeDeleted(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	f.ctl.auth.deleteAuth = func(string, string) (bool, error) { return false, errors.New("delete refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil || !strings.Contains(err.Error(), "delete refused") {
+		t.Fatalf("Remove = %v, want the OAuth-record cleanup failure", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the failed removal to have restored it", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record did not survive the failed removal: %v", loadErr)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
+		t.Fatal("the instance left the registry even though the removal failed")
+	}
+}
+
+// An OAuth record the hub cannot parse is still one DeleteAuth deletes by
+// path, so a rollback that re-encoded a parsed record could not put it back.
+// The capture is the file's bytes, which is what makes this case restorable.
+func TestInstances_RemoveRestoresACorruptOAuthRecordWhenTheConfigWriteFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	authPath := authopenai.AuthFilePath(f.stateDir, "work")
+	corrupt := []byte("this is not an auth record\n")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(authPath, corrupt, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the config write failure")
+	}
+	restored, readErr := os.ReadFile(authPath)
+	if readErr != nil {
+		t.Fatalf("the corrupt OAuth record was not restored: %v", readErr)
+	}
+	if !bytes.Equal(restored, corrupt) {
+		t.Fatalf("OAuth record bytes = %q, want the original %q", restored, corrupt)
 	}
 }
 
