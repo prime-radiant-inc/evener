@@ -1419,6 +1419,7 @@ export interface QueueState {
   ids?: string[];
   clientMutationIds?: string[];
   texts?: string[];
+  skillNames?: string[][];
 }
 
 export interface ReasoningSummaryDeltaParams {

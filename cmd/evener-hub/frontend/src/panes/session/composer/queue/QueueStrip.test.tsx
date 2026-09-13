@@ -641,8 +641,85 @@ describe("edit", () => {
       fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
     });
 
-    expect(onRestoreToComposer).toHaveBeenCalledWith("the full untruncated message");
+    expect(onRestoreToComposer).toHaveBeenCalledWith("the full untruncated message", undefined, undefined);
     await waitFor(() => expect(calls).toEqual(["restore", "cancelQueued"]));
+  });
+
+  test("editing a queued entry restores its skill selections as chips alongside the text", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: ["queued text"],
+          preview: ["queued text"],
+          skillNames: [["probe"]],
+        },
+      },
+    });
+    fake.on("turn/cancelQueued", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      removedText: "queued text",
+    }));
+    const onRestoreToComposer = vi.fn();
+    renderStrip(defaultProps({ onRestoreToComposer }));
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
+    });
+
+    expect(onRestoreToComposer).toHaveBeenCalledWith("queued text", undefined, ["probe"]);
+    await waitFor(() => {
+      expect(fake.calls.some((call) => call.method === "turn/cancelQueued")).toBe(true);
+    });
+  });
+
+  test("a skill-only queued entry (blank text) stays editable so its chips can be restored", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: ["[skill: probe]"],
+          skillNames: [["probe"]],
+        },
+      },
+    });
+    fake.on("turn/cancelQueued", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      removedText: "",
+    }));
+    const onRestoreToComposer = vi.fn();
+    renderStrip(defaultProps({ onRestoreToComposer }));
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    const editButton = within(row).getByRole("button", { name: /edit/i });
+    expect(isDisabled(editButton)).toBe(false);
+    await act(async () => {
+      fireEvent.click(editButton);
+    });
+
+    expect(onRestoreToComposer).toHaveBeenCalledWith("", undefined, ["probe"]);
   });
 
   // The restore runs after the row is locked, so a failure there owes the row

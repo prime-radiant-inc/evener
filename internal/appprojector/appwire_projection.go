@@ -1083,6 +1083,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 				IDs:               append([]string(nil), data.IDs...),
 				ClientMutationIDs: append([]string(nil), data.ClientMutationIDs...),
 				Texts:             append([]string(nil), data.Texts...),
+				SkillNames:        cloneSkillNames(data.SkillNames),
 			},
 		})}
 	case events.EventTaskUpdated:
@@ -2315,4 +2316,18 @@ func projectErrorCause(cause *events.ErrorCause) *appwire.DiagnosticCause {
 func eventData[T events.EventData](data events.EventData) T {
 	typed, _ := data.(T)
 	return typed
+}
+
+// cloneSkillNames deep-copies the per-entry skill-name lists a
+// QueueChangedData snapshot carries, so the wire projection never aliases
+// the daemon's queue state.
+func cloneSkillNames(names [][]string) [][]string {
+	if names == nil {
+		return nil
+	}
+	out := make([][]string, len(names))
+	for i, entry := range names {
+		out[i] = append([]string(nil), entry...)
+	}
+	return out
 }

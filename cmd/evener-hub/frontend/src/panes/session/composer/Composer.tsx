@@ -1030,17 +1030,29 @@ export function Composer({ ref }: ComposerProps) {
   // QueueStrip uses this behavior when a queued entry is moved back into
   // the composer for editing.
   //
-  // Deliberately typed to accept only `restoredText`, not the second
-  // `attachments` parameter QueueStripProps.onRestoreToComposer's own
-  // signature allows for - a queued entry's edit is a text-only recompose
-  // per parity (contracts-composer-queue-pending.md:70, parity-m5-
-  // composer.md:102): dropped image attachments surface via QueueStrip's
-  // own durable queue state, never restored here. Any attachments argument a
-  // caller passes is simply extra to a JS/TS call and never reaches this
-  // function's body.
-  function restoreTextToComposer(restoredText: string): void {
+  // `attachments` is accepted for signature symmetry but never restored: a
+  // queued entry's edit keeps image attachments out of the composer per
+  // parity (contracts-composer-queue-pending.md:70, parity-m5-
+  // composer.md:102) - dropped image attachments surface via QueueStrip's
+  // own durable queue state. `skillNames` restores the entry's selections
+  // as chips (union with the current draft's chips, deduped by name): a
+  // queued skill selection must survive the edit round-trip, not silently
+  // drop.
+  function restoreTextToComposer(
+    restoredText: string,
+    _attachments?: InputAttachment[],
+    restoredSkillNames?: readonly string[],
+  ): void {
     const merged = mergeDraftText(textRef.current, restoredText);
     textEditor.write(merged, merged.length);
+    if (restoredSkillNames !== undefined && restoredSkillNames.length > 0) {
+      let selections = skillNamesRef.current;
+      for (const name of restoredSkillNames) {
+        selections = addSkillSelection(selections, name);
+      }
+      editSkillNames(selections);
+      if (activeRecoveryIdRef.current === null) persistDraftSelections();
+    }
     textareaRef.current?.focus();
   }
 

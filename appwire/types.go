@@ -764,6 +764,13 @@ type QueueState struct {
 	IDs               []string `json:"ids,omitempty"`
 	ClientMutationIDs []string `json:"clientMutationIds,omitempty"`
 	Texts             []string `json:"texts,omitempty"`
+	// SkillNames is FIFO-aligned with Preview and carries each entry's
+	// canonical skill selections (empty slice for an entry with none), so
+	// editing or returning a queued entry restores its chips instead of
+	// silently dropping them. Absent on old daemons; clients must treat a
+	// missing SkillNames as "selections unavailable", never as "no
+	// selections".
+	SkillNames [][]string `json:"skillNames,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged

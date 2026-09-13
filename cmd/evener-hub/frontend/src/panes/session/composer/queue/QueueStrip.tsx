@@ -73,7 +73,10 @@ export interface QueueStripProps {
   // dropped images are surfaced as their own warning toast below). The
   // parameter is kept for signature symmetry with a general "restore to
   // composer" seam the integration may reuse for other callers.
-  onRestoreToComposer(text: string, attachments?: InputAttachment[]): void;
+  // `skillNames` carries the entry's canonical skill selections from the
+  // queue projection (QueueState.skillNames) so an edit restores its chips
+  // too - a queued {type:"skill"} item is otherwise unrecoverable.
+  onRestoreToComposer(text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): void;
   activeRecoveryId?: string;
   onEditRecovery?(record: MutationRecoveryRecord): void;
   // Called once a drain-as-steer intent commits to IndexedDB, so the
@@ -123,9 +126,9 @@ function recordContent(record: MutationOutboxRecord): { text: string; imageCount
 }
 
 // skillMarkers renders a record's canonical skill selections for display and
-// copy: the name is the selection's whole user-visible identity (the complete
-// selection distinguishable from typed text. Without it a skill-only record
-// previews blank and copies as an empty string.
+// copy: the name is the selection's whole user-visible identity - the part of
+// a queued entry that is distinct from its typed text. Without it a
+// skill-only record previews blank and copies as an empty string.
 function skillMarkers(names: readonly string[]): string {
   return names.map((name) => `[skill: ${name}]`).join(" ");
 }
@@ -229,7 +232,7 @@ export function QueueStrip({
     }
   }
 
-  async function handleEdit(index: number, entryId: string, fullText: string): Promise<void> {
+  async function handleEdit(index: number, entryId: string, fullText: string, skillNames?: readonly string[]): Promise<void> {
     setRowBusy(entryId, true);
     try {
       // FIRST - loser-safe: the user's text is safely in the composer
@@ -238,7 +241,7 @@ export function QueueStrip({
       // must not borrow the cancel's message below, and must leave the queued
       // entry alone rather than removing a message with nowhere to go.
       try {
-        onRestoreToComposer(fullText);
+        onRestoreToComposer(fullText, undefined, skillNames);
       } catch (err) {
         toasts.push("error", `Couldn't move this message to the composer: ${errorText(err)}`);
         return;
@@ -361,10 +364,13 @@ export function QueueStrip({
         {Array.from({ length: rowCount }, (_, index) => {
           const entryId = ids?.[index];
           const fullText = texts?.[index];
+          const entrySkillNames = queue?.skillNames?.[index];
           const displayText = truncateForDisplay(preview?.[index] ?? fullText ?? "");
           const busy = entryId !== undefined && busyEntryIds.has(entryId);
           const actionsAvailable = hasIds && entryId !== undefined;
-          const imageOnly = hasTexts && (fullText ?? "").trim() === "";
+          // A blank-text entry is uneditable only when it carries nothing
+          // else restorable - a skill-only entry's chips ARE the content.
+          const imageOnly = hasTexts && (fullText ?? "").trim() === "" && (entrySkillNames?.length ?? 0) === 0;
           const editAvailable = actionsAvailable && hasTexts && !imageOnly;
 
           return (
@@ -392,7 +398,9 @@ export function QueueStrip({
                   disabled={!editAvailable || busy}
                   disabledReason={editDisabledReason({ actionsAvailable, hasTexts, imageOnly })}
                   onClick={() => {
-                    if (entryId !== undefined && fullText !== undefined) void handleEdit(index, entryId, fullText);
+                    if (entryId !== undefined && fullText !== undefined) {
+                      void handleEdit(index, entryId, fullText, entrySkillNames);
+                    }
                   }}
                 />
                 <ActionButton
