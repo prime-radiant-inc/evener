@@ -289,6 +289,44 @@ test("a flush cannot settle while a submit is still in flight", async () => {
   expect(flushResolved).toBe(true);
 });
 
+// The flush above waits inside act(), so durable work with no completion left
+// parks the caller there until vitest abandons the whole test - and an
+// abandoned act() leaves React's act queue open for the rest of the FILE, so
+// every later render produces nothing and one stall becomes dozens of
+// unrelated failures (issue #1187). The per-round tripwire is what turns that
+// back into one named failure, in the test that caused it; without this test a
+// regression that clears the timer or swallows its rejection restores the hang
+// silently, and the only symptom is a file that fails 33 ways again.
+test("a flush that can never settle trips instead of hanging inside act", async () => {
+  let releaseSubmit: () => void = () => undefined;
+  const stalled = new Promise<void>((resolve) => {
+    releaseSubmit = resolve;
+  });
+  const submitted = submitWithPendingTracking(
+    { ref: "ref_a", method: "send", text: "never settles", onFailure: () => undefined },
+    () => stalled,
+  );
+
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    // Captured before the clock moves: the rejection lands while the timers
+    // advance, and a handler attached only afterwards is an unhandled
+    // rejection in that window.
+    const flushing = flushPendingTurnsProjectionForTests().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await flushing).toMatchObject({
+      message: expect.stringMatching(/projection work stalled: 1 operation\(s\) still unsettled after \d+ms/),
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+
+  releaseSubmit();
+  await submitted;
+  await flushPendingTurnsProjectionForTests();
 test("another tab's durable send is not claimed as this client's submission", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

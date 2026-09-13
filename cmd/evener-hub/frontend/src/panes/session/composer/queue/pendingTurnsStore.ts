@@ -91,6 +91,38 @@ function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
   });
 }
 
+// A round waits on real durable work, so its wall time scales with machine
+// load - but no amount of load turns work that has no completion left into
+// work that finishes. A test that stalls storage and then flushes without
+// releasing it parks HERE, inside the act() below, until vitest abandons the
+// whole test at its own timeout - and an abandoned act() leaves React's act
+// queue open for the rest of the FILE, so every later render produces nothing
+// and one hang becomes dozens of failures (issue #1187). This bound exists to
+// make that one named failure in the test that caused it, nothing else: it is
+// a tripwire for a stall, never pacing. The slowest round measured across the
+// whole web suite (10373 tests) under 32-way CPU contention was 165ms.
+const SETTLE_STALL_TRIPWIRE_MS = 4_000;
+
+async function awaitOutstandingProjectionWork(outstanding: Promise<unknown>[]): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const tripwire = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `pending-turns projection work stalled: ${outstanding.length} operation(s) still unsettled after ${SETTLE_STALL_TRIPWIRE_MS}ms - release whatever storage or transport this test is holding before flushing`,
+          ),
+        ),
+      SETTLE_STALL_TRIPWIRE_MS,
+    );
+  });
+  try {
+    await Promise.race([Promise.allSettled(outstanding), tripwire]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Awaits whatever projection work is outstanding right now and reports how
 // much that was. Callers repeat until it reports zero, flushing React in
 // between: the components start this work from effects, so only a flush can
@@ -99,7 +131,7 @@ function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
 // registered itself by the time the caller looks again.
 export async function settlePendingTurnsProjectionForTests(): Promise<number> {
   const outstanding = [...inFlightProjectionWork];
-  await Promise.allSettled(outstanding);
+  await awaitOutstandingProjectionWork(outstanding);
   await new Promise<void>((resolve) => {
     const hop = new MessageChannel();
     hop.port1.onmessage = () => {
