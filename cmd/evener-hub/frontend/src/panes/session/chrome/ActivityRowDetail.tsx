@@ -70,6 +70,20 @@ function clockFromMillis(millis: number): string {
   return formatClockTime(new Date(millis).toISOString()) ?? "";
 }
 
+// Two deliveries can land in the same millisecond and the timeline draws one
+// dot per retained instant, so the instant alone is not a unique React key.
+// The occurrence number disambiguates duplicates without dropping a real
+// delivery; the array index would also work but trips the lint rule for
+// order-dependent keys.
+function keyedInstants(instants: number[]): Array<{ millis: number; key: string }> {
+  const occurrences = new Map<number, number>();
+  return instants.map((millis) => {
+    const occurrence = (occurrences.get(millis) ?? 0) + 1;
+    occurrences.set(millis, occurrence);
+    return { millis, key: `${millis}:${occurrence}` };
+  });
+}
+
 // The delivery timeline: a rail with one dot per retained instant, positioned
 // proportionally between the earliest instant and `now`. Nothing here implies
 // a drop or a future firing - the only instants drawn are the ones the wire
@@ -77,6 +91,7 @@ function clockFromMillis(millis: number): string {
 function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; now: number }): JSX.Element | null {
   const instants = watchDeliveryInstants(watch);
   if (instants.length === 0) return null;
+  const dots = keyedInstants(instants);
   const earliest = instants[0] ?? 0;
   const span = now - earliest;
   const position = (millis: number): number => {
@@ -106,9 +121,9 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
           style={{ left: "100%" }}
           aria-hidden="true"
         />
-        {instants.map((millis) => (
+        {dots.map(({ millis, key }) => (
           <span
-            key={millis}
+            key={key}
             className={CLASS.timelineDot}
             data-testid="watch-timeline-dot"
             style={{ left: `${position(millis)}%` }}

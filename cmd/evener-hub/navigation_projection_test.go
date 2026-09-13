@@ -3,6 +3,8 @@ package hub
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -166,7 +168,7 @@ func TestNavigationSummaryDoesNotAggregateWatchesAcrossSessions(t *testing.T) {
 			},
 			{
 				ID: "session-b", Title: "b", Kind: "session", State: "idle",
-				Watches: []appwire.EvenerWatchInfo{{ID: "watch-b", Source: "output", Note: "receiver watch"}},
+				Watches: []appwire.EvenerWatchInfo{{ID: "watch-b", Source: "output", Note: "receiver watch", CreatedAt: "2026-09-12T10:00:00Z"}},
 			},
 		},
 	}
@@ -213,11 +215,12 @@ func TestNavigationSummaryDoesNotAggregateWatchesAcrossSessions(t *testing.T) {
 	}
 }
 
-// TestNavigationWatchDeliveryTimesBoundedLikeOtherWatchStrings proves the
-// delivery timeline gets the same per-string bound every other watch field
-// gets, so one pathological instant cannot dominate the row, while a normal
-// RFC3339 instant passes through unchanged.
-func TestNavigationWatchDeliveryTimesBoundedLikeOtherWatchStrings(t *testing.T) {
+// TestNavigationWatchDeliveryTimesDropsUnrepresentableInstants pins the fix for
+// the codec-break found in review: the web codec validates every delivery_times
+// entry as strict RFC3339, so TRUNCATING an over-long value with an ellipsis made
+// the whole watch-carrying snapshot fail to decode. An instant the codec cannot
+// represent is dropped instead; a normal RFC3339 instant passes through unchanged.
+func TestNavigationWatchDeliveryTimesDropsUnrepresentableInstants(t *testing.T) {
 	long := strings.Repeat("a", maxNavigationLabelRunes+64)
 	project := hubcore.TreeProject{
 		Key:  "project",
@@ -225,7 +228,7 @@ func TestNavigationWatchDeliveryTimesBoundedLikeOtherWatchStrings(t *testing.T) 
 		Current: []hubcore.TreeNode{{
 			ID: "session-a", Title: "a", Kind: "session", State: "idle",
 			Watches: []appwire.EvenerWatchInfo{{
-				ID: "watch-a", Source: "output",
+				ID: "watch-a", Source: "output", CreatedAt: "2026-09-12T10:00:00Z",
 				DeliveryTimes: []string{"2026-09-12T10:00:00Z", long},
 			}},
 		}},
@@ -242,11 +245,69 @@ func TestNavigationWatchDeliveryTimesBoundedLikeOtherWatchStrings(t *testing.T) 
 		t.Fatalf("projected rows = %+v, want one session with one watch", resource.Current.Sessions)
 	}
 	got := resource.Current.Sessions[0].Watches[0].DeliveryTimes
-	if len(got) != 2 || got[0] != "2026-09-12T10:00:00Z" {
-		t.Fatalf("DeliveryTimes = %+v, want the short instant carried unchanged", got)
+	if !reflect.DeepEqual(got, []string{"2026-09-12T10:00:00Z"}) {
+		t.Fatalf("DeliveryTimes = %+v, want only the representable instant", got)
 	}
-	if runes := len([]rune(got[1])); runes != maxNavigationLabelRunes || !strings.HasSuffix(got[1], "…") {
-		t.Fatalf("over-long instant truncated to %d runes (suffix %q), want %d runes ending in an ellipsis", runes, got[1][len(got[1])-3:], maxNavigationLabelRunes)
+}
+
+// A watch whose required created_at cannot be represented is dropped entirely:
+// created_at has no absent form in the codec, so carrying an ellipsized value
+// would reject the whole resource, and carrying a fabricated one would lie.
+func TestNavigationWatchProjectionDropsWatchWithUnrepresentableCreatedAt(t *testing.T) {
+	long := strings.Repeat("x", maxNavigationLabelRunes+64)
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{
+				{ID: "watch-ok", Source: "output", CreatedAt: "2026-09-12T10:00:00Z"},
+				{ID: "watch-bad", Source: "output", CreatedAt: long},
+			},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	rows := resource.Current.Sessions
+	if len(rows) != 1 {
+		t.Fatalf("sessions = %+v, want one", rows)
+	}
+	if len(rows[0].Watches) != 1 || rows[0].Watches[0].ID != "watch-ok" {
+		t.Fatalf("watches = %+v, want only watch-ok", rows[0].Watches)
+	}
+	if rows[0].Watches[0].CreatedAt != "2026-09-12T10:00:00Z" {
+		t.Fatalf("CreatedAt = %q, want the valid instant unchanged", rows[0].Watches[0].CreatedAt)
+	}
+}
+
+// validNavigationTimestamp must accept exactly what the web codec accepts. Both
+// read the same shared fixture list so the Go check cannot drift from the
+// codec's rfc3339Timestamp grammar.
+func TestValidNavigationTimestampMatchesCodecFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "navigation", "timestamps.json"))
+	if err != nil {
+		t.Fatalf("read codec fixture: %v", err)
+	}
+	var fixtures []struct {
+		Value string `json:"value"`
+		Valid bool   `json:"valid"`
+	}
+	if err := json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatalf("decode codec fixture: %v", err)
+	}
+	if len(fixtures) == 0 {
+		t.Fatal("codec fixture is empty")
+	}
+	for _, fixture := range fixtures {
+		if got := validNavigationTimestamp(fixture.Value); got != fixture.Valid {
+			t.Errorf("validNavigationTimestamp(%q) = %v, want the codec's %v", fixture.Value, got, fixture.Valid)
+		}
 	}
 }
 

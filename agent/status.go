@@ -259,7 +259,9 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	// Jobs.
 	if s.jobManager != nil {
 		ds.Jobs = projectJobStatusInfos(detailedStatusJobRecords(s.jobManager.list(listFilter{})))
-		ds.Watches = s.jobManager.liveWatchStatuses()
+		// Aggregate descendant managers too: a receiver watch on a descendant's
+		// job is held in the descendant's manager, not this session's.
+		ds.Watches = s.liveWatchStatuses()
 	}
 	if s.delegateController != nil {
 		rootID := s.delegateController.rootSessionID

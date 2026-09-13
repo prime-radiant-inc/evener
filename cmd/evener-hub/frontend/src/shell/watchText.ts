@@ -14,19 +14,26 @@ import type { NavigationWatchCadence, NavigationWatchSummary } from "../protocol
 // PERIOD is real, and that is what these labels carry.
 export function watchDurationLabel(seconds: number | undefined): string {
   if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return "";
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3600) {
-    const minutes = Math.floor(seconds / 60);
-    const rest = Math.round(seconds % 60);
+  // Round ONCE to the nearest second, then floor each unit from that total.
+  // Rounding a remainder while flooring the larger unit is what let 119.6s
+  // print "1m60s": the minutes stayed at 1 while the seconds rounded up to 60.
+  // A whole-second total both carries that rounding into the larger unit (120s
+  // reads "2m") and keeps every remainder below its unit (never "60s", "60m",
+  // "24h").
+  const total = Math.round(seconds);
+  if (total < 60) return `${total}s`;
+  if (total < 3600) {
+    const minutes = Math.floor(total / 60);
+    const rest = total % 60;
     return rest > 0 ? `${minutes}m${rest}s` : `${minutes}m`;
   }
-  if (seconds < 86400) {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.round((seconds % 3600) / 60);
+  if (total < 86400) {
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
     return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
   }
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.round((seconds % 86400) / 3600);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
   return hours > 0 ? `${days}d${hours}h` : `${days}d`;
 }
 

@@ -852,10 +852,12 @@ function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode;
 // The "+N older" note for rows the server capped away (hubcore's
 // maxSidebarSessionsPerTier). Its text starts at the same x as every other
 // row's, with no dot or chevron of its own. Project overflow rows activate a
-// bounded fetch for the capped-away tier rows; synthetic child overflow
-// remains an honest non-actionable count - and a capped watch list reuses the
-// same row with `suffix: "more watches"` instead of the tier cap's "older".
+// bounded fetch for the capped-away tier rows; a passive row (node.passive,
+// used by the local watch cap whose rows the wire already carried) is an
+// honest count with nothing to fetch, so it gets no click handler and the
+// Tree's own activation is a no-op for it (see Rail's isPassiveRailNode).
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
+  const interactive = node.passive !== true;
   return (
     <span className={CLASS.railRow}>
       {/* The treeitem's Enter handler is the keyboard path; this click makes
@@ -865,7 +867,7 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
       <span
         data-testid="rail-row-overflow"
         className={CLASS.overflow}
-        onClick={info.activate}
+        onClick={interactive ? info.activate : undefined}
       >{`+${node.count} ${node.suffix ?? "older"}`}</span>
     </span>
   );

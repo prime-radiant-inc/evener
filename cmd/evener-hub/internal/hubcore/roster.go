@@ -359,6 +359,14 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 				_, _ = h.Write([]byte(event))
 				_, _ = h.Write([]byte{0})
 			}
+			// DeliveryTimes feeds the activity panel's timeline, and the
+			// daemon-restore case rebuilds the ring empty. A delivery-only change
+			// (same count, new instants) must still move the fingerprint or that
+			// timeline never invalidates.
+			for _, at := range watch.DeliveryTimes {
+				_, _ = h.Write([]byte(at))
+				_, _ = h.Write([]byte{0})
+			}
 			_, _ = h.Write([]byte{0})
 		}
 	}
