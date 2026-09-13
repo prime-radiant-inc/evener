@@ -10,6 +10,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
+import type { AppwireClientLike } from "../protocol/clientLike";
 import { ClientNotReadyError, isStaleCursorError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
@@ -20,7 +21,6 @@ import {
   notificationRoutingKey,
   resolvePendingEscalation,
 } from "../protocol/reducer";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
   GoalSetResponse,

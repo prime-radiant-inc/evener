@@ -771,7 +771,11 @@ export function projectQueue(queue: Thread["evener"]["queue"]): MobileQueue {
   };
 }
 
-function projectUsage(evener: Thread["evener"]): MobileUsage {
+// projectUsage copies EvenerThread's usage aggregate and context fields into
+// MobileUsage. Values are passed straight through: an absent wire field stays
+// undefined rather than becoming a 0 that would read as a real measurement.
+// Shared with the activity service, which adds only durationMs on top.
+export function projectUsage(evener: Thread["evener"]): MobileUsage {
   const usage: EvenerUsage | undefined = evener.usage;
   return {
     inputTokens: usage?.inputTokens,

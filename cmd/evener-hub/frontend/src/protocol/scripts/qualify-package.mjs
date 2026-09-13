@@ -32,6 +32,7 @@ async function qualify() {
   const shippedModules = [
     "index",
     "client",
+    "clientLike",
     "errors",
     "transport",
     "types.gen",
@@ -114,6 +115,7 @@ async function qualify() {
   // check covers each module's packed .d.ts and not just its runtime half.
   const typeExports = [
     "AppwireClientOptions",
+    "AppwireClientLike",
     "WebSocketLike",
     "AskAnswerItem",
     "ActivityTree",
