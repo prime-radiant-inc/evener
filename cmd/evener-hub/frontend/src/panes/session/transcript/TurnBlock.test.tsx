@@ -668,6 +668,19 @@ test("a user-typed steer is a speaker row: it renders OUTSIDE the wrapper, becau
   expect(screen.queryByTestId("run-content")).toBeNull();
 });
 
+test("a human-note steer keeps its run row: the kind routes it to the divider, not the message view", () => {
+  // A human note rides the user-sourced steer path but the KIND routes it to
+  // SteeringDivider (SteeringItem's human-note branch) instead of
+  // UserMessageView. A divider is a run row: its rail icon pulls into the
+  // gutter with margin-left: -speaker-gutter, which only exists under
+  // .runContent - unwrapping it would pull the icon out of the column.
+  const items = [
+    item({ id: "st-note", type: "steering", text: "note to self", source: "user", steeringKind: "human-note" }),
+  ];
+  render(<TurnBlock turn={turn(items)} />);
+  expectInsideRunContent(screen.getByTestId("steering-item"));
+});
+
 test("agentMessage and reasoning render inside a run-content wrapper", () => {
   // At activity level reasoning=false hides reasoning items; use full level
   // (reasoning=true) so the think-block renders.

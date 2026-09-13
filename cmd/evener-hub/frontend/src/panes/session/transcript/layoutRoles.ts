@@ -36,7 +36,16 @@ export function rowRoleFor(item: ItemModel, opts: { opensExchange?: boolean }): 
   // indents (34 + 34) - seating the steer one full gutter right of every run
   // row it sits among, including a real prompt's own text. The role is still
   // answered by WHERE the row's content lands, not by what the wire calls it.
-  if (item.type === "steering" && item.source === "user") return "speaker";
+  //
+  // The human-note kind is the exception the renderer makes: SteeringItem
+  // routes that kind to the LABELED DIVIDER rather than the message view, and
+  // a divider is a run row - its rail icon pulls into the gutter with
+  // margin-left: -speaker-gutter, which only exists under .runContent's
+  // padding. So the condition asks the renderer's own question, kind included,
+  // and not just `source`.
+  if (item.type === "steering" && item.source === "user" && item.steeringKind !== "human-note") {
+    return "speaker";
+  }
   if (item.type === "agentMessage" && opts.opensExchange === true) return "speaker";
   return "run";
 }
