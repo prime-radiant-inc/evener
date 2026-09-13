@@ -16,12 +16,12 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
+import { clip, clipJobID, parseArgs, str } from "../../../../protocol/toolCallText";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
-import { clip, clipJobID, parseArgs, str } from "./helpers";
 import styles from "./jobWatch.module.css";
 
 const CLASS = {

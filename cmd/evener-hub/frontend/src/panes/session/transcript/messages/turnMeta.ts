@@ -9,9 +9,10 @@
 // "$0.0234"). turnUsageTokens (chrome/detailsAccounting.ts) owns the usage
 // narrowing, shared with the session-details panel's own token derivation so
 // the two surfaces read one turn's tokens by exactly one rule.
+
+import { formatDurationMs, formatTokenCount } from "../../../../protocol/displayFormat";
 import type { TurnModel } from "../../../../protocol/model";
 import { turnUsageTokens } from "../../chrome/detailsAccounting";
-import { formatDurationMs, formatTokenCount } from "./format";
 
 export interface TurnMetaParts {
   duration?: string;

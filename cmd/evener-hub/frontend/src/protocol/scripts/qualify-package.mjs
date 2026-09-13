@@ -26,10 +26,11 @@ async function qualify() {
     ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
     consumerDir,
   );
-  // Every module the package ships. docContent.ts is here too: only its
-  // readDocFile calls global fetch, and it does so at call time, so the module
-  // loads and its URL builders, size cap and error type run in a bare Node
-  // consumer. The runner therefore never calls readDocFile.
+  // Every module the package ships. docContent.ts is here too: it names no
+  // browser global at all - readDocFile takes the host's DocPort - so the
+  // module loads and its URL builders, size cap and error type run in a bare
+  // Node consumer. The runner never calls readDocFile: a port implies a
+  // request, and qualification makes none.
   const shippedModules = [
     "index",
     "client",
@@ -38,9 +39,13 @@ async function qualify() {
     "transport",
     "types.gen",
     "askAnswers",
+    "askShared",
+    "deriveAskQuestions",
+    "attachmentMarkers",
     "activityData",
     "activityList",
     "activityMerge",
+    "activityRows",
     "itemFailure",
     "jobOutput",
     "model",
@@ -49,6 +54,10 @@ async function qualify() {
     "sessionErrors",
     "stableDelegate",
     "docContent",
+    "submitRouting",
+    "displayFormat",
+    "toolCallText",
+    "catalogCommands",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -74,6 +83,10 @@ async function qualify() {
     "sessionActionHeadline",
     "rpcURLFromLocation",
     "composeAskAnswers",
+    "parseAskUserQuestions",
+    "answeredAskUserSuffix",
+    "liveAskQuestions",
+    "translateAttachmentMarkers",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
     "STEERING_KINDS",
@@ -90,6 +103,10 @@ async function qualify() {
     "ActivityList",
     "fenceRootSession",
     "graftContinuationTree",
+    "foldRowID",
+    "jobIsFailed",
+    "activityDelegateState",
+    "buildActivityRows",
     "hasItemFailure",
     "hasErrorText",
     "hasFailureStatus",
@@ -115,6 +132,31 @@ async function qualify() {
     "DocFileError",
     "docFileRawURL",
     "docImageURL",
+    "decideSubmitRoute",
+    "decideSteerRoute",
+    "isTurnActive",
+    "formatTokenCount",
+    "formatDurationMs",
+    "formatCharCount",
+    "formatClockTime",
+    "formatClockTimeSeconds",
+    "formatElapsed",
+    "firstLine",
+    "splitMandate",
+    "plainQuoteLine",
+    "clip",
+    "clipJobID",
+    "tailSlice",
+    "tailFold",
+    "formatToolDuration",
+    "formatByteCount",
+    "lineCount",
+    "parseArgs",
+    "parseJSONObject",
+    "trailingBracketFooter",
+    "str",
+    "slashCommandInvocation",
+    "visibleCatalogCommands",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -123,8 +165,13 @@ async function qualify() {
     "AppwireClientLike",
     "WebSocketLike",
     "AskAnswerItem",
+    "AskUserQuestion",
+    "AskQuestionRef",
+    "MarkerAttachment",
+    "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
+    "ActivityRow",
     "ItemFailureSignals",
     "JobLogTail",
     "ThreadModel",
@@ -132,6 +179,8 @@ async function qualify() {
     "SendQueueAvailability",
     "StableDelegateState",
     "DocFileContent",
+    "SubmitRoute",
+    "SteerRoute",
   ];
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
@@ -139,6 +188,16 @@ async function qualify() {
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
+const askItem = {
+  id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
+  argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
+};
+assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
+assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
+assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
+assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
+assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.equal(new client.WireError("nope", -32000).code, -32000);
 assert.equal(client.errorText(new Error("boom")), "boom");
 assert.equal(client.errorKind(new Error("boom")), "unknown");
@@ -162,6 +221,10 @@ assert(Array.isArray(client.defaultExpandedIDs(tree)));
 assert.equal(client.isActivityFailure("failure", undefined), true);
 assert.equal(client.fenceRootSession(session, session).sessionId, "thread");
 assert.equal(client.graftContinuationTree(tree, "session:thread", tree).revision, 1);
+assert.equal(client.foldRowID("session:thread"), "session:thread:inactive-fold");
+assert.deepEqual(client.buildActivityRows(tree, new Set()), []);
+assert.equal(client.jobIsFailed({ terminal: true, outcome: "failure" }), true);
+assert.equal(client.activityDelegateState({ kind: "delegate", type: "task", child: session }).failed, false);
 assert.equal(client.hasItemFailure({ status: "completed", exitCode: 1 }), true);
 assert.equal(client.hasFailureStatus({ status: "interrupted" }), true);
 assert.equal(client.hasErrorText({ error: "  " }), false);
@@ -175,9 +238,34 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
-assert.equal(client.docFileRawURL("s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
+assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
+assert.equal(client.isTurnActive("active", "turn_1"), true);
+assert.equal(client.formatTokenCount(41200), "41k");
+assert.equal(client.formatDurationMs(1500), "1.5s");
+assert.equal(client.formatCharCount(2500), "2.5k chars");
+assert.equal(client.formatClockTime(undefined), undefined);
+assert.equal(client.formatClockTimeSeconds("not a timestamp"), undefined);
+assert.equal(client.formatElapsed(65000), "1m05s");
+assert.equal(client.firstLine("\\n  hello  \\n", 20), "hello");
+assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest: "rest" });
+assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
+assert.equal(client.slashCommandInvocation({ name: "plan", source: "plugin", pluginName: "acme" }), "/acme:plan");
+assert.deepEqual(client.visibleCatalogCommands([{ name: "plan", source: "plugin", pluginName: "acme" }], new Set()), []);
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
+assert.equal(client.clip("hello", 3), "hel\u2026");
+assert.equal(client.clipJobID("job"), "job");
+assert.equal(client.tailSlice("hello", 2), "lo");
+assert.equal(client.tailFold("hello", 99), "hello");
+assert.equal(client.formatToolDuration(0), "1ms");
+assert.equal(client.formatByteCount(1), "1 byte");
+assert.equal(client.lineCount("a\\nb\\n"), 2);
+assert.deepEqual(client.parseArgs("not json"), {});
+assert.equal(client.parseJSONObject("[]"), undefined);
+assert.equal(client.trailingBracketFooter("done [exit 0]"), "exit 0");
+assert.equal(client.str({ path: "/tmp" }, "path"), "/tmp");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
@@ -194,6 +282,36 @@ assert.equal(activity.getSnapshot().tree, null);
 const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
       cjsTypeUses: `const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" }); void app;`,
       smoke: rootSmokeCalls,
+    },
+    // The doc-pane data layer, published as its own specifier because
+    // readDocFile is not a root export: it needs a fetch, and a consumer that
+    // wants to substitute one (or spy on the module) needs a real subpath to
+    // import, which a root re-export cannot give it.
+    "./docContent": {
+      values: ["DOC_FILE_MAX_BYTES", "DocFileError", "docFileRawURL", "docImageURL", "readDocFile"],
+      types: ["DocFetch", "DocFileContent", "DocFileErrorKind", "DocPort", "DocResponseLike"],
+      esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
+const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
+      cjsTypeUses: `const fetchDoc: client.DocFetch = async (url: string) => {
+  void url;
+  throw new client.DocFileError("error", 500);
+};
+const port: client.DocPort = { origin: "https://hub.example", fetch: fetchDoc }; void port;`,
+      // The URL builders and the size cap are the whole callable surface here:
+      // readDocFile needs a port, and qualification makes no requests, so it is
+      // checked for presence and its behavior is covered by unit tests. The
+      // builders are called with both bases the two adapters supply, so the
+      // same-origin web string and the native absolute URL are both qualified.
+      smoke: `assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
+assert.equal(client.docImageURL("", "s", "p"), "/doc/image?session=s&path=p");
+assert.equal(
+  client.docFileRawURL("https://hub.example", "s", "p"),
+  "https://hub.example/doc/file?format=raw&session=s&path=p",
+);
+assert.equal(client.docImageURL("https://hub.example", "s", "p"), "https://hub.example/doc/image?session=s&path=p");
+assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
+assert.equal(typeof client.readDocFile, "function");
+`,
     },
   };
   const publishedSpecifiers = Object.keys(packageManifest.exports);

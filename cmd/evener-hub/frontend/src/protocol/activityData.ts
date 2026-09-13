@@ -196,7 +196,7 @@ type ActivityIdentity =
   | { kind: "delegate"; delegateId: string }
   | { kind: "shell"; jobId: string };
 
-type ActivityNodeLike = ActivityIdentity | ActivitySessionNode | ActivityShellEntry | ActivityDelegateEntry;
+export type ActivityNodeLike = ActivityIdentity | ActivitySessionNode | ActivityShellEntry | ActivityDelegateEntry;
 
 type TreeIndex = {
   ids: Set<string>;

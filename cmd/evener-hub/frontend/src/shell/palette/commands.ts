@@ -9,6 +9,7 @@
 // open) for an idle-guarded action or a Conflict, or as a useToasts() toast
 // for a fire-and-report action - never a silent swallow.
 
+import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
 import type { ThreadModel } from "../../protocol/model";
 import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
 import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
@@ -26,7 +27,6 @@ import { effortLabel, effortOptionLevels } from "../reasoningEffort";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
-import { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 import { commandScore } from "./commandScore";
 import { focusedModel, hasActiveTurn, type OnPage, type PaletteContext } from "./paletteContext";
 import { readRecentCommandIds } from "./recentCommands";
