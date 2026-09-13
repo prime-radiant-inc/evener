@@ -1,4 +1,5 @@
 import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, useRef } from "react";
+import type { EntityView } from "../protocol/entityView";
 import type { ThreadModel } from "../protocol/model";
 import { beginDisclosureBaseline } from "../widgets/disclosure/disclosureStore";
 import {
@@ -26,6 +27,8 @@ export interface TranscriptRenderContextValue {
   readonly fullBaselineGeneration: number;
   /** Snapshot supplied by the owning transcript; never read from threadsStore. */
   readonly thread?: ThreadModel;
+  /** Shared entity index supplied by the owning transcript. */
+  readonly entities?: ReadonlyMap<string, EntityView>;
 }
 
 export interface TranscriptRenderContextInput {
@@ -39,6 +42,7 @@ export interface TranscriptRenderContextInput {
   eligibleDisclosureIds?: readonly string[];
   fullBaselineGeneration?: number;
   thread?: ThreadModel;
+  entities?: ReadonlyMap<string, EntityView>;
 }
 
 export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
@@ -84,6 +88,7 @@ const DEFAULT_CONTEXT: TranscriptRenderContextValue = {
   eligibleDisclosureIds: [],
   fullBaselineGeneration: 0,
   thread: undefined,
+  entities: undefined,
 };
 
 const TranscriptRenderContext = createContext<TranscriptRenderContextValue | null>(null);
@@ -125,6 +130,7 @@ export function createTranscriptRenderContext(input: TranscriptRenderContextInpu
     eligibleDisclosureIds,
     fullBaselineGeneration: input.fullBaselineGeneration ?? 0,
     thread: input.thread,
+    entities: input.entities,
   };
 }
 
@@ -157,6 +163,7 @@ export function TranscriptRenderProvider({
   eligibleDisclosureIds,
   fullBaselineGeneration,
   thread,
+  entities,
 }: TranscriptRenderProviderProps) {
   const semanticConfig = normalizeConfig(config ?? DEFAULT_CONFIG);
   const semanticMetadata = metadataFor(semanticConfig, metadata ?? projectedMetadata ?? projection?.metadata);
@@ -173,13 +180,20 @@ export function TranscriptRenderProvider({
     semanticGeneration,
   ].join("\0");
   const semanticContextRef = useRef<
-    { key: string; thread: ThreadModel | undefined; context: TranscriptRenderContextValue } | undefined
+    | {
+        key: string;
+        thread: ThreadModel | undefined;
+        entities: ReadonlyMap<string, EntityView> | undefined;
+        context: TranscriptRenderContextValue;
+      }
+    | undefined
   >(undefined);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: semanticKey covers semantic display values; thread identity refreshes snapshot-derived summaries
+  // biome-ignore lint/correctness/useExhaustiveDependencies: semanticKey covers semantic display values; thread and entity-map identities refresh snapshot-derived inputs
   const context = useMemo(() => {
     if (value !== undefined) return value;
     const previous = semanticContextRef.current;
-    if (previous?.key === semanticKey && previous.thread === thread) return previous.context;
+    if (previous?.key === semanticKey && previous.thread === thread && previous.entities === entities)
+      return previous.context;
     const next = createTranscriptRenderContext({
       config: semanticConfig,
       metadata: semanticMetadata,
@@ -188,10 +202,11 @@ export function TranscriptRenderProvider({
       disclosureScope: semanticScope,
       fullBaselineGeneration: semanticGeneration,
       thread,
+      entities,
     });
-    semanticContextRef.current = { key: semanticKey, thread, context: next };
+    semanticContextRef.current = { key: semanticKey, thread, entities, context: next };
     return next;
-  }, [semanticKey, thread, value]);
+  }, [semanticKey, thread, entities, value]);
   const full = isFullConfig(context.config);
   const previous = useRef<{ scope: string; full: boolean; generation: number; eligible: string } | undefined>(
     undefined,
