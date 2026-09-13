@@ -39,18 +39,23 @@
 // with no hover to reveal them).
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-
+// The watch vocabulary lives in shell/watchText.ts so the session panel's pure
+// row model can import it without pulling this React module (and every widget
+// stylesheet) into its own graph. Re-exported here so the rail's existing
+// callers and tests keep their import path.
+import {
+  watchArmedLabel,
+  watchCadenceLabel,
+  watchDurationLabel,
+  watchGloss,
+  watchTitle,
+} from "../../protocol/watchText";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
-// The watch vocabulary lives in shell/watchText.ts so the session panel's pure
-// row model can import it without pulling this React module (and every widget
-// stylesheet) into its own graph. Re-exported here so the rail's existing
-// callers and tests keep their import path.
-import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, watchTitle } from "../watchText";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {

@@ -26,6 +26,7 @@
     "composerInput.ts",
     "activityData.ts",
     "activityRows.ts",
+    "watchText.ts",
     "activityList.ts",
     "activityMerge.ts",
     "itemFailure.ts",

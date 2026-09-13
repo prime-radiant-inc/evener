@@ -5,7 +5,6 @@
 // Sessions never become rows — the panel header covers the root and a delegate
 // row stands in for its child session.
 
-import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchTitle } from "../shell/watchText";
 import {
   type ActivityDelegate,
   type ActivityEntry,
@@ -22,6 +21,7 @@ import {
 import { formatClockTime } from "./displayFormat";
 import { stableDelegateDisplayStatus } from "./stableDelegate";
 import type { NavigationWatchSummary } from "./types.gen";
+import { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchTitle } from "./watchText";
 
 export interface ActivityRowBase {
   id: string;

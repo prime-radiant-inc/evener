@@ -6,7 +6,7 @@
 // typechecks as part of its own build, so importing these from the rail's React
 // component file dragged every widget stylesheet into that graph - a dependency
 // the mobile check rejects, correctly. Keep this file importable from anywhere.
-import type { NavigationWatchCadence, NavigationWatchSummary } from "../protocol/types.gen";
+import type { NavigationWatchCadence, NavigationWatchSummary } from "./types.gen";
 
 // A watch's cadence in the rail's compact shorthand: seconds in, "10m" out.
 // Deliberately coarse (no "in 4m", no countdown): the runtime keeps a ticker,
