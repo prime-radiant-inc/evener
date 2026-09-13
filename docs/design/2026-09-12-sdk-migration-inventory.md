@@ -324,7 +324,7 @@ not move as-is. Reasons, in order of weight:
 Cheapest first step either way: put the unpacked `protocol/*.ts` modules into
 the build and move `AppwireClientLike` out of `protocol/testing/`. That alone
 converts 3,502 lines from "in the folder" to "in the package" and gives every
-later PR a place to land. Both are now written: see "Since this was written".
+later PR a place to land. Both have since been written — see "Delta since baseline".
 
 ## 7. Counts
 
@@ -354,7 +354,6 @@ Statuses observed at `99fa1882f`; re-query before acting.
 | A5 #1186 | `2245f9715` | Deleted `mobile/src/dev/conversationFixtures.ts`, so §4's nine-module table is one module ahead of reality and `mobile/src` is 6,841 lines, not 7,615. Also widened `mobile-native` typechecking over all of `mobile/src`, closing the gap that let a dead file with dangling imports survive |
 | B1 #1189 | `27503c07d` | `files` 17 → **18**: `itemFailure.ts` added. The web and native settled-item predicates were identical and both now call it. It also closed the third, divergent predicate recorded in §3: `toolRenderers.ts:190-193` now delegates the shared half to `hasItemFailure` and keeps only the descriptor half, so issues #1190 and #1197 are closed. That was plan row B1b; it never needed its own PR |
 | B3b #1203 | `4da382482` | Native's two `projectUsage` copies collapsed to one. That DUPLICATED row is closed; the count in §7 is the baseline count and is not decremented |
-
 | A3b #1206 | `99fa1882f` | Exports from the root the twelve `errors` helpers the apps import, which is what makes the plan's A4 rewrite compile. `chunkViewBackingForTests` and `readDocFile` are deliberately excluded |
 
 A3 and A4 are unstarted and block all of phase C.
