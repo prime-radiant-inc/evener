@@ -32,6 +32,14 @@ import {
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
+import {
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  spliceSlashCommand,
+} from "../../../protocol/slashCompletion";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
@@ -80,14 +88,6 @@ import {
 import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import {
-  filterSlashMenuItems,
-  mergeSlashCommands,
-  parseSlashToken,
-  type SlashMenuItem,
-  type SlashToken,
-  spliceSlashCommand,
-} from "./slashCompletion";
 import { recordStoplessComposer } from "./stoplessComposer";
 
 export interface ComposerProps {

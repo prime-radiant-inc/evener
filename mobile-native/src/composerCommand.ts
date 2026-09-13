@@ -2,7 +2,7 @@ import {
   findBuiltinArgument,
   matchBuiltinInvocation,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/builtinInvocation";
-import { mergeSlashCommands } from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
+import { mergeSlashCommands } from "../../cmd/evener-hub/frontend/src/protocol/slashCompletion";
 import type { ThreadClearResponse } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import {
   effortLabel,
