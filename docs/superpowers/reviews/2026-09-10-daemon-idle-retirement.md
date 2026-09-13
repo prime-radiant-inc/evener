@@ -1597,3 +1597,61 @@ none touch the retirement lifecycle. Style notes: the plan's `awaitTurnSettled` 
 Plan tasks 1–13 are now complete and accepted. The two branch-level findings above, plus the hardening list
 accumulated across every task, must be cleared before the branch merges — `make lint` remediation first, since
 it is what makes the canonical gate red. The branch is not merged, and no binary has been installed.
+
+### Branch remediation — ACCEPTED (`b7f336eb71` + `39eaf2b803`)
+
+Clears the two blockers that made the canonical merge gate red. Both were recorded when Task 13 was accepted.
+
+**Blocker B1 — the branch's own lint debt.** `make merge-approval-gate` exited 2 in `lint-golangci` on 74
+findings (root 14, `agent` 60). Fixed in `b7f336eb71` (25 files, +140/−111). The writer's Step 0 settled the
+scope question decisively: a detached scratch worktree at the branch point `2664cc881d` runs `make lint` with
+exit 0 and all nine sub-targets passing, so the base is lint-clean and **every one of the 74 findings was this
+branch's own debt**. The "pre-existing" framing in Task 13's report was wrong, as the parent ruled.
+
+**Blocker B2 — a load-sensitive flake in Task 8's test.** `TestServeRetirementManualTimerSingleOwner` failed
+about one combined run in four. Fixed in `39eaf2b803` (`cmd/evener/serve_retirement_test.go`, +50) by adding
+`awaitRetirementSettled`, a bounded state condition-watch that waits until the daemon's own published lifecycle
+reports `phase == resident`, no blockers, and an armed deadline, held continuously for 500 ms with a 15 s
+loud-failure tripwire. Diagnosis confirmed rather than assumed: `consumeRetirementClaim` emits `claim_consumed`
+at its top (`serve.go:786`) before any blocking call, so "never observed" means the claim was never granted, and
+`TryClaim(manual=true)` returns nil immediately while work is in flight or evidence finds blockers. The daemon
+was correctly refusing to retire a session with unsettled work — a refusal, not a hang, and not a product
+defect. The writer widened the gate to all four retirement triggers in the file after reproducing the identical
+hole in `TestServeRetirementAutomaticExpiryReachesRelease`. No production file changed.
+
+**Parent verification.**
+
+- Canonical `env ROOT_FULL=1 make merge-approval-gate`: **exit 0**, 241 s, under ambient load ~10 with no
+  artificial load added — lint 9/9 sub-targets PASS, build ok, test 8/8 module streams PASS, zero failure
+  markers. This is the first green canonical gate on this branch.
+- `lint-golangci` returned in 2 s there, i.e. a cache hit, so it was not treated as sufficient. A **cold-cache**
+  run (`GOLANGCI_LINT_CACHE` pointed at a fresh directory, bypassing the worktree's shared cache) reported
+  `0 issues.` for the root module and `0 issues.` for the agent module, in 88 s of real analysis. B1 is closed.
+- The combined focused gate `go test -race ./cmd/evener-hub ./cmd/evener -run
+  'TestDaemonRetirement|TestServeRetirement' -count=1` ran **5/5 green**, plus a verbose run showing the same
+  test set (23 PASS / 0 FAIL / 3 SKIP, including both `TestServeRetirementManualTimerSingleOwner` subtests).
+- No assertion was weakened and no test was skipped: test files are +88/−88, with zero `t.Skip` added or
+  removed anywhere in the remediation, and `git diff --check` is clean.
+
+**Changes the parent reviewed individually.** The two `gocritic deferInLoop` fixes are the only
+behaviour-adjacent production changes, and they are semantically equivalent: each collects
+`plans.retirementRelease` into a slice and runs them LIFO in one deferred closure via `slices.Backward` instead
+of `defer` inside the loop. The replaced per-iteration defers also ran LIFO at function return with the same
+per-iteration binding, so hold-until-return, release-exactly-once and ordering are preserved, including on early
+return. The two assertion-adjacent test removals are genuine lint conversions — the `sloppyTypeAssert` fix drops
+redundant `.(execenv.ExecutionEnvironment)` casts while keeping `got != wantPolicy → t.Fatalf`, and the QF1003
+fix turns an `if/else if` into an equivalent `switch` with unchanged bodies. The four `//nolint:nilerr`
+suppressions were checked at the source: `retentionSet` is assigned `true` at exactly one site
+(`agent/execenv/scratch_retention.go:25`) and never reset, and the getter errors only when it is false, so the
+two read-back branches really are unreachable after a successful set; the other two encode the documented
+"source with no durable identity is a no-op". Each suppression is justified rather than concealing a bug. The
+errcheck fixes keep the existing `_ =` idiom, and the `Close` errors are genuinely non-actionable after the
+operation has resolved.
+
+**New hardening-list item.** The writer's first canonical run was red (exit 2) on `ROOT_FULL=1 make test`
+flaking in Task 13's own `TestDaemonRetirementProcessAdmittedWorkResetsInterval`
+(`daemon_retirement_e2e_test.go:1368`) hitting the 90 s `daemonRetirementWatchdog` under artificial load; the
+same commit passed on re-run. That is load-sensitivity in the Task 13 e2e tests' watchdog, distinct from the
+serve flake this unit fixed, and it is a robustness item rather than a correctness defect.
+
+Branch HEAD after this unit: `39eaf2b803`. Still unmerged; nothing installed.
