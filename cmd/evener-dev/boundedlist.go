@@ -76,6 +76,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.stdout = out.Bytes()
 		result.err = err
 		result.exitCode = exitCodeOf(err)
+		stopSurvivors(cmd, result.pgid, grace, stderr)
 		return result
 	case <-time.After(timeout):
 	}
@@ -91,9 +92,38 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		<-done
 	}
 	reaped.Store(true)
+	stopSurvivors(cmd, result.pgid, grace, stderr)
 	result.stdout = out.Bytes()
 	result.exitCode = 1
 	return result
+}
+
+// stopSurvivors stops whatever is still in the command's process group once the
+// leader is gone. The leader being reaped says nothing about the group: a
+// leader that handles SIGTERM and exits can leave a child that ignores it, and
+// that child goes on holding the build and module cache locks.
+//
+// Signalling a group id whose leader has been reaped is safe exactly while the
+// group is not empty. A pid cannot be reused while it is still a live group's
+// id, so any answer to kill(-pgid, 0) other than ESRCH means the group is the
+// one this attempt created -- and if the answer is ESRCH there is nobody to
+// signal and nothing is sent.
+func stopSurvivors(cmd *exec.Cmd, pgid int, grace time.Duration, stderr io.Writer) {
+	if pgid == 0 || !processGroupExists(pgid) {
+		return
+	}
+	_, _ = fmt.Fprintf(stderr, "bounded-list: %s left processes running in its group; stopping them.\n", cmd.Path)
+	stopProcessGroup(cmd, false)
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !processGroupExists(pgid) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processGroupExists(pgid) {
+		stopProcessGroup(cmd, true)
+	}
 }
 
 func exitCodeOf(err error) int {
@@ -126,8 +156,8 @@ func boundedList(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "bounded-list: give it a command to run, after --")
 		return 2
 	}
-	if *attempts < 1 || *timeout <= 0 {
-		_, _ = fmt.Fprintln(stderr, "bounded-list: -attempts must be at least 1 and -timeout positive")
+	if *attempts < 1 || *timeout <= 0 || *grace <= 0 {
+		_, _ = fmt.Fprintln(stderr, "bounded-list: -attempts must be at least 1, and -timeout and -grace positive")
 		return 2
 	}
 	for attempt := 1; attempt <= *attempts; attempt++ {

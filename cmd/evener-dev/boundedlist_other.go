@@ -11,3 +11,6 @@ import "os/exec"
 func isolateProcessGroup(*exec.Cmd) bool { return false }
 
 func stopProcessGroup(cmd *exec.Cmd, _ bool) { _ = cmd.Process.Kill() }
+
+// Without process groups there is no group to survive the leader.
+func processGroupExists(int) bool { return false }

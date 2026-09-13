@@ -34,11 +34,17 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	return run(args[1:])
 }
 
-func usage(w io.Writer) {
+// SubcommandNames lists this package's subcommands in sorted order, so that a
+// caller printing its own help does not hand-copy a list that then goes stale.
+func SubcommandNames() []string {
 	names := make([]string, 0, len(subcommands))
 	for name := range subcommands {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	_, _ = fmt.Fprintf(w, "usage: evener dev <subcommand> [args]\nsubcommands: %s\n", strings.Join(names, " "))
+	return names
+}
+
+func usage(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "usage: evener dev <subcommand> [args]\nsubcommands: %s\n", strings.Join(SubcommandNames(), " "))
 }
