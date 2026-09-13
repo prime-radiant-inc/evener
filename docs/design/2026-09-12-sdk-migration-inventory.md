@@ -24,8 +24,10 @@ PACKAGE CANDIDATE (2 consumers) only if
 **Consumers are counted by direct import:** a module has two consumers when both
 trees name it in an import statement of their own. Transitive reach does not
 count, and neither does a type-only import — neither survives to run time, and
-neither is evidence that the second tree depends on the module's behaviour. All
-33 such rows were re-checked this way and all 33 hold. Line counts are non-test lines at the stated
+neither is evidence that the second tree depends on the module's behaviour.
+**34 such rows** were re-checked this way at the `f2599d1ed` re-audit and all 34
+held; **32 today**, after `sendQueueAvailability.ts` left the set in round 23 and
+`deriveAskQuestions.ts` in round 26. Line counts are non-test lines at the stated
 commit. Where I am unsure I say so in the row.
 
 ## 0. What the package was at the baseline
@@ -71,8 +73,12 @@ how. Fact 4 still holds.
    only **25** imported `AppwireClientLike` itself; the rest import `FakeClient`
    and keep that import wherever the type moves. **A2 (#1188) closed this,
    merged as `3bf357337`:** the type is declared in `protocol/clientLike.ts`, exported from
-   `index.ts` and in the build `files`; 112 `testing/fakeClient` import lines
-   remain and **none** of them import `AppwireClientLike`.
+   `index.ts` and in the build `files`. Counted by grep over
+   `cmd/evener-hub/frontend/src`, **files and lines stated separately**: the
+   `f2599d1ed` baseline had **136 files / 137 import lines** naming
+   `protocol/testing/fakeClient`; post-A2 and still today it is **112 files /
+   112 lines**, so **24 files stopped importing it**. None of the 112 names
+   `AppwireClientLike`.
 4. **The package has zero runtime dependencies** (`protocol/package.json` has no
    `dependencies`). Both consumers' stores are zustand
    (`cmd/evener-hub/frontend/package.json` and `mobile-native/package.json`
