@@ -1274,6 +1274,58 @@ func TestInstances_RemoveWaitsForAnInFlightCredentialWrite(t *testing.T) {
 	}
 }
 
+// Every instance mutation that rewrites providers.toml and reloads is one step
+// with the credential writes: a client's endpoint assertion is checked inside
+// the credential lock, so a mutation that landed between that check and the
+// store would put the secret on an endpoint the client never reviewed. A
+// reload is not just a read either - it commits what it read, so one that
+// overlapped a credential clear could publish a view the clear had already
+// invalidated. Each mutation below holds credMu exclusively across its write
+// and reload, so it cannot run through a credential write still in flight.
+func TestInstances_MutationsWaitForAnInFlightCredentialWrite(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		run  func(f *instancesFixture) error
+	}{
+		{"edit moves the endpoint", func(f *instancesFixture) error {
+			return f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://moved.example.test/v1"})
+		}},
+		{"create authors a shadowing entry", func(f *instancesFixture) error {
+			return f.ctl.Create(appwire.InstanceCreateParams{Name: "work2", Base: "openai"})
+		}},
+		{"set default rewrites the file", func(f *instancesFixture) error {
+			return f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"})
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newInstancesFixture(t, nil)
+			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			f.ctl.auth.credMu.RLock()
+			done := make(chan error, 1)
+			go func() { done <- tt.run(f) }()
+			select {
+			case err := <-done:
+				f.ctl.auth.credMu.RUnlock()
+				t.Fatalf("the mutation ran through a credential write still in flight (err = %v)", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+			f.ctl.auth.credMu.RUnlock()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("mutation: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the mutation never finished after the credential write released the lock")
+			}
+		})
+	}
+}
+
 // The race the lock exists for, end to end: a credential write that starts
 // before the removal (it has already read the registry and passed its checks)
 // must not leave its key behind. The removal holds the credential lock

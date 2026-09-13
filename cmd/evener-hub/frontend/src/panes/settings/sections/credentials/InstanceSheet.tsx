@@ -86,6 +86,10 @@ const CHANGED_INSTANCE_ERROR =
 // removal and a recreation under the same name, or another instance renamed
 // onto the freed one, both leave an entry there - so a superseded rename only
 // belongs to this save when the fields this save did not touch still match.
+// endpointFingerprint is a derived field, not an independent fact: the hub
+// digests the resolved endpoint, so a request that edits what the digest is
+// resolved from necessarily changes it. It can only stand in for the endpoint
+// when those fields are not part of the request (see ENDPOINT_AFFECTING_FIELDS).
 const RENAME_IDENTITY_FIELDS = [
   "providerId",
   "base",
@@ -98,6 +102,13 @@ const RENAME_IDENTITY_FIELDS = [
   "apiKeyEnv",
   "credentialHeader",
 ] as const;
+
+/** The request fields the listing's endpointFingerprint is resolved from: the
+ * hub digests the transport's resolved endpoint, which baseUrl (the URL
+ * override), vars ({VAR} substitution), and the head record selected by
+ * protocol/surface each feed. Editing any of them derives a new digest, so the
+ * digest cannot be compared as an untouched identity field across such a save. */
+const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as const;
 
 /** The entry fields this save's params changed, whether a field carries a value
  * or a `clear` flag: those are the fields a rename may legitimately differ in. */
@@ -154,7 +165,10 @@ function renamedInstanceLanded(
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
   const changed = changedFields(params);
-  const untouched = RENAME_IDENTITY_FIELDS.filter((field) => !changed.has(field));
+  const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
+  const untouched = RENAME_IDENTITY_FIELDS.filter(
+    (field) => !changed.has(field) && !(endpointChanged && field === "endpointFingerprint"),
+  );
   return untouched.every((field) => fieldValue(before, field) === fieldValue(listed, field)) ? newName : undefined;
 }
 

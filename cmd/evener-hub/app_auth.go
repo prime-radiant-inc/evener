@@ -58,14 +58,18 @@ type hubAuthController struct {
 	// duplicate caller before the shared probe completes.
 	credentialTestJoined func()
 
-	// credMu serializes an instance rename against every other credential
-	// write. A rename asks which credentials already sit under the new name
-	// and then moves the old instance's onto it; a stored key or OAuth
-	// record written between those two steps is one the check never saw and
-	// the move would overwrite. Writers take the read side — they are
+	// credMu serializes the instances controller's providers.toml mutations
+	// against every credential write. A mutation asks which credentials
+	// already sit under a name, or which endpoint it resolves to, and then
+	// rewrites the file and reloads the registry; a stored key or OAuth
+	// record written between those steps is one the check never saw and lands
+	// against an instance the client never reviewed. A reload commits what it
+	// read, so one running across a credential clear would publish a view the
+	// clear had already invalidated. Writers take the read side: they are
 	// already safe against each other through the credentials store's own
-	// mutex and the OAuth state files. Rename and logout take it exclusively
-	// for their complete check-and-write operations.
+	// mutex and the OAuth state files. Create, Edit (including a rename),
+	// Remove, SetDefault and logout take it exclusively for their complete
+	// check-and-write operations.
 	credMu sync.RWMutex
 
 	mu          sync.Mutex
@@ -83,16 +87,22 @@ type hubAuthController struct {
 var hubAuthControllerSetup func(*hubAuthController)
 
 type hubAuthFlow struct {
-	Provider     string
-	State        string
-	CodeVerifier string
-	RedirectURI  string
+	Provider string
+	State    string
+	// EndpointFingerprint is the endpoint the instance resolved to when the
+	// flow was created: the destination the user began signing in for.
+	EndpointFingerprint string
+	CodeVerifier        string
+	RedirectURI         string
 }
 
 type deviceFlow struct {
-	Provider  string
-	Code      authopenai.DeviceCode
-	StartedAt time.Time
+	Provider string
+	Code     authopenai.DeviceCode
+	// EndpointFingerprint is the endpoint the instance resolved to when the
+	// flow was created, as on hubAuthFlow.
+	EndpointFingerprint string
+	StartedAt           time.Time
 }
 
 func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
@@ -244,15 +254,20 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 		return appwire.AuthLoginStartResponse{}, err
 	}
 
+	// Captured with the flow: the authorize round trip below is long enough
+	// for an edit to re-point the instance, and this is the only value that
+	// can say which endpoint the user began signing in for.
+	endpoint := c.endpointFingerprintFor(provider)
 	c.mu.Lock()
 	if c.flows == nil {
 		c.flows = map[string]hubAuthFlow{}
 	}
 	c.flows[state] = hubAuthFlow{
-		Provider:     provider,
-		State:        state,
-		CodeVerifier: verifier,
-		RedirectURI:  redirectURI,
+		Provider:            provider,
+		State:               state,
+		EndpointFingerprint: endpoint,
+		CodeVerifier:        verifier,
+		RedirectURI:         redirectURI,
 	}
 	c.mu.Unlock()
 
@@ -304,12 +319,15 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
 	// Asked again inside the lock: the check at the top of this call ran
-	// before the token exchange, which is a browser round trip long, and a
-	// rename holds credMu exclusively while it re-keys providers.toml and
-	// reloads. Only the answer under the lock describes the instance this
-	// record lands under.
+	// before the token exchange, which is a browser round trip long, and an
+	// instance mutation holds credMu exclusively while it rewrites
+	// providers.toml and reloads. Only the answer under the lock describes
+	// the instance, and the endpoint, this record lands under.
 	if err := c.credentialWrite(func() error {
 		if err := c.requiresCodex(provider); err != nil {
+			return err
+		}
+		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint); err != nil {
 			return err
 		}
 		return c.saveAuth(c.stateDir, provider, record)
@@ -490,6 +508,14 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		if c.instanceUsesGCPADC(name) {
 			return appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
 		}
+		// An instance that authenticates nothing reads no key either: the
+		// transport sends no credential at all (llm/authenticators.go), so a
+		// stored key would be one nothing reads, reported as a successful
+		// credential save, and left under a name a later edit can point at a
+		// scheme that does read it.
+		if auth, ok := c.instanceAuthScheme(name); ok && auth == registry.AuthNone {
+			return appwire.InvalidParams(fmt.Sprintf("%s authenticates without a credential: it reads no API key, so a stored one would be a credential nothing sends", name))
+		}
 		// A name that is neither keeps the key where nothing reads it: the pane
 		// only offers this write for a row its listing had, so a name that no
 		// longer resolves is one an instance was removed from since - and the
@@ -593,11 +619,15 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	if err != nil {
 		return appwire.AuthDeviceStartResponse{}, fmt.Errorf("generate device flow id: %w", err)
 	}
+	// As LoginStart captures it: the poll below is the long step, and the
+	// endpoint the instance resolved to when the flow was created is what the
+	// record may be filed against.
+	endpoint := c.endpointFingerprintFor(provider)
 	c.mu.Lock()
 	if c.deviceFlows == nil {
 		c.deviceFlows = map[string]deviceFlow{}
 	}
-	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Code: dc, StartedAt: c.now()}
+	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Code: dc, EndpointFingerprint: endpoint, StartedAt: c.now()}
 	c.mu.Unlock()
 	return appwire.AuthDeviceStartResponse{
 		Provider:        provider,
@@ -650,9 +680,13 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
 	// Re-checked under the lock for the same reason LoginComplete re-checks
-	// it: the poll's own exchange is the long step a rename can land in.
+	// it: the poll's own exchange is the long step an instance mutation can
+	// land in.
 	if err := c.credentialWrite(func() error {
 		if err := c.requiresCodex(provider); err != nil {
+			return err
+		}
+		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint); err != nil {
 			return err
 		}
 		return c.saveAuth(c.stateDir, provider, record)
@@ -788,6 +822,24 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 	}
 	if current != asserted {
 		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
+	}
+	return nil
+}
+
+// verifyFlowEndpoint refuses a sign-in flow whose instance no longer resolves
+// to the endpoint the flow was started for. The flow's own exchange is a
+// browser round trip long, and an edit that re-points base_url keeps the auth
+// scheme the completion re-checks, so the scheme alone cannot say that the
+// record would land where the user signed in. An empty capture (the hub had no
+// key to digest with when the flow started) or an empty current value (it has
+// none now) is not a refusal: the hub cannot name a destination the user was
+// not shown.
+func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
+	if started == "" {
+		return nil
+	}
+	if current := c.endpointFingerprintFor(name); current != "" && current != started {
+		return appwire.Conflict(name + " no longer resolves to the endpoint this sign-in was started on: review its destination and start the sign-in again")
 	}
 	return nil
 }

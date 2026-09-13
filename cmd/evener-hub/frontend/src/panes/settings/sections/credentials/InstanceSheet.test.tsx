@@ -1232,6 +1232,40 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
 
+  // A rename that also edits an endpoint-affecting field necessarily changes
+  // the listing's endpointFingerprint: the digest is derived from the resolved
+  // endpoint, which baseUrl/vars/protocol/surface are exactly what it resolves
+  // from. Comparing that derived field as though the save left it untouched
+  // rejects the store's own confirmation of a rename that plainly landed. It
+  // stands as an independent identity field only when this save did not touch
+  // what it derives from.
+  test("a superseded rename that also edits the endpoint is confirmed by the store's own listing", async () => {
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      baseUrl: "https://gw.example.test/v1/x",
+    });
+
+    const renamed = {
+      ...WORK,
+      name: "work2",
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-work2",
+    };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
   // A rename frees its old name for anyone to take: a removal and a recreation
   // under it, or another instance's own rename onto it. The store's list then
   // holds the new name without holding this save's rename, and steering the
@@ -1256,16 +1290,29 @@ describe("the form", () => {
   // carries that this save did not touch, not only the ones baseUrl can show:
   // endpointFingerprint is the digest of the complete resolved endpoint, so a
   // different instance whose query-only difference leaves every visible field
-  // identical is still not the one that performed this rename.
-  test("a superseded rename is not confirmed by a look-alike differing only in the fingerprint", async () => {
+  // identical is still not the one that performed this rename. A save that
+  // edits only a credential field derives no new digest, so the fingerprint
+  // remains an independent identity field for it.
+  test("a superseded rename that leaves the endpoint untouched is not confirmed by a differing fingerprint", async () => {
     const { fake, finish } = deferredEdit();
     const { handlers } = renderSheet(WORK, {}, [OPENAI]);
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
+    await user.clear(field("API key environment variable"));
+    await user.type(field("API key environment variable"), "PORTKEY_KEY_2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      apiKeyEnv: "PORTKEY_KEY_2",
+    });
 
-    const lookAlike = { ...WORK, name: "work2", endpointFingerprint: "fp-other" };
+    const lookAlike = {
+      ...WORK,
+      name: "work2",
+      apiKeyEnv: "PORTKEY_KEY_2",
+      endpointFingerprint: "fp-other",
+    };
     await refreshList(fake, [lookAlike]);
     await act(async () => finish({ instances: [lookAlike], availableProviders: [OPENAI] }));
 

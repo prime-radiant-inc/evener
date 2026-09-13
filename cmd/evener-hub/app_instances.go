@@ -530,6 +530,15 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The discipline every providers.toml mutation here follows
+	// (hubAuthController.credMu): held across the read, the write and the
+	// reload. A credential write's endpoint assertion is checked under this
+	// lock, so only an instance set that cannot move out from under it
+	// describes what the stored secret lands on - and authoring an entry can
+	// move it, since a name that was a curated provider until now resolves to
+	// the entry's endpoint afterwards.
+	c.auth.credMu.Lock()
+	defer c.auth.credMu.Unlock()
 	l, _, err := c.read()
 	if err != nil {
 		return err
@@ -607,6 +616,14 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Held for the rest of the call, so the providers.toml write and the
+	// reload that follows it sit inside the same held lock
+	// (hubAuthController.credMu). An edit that moves base_url is one step with
+	// every credential write: the write's endpoint assertion is checked under
+	// this lock and only describes the instance it lands on if no edit can
+	// land between that check and the store.
+	c.auth.credMu.Lock()
+	defer c.auth.credMu.Unlock()
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so if the edit parses fine but fails to load (#711),
 	// writing it back restores exactly what was on disk before this call.
@@ -640,13 +657,10 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		if _, taken := c.reg.Get().Instance(newName); taken {
 			return appwire.Conflict(fmt.Sprintf("instance %q already exists", newName))
 		}
-		// The destination check below and the move at the end of this call
-		// are one step: a credential written between them is one the check
-		// never saw and the move would overwrite. Held for the rest of the
-		// call, so the providers.toml write and the reload that follows it
-		// sit inside the same held lock (hubAuthController.credMu).
-		c.auth.credMu.Lock()
-		defer c.auth.credMu.Unlock()
+		// The destination check below and the move at the end of this call are
+		// one step too: a credential written between them is one the check
+		// never saw and the move would overwrite, and the lock that orders
+		// this call against every credential write is already held.
 		// Both checks above ask which instances exist, and a credential can
 		// outlive the instance it belonged to: providers.toml hand-edited
 		// while credentials.toml or the OAuth state kept its entry. Under a
@@ -1113,6 +1127,12 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Held across the write and the reload like every other mutation here
+	// (hubAuthController.credMu): a reload commits the credential view it
+	// read, so one running across a credential write's clear could publish a
+	// state that clear had already invalidated.
+	c.auth.credMu.Lock()
+	defer c.auth.credMu.Unlock()
 	// Checked under the lock that holds the write: a rename landing between
 	// the two would leave a default naming an instance that has moved, which
 	// the next load refuses while it sits on disk.
