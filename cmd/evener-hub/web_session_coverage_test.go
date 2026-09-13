@@ -50,7 +50,7 @@ func TestSessionRefMatchesIDClusterPrefix(t *testing.T) {
 // that no consumer read. Re-adding mirrored state without a reader must fail
 // here rather than silently restoring dead fields.
 func TestDaemonStatusCarriesNoSharedNotesMirrors(t *testing.T) {
-	typ := reflect.TypeOf(daemonStatus{})
+	typ := reflect.TypeFor[daemonStatus]()
 	for _, name := range []string{"HumanNote", "AgentNote", "SessionURLs", "SharedNotes"} {
 		if _, found := typ.FieldByName(name); found {
 			t.Errorf("daemonStatus declares unread shared-notes field %s", name)
