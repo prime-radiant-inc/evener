@@ -54,6 +54,7 @@ async function qualify() {
     "docContent",
     "submitRouting",
     "displayFormat",
+    "toolCallText",
     "catalogCommands",
   ];
   // Every runtime export of the package root. The root's generated consumer
@@ -138,6 +139,17 @@ async function qualify() {
     "firstLine",
     "splitMandate",
     "plainQuoteLine",
+    "clip",
+    "clipJobID",
+    "tailSlice",
+    "tailFold",
+    "formatToolDuration",
+    "formatByteCount",
+    "lineCount",
+    "parseArgs",
+    "parseJSONObject",
+    "trailingBracketFooter",
+    "str",
     "slashCommandInvocation",
     "visibleCatalogCommands",
   ];
@@ -227,6 +239,17 @@ assert.equal(client.slashCommandInvocation({ name: "plan", source: "plugin", plu
 assert.deepEqual(client.visibleCatalogCommands([{ name: "plan", source: "plugin", pluginName: "acme" }], new Set()), []);
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
+assert.equal(client.clip("hello", 3), "hel\u2026");
+assert.equal(client.clipJobID("job"), "job");
+assert.equal(client.tailSlice("hello", 2), "lo");
+assert.equal(client.tailFold("hello", 99), "hello");
+assert.equal(client.formatToolDuration(0), "1ms");
+assert.equal(client.formatByteCount(1), "1 byte");
+assert.equal(client.lineCount("a\\nb\\n"), 2);
+assert.deepEqual(client.parseArgs("not json"), {});
+assert.equal(client.parseJSONObject("[]"), undefined);
+assert.equal(client.trailingBracketFooter("done [exit 0]"), "exit 0");
+assert.equal(client.str({ path: "/tmp" }, "path"), "/tmp");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

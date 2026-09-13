@@ -6,10 +6,10 @@
 // target/result slot on the wire like the legacy DOM had).
 
 import type { ItemModel } from "../../../../protocol/model";
+import { clip, lineCount, parseArgs, str } from "../../../../protocol/toolCallText";
 import { CodeBlock } from "../../../../widgets";
 import { registerToolRenderer, type ToolRendererDescriptor, type ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
-import { clip, lineCount, parseArgs, str } from "./helpers";
 
 const GREP_PATTERN_CLIP = 50;
 
