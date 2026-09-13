@@ -4,8 +4,8 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { ItemModel } from "../../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../../protocol/stableDelegate";
+import { parseArgs, parseJSONObject, str } from "../../../../protocol/toolCallText";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
-import { parseArgs, parseJSONObject, str } from "./helpers";
 
 export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unknown";
 
