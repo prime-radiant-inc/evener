@@ -8,8 +8,10 @@ were deliberately left out of it.
 
 Closed on `shared-notes-followups` (PR #1249) unless noted; hashes are on that branch.
 
-- **1** — fixed in `99fb9b8089`: the per-row Remove button is disabled while its request is in
-  flight, and an entry already absent from `model.sessionUrls` counts as a successful removal.
+- **1** — fixed in `99fb9b8089`, hardened in `0ce49e706`: the per-row Remove button is disabled
+  while its request is in flight, and the handler checks a synchronous ref so two clicks inside one
+  tick still fire a single request. The second half of the finding — treating an entry already
+  absent from `model.sessionUrls` as a successful removal — is not implemented; see the item below.
 - **2, 7** — fixed in `24a4a433c3` (merged in `fe3c249fc0`): the delayed save samples the instance
   identity inside `save()` after hydration, so a rotation the client has already observed saves
   against the current instance. The daemon's `ExpectedInstanceID` fence remains the authority.
@@ -46,6 +48,13 @@ two `urls/remove` requests; the second reports the entry as missing after the fi
 surfaces a spurious "Couldn't remove link" toast. Disable the per-row button while its request is
 pending, and treat an entry that is already absent from `model.sessionUrls` as success rather than
 an error.
+
+Implemented as the button guard only: the row is disabled while its request is pending (and a
+synchronous ref keeps two clicks in one tick to one request), so the reported double-click symptom
+cannot occur. The absent-entry half was not implemented: `threadsStore.removeURL` still dispatches
+unconditionally and surfaces an unknown-id error, which is honest for an entry another client
+removed but does show a toast for an outcome the user wanted. Recorded here rather than claimed in
+the Status section.
 
 ## 2. Stale `expectedInstanceId` at debounce schedule time (Medium)
 
