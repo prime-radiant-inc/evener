@@ -150,11 +150,19 @@ func (p commandPalette) selectedEntry() (commandPaletteEntry, bool) {
 }
 
 func commandPaletteEntriesForRows(mode hubMode, caps hubSessionCapabilities, rows []hubRow) []commandPaletteEntry {
+	return commandPaletteEntriesForSession(mode, caps, false, "", rows)
+}
+
+// commandPaletteEntriesForSession is commandPaletteEntriesForRows with explicit
+// session liveness. Production palette opens pass m.detail.Live; the legacy
+// wrapper above (kept for the existing coverage tests) assumes not-live, so
+// /notes and /url-remove show disabled there unless the caller says live.
+func commandPaletteEntriesForSession(mode hubMode, caps hubSessionCapabilities, live bool, state string, rows []hubRow) []commandPaletteEntry {
 	scope := hubCommandDashboard
 	if mode == hubModeSession {
 		scope = hubCommandSession
 	}
-	ctx := hubCommandContext{mode: mode, caps: caps}
+	ctx := hubCommandContext{mode: mode, caps: caps, live: live, state: state}
 	entries := make([]commandPaletteEntry, 0, len(rows)+len(hubCommandRegistry))
 	for _, command := range hubCommandsForScope(scope) {
 		available, reason := hubCommandAvailable(command, ctx)

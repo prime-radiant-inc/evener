@@ -5,6 +5,7 @@ import type {
   MutationOptimisticRecord,
   MutationOutboxRecord,
   MutationOutboxState,
+  MutationRecord,
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./mutationOutbox";
@@ -182,6 +183,7 @@ export class MutationOutboxIndexedDB {
       ]);
       const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
       if (!source) return false;
+      await this.#discardSupersededNoteRecovery(transaction, source);
 
       const display = source.optimisticDisplay;
       const retainsOptimisticDisplay =
@@ -225,11 +227,29 @@ export class MutationOutboxIndexedDB {
         requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
       ]);
       if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
+      await this.#discardSupersededNoteRecovery(transaction, outboxRecord ?? optimisticRecord ?? recoveryRecord);
       if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
       if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
       if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
       return true;
     });
+  }
+
+  // A later accepted note supersedes refused earlier text, not chat recovery
+  // or unresolved transport. Retire it in the same canonical-settlement write.
+  async #discardSupersededNoteRecovery(transaction: IDBTransaction, source: MutationRecord | undefined): Promise<void> {
+    if (source?.method !== "notes/human/set") return;
+    const store = transaction.objectStore(RECOVERY_STORE);
+    const records = await requestResult<MutationRecoveryRecord[]>(store.getAll());
+    for (const record of records) {
+      if (
+        record.method === "notes/human/set" &&
+        record.targetRef === source.targetRef &&
+        record.intentSequence < source.intentSequence
+      ) {
+        await requestResult(store.delete(record.clientMutationId));
+      }
+    }
   }
 
   // Commit attempt evidence before transport so another tab or a reload cannot

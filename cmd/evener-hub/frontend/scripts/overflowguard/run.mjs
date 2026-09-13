@@ -1097,7 +1097,7 @@ async function main() {
     if (shortMenu.viewportWidth !== 844 || shortMenu.viewportHeight !== 390) {
       shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
     }
-    if (shortMenu.itemCount !== 9) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 9`);
+    if (shortMenu.itemCount !== 10) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 10`);
     if (shortMenu.top < 8 - GEOMETRY_TOLERANCE || shortMenu.bottom > 390 - 8 + GEOMETRY_TOLERANCE) {
       shortMenuFailures.push(`bounds=${shortMenu.top}-${shortMenu.bottom}, expected within 8-382`);
     }

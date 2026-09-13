@@ -145,9 +145,9 @@ export function QueueStrip({
     (entry) => entry.state !== "blockedUnknown",
   );
   const recoveryEntries = useRecoveryEntries(sessionRef).filter(
-    (record) => record.clientMutationId !== activeRecoveryId,
+    (record) => record.method !== "notes/human/set" && record.clientMutationId !== activeRecoveryId,
   );
-  const blockedEntries = useBlockedMutationEntries(sessionRef);
+  const blockedEntries = useBlockedMutationEntries(sessionRef).filter((record) => record.method !== "notes/human/set");
   const durableEntries = [
     ...recoveryEntries.map((record) => ({ kind: "recovery" as const, record })),
     ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),

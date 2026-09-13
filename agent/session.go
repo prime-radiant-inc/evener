@@ -222,6 +222,24 @@ type Session struct {
 	// tracker.
 	envContextState *envctx.State
 
+	// notesLastProjected is the last shared-notes block
+	// maybeAppendNotesContext appended as a NOTES_CONTEXT turn. The
+	// projection appends only when the rendered block differs from this
+	// record, so consecutive rounds with no notes change append once rather
+	// than re-emitting a limit-sized block every round. Cleared by
+	// resetNotesProjectionAfterCompaction when compaction folds history away
+	// (the model must re-see the current state), and seeded from restored
+	// history on resume (see below). Guarded by mu.
+	notesLastProjected string
+	// notesEverProjected reports whether this process has ever projected a
+	// non-empty notes block. It distinguishes the transition-to-empty case
+	// (append the explicit cleared marker so the next model request
+	// reflects the cleared list) from the never-populated case (project
+	// nothing, keeping a fresh session's history byte-identical). Seeded
+	// from restored history on resume alongside notesLastProjected.
+	// Guarded by mu.
+	notesEverProjected bool
+
 	// --- Synchronization / lock discipline ---
 	//
 	// The turn loop (ProcessInput → processOneInput) is the primary owner of
@@ -263,6 +281,12 @@ type Session struct {
 	// that announces it. It is always acquired before mu; emit runs after mu is
 	// released, so observers see mutation order without event emission under mu.
 	goalUpdateMu sync.Mutex
+	// notesUpdateMu serializes each shared-notes store mutation with the event
+	// that announces it, mirroring goalUpdateMu: the mutation and its
+	// snapshot capture run under this lock plus mu, and emit runs after both
+	// are released, so concurrent saves publish in store order and a stale
+	// event never wins at the projector.
+	notesUpdateMu sync.Mutex
 
 	// --- native worktree occupancy (spec §7) ---
 	//
@@ -707,11 +731,14 @@ type Session struct {
 	totalRounds       int  // cumulative tool rounds across all inputs
 
 	// self-compaction state (compact tool)
-	pinnedNote          string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
-	pinnedNoteGen       uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
-	pendingInstructions string // compaction_instructions awaiting the round-tail force
-	forceRequested      bool   // a compact tool call is pending this round
-	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
+	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
+	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
+	// shared-notes state (human/agent whiteboards plus URL list)
+	agentNote           string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
+	sessionURLs         []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
+	pendingInstructions string              // compaction_instructions awaiting the round-tail force
+	forceRequested      bool                // a compact tool call is pending this round
+	nudgedSinceCompact  bool                // warning-nudge latch; reset on any compaction
 
 	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
 	// uses contextMgr.ElicitNote (Variant B of the forced-note mechanism — see
@@ -2106,23 +2133,44 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 // Writes only lightweight SessionMeta (~500 bytes), not the full history.
 // The conversation history is already durably recorded by the transcript JSONL.
 func (s *Session) maybeAutoSave() {
-	if s.stateDir == "" {
-		return
-	}
-	err := func() error {
-		s.metaSaveMu.Lock()
-		defer s.metaSaveMu.Unlock()
-		meta := s.Meta()
-		if fs := s.cfg.testOnly.metaFS; fs != nil {
-			return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
-		}
-		return schema.SaveSessionMeta(s.stateDir, meta)
-	}()
-	if err != nil {
+	if err := s.autoSaveMeta(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
 	}
+}
+
+// autoSaveMeta persists the session metadata, reporting the write outcome so
+// mutation paths can refuse to journal success for a write that never landed.
+// maybeAutoSave keeps the warn-only contract for the non-mutation callers.
+//
+// autoSaveMetaLocked is the same write for callers that already hold
+// metaSaveMu (a mutation+rollback critical section): the lock must stay held
+// from the save attempt through the rollback, so a concurrent maybeAutoSave
+// cannot snapshot a transient mutation between a failed save and its restore
+// and persist it to disk.
+func (s *Session) autoSaveMeta() error {
+	if s.stateDir == "" {
+		return nil
+	}
+	s.metaSaveMu.Lock()
+	defer s.metaSaveMu.Unlock()
+	return s.saveSessionMetaLocked()
+}
+
+func (s *Session) autoSaveMetaLocked() error {
+	if s.stateDir == "" {
+		return nil
+	}
+	return s.saveSessionMetaLocked()
+}
+
+func (s *Session) saveSessionMetaLocked() error {
+	meta := s.Meta()
+	if fs := s.cfg.testOnly.metaFS; fs != nil {
+		return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+	}
+	return schema.SaveSessionMeta(s.stateDir, meta)
 }
 
 // sessionsSubdir is the directory, under a session's StateDir, where its

@@ -49,10 +49,11 @@ export interface SessionMenuProps {
   triggerLabel: string; // sr-only trigger name: "Session actions" / `Actions for ${title}`
   canRename: boolean;
   canShutdown: boolean;
+  canReadNotes: boolean;
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
-  panesOpen: { details: boolean; tasks: boolean; activity: boolean };
+  panesOpen: { details: boolean; tasks: boolean; activity: boolean; notes: boolean };
   taskLabel?: string; // e.g. "Tasks 3/7"; defaults to "Tasks"
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
   /** Pane-only action. Rail/sidebar callers omit it. */
@@ -77,6 +78,7 @@ export function SessionMenu({
   triggerLabel,
   canRename,
   canShutdown,
+  canReadNotes,
   session,
   treeNode,
   panesOpen,
@@ -129,6 +131,13 @@ export function SessionMenu({
       onSelect: () => actions.onOpenPane("activity"),
     },
   ];
+  if (canReadNotes) {
+    paneItems.push({
+      id: "notes",
+      label: checked("Notes", panesOpen.notes),
+      onSelect: () => actions.onOpenPane("notes"),
+    });
+  }
   if (onOpenVerbosity) {
     paneItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
   }

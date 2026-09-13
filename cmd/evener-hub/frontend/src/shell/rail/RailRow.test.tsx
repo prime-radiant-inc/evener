@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
+import { hydrateThread } from "../../protocol/reducer";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -17,6 +18,7 @@ import {
   type ResourceKey,
   type ResourceState,
 } from "../../stores/navigation/types";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -107,13 +109,57 @@ afterAll(() => {
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
+  resetThreadsStoreForTests();
   seedPinCatalogForPicker();
 });
 
 afterEach(() => {
   cleanup();
   resetNavigationStoreForTests();
+  resetThreadsStoreForTests();
 });
+
+function notesModel(ref: string, sharedNotes: boolean) {
+  return hydrateThread(
+    {
+      thread: {
+        id: "thread_notes",
+        sessionId: "session_notes",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "anthropic",
+        createdAt: 1000,
+        updatedAt: 1000,
+        status: { type: "ended" },
+        cwd: "/tmp/project",
+        cliVersion: "1.0.0",
+        source: "evener",
+        evener: {
+          ref,
+          capabilities: {
+            send: false,
+            steer: false,
+            interrupt: false,
+            compact: false,
+            clear: false,
+            forkFromTurn: false,
+            shutdown: false,
+            changeModel: false,
+            changeVisionModel: false,
+            queue: false,
+            goal: false,
+            sharedNotes,
+            rename: false,
+          },
+          queue: { revision: 0 },
+          humanNote: "saved rail note",
+        },
+      },
+    },
+    ref,
+    0,
+  );
+}
 
 function apiNode(overrides: Partial<RailSession> = {}): RailSession {
   return {
@@ -214,6 +260,46 @@ async function openMenu(name: RegExp | string) {
   await user.click(screen.getByRole("button", { name }));
   return user;
 }
+
+test("rail Notes follows its hydrated capability from unknown to false to supported ended", async () => {
+  // Navigation's live flag and another session's capability are not evidence
+  // of this row's notes support. Keep the same mounted menu through hydration.
+  const other = notesModel("local:other", true);
+  threadsStore.setState({ threads: new Map([[other.ref, other]]) });
+  const session = renderRow(
+    { state: "ended", live: false },
+    actions({
+      onOpenSessionPane: (target, pane) => {
+        workspaceStore.getState().togglePane(sessionPanelPaneType(pane), { ref: target.ref });
+      },
+    }),
+  );
+  const user = await openMenu(/actions for/i);
+  expect.soft(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
+
+  act(() => {
+    threadsStore.setState({
+      threads: new Map([
+        [other.ref, other],
+        [session.ref, notesModel(session.ref, false)],
+      ]),
+    });
+  });
+  expect.soft(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
+
+  act(() => {
+    threadsStore.setState({
+      threads: new Map([
+        [other.ref, other],
+        [session.ref, notesModel(session.ref, true)],
+      ]),
+    });
+  });
+  await user.click(screen.getByRole("menuitem", { name: "Notes" }));
+  expect(workspaceStore.getState().panes).toEqual(
+    expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: session.ref } })]),
+  );
+});
 
 function normalizedRailResource(
   key: Extract<ResourceKey, { kind: "project_page" | "pin_section" }>,
@@ -1316,16 +1402,18 @@ describe("session row", () => {
   // the wire withholds `rename` from every nested/synthetic node), and
   // Shut down.
   test("a subagent row's menu is panes + rename + shut down only", async () => {
+    threadsStore.setState({ threads: new Map([["local:a", notesModel("local:a", true)]]) });
     renderRow({ kind: "subagent", rename: false });
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(items).toEqual(["Details", "Tasks", "Activity", "Rename", "Shut down"]);
+    expect(items).toEqual(["Details", "Tasks", "Activity", "Notes", "Rename", "Shut down"]);
   });
 
   // The row's menu is THE shared SessionMenu now - the same item list, in the
   // same order, the session pane's chrome shows (SessionMenu.test.tsx pins
   // the component's own copy of this contract).
   test("session row menu is the unified menu: panes group first, shut down present", async () => {
+    threadsStore.setState({ threads: new Map([["local:a", notesModel("local:a", true)]]) });
     renderRow({ kind: "session", host_id: "local" });
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
@@ -1333,6 +1421,7 @@ describe("session row", () => {
       "Details",
       "Tasks",
       "Activity",
+      "Notes",
       "Rename",
       "Pin this session…",
       "Archive",
