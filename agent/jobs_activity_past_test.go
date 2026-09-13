@@ -1997,13 +1997,14 @@ func TestLoadSessionJobActivityTree_DepthContinuationAfterTheChildWasAlreadyRewr
 	}
 }
 
-// TestProjectStableActivityDelegate_DepthBoundaryTruncatesWithoutTheChild pins
-// that the depth bound reports a truncated branch whether or not the load left
-// a placeholder behind. A load budget that runs out at the boundary leaves no
-// placeholder at all, and reaching for the child before deciding turns that
-// into "child session unavailable" with nothing to continue to — the branch
-// becomes a dead end rather than a page the client can ask for.
-func TestProjectStableActivityDelegate_DepthBoundaryTruncatesWithoutTheChild(t *testing.T) {
+// TestProjectStableActivityDelegate_DepthBoundarySaysWhyWhenTheBudgetRanOut
+// pins what a depth-boundary delegate reports when the load budget ran out
+// before anything could name its child's generations. There is nothing to
+// fence a continuation with, and an unfenced one is refused by every resume of
+// a child that was ever folded — a certain dead end dressed as a page. The
+// branch is truncated with a diagnostic naming the session to request instead,
+// and no branch error, because nothing failed.
+func TestProjectStableActivityDelegate_DepthBoundarySaysWhyWhenTheBudgetRanOut(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "boundarytruncroot"
 	const boundaryChildren = 4
@@ -2016,8 +2017,10 @@ func TestProjectStableActivityDelegate_DepthBoundaryTruncatesWithoutTheChild(t *
 		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
 	})
 	descriptors := make([]delegatestore.Descriptor, 0, boundaryChildren)
+	childIDs := make([]string, 0, boundaryChildren)
 	for i := range boundaryChildren {
 		childID := fmt.Sprintf("boundarytruncchild%d", i)
+		childIDs = append(childIDs, childID)
 		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
 			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
 			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
@@ -2026,6 +2029,19 @@ func TestProjectStableActivityDelegate_DepthBoundaryTruncatesWithoutTheChild(t *
 		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, "next"))
 	}
 	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+
+	// Fold every child once, so an unfenced token would be refused on resume
+	// rather than passing by accident.
+	for _, childID := range childIDs {
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, childID, appwire.JobsListParams{}); err != nil {
+			t.Fatalf("fold %s: %v", childID, err)
+		}
+		path := filepath.Join(jobsDir(stateDir, childID), "jobs.jsonl")
+		rewritten := time.Unix(7_000_000, 0)
+		if err := os.Chtimes(path, rewritten, rewritten); err != nil {
+			t.Fatalf("restamp %s: %v", childID, err)
+		}
+	}
 
 	// The root sits AT the bound and the budget affords naming one child's
 	// generations, so the rest have no placeholder.
@@ -2044,30 +2060,35 @@ func TestProjectStableActivityDelegate_DepthBoundaryTruncatesWithoutTheChild(t *
 	budget := newBoundedActivityBudget(rootID, time.Unix(1000, 0).UTC(), 0)
 	budget.maxDepth = 0
 	projected := projectActivitySessionAt(*snapshot, budget, 0, nil, 0)
-	delegates := 0
-	var token string
+	unpaged := 0
 	for _, entry := range projected.Entries {
-		if entry.Delegate == nil {
+		delegate := entry.Delegate
+		if delegate == nil {
 			continue
 		}
-		delegates++
-		if entry.Delegate.Branch.Error != "" {
-			t.Fatalf("delegate %q reports %q instead of a truncated branch", entry.Delegate.DelegateID, entry.Delegate.Branch.Error)
+		if delegate.Branch.Error != "" {
+			t.Fatalf("delegate %q reports %q; nothing failed here", delegate.DelegateID, delegate.Branch.Error)
 		}
-		if !entry.Delegate.Branch.Truncated || entry.Delegate.Branch.Continuation == "" {
-			t.Fatalf("delegate %q branch = %+v, want truncated with a continuation", entry.Delegate.DelegateID, entry.Delegate.Branch)
+		if !delegate.Branch.Truncated {
+			t.Fatalf("delegate %q branch = %+v, want truncated", delegate.DelegateID, delegate.Branch)
 		}
-		token = entry.Delegate.Branch.Continuation
+		if delegate.Branch.Continuation != "" {
+			continue // the one child the budget could name
+		}
+		unpaged++
+		if len(delegate.Diagnostics) == 0 {
+			t.Fatalf("delegate %q has no continuation and no diagnostic; the reader is told neither what happened nor what to ask for", delegate.DelegateID)
+		}
+		if !strings.Contains(delegate.Diagnostics[0], "load budget exhausted") || !strings.Contains(delegate.Diagnostics[0], delegate.ChildSessionID) {
+			t.Fatalf("delegate %q diagnostic = %q, want it to name the exhaustion and the session to request", delegate.DelegateID, delegate.Diagnostics[0])
+		}
+		// What the diagnostic tells the reader to do actually works.
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, delegate.ChildSessionID, appwire.JobsListParams{}); err != nil {
+			t.Fatalf("requesting %s directly, as the diagnostic says to: %v", delegate.ChildSessionID, err)
+		}
 	}
-	if delegates != boundaryChildren {
-		t.Fatalf("projected %d delegates, want %d", delegates, boundaryChildren)
-	}
-
-	// The token is usable: these journals were never rewritten, so the
-	// generations it names — none, for a child the budget never reached —
-	// are the ones its own load reports.
-	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err != nil {
-		t.Fatalf("resuming a depth-boundary continuation minted without a placeholder: %v", err)
+	if unpaged != boundaryChildren-affordable {
+		t.Fatalf("%d delegates reported the exhaustion, want %d", unpaged, boundaryChildren-affordable)
 	}
 }
 

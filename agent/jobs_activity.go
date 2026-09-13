@@ -464,11 +464,11 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			// Naming them reads the child's metadata, so it is charged the
 			// same unit a loaded child pays before it is descended into, and
 			// it stops when a canceled request stops everything else. A
-			// budget with nothing left leaves no placeholder for this child;
-			// projection still reports the branch as truncated with a
-			// continuation (projectStableActivityDelegate decides that
-			// before it reaches for the child), and that token simply names
-			// no generations.
+			// budget with nothing left leaves no placeholder for this child,
+			// and projection reports that branch as truncated with a
+			// diagnostic and no continuation — a token with no generations
+			// behind it would be refused by every resume, so it is not
+			// minted at all (projectStableActivityDelegate).
 			if err := cache.ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -1167,22 +1167,27 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	}
 	childPath := appendActivityPath(path, row.id)
 	if budget != nil && budget.bounded && depth >= budget.maxDepth {
-		// Decided before the child is touched, because at the bound there
-		// may be nothing to touch: the load leaves a placeholder there
-		// rather than a session, and when its own budget ran out before it
-		// could even name that child's generations it leaves nothing at all.
-		// The honest answer is the same either way — a truncated branch with
-		// a continuation — and reaching for the child first would turn the
-		// second case into "child session unavailable" with no way forward.
-		// The child's OWN generations when they were named; none when they
-		// were not, in which case the token names none and the resume
-		// refuses it once, which the client answers by restarting (see
-		// activityContinuation).
-		var jobsEpoch, delegatesEpoch uint64
-		if child := snapshot.Children[childID]; child != nil {
-			jobsEpoch, delegatesEpoch = child.JobsEpoch, child.DelegatesEpoch
+		// Decided before the child is touched, because at the bound there may
+		// be nothing to touch: the load leaves a placeholder there rather
+		// than a session, and when its own budget ran out before it could
+		// name that child's generations it leaves nothing at all. Reaching
+		// for the child first would turn that into "child session
+		// unavailable", which says neither what happened nor what to do.
+		child := snapshot.Children[childID]
+		if child == nil {
+			// Nothing named this child's generations, so a continuation for
+			// it could carry none — and an unfenced token is refused by
+			// every resume of a child anything ever folded, which is a
+			// certain dead end dressed up as a page. Say what happened and
+			// how to read this branch instead: a request rooted at the child
+			// renders it with a budget of its own.
+			delegate.Branch.Truncated = true
+			delegate.Diagnostics = append(delegate.Diagnostics, fmt.Sprintf("load budget exhausted; request session %q directly", childID))
+			return delegate
 		}
-		markActivityDelegateTruncated(&delegate, budget, childID, childPath, jobsEpoch, delegatesEpoch)
+		// The child's OWN generations: a resume checks the token against the
+		// generations of the session it names — see markActivityDelegateTruncated.
+		markActivityDelegateTruncated(&delegate, budget, childID, childPath, child.JobsEpoch, child.DelegatesEpoch)
 		return delegate
 	}
 	child := snapshot.Children[childID]
