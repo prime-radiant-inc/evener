@@ -1188,6 +1188,51 @@ base = "openai"
 	}
 }
 
+// Logout carries the same endpoint assertion the credential writes do: a
+// sign-out confirmed for the row the pane listed must not clear the layer of an
+// instance another client has re-pointed since, so a stale assertion is refused
+// while the key survives and the current one clears it.
+func TestAuth_LogoutRefusesAConfirmationForADifferentEndpoint(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, `[providers.work]
+base = "openai"
+base_url = "https://a.example.test/v1"
+`)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	if err := ctrl.creds.Set("work", "sk-keep"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	stale := ctrl.endpointFingerprintFor("work")
+	if stale == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+	// What another client does while the confirmation is open.
+	renameProvidersEntry(t, ctrl, tomlPath, `[providers.work]
+base = "openai"
+base_url = "https://b.example.test/v1"
+`)
+	current := ctrl.endpointFingerprintFor("work")
+	if current == "" || current == stale {
+		t.Fatalf("fixture drift: the rewrite must move the endpoint (stale=%q current=%q)", stale, current)
+	}
+
+	if _, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "work", ExpectedEndpointFingerprint: stale}); err == nil {
+		t.Fatal("Logout landed for a confirmation given against a different endpoint")
+	}
+	if v, ok := ctrl.creds.Get("work"); !ok || v != "sk-keep" {
+		t.Fatalf("stored key = %q/%v, want it untouched by the refused logout", v, ok)
+	}
+
+	if _, err := ctrl.Logout(appwire.AuthLogoutParams{Provider: "work", ExpectedEndpointFingerprint: current}); err != nil {
+		t.Fatalf("Logout for the endpoint the name resolves to now: %v", err)
+	}
+	if v, ok := ctrl.creds.Get("work"); ok || v != "" {
+		t.Fatalf("stored key = %q/%v, want the matching logout to clear it", v, ok)
+	}
+}
+
 // renameProvidersEntry is what an instance rename leaves behind for a
 // credential write already in flight: providers.toml re-keyed and the
 // registry reloaded onto it.

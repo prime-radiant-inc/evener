@@ -922,6 +922,15 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	c.auth.credMu.Lock()
 	defer c.auth.credMu.Unlock()
 
+	// The confirmation this removal carries names the row the client listed, so
+	// a name another client has re-pointed since (a removal and a recreation
+	// under it, or an edit to its base_url) is refused rather than having its
+	// replacement instance removed. Asked here, under the exclusive lock, so it
+	// describes the instance the cleanup below acts on.
+	if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+		return err
+	}
+
 	// Credentials first, then the authored entry: a cleanup that cannot
 	// complete fails the removal while the instance and its name still exist,
 	// so the caller can retry it. The reverse order would report a deletion
@@ -1081,10 +1090,11 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 		}
 		deleted.storedKey = true
 	}
-	if _, err := c.auth.deleteAuth(c.auth.stateDir, name); err != nil {
+	removedRecord, err := c.auth.deleteAuth(c.auth.stateDir, name)
+	if err != nil {
 		return deleted, fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
 	}
-	deleted.oauthRecord = true
+	deleted.oauthRecord = removedRecord
 	return deleted, nil
 }
 

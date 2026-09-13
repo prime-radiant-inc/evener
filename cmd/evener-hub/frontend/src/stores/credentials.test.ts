@@ -439,6 +439,63 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     expect(result.removed).toBe(true);
   });
 
+  // A destructive action carries the endpoint the caller showed the user, so
+  // the hub can refuse a name that now resolves elsewhere rather than clearing
+  // or removing a replacement's credentials/configuration. A caller shown no
+  // endpoint sends nothing, rather than an empty-string assertion.
+  test("remove() forwards the expected endpoint fingerprint when given one", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "work", expectedEndpointFingerprint: "fp-work" });
+      return { instances: [], availableProviders: [] };
+    });
+    expect(await credentialsStore.getState().remove("work", "fp-work")).toBe(true);
+  });
+
+  test("clearStoredKey() forwards the expected endpoint fingerprint when given one", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    await credentialsStore.getState().clearStoredKey("work", "fp-work");
+  });
+
+  test("logout() forwards the expected endpoint fingerprint when given one", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/logout", (params) => {
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+      return {
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      };
+    });
+    await credentialsStore.getState().logout("work", "fp-work");
+  });
+
+  test("the destructive wrappers omit the fingerprint when none was captured", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return { instances: [], availableProviders: [] };
+    });
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "work" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    fake.on("evener/auth/logout", (params) => {
+      expect(params).toEqual({ provider: "work" });
+      return {
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      };
+    });
+    await credentialsStore.getState().remove("work");
+    // An empty string is "shown no endpoint" too, not an empty assertion.
+    await credentialsStore.getState().clearStoredKey("work", "");
+    await credentialsStore.getState().logout("work", "");
+  });
+
   test("loginStart() calls evener/auth/login/start", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/login/start", (params) => {

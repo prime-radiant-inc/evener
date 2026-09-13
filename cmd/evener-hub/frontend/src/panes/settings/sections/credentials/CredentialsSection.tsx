@@ -59,7 +59,17 @@ type OpenEditor =
   | OAuthEditor
   | null;
 
-type PendingConfirm = { kind: "clear" | "clearStoredKey" | "remove"; name: string } | null;
+// expectedEndpointFingerprint is the endpoint the confirm was opened against,
+// captured from the row the user acted on. A concurrent client can put a
+// different instance under the name while the dialog is open, and the hub uses
+// this to refuse clearing or removing the replacement. Undefined when the row
+// showed no endpoint, so an old listing asserts nothing rather than an empty
+// value.
+type PendingConfirm = {
+  kind: "clear" | "clearStoredKey" | "remove";
+  name: string;
+  expectedEndpointFingerprint?: string;
+} | null;
 type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
 
 // Diagnostics: the providers.toml load-error pointer, the user-layer note,
@@ -194,20 +204,20 @@ export function CredentialsSection({
 
   async function handleConfirmedAction(): Promise<void> {
     if (!pendingConfirm) return;
-    const { kind, name } = pendingConfirm;
+    const { kind, name, expectedEndpointFingerprint } = pendingConfirm;
     setConfirmBusy(true);
     try {
       if (kind === "clear") {
-        await credentialsStore.getState().logout(name);
+        await credentialsStore.getState().logout(name, expectedEndpointFingerprint);
         await refreshListingAfterMutation();
         toast.push("success", `Credentials cleared for ${name}`);
       } else if (kind === "clearStoredKey") {
         const label = clearsCredentialJson(name) ? "Stored credential JSON" : "Stored key";
-        await credentialsStore.getState().clearStoredKey(name);
+        await credentialsStore.getState().clearStoredKey(name, expectedEndpointFingerprint);
         await refreshListingAfterMutation();
         toast.push("success", `${label} cleared for ${name}`);
       } else {
-        const applied = await credentialsStore.getState().remove(name);
+        const applied = await credentialsStore.getState().remove(name, expectedEndpointFingerprint);
         // The store's own listing IS the applied response when the removal won
         // the race, so it can be checked directly; only a superseded removal
         // has to be re-read. Either way the row must be gone from the listing
@@ -372,13 +382,31 @@ export function CredentialsSection({
           if (previous !== null && previous !== next) onInstanceRenamed?.(previous, next);
         }}
         onClear={() => {
-          if (selectedInstance !== null) setPendingConfirm({ kind: "clear", name: selectedInstance });
+          if (selectedInstance !== null) {
+            setPendingConfirm({
+              kind: "clear",
+              name: selectedInstance,
+              expectedEndpointFingerprint: findInstance(selectedInstance)?.endpointFingerprint,
+            });
+          }
         }}
         onClearStoredKey={() => {
-          if (selectedInstance !== null) setPendingConfirm({ kind: "clearStoredKey", name: selectedInstance });
+          if (selectedInstance !== null) {
+            setPendingConfirm({
+              kind: "clearStoredKey",
+              name: selectedInstance,
+              expectedEndpointFingerprint: findInstance(selectedInstance)?.endpointFingerprint,
+            });
+          }
         }}
         onRemove={() => {
-          if (selectedInstance !== null) setPendingConfirm({ kind: "remove", name: selectedInstance });
+          if (selectedInstance !== null) {
+            setPendingConfirm({
+              kind: "remove",
+              name: selectedInstance,
+              expectedEndpointFingerprint: findInstance(selectedInstance)?.endpointFingerprint,
+            });
+          }
         }}
         onSetDefault={() => {
           if (selectedInstance !== null) void handleSetDefault(selectedInstance);

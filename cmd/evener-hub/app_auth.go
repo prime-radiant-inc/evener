@@ -354,10 +354,16 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	// same locked write as the removal: a rename holds credMu exclusively
 	// while it re-keys providers.toml and reloads, so a scheme read outside
 	// the lock can aim the clear at a store this name no longer
-	// authenticates from.
+	// authenticates from. The endpoint assertion is checked there too, for the
+	// same reason: the sign-out was confirmed for the row the client listed,
+	// and a name another client has re-pointed since belongs to a different
+	// instance.
 	codex := false
 	removed := false
 	if err := c.credentialWriteExclusive(func() error {
+		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+			return err
+		}
 		codex = c.instanceIsCodex(name)
 		if !codex {
 			_, hadFile := c.creds.Get(name)
@@ -550,7 +556,16 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 // exactly as it was.
 func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
-	if err := c.credentialWrite(func() error { return c.clearCredential(name) }); err != nil {
+	// The endpoint check and the clear are one step, the way the set is: the
+	// clear was confirmed for the row the client listed, and a name another
+	// client has re-pointed since must not have its replacement instance's key
+	// removed.
+	if err := c.credentialWrite(func() error {
+		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+			return err
+		}
+		return c.clearCredential(name)
+	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	c.refreshAfterCredentialWrite()
@@ -814,12 +829,14 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 		return nil
 	}
 	current := c.endpointFingerprintFor(name)
-	// No fingerprint to compare means the hub cannot say where this name points
-	// - no registry, no usable key, nothing resolvable - and refusing on that
-	// would block a write whose endpoint nobody disputed. The name itself is
-	// still judged by nameIsConnectable beside this call.
+	// A fingerprint the hub cannot match is a refusal, not a bypass: the client
+	// was shown an endpoint, and a hub that can no longer describe where the
+	// name points cannot say the credential would land there. Landing it anyway
+	// would let a deleted key file or an unreachable state root switch the guard
+	// off without a word. Only a client that asserted nothing (one that was
+	// shown no endpoint, or an older peer) is nothing to check.
 	if current == "" {
-		return nil
+		return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
 	}
 	if current != asserted {
 		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
@@ -839,7 +856,14 @@ func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
 	if started == "" {
 		return nil
 	}
-	if current := c.endpointFingerprintFor(name); current != "" && current != started {
+	current := c.endpointFingerprintFor(name)
+	// As verifyEndpointFingerprint reads it: a flow bound to an endpoint the hub
+	// can no longer describe is one whose record nobody can place, so it is
+	// refused rather than filed somewhere the user never signed in for.
+	if current == "" {
+		return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot resolve it now, so review its destination and start the sign-in again")
+	}
+	if current != started {
 		return appwire.Conflict(name + " no longer resolves to the endpoint this sign-in was started on: review its destination and start the sign-in again")
 	}
 	return nil

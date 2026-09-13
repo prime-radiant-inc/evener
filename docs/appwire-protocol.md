@@ -303,6 +303,7 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `AuthApiKeySetParams`
@@ -402,6 +403,7 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `AuthLogoutResponse`
@@ -773,6 +775,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`

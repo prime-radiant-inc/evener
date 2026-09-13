@@ -152,6 +152,18 @@ function draftIdentity(entry: InstanceEntry): string {
   return DRAFT_IDENTITY_FIELDS.map((field) => fieldValue(entry, field)).join("\u0000");
 }
 
+/** Whether a rename carried `base` over unchanged. Renaming a curated-shadow
+ * instance pins base to the old name: the entry owned the name of the curated
+ * provider it shadowed, and that name is what its configuration is inherited
+ * through, so the hub writes the old name into base before the name is gone.
+ * The rename therefore carries base over as this save's own pinning - before's
+ * base is empty and the listing's base is the name the instance just left -
+ * and any other difference in base is a different instance. */
+function baseCarriedByRename(before: InstanceEntry, listed: InstanceEntry): boolean {
+  if (fieldValue(before, "base") === fieldValue(listed, "base")) return true;
+  return before.base === "" && listed.base === before.name;
+}
+
 /** The name this save's rename landed under, or undefined when the store's own
  * listing cannot say that it did: the new name has to be held by the instance
  * this save renamed, not by a later tenant of the freed name. */
@@ -169,7 +181,10 @@ function renamedInstanceLanded(
   const untouched = RENAME_IDENTITY_FIELDS.filter(
     (field) => !changed.has(field) && !(endpointChanged && field === "endpointFingerprint"),
   );
-  return untouched.every((field) => fieldValue(before, field) === fieldValue(listed, field)) ? newName : undefined;
+  const matches = untouched.every((field) =>
+    field === "base" ? baseCarriedByRename(before, listed) : fieldValue(before, field) === fieldValue(listed, field),
+  );
+  return matches ? newName : undefined;
 }
 
 export interface InstanceSheetProps {

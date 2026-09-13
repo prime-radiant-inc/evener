@@ -1340,6 +1340,64 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
+  // Renaming a curated-shadow instance does change its listing's `base`: the
+  // entry held the curated provider's own name, and that name is what its
+  // configuration is inherited through, so the hub pins the old name into
+  // base to keep the inherited configuration after the name is gone. That is
+  // this rename carrying base over, not a different instance wearing the new
+  // name, and reading it as a difference rejects the store's own confirmation.
+  test("a superseded rename of a curated shadow is confirmed though the rename pinned base", async () => {
+    const shadow = instance({
+      name: "openai",
+      providerId: "openai",
+      base: "",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      apiKeyEnv: "PORTKEY_KEY",
+      endpointFingerprint: "fp-shadow",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(shadow, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+
+    const renamed = { ...shadow, name: "openai-work", base: "openai" };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // The pinning is the old name, exactly: a listing whose base is some other
+  // value is not this rename carried over but a different instance, and
+  // steering the sheet onto it would title one instance with another's values.
+  test("a superseded rename is not confirmed by a listing whose base is not the old name", async () => {
+    const shadow = instance({
+      name: "openai",
+      providerId: "openai",
+      base: "",
+      endpointFingerprint: "fp-shadow",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(shadow, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+
+    const lookAlike = { ...shadow, name: "openai-work", base: "anthropic" };
+    await refreshList(fake, [lookAlike]);
+    await act(async () => finish({ instances: [lookAlike], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved openai-work")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
   test("a plain save the store superseded keeps the draft and does not claim a save", async () => {
     const { fake, finish } = deferredEdit();
     renderSheet(WORK, {}, [OPENAI]);

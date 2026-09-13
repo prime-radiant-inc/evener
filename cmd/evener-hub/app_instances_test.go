@@ -858,6 +858,66 @@ func TestInstances_RemoveRestoresTheStoredKeyWhenTheOAuthRecordCannotBeDeleted(t
 	}
 }
 
+// The destructive confirmations carry the endpoint assertion the credential
+// writes do, and for the same reason: the user confirmed an action on the row
+// the pane listed, so a name another client has re-pointed since must not have
+// its replacement instance removed or its replacement's key cleared. A stale
+// assertion is refused and nothing moves; the current one acts.
+func TestInstances_DestructiveConfirmationsCarryTheEndpoint(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		act  func(f *instancesFixture, fingerprint string) error
+	}{
+		{"remove", func(f *instancesFixture, fingerprint string) error {
+			return f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work", ExpectedEndpointFingerprint: fingerprint})
+		}},
+		{"clear the stored key", func(f *instancesFixture, fingerprint string) error {
+			_, err := f.ctl.auth.ApiKeyClear(appwire.AuthApiKeyClearParams{Provider: "work", ExpectedEndpointFingerprint: fingerprint})
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newInstancesFixture(t, nil)
+			if err := f.ctl.Create(appwire.InstanceCreateParams{
+				Name:    "work",
+				Base:    "openai",
+				BaseURL: "https://a.example.test/v1",
+			}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := f.store.Set("work", "sk-keep"); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			stale := f.ctl.auth.endpointFingerprintFor("work")
+			if stale == "" {
+				t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+			}
+			// What another client does while the confirmation is open.
+			if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
+				t.Fatalf("Edit: %v", err)
+			}
+			current := f.ctl.auth.endpointFingerprintFor("work")
+			if current == "" || current == stale {
+				t.Fatalf("fixture drift: the edit must move the endpoint (stale=%q current=%q)", stale, current)
+			}
+
+			if err := tt.act(f, stale); err == nil {
+				t.Fatal("the action landed for a confirmation given against a different endpoint")
+			}
+			if v, ok := f.store.Get("work"); !ok || v != "sk-keep" {
+				t.Fatalf("stored key = %q/%v, want it untouched by the refused action", v, ok)
+			}
+			if _, still := f.ctl.reg.Get().Instance("work"); !still {
+				t.Fatal("the refused action removed the instance anyway")
+			}
+
+			if err := tt.act(f, current); err != nil {
+				t.Fatalf("action for the endpoint the name resolves to now: %v", err)
+			}
+		})
+	}
+}
+
 // unwritableCredentialsPath puts a directory where credentials.toml belongs, so
 // the store's next persist cannot land: the shape of a credentials path that is
 // gone, read-only, or on a filesystem that has stopped taking writes.
@@ -1682,10 +1742,14 @@ func TestInstances_ApiKeySetLandsWhenTheRegistryCannotReload(t *testing.T) {
 	}
 }
 
-// An assertion the hub cannot check is not a refusal. With no usable key the
-// hub computes no fingerprint for any name, and a write whose endpoint nobody
-// can describe has to land rather than be reported as moved.
-func TestInstances_ApiKeySetDoesNotConflictWhenTheHubCannotFingerprint(t *testing.T) {
+// An asserted endpoint the hub can no longer match is refused, not waved
+// through: the client was shown an endpoint (it asserted one), and a hub that
+// computes no fingerprint for the name cannot say the key would land there. The
+// unkeyable state root is exactly the state that would otherwise switch the
+// protection off silently, so a write carrying an assertion has to fail closed
+// and ask the user to look again. A client that was shown nothing asserts
+// nothing, which is still the one case with no check to make.
+func TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -1701,11 +1765,56 @@ func TestInstances_ApiKeySetDoesNotConflictWhenTheHubCannotFingerprint(t *testin
 		Provider:                    "work",
 		Value:                       "sk-unchecked",
 		ExpectedEndpointFingerprint: "asserted-by-a-form-the-hub-cannot-describe",
-	}); err != nil {
-		t.Fatalf("ApiKeySet refused an assertion it cannot check: %v", err)
+	}); err == nil {
+		t.Fatal("ApiKeySet accepted an assertion the hub cannot check")
 	}
-	if v, _ := f.store.Get("work"); v != "sk-unchecked" {
-		t.Fatalf("stored key = %q, want the write to land", v)
+	if v, _ := f.store.Get("work"); v != "" {
+		t.Fatalf("stored key = %q, want nothing stored for an assertion that cannot be checked", v)
+	}
+	// The client that was shown nothing is still nothing to check: an empty
+	// assertion is what the pane sends when the listing carried no fingerprint,
+	// and refusing that would block every write in an unkeyable hub.
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider: "work",
+		Value:    "sk-no-assertion",
+	}); err != nil {
+		t.Fatalf("ApiKeySet refused a write that asserted nothing: %v", err)
+	}
+}
+
+// removeCredentials documents that it reports which credential layers it
+// actually deleted, and its caller's restore gate relies on that reading: a
+// flag set for a file that was never there says there is something to put back.
+func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	deleted, err := f.ctl.removeCredentials("work")
+	if err != nil {
+		t.Fatalf("removeCredentials: %v", err)
+	}
+	if deleted.storedKey || deleted.oauthRecord {
+		t.Fatalf("removeCredentials reported %+v for a name holding nothing", deleted)
+	}
+
+	// With a layer present the flag follows the deletion it just performed.
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(authopenai.AuthFilePath(f.stateDir, "work")), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(authopenai.AuthFilePath(f.stateDir, "work"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	deleted, err = f.ctl.removeCredentials("work")
+	if err != nil {
+		t.Fatalf("removeCredentials: %v", err)
+	}
+	if !deleted.storedKey || !deleted.oauthRecord {
+		t.Fatalf("removeCredentials reported %+v for a name holding both layers", deleted)
 	}
 }
 

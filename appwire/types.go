@@ -2157,6 +2157,14 @@ type AuthLoginCompleteResponse struct {
 
 type AuthLogoutParams struct {
 	Provider string `json:"provider"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Provider (InstanceEntry.endpointFingerprint). The hub refuses the
+	// logout when the name resolves to a different endpoint by the time it
+	// lands: the sign-out was confirmed for the row the client listed, and a
+	// name another client has re-pointed since belongs to a different
+	// instance. Empty asserts nothing, which is what a client that never saw
+	// an endpoint sends.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 type AuthLogoutResponse struct {
@@ -2690,6 +2698,12 @@ type AuthApiKeySetParams struct {
 // AuthApiKeyClearParams is the params for evener/auth/apiKey/clear.
 type AuthApiKeyClearParams struct {
 	Provider string `json:"provider"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Provider (InstanceEntry.endpointFingerprint), checked the way
+	// AuthApiKeySetParams's is. The clear was confirmed for the row the client
+	// listed, so a name another client has re-pointed since must not have its
+	// replacement instance's key removed. Empty asserts nothing.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 // AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
@@ -2896,6 +2910,12 @@ type InstanceEditParams struct {
 // InstanceRemoveParams is the params for evener/instance/remove.
 type InstanceRemoveParams struct {
 	Name string `json:"name"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Name (InstanceEntry.endpointFingerprint), checked the way
+	// AuthApiKeySetParams's is. The removal was confirmed for the row the
+	// client listed, so a name another client has re-pointed since must not
+	// have its replacement instance removed. Empty asserts nothing.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 // InstanceSetDefaultParams is the params for evener/instance/setDefault.

@@ -920,6 +920,91 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await screen.findByText("Removed instance personal");
   });
 
+  // A confirmation is issued against the instance the user was looking at:
+  // the row's endpoint fingerprint travels with the action so the hub refuses
+  // a name that now resolves elsewhere instead of clearing or removing a
+  // replacement's credentials/configuration.
+  test("Clear sends the endpoint fingerprint of the row the confirm was opened for", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
+    fake.on("evener/auth/logout", (params) => {
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+      return {
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Clear" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Credentials cleared for work");
+  });
+
+  test("Clear stored key sends the endpoint fingerprint of the row the confirm was opened for", async () => {
+    const fake = connectFakeClient();
+    const SHADOWED = instance({
+      name: "shadowed",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      hasStoredFile: true,
+      endpointFingerprint: "fp-shadowed",
+    });
+    fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "shadowed", expectedEndpointFingerprint: "fp-shadowed" });
+      return { provider: "shadowed", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("shadowed");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "shadowed");
+    await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Stored key cleared for shadowed");
+  });
+
+  test("Remove sends the endpoint fingerprint of the row the confirm was opened for", async () => {
+    const fake = connectFakeClient();
+    const PERSONAL_FP = { ...PERSONAL, endpointFingerprint: "fp-personal" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK, PERSONAL_FP], availableProviders: [] }));
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "personal", expectedEndpointFingerprint: "fp-personal" });
+      return { instances: [WORK], availableProviders: [] };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await screen.findByText("Removed instance personal");
+  });
+
   // A name the environment also supplies keeps resolving after the authored
   // entry is removed: the hub re-lists it as an implicit instance, and the
   // access it resolves is the environment's, not the removed entry's. The

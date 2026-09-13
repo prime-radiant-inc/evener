@@ -176,6 +176,42 @@ func TestAuth_DeviceFlowBindsTheEndpointItStartedOn(t *testing.T) {
 	}
 }
 
+// TestAuth_EndpointAssertionsTheHubCannotResolveAreRefused pins the rule the two
+// checks share: an empty assertion is a client that was shown no endpoint, or an
+// older peer, and is nothing to check, while an assertion the hub resolves no
+// current value for is refused. Landing a credential on a destination nobody can
+// describe is what the assertion exists to prevent, and waving it through would
+// let an unusable state root switch the guard off without a word.
+//
+// The flow's half is pinned here rather than end to end: a flow cannot outlive
+// the process that captured it, and that process holds the key it digested
+// with, so the end-to-end window in which a current fingerprint disappears
+// belongs to the credential write (TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck).
+func TestAuth_EndpointAssertionsTheHubCannotResolveAreRefused(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, t.TempDir(), writeProvidersToml(t, dir, codexInstanceToml))
+	// No view to answer from: the fingerprint resolves nothing, which is the
+	// state an unusable key or an unloaded registry leaves.
+	ctrl.reg = nil
+
+	if err := ctrl.verifyEndpointFingerprint("work", ""); err != nil {
+		t.Fatalf("verifyEndpointFingerprint with no assertion = %v, want nil", err)
+	}
+	if err := ctrl.verifyFlowEndpoint("work", ""); err != nil {
+		t.Fatalf("verifyFlowEndpoint with no capture = %v, want nil", err)
+	}
+
+	err := ctrl.verifyEndpointFingerprint("work", "asserted-by-a-form")
+	if err == nil || !strings.Contains(err.Error(), "cannot be checked against the endpoint") {
+		t.Fatalf("verifyEndpointFingerprint = %v, want the refusal for an assertion the hub cannot resolve", err)
+	}
+	err = ctrl.verifyFlowEndpoint("work", "captured-when-the-flow-started")
+	if err == nil || !strings.Contains(err.Error(), "cannot be checked against the endpoint") {
+		t.Fatalf("verifyFlowEndpoint = %v, want the refusal for a flow the hub cannot place", err)
+	}
+}
+
 // TestAuth_DevicePollRefusesARecordForAnEndpointThatMoved is the same binding
 // on the device flow, whose own exchange is the long step.
 func TestAuth_DevicePollRefusesARecordForAnEndpointThatMoved(t *testing.T) {

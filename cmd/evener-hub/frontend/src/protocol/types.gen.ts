@@ -59,6 +59,7 @@ export interface AttentionSummary {
 
 export interface AuthApiKeyClearParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface AuthApiKeySetParams {
@@ -122,6 +123,7 @@ export interface AuthLoginStartResponse {
 
 export interface AuthLogoutParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface AuthLogoutResponse {
@@ -588,6 +590,7 @@ export interface InstanceListResponse {
 
 export interface InstanceRemoveParams {
   name: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface InstanceSetDefaultParams {

@@ -76,7 +76,7 @@ export interface CredentialsStoreState {
   // the raw response.
   create(params: InstanceCreateParams): Promise<boolean>;
   edit(params: InstanceEditParams): Promise<boolean>;
-  remove(name: string): Promise<boolean>;
+  remove(name: string, expectedEndpointFingerprint?: string): Promise<boolean>;
   setDefault(name: string): Promise<void>;
   // Auth mutations return the raw wire response and never touch
   // instances/availableProviders synchronously - on success the store
@@ -96,8 +96,8 @@ export interface CredentialsStoreState {
   // OAuth/ADC/env credential untouched - the counterpart to setApiKey, and
   // the narrow alternative to logout() for a stray stored key shadowed
   // behind an active oauth/adc sign-in (issue #713).
-  clearStoredKey(provider: string): Promise<AuthStatusResponse>;
-  logout(provider: string): Promise<AuthLogoutResponse>;
+  clearStoredKey(provider: string, expectedEndpointFingerprint?: string): Promise<AuthStatusResponse>;
+  logout(provider: string, expectedEndpointFingerprint?: string): Promise<AuthLogoutResponse>;
   loginStart(provider: string): Promise<AuthLoginStartResponse>;
   loginComplete(provider: string, flowId: string, redirectUrl: string): Promise<AuthLoginCompleteResponse>;
   deviceStart(provider: string): Promise<AuthDeviceStartResponse>;
@@ -198,9 +198,14 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     return applyMutation(() => client.request("evener/instance/edit", params));
   },
 
-  async remove(name) {
+  async remove(name, expectedEndpointFingerprint) {
     const client = requireClient();
-    return applyMutation(() => client.request("evener/instance/remove", { name }));
+    return applyMutation(() =>
+      client.request("evener/instance/remove", {
+        name,
+        ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+      }),
+    );
   },
 
   async setDefault(name) {
@@ -247,11 +252,14 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     }
   },
 
-  async clearStoredKey(provider) {
+  async clearStoredKey(provider, expectedEndpointFingerprint) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      const result = await client.request("evener/auth/apiKey/clear", { provider });
+      const result = await client.request("evener/auth/apiKey/clear", {
+        provider,
+        ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+      });
       scheduleRefetch(true); // same rationale as setApiKey
       return result;
     } catch (err) {
@@ -260,11 +268,14 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     }
   },
 
-  async logout(provider) {
+  async logout(provider, expectedEndpointFingerprint) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      const result = await client.request("evener/auth/logout", { provider });
+      const result = await client.request("evener/auth/logout", {
+        provider,
+        ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+      });
       scheduleRefetch(true); // same rationale as setApiKey
       return result;
     } catch (err) {
