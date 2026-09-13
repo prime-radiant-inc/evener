@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL, readDocFile } from "./docContent";
+import { DOC_FILE_MAX_BYTES, type DocFetch, DocFileError, docFileRawURL, docImageURL, readDocFile } from "./docContent";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -28,20 +28,38 @@ function headers(contentType: string): Record<string, string> {
   return { "Content-Type": contentType };
 }
 
+// A DocFetch that records what it was asked for and answers with a canned
+// response. A real fetch Response satisfies DocResponseLike structurally, so
+// the fake is the real shape the browser adapter hands back.
+function recordingFetch(response: Response): { fetch: DocFetch; urls: string[] } {
+  const urls: string[] = [];
+  return {
+    urls,
+    fetch: async (url) => {
+      urls.push(url);
+      return response;
+    },
+  };
+}
+
+function respondWith(response: Response): DocFetch {
+  return recordingFetch(response).fetch;
+}
+
 describe("readDocFile", () => {
-  test("fetches the raw variant with the auth cookie (same-origin credentials)", async () => {
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response("x", { headers: headers("text/plain; charset=utf-8") }));
-    await readDocFile("s1", "notes.txt");
-    expect(spy).toHaveBeenCalledWith("/doc/file?format=raw&session=s1&path=notes.txt", { credentials: "same-origin" });
+  test("asks the injected fetch for the raw variant and never touches the global fetch", async () => {
+    // The host supplies the fetch, so the package carries no browser global and
+    // no credentials policy; the web's browserDocFetch adapter owns both.
+    const global = vi.spyOn(globalThis, "fetch");
+    const doc = recordingFetch(new Response("x", { headers: headers("text/plain; charset=utf-8") }));
+    await readDocFile("s1", "notes.txt", doc.fetch);
+    expect(doc.urls).toEqual(["/doc/file?format=raw&session=s1&path=notes.txt"]);
+    expect(global).not.toHaveBeenCalled();
   });
 
   test("a text file yields decoded text, not binary, with the charset stripped off the mediaType", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("hello world", { headers: headers("text/plain; charset=utf-8") }),
-    );
-    expect(await readDocFile("s1", "notes.txt")).toEqual({
+    const fetchDoc = respondWith(new Response("hello world", { headers: headers("text/plain; charset=utf-8") }));
+    expect(await readDocFile("s1", "notes.txt", fetchDoc)).toEqual({
       text: "hello world",
       binary: false,
       mediaType: "text/plain",
@@ -51,20 +69,16 @@ describe("readDocFile", () => {
   });
 
   test("markdown source is returned verbatim as text - mode selection is the pane's job, not the data layer's", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("# Title\n\nBody", { headers: headers("text/plain; charset=utf-8") }),
-    );
-    const doc = await readDocFile("s1", "README.md");
+    const fetchDoc = respondWith(new Response("# Title\n\nBody", { headers: headers("text/plain; charset=utf-8") }));
+    const doc = await readDocFile("s1", "README.md", fetchDoc);
     expect(doc.text).toBe("# Title\n\nBody");
     expect(doc.binary).toBe(false);
   });
 
   test("an octet-stream response is binary with empty text and the octet-stream mediaType", async () => {
     const body = new Uint8Array([0x00, 0x01, 0x02, 0x03]);
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(body, { headers: headers("application/octet-stream") }),
-    );
-    expect(await readDocFile("s1", "blob.bin")).toEqual({
+    const fetchDoc = respondWith(new Response(body, { headers: headers("application/octet-stream") }));
+    expect(await readDocFile("s1", "blob.bin", fetchDoc)).toEqual({
       text: "",
       binary: true,
       mediaType: "application/octet-stream",
@@ -75,7 +89,7 @@ describe("readDocFile", () => {
 
   test("truncation is read from the X-Doc-Truncated header, with the true total from X-Doc-Total-Size", async () => {
     const body = "a".repeat(DOC_FILE_MAX_BYTES);
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const fetchDoc = respondWith(
       new Response(body, {
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
@@ -84,7 +98,7 @@ describe("readDocFile", () => {
         },
       }),
     );
-    const doc = await readDocFile("s1", "big.log");
+    const doc = await readDocFile("s1", "big.log", fetchDoc);
     expect(doc.truncated).toBe(true);
     expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES); // received (head) bytes
     expect(doc.totalBytes).toBe(2097152); // the file's true size, from the header
@@ -94,32 +108,33 @@ describe("readDocFile", () => {
     // A file of exactly the cap serves its whole self and sends no truncation
     // header; the old body>=cap derivation wrongly flagged this boundary.
     const body = "a".repeat(DOC_FILE_MAX_BYTES);
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(body, { headers: headers("text/plain; charset=utf-8") }),
-    );
-    const doc = await readDocFile("s1", "exact.log");
+    const fetchDoc = respondWith(new Response(body, { headers: headers("text/plain; charset=utf-8") }));
+    const doc = await readDocFile("s1", "exact.log", fetchDoc);
     expect(doc.truncated).toBe(false);
     expect(doc.totalBytes).toBeUndefined();
     expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES);
   });
 
   test("a 403 (path escapes the session cwd) rejects with a forbidden DocFileError", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("forbidden", { status: 403 }));
-    await expect(readDocFile("s1", "../etc/passwd")).rejects.toMatchObject({ kind: "forbidden", status: 403 });
+    const fetchDoc = respondWith(new Response("forbidden", { status: 403 }));
+    await expect(readDocFile("s1", "../etc/passwd", fetchDoc)).rejects.toMatchObject({
+      kind: "forbidden",
+      status: 403,
+    });
   });
 
   test("a 404 (missing file / unknown or non-local session) rejects with a not-found DocFileError", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not found", { status: 404 }));
-    await expect(readDocFile("s1", "gone.txt")).rejects.toMatchObject({ kind: "not-found", status: 404 });
+    const fetchDoc = respondWith(new Response("not found", { status: 404 }));
+    await expect(readDocFile("s1", "gone.txt", fetchDoc)).rejects.toMatchObject({ kind: "not-found", status: 404 });
   });
 
   test("any other non-ok status rejects with a generic error DocFileError carrying the status", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 500 }));
-    await expect(readDocFile("s1", "x.txt")).rejects.toMatchObject({ kind: "error", status: 500 });
+    const fetchDoc = respondWith(new Response("boom", { status: 500 }));
+    await expect(readDocFile("s1", "x.txt", fetchDoc)).rejects.toMatchObject({ kind: "error", status: 500 });
   });
 
   test("the rejection is a DocFileError instance so the pane can switch on kind", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 404 }));
-    await expect(readDocFile("s1", "gone.txt")).rejects.toBeInstanceOf(DocFileError);
+    const fetchDoc = respondWith(new Response(null, { status: 404 }));
+    await expect(readDocFile("s1", "gone.txt", fetchDoc)).rejects.toBeInstanceOf(DocFileError);
   });
 });

@@ -8,7 +8,9 @@
 //   readDocFile - fetches RAW file bytes from /doc/file?format=raw (the raw
 //   variant of handleDocFile, cmd/evener-hub/doc_serve.go:75), then builds the
 //   client-side DocFileContent the doc pane renders (binary notice / sanitized
-//   markdown / escaped <pre>). It is NOT the legacy /doc/file HTML page.
+//   markdown / escaped <pre>). It is NOT the legacy /doc/file HTML page. The
+//   request itself comes from a DocFetch the host supplies, so this module
+//   names no browser global and no credentials policy of its own.
 export interface DocFileContent {
   text: string;
   binary: boolean;
@@ -46,6 +48,21 @@ export class DocFileError extends Error {
   }
 }
 
+// DocResponseLike is the minimal response surface readDocFile reads. A real
+// fetch Response satisfies it structurally, so a host adapter can hand one
+// straight back while the package itself stays free of the DOM.
+export interface DocResponseLike {
+  ok: boolean;
+  status: number;
+  headers: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+// DocFetch is the host's port for doc requests: it owns transport policy -
+// credentials in the browser, auth headers on native - so the package neither
+// reaches for a global nor decides how the request is authenticated.
+export type DocFetch = (url: string) => Promise<DocResponseLike>;
+
 function errorKindForStatus(status: number): DocFileErrorKind {
   if (status === 403) return "forbidden";
   if (status === 404) return "not-found";
@@ -71,10 +88,8 @@ export function docFileRawURL(session: string, path: string): string {
 // headers (writeDocFileRaw), present only when the file exceeded the cap - so a
 // file of exactly the cap reads as complete, no longer a false positive from
 // the old body>=cap inference (floor cross-cutting #9).
-export async function readDocFile(session: string, path: string): Promise<DocFileContent> {
-  // same-origin credentials so the hub's auth cookie rides along, exactly as
-  // the manifest and every other same-origin fetch in this app do.
-  const res = await fetch(docFileRawURL(session, path), { credentials: "same-origin" });
+export async function readDocFile(session: string, path: string, fetchDoc: DocFetch): Promise<DocFileContent> {
+  const res = await fetchDoc(docFileRawURL(session, path));
   if (!res.ok) {
     throw new DocFileError(errorKindForStatus(res.status), res.status);
   }
