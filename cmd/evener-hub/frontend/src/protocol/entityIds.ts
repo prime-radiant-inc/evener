@@ -28,21 +28,22 @@ function isUUIDv7Payload(payload: string): boolean {
   let n = 0n;
   for (const ch of payload) n = n * 62n + BigInt(BASE62.indexOf(ch));
   if (n >> 128n !== 0n) return false;
-  const bytes = new Uint8Array(16);
+  let version: number | undefined;
+  let variant: number | undefined;
   for (let i = 15; i >= 0; i--) {
-    bytes[i] = Number(n & 0xffn);
+    const byte = Number(n & 0xffn);
+    if (i === 6) version = byte >> 4;
+    if (i === 8) variant = byte >> 6;
     n >>= 8n;
   }
-  const version = bytes[6] >> 4;
-  const variant = bytes[8] >> 6;
   return version === 7 && variant === 2;
 }
 
 function matchAt(text: string, start: number, kind: EntityKind, length: number): EntityIdMatch | undefined {
   const end = start + length;
   if (end > text.length) return undefined;
-  const before = start === 0 ? "" : text[start - 1];
-  const after = end === text.length ? "" : text[end];
+  const before = text.charAt(start - 1);
+  const after = text.charAt(end);
   if (before !== "" && /[0-9A-Za-z_]/.test(before)) return undefined;
   if (after !== "" && /[0-9A-Za-z_]/.test(after)) return undefined;
   const id = text.slice(start, end);

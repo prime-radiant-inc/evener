@@ -11,8 +11,8 @@ test("detects each kind at its exact length", () => {
   const found = findEntityIds(`a ${JOB} b ${DELEGATE} c ${WATCH} d`);
   expect(found.map((m) => m.kind)).toEqual(["job", "delegate", "watch"]);
   expect(found.map((m) => m.id)).toEqual([JOB, DELEGATE, WATCH]);
-  expect(found[0].start).toBe(2);
-  expect(found[0].end).toBe(2 + JOB.length);
+  expect(found[0]?.start).toBe(2);
+  expect(found[0]?.end).toBe(2 + JOB.length);
 });
 
 test("rejects wrong lengths, bad alphabet, and bad UUIDv7 payloads", () => {
