@@ -1,4 +1,4 @@
-import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
+import type { AppwireClientLike } from "../../protocol/clientLike";
 import type { ModelDescriptor, ModelListParams, ModelListResponse } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import type { ModelCatalog, ModelCatalogEntry } from "./index";

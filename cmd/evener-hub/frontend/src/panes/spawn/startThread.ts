@@ -3,7 +3,7 @@
 // signature + a minimal working body (bare
 // prompt + cwd -> real session); T2 fills the rest (branch/access-mode ->
 // launchOverrides, the schema engine, sticky defaults).
-import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
+import type { AppwireClientLike } from "../../protocol/clientLike";
 import type { LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
 import { buildComposerInput } from "../../stores/composerInput";
 import type { InputAttachment } from "../../stores/threads";

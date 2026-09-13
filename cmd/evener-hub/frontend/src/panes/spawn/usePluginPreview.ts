@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AppwireClientLike } from "../../protocol/clientLike";
 import { errorText } from "../../protocol/errors";
-import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/types.gen";
 
 export const PLUGIN_PREVIEW_DEBOUNCE_MS = 250;
