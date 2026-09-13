@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -1190,5 +1191,138 @@ func TestSkillDelivery_FallbackSmallerWindow(t *testing.T) {
 	}
 	if got := lifecycleObligations(s); len(got) != 0 {
 		t.Fatalf("obligations outstanding after admission: %+v", got)
+	}
+}
+
+// TestSkillToolRound_CarrierNeverPrecedesItsDurableObligation pins the ordering
+// admitSkillActivationBatch already documents for the selection route: an
+// obligation must be durable BEFORE the carrier turn that announces it is
+// recorded. A failed obligation save must therefore publish no carrier turn at
+// all. The old order recorded the carrier first, so this exact save failure —
+// and the crash window it stands in for — left a durable carrier whose
+// obligation the snapshot had lost; a later fold then dropped the body with
+// nothing left to reload it, and the model lost the skill's complete
+// instructions for the rest of the session.
+func TestSkillToolRound_CarrierNeverPrecedesItsDurableObligation(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	repair := breakSessionMetaPath(t, s)
+	defer repair()
+
+	const callID = "call-tool-round"
+	obligation := schema.SkillDeliveryObligation{
+		InvocationID: "inv-tool-round",
+		ToolCallID:   callID,
+		Identity: schema.SkillContentIdentity{
+			Name:         "opaque",
+			DeclaredName: "opaque",
+			Source:       filepath.Join(t.TempDir(), "opaque", "SKILL.md"),
+			FileDigest:   "opaque-file-digest",
+		},
+		Route: "model_tool",
+	}
+	toolState, err := json.Marshal(skillToolState{
+		Outcome: schema.SkillActivationOutcome{
+			SessionID:    s.id,
+			InvocationID: obligation.InvocationID,
+			ToolCallID:   callID,
+			Identity:     obligation.Identity,
+			Status:       "pending",
+		},
+		Obligation: &obligation,
+	})
+	if err != nil {
+		t.Fatalf("marshal use_skill tool state: %v", err)
+	}
+	calls := []llm.ToolCallData{{ID: callID, Name: "use_skill", Type: "function"}}
+	results := []tool.ExecResult{{CallID: callID, ToolName: "use_skill", Output: "use_skill opaque", ToolState: toolState}}
+	parts := []llm.ContentPart{{
+		Kind:       llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "use_skill", Content: "use_skill opaque"},
+	}}
+
+	if err := s.appendToolResults(context.Background(), calls, results, parts); err == nil {
+		t.Fatal("a failed obligation save must surface an error")
+	}
+	for _, state := range skillTurnStates(s) {
+		if len(state.Obligations) != 0 {
+			t.Fatalf("a failed obligation save published a carrier turn carrying %+v", state.Obligations)
+		}
+	}
+	// Nothing half-admits either: the failed save rolls the obligation back out
+	// of the live snapshot, so memory and the durable snapshot agree.
+	if got := lifecycleObligations(s); len(got) != 0 {
+		t.Fatalf("a failed obligation save left live obligations: %+v", got)
+	}
+}
+
+// TestSkillDelivery_CommitSaveFailureKeepsObligationsPending pins
+// commitSkillDelivery's rollback: a failed metadata save must leave the live
+// snapshot exactly as it was, still holding the pending obligation. Without the
+// rollback the in-memory obligations were cleared while the durable snapshot
+// kept them, so a same-process retry saw no pending delivery and skipped the
+// revalidation the obligation exists to force.
+func TestSkillDelivery_CommitSaveFailureKeepsObligationsPending(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	identity := schema.SkillContentIdentity{
+		Name:         "opaque",
+		DeclaredName: "opaque",
+		Source:       filepath.Join(t.TempDir(), "opaque", "SKILL.md"),
+		FileDigest:   "opaque-file-digest",
+	}
+	obligation := schema.SkillDeliveryObligation{
+		InvocationID: "inv-commit-rollback",
+		ToolCallID:   "call-commit-rollback",
+		Identity:     identity,
+		Route:        "model_tool",
+	}
+	s.mu.Lock()
+	s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, obligation)
+	entry := s.skillLifecycle.Inventory[identity.Name]
+	s.skillLifecycle.Inventory[identity.Name] = entry
+	s.skillLifecycle.Revision++
+	revision := s.skillLifecycle.Revision
+	s.mu.Unlock()
+	if err := s.saveMeta(); err != nil {
+		t.Fatalf("seed the pending obligation: %v", err)
+	}
+
+	activation := schema.OrdinarySkillActivation{
+		Identity:     identity,
+		Route:        "model_tool",
+		InvocationID: obligation.InvocationID,
+	}
+	commit := skillDeliveryCommit{
+		Revision: revision,
+		Outcomes: []schema.SkillActivationOutcome{{
+			SessionID:    s.id,
+			InvocationID: obligation.InvocationID,
+			ToolCallID:   obligation.ToolCallID,
+			Identity:     identity,
+			Status:       "delivered",
+			Activation:   &activation,
+		}},
+		SatisfiedInvocationIDs: []string{obligation.InvocationID},
+	}
+
+	repair := breakSessionMetaPath(t, s)
+	if _, err := s.commitSkillDelivery(context.Background(), commit); err == nil {
+		t.Fatal("a failed metadata save must surface an error")
+	}
+	repair()
+
+	if got := lifecycleObligations(s); len(got) != 1 {
+		t.Fatalf("obligations after the failed save = %+v, want the pending obligation restored", got)
+	}
+	s.mu.Lock()
+	delivered := s.skillLifecycle.Inventory[identity.Name].Ordinary
+	after := s.skillLifecycle.Revision
+	s.mu.Unlock()
+	if delivered != nil {
+		t.Fatalf("inventory kept an unpersisted delivery: %+v", delivered)
+	}
+	if after != revision {
+		t.Fatalf("revision after the rollback = %d, want the pre-commit %d", after, revision)
 	}
 }

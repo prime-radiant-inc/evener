@@ -293,6 +293,14 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			content := renderSkillReloadReminder(reminder, s.canInstructTool("use_skill"))
 			if !s.skillReloadReminderFits(content) {
 				// Keep the full list and fail visibly; never trim older names.
+				// Reminders already admitted in this call are consumed first:
+				// their turns are durable, and leaving their receipts behind
+				// would re-append them on every retry, spending more of the very
+				// window this check measures. A failed consumption save is only
+				// warned about (inside the helper) because the fit error is the
+				// failure the caller must see; a restart reconciles the durable
+				// reminder turns the same way.
+				_ = s.consumeSkillReloadReminders(reminderPublications)
 				return nil, nil, fmt.Errorf("the complete post-compaction skill inventory (%d entries) does not fit the remaining context window", len(summary))
 			}
 			turn := schema.NewTurn(schema.TurnSystem, llm.User(content))
@@ -317,23 +325,35 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			reminderPublications[publicationID] = true
 		}
 	}
-	if len(reminderPublications) > 0 {
-		// The reminder's durable admission is its recorded turn: consume its
-		// receipts now so a retry or restart cannot repeat delivery.
-		s.mu.Lock()
-		removed := s.removeSkillCompactionHandoffsLocked(reminderPublications)
-		if removed {
-			s.skillLifecycle.Revision++
-		}
-		s.mu.Unlock()
-		if removed {
-			if err := s.saveMeta(); err != nil {
-				s.emit(events.EventWarning, warningDataFromError("persisting the compaction skill reminder consumption failed", err))
-				return nil, nil, err
-			}
-		}
+	// The reminder's durable admission is its recorded turn: consume its
+	// receipts now so a retry or restart cannot repeat delivery.
+	if err := s.consumeSkillReloadReminders(reminderPublications); err != nil {
+		return nil, nil, err
 	}
 	return batch, outcomes, nil
+}
+
+// consumeSkillReloadReminders retires the handoffs whose reminders were already
+// durably admitted, so neither a retry nor a restart can deliver the same
+// inventory notification twice. Only the named publications are removed.
+func (s *Session) consumeSkillReloadReminders(publications map[string]bool) error {
+	if len(publications) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	removed := s.removeSkillCompactionHandoffsLocked(publications)
+	if removed {
+		s.skillLifecycle.Revision++
+	}
+	s.mu.Unlock()
+	if !removed {
+		return nil
+	}
+	if err := s.saveMeta(); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("persisting the compaction skill reminder consumption failed", err))
+		return err
+	}
+	return nil
 }
 
 // admitCompactedSkillReloads performs the budgeted body admission for a
@@ -363,6 +383,11 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 		outcomeByID[outcomes[i].InvocationID] = &outcomes[i]
 	}
 	var obligations []schema.SkillDeliveryObligation
+	// Carriers embed the COMPLETE body, so they are recorded only after the
+	// obligations that keep those bodies alive are durable. Recording them here
+	// would publish a durable carrier whose obligation a failed save (or a crash
+	// before it) could lose.
+	var carriers []schema.Turn
 	for _, item := range batch.Items {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -409,13 +434,20 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 				Outcomes:    []schema.SkillActivationOutcome{*outcome},
 				Obligations: []schema.SkillDeliveryObligation{obligation},
 			}
-			s.recordTurn(carrier, carrier)
+			carriers = append(carriers, carrier)
 		}
 		obligations = append(obligations, obligation)
 	}
-	// Reload receipts are consumed only now, after the carriers and
-	// obligations below are durable in the same save.
+	// The obligations are persisted before their carriers are recorded, exactly
+	// like every other activation route; the reverse window (an obligation whose
+	// carrier never landed) re-delivers from the recorded source at the next
+	// dispatch seam and is the safe one.
 	s.mu.Lock()
+	// Snapshot the transaction's inputs so a failed save can restore them: the
+	// receipts must stay pending and the obligations must not half-admit, or a
+	// retry would re-drive neither and a restart would deliver the reload twice.
+	priorHandoffs := append([]schema.SkillCompactionReceipt(nil), s.skillLifecycle.PendingHandoffs...)
+	priorRevision := s.skillLifecycle.Revision
 	publications := s.consumedReloadPublicationsLocked(outcomes)
 	removed := s.removeSkillCompactionHandoffsLocked(publications)
 	if len(obligations) > 0 {
@@ -424,12 +456,23 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 	if removed || len(obligations) > 0 {
 		s.skillLifecycle.Revision++
 	}
+	admittedRevision := s.skillLifecycle.Revision
 	s.mu.Unlock()
 	if removed || len(obligations) > 0 {
 		if err := s.saveMeta(); err != nil {
+			s.mu.Lock()
+			if s.skillLifecycle.Revision == admittedRevision {
+				s.skillLifecycle.PendingHandoffs = priorHandoffs
+				s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, obligations)
+				s.skillLifecycle.Revision = priorRevision
+			}
+			s.mu.Unlock()
 			s.emit(events.EventWarning, warningDataFromError("persisting the compacted skill reload admission failed", err))
 			return err
 		}
+	}
+	for _, carrier := range carriers {
+		s.recordTurn(carrier, carrier)
 	}
 	return nil
 }
@@ -486,6 +529,10 @@ func (s *Session) skillContentInLiveHistory(identity schema.SkillContentIdentity
 // recordSkillReloadNotification appends one typed reload notification turn to
 // the real history: the model-facing notice plus the causal outcome, and the
 // delivery obligation when the notification reserves one.
+//
+// A non-nil obligation makes this turn a carrier, so the caller must have
+// persisted that obligation before calling — every current call site passes
+// nil and relies on the body-carrying admission below instead.
 func (s *Session) recordSkillReloadNotification(message string, outcome schema.SkillActivationOutcome, obligation *schema.SkillDeliveryObligation) {
 	turn := schema.NewTurn(schema.TurnSystem, llm.User(message))
 	state := &schema.SkillTurnState{Outcomes: []schema.SkillActivationOutcome{outcome}}

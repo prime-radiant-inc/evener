@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -184,9 +185,33 @@ func skillToolErrorCode(err error) string {
 	return skillActivationErrorCode(err)
 }
 
+// withoutObligationsByInvocationID returns obligations minus every entry whose
+// InvocationID appears in added, preserving order and reusing the backing
+// array. Every rollback path that undoes an unpersisted obligation append uses
+// it, so memory and the durable snapshot agree after a failed save.
+func withoutObligationsByInvocationID(obligations, added []schema.SkillDeliveryObligation) []schema.SkillDeliveryObligation {
+	if len(added) == 0 {
+		return obligations
+	}
+	drop := make(map[string]bool, len(added))
+	for _, obligation := range added {
+		drop[obligation.InvocationID] = true
+	}
+	kept := obligations[:0]
+	for _, obligation := range obligations {
+		if !drop[obligation.InvocationID] {
+			kept = append(kept, obligation)
+		}
+	}
+	return kept
+}
+
 // persistSkillToolObligations records the round's new delivery obligations in
-// the lifecycle snapshot and saves it before a retry or restart can lose
-// them. A save failure is surfaced to the caller.
+// the lifecycle snapshot and saves it before a retry or restart can lose them.
+// A save failure is surfaced to the caller AND rolled back out of the live
+// snapshot, so memory and the durable snapshot agree — both lack the
+// obligations — and nothing half-admits. That rollback is what lets the caller
+// refuse to publish a carrier for obligations that were not persisted.
 func (s *Session) persistSkillToolObligations(state *schema.SkillTurnState) error {
 	if state == nil || len(state.Obligations) == 0 {
 		return nil
@@ -196,6 +221,10 @@ func (s *Session) persistSkillToolObligations(state *schema.SkillTurnState) erro
 	s.skillLifecycle.Revision++
 	s.mu.Unlock()
 	if err := s.saveMeta(); err != nil {
+		s.mu.Lock()
+		s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, state.Obligations)
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("saving skill delivery obligations failed", err))
 		return err
 	}
@@ -443,6 +472,14 @@ func (s *Session) commitSkillDelivery(ctx context.Context, commit skillDeliveryC
 		s.mu.Unlock()
 		return false, nil
 	}
+	// Snapshot what this transaction is about to change so a failed metadata
+	// save can restore it. Without the rollback the in-memory snapshot keeps
+	// clean state while the durable one still holds the satisfied obligations,
+	// and a same-process retry sees no pending delivery and skips the
+	// revalidation those obligations exist to force.
+	priorObligations := append([]schema.SkillDeliveryObligation(nil), s.skillLifecycle.Obligations...)
+	priorInventory := make(map[string]schema.SkillInventoryEntry, len(s.skillLifecycle.Inventory))
+	maps.Copy(priorInventory, s.skillLifecycle.Inventory)
 	kept := s.skillLifecycle.Obligations[:0]
 	for _, obligation := range s.skillLifecycle.Obligations {
 		if !satisfied[obligation.InvocationID] {
@@ -471,8 +508,19 @@ func (s *Session) commitSkillDelivery(ctx context.Context, commit skillDeliveryC
 		}
 	}
 	s.skillLifecycle.Revision++
+	committedRevision := s.skillLifecycle.Revision
 	s.mu.Unlock()
 	if err := s.saveMeta(); err != nil {
+		// Undo the whole transaction, but only when no concurrent writer touched
+		// the lifecycle since: the snapshot is the previous map wholesale, so
+		// replaying it over a newer revision would clobber that writer's work.
+		s.mu.Lock()
+		if s.skillLifecycle.Revision == committedRevision {
+			s.skillLifecycle.Obligations = priorObligations
+			s.skillLifecycle.Inventory = priorInventory
+			s.skillLifecycle.Revision = commit.Revision
+		}
+		s.mu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("saving skill delivery admission failed", err))
 		return true, err
 	}

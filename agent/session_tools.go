@@ -1027,6 +1027,20 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 				return
 			}
 		}
+		// Obligations must be durable BEFORE the carrier turn that announces them
+		// is recorded — the same order admitSkillActivationBatch holds for the
+		// selection route. A crash or failed save in between must never leave a
+		// durable carrier whose obligation the snapshot lost, because a later fold
+		// would then drop the body with nothing left to reload it. The reverse
+		// window is the safe one: an obligation whose carrier never landed
+		// re-delivers from its recorded source at the next dispatch seam.
+		if persistErr = s.persistSkillToolObligations(skillState); persistErr != nil {
+			// The round will not persist, so release the inline delivery receipts
+			// it acquired before the failure and leave their durable heads
+			// replayable.
+			abortDelegateToolCallDeliveryCommits(commits)
+			return
+		}
 		persistedParts := projectToolResultsForTranscript(calls, results, parts)
 		live := llm.Message{Role: llm.RoleTool, Content: parts}
 		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
@@ -1044,11 +1058,6 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
 		}
 		if persistErr != nil {
-			return
-		}
-		// Obligations persist before any retry or restart can lose them.
-		if err := s.persistSkillToolObligations(skillState); err != nil {
-			persistErr = err
 			return
 		}
 		persistErr = s.flushPendingDelegateDeliveries()

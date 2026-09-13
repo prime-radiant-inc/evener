@@ -194,6 +194,9 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 // checkpoint phase), with the final publication's handoff last. After the
 // receipt pass, a slot still in the published phase is the live
 // claim→delivery-flip window artifact (R19) and completes unconditionally.
+// Durable reload-reminder turns are reconciled the same way: the reminder turn
+// IS its handoff's admission, so a handoff whose reminder already landed must
+// be consumed here rather than delivered a second time after the restart.
 func reconcileSkillCompactionReceipts(entries []transcript.Entry, snapshot *schema.SkillLifecycleSnapshot, sessionID string) {
 	if snapshot == nil {
 		return
@@ -231,6 +234,31 @@ func reconcileSkillCompactionReceipts(entries []transcript.Entry, snapshot *sche
 				snapshot.PendingHandoffs[i].Phase = skillCompactionReceiptDelivered
 			}
 		}
+	}
+	// A durable ReloadReminder turn is the handoff's admission: the live path
+	// removes the handoff right after that turn's transcript write, so a crash
+	// or failed save in between leaves a snapshot whose handoff would repeat the
+	// reminder on the next prepare. The durable turn is the authority, so
+	// consume the handoff it names. The live consumption removes by publication
+	// identity, and a publication's identity is never reused, so this can only
+	// retire the handoff that reminder already satisfied.
+	deliveredReminders := map[string]bool{}
+	for _, entry := range entries {
+		if state := entry.Turn.SkillState; state != nil && state.ReloadReminder != nil {
+			if id := state.ReloadReminder.PublicationID; id != "" {
+				deliveredReminders[id] = true
+			}
+		}
+	}
+	if len(deliveredReminders) != 0 {
+		kept := snapshot.PendingHandoffs[:0]
+		for _, handoff := range snapshot.PendingHandoffs {
+			if deliveredReminders[handoff.Operation.PublicationID] {
+				continue
+			}
+			kept = append(kept, handoff)
+		}
+		snapshot.PendingHandoffs = kept
 	}
 }
 

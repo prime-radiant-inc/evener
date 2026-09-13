@@ -1091,3 +1091,209 @@ func TestSkillReloadReminder_ConsumesReceiptOnlyAfterDurableAdmission(t *testing
 		}
 	}
 }
+
+// countSkillReloadReminderTurns returns how many turns in the session's history
+// carry a typed post-compaction reload reminder.
+func countSkillReloadReminderTurns(s *Session) int {
+	n := 0
+	for _, state := range skillTurnStates(s) {
+		if state.ReloadReminder != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSkillReloadReminder_DurableReminderConsumedAtRestore pins the restart
+// half of the reminder's admission contract: the reminder turn IS its handoff's
+// durable admission, so a snapshot that still holds the handoff (a crash or
+// failed save between the turn's transcript write and the consumption save)
+// must be reconciled from that durable turn at restore — never repeat the
+// reminder. Without the reconciliation the handoff survives the restart and the
+// same inventory notification is delivered a second time.
+func TestSkillReloadReminder_DurableReminderConsumedAtRestore(t *testing.T) {
+	s := newTestSession(t)
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "absent"},
+			PublicationID: "pub-durable-reminder",
+		},
+	}}
+	s.mu.Unlock()
+
+	reminder := &schema.SkillReloadReminder{
+		Revision:      9,
+		PublicationID: "pub-durable-reminder",
+		Selection:     schema.SkillReloadSelection{State: "absent"},
+	}
+	turn := schema.NewTurn(schema.TurnSystem, llm.User("the complete skill inventory reminder"))
+	turn.SkillState = &schema.SkillTurnState{ReloadReminder: reminder}
+	entries := []transcript.Entry{{Turn: turn}}
+
+	if got := countSkillReloadReminderTurns(s); got != 0 {
+		t.Fatalf("test setup: the reminder turn already joined history %d time(s)", got)
+	}
+	reconcileSkillCompactionReceipts(entries, &s.skillLifecycle, s.id)
+
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("the durable reminder left its handoff pending: %+v", handoffs)
+	}
+	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads after reconciliation: %v", err)
+	}
+	if batch != nil || len(outcomes) != 0 {
+		t.Fatalf("a consumed handoff still prepared delivery: batch=%+v outcomes=%+v", batch, outcomes)
+	}
+	if got := countSkillReloadReminderTurns(s); got != 0 {
+		t.Fatalf("the consumed handoff delivered the reminder again (%d turns)", got)
+	}
+}
+
+// TestSkillReloadReminder_FitFailureConsumesEarlierReminders pins the failure
+// half. When a later receipt's reminder cannot fit, the reminders already
+// durably admitted in this same call must be consumed before the error returns:
+// otherwise every retry re-appends them, and since the fit check measures the
+// history that now contains the duplicates, each attempt consumes more of the
+// very window it is checking and the cycle can never converge.
+func TestSkillReloadReminder_FitFailureConsumesEarlierReminders(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	// A construction window keeps the context manager's estimator live (a
+	// profile without a window reports zero usage for every history), then the
+	// session profile is narrowed to admit exactly one reminder candidate.
+	s, _, _ := newReloadSession(t, root, 1_000_000, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_fit", nil))
+	plantPreloadRecord(t, s, "bulk", strings.Repeat("bulk fixture description ", 200))
+
+	// Mirror the production reminder content exactly so the window can be sized
+	// to admit exactly one of the two candidates.
+	summary, diagnostics := s.skillInventorySummary(context.Background())
+	if len(summary) == 0 {
+		t.Fatal("test setup: the planted inventory is empty")
+	}
+	s.mu.Lock()
+	revision := s.skillLifecycle.Revision
+	sys := s.cachedSystemPrompt
+	history := append([]schema.Turn{}, s.history...)
+	s.mu.Unlock()
+	if s.contextMgr == nil || s.profile == nil {
+		t.Fatal("test setup: the session has no context manager or profile")
+	}
+	reminder := schema.SkillReloadReminder{
+		Revision:      revision,
+		PublicationID: "pub-fit-1",
+		Selection:     schema.SkillReloadSelection{State: "absent"},
+		Inventory:     summary,
+		Diagnostics:   skillInventoryDiagnostics(diagnostics),
+	}
+	content := renderSkillReloadReminder(reminder, s.canInstructTool("use_skill"))
+	used := s.contextMgr.EstimateUsage(history, len(sys)).Used
+	tokens := llm.EstimateMessagesInputTokens([]llm.Message{llm.User(content)}).Tokens
+	window := used + 1024 + tokens + 1
+	if window >= 102400 {
+		t.Fatalf("test setup: window %d does not keep the 1024-token reserve", window)
+	}
+	if got := skillReloadSafetyReserve(window); got != 1024 {
+		t.Fatalf("test setup: reserve at window %d = %d, want 1024", window, got)
+	}
+	s.profile = WithContextWindow(s.profile, window)
+	if !s.skillReloadReminderFits(content) {
+		t.Fatalf("test setup: the first reminder must fit window %d (used=%d tokens=%d)", window, used, tokens)
+	}
+
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{
+		{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    1,
+				Selection:     schema.SkillReloadSelection{State: "absent"},
+				PublicationID: "pub-fit-1",
+			},
+		},
+		{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     schema.SkillReloadSelection{State: "absent"},
+				PublicationID: "pub-fit-2",
+			},
+		},
+	}
+	s.mu.Unlock()
+
+	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+		t.Fatal("the second reminder cannot fit the window; the preparation must fail visibly")
+	}
+	if got := countSkillReloadReminderTurns(s); got != 1 {
+		t.Fatalf("reminder turns after the fit failure = %d, want exactly the one admitted before the failure", got)
+	}
+	handoffs := pendingHandoffsSnapshot(s)
+	if len(handoffs) != 1 || handoffs[0].Operation.PublicationID != "pub-fit-2" {
+		t.Fatalf("handoffs after the fit failure = %+v, want only the undelivered pub-fit-2", handoffs)
+	}
+
+	// The retry must not re-append the reminder that was already admitted.
+	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+		t.Fatal("the retained reminder still cannot fit the window")
+	}
+	if got := countSkillReloadReminderTurns(s); got != 1 {
+		t.Fatalf("reminder turns after the retry = %d, want no re-append", got)
+	}
+}
+
+// TestSkillReload_AdmittedCarrierWaitsForItsDurableObligation pins the same
+// ordering for the compaction-reload route that the tool round and the
+// selection route already hold: a reload carrier embeds the COMPLETE skill
+// body, so it must not be recorded before the obligation that keeps that body
+// alive at dispatch is durable. A failed admission save must therefore publish
+// no carrier at all — the code recorded it first and then claimed, in a
+// comment, that the carriers were durable "in the same save".
+func TestSkillReload_AdmittedCarrierWaitsForItsDurableObligation(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_carrier")
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_carrier", nil))
+	plantOrdinaryRecord(t, s, root, "opaque", true)
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+			PublicationID: "pub-reload-carrier",
+		},
+	}}
+	s.mu.Unlock()
+
+	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if batch == nil || len(batch.Items) != 1 {
+		t.Fatalf("test setup: prepared batch = %+v, want the one selected reload", batch)
+	}
+
+	repair := breakSessionMetaPath(t, s)
+	err = s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, batch, outcomes)
+	if err == nil {
+		t.Fatal("a failed admission save must surface an error")
+	}
+	repair()
+
+	for _, state := range skillTurnStates(s) {
+		if len(state.Obligations) != 0 {
+			t.Fatalf("a failed admission save published a carrier turn carrying %+v", state.Obligations)
+		}
+	}
+	if got := lifecycleObligations(s); len(got) != 0 {
+		t.Fatalf("a failed admission save left live obligations: %+v", got)
+	}
+}

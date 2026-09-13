@@ -477,18 +477,12 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 	if err := s.saveMeta(); err != nil {
 		// Roll the batch's obligations back out of memory: no carrier has been
 		// published for them yet, so nothing half-admits.
-		drop := make(map[string]bool, len(admissions))
+		added := make([]schema.SkillDeliveryObligation, 0, len(admissions))
 		for _, adm := range admissions {
-			drop[adm.obligation.InvocationID] = true
+			added = append(added, adm.obligation)
 		}
 		s.mu.Lock()
-		kept := s.skillLifecycle.Obligations[:0]
-		for _, obligation := range s.skillLifecycle.Obligations {
-			if !drop[obligation.InvocationID] {
-				kept = append(kept, obligation)
-			}
-		}
-		s.skillLifecycle.Obligations = kept
+		s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, added)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("saving skill delivery obligations failed", err))
