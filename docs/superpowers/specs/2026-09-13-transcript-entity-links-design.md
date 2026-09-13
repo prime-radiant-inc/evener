@@ -2,9 +2,9 @@
 
 ## Status
 
-Approved in outline. Scope locked with Jesse on 2026-09-13, revised after three
-design reviews (roborev jobs 9855, 9876, 9885) and a simplify pass over four
-angles (reuse, simplification, efficiency, altitude):
+Approved in outline. Scope locked with Jesse on 2026-09-13, revised after four
+design reviews (roborev jobs 9855, 9876, 9885, 9890) and a simplify pass over
+four angles (reuse, simplification, efficiency, altitude):
 
 - **Entities:** shell jobs (`job_…`) and stable delegates (`dlg_…`) get a link
   plus a hover card; evener watches (`watch_…`) get a hover card only.
@@ -108,24 +108,25 @@ decision that must first establish backend resolvability.
 Resolution is a derived view over state the current session already has. It
 adds no fetch engine, no cache layer, and no concurrency policy.
 
-### Request coordination
+### Ownership
 
-The view reuses `activitySummaryStore.refreshRoot` as its one request
-coordinator, exactly as `ActivityPanelBody` does:
+The view owns no requests and no refresh. It is a read-only derived consumer of
+`activityPanelStore`'s retained tree, `ThreadModel.delegates[]`, and the loaded
+turns. It mounts no body, calls neither `refreshRoot` nor `listJobs`, and adds
+no freshness value.
 
-- On mount it registers a body (`mountBody(ref)` / `unmountBody(ref)`) so its
-  lifetime counts like any other activity consumer.
-- When it needs a tree it calls
-  `refreshRoot(ref, model.jobsUpdatedAt, (r) => threadsStore.listJobs(r))`.
-  That store already owns deduplication (`beginRootFetch`), monotonic request
-  fencing (`requestID`), and the queued follow-up (`pendingBump`, drained by
-  `issuePendingRootFetch`), and it publishes the parsed tree into
-  `activityPanelStore`.
-- Freshness provenance is therefore the coordinator's own state
-  (`lastFetchedBump`, `requestID`, `pendingBump`), plus the panel's
-  `retainedNonReady` and `unprovenFreshness` (`jobsUpdatedAt === null`) rules.
-  The design stores no second freshness value and issues no direct `listJobs`
-  call.
+It does not need to. `SessionChrome` always mounts `ActivityPanel` with
+`hideTrigger` and `refreshWhenHidden`, whose effect owns the per-session
+refresh and publishes the parsed tree into `activityPanelStore`
+(`ActivityPanel.tsx:323-352`). The tree is therefore maintained whenever a
+session pane's chrome is present. A second owner here is exactly what would
+force duplicate forced refreshes, so the design adds none.
+
+Documented limitation: a bare read-only `transcript` pane mounts no session
+chrome, so it has no retained tree. Delegate and watch entities still resolve
+there (delegates arrive with the hydrated thread; watches come from loaded
+turns), but job entities do not. Giving that pane an activity owner is a
+follow-up, not part of this change.
 
 ### Sources
 
@@ -152,10 +153,16 @@ after a fold change.
 
 ### Derivation ownership
 
-One index exists per `(session ref, retained tree, delegates[], turns version)`,
-shared by every `EntityRef` on screen through a memoized selector or store
-subscription. Inline references must not each flatten the tree, and the watch
-fold must not re-run per stream tick.
+One index exists per `(session ref, retained tree, delegates[])`, shared by
+every `EntityRef` on screen through a memoized selector or store subscription;
+inline references must not each flatten the tree.
+
+The watch fold keys on the loaded `job_watch` tool items, not on the turns
+array. `ThreadModel` has no turns version, and agent prose deltas replace that
+array, so keying on it would re-fold every loaded `job_watch` result on each
+delta. Key on the set of `job_watch` items (their ids plus completed state),
+which prose deltas do not change. Tool completion and older-history paging do
+change it, which is correct.
 
 ### State
 
@@ -166,17 +173,25 @@ and the existing formatters and classifiers: `activityDelegateState`,
 `formatUsagePair`, `formatByteCount`, `clipJobID`. Do not define new
 `JobState`/`DelegateState` shapes or re-derive any of these.
 
-### Delegate precedence
+### Delegate selection
 
-Selection is revision-aware, because a tree response can carry a higher
-`projectionRevision` than the live array (which `listJobs` does not update):
+A delegate may resolve from the live `delegates[]` array alone, with no tree
+row. That is a first-class branch, not a failure: because
+`EvenerDelegateInfo.transcriptRef` is required, a live-only delegate both earns
+a card and navigates. Its card normalizes through the existing helpers
+(`stableDelegateDisplayStatus`, `classifyJobStatus`), since an
+`EvenerDelegateInfo` is not an `ActivityDelegateRow`.
+
+When both sources have the delegate, selection is revision-aware, because a
+tree response can carry a higher `projectionRevision` than the live array
+(which nothing here updates):
 
 - both numeric: higher wins, live record on a tie;
 - tree record lacks `projectionRevision`: live record;
 - no live record: tree record.
 
-`ActivityDelegate.projectionRevision` is optional; `EvenerDelegateInfo
-.projectionRevision` is required.
+`ActivityDelegate.projectionRevision` is optional;
+`EvenerDelegateInfo.projectionRevision` is required.
 
 ## Rendering
 
@@ -282,8 +297,9 @@ from `delegate.childRef` (the underlying `ActivityDelegate.transcriptRef` is
 optional). Use the row fields, never the underlying record's optional ones.
 
 Only rows from the current session's loaded tree are eligible. `JobLog` fetches
-output through `parentRef`; a guessed owner is worse than no link, so an id
-with no eligible row stays plain text.
+output through `parentRef`; a guessed owner is worse than no link, so a **job**
+id with no eligible row stays plain text. That rule is jobs-only: a delegate
+resolves and navigates from a live `delegates[]` record without any tree row.
 
 ## Failure modes
 
@@ -292,10 +308,14 @@ with no eligible row stays plain text.
 - Malformed or server-invalid id: not detected.
 - Job id with no eligible tree row: plain text, no link, no card. A job's state
   and target both come from the row.
-- Lookup or parse failure: no card, no link, no error surface. The view never
-  retries on its own; re-fetch is governed only by `refreshRoot`'s existing
-  rules (bump change, unproven freshness, or a retained non-ready state on
-  remount). No timer and no per-hover retry.
+- No tree yet (initial state): job entities are unresolved; delegates and
+  watches still resolve from their own sources.
+- Refresh failure with a tree already retained: `activityPanelStore` keeps it as
+  `{kind: "ready", tree, staleError}` and `retainedActivityTree` still returns
+  it, so already-shown cards remain and are marked stale from `staleError`. A
+  first-load failure leaves no tree and no card.
+- Malformed or unparseable payload: no card, no link, no error surface. The view
+  never fetches, so it cannot retry; refresh belongs to the panel owner.
 - Truncated tree without the id: unresolved.
 
 ## Accessibility
@@ -323,14 +343,15 @@ the Go identifier package.
 tests).**
 Acceptance: resolution from loaded fixtures for all three kinds; resolution
 identical before and after a fold change (disclosure-independent index);
-revision-aware delegate selection including the tree-lacks-revision case;
-`refreshRoot` is the only request path (no direct `listJobs`, no duplicate
-request when the panel is also mounted, and a queued follow-up when an
-invalidation lands mid-fetch); one shared index per
-`(ref, tree, delegates, turns version)`; operation-aware watch normalization
-with field presence preserved; positional ordering across older-history paging;
-no resolution outside the current session's tree. `jobWatch`'s existing tests
-still pass after the extraction.
+revision-aware delegate selection including the tree-lacks-revision case; the
+live-only delegate branch cards and navigates from `EvenerDelegateInfo`; the
+view performs no requests and mounts no refresh owner (no `listJobs`, no
+`refreshRoot`, no body registration); one shared index per
+`(ref, tree, delegates)`; the watch fold does not re-run when only agent prose
+deltas change; a retained-tree refresh failure keeps cards and marks them stale;
+operation-aware watch normalization with field presence preserved; positional
+ordering across older-history paging; no resolution outside the current
+session's tree. `jobWatch`'s existing tests still pass after the extraction.
 
 **Stage 3 — shared interaction (`panes/session/transcript/EntityRef.tsx`,
 `panes/session/transcript/EntityText.tsx`, `widgets/hovercard/index.tsx`, the
