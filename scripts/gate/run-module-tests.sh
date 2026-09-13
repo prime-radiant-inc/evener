@@ -308,12 +308,12 @@ package_list_diagnostic() {
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
-	printf 'run-module-tests.sh: could not list the packages of module %s.\n' "$module" >&2
+	printf 'run-module-tests.sh: listing the packages of module %s timed out.\n' "$module" >&2
 	printf 'run-module-tests.sh: worktree/module: %s (%s)\n' "$worktree" "$module" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
 	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list_log" >&2
-	printf 'run-module-tests.sh: if the list timed out, repair the configured caches and retry:\n' >&2
+	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
 	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
 		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
 }
@@ -335,7 +335,12 @@ run_package_list() {
 		-- go list ./... >"$package_list" 2>"$package_list_stderr" || status=$?
 	if [ "$status" -ne 0 ]; then
 		cat "$package_list_stderr" >&2
-		package_list_diagnostic "$module" "$package_list_stderr"
+		# 124 is the helper's timeout status, and the only one the cache advice
+		# below fits: any other status is `go list` deciding something about
+		# the packages themselves.
+		if [ "$status" -eq 124 ]; then
+			package_list_diagnostic "$module" "$package_list_stderr"
+		fi
 	fi
 	return "$status"
 }

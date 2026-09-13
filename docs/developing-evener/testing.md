@@ -96,7 +96,11 @@ from a cold, loaded runner, and a killed attempt leaves the caches warmer for
 the next. Only a timeout is retried -- a `go list` that exits non-zero has
 decided something about the package list itself. The helper stops the whole
 `go list` process group, because a surviving compiler keeps holding the build
-and module cache locks every later run on that host needs.
+and module cache locks every later run on that host needs, and it forwards a
+TERM, INT or HUP of its own to that group, which a signal to the gate no longer
+reaches by itself. It exits 124 when every attempt timed out, and passes
+through whatever the command printed on every outcome, so a half-written list
+is still evidence.
 
 ## Destructive Operations and the Tooling Test Estate
 
