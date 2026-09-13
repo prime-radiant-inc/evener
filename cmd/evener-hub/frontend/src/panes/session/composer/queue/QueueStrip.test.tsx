@@ -1047,6 +1047,39 @@ describe("optimistic pending queue rows", () => {
     expect(within(row).getByText("not yet confirmed")).toBeTruthy();
     expect(within(row).queryByRole("button")).toBeNull();
   });
+
+  // A queued submission can carry ONLY skills, with no typed prose. The pending
+  // row must show the same [skill: …] marker a durable queue row already shows -
+  // without it the row renders blank until the daemon's own queue data arrives.
+  test("a skill-only pending queue row renders its skill marker instead of staying blank", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: { revision: 0, depth: 0 },
+      },
+    });
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
+    renderStrip(defaultProps());
+
+    await act(async () => {
+      await submitWithPendingTracking(
+        { ref: "ref_a", method: "queue", text: "", skillNames: [" pkg:probe ", "pkg:probe"], onFailure: () => {} },
+        () => threadsStore.getState().queue("ref_a", "", undefined, [" pkg:probe ", "pkg:probe"]),
+      );
+    });
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("[skill: pkg:probe]")).toBeTruthy();
+  });
 });
 
 describe("drain-as-steer affordance", () => {

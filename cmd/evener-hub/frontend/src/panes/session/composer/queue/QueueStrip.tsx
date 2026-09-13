@@ -19,6 +19,7 @@ import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "..
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   discardRecoveryPendingTurn,
+  type PendingTurnEntry,
   resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
   submitWithPendingTracking,
@@ -141,6 +142,16 @@ function recordPreview(record: MutationOutboxRecord): string {
     .filter((part) => part !== "")
     .join(" ");
   return truncateForDisplay(preview);
+}
+
+// A pending entry already carries its canonical skill names, so it renders the
+// same text-plus-markers preview a durable record does. Without the markers an
+// entry with no text and no images (a skill-only submission) would be blank
+// until the authoritative queue row replaces it.
+function pendingPreview(entry: PendingTurnEntry): string {
+  return [queueEntryPreviewText(entry.text, entry.imageCount), skillMarkers(entry.skillNames)]
+    .filter((part) => part !== "")
+    .join(" ");
 }
 
 function editDisabledReason(opts: {
@@ -427,7 +438,7 @@ export function QueueStrip({
         })}
         {pendingQueueEntries.map((entry) => (
           <li key={entry.id} className={`${CLASS.row} ${CLASS.rowPending}`}>
-            <span className={CLASS.rowText}>{queueEntryPreviewText(entry.text, entry.imageCount)}</span>
+            <span className={CLASS.rowText}>{pendingPreview(entry)}</span>
           </li>
         ))}
         {durableEntries.map(({ kind, record }) => {
