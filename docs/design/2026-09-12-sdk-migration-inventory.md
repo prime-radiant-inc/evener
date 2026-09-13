@@ -347,7 +347,7 @@ top-level modules plus the `testing/` directory): 32 + 49 + 10 + 17 = 108.
 ## Delta since baseline
 
 What has landed since `92561dbe3`, and what it does to the frozen tables above.
-Statuses observed at `2b1e02939`; re-query before acting.
+Statuses observed at `c867646c4`; re-query before acting.
 
 | PR | Merged as | Effect on the baseline |
 | --- | --- | --- |
@@ -358,6 +358,7 @@ Statuses observed at `2b1e02939`; re-query before acting.
 | B3b #1203 | `4da382482` | Native's two `projectUsage` copies collapsed to one. That DUPLICATED row is closed; the count in §7 is the baseline count and is not decremented |
 | A3b #1206 | `99fa1882f` | Exports from the root the twelve `errors` helpers the apps import, which is what makes the plan's A4 rewrite compile. `chunkViewBackingForTests` and `readDocFile` are deliberately excluded |
 | A3c #1207 | `2a8163eb0` | The qualification manifest is per specifier rather than root-only, so a published subpath can be qualified at all — the prerequisite for the plan's A3d and C1 |
+| C11a #1225 | `c867646c4` | `tools/helpers.ts` → `protocol/toolCallText.ts`, the pure half C11b's `askShared` move depends on |
 | C6 #1227 | `2b1e02939` | `stores/attachmentMarkers.ts` relocated into the package |
 | C26 #1226 | `b9a98151c` | `messages/format.ts` → `protocol/displayFormat.ts`. Left `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` together at the package root with different rules — filed as #1228 for a naming pass after C11b |
 | C10 #1222 | `ba4164649` | `submitRouting` relocated into the package |
@@ -369,6 +370,6 @@ A3 and A4 are unstarted, and what they block is narrower than an earlier draft
 of this document claimed: the package-name import rewrite and the directory
 move. Relocations into `protocol/` land without them, with consumers still on
 deep relative paths — C10 (#1222, `ba4164649`), C13 (#1223, `e2c77cc72`),
-C24 (#1221, `303053dfb`), C26 (#1226, `b9a98151c`) and C6 (#1227, `2b1e02939`)
-all did. Unrelated to this
+C24 (#1221, `303053dfb`), C26 (#1226, `b9a98151c`), C6 (#1227, `2b1e02939`) and
+C11a (#1225, `c867646c4`) all did. Unrelated to this
 lane, #1098 merged as `cb211c5f8`.

@@ -323,9 +323,9 @@ through D21–D24 and the directory is deleted at the end of D24.
 every row above, so the headline and the phases cannot drift apart again. The
 tables carry 73 rows, six of them withdrawn phase-B rows that contribute
 nothing — so **67 rows of work**, and **66 real PRs**, because B1b landed inside
-B1 rather than on its own. **Thirteen have landed** (A1, A2, A3b, A3c, A3d, A5,
-B1 carrying B1b, B3b, C6, C10, C13, C24, C26), so **53 remain**, three of them in
-flight (C11a #1225, C5 #1229, C15 #1230).
+B1 rather than on its own. **Fourteen have landed** (A1, A2, A3b, A3c, A3d, A5,
+B1 carrying B1b, B3b, C6, C10, C11a, C13, C24, C26), so **52 remain**, two of
+them in flight (C5 #1229, C15 #1230).
 
 Phase A 8 PRs / 2,820 lines. Phase B 210, the sum of its three live rows of 9
 (all three landed). Phase C 27 / 8,550. Phase D 29 / 18,610. Each subtotal is its own rows added up, not an estimate.
@@ -352,7 +352,7 @@ no phase-D PR deletes it, and on the evidence none should.
 
 ## Status as of 2026-09-12
 
-Observed at `2b1e02939`, not assumed; re-query before acting.
+Observed at `c867646c4`, not assumed; re-query before acting.
 
 | Plan PR | GitHub | State |
 | --- | --- | --- |
@@ -365,7 +365,7 @@ Observed at `2b1e02939`, not assumed; re-query before acting.
 | C24 | #1221 | **merged** as `303053dfb` — `DocPort`, both adapters, `docImageURL` still a string builder |
 | C10 | #1222 | **merged** as `ba4164649` — `submitRouting` → `protocol/submitRouting.ts` |
 | C13 | #1223 | **merged** as `e2c77cc72` — `activityRows` → `protocol/activityRows.ts` |
-| C11a | #1225 | open at `0ba4ad45d` on `2b1e02939`, awaiting review — `tools/helpers.ts` → `protocol/toolCallText.ts` |
+| C11a | #1225 | **merged** as `c867646c4` — `tools/helpers.ts` → `protocol/toolCallText.ts` |
 | C6 | #1227 | **merged** as `2b1e02939` — `stores/attachmentMarkers.ts` → `protocol/attachmentMarkers.ts` |
 | C5 | #1229 | open at `1452e07d5` on `2b1e02939` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
 | C15 | #1230 | open at `20ed3f884` on `2b1e02939` — `shell/palette/catalogCommands.ts` → the package |
