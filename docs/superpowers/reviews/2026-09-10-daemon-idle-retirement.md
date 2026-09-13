@@ -1410,3 +1410,119 @@ are recorded.
 The parent also hit the run's own documented trap while establishing this: the first probe command ended in
 `echo | tee`, so the job reported `exit_zero` while the gate had actually exited 2. Reading the log caught
 it. Capture `make`'s own exit status, not a trailing `echo`'s — that rule applies to the parent too.
+### Task 12 — ACCEPTED (`d632f35dce` + fix `9482778d5b`)
+
+Prove selected transcript/draft recovery through the actual client and the real browser. `d632f35dce`
+(parent `0b840c7b3b`) is 10 files, +2135/−24: the new `threads.retirement.test.tsx`,
+`src/dev/retirementharness-entry.tsx`, `retirementharness.html`, `scripts/retirementguard/run.mjs`, and
+`cmd/evener-hub/app_retirement_browser_test.go`, plus `frontend/package.json`, `make/testing.mk`,
+`docs/developing-evener/testing.md`, and the two disclosed out-of-scope paths below.
+
+**This is a proof task and it found no production gap — on purpose.** `cmd/evener-hub/frontend/src/stores/threads.ts`
+and `cmd/evener-hub/app_relay.go` are **untouched** and absent from the commit. With the fixture corrected the
+recovery contract passes against unchanged production code, which is the plan's intended outcome: the plan's
+Step 2 says explicitly that a writer must not invent a production edit just to give the task a diff. The
+parent verified the absence of a diff directly, and the independent review was briefed to attack exactly this —
+whether the fixture had been shaped to avoid a gap — and concluded it had not.
+
+**The RED is genuine and parent-reproduced.** The broken boundary is a committed fixture switch,
+`const RED_SUPPRESS_REPLACEMENT = false` (`threads.retirement.test.tsx:81`). With the replacement never wired,
+the post-resync read keeps returning the old instance and `turn/start` is rejected, so the streamed turn never
+arrives and the plan's own assertion fails:
+
+```text
+FAIL threads.retirement.test.tsx > selected transcript and unsent draft survive source retirement
+AssertionError: expected 2 to be 3   // expect(after.length).toBe(before.length + 1)  at :509
+```
+
+The parent reproduced this independently by copying the test to a throwaway `zz-red-probe.test.tsx`, flipping
+the switch, and running it: exit 1 in 220 ms with exactly that assertion (probe deleted, tree clean). That is
+the missing-streamed-event boundary the plan names. The first attempt at this task instead produced a
+`Test timed out in 5000ms` hang, which is *not* acceptable evidence — a timeout can mean a fixture deadlock
+rather than the intended boundary, and here it did: `send()` was awaiting a promise the suppressed source never
+resolved. The fixture now resolves a real transport outcome in both branches, so suppression yields a named
+assertion failure instead of a hang.
+
+**All five plan assertions are proven, not merely observed.** Each has a mechanism stronger than reading back
+state the harness itself wrote. (1) A real Session pane plus real `AppwireClient` over a scripted WebSocket
+server shows the transcript and draft preserved across retirement with exactly one turn added on submit and the
+draft cleared. (2) The late old-generation case is deliberately **non-vacuous**: the fixture injects a stale
+`turn/started` with an acknowledgement callback, and the Go test fails unless that acknowledgement lands, so the
+Hub demonstrably delivered the stale frame to the subscription rather than the client ignoring a phantom;
+`result.json` records `survived: false`. (3) The retry case is **server-verified**: `retryMutationIDs` records
+every `turn/start` attempt and the test asserts exactly two entries with the same non-empty id, so a regenerated
+id fails immediately. (4) The unavailability case asserts server-side that no `turn/start` ever carried the
+retained draft text, independently of timing. (5) `readyTransitions: 1` — a browser reconnect would make it
+≥ 2 — with `resyncCount: 1`, so recovery went through the same never-reconnected socket; a reconnect is
+explicitly not the mechanism.
+
+**Browser evidence is retained**, outside the scratch the runner deletes:
+`.superpowers/sdd/2026-09-10-daemon-idle-retirement/task-12-browser-artifacts/` holds five 1400×900 PNGs and a
+machine-readable `result.json`. The three the plan requires are present (before retirement, after retirement
+with draft, after resumed streaming) and two more extend coverage (lost-reply retry, unavailable controls).
+`result.json` records the core contract: same ref, same draft and same turn IDs across retirement with
+`sourceGeneration` moving `instance_v1` → `instance_v2`, exactly one new turn on submit, `lateFrame.survived:
+false`, `retry.turnAdded: 1`, and the unavailable case retaining the draft with the turn set unchanged.
+Record-only observation: `01-before-retirement.png` and `02-after-retirement.png` are byte-identical, which is
+consistent with "the transcript and draft look unchanged" but means those two images do not independently show
+the transition; the generation change in `result.json` carries that.
+
+**Independent review: spec PASS, 0 Critical**, quality "acceptable with one noted inconsistency". It also
+confirmed that the five fixture-construction defects fixed during the task were infrastructure correctness
+problems rather than fixture weakening — an empty navigation `generationId`, item-mode `thread/read` requiring
+`itemsView:"fragment"`, the relay needing a live continuation, cross-origin WebSocket needing the Vite proxy,
+and the canonical relay path needing the resync before the old generation closed. Without those the fixture was
+not exercising the real production path at all; fixing them made the real path exercisable.
+
+**Fix round 1 (`9482778d5b`, 1 file, +9/−5).** The one actionable finding: `docs/developing-evener/testing.md`
+still claimed in its "Frontend setup boundary" prose that `make test-web-browser` is deterministic after the
+frontend dependencies alone, while the same commit had correctly updated the guard table to say `retirementguard`
+also needs the Go toolchain. The file contradicted itself and a reader of the prose got a wrong prerequisite
+list. The parent confirmed the contradiction by reading both passages and fixed it rather than deferring it,
+since the task introduced it in a file it modified. The prose now separates the two targets' prerequisites,
+states that a missing browser or Go toolchain is a reported prerequisite failure, and notes that a cold module
+cache can require network access. The parent then confirmed the prose survives `make generate` with the tree
+clean, and that the generated table is unchanged.
+
+**Two paths outside the plan's Step 5 commit list, both necessary and both disclosed.**
+`scripts/web/test-web-browser.sh` *is* `make test-web-browser` — its hard-coded guard loop is the only place the
+new guard could be added, and the plan's Files list omits it (plan defect, as with Task 8's missing frontend
+fixtures). `runtime_pair_build_test.go` pins the old five-guard shape and the old npm-command set, both of which
+Task 12 necessarily changes; the review confirmed it was **strengthened** (5 → 6 verdicts, all six guards named
+explicitly, `"run retirementguard"` added, nothing removed). Same forced-test-edit precedent as Task 8's goldens
+and Task 10's catalog/routing tests.
+
+**Verification.** Parent gates rerun by the parent on the committed tree, each with its own exit status
+(`task-12-parent-verification.log`): `TMPDIR=/tmp/eb make test-web-browser` → six PASS including
+`web-retirementguard`, exit 0, and **no leftover** scratch directory; focused vitest → 1 passed, exit 0;
+`go test -race ./cmd/evener-hub -run 'RetirementBrowser|RetirementResume|Relay' -args -retirement-browser` →
+ok 38.616s, exit 0; canonical `make test` → all eight modules PASS, exit 0; zero `[no tests to run]`
+occurrences; `make generate` idempotent with a clean tree. The browser gate needs a short `TMPDIR` in this
+environment because Chrome's process-singleton socket exceeds `sun_path` under the default sandbox root — that
+applies to all six guards and is environmental, not a test result.
+
+**A real defect the parent caught in an intermediate state.** The first post-wiring browser run printed six PASS
+but then produced ~4.2 MB of `rm: cannot remove … Permission denied` under the new guard's private HOME: because
+`retirementguard` runs `go test`, a bare private HOME made Go build a ~696 MB module cache whose read-only files
+defeat the runner's `scratch_rm`, which sets `finish_status=1` and exits nonzero. That is a correct failure, not
+a flaky test — it breaks the contract that `runtime_pair_build_test.go`'s conciseness test pins. Fixed at the
+cause by routing the guard through the pre-existing `scripts/lib/private-go-home.sh` (already used by
+`build-runtime-pair.sh` and `run-module-tests.sh`), which preserves the user's Go caches while keeping the
+guard's `HOME` private; the review judged this sound and the "private process home" documentation still
+accurate.
+
+**Process notes worth keeping.** Two writers died on provider exhaustion before this landed — the first after 27
+minutes on an `openrouter-corp` 402 (insufficient credits), the second in 1.4 seconds on a `kimi-code` 403
+(weekly usage limit, not the 5-hour window earlier entries recorded). The parent preserved the entire WIP
+out-of-tree with checksums before dispatching a replacement, so nothing was lost. The successful continuation
+then ended a turn on a checkpoint rather than completing, which is why the parent assessed the on-disk state
+directly instead of trusting the checkpoint — that assessment is what surfaced the cleanup defect.
+
+Record-only items for the hardening list: the two byte-identical screenshots; the disclosed 800 ms absence
+tripwire in the no-auto-resume case (the Go-side assertion is the real mechanism, so the bound is belt to
+suspenders); `make lint` and whole-repo `make test-race` were not run (not in Task 12's gate list); the Go race
+log carries no per-test PASS line because the test ran without `-v`; and the race detector remains
+probabilistic. The environment-specific `TMPDIR=/tmp/eb` requirement for the browser gate should be recorded in
+the operator-facing docs alongside Task 13's operator policy.
+
+Tasks 12 and 13: Task 13 remains. At this point plan tasks 1–12 of 13 are complete and accepted.
