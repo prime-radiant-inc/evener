@@ -5,6 +5,7 @@ import * as paneActions from "../../../../shell/paneActions";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Markdown } from "../../../../widgets/markdown";
 import { OpenButton } from "../../../../widgets/openbutton";
+import { browserDocPort } from "../../../doc/browserDocPort";
 import { fileDocParams } from "../fileOpenBeside";
 import { isValidTranscriptRef } from "./steeringClassify";
 
@@ -53,7 +54,9 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
         open();
       };
       link.href =
-        params.kind === "image" ? docImageURL(params.session, params.path) : docFileRawURL(params.session, params.path);
+        params.kind === "image"
+          ? docImageURL(browserDocPort.origin, params.session, params.path)
+          : docFileRawURL(browserDocPort.origin, params.session, params.path);
       link.addEventListener("click", onClick);
       const slot = document.createElement("span");
       link.after(slot);

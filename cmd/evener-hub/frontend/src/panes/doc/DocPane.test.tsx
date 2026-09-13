@@ -7,6 +7,7 @@ import { DOC_FILE_MAX_BYTES, type DocFileContent, DocFileError, docImageURL } fr
 import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { browserDocPort } from "./browserDocPort";
 import DocPane from "./DocPane";
 // Side-effect import: registers the real "doc" pane type (index.tsx), needed
 // below so workspaceStore.openPane("doc", ...) can seed an already-open doc
@@ -137,7 +138,7 @@ test("shows a loading placeholder while the fetch is in flight", () => {
 test("an image pane renders an <img> at the /doc/image URL and never fetches raw file bytes", () => {
   render(<DocPane params={{ session: "s1", path: "out/pic.png", kind: "image" }} paneId="doc-2" focused={true} />);
   const img = screen.getByTestId("doc-image") as HTMLImageElement;
-  expect(img.getAttribute("src")).toBe(docImageURL("s1", "out/pic.png"));
+  expect(img.getAttribute("src")).toBe(docImageURL(browserDocPort.origin, "s1", "out/pic.png"));
   expect(img.getAttribute("alt")).toBe("pic.png");
   expect(mockRead).not.toHaveBeenCalled();
 });
@@ -160,7 +161,7 @@ test("clicking an image opens a full-size lightbox dialog", async () => {
   const dialog = screen.getByRole("dialog");
   expect(dialog).toBeTruthy();
   const lightbox = screen.getByTestId("doc-lightbox-img") as HTMLImageElement;
-  expect(lightbox.getAttribute("src")).toBe(docImageURL("s1", "out/pic.png"));
+  expect(lightbox.getAttribute("src")).toBe(docImageURL(browserDocPort.origin, "s1", "out/pic.png"));
 });
 
 test("an image that fails to load shows an unavailable notice instead of a broken image", () => {

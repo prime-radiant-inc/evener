@@ -33,9 +33,9 @@ export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalRe
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type { DocFileContent, DocFileErrorKind } from "./docContent";
-// readDocFile is deliberately absent: it hardcodes a relative URL and the
-// browser fetch global, so no Node or native consumer of this package can call
-// it. It joins the entry point when it takes a base-URL and fetch port.
+// readDocFile is deliberately absent from the root: it needs a DocPort from the
+// host, and a consumer that supplies one (or spies on the module) wants the
+// module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
 export {
   ClientNotReadyError,
