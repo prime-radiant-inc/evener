@@ -383,6 +383,50 @@ no resumable application session, and continuation state created by tests lived
 inside their process-owned state root. Apple container is diagnostic evidence
 for this contract, not a local or CI gate dependency.
 
+## The Native Gate Bundles the App
+
+`make test-native` starts by bundling the real iOS entry point
+(`make test-native-bundle`, `scripts/native/test-native-bundle.sh`). Nothing
+else in the repository runs Metro, and that is the whole reason the target
+exists.
+
+The native app has three resolvers and only one of them ships. Vitest resolves
+through Vite, `tsc` resolves through TypeScript's own resolver reading
+`tsconfig`, and the app on a device resolves through `mobile-native/metro.config.js`
+— its `watchFolders`, its `nodeModulesPaths`, and the `resolveRequest` hook
+that redirects specifiers coming from the shared `mobile/` and frontend
+sources. A regression in that third resolver — a stale alias, a dropped
+`watchFolders` entry, a `node_modules` path that only resolves from one
+directory, a package that moved — is invisible to the first two. Before this
+gate existed it would have passed CI green and failed first on a device, or in
+a TestFlight build.
+
+Bundling is the only check that reads the shipping resolver, so the gate
+bundles: `npx expo export --platform ios`, which drives Metro over `index.ts`
+without a device, a simulator, or a running packager, and exits non-zero naming
+the unresolved specifier and its import stack. It runs with `--clear` and a
+private `HOME`/`TMPDIR`, so the verdict is never inherited from a warm Metro
+cache, and it runs ahead of the Vitest suites because a bundle that does not
+build is the cheaper failure to read. iOS only: that is the platform the app
+ships on, and the app tree carries no platform-specific source files.
+
+`EVENER_NATIVE_BUNDLE_TIMEOUT` (default 600s) is a tripwire for a hung
+bundler, not the mechanism that decides the verdict — a passing run takes
+about nine seconds on a developer Mac. A failure replays the bundler's whole
+log and keeps its log directory; `--verbose` replays it on a pass too.
+
+Metro is a worker pool, so the gate runs it as a job in its own process group
+and signals that group, never the direct child alone and never a number read
+out of a process listing. Every exit path goes through one `stop_bundle`:
+success, failure, the timeout, and an interrupt delivered to the script, which
+the traps forward because the script's own group belongs to whoever invoked it.
+The stop is bounded in turn — `EVENER_NATIVE_BUNDLE_STOP_GRACE` (default 5s),
+then `SIGKILL` — so a bundler that declines `SIGTERM` cannot turn the tripwire
+into the hang it exists to prevent. `TestNativeBundleInterruptStopsBundlerProcessGroup`,
+`TestNativeBundleTimeoutEscalatesPastIgnoredTerm`, and
+`TestNativeBundleDoesNotSignalReapedBundler` hold all three parts; each one
+fails if its mechanism is removed.
+
 ## The Test Timing Ratchet
 
 `make test-timing-budget` measures per-Go-package test wall time, plus one
@@ -1025,7 +1069,8 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | --- | --- | --- | --- | --- | --- |
 | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
 | `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, and the real transcript scroll/jump-to-latest path. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
-| `make test-native` | The native iPhone app and its shared session core gate. | Native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider. | Native tests, shared-session tests or native typechecking fail. |
+| `make test-native` | The native iPhone app and its shared session core gate. | Metro bundles the real iOS entry point, and the native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider. | Bundling, native tests, shared-session tests or native typechecking fail. |
+| `make test-native-bundle` | The native app's Metro bundling gate. | Metro resolves every specifier the real iOS entry point reaches — the app's own sources, the shared mobile/ and frontend sources its resolveRequest redirects, and the AppWire client wherever that package lives — and Hermes compiles the result. | Native CI (via make test-native); local pre-merge when native sources, metro.config.js, or the AppWire client package's location moves. | Node 22.13+ and an already-installed mobile-native dependency tree; no device, simulator, packager, hub, or provider. Runs with a private process home and temporary root and passes --clear, so the verdict never comes from a warm Metro cache. ~9s on a developer Mac; EVENER_NATIVE_BUNDLE_TIMEOUT (default 600s) bounds a hung bundler and EVENER_NATIVE_BUNDLE_STOP_GRACE (default 5s) bounds the stop that follows. Every exit path, interrupts included, stops the bundler's whole process group. | Metro cannot resolve a module, the bundle or Hermes step fails, or the run exceeds the timeout. |
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies; qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
