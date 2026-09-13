@@ -54,6 +54,18 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 	s.emitWithProvenance(kind, data, p)
 }
 
+// noteJobTreeShapeChange moves the activity clock for a change that adds or
+// removes an entry rather than starting or finishing a job: a delegate
+// appearing shifts its owner's sorted delegate list, and a live continuation
+// minted before it must be refused rather than applied to a list that moved
+// under it.
+func (s *Session) noteJobTreeShapeChange() {
+	if s == nil {
+		return
+	}
+	s.jobActivityClock.nextRevision()
+}
+
 func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bool) {
 	if s == nil || (kind != events.EventJobStarted && kind != events.EventJobFinished) {
 		return "", 0, false

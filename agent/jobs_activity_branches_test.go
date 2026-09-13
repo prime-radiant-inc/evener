@@ -1266,3 +1266,71 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 		t.Fatalf("live root's own continuation into its closed child was rejected: %v", err)
 	}
 }
+
+// seedRetainedActivityDelegate seeds one finished, acknowledged delegate on a
+// live session, the shape a completed delegate leaves behind in the activity
+// tree.
+func seedRetainedActivityDelegate(t *testing.T, s *Session, delegateID string) {
+	t.Helper()
+	descriptor := stableReadonlyDescriptor(s, delegateID)
+	started := time.Unix(30, 0).UTC()
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:                  "complete",
+		communicated:            true,
+		structuredResultPresent: true,
+		descriptor:              descriptor,
+		startedAt:               started,
+		latestActivityAt:        started.Add(time.Second),
+		endedAt:                 started.Add(2 * time.Second),
+	})
+	seedStableReadonlyFinish(t, s, delegateID, descriptor, started, finish, true)
+}
+
+// TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears pins that
+// a live root's revision means "the shape of this tree changed", not only
+// "a shell job started or finished". A session's entries are its shell jobs
+// followed by its delegates in sorted order, so a delegate created between
+// pages inserts into that list and moves every entry after it: a ResumeIndex
+// minted before it lands somewhere else entirely, redelivering one entry and
+// stepping over another. The continuation has to be refused, the same as for
+// any other mutation the live fence exists to catch.
+func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	seedRetainedActivityDelegate(t, s, "dlg_b")
+	page, err := s.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(page.Root.Entries) != 1 {
+		t.Fatalf("first page entries = %d, want 1", len(page.Root.Entries))
+	}
+	token := encodeActivityContinuation(activityContinuation{
+		Version:     activityContinuationV1,
+		RootID:      s.ID(),
+		SessionID:   s.ID(),
+		ResumeIndex: 1,
+		Revision:    activityCurrentRootRevision(s.jobActivityClock),
+	})
+
+	// A delegate created now sorts ahead of dlg_b and shifts it by one.
+	seedRetainedActivityDelegate(t, s, "dlg_a")
+
+	resumed, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token})
+	if err == nil {
+		delivered := make([]string, 0, len(resumed.Root.Entries))
+		for _, entry := range resumed.Root.Entries {
+			if entry.Delegate != nil {
+				delivered = append(delivered, entry.Delegate.DelegateID)
+			}
+		}
+		t.Fatalf("resume delivered %v against a list that shifted under it; want the continuation refused", delivered)
+	}
+	if !strings.Contains(err.Error(), "live session changed") {
+		t.Fatalf("error = %v, want a live-session-changed staleness error", err)
+	}
+}
