@@ -1,22 +1,23 @@
 # @evener/appwire-client
 
-The framework independent TypeScript client for Evener's AppWire protocol. It
-has no runtime dependencies and exports the client, the connection seam
+The framework independent TypeScript client for Evener's AppWire protocol.
+It has no runtime dependencies and exports the client, the connection seam
 applications program against, the transport contract, generated protocol
 types, wire errors with their session classifiers, the rejection classifier
 and the user-facing message helpers every failure display goes through, the
 pure question formatter, the translation that turns a composer's `[image N]`
-attachment markers into prose at send, the thread view model and its
-notification reducer, the activity tree parser, merge and disclosure rules,
-the job log tail parser, the send/queue availability table, the
-send/steer/queue/drain routing decisions a composer makes off it, the stable
-delegate status rule, the display formatters both apps render counts,
-durations and clock times with, and the doc-pane URL builders, which hang
-their hrefs off a base origin the host supplies (empty for a same-origin web
-page). The doc-pane data layer is published at the `./docContent` subpath as
-well, where `readDocFile` takes the host's `DocPort` - that base origin paired
-with a fetch: the package issues no request of its own and names neither an
-origin nor a credentials policy.
+attachment markers into prose at send and the composer input assembly that
+applies that translation and stages the attached images beside the text, the
+thread view model and its notification reducer, the activity tree parser,
+merge and disclosure rules, the job log tail parser, the send/queue
+availability table, the send/steer/queue/drain routing decisions a composer
+makes off it, the stable delegate status rule, the display formatters both
+apps render counts, durations and clock times with, and the doc-pane URL
+builders, which hang their hrefs off a base origin the host supplies (empty
+for a same-origin web page). The doc-pane data layer is published at the
+`./docContent` subpath as well, where `readDocFile` takes the host's
+`DocPort` - that base origin paired with a fetch: the package issues no
+request of its own and names neither an origin nor a credentials policy.
 
 Build and qualify from this directory with `npm run qualification`. The runner
 packs the package, installs that tarball into a temporary consumer, and then,

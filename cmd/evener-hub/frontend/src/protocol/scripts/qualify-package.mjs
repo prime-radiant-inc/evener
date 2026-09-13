@@ -40,6 +40,7 @@ async function qualify() {
     "types.gen",
     "askAnswers",
     "attachmentMarkers",
+    "composerInput",
     "activityData",
     "activityList",
     "activityMerge",
@@ -80,6 +81,8 @@ async function qualify() {
     "rpcURLFromLocation",
     "composeAskAnswers",
     "translateAttachmentMarkers",
+    "buildInput",
+    "buildComposerInput",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
     "STEERING_KINDS",
@@ -146,6 +149,7 @@ async function qualify() {
     "WebSocketLike",
     "AskAnswerItem",
     "MarkerAttachment",
+    "InputAttachment",
     "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
@@ -167,6 +171,11 @@ async function qualify() {
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
+assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
+assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
+  { type: "text", text: "(attached image 1: shot.png)go" },
+  { type: "image", mediaType: "image/png", data: "AA", name: "shot.png" },
+]);
 assert.equal(new client.WireError("nope", -32000).code, -32000);
 assert.equal(client.errorText(new Error("boom")), "boom");
 assert.equal(client.errorKind(new Error("boom")), "unknown");

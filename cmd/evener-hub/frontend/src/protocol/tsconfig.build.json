@@ -20,6 +20,7 @@
     "types.gen.ts",
     "askAnswers.ts",
     "attachmentMarkers.ts",
+    "composerInput.ts",
     "activityData.ts",
     "activityRows.ts",
     "activityList.ts",
