@@ -291,26 +291,26 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 // ForceCompact caller shares this exact shape: Compact,
 // applyPendingForceCompact, and handleModelError's content-filter retry.
 //
-	// captured is the compaction operation this fold's REQUESTING caller captured
-	// (a round-tail dispatch's pending forced operation); unrelated manual folds
-	// pass nil and can therefore claim nothing. On success, the winning
-	// publication claims the captured generation (inside the transaction) and
-	// applies shrinkTurnHistoryBaseline atomically with the publish (using the
-	// fold's own pre/post lengths, never the merged-in result — see
-	// publishFoldedHistory) and returns ok=true. On ok=false, both attempts lost
-	// the publish race: s.history is whatever the winning competitor left it as,
-	// and this fold's work — including the shrink it would have applied — is
-	// entirely discarded; the caller decides what that means for it. A captured
-	// FORCED operation is then terminally retired (forced_not_published): its own
-	// fold can never claim it, so leaving it pending would wedge the cycle
-	// forever. The retirement's terminal loss notice lands alongside any winner's
-	// handoff. A captured automatic intent (none exists today — the per-request
-	// fold owns that path) would stay pending for its next actual fold.
-	//
-	// refusal carries publishFoldTransaction's reason when ok=false: nil for the
-	// publication race this retries, and the poisoned-transcript error for the
-	// refusal it does not retry, since no second fold can make that writer accept
-	// the markers.
+// captured is the compaction operation this fold's REQUESTING caller captured
+// (a round-tail dispatch's pending forced operation); unrelated manual folds
+// pass nil and can therefore claim nothing. On success, the winning
+// publication claims the captured generation (inside the transaction) and
+// applies shrinkTurnHistoryBaseline atomically with the publish (using the
+// fold's own pre/post lengths, never the merged-in result — see
+// publishFoldedHistory) and returns ok=true. On ok=false, both attempts lost
+// the publish race: s.history is whatever the winning competitor left it as,
+// and this fold's work — including the shrink it would have applied — is
+// entirely discarded; the caller decides what that means for it. A captured
+// FORCED operation is then terminally retired (forced_not_published): its own
+// fold can never claim it, so leaving it pending would wedge the cycle
+// forever. The retirement's terminal loss notice lands alongside any winner's
+// handoff. A captured automatic intent (none exists today — the per-request
+// fold owns that path) would stay pending for its next actual fold.
+//
+// refusal carries publishFoldTransaction's reason when ok=false: nil for the
+// publication race this retries, and the poisoned-transcript error for the
+// refusal it does not retry, since no second fold can make that writer accept
+// the markers.
 func (s *Session) foldWithForceCompact(ctx context.Context, instructions string, captured *schema.SkillCompactionOperation) (ok bool, refusal error) {
 	const maxAttempts = 2
 	for range maxAttempts {
