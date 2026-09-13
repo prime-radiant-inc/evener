@@ -245,6 +245,52 @@ func awaitRendezvousEntry(t *testing.T, runDir string) rendezvous.Entry {
 	}
 }
 
+// awaitRetirementSettled waits until the daemon's own published lifecycle
+// reports a settled, blocker-free resident, with an armed deadline when idle
+// retirement is enabled. A manual retire — or the timer tick that re-proves
+// eligibility — is only consumable once session startup has stopped taking
+// retirement-mutation leases: TryClaim declines with a nil claim while any
+// lease is active, so a trigger sent before this point is correctly refused
+// rather than consumed. Session startup takes and releases leases in bursts,
+// so the condition must hold continuously across a settle-hold window: a
+// single observation can land in a gap between startup leases and let the
+// trigger race the next one. The loop condition-watches the daemon's published
+// state; the wall-clock deadline is a tripwire, never the mechanism.
+func awaitRetirementSettled(t *testing.T, srv *clearIdentityServer) {
+	t.Helper()
+	const settleHold = 500 * time.Millisecond
+	deadline := time.Now().Add(15 * time.Second)
+	var last appwire.DaemonLifecycle
+	var lastErr error
+	var settledSince time.Time
+	for {
+		out, err := dispatchDaemonRPC(srv, appwire.MethodEvenerDaemonStatus, appwire.DaemonStatusParams{})
+		settled := false
+		if err != nil {
+			lastErr = err
+		} else if status, ok := out.(appwire.DaemonStatusResponse); ok {
+			last, lastErr = status.Lifecycle, nil
+			settled = status.Lifecycle.Phase == "resident" && len(status.Lifecycle.Blockers) == 0 &&
+				(status.Lifecycle.TimeoutMillis == 0 || status.Lifecycle.Deadline != "")
+		} else {
+			lastErr = errors.New("daemon status returned an unexpected result type")
+		}
+		if settled {
+			if settledSince.IsZero() {
+				settledSince = time.Now()
+			} else if time.Since(settledSince) >= settleHold {
+				return
+			}
+		} else {
+			settledSince = time.Time{}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon never settled: phase=%q deadline=%q blockers=%+v err=%v", last.Phase, last.Deadline, last.Blockers, lastErr)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func daemonIdentityFor(entry rendezvous.Entry) appwire.DaemonIdentity {
 	return appwire.DaemonIdentity{
 		Ref:        "local:" + entry.SessionID,
@@ -312,6 +358,7 @@ func TestServeRetirementAutomaticExpiryReachesRelease(t *testing.T) {
 		t.Fatalf("retirement arm = %v, want the configured 1h", d)
 	}
 	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
 
 	clk.Advance(time.Hour)
 	clk.fire(t)
@@ -349,6 +396,7 @@ func TestServeRetirementManualTimerSingleOwner(t *testing.T) {
 		rec.await(t, "root_published")
 		clk.awaitArm(t)
 		entry := awaitRendezvousEntry(t, runDir)
+		awaitRetirementSettled(t, state.srv)
 
 		release := rec.gateAt("claim_consumed")
 		type retireOutcome struct {
@@ -403,6 +451,7 @@ func TestServeRetirementManualTimerSingleOwner(t *testing.T) {
 		rec.await(t, "root_published")
 		clk.awaitArm(t)
 		entry := awaitRendezvousEntry(t, runDir)
+		awaitRetirementSettled(t, state.srv)
 
 		release := rec.gateAt("claim_consumed")
 		clk.Advance(time.Hour)
@@ -445,6 +494,7 @@ func TestServeRetirementStaleIdentityRefused(t *testing.T) {
 	rec.await(t, "root_published")
 	runDir := serveArgValue(args, "--run-dir")
 	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
 
 	fingerprint := func(mutate func(*rendezvous.Entry)) string {
 		e := entry
