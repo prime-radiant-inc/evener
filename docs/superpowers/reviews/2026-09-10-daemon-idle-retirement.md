@@ -1443,18 +1443,30 @@ rather than the intended boundary, and here it did: `send()` was awaiting a prom
 resolved. The fixture now resolves a real transport outcome in both branches, so suppression yields a named
 assertion failure instead of a hang.
 
-**All five plan assertions are proven, not merely observed.** Each has a mechanism stronger than reading back
-state the harness itself wrote. (1) A real Session pane plus real `AppwireClient` over a scripted WebSocket
-server shows the transcript and draft preserved across retirement with exactly one turn added on submit and the
-draft cleared. (2) The late old-generation case is deliberately **non-vacuous**: the fixture injects a stale
-`turn/started` with an acknowledgement callback, and the Go test fails unless that acknowledgement lands, so the
-Hub demonstrably delivered the stale frame to the subscription rather than the client ignoring a phantom;
-`result.json` records `survived: false`. (3) The retry case is **server-verified**: `retryMutationIDs` records
-every `turn/start` attempt and the test asserts exactly two entries with the same non-empty id, so a regenerated
-id fails immediately. (4) The unavailability case asserts server-side that no `turn/start` ever carried the
-retained draft text, independently of timing. (5) `readyTransitions: 1` — a browser reconnect would make it
-≥ 2 — with `resyncCount: 1`, so recovery went through the same never-reconnected socket; a reconnect is
-explicitly not the mechanism.
+**Four of the five plan assertions are proven, not merely observed; the fifth is retained as a disclosed
+non-falsifiable check and is not offered as proof.** (1) A real Session pane plus real `AppwireClient` over a
+scripted WebSocket server shows the transcript and draft preserved across retirement with exactly one turn added
+on submit and the draft cleared. (2) The late old-generation case is **not non-vacuous, and an earlier version of
+this record overstated it as "deliberately non-vacuous"** (whole-branch review, reviewer B, Finding 1). The
+fixture injects a stale `turn/started` with an acknowledgement callback and the Go test fails unless that
+acknowledgement lands, so the Hub demonstrably **delivered** the stale frame to the subscription — that part is
+genuine and remains. The browser assertion itself (`retirementguard/run.mjs:317`, `lateFrame.survived`) **cannot
+fail**: the stale frame is pushed on the retiring generation *before* the resync that starts hydration,
+`hydrateThread` rebuilds `turns` purely from the snapshot (`reducer.ts:745,777`), and `publishThreadHydration`
+replaces the model wholesale (`threads.ts:1424`), so the ghost always lands on the pre-hydration model and is
+discarded. Strengthening the fixture to deliver the frame **after** the resync, inside the hydration window
+(where `threads.ts:1421` replays in-window frames onto the snapshot), still does not make it falsifiable: with
+that fixture the guard PASSES, the ghost never enters the published model (0 sightings under 4 ms sampling,
+`survived: false`), and a `go test -overlay` sabotage of the Hub's relay ownership/retirement fence left it
+GREEN — so no Go-side fence suppresses the ghost, and the remaining suppression is client-side production
+frontend, unreachable from a Go overlay. No honest browser-observable falsifiable form of this assertion exists
+without changing production behaviour, so none was fabricated; `result.json`'s `survived: false` is a guaranteed
+value, not evidence. (3) The retry case is **server-verified**: `retryMutationIDs` records every `turn/start`
+attempt and the test asserts exactly two entries with the same non-empty id, so a regenerated id fails
+immediately. (4) The unavailability case asserts server-side that no `turn/start` ever carried the retained
+draft text, independently of timing. (5) `readyTransitions: 1` — a browser reconnect would make it ≥ 2 — with
+`resyncCount: 1`, so recovery went through the same never-reconnected socket; a reconnect is explicitly not the
+mechanism.
 
 **Browser evidence is retained**, outside the scratch the runner deletes:
 `.superpowers/sdd/2026-09-10-daemon-idle-retirement/task-12-browser-artifacts/` holds five 1400×900 PNGs and a
