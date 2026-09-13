@@ -208,16 +208,23 @@ for stale_knob in EVENER_ROOT_PACKAGE_LIST_TIMEOUT EVENER_ROOT_PACKAGE_LIST_ATTE
 		exit 2
 	fi
 done
+# Read in base ten and kept that way. Every use below is arithmetic — the
+# deadline comparison, the doubled budget in the diagnostic, the tick counts —
+# and bash reads a leading zero as octal, so `08` is a shell error at the point
+# of use rather than eight seconds. Normalising here means the rest of the
+# script never sees the spelling the caller typed.
 PACKAGE_LIST_TIMEOUT=${EVENER_PACKAGE_LIST_TIMEOUT:-60}
-if [[ ! "$PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+if [[ ! "$PACKAGE_LIST_TIMEOUT" =~ ^[0-9]+$ ]] || [ "$((10#$PACKAGE_LIST_TIMEOUT))" -lt 1 ]; then
 	printf 'run-module-tests.sh: EVENER_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$PACKAGE_LIST_TIMEOUT" >&2
 	exit 2
 fi
+PACKAGE_LIST_TIMEOUT=$((10#$PACKAGE_LIST_TIMEOUT))
 PACKAGE_LIST_ATTEMPTS=${EVENER_PACKAGE_LIST_ATTEMPTS:-3}
-if [[ ! "$PACKAGE_LIST_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+if [[ ! "$PACKAGE_LIST_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$((10#$PACKAGE_LIST_ATTEMPTS))" -lt 1 ]; then
 	printf 'run-module-tests.sh: EVENER_PACKAGE_LIST_ATTEMPTS must be a positive integer (got %q)\n' "$PACKAGE_LIST_ATTEMPTS" >&2
 	exit 2
 fi
+PACKAGE_LIST_ATTEMPTS=$((10#$PACKAGE_LIST_ATTEMPTS))
 # Seconds to wait for a stopped attempt's process group to empty after each of
 # SIGTERM and SIGKILL. Only a member that ignores or cannot take the signal
 # reaches the end of either wait, so the ordinary stop costs milliseconds. Not

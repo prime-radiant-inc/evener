@@ -52,11 +52,14 @@ repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 . "$script_dir/../lib/scratch-lib.sh"
 . "$script_dir/../lib/process-group-lib.sh"
 
+# Base ten, and kept that way: the backoff below multiplies it, and bash reads a
+# leading zero as octal.
 attempts=${EVENER_GOLANGCI_INSTALL_ATTEMPTS:-3}
-if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
+if [[ ! "$attempts" =~ ^[0-9]+$ ]] || [ "$((10#$attempts))" -lt 1 ]; then
 	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a positive integer (got %q)\n' "$attempts" >&2
 	exit 2
 fi
+attempts=$((10#$attempts))
 
 version="$(awk '$1=="golangci-lint" {print $2}' "$repo_root/.tool-versions")"
 if [ -z "$version" ]; then
