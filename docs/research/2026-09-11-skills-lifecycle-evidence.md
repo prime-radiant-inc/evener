@@ -648,3 +648,121 @@ results are recorded here rather than only the green one.
 
 No assertion, filter, pairing, or tolerance was weakened in this round. The
 `generate` gate stayed zero-diff across both runs.
+
+## Fifth round: merge with main, then the roborev findings (2026-09-13)
+
+### Merge (Jesse's ruling: merge, do not rebase again)
+
+`origin/main` advanced to `42d27f946e` (shared session notes) while the branch sat
+at `436445f54f`, so the PR conflicted in seven files. Merging rather than
+rebasing was Jesse's call: main moved twice during this delivery and each rebase
+cost a full per-commit conflict cycle.
+
+Merge commit `aff47fc615` (parents `436445f54f`, `42d27f946e`) plus carrier
+commit `ff9a8254a5`. Nine conflict hunks, all resolved as unions — main's newer
+structure with this feature's semantics re-applied:
+
+- `snapshot.go` / `session_state.go`: main's `HumanNote`/`AgentNote`/`SessionURLs`
+  alongside our `Skills` lifecycle field.
+- `session_init.go`: our delegate-history strip plus main's
+  `escapeNotesHistoryTurns`; our `skillLifecycle` restore and
+  `resumeSkillCompaction` alongside main's notes-projection seeds.
+- `session.go`: main's `agentNote`/`sessionURLs` fields alongside our updated
+  compaction-state comments; and at `maybeAutoSave`, main's `autoSaveMeta()` —
+  verified byte-for-byte equivalent to our `saveMeta()` (same `stateDir` check,
+  same `metaSaveMu` lock, same `Meta()` + fs write), so main's newer call site
+  wins.
+- `session_client_mutation_queue.go`: our `SkillNames` field alongside main's
+  `Kind` stamp and its explanatory comment.
+- `server/appwire_runtime.go`: our `SkillInput` capability alongside main's
+  `SharedNotes` capability.
+- `Composer.tsx`: our `skillSelections` import; main moved `slashCompletion` to
+  `src/protocol/`, and the moved test file landed there (verified: 29 files /
+  748 tests pass in `src/protocol`), so the composer suite's 627 -> 558 test
+  count is a MOVE, not lost coverage.
+
+Two initial resolutions were wrong in an instructive way: the "concatenate both
+sides" rule is only valid when a conflict's base section is empty. Two hunks had
+a non-empty base that both sides retained, so concatenating duplicated field
+declarations and struct-literal fields. The compiler caught both; after repair
+each field was verified to appear exactly once, and the merged head builds,
+typechecks, and passes the focused agent and composer suites.
+
+### roborev 9351 findings
+
+| Finding | Verdict | Evidence |
+| --- | --- | --- |
+| M1 reload-receipt durability hole (`agent/session_skill_reload.go`) | FIXED | The reminder turn IS the receipt's durable admission, but it was appended with `recordTurn`, which swallows transcript write failures, and the receipt was consumed regardless — a failed write lost the only reminder with no retry. It now appends through the durable pair (transcript write first, live append only on success), warns, and returns an error WITHOUT consuming. `TestSkillReloadReminder_ConsumesReceiptOnlyAfterDurableAdmission` drives the real `prepareCompactedSkillReloads` over a genuinely failing transcript (`transcriptWriteFailFS`) and asserts the failure is reported, the handoff stays pending, and no reminder turn joined the history. RED first: "a reminder whose transcript write failed reported success". |
+| M2 text items merged without a separator (`agent/session_client_mutation_queue.go:507`) | **REFUTED, not fixed** | See the dedicated note below. |
+| L1 missing `reload_skills` field treated as absent (`agent/skill_reload_selection.go`) | FIXED | A `<skill-reload-selection>{}</skill-reload-selection>` block produced a nil raw message, which `parseSkillReloadSelection` reports as `absent` rather than `invalid`, so the malformed block was consumed and the note dropped — contradicting the parser's own documented contract. The block must now carry the field; absent means invalid and the note survives verbatim. RED first: the note was stripped and the state read `absent`. |
+| L2 inconsistent skill-name canonicalization (composer) | FIXED | One helper, `canonicalSkillNames` in `protocol/composerInput.ts` (trim, drop empty, dedupe preserving first-seen order), now backs all three paths: `buildInput`, `recoveryDraft`'s record extractor AND its merge union, and the queue strip's `recordContent`. RED first at two call sites (`buildInput` emitted padded/duplicate items; the recovery draft kept `" pkg:probe "`, `""` and `"pkg:probe"` as three separate chips). |
+| L3 dead `SkillNames` field on `queuedClientMutationIdentity` (`agent/session_queue.go`) | FIXED | The field was written by `withQueuedClientMutation` and never read; the durable-selection context value is the real channel. Dropped the field and the copy, so the compiler proves nothing depended on it. |
+
+### M2: refuted rather than fixed
+
+roborev reported that `queuedInputFromClientMutation` concatenates an entry's
+text items without a separator, "so two distinct text items become one merged
+word and the turn transcript differs from what `combineClientMutationInputs`
+produces with `"\n\n"`".
+
+That comparison is between two different granularities, and I did not change the
+behavior:
+
+- `combineClientMutationInputs` joins whole ENTRIES with `"\n\n"` — distinct
+  queued messages, where a separator marks real message boundaries.
+- `queuedInputFromClientMutation` handles ONE entry — a single queued message.
+  Its items are parts of that one message.
+
+Inserting `"\n\n"` between one message's items would invent separators the user
+never typed. Concatenation is the faithful reading of the items as the byte
+sequence they are. The client cannot produce the multi-item case anyway:
+`buildInput` emits exactly one text item (`protocol/composerInput.ts:43`), and
+`translateAttachmentMarkers` rewrites image markers inline rather than splitting
+the text around them — so nothing in this client splits one message into several
+text items.
+
+The pre-existing characterization test
+(`agent/session_client_mutation_queue_branches_test.go`, "multiple text items
+concatenated", with inputs `"hello "` and `"world"` producing `"hello world"`)
+documents this intent, and its deliberate trailing space is the signature of
+prose split into parts rather than of two distinct messages. Changing that
+assertion to match roborev would have required evidence that the check itself
+was wrong; the evidence points the other way, so the finding is declined with
+this rationale and the behavior is unchanged.
+
+### Gates on the merged-plus-findings head
+
+Run serially on the final tree, each gate's own exit status read directly (`make`
+followed immediately by `$?` — never a trailing `echo`, which masked a real
+`lint-gofmt` failure earlier in this delivery).
+
+First run found two failures; both are recorded here rather than only the green
+re-run:
+
+| Gate | First run | Final run |
+| --- | --- | --- |
+| `make generate` (zero-diff) | exit 0, 0s | exit 0, 0s |
+| `make fuzz` | exit 0, 292s | — |
+| `make test-api-package` | **exit 2, 3s** | exit 0 |
+| `make vet` | exit 0, 6s | — |
+| `make merge-approval-gate` | **exit 2, 898s** | exit 0, 1021s |
+| `make test-web` | exit 0, 638s | — |
+| `TMPDIR=/tmp make test-web-browser` | exit 0, 241s | — |
+
+- `test-api-package` failed because the merge surfaced a real incompatibility:
+  this feature makes `mergeSlashCommands` offer only available, user-invocable
+  skills, while main's qualification fixture (`src/protocol/scripts/qualify-package.mjs`)
+  passes a bare `{name: "writing", description: "writing skill"}`, so `/writing`
+  disappeared from the packaged catalog. The script is main's and unchanged by
+  this branch; our filter is the documented contract, so the fixture was stale
+  and now carries the flags the contract requires. Assertions in it are
+  unchanged.
+- `merge-approval-gate` failed on `TestQueuedInputFromClientMutation`, the
+  existing characterization test for the M2 behavior described below. Reverting
+  the M2 change restored it; the gate then passed with no FAIL lines.
+
+No assertion, filter, pairing, or tolerance was weakened. The only assertions
+changed in this round are the two new tests added for M1 and L2, and the two
+fixture updates forced by this feature's own contract (`clientMutationInput`'s
+three-argument call in main's notes test, and the skill fixture above) — each
+preserving its original input and intent.
