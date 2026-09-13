@@ -1568,3 +1568,35 @@ test("a summary-only job_watch clear renders a non-expandable row (hasBody predi
   );
   expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
 });
+
+// --- #1173: a summary-less intent-bearing row stays single-level on failure ---
+// A delegate row deliberately renders no summary text (subagentModule owns its
+// presentation), so the failure force-open must not carry an empty summary line
+// open. The body disclosure chevron stays on the intent line
+// (data-body-trigger-intent), exactly as it does for a clean delegate row.
+test.each(["chat", "intent"] as const)(
+  "a failed delegate row at the %s level renders no empty summary line (body trigger on the intent line)",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { container } = renderWithConfig(
+      config,
+      item({
+        id: `delegate_fail_${level}`,
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+        error: "delegate activation failed",
+      }),
+    );
+    // The body force-opens (only failure earns the eye, unchanged).
+    expect(screen.getByTestId("tool-row-body-trigger").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+    // No summary text exists for a delegate row, so no summary line (empty or
+    // otherwise) renders and no summary-open region is forced.
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(container.querySelector('[data-body-trigger="true"]')).toBeNull();
+    // The body trigger rides the intent line instead.
+    expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe("true");
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Delegating the flaky suite");
+  },
+);
