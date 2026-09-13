@@ -440,3 +440,90 @@ or changes behavior without a test was retained.
 No assertion, filter, pairing, or tolerance was weakened in this round. The
 only behavioral changes are the four fixes above, each pinned red-before /
 green-after by its named test.
+## Third post-PR-review fix round (2026-09-13, PR #1168 head d04a8cc5ed)
+
+This round resumed after the previous agent was stopped having run ZERO tests
+and written NO test file, leaving uncommitted scaffolding (a
+`SkillInputRecord.Prepared` carrier plus `recordPreparedSelection` wiring whose
+comments referenced a `reconcilePendingSkillSelections` that did not exist).
+The inherited diff was audited against the findings before being kept: the
+design direction (retain the selection on the durable typed input record,
+reconcile at restore — the second of the two approaches the finding allowed)
+was sound and matches the `reconcileSkillCompactionReceipts` precedent
+(agent/transcript_read.go:197), so the carrier and wiring were kept and the
+missing reconcile was implemented. Everything below was proven red-first.
+
+### Inherited-work audit (items 1)
+
+- Kept: `schema.SkillInputRecord.Prepared []SkillSelectionInvocation` (+ its
+  Clone), `recordPreparedSelection` (agent/session_skill_activation.go:79-98),
+  and its three call sites (agent/session_queue.go:1013,
+  session_skill_activation.go:156, session_slash_command.go:111). Verified the
+  annotated record is the same pointer written into the turn's
+  `SkillState.Input` on all three paths, so the prepared invocations are
+  durable with the input turn.
+- Repaired: the `admitSteeringSelectionBatch` comment claimed re-drive "at the
+  next dispatch seam or, after a crash, at restore" — only restore exists; the
+  comment now says restore.
+- Implemented: the missing `reconcilePendingSkillSelections`
+  (agent/session_skill_activation.go:197). Coverage predicate: an invocation
+  is never re-driven when the snapshot still holds its obligation, the
+  inventory recorded its delivery (`Ordinary.InvocationID`), or ANY decoded
+  transcript entry carries its identity in an outcome or obligation (a carrier
+  or notification is published only after the obligation save succeeded, and a
+  finalized failure keeps its record). Uncovered prepared invocations are
+  re-prepared and re-admitted per input record through the same atomic
+  prepare/admit path as a live selection. Wired into restore AFTER skills
+  discovery and transcript attach and BEFORE `setRestoredTranscript`
+  (agent/session_init.go:1214), with a `refreshFromDisk` when carriers were
+  appended. An earlier placement (before `initSessionState`) silently
+  no-opped because `s.skills` is discovered there
+  (session_init.go:1392) — caught by the red test, moved, re-proven.
+
+### Findings verdicts
+
+| # | Finding | Verdict | Evidence and what changed |
+| --- | --- | --- | --- |
+| 1 | User-selected skill silently lost when metadata persistence fails (also last round's nit N2) | FIXED | The input/steering turn was written and the mutation consumed BEFORE `admitSkillActivationBatch` persisted its obligation; on save failure the obligation rolled back and restore (meta-only) lost the selection. The durable input record now carries the prepared invocations (`Prepared`), and restore re-drives any uncovered one via `reconcilePendingSkillSelections` (agent/session_skill_activation.go:197, wired at session_init.go:1214). `TestSkillActivation_SteeringSelectionReconciledAfterAdmissionSaveFailure` (agent/session_skill_reconcile_test.go:23) drives the REAL steering path (`consumeSteeringMessage`) under the real `breakSessionMetaPath` injection, asserts nothing half-admits live, then restores and asserts exactly one reconciled obligation (route `user_selection`, identity `opaque`, invocation identity matching the steering turn's `Prepared`), the carrier published, the steering turn pinned, and a second restore idempotent. RED first: "restored obligations = [], want exactly one reconciled from the durable steering input record". `TestSkillActivation_AdmittedSelectionIsNotReReconciled` (:125) pins that a successfully admitted selection is NOT re-driven. |
+| 2 | Editing a queued message silently drops its skill selections; docs claimed otherwise | FIXED | `QueueState` surfaced only texts/preview/ids, so a queued `{type:"skill"}` item was unrecoverable. Per-entry canonical names now ride the whole projection: `appwire.QueueState.SkillNames` (appwire/types.go:773) and `events.QueueChangedData.SkillNames` (agent/events/payloads.go:450), FIFO-aligned; filled in `queueChangedDataLocked` (agent/session_queue.go:842-847) and `ClientMutationProjection` (agent/session_client_mutation_queue.go:48,66); mapped through `cloneSkillNames` (internal/appprojector/appwire_projection.go). Client: `QueueState.skillNames` regenerated (types.gen.ts), `onRestoreToComposer` gained the `skillNames` parameter (QueueStrip.tsx:76-78), `handleEdit` passes the entry's names (QueueStrip.tsx:402), a skill-only entry stays editable (QueueStrip.tsx:373), and `restoreTextToComposer` unions the restored chips into the draft and persists them (Composer.tsx:1041-1056). Daemon test `TestClientMutationProjection_QueueEntrySkillNames` (agent/session_queue_skills_projection_test.go:23) queues a skill-only and a mixed entry through the real mutation endpoint and asserts BOTH the projection and the depth-2 `QueueChanged` event carry `[[probe] [probe]]` (RED: `queue.SkillNames undefined`; event-capture race fixed with a bounded poll, stable at -count=5). Frontend: two new QueueStrip tests — edit restores text AND chips (`toHaveBeenCalledWith("queued text", undefined, ["probe"])`), and a skill-only entry's edit is enabled (RED: "expected true to be false"); the pre-existing edit test's assertion was updated to the new 3-arg contract with text and loser-safe ordering unchanged. `go generate ./appwire/...` ran; `make generate` exit 0 with zero new diff. docs/skills.md:255 and :353-354 now describe real behavior; no doc was weakened. |
+| 3 | Compaction reload reminder discards computed discovery diagnostics | FIXED | `skillInventorySummary` computes per-source diagnostics but the site did `_ = diagnostics` under a comment claiming they "ride the typed turn" — false: `SkillReloadReminder` carried only `Inventory`, and `SkillInventorySummary` only `Availability`. The reminder now carries them: `schema.SkillInventoryDiagnostic` + `SkillReloadReminder.Diagnostics` (agent/schema/skill_lifecycle.go:95-110, cloned at :296), populated via `skillInventoryDiagnostics` (agent/session_skill_reload.go:291, helper at :147-164); the false comment is gone. `TestSkillReloadReminder_CarriesDiscoveryDiagnostics` (agent/session_skill_reload_test.go:985) seeds an inventory entry whose recorded source is unreadable, drives `prepareCompactedSkillReloads`, and asserts the recorded reminder keeps the `unavailable` classification AND an `unreadable_source` diagnostic naming the source. RED first: `reminder.Diagnostics undefined`. |
+| 4 | Garbled comment (unbalanced parenthesis) at QueueStrip.tsx:126-127 | FIXED | Rewritten (QueueStrip.tsx:125-128): "the name is the selection's whole user-visible identity - the part of a queued entry that is distinct from its typed text. Without it a skill-only record previews blank and copies as an empty string." |
+
+### Triaged nits from the last review (accepted as-is)
+
+- N3 (140-char preview truncation can hide skill markers; copy unaffected):
+  ACCEPTED. The truncated preview is display-only; the copy path
+  (`handleCopy`, QueueStrip.tsx:334-346) copies full text plus all skill
+  markers untruncated, and this round's item-2 fix makes the EDIT path restore
+  selections from the projection's `skillNames` rather than from the preview
+  line, so truncation no longer hides anything recoverable.
+- N4 (one environmental vitest flake under load): ACCEPTED. Single
+  load-induced flake, not a product assertion failure; the touched suites were
+  re-run this round (QueueStrip 42/42, composer family 643/643) with no
+  recurrence.
+
+### Re-run gates on the third fix-round head (all serial)
+
+| Command | Exit | Duration | Notes |
+| --- | --- | --- | --- |
+| `make fuzz` | 0 | 382s | full fuzzcov/harvest/seed-replay pipeline, zero FAIL lines |
+| `make test-api-package` | 0 | 3s | qualified @evener/appwire-client@0.1.0 |
+| `make vet` | 0 | 56s | no diagnostics |
+| `make merge-approval-gate` | 0 | 342s | on the final code head f3e01a45b3: lint-naming/gofmt/evenerfuzz/eval/internal/golangci/generated/fuzz-registry PASS, secret-scan PASS, ROOT_FULL waves PASS (. 121.78s, agent 10.51s, llm 8.14s, auth 1.55s, envvars 0.36s, invariant 0.34s, identifier 1.05s, web 167.38s), test-native + test-api-package PASS. Earlier runs failed fast on this round's OWN defects and were fixed, never waved through: (1) gofmt on agent/schema/skill_lifecycle.go struct alignment, (2) revive redefines-builtin-id (`copy :=`) in the new projection test, (3) golangci gofmt on the same test after the rename patch, (4) lint-generated requires generated files COMMITTED — the wire/client commit unblocked it, (5) web-lint biome formatting of the new handleEdit signature. |
+| `TMPDIR=/tmp make test-web-browser` | 0 | 201s | 6/6 guards PASS first try (web-layoutguard, web-overflowguard, web-shellguard, web-spawnguard, web-transcriptscrollguard, web-skillguard). Ran on 6d1c8cec9c; the final head f3e01a45b3 adds one Go-test-only commit, which cannot affect browser guards. |
+| `make generate` | 0 | 1s | zero-diff on the final head: the working tree's only modified path is this evidence document |
+
+### Affected Stage 2/3 families and touched frontend suites
+
+| Command | Result |
+| --- | --- |
+| `go test ./agent -run '^(TestSkillActivation_\|TestSkillDelivery_\|TestSkillReload\|TestSkillCompaction_\|TestClientMutation\|TestConsumeSteering\|TestExpandSlashCommand\|TestQueuePersist_\|TestRestore\|TestResume\|TestReconcile\|TestMintSkillOperationID_)' -count=1` | ok (12.402s) |
+| `go test -race ./agent -run '^(TestSkillDelivery_\|TestSkillActivation_\|TestSkillReload\|TestSkillCompaction_\|TestClientMutationProjection_)' -count=1` | ok (4.457s) — this run CAUGHT a real data race in this round's new projection test (reading the `captureEvents` slice while its goroutine appended); fixed with a mutex-guarded collector (f3e01a45b3), re-run green, plus `-race -count=3` on the test itself and `-race` on all three other new tests |
+| `go test ./appwire/... ./internal/appwirets/... ./internal/appwiredoc/... ./internal/appprojector/... ./agent/events ./agent/schema -count=1` | all packages ok |
+| `npx vitest run src/panes/session/composer` (covers queue/) | 28 files / 643 tests PASS, including QueueStrip 42/42 with the 2 new edit-restores-chips tests |
+| `npx tsc --noEmit --incremental false` (frontend) | clean |
+
+No assertion, filter, pairing, or tolerance was weakened in this round. The
+pre-existing QueueStrip edit test's call assertion was updated to the new
+three-argument `onRestoreToComposer` contract with its restored-text and
+loser-safe-ordering assertions unchanged.
