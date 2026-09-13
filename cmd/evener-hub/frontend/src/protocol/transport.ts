@@ -1,20 +1,7 @@
-// WebSocketLike is the minimal socket surface AppwireClient depends on. Its
-// settable onopen/onmessage/onclose/onerror handlers mirror the assignable
-// properties of the browser WebSocket API, so a real WebSocket satisfies it
-// structurally at runtime while tests substitute a fake (see testing/fakeSocket.ts).
-export interface WebSocketLike {
-  send(data: string): void;
-  close(code?: number): void;
-  onopen: (() => void) | null;
-  onmessage: ((ev: { data: unknown }) => void) | null;
-  onclose: ((ev: { code: number }) => void) | null;
-  onerror: (() => void) | null;
-}
-
-// rpcURLFromLocation builds the appwire RPC endpoint URL from a
-// window.location-shaped object, upgrading http(s) to the matching ws(s)
-// scheme. Mirrors appwire.js's rpcURL().
-export function rpcURLFromLocation(loc: { protocol: string; host: string }): string {
-  const scheme = loc.protocol === "https:" ? "wss:" : "ws:";
-  return `${scheme}//${loc.host}/rpc`;
-}
+// Temporary re-export seam for SDK migration row A3: the AppWire TypeScript
+// package now lives at appwire-client/typescript/, and the web tree's imports
+// still spell it `protocol/<module>`. SDK A4 rewrites those imports to
+// `@evener/appwire-client` and deletes this whole directory. Do not add
+// anything here that is not a re-export, and do not import from here in new
+// code.
+export * from "../../../../../appwire-client/typescript/transport";

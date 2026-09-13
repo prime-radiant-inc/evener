@@ -4,7 +4,7 @@ import {
 	markerText,
 	stripMarker,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/textareaMarkers";
-import type { InputAttachment } from "../../cmd/evener-hub/frontend/src/protocol/composerInput";
+import type { InputAttachment } from "../../appwire-client/typescript/composerInput";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
 import type {
