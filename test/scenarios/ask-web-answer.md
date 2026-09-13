@@ -216,7 +216,7 @@ gesture.
   transcript's collapsed `ask_user` row grows its answered recap: the row
   `[data-testid="tool-call-item"][data-tool-name="ask_user"]` reads
   `Asked: [DB choice] — answered: "SQLite"` (`askUser.tsx:113-127` +
-  `panes/session/askShared.ts:118-150`; the note is deliberately stripped from the recap,
+  `cmd/evener-hub/frontend/src/protocol/askShared.ts:118-150`; the note is deliberately stripped from the recap,
   `askShared.ts:88-95`). Falsify: the dock is still up after a successful send, or the row
   still reads a bare `Asked: [DB choice]` long after the reply landed.
 - **Step 8 (exact)**: the outline shows the `ask_user` tool result carrying the ack text

@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
-import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { liveAskQuestions } from "./deriveAskQuestions";
+import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import type { ThreadCapabilities } from "./types.gen";
 
 // --- fixtures (mirrors the local item/turn/model builder convention used
 // by transcript/flow/useTranscriptScroll.test.ts, kept local rather than

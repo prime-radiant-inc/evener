@@ -10,19 +10,19 @@
 // component-level useEffect: this is what lets a session's FIRST hydrate
 // (which can complete before any AskDock ever mounts) still populate
 // batches immediately, and it mirrors threads.ts's own connectionStore.
-// subscribe wiring exactly. See reconcileBatches.ts's own header for why a
-// purely positional signal isn't enough on its own, and this file's
+// subscribe wiring exactly. See protocol/reconcileBatches.ts's own header
+// for why a purely positional signal isn't enough on its own, and this file's
 // sendBatch for how the in-flight submission race is actually resolved:
 // freeze the batch until its durable outbox commit, then let the outbox and
 // recovery surfaces own later network outcomes.
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { type AskResolution, composeAskAnswers } from "../../../../protocol/askAnswers";
+import { liveAskQuestions } from "../../../../protocol/deriveAskQuestions";
 import { sessionActionError } from "../../../../protocol/errors";
 import type { ThreadModel } from "../../../../protocol/model";
+import { type AskBatch, reconcileBatches } from "../../../../protocol/reconcileBatches";
 import { threadsStore } from "../../../../stores/threads";
-import { liveAskQuestions } from "./deriveAskQuestions";
-import { type AskBatch, reconcileBatches } from "./reconcileBatches";
 
 export interface AskAnswerState {
   resolution: AskResolution | null;
@@ -331,10 +331,10 @@ export const askDockStore = createStore<AskDockState>(() => ({
 // reconcileRef folds one ref's current ThreadModel into its ask-dock
 // bookkeeping: recompute the live question set (minus anything this client
 // has permanently excluded - see AskDockRefState's own doc comment),
-// reconcile batches against it (reconcileBatches.ts owns the actual merge/
-// prune/protect rules), and prune any per-question answer draft whose key no
-// longer belongs to any batch (durably submitted or resolved by someone else;
-// there is nothing left for that draft to attach to).
+// reconcile batches against it (protocol/reconcileBatches.ts owns the
+// actual prune/protect rules), and prune any per-question answer draft whose
+// key no longer belongs to any batch (durably submitted or resolved by
+// someone else; there is nothing left for that draft to attach to).
 function reconcileRef(ref: string, model: ThreadModel): void {
   const liveAll = liveAskQuestions(model);
   askDockStore.setState((s) => {

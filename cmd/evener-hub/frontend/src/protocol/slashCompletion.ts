@@ -9,8 +9,8 @@
 // text/caret state and the plugin slash-command catalog (stores/
 // commandCatalog.ts), the same catalog the modal command palette reads.
 
-import { slashCommandInvocation } from "../../../protocol/catalogCommands";
-import type { CommandDescriptor, EvenerSkillInfo } from "../../../protocol/types.gen";
+import { slashCommandInvocation } from "./catalogCommands";
+import type { CommandDescriptor, EvenerSkillInfo } from "./types.gen";
 
 type ScopedCommand = {
   id: string;

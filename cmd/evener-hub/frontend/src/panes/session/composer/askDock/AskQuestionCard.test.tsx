@@ -5,9 +5,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import type { AskQuestionRef } from "../../../../protocol/deriveAskQuestions";
 import { AskQuestionCard } from "./AskQuestionCard";
 import type { AskAnswerState } from "./askDockStore";
-import type { AskQuestionRef } from "./deriveAskQuestions";
 
 afterEach(cleanup);
 

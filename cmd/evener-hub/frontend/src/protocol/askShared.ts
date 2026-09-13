@@ -2,12 +2,12 @@
 // truth: agent/internal/tool/definitions.go's DefAskUser gives the exact
 // argumentsJson shape - {questions:[{header?, question,
 // options:[{label,detail,recommended?}], multi_select?, why?,
-// if_unanswered?}]}, 1-4 questions. This used to live private to
-// transcript/tools/askUser.tsx (the wave-4 read-only tool-call renderer);
-// wave 5's composer/askDock/** needs the identical shape check to build
-// its interactive answering dock, so it moved here - a leaf module outside
-// both transcript/tools/** and composer/** so neither wave's manifest
-// entangles with the other. askUser.tsx imports these back and is
+// if_unanswered?}]}, 1-4 questions. This used to live private to the web
+// transcript's askUser.tsx (the wave-4 read-only tool-call renderer);
+// wave 5's composer/askDock/** needed the identical shape check to build
+// its interactive answering dock, so it became a leaf module the two
+// could share. It is package API now: deriveAskQuestions sits on it and
+// both frontends import that. askUser.tsx imports these back and is
 // otherwise unchanged (its own rendering/tests stay byte-equivalent).
 //
 // Parsing is defensive throughout: a malformed argumentsJSON, a missing
@@ -15,8 +15,8 @@
 // degrade to a fallback rather than throwing, since this is untrusted wire
 // JSON, not a value this file controls the shape of.
 
-import type { ItemModel, ThreadModel } from "../../protocol/model";
-import { parseArgs } from "../../protocol/toolCallText";
+import type { ItemModel, ThreadModel } from "./model";
+import { parseArgs } from "./toolCallText";
 
 export interface AskUserOption {
   label: string;

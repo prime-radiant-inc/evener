@@ -81,10 +81,27 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		}},
 	}
 	got := estimateTokens(turns)
-	totalChars := len("let me think about this carefully") + len("answer")
-	want := totalChars / 4
+	// A thinking part with no replay metadata (no signature, no encrypted
+	// content) is display-only — the adapter never re-sends it — so it must not
+	// be billed to the context estimate (issue #653). Only the answer counts.
+	want := len("answer") / 4
 	if got != want {
 		t.Fatalf("EstimateTokens = %d, want %d", got, want)
+	}
+
+	// Thinking the adapter will replay (provider-scoped signature) is billed.
+	replayable := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "let me think about this carefully", Signature: "crypto-sig"}},
+				{Kind: llm.ContentText, Text: "answer"},
+			},
+		}},
+	}
+	totalChars := len("let me think about this carefully") + len("crypto-sig") + len("answer")
+	if got := estimateTokens(replayable); got != totalChars/4 {
+		t.Fatalf("EstimateTokens = %d, want %d", got, totalChars/4)
 	}
 }
 
