@@ -177,10 +177,10 @@ func TestBreakerDispatch_SuccessClearsOnlyMatchingRun(t *testing.T) {
 		t.Fatalf("setup invocations = %d, want 5", fake.calls)
 	}
 
-	if streak, _, _ := r.breaker.check("read_transcript", []byte(`{"transcript_ref":"job:job_a"}`)); streak != 1 {
+	if streak, _, _ := r.breaker.check(newDispatchKey("read_transcript", []byte(`{"transcript_ref":"job:job_a"}`))); streak != 1 {
 		t.Fatalf("A's run after its own success = %d, want 1", streak)
 	}
-	if streak, _, _ := r.breaker.check("read_transcript", []byte(`{"transcript_ref":"job:job_b"}`)); streak != 2 {
+	if streak, _, _ := r.breaker.check(newDispatchKey("read_transcript", []byte(`{"transcript_ref":"job:job_b"}`))); streak != 2 {
 		t.Fatalf("B's run was altered by A's success: streak = %d, want 2", streak)
 	}
 
