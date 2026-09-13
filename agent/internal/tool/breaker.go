@@ -82,11 +82,12 @@ func exactSignature(name string, args []byte) string {
 // failureFingerprint returns the ledger key for a dispatch's repeated-failure
 // run. Unlike exactSignature it hashes a normalized view of the arguments:
 // free-text fields no tool executes on (intent, and the shell tool's
-// presentation-only job description) are dropped, JSON key order and
-// whitespace are canonicalized, and null/empty/zero-valued fields that mean
-// "use the default" are dropped. A call that changes only those fields is the
-// same failing operation, while a change to a meaningful field (target ref,
-// mode, offset, regex) keeps its own fingerprint and bounded history.
+// presentation-only job description) are dropped and JSON key order and
+// whitespace are canonicalized. A call that changes only those is the same
+// failing operation, while any change to a field the tool executes on (target
+// ref, mode, offset, regex, or a presence-sensitive default such as
+// offset_bytes=0 or depends_on: []) keeps its own fingerprint and bounded
+// history: values are never judged to be "defaults" by their content alone.
 //
 // Arguments that are not a single well-formed JSON value fall back to
 // exactSignature, preserving the original byte-exact behavior.
@@ -123,9 +124,20 @@ func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
 	return encoded, true
 }
 
-// canonicalizeValue recursively prunes free-text fields and neutral defaults
-// from a decoded JSON value. Maps are re-encoded by json.Marshal with sorted
-// keys, so key order and whitespace cannot change the fingerprint.
+// canonicalizeValue recursively prunes fields that no tool executes on from a
+// decoded JSON value. Maps are re-encoded by json.Marshal with sorted keys, so
+// key order and whitespace cannot change the fingerprint.
+//
+// Fields are dropped by NAME only. A value that looks like a default is
+// deliberately kept, because whether a value means "omitted" is a property of
+// the field's contract, not of the value: a present read_transcript
+// offset_bytes=0 selects the retained-page operation while omitting it selects
+// the default view, and a present task_list depends_on: [] clears a task's
+// dependencies while omitting it leaves them alone. Pruning by value folded
+// those meaningful calls into the omitted form and could park a call the model
+// legitimately changed. The cost of not pruning is only that a caller which
+// materializes a real default gets its own fingerprint, which delays the
+// breaker rather than refusing a call that was meant to change.
 func canonicalizeValue(v any, dropDescription bool) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -137,11 +149,7 @@ func canonicalizeValue(v any, dropDescription bool) any {
 			if dropDescription && k == "description" {
 				continue // the shell tool's job label, presentation only
 			}
-			canonical := canonicalizeValue(val, false)
-			if isNeutralDefaultValue(canonical) {
-				continue
-			}
-			out[k] = canonical
+			out[k] = canonicalizeValue(val, false)
 		}
 		return out
 	case []any:
@@ -167,30 +175,6 @@ func canonicalNumber(n json.Number) any {
 		return f
 	}
 	return n
-}
-
-// isNeutralDefaultValue reports whether a canonicalized value means "omitted":
-// null, the empty string, or an empty array or object. Boolean false and
-// numeric zero are deliberately not neutral, because a value alone cannot say
-// whether a schema treats it as the default. For read_transcript an explicit
-// offset_bytes=0 selects the retained-page operation while omitting it selects
-// the default view (session_tools_transcript.go), so folding zero into
-// "omitted" would hide a meaningful correction and could park a call the model
-// legitimately changed. Erring toward a distinct fingerprint only delays the
-// breaker; erring toward a false match refuses a call the model meant to change.
-func isNeutralDefaultValue(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return true
-	case string:
-		return x == ""
-	case []any:
-		return len(x) == 0
-	case map[string]any:
-		return len(x) == 0
-	default:
-		return false
-	}
 }
 
 // breakerThreshold is how many times a signature may produce the same answer
@@ -227,7 +211,7 @@ func failureParkText(name string, snippets []string) string {
 	var b strings.Builder
 	b.WriteString(parkPrefix)
 	b.WriteString(name)
-	b.WriteString(" with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.")
+	b.WriteString(" with equivalent arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.")
 	if len(snippets) > 0 {
 		b.WriteString("\n\nThe failures so far:")
 		for i, snippet := range snippets {

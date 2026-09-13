@@ -9,9 +9,11 @@ import (
 )
 
 // The tests here cover the semantic repeated-failure fingerprint: a call that
-// changes only free-text or neutral/default fields is the same failing
-// operation, while a meaningful change (target, mode, offset) is a fresh
-// attempt that must not erase the old fingerprint's run.
+// changes only free-text fields (intent, the shell job description) or JSON
+// formatting is the same failing operation, while any change to a field the
+// tool executes on (target, mode, offset) is a fresh attempt that must not
+// erase the old fingerprint's run. A value that merely looks like a default is
+// not normalized away: presence is meaningful per the field's contract.
 
 const semanticBoom = "invalid_request: context_lines requires output_match"
 
@@ -56,22 +58,20 @@ func TestBreakerDispatch_IntentOnlyChangeStillParks(t *testing.T) {
 	}
 }
 
-func TestBreakerDispatch_NeutralDefaultsAndFormattingStillPark(t *testing.T) {
+func TestBreakerDispatch_IntentAndFormattingStillPark(t *testing.T) {
 	r := NewRegistry()
 	fake := semanticRefTool(t, r, func(int) (any, error) { return nil, errors.New(semanticBoom) })
 	env := breakerEnv(t)
 	ctx := context.Background()
 
 	// Same effective call every time: differing JSON key order, whitespace, and
-	// provider-materialized default-equivalent values (empty strings and nulls,
-	// which the tool schemas call omitted) must all fingerprint the same.
-	// Explicit numeric zeros are deliberately absent here; see
-	// TestFailureFingerprint_ExplicitZeroIsDistinct.
+	// free-text intent must all fingerprint the same. A value that merely looks
+	// like a default is deliberately absent here, because it is no longer
+	// normalized away (see TestFailureFingerprint_MeaningfulDefaultsArePreserved).
 	calls := []llmCallArgs{
 		{id: "n1", args: `{"transcript_ref":"job:job_1","intent":"look"}`},
 		{id: "n2", args: `{ "intent" : "look again" , "transcript_ref" : "job:job_1" }`},
-		{id: "n3", args: `{"range":"","transcript_ref":"job:job_1"}`},
-		{id: "n4", args: `{"output_match":"","format":null,"transcript_ref":"job:job_1"}`},
+		{id: "n3", args: `{"transcript_ref":"job:job_1"}`},
 	}
 	results := make([]ExecResult, 0, len(calls))
 	for _, c := range calls {
@@ -79,13 +79,10 @@ func TestBreakerDispatch_NeutralDefaultsAndFormattingStillPark(t *testing.T) {
 	}
 
 	if fake.calls != 2 {
-		t.Fatalf("neutral defaults reset the failure streak: invocations = %d, want 2", fake.calls)
+		t.Fatalf("intent-only changes reset the failure streak: invocations = %d, want 2", fake.calls)
 	}
 	if !strings.HasPrefix(results[2].Output, wantFailurePark("read_transcript")) {
-		t.Fatalf("third neutral-default variant was not parked: %q", results[2].Output)
-	}
-	if !strings.HasPrefix(results[3].Output, wantFailurePark("read_transcript")) {
-		t.Fatalf("fourth neutral-default variant was not parked: %q", results[3].Output)
+		t.Fatalf("third intent-only variant was not parked: %q", results[2].Output)
 	}
 }
 
@@ -249,34 +246,20 @@ func TestFailureFingerprint_KeyOrderWhitespaceAndIntentAreEquivalent(t *testing.
 	}
 }
 
-func TestFailureFingerprint_NeutralDefaultsAreEquivalent(t *testing.T) {
-	want := fp("read_transcript", `{"transcript_ref":"job:j1"}`)
-	for _, args := range []string{
-		`{"transcript_ref":"job:j1","range":"","output_match":""}`,
-		`{"transcript_ref":"job:j1","format":null,"extra":{},"list":[]}`,
-	} {
-		if got := fp("read_transcript", args); got != want {
-			t.Errorf("fingerprint(%s) = %q, want %q", args, got, want)
-		}
-	}
-	// Empty and absent arguments are the same call.
-	if fp("read_transcript", ``) != fp("read_transcript", `{}`) {
-		t.Errorf("empty and {} must fingerprint the same")
-	}
-}
-
-// Explicit numeric zero is presence, not omission. read_transcript treats a
-// present offset_bytes as the retained-page operation even when it is zero (see
-// TestNormalizeRetainedReadArgsPreservesExplicitZeroOffset), so folding zero
-// into the omitted form would hide a meaningful correction and could park a
-// call the model legitimately changed. A value-based rule cannot know a
-// schema's numeric defaults, so it errs toward a distinct fingerprint.
-func TestFailureFingerprint_ExplicitZeroIsDistinct(t *testing.T) {
+// A value that looks like a default is presence, not omission. Fields are
+// dropped by name only, so each of these keeps its own fingerprint rather than
+// folding into the omitted form. read_transcript's offset_bytes=0 selects the
+// retained-page operation and task_list's depends_on: [] clears dependencies; a
+// provider-materialized default is a real argument too.
+func TestFailureFingerprint_MeaningfulDefaultsArePreserved(t *testing.T) {
 	base := fp("read_transcript", `{"transcript_ref":"job:j1"}`)
 	for _, args := range []string{
 		`{"transcript_ref":"job:j1","offset_bytes":0}`,
+		`{"transcript_ref":"job:j1","range":""}`,
+		`{"transcript_ref":"job:j1","format":null}`,
 		`{"transcript_ref":"job:j1","context_lines":0}`,
-		`{"transcript_ref":"job:j1","expand_turn":0}`,
+		`{"transcript_ref":"job:j1","extra":{}}`,
+		`{"transcript_ref":"job:j1","list":[]}`,
 	} {
 		if got := fp("read_transcript", args); got == base {
 			t.Errorf("fingerprint(%s) = %q, must differ from the omitted form", args, got)
@@ -284,6 +267,10 @@ func TestFailureFingerprint_ExplicitZeroIsDistinct(t *testing.T) {
 	}
 	if fp("read_file", `{"offset_bytes":0}`) == fp("read_file", `{}`) {
 		t.Error("explicit offset_bytes=0 must not fingerprint as omitted")
+	}
+	// Empty and absent arguments are the same call.
+	if fp("read_transcript", ``) != fp("read_transcript", `{}`) {
+		t.Errorf("empty and {} must fingerprint the same")
 	}
 }
 
@@ -344,12 +331,10 @@ func TestFailureFingerprint_IsBoundedAndSecretFree(t *testing.T) {
 }
 
 // The repetition nudge is an exact-call signal and must stay byte-keyed: two
-// calls whose raw arguments differ only by neutral defaults are the same
+// calls whose raw arguments differ only by a free-text intent are the same
 // semantic operation but not a byte-identical repeat, so a caller comparing
-// their bodies must see the unmodified result. This is the shape
-// TestRegistryExecuteCallNormalizesMaterializedRetainedDefaults exercises one
-// layer up.
-func TestBreakerDispatch_NeutralDefaultsDoNotTriggerRepetitionNudge(t *testing.T) {
+// their bodies must see the unmodified result.
+func TestBreakerDispatch_IntentChangeDoesNotTriggerRepetitionNudge(t *testing.T) {
 	const body = "ready\n"
 	r := NewRegistry()
 	fake := registerBreakerFake(t, r, "read_transcript", func(int) (any, error) { return body, nil })
@@ -360,14 +345,14 @@ func TestBreakerDispatch_NeutralDefaultsDoNotTriggerRepetitionNudge(t *testing.T
 	if omitted.Output != body {
 		t.Fatalf("omitted output = %q, want %q", omitted.Output, body)
 	}
-	materialized := r.ExecuteCall(ctx, env, breakerCall("m1", "read_transcript", `{"transcript_ref":"job:job_1","range":"","output_match":""}`))
+	materialized := r.ExecuteCall(ctx, env, breakerCall("m1", "read_transcript", `{"transcript_ref":"job:job_1","intent":"again"}`))
 	if fake.calls != 2 {
-		t.Fatalf("materialized defaults must dispatch: invocations = %d, want 2", fake.calls)
+		t.Fatalf("an intent-only change must dispatch: invocations = %d, want 2", fake.calls)
 	}
 	if strings.Contains(materialized.Output, repetitionNudgeMarker) {
-		t.Fatalf("neutral defaults triggered the exact-call repetition nudge: %q", materialized.Output)
+		t.Fatalf("an intent-only change triggered the exact-call repetition nudge: %q", materialized.Output)
 	}
 	if materialized.Output != body {
-		t.Fatalf("materialized output = %q, want the unmodified %q", materialized.Output, body)
+		t.Fatalf("intent-only output = %q, want the unmodified %q", materialized.Output, body)
 	}
 }
