@@ -172,7 +172,7 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} />
+      <Composer ref={ref} focused={false} />
     </ClientProvider>,
   );
   await act(async () => {
@@ -398,7 +398,7 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
         await act(async () => {
           await threadsStore.getState().ensureThread("ref_b");
         });
-        const second = render(<Composer ref="ref_b" />);
+        const second = render(<Composer ref="ref_b" focused={false} />);
         destinationElement = second
           .getAllByRole("textbox", { name: "Message" })
           .find((element) => element !== message)!;
@@ -747,7 +747,7 @@ test.each([
       });
       if (remount) {
         cleanup();
-        render(<Composer ref="ref_a" />);
+        render(<Composer ref="ref_a" focused={false} />);
       }
       expect(actionButton().disabled).toBe(true);
       fireEvent.click(actionButton());
@@ -1242,7 +1242,7 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="ref_a" />
+      <Composer ref="ref_a" focused={false} />
     </ClientProvider>,
   );
 

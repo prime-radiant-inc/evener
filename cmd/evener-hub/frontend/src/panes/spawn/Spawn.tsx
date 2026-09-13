@@ -19,6 +19,7 @@ import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { effortLabel } from "../../shell/reasoningEffort";
 import { navigate, paneToURL } from "../../shell/routing";
+import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
 import {
   Button,
@@ -723,14 +724,16 @@ function SpawnForm({
   const pluginSelectionBlocked =
     explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
+  // Writing the prompt is what starting an agent IS, so the caret starts
+  // there rather than on whichever field happens to be first in the DOM. A
+  // dedicated effect, not folded into the catalog loading below: an unrelated
+  // fetch refactor must never silently change focus behavior.
+  useMountAutofocus(textareaRef, focused);
+
   // Draft defaults and URL prefill are owned above the form's lifetime.
   // Mount only the asynchronous catalogs and focus the current prompt.
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only catalog loading
   useEffect(() => {
-    // Writing the prompt is what starting an agent IS, so the caret starts
-    // there rather than on whichever field happens to be first in the DOM.
-    textareaRef.current?.focus();
-
     let active = true;
     client.request("evener/harnesses/list", {}).then(
       (r) => {

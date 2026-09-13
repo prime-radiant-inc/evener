@@ -307,6 +307,16 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const expandedSummary = expanded ? descriptor.summaryWhenExpanded : undefined;
   const summary =
     expandedSummary !== undefined ? expandedSummary : useProjectedSummary ? projectedSummary : descriptorSummary;
+  // The summary text the row would actually SHOW once its summary line is
+  // open. A delegate row deliberately renders none (subagentModule owns its
+  // presentation) even though its descriptor's own summary() returns the
+  // description the intent line already carries. A row with no summary text
+  // has no summary line to open, so the failure force-open below must never
+  // carry an EMPTY one open (the regression: a failed, non-superseded delegate
+  // took the two-level path with an empty summary and moved the body chevron
+  // onto a stray empty line).
+  const rowSummaryText = isDelegate ? "" : summary;
+  const hasSummaryText = rowSummaryText.trim() !== "";
 
   // Two-level disclosure: the summary line has its own open/closed state,
   // independent of the body disclosure. At verbosity levels where toolCalls is
@@ -322,8 +332,11 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // with it, so a failed row lands on the complete level 2 (intent + one-line
   // tool call + body) instead of skipping the call on its way down. A
   // superseded preval-only bounce demotes exactly as the body does (kata hgm1),
-  // and an explicit reader toggle still wins in the store.
-  const summaryFallback = summaryConfigDefault || (failed && !superseded);
+  // and an explicit reader toggle still wins in the store. Only a row that
+  // actually has summary text is carried open: a summary-less intent-bearing
+  // row (a delegate) stays single-level, keeping the body chevron on the
+  // intent line.
+  const summaryFallback = summaryConfigDefault || (failed && !superseded && hasSummaryText);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryFallback);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
   // A descriptor may suppress its whole row (task_list `action:"view"` and
@@ -342,7 +355,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow
-          summary={isDelegate ? "" : summary}
+          summary={rowSummaryText}
           summaryLink={summaryLink}
           intent={intent}
           icon={descriptor.icon}
@@ -386,7 +399,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         // serves the remaining no-summary states: delegate rows
         // (subagentModule owns their presentation) and a two-level row whose
         // summary line the reader collapsed (summaryOpen=false).
-        summary={isDelegate || !summaryOpen ? "" : summary}
+        summary={!summaryOpen ? "" : rowSummaryText}
         summaryLink={summaryLink}
         intent={intent}
         icon={descriptor.icon}
