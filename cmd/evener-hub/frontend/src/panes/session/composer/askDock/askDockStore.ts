@@ -18,10 +18,10 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { type AskResolution, composeAskAnswers } from "../../../../protocol/askAnswers";
+import { liveAskQuestions } from "../../../../protocol/deriveAskQuestions";
 import { sessionActionError } from "../../../../protocol/errors";
 import type { ThreadModel } from "../../../../protocol/model";
 import { threadsStore } from "../../../../stores/threads";
-import { liveAskQuestions } from "./deriveAskQuestions";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";
 
 export interface AskAnswerState {

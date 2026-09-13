@@ -72,7 +72,7 @@ test("summary degrades to a bare label for malformed argumentsJSON, never throws
 
 // --- summarySuffix (kata h70z): the collapsed row's "— answered: ..."
 // recap, read back from a later [answers] reply. answeredAskUserSuffix
-// itself is unit-tested exhaustively in ../../askShared.test.ts; these
+// itself is unit-tested exhaustively in protocol/askShared.test.ts; these
 // tests only confirm the descriptor wires it up correctly. -------------
 
 function threadModel(items: ItemModel[]) {
