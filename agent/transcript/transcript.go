@@ -43,6 +43,24 @@ var ErrInvalidRecordBoundary = errors.New("invalid transcript record boundary")
 // configured framing limit.
 var ErrLineTooLong = errors.New("transcript line too long")
 
+// ErrRollbackFailed marks a durable append that failed and could not be taken
+// back out of the file. The entry's line may still be there, so the append's
+// outcome is unknown: a caller that simply retries can record the same turn
+// twice under two identities. Reconcile the entry against the transcript —
+// EstablishDurability makes what a reader can see authoritative — before
+// deciding whether to write it again.
+var ErrRollbackFailed = errors.New("rollback failed")
+
+// ErrWriterPoisoned marks a writer that refuses further appends. An append
+// that failed partway and could not be rolled back leaves bytes at the tail
+// that are not a record: appending after them would run the next entry onto
+// the remains of the last and make the whole file unreadable. The writer stops
+// rather than produce that, so the failure surfaces on every later append
+// instead of being discovered by whoever next reads the transcript. Recovery is
+// to reopen the transcript, which rebuilds the writer from the complete records
+// the file still holds.
+var ErrWriterPoisoned = errors.New("transcript writer refuses further appends after an unresolved partial append")
+
 // Header is the first line of a transcript JSONL file.
 type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
@@ -235,6 +253,19 @@ type Writer struct {
 	dirty    bool
 	lastSync time.Time
 
+	// poisoned records an append that failed partway and could not be rolled
+	// back: the file's tail may be the remains of a record rather than a
+	// record, and nothing this writer could append after it would be readable.
+	// See ErrWriterPoisoned.
+	poisoned bool
+
+	// positionUnknown records a rollback that removed the entry but could not
+	// seek back to the file's new end, leaving this writer's position past it.
+	// The file is consistent and the writer stays usable, but the next append
+	// has to re-establish the end before writing or its record lands past it,
+	// behind a gap the filesystem zero-fills.
+	positionUnknown bool
+
 	// failures counts the session's failed tool calls as they are written, for
 	// the live figure a running session reports. Nil until TrackFailures
 	// installs it, and a nil counter reports ABSENT rather than zero: a writer
@@ -407,6 +438,20 @@ func (w *Writer) EstablishDurability() error {
 	return nil
 }
 
+// Poisoned reports whether this writer has stopped accepting appends after an
+// append it could not resolve. Nil-safe, like the append doors themselves: a
+// session with no state directory has no writer and so has nothing to refuse.
+// Callers use it to fail closed before doing work whose records would be lost —
+// see ErrWriterPoisoned.
+func (w *Writer) Poisoned() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.poisoned
+}
+
 func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w == nil || w.closed.Load() {
 		return nil
@@ -419,6 +464,18 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	// fast-path check above and the lock acquisition.
 	if w.closed.Load() {
 		return nil
+	}
+	if w.poisoned {
+		return ErrWriterPoisoned
+	}
+	if w.positionUnknown {
+		// Write nothing until the end is known again. A seek that fails here
+		// leaves the flag set, so the next attempt re-establishes it rather
+		// than writing into the gap.
+		if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
+			return fmt.Errorf("seek transcript append position: %w", err)
+		}
+		w.positionUnknown = false
 	}
 
 	entry := Entry{
@@ -441,11 +498,16 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		}
 	}
 
+	data = append(data, '\n')
 	previousDirty := w.dirty
-	if err := w.writeLineLocked(append(data, '\n')); err != nil {
+	if written, err := w.writeLineLocked(data); err != nil {
 		if forceSync {
-			return w.appendFailureLocked("write transcript entry", err, startOffset)
+			return w.appendFailureLocked("write transcript entry", err, startOffset, turn, written, len(data))
 		}
+		// The buffered door attempts no rollback, so whatever landed stays
+		// exactly where it is — including the writer's position, which only
+		// the bytes it wrote have moved.
+		w.poisonLandedBytesLocked(turn, written, len(data))
 		return fmt.Errorf("write transcript entry: %w", err)
 	}
 
@@ -453,63 +515,137 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if forceSync || w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
 		if err := w.file.Sync(); err != nil {
 			if forceSync {
-				if rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
-					return fmt.Errorf("sync transcript entry: %w; rollback failed: %w", err, rollbackErr)
+				if removed, rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
+					if !removed {
+						w.countAppendedEntryLocked(turn)
+					}
+					return fmt.Errorf("sync transcript entry: %w; %w: %w", err, ErrRollbackFailed, rollbackErr)
 				}
 				w.dirty = previousDirty
 				return fmt.Errorf("sync transcript entry: %w", err)
 			}
+			// The buffered door rolls nothing back, so the whole line stays in
+			// the file and every reader of this transcript sees it. Spend its
+			// sequence number here or the next append takes that number again.
+			w.countAppendedEntryLocked(turn)
 			return fmt.Errorf("sync transcript entry: %w", err)
 		}
 		w.lastSync = time.Now()
 		w.dirty = false
 	}
 
-	w.seq++
-	// Counted only once the entry is on its way to the file and no rollback can
-	// take it back: the figure is a statement about the transcript, so it moves
-	// for exactly the entries a later reader of that transcript would see.
-	w.failures.Observe(turn)
+	w.countAppendedEntryLocked(turn)
 	return nil
 }
 
-func (w *Writer) writeLineLocked(line []byte) error {
+// poisonLandedBytesLocked stops the writer when a failed write left bytes at
+// the tail of the file that no later append may run onto, and marks those bytes
+// for Close to flush. A write that transferred nothing left nothing to guard:
+// the file and the position are as they were, so the writer stays usable and a
+// retry still lands. A whole line that landed is a record a reader will see, so
+// it spends its sequence number and counts the failures it settles before the
+// writer stops.
+func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int) {
+	if written == 0 {
+		return
+	}
+	// Nothing synced what landed, and Close flushes only what it is told is
+	// dirty. An entry counted here but left out of that flush is one the writer
+	// reports and the disk may never receive.
+	w.dirty = true
+	if written == lineLen {
+		w.countAppendedEntryLocked(turn)
+	}
+	w.poisoned = true
+}
+
+// countAppendedEntryLocked spends the entry's sequence number and counts the
+// failures the entry settles. Both figures are statements about the transcript,
+// so they move for exactly the entries a later reader of that file would see —
+// which is why a rollback that could not take a written entry back out spends
+// them too, and a rollback that removed the entry does not.
+func (w *Writer) countAppendedEntryLocked(turn schema.Turn) {
+	w.seq++
+	w.failures.Observe(turn)
+}
+
+// writeLineLocked writes the whole line, reporting how much of it reached the
+// file. The count is what decides whether a failed write left a record behind
+// or only the remains of one.
+func (w *Writer) writeLineLocked(line []byte) (int, error) {
+	written := 0
 	for len(line) > 0 {
 		n, err := w.file.Write(line)
+		written += n
 		if err != nil {
-			return err
+			return written, err
 		}
 		if n == 0 {
-			return io.ErrShortWrite
+			return written, io.ErrShortWrite
 		}
 		line = line[n:]
 	}
-	return nil
+	return written, nil
 }
 
-func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64) error {
-	if rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
-		return fmt.Errorf("%s: %w; rollback failed: %w", operation, err, rollbackErr)
+// appendFailureLocked reports a write that failed, having transferred the whole
+// line or only part of one. A rollback that takes those bytes back out settles
+// it: nothing was written, nothing is spent.
+//
+// A rollback that fails settles nothing, and what it leaves decides the rest —
+// on exactly the rule the buffered door follows, since the bytes at the tail are
+// the same bytes either way. A truncate that succeeded removed them, so there is
+// nothing to guard and only the file's end is in question (rollbackAppendLocked
+// records that). A truncate that failed left whatever the write transferred:
+// nothing at all leaves the file and the position as they were and the writer
+// usable; a WHOLE line is a record a reader will see, so it spends its sequence
+// number and counts the failures it settles before the writer stops; a PARTIAL
+// line is not a record and spends nothing. Bytes that landed and could not be
+// taken back out are the only arm that poisons the writer: past them it can
+// promise nothing about where the file ends, so it refuses to append rather
+// than write a record no reader can get back out.
+func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64, turn schema.Turn, written, lineLen int) error {
+	removed, rollbackErr := w.rollbackAppendLocked(startOffset)
+	if rollbackErr == nil {
+		return fmt.Errorf("%s: %w", operation, err)
 	}
-	return fmt.Errorf("%s: %w", operation, err)
+	if !removed {
+		w.poisonLandedBytesLocked(turn, written, lineLen)
+	}
+	return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
 }
 
-func (w *Writer) rollbackAppendLocked(startOffset int64) error {
+// rollbackAppendLocked takes the entry written at startOffset back out of the
+// file. It reports whether the entry is gone, which only the truncate decides:
+// a truncate that succeeded has removed the entry even when the seek or sync
+// after it fail, and a truncate that failed leaves the entry where a later
+// reader will find it. It also records on the writer whether the file's end is
+// still known, since the seek that restores it is the step that can fail on its
+// own.
+func (w *Writer) rollbackAppendLocked(startOffset int64) (removed bool, err error) {
 	truncateErr := w.file.Truncate(startOffset)
 	_, seekErr := w.file.Seek(0, io.SeekEnd)
+	removed = truncateErr == nil
+	// Only a truncate that moved the end and a seek that could not follow it
+	// leave the position wrong. A truncate that failed left the entry in the
+	// file, so the position this append reached is still the file's end. Set
+	// only: no rollback outcome establishes an end this writer had already lost.
+	if removed && seekErr != nil {
+		w.positionUnknown = true
+	}
 	if truncateErr != nil && seekErr != nil {
-		return fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
+		return removed, fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
 	}
 	if truncateErr != nil {
-		return fmt.Errorf("truncate to %d: %w", startOffset, truncateErr)
+		return removed, fmt.Errorf("truncate to %d: %w", startOffset, truncateErr)
 	}
 	if seekErr != nil {
-		return fmt.Errorf("seek eof: %w", seekErr)
+		return removed, fmt.Errorf("seek eof: %w", seekErr)
 	}
 	if syncErr := w.file.Sync(); syncErr != nil {
-		return fmt.Errorf("sync rollback truncate: %w", syncErr)
+		return removed, fmt.Errorf("sync rollback truncate: %w", syncErr)
 	}
-	return nil
+	return removed, nil
 }
 
 // Close syncs and closes the underlying file. Idempotent: safe to call multiple times.

@@ -189,6 +189,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// history: without it a new thread lists as its raw session id for its whole
 	// first turn.
 	events.EventQueueChanged: facetQueue,
+	events.EventEnvironment:  facetContext,
 	events.EventUserInput:    facetQueue | facetWork | facetContext | facetAsk | facetMeta,
 	// TURN_STARTED is a turn-OPENING event, so it sits here rather than with
 	// TURN_ENDED's facetAll: the checkpoint argument above is about a turn
