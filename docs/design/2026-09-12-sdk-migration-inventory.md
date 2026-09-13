@@ -47,7 +47,7 @@ how. Fact 4 still holds.
    see the delta section.
 2. **`index.ts` carried nine export statements and eleven runtime exports**
    (`protocol/index.ts:1-9`; size new work off the current file and the
-   `runtimeExports` manifest, never off this list): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
+   export manifest (`packageExports`), never off this list): `AppwireClient`, `APPWIRE_PROTOCOL_VERSION`,
    `ConnectionClosedError`, `RequestTimeoutError`, `WireError`,
    `rpcURLFromLocation`, `composeAskAnswers`, `METHOD_NAMES`,
    `NOTIFICATION_NAMES`, `STEERING_KINDS`, `THREAD_ITEM_EVENT_KINDS`, plus the
@@ -65,8 +65,8 @@ how. Fact 4 still holds.
    production modules (`stores/threads.ts:24`, `shell/clientContext.tsx:10`, …).
    `protocol/testing/` is not in the build `files` list. Of those 136 files,
    only **25** imported `AppwireClientLike` itself; the rest import `FakeClient`
-   and keep that import wherever the type moves. **A2 (#1188) closed this:** at
-   `27503c07d` the type is declared in `protocol/clientLike.ts`, exported from
+   and keep that import wherever the type moves. **A2 (#1188) closed this,
+   merged as `3bf357337`:** the type is declared in `protocol/clientLike.ts`, exported from
    `index.ts` and in the build `files`; 114 `testing/fakeClient` import lines
    remain and **none** of them import `AppwireClientLike`.
 4. **The package has zero runtime dependencies** (`protocol/package.json` has no
@@ -77,7 +77,7 @@ how. Fact 4 still holds.
 5. **The qualification runner hard-coded the export list four times.** It wrote
    four consumer files, each naming all eleven runtime exports literally, so a
    new export had to be added in four places. A1 has since replaced this with
-   one shared `runtimeExports` manifest — see the delta section. A new *subpath*
+   one shared export manifest — see the delta section. A new *subpath*
    still needs all four write sites touched.
 
 The unexpected finding: **the native app already imports 30+ web frontend
@@ -256,10 +256,10 @@ Three different ways, only one of which is qualified.
    `protocol/scripts/qualify-package.mjs`: `npm pack`, install outside the
    checkout, ESM + CJS type-check and runtime import, declaration check, then the
    shipped examples against a scripted `ws` server. What it exercises is whatever the
-   `runtimeExports` manifest at `qualify-package.mjs:69` lists, across four
-   generated consumer programs — cite the manifest, never a number, because a
-   symbol added to `index.ts` and not to that array is unqualified while the
-   gate stays green.
+   `packageExports` manifest in `qualify-package.mjs` lists, per specifier,
+   across four generated consumer programs — cite the manifest, never a number
+   and never a line, because a symbol added to `index.ts` and not to the
+   manifest is unqualified while the gate stays green.
 2. **Deep relative import from the web** (`../protocol/model`,
    `../protocol/reducer`, `../protocol/testing/fakeClient`). Compiled by Vite and
    `tsc --noEmit` in `make test-web`. Nothing checks these files stay packable.
@@ -349,7 +349,7 @@ Statuses observed at `cb211c5f8`; re-query before acting.
 
 | PR | Merged as | Effect on the baseline |
 | --- | --- | --- |
-| A1 #1184 | `f2599d1ed` | `tsconfig.build.json` `files` 6 → **16**: all ten previously-unpacked modules ship, `docContent.ts` included, with only `readDocFile` held off `index.ts` until C24. §5's "In tarball?" column is superseded — every top-level module now ships. Also collapsed the runner's four hard-coded export lists into one `runtimeExports` manifest (`qualify-package.mjs:69`), which fact 5 had asked for |
+| A1 #1184 | `f2599d1ed` | `tsconfig.build.json` `files` 6 → **16**: all ten previously-unpacked modules ship, `docContent.ts` included, with only `readDocFile` held off `index.ts` until C24. §5's "In tarball?" column is superseded — every top-level module now ships. Also collapsed the runner's four hard-coded export lists into one export manifest, which fact 5 had asked for; A3c (#1207) then made that manifest per-specifier and renamed it `packageExports` |
 | A2 #1188 | `3bf357337` | `files` 16 → **17**: `clientLike.ts` added, declaring `AppwireClientLike` and exported from `index.ts`. §5 has no row for it, by design — the table is the baseline. 25 importers rewritten; 114 `testing/fakeClient` import lines remain, none of them for the type |
 | A5 #1186 | `2245f9715` | Deleted `mobile/src/dev/conversationFixtures.ts`, so §4's nine-module table is one module ahead of reality and `mobile/src` is 6,841 lines, not 7,615. Also widened `mobile-native` typechecking over all of `mobile/src`, closing the gap that let a dead file with dangling imports survive |
 | B1 #1189 | `27503c07d` | `files` 17 → **18**: `itemFailure.ts` added. The web and native settled-item predicates were identical and both now call it. It also closed the third, divergent predicate recorded in §3: `toolRenderers.ts:190-193` now delegates the shared half to `hasItemFailure` and keeps only the descriptor half, so issues #1190 and #1197 are closed. That was plan row B1b; it never needed its own PR |
@@ -358,5 +358,5 @@ Statuses observed at `cb211c5f8`; re-query before acting.
 | A3c #1207 | `2a8163eb0` | The qualification manifest is per specifier rather than root-only, so a published subpath can be qualified at all — the prerequisite for the plan's A3d and C1 |
 | A3d #1209 | open | Publishes `./docContent` as the package's second specifier and turns `readDocFile` into `readDocFile(session, path, fetchDoc)`, where `DocFetch` returns a `DocResponseLike` — the minimal `{ ok, status, headers.get, arrayBuffer }` a real `Response` satisfies, because a `Promise<Response>` in the `.d.ts` fails the runner's DOM-free declaration consumers. The web's adapter is `panes/doc/browserDocFetch.ts`; the root keeps the pure helpers. §3's `docContent` seam row is answered by this |
 
-A3, A3d and A4 are unstarted and block all of phase C. Unrelated to this lane,
-#1098 merged as `cb211c5f8`.
+A3 and A4 are unstarted; A3d is open as #1209. Together they block all of phase
+C. Unrelated to this lane, #1098 merged as `cb211c5f8`.
