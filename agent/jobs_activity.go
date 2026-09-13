@@ -50,14 +50,20 @@ const (
 // list from its own top with a fresh budget. JobsEpoch/
 // DelegatesEpoch are the fold-cache generations (foldcache.Result.Epoch —
 // see historicalJobFoldCache/historicalDelegateFoldCache in
-// jobs_activity_past.go) SessionID's own jobs.jsonl and RootID's shared
-// delegates.jsonl were at when this token was minted; loadActivitySnapshotForParams
-// rejects a resume whose epochs no longer match what the fold caches
-// currently report for those same paths, rather than silently applying
-// ResumeIndex to a journal that was rewritten or shrunk out from under it.
-// An ordinary append never bumps epoch (see foldcache.Result.Epoch's own
-// doc comment) — append-only growth is exactly the case a resume must
-// tolerate, not treat as staleness.
+// jobs_activity_past.go) of the two journals SESSIONID folds: its own
+// jobs.jsonl and the delegates.jsonl owned by the root its metadata names,
+// which is RootID for a well-formed tree and whatever that metadata says
+// otherwise. They belong to the session the token TARGETS, never to the root
+// of the page that minted it — a live root reads neither cache, so carrying
+// its zeros for a closed child's token would refuse a branch nobody touched.
+// A closed child under a live root is generation-fenced through these, while
+// the live root itself is revision-fenced below.
+// loadActivitySnapshotForParams rejects a resume whose generations no longer
+// match what the fold caches currently report for those same paths, rather
+// than silently applying ResumeIndex to a journal that was rewritten or
+// shrunk out from under it. An ordinary append never bumps a generation (see
+// foldcache.Result.Epoch's own doc comment) — append-only growth is exactly
+// the case a resume must tolerate, not treat as staleness.
 type activityContinuation struct {
 	Version        int      `json:"v"`
 	RootID         string   `json:"root"`
@@ -70,11 +76,13 @@ type activityContinuation struct {
 	// activityCurrentRootRevision) at mint time — appwire.JobActivityTree's
 	// own Revision field, carried into the continuation too. Only checked
 	// on resume when the root is LIVE (loadActivitySnapshotForParamsWithCache):
-	// a live session's JobsEpoch/DelegatesEpoch above are always 0 (it
-	// reads neither fold cache), so they provide no staleness protection
-	// at all for a live continuation — 0 == 0 always passes, even across a
-	// real mutation. Revision closes that gap the same way epoch closes it
-	// for historical sessions. For a historical continuation this is still
+	// a LIVE session's own JobsEpoch/DelegatesEpoch above are always 0 (it
+	// reads neither fold cache), so for a token naming a live session they
+	// provide no staleness protection at all — 0 == 0 always passes, even
+	// across a real mutation. Revision closes that gap the same way a
+	// generation closes it for a historical session. A token naming a CLOSED
+	// child under that same live root carries the child's real generations,
+	// so it is fenced by both. For a historical continuation this is still
 	// populated (mint time's
 	// activitySnapshotPersistedRevision) but not validated — the epoch
 	// fields already cover that case, and this field's value there is not
@@ -343,7 +351,10 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	// root or not (collectActivitySessionEpochs). An ordinary append never
 	// moves either (see activityContinuation's doc comment), so this rejects
 	// exactly the resume whose underlying journal was rewritten or shrunk
-	// since, the case ResumeIndex is unsafe to apply to. A live session reads
+	// since, the case ResumeIndex is unsafe to apply to — and a token minted
+	// before generations were carried names none, so it is refused once and
+	// the client restarts pagination, which is what the error asks for. A
+	// live session reads
 	// neither fold cache, so its own generations are 0 on both sides and this
 	// check is silent for it; the revision below is what fences a live
 	// target. A live root paging into a CLOSED child is fenced by both: the
@@ -777,7 +788,7 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 	// Collected from snapshot (the internal tree projection just consumed)
 	// before trimming works purely on the flattened wire shape, which
 	// carries no epoch information of its own — see
-	// collectActivityJobsEpochs and trimActivityTrailingEntry. revision is
+	// collectActivitySessionEpochs and trimActivityTrailingEntry. revision is
 	// the same value just seeded into budget.revision above, embedded the
 	// same way in whatever continuation trimming mints too.
 	// startDepth is -len(continuation.Path) (loadActivitySnapshotForParams),
@@ -1424,9 +1435,8 @@ func (r activityTrimResume) offsetAt(path []string) int {
 }
 
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
-// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs,
-// revision, and resume feed every continuation trimming mints — see
-// trimActivityTrailingEntry. Dropping an entry is also the only evidence
+// encodes within activityMaxEncodedBytes. epochs, revision and resume feed
+// every continuation trimming mints — see trimActivityTrailingEntry. Dropping an entry is also the only evidence
 // available about WHY the page was too big: an entry that leaves the page
 // within the limit is what did not fit, and is skipped when no later page
 // could carry it either; one that does not is left for a page that
