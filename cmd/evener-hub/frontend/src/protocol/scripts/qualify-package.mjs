@@ -39,6 +39,7 @@ async function qualify() {
     "transport",
     "types.gen",
     "askAnswers",
+    "attachmentMarkers",
     "activityData",
     "activityList",
     "activityMerge",
@@ -78,6 +79,7 @@ async function qualify() {
     "sessionActionHeadline",
     "rpcURLFromLocation",
     "composeAskAnswers",
+    "translateAttachmentMarkers",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
     "STEERING_KINDS",
@@ -143,6 +145,7 @@ async function qualify() {
     "AppwireClientLike",
     "WebSocketLike",
     "AskAnswerItem",
+    "MarkerAttachment",
     "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
@@ -163,6 +166,7 @@ async function qualify() {
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
+assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.equal(new client.WireError("nope", -32000).code, -32000);
 assert.equal(client.errorText(new Error("boom")), "boom");
 assert.equal(client.errorKind(new Error("boom")), "unknown");
