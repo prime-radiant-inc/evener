@@ -18,6 +18,8 @@
 // {text, skillNames} as a single atomic localStorage value, so a draft's
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
+import { canonicalSkillNames } from "../../../protocol/composerInput";
+
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
 const draftRevisions = new Map<string, number>();
@@ -78,7 +80,13 @@ export function readComposerDraft(ref: string): ComposerDraft {
       } catch {
         parsed = null;
       }
-      if (isStoredComposerDraft(parsed)) return parsed;
+      // The draft is the one selection source the composer reads verbatim, so
+      // it is also the one place a corrupted or hand-edited v2 record could
+      // hand padded, empty or repeated names straight to the chips. Canonical
+      // names are the contract everywhere else; enforce it here too.
+      if (isStoredComposerDraft(parsed)) {
+        return { text: parsed.text, skillNames: canonicalSkillNames(parsed.skillNames) };
+      }
     }
     return { text: localStorage.getItem(draftStorageKey(ref)) ?? "", skillNames: [] };
   } catch {

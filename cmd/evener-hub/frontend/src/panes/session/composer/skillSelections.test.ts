@@ -14,6 +14,12 @@ test("addSkillSelection preserves the existing selection order", () => {
   expect(addSkillSelection(["pkg:first", "pkg:second"], "pkg:third")).toEqual(["pkg:first", "pkg:second", "pkg:third"]);
 });
 
+test("addSkillSelection canonicalizes the incoming name and the existing list", () => {
+  expect(addSkillSelection([], "   ")).toEqual([]);
+  expect(addSkillSelection(["pkg:probe"], " pkg:probe ")).toEqual(["pkg:probe"]);
+  expect(addSkillSelection([" pkg:probe ", ""], "pkg:other")).toEqual(["pkg:probe", "pkg:other"]);
+});
+
 test("removeSkillSelection removes only the named selection", () => {
   expect(removeSkillSelection(["pkg:a", "pkg:b", "pkg:c"], "pkg:b")).toEqual(["pkg:a", "pkg:c"]);
 });

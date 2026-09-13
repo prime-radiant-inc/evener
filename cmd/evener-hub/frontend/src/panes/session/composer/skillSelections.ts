@@ -11,9 +11,16 @@
 // never edits the draft's prose: the names ride their own list, and the wire
 // assembles them as skill items AFTER the ordinary text/attachment items.
 
-/** Appends a canonical name unless it is already selected (dedup by name). */
+import { canonicalSkillNames } from "../../../protocol/composerInput";
+
+/**
+ * Appends a canonical name unless it is already selected (dedup by name). The
+ * whole list is canonicalized, not just the incoming name: a selection list
+ * that already carries a padded or empty entry (a corrupted draft, say) would
+ * otherwise survive next to the canonical one and render as a duplicate chip.
+ */
 export function addSkillSelection(names: readonly string[], canonicalName: string): string[] {
-  return names.includes(canonicalName) ? [...names] : [...names, canonicalName];
+  return canonicalSkillNames([...names, canonicalName]);
 }
 
 /** Removes exactly the named selection; an absent name leaves the list as-is. */

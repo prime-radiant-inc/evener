@@ -178,6 +178,21 @@ test("blank text with no selections still stores nothing", () => {
   expect(localStorage.getItem(draftStorageKey("local:01AAA"))).toBeNull();
 });
 
+// The draft is the one selection source the composer reads verbatim, so a
+// hand-edited or corrupted v2 record must not hand padded, empty or repeated
+// names to the chip list: they render blank/duplicate chips with colliding
+// React keys, and the wire contract forbids a non-canonical name.
+test("readComposerDraft canonicalizes the stored skill names", () => {
+  localStorage.setItem(
+    composerDraftStorageKey("local:01AAA"),
+    JSON.stringify({ text: "keep me", skillNames: [" pkg:probe ", "", "pkg:probe", "  ", "pkg:other", "pkg:other"] }),
+  );
+  expect(readComposerDraft("local:01AAA")).toEqual({
+    text: "keep me",
+    skillNames: ["pkg:probe", "pkg:other"],
+  });
+});
+
 test("clearDraft removes both the v2 record and any legacy v1 value", () => {
   writeComposerDraft("local:01AAA", { text: "draft", skillNames: ["pkg:probe"] });
   clearDraft("local:01AAA");
