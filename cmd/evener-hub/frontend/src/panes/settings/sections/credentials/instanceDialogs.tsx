@@ -446,7 +446,7 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
       placeholder="paste key"
       successText={`API key saved for ${instance.name}`}
       input="password"
-      submit={(name, value) => credentialsStore.getState().setApiKey(name, value)}
+      submit={(name, value) => credentialsStore.getState().setApiKey(name, value, instance.endpointFingerprint)}
     />
   );
 }
@@ -469,7 +469,7 @@ export function CredentialJsonDialog({ instance, onCancel, onSuccess }: ApiKeyDi
       placeholder="paste a service-account key or application_default_credentials.json"
       successText={`Credential JSON saved for ${instance.name}`}
       input="textarea"
-      submit={(name, value) => credentialsStore.getState().setCredentialJson(name, value)}
+      submit={(name, value) => credentialsStore.getState().setCredentialJson(name, value, instance.endpointFingerprint)}
     />
   );
 }

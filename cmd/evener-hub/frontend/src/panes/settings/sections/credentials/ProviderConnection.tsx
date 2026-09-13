@@ -1,4 +1,5 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { WireError } from "../../../../protocol/errors";
 import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
@@ -89,6 +90,14 @@ function destination(row: InstanceEntry | undefined): string {
 }
 function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
+}
+
+// The hub's refusal when the endpoint this flow asserted on a credential write
+// is not the one the name resolves to anymore (appwire.Conflict): the
+// connection moved between this flow's check and the write - the one gap the
+// client cannot close by comparing a listing it already holds.
+function isEndpointConflict(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "conflict";
 }
 
 export function ProviderConnection(props: ProviderConnectionProps) {
@@ -425,6 +434,28 @@ function SelectedConnection({
     }
   }
 
+  // A refused endpoint assertion means the name moved between this flow's check
+  // and the write, so the draft was typed for an endpoint that is gone: drop
+  // it, re-anchor to what the hub resolves now, and say why - rather than leave
+  // the user with a save that silently went somewhere else. The re-read is what
+  // makes the re-anchor the hub's current view, and it is deliberately allowed
+  // to reset the flow on the way: it is a caller read, so the invalidation
+  // watch reads the listing change it brings as a foreign one. These writes run
+  // after it and restate this refusal's own outcome. Nothing else can be
+  // mid-flight here - the flow is busy for the whole window - and a re-read
+  // that fails still leaves the alert below, with the next submit re-checking
+  // against the listing the store does hold.
+  async function recoverChangedEndpoint() {
+    try {
+      await credentialsStore.getState().fetch();
+    } catch {
+      // Best-effort: the alert below is the answer either way.
+    }
+    changeValue("");
+    setBaseline(findSetup(name));
+    setError("This connection changed to a different endpoint. Check its destination and enter the key again.");
+  }
+
   async function refreshAndCheck(token: number, expectedSource?: string) {
     setPhase("refreshing");
     // The listing this refresh waits for can be superseded by the debounced
@@ -511,15 +542,22 @@ function SelectedConnection({
       setPhase("saving");
       try {
         const state = credentialsStore.getState();
-        if (json) await state.setCredentialJson(name, value.trim());
-        else await state.setApiKey(name, value.trim());
+        // The endpoint this flow showed the user is asserted on the write: the
+        // hub compares it where the write lands, which is what closes the gap
+        // between the check above and the RPC.
+        const asserted = row?.endpointFingerprint;
+        if (json) await state.setCredentialJson(name, value.trim(), asserted);
+        else await state.setApiKey(name, value.trim(), asserted);
         if (!current(token)) return;
         setSaved(true);
-      } catch {
-        if (current(token)) {
-          setPhase("idle");
-          setError("Credential could not be saved. Your draft is retained; retry saving.");
+      } catch (err) {
+        if (!current(token)) return;
+        if (isEndpointConflict(err)) {
+          await recoverChangedEndpoint();
+          return;
         }
+        setPhase("idle");
+        setError("Credential could not be saved. Your draft is retained; retry saving.");
         return;
       }
       await refreshAndCheck(token, "store");

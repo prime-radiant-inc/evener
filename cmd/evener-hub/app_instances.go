@@ -1,13 +1,17 @@
 package hub
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -144,7 +148,7 @@ func (c *hubInstancesController) entryFor(inst registry.Instance, authored *regi
 		Surface:             inst.Surface,
 		Auth:                inst.Auth,
 		BaseURL:             sanitizeEndpointURL(inst.BaseURL),
-		EndpointFingerprint: endpointFingerprint(inst.BaseURL),
+		EndpointFingerprint: endpointFingerprint(c.authStateDir(), inst.BaseURL),
 		Vars:                inst.Vars,
 		Implicit:            inst.Implicit,
 		Hidden:              inst.Hidden,
@@ -170,6 +174,17 @@ func (c *hubInstancesController) entryFor(inst registry.Instance, authored *regi
 		entry.CredentialHeader = credentialHeaderField(authored.CredentialHeaders)
 	}
 	return entry
+}
+
+// authStateDir is the state root the controllers share: the OAuth records and,
+// beside them, the key the endpoint fingerprints are keyed with. A bare
+// controller (a test that wired no auth) has none, and its fingerprints are
+// then omitted rather than served unkeyed.
+func (c *hubInstancesController) authStateDir() string {
+	if c.auth == nil {
+		return ""
+	}
+	return c.auth.stateDir
 }
 
 // credentialHeaderField renders the authored credential_headers map as the
@@ -225,13 +240,102 @@ func sanitizeEndpointURL(raw string) string {
 // carry a token - so the digest is what lets it notice that the destination
 // changed under an open flow. It is over the trimmed raw URL, so two endpoints
 // that differ only in a query parameter fingerprint differently.
-func endpointFingerprint(raw string) string {
+//
+// The digest is keyed with the hub's own secret, not a bare hash: the stripped
+// parts can be low-entropy (a password in userinfo, a short query token), and
+// an unkeyed digest of a guessable secret is a guessable function of it - a
+// client holding the listing could recover the secret by brute force, which is
+// exactly what the sanitized copy exists to prevent. A state root the hub
+// cannot key under omits the fingerprint rather than serving that digest.
+func endpointFingerprint(stateDir, raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
+	key := endpointFingerprintKey(stateDir)
+	if len(key) == 0 {
+		return ""
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(raw))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// endpointFingerprintKeyFile is the key's name under the auth state root, the
+// same root the OAuth records live in.
+const endpointFingerprintKeyFile = "endpoint-fingerprint.key"
+
+var (
+	endpointFingerprintKeyMu    sync.Mutex
+	endpointFingerprintKeyCache = map[string][]byte{}
+)
+
+// endpointFingerprintKey returns the key the endpoint fingerprints are keyed
+// with, creating it under stateDir on first use. It is machine-local, 0600, and
+// never sent anywhere: only a holder of the key can recompute a digest. A key
+// that can neither be read nor created yields nil, and the caller then omits
+// the fingerprint. Only successes are cached, so a state root that becomes
+// writable later starts serving fingerprints again.
+func endpointFingerprintKey(stateDir string) []byte {
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		return nil
+	}
+	endpointFingerprintKeyMu.Lock()
+	defer endpointFingerprintKeyMu.Unlock()
+	if key, ok := endpointFingerprintKeyCache[stateDir]; ok {
+		return key
+	}
+	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
+	key, err := readEndpointFingerprintKey(path)
+	if err != nil {
+		key, err = createEndpointFingerprintKey(path)
+		if err != nil {
+			return nil
+		}
+	}
+	if len(key) == 0 {
+		return nil
+	}
+	endpointFingerprintKeyCache[stateDir] = key
+	return key
+}
+
+func readEndpointFingerprintKey(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.TrimSpace(string(raw))), nil
+}
+
+// createEndpointFingerprintKey writes a fresh 32-byte key at 0600. O_EXCL is
+// what keeps two hubs racing to create it from each ending up with a different
+// key, which would leave them disagreeing about every fingerprint.
+func createEndpointFingerprintKey(path string) ([]byte, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return nil, err
+	}
+	key := []byte(base64.RawURLEncoding.EncodeToString(raw[:]))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return readEndpointFingerprintKey(path)
+		}
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(key); err != nil {
+		return nil, err
+	}
+	if err := f.Sync(); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
 
 // writeLoadable is the invariant every mutation holds: a providers.toml the

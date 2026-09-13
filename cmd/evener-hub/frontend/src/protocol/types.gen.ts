@@ -64,11 +64,13 @@ export interface AuthApiKeyClearParams {
 export interface AuthApiKeySetParams {
   provider: string;
   value: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface AuthCredentialJsonSetParams {
   provider: string;
   value: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface AuthDevicePollParams {

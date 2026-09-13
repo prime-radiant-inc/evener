@@ -2677,6 +2677,14 @@ type AuthListResponse struct {
 type AuthApiKeySetParams struct {
 	Provider string `json:"provider"`
 	Value    string `json:"value"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Provider (InstanceEntry.endpointFingerprint). The hub refuses the
+	// write when the name resolves to a different endpoint by the time it
+	// lands: the client's own comparison reads a listing a concurrent change
+	// can outdate, so only the hub can make the check and the write one step.
+	// Empty asserts nothing, which is what a client that never saw an endpoint
+	// sends.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 // AuthApiKeyClearParams is the params for evener/auth/apiKey/clear.
@@ -2690,6 +2698,9 @@ type AuthApiKeyClearParams struct {
 type AuthCredentialJsonSetParams struct {
 	Provider string `json:"provider"`
 	Value    string `json:"value"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Provider, checked the same way as AuthApiKeySetParams's.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 // AuthDeviceStartParams is the params for evener/auth/device/start.

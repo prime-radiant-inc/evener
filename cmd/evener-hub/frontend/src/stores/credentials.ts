@@ -85,8 +85,13 @@ export interface CredentialsStoreState {
   // callers may still fetch for their own steering, and failures surface as
   // inline errors/toasts in the caller rather than this store swallowing
   // them into an `error` field.
-  setApiKey(provider: string, value: string): Promise<AuthStatusResponse>;
-  setCredentialJson(provider: string, value: string): Promise<AuthStatusResponse>;
+  // expectedEndpointFingerprint is the endpoint the caller showed the user
+  // (InstanceEntry.endpointFingerprint). The hub refuses the write when the
+  // name resolves elsewhere by then, which is the one gap the caller cannot
+  // close itself: its own comparison reads a listing a concurrent change can
+  // outdate.
+  setApiKey(provider: string, value: string, expectedEndpointFingerprint?: string): Promise<AuthStatusResponse>;
+  setCredentialJson(provider: string, value: string, expectedEndpointFingerprint?: string): Promise<AuthStatusResponse>;
   // clearStoredKey removes only the credentials.toml entry, leaving any
   // OAuth/ADC/env credential untouched - the counterpart to setApiKey, and
   // the narrow alternative to logout() for a stray stored key shadowed
@@ -203,11 +208,15 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     await applyMutation(() => client.request("evener/instance/setDefault", { name }));
   },
 
-  async setApiKey(provider, value) {
+  async setApiKey(provider, value, expectedEndpointFingerprint) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      const result = await client.request("evener/auth/apiKey/set", { provider, value });
+      const result = await client.request("evener/auth/apiKey/set", {
+        provider,
+        value,
+        ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+      });
       // The store owns the post-mutation listing refresh: the caller that
       // issued the save may be canceled, hidden, or unmounted before this
       // resolves, and its own refresh would die with it. The `self` mark lets
@@ -221,11 +230,15 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     }
   },
 
-  async setCredentialJson(provider, value) {
+  async setCredentialJson(provider, value, expectedEndpointFingerprint) {
     const client = requireClient();
     noteLocalAuthMutation(provider);
     try {
-      const result = await client.request("evener/auth/credentialJson/set", { provider, value });
+      const result = await client.request("evener/auth/credentialJson/set", {
+        provider,
+        value,
+        ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+      });
       scheduleRefetch(true); // same rationale as setApiKey
       return result;
     } catch (err) {

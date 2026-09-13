@@ -74,6 +74,12 @@ const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // how to get the current state.
 const STALE_SAVE_WARNING =
   "Saved, but the list changed underneath; your edits were kept — refresh to see the current state";
+// The instance under the sheet was replaced by a different one at the same
+// name, so the retained draft belongs to an instance that is no longer there.
+// The form is reset to the instance now on screen rather than saving stale
+// edits onto its replacement.
+const CHANGED_INSTANCE_ERROR =
+  "This instance was replaced under the same name; the form was reset to the instance now on screen.";
 
 // The entry fields a rename carries over unchanged, and that the store's own
 // listing can be compared on. The name alone cannot identify a rename - a
@@ -86,6 +92,8 @@ const RENAME_IDENTITY_FIELDS = [
   "baseUrl",
   "protocol",
   "surface",
+  "auth",
+  "endpointFingerprint",
   "vars",
   "apiKeyEnv",
   "credentialHeader",
@@ -112,6 +120,25 @@ function fieldValue(entry: InstanceEntry, field: string): string {
     return JSON.stringify(pairs);
   }
   return String(raw);
+}
+
+// The immutable identity of the entry a draft belongs to: the name plus the
+// fields no edit through this sheet changes. providerId/base/auth pick the
+// provider and scheme; endpointFingerprint identifies the complete resolved
+// endpoint even when the displayed baseUrl is byte-identical (a query-only
+// change is invisible in baseUrl). The fields a draft edits - baseUrl,
+// protocol, surface, vars, apiKeyEnv, credentialHeader - are deliberately not
+// here: a change to one of them is this instance edited, not a different
+// instance under the same name.
+const DRAFT_IDENTITY_FIELDS = ["name", "providerId", "base", "auth", "endpointFingerprint"] as const;
+
+/** The identity a draft was seeded from, so a listing change that leaves the
+ * name but puts a different instance under it cannot silently re-target the
+ * draft: the save is refused and the form re-anchored to the entry now on
+ * screen instead of writing edits typed for the old instance onto its
+ * replacement. */
+function draftIdentity(entry: InstanceEntry): string {
+  return DRAFT_IDENTITY_FIELDS.map((field) => fieldValue(entry, field)).join("\u0000");
 }
 
 /** The name this save's rename landed under, or undefined when the store's own
@@ -194,6 +221,11 @@ export function InstanceSheet({
   // response lands. Compared against the instance the save went out for, this
   // is what says whether the answer is still this sheet's to act on.
   const shownName = useRef(name);
+  // The identity the current draft was seeded from. A listing change can put a
+  // different instance under the same name without the name-keyed effect
+  // above noticing, so handleSave checks the draft still belongs to the
+  // instance it is about to write to.
+  const seededIdentity = useRef<string | null>(null);
 
   const stored = name === null ? undefined : instances.find((i) => i.name === name);
   const instance = stored ?? renamingFrom;
@@ -207,6 +239,7 @@ export function InstanceSheet({
     setInitial(seeded);
     setDraft(seeded);
     setFormError(null);
+    seededIdentity.current = draftIdentity(inst);
   }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reseed only when a different instance opens; a refresh of the same instance must not clobber in-progress edits
@@ -268,6 +301,17 @@ export function InstanceSheet({
     // in-flight write must not go out through that door either.
     if (busy || writesRefused) return;
     if (instance === undefined) return;
+    // The draft belongs to the instance it was seeded from. A removal and
+    // recreation under the freed name, or another instance renamed onto it,
+    // leaves the name the sheet is on while handing it a different instance:
+    // saving then writes edits typed against the old endpoint onto the
+    // replacement. Refuse, re-anchor to the entry now on screen, and say so -
+    // the same refusal the guided flow makes when its destination moves.
+    if (draftIdentity(instance) !== seededIdentity.current) {
+      seed(instance);
+      setFormError(CHANGED_INSTANCE_ERROR);
+      return;
+    }
     // Ahead of the `params === null` guard, not behind it: an emptied Name is
     // exactly the edit that leaves params null, so a refusal below would
     // never be reached. Refused rather than sent because the wire reads an

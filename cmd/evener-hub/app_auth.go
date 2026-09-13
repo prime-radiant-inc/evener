@@ -491,6 +491,9 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		if !c.nameIsConnectable(name) {
 			return appwire.InvalidParams(fmt.Sprintf("%q is not a configured provider or instance: nothing reads a key stored under it", name))
 		}
+		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+			return err
+		}
 		return c.setCredential(name, params.Value)
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
@@ -732,6 +735,39 @@ func (c *hubAuthController) nameIsConnectable(name string) bool {
 	return ok
 }
 
+// endpointFingerprintFor is the endpoint fingerprint a client was shown for
+// name, asked of the same registry the write lands against. Empty when the name
+// resolves to no endpoint here - which is also what a client that asserts
+// nothing sends.
+func (c *hubAuthController) endpointFingerprintFor(name string) string {
+	r := c.registry()
+	if r == nil {
+		return ""
+	}
+	inst, ok := r.Instance(name)
+	if !ok {
+		return ""
+	}
+	return endpointFingerprint(c.stateDir, inst.BaseURL)
+}
+
+// verifyEndpointFingerprint refuses a credential write whose client asserted an
+// endpoint this name no longer resolves to. Callers run it inside the
+// credential lock, which is what makes the check and the write one step: a
+// client's own comparison reads a listing that a concurrent change can outdate,
+// so between its check and this RPC the name can move to an endpoint the user
+// never reviewed - and then the secret would land there. An empty assertion
+// (a client that was shown no endpoint, or an older peer) is not a refusal.
+func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) error {
+	if asserted == "" {
+		return nil
+	}
+	if current := c.endpointFingerprintFor(name); current != asserted {
+		return appwire.Conflict(fmt.Sprintf("%s no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again", name))
+	}
+	return nil
+}
+
 // instanceIsCodex reports whether name authenticates through the Codex
 // OAuth flow (spec §9.5): its transport auth is oauth-openai-codex.
 func (c *hubAuthController) instanceIsCodex(name string) bool {
@@ -771,6 +807,9 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		// stays for the caller who pasted for the wrong instance, so the
 		// refusal still beats a complaint about the JSON.
 		if err := c.requiresGCPADC(name); err != nil {
+			return err
+		}
+		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
 			return err
 		}
 		return c.setCredential(name, value)

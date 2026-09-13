@@ -880,6 +880,88 @@ describe("the form", () => {
     expect(saveButton().disabled).toBe(false);
   });
 
+  // A name frees when an instance is removed, and anything can be recreated
+  // under it. The retained draft was typed against the instance that left;
+  // saving it would write those edits onto the replacement. The draft survives
+  // the listing swap (the effect above must not clobber edits), so the save
+  // itself is where the identity has to be checked.
+  test("a remove/recreate under the same name cannot take the retained draft's edit", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      credentialRequired: true,
+    });
+    const replacement = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v2",
+      endpointFingerprint: "fp-after",
+      credentialRequired: true,
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new Error("must not be called");
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/stale");
+
+    act(() => {
+      credentialsStore.setState({ instances: [replacement], availableProviders: [OPENAI] });
+    });
+    // The premise: the draft is retained across the swap, still dirty.
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/stale");
+    expect(saveButton().disabled).toBe(false);
+
+    await user.click(saveButton());
+    // The stale edit must not reach the replacement...
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
+    expect(screen.getByRole("alert").textContent).toContain("replaced under the same name");
+    // ...and the form re-anchors to the instance now on screen.
+    expect(field("Base URL").value).toBe("https://gw.example.test/v2");
+  });
+
+  // The fingerprint is the part of the identity baseUrl cannot show: two
+  // endpoints that differ only in a query parameter read identically, and a
+  // recreation that changes only the query is still a different instance.
+  test("a recreation differing only in the endpoint fingerprint is refused too", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      credentialRequired: true,
+    });
+    const replacement = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-after",
+      credentialRequired: true,
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new Error("must not be called");
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("API key environment variable"), "STALE_KEY");
+
+    act(() => {
+      credentialsStore.setState({ instances: [replacement], availableProviders: [OPENAI] });
+    });
+    expect(field("API key environment variable").value).toBe("STALE_KEY");
+
+    await user.click(saveButton());
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
+    expect(screen.getByRole("alert").textContent).toContain("replaced under the same name");
+    expect(field("API key environment variable").value).toBe("");
+  });
+
   // The guard that keeps a rename's vanish from closing the sheet is spent by
   // the section's re-selection: a guard that outlived the rename would swallow
   // the next genuine removal too, leaving an editor open on a ghost.
@@ -1164,6 +1246,47 @@ describe("the form", () => {
 
     await refreshList(fake, [{ ...OTHER, name: "work2" }]);
     await act(async () => finish({ instances: [{ ...OTHER, name: "work2" }], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // The rename's identity comparison has to cover every field the entry
+  // carries that this save did not touch, not only the ones baseUrl can show:
+  // endpointFingerprint is the digest of the complete resolved endpoint, so a
+  // different instance whose query-only difference leaves every visible field
+  // identical is still not the one that performed this rename.
+  test("a superseded rename is not confirmed by a look-alike differing only in the fingerprint", async () => {
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+
+    const lookAlike = { ...WORK, name: "work2", endpointFingerprint: "fp-other" };
+    await refreshList(fake, [lookAlike]);
+    await act(async () => finish({ instances: [lookAlike], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // Same for the auth scheme: an instance that authenticates differently is a
+  // different instance, however alike the rest of its listing entry reads.
+  test("a superseded rename is not confirmed by a look-alike differing only in auth", async () => {
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+
+    const lookAlike = { ...WORK, name: "work2", auth: "oauth-openai-codex" };
+    await refreshList(fake, [lookAlike]);
+    await act(async () => finish({ instances: [lookAlike], availableProviders: [OPENAI] }));
 
     expect(handlers.onRenamed).not.toHaveBeenCalled();
     expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);

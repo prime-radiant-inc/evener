@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
@@ -898,6 +899,38 @@ test("a credential draft is not saved to a destination that changed since it was
   await user.click(screen.getByRole("button", { name: "Save and check" }));
 
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+  expect(
+    await screen.findByText(
+      "This connection changed to a different endpoint. Check its destination and enter the key again.",
+    ),
+  ).toBeTruthy();
+});
+
+test("the hub's endpoint refusal re-anchors the flow instead of saving to the moved destination", async () => {
+  const { user, client } = setup(fingerprintList("fp-2024"));
+  await choose(user, "Anthropic");
+  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  // The name moves between this flow's check and the write. The client cannot
+  // see that window, so the hub refuses the asserted endpoint (appwire.Conflict
+  // with evenerErrorInfo "conflict").
+  client.on("evener/auth/apiKey/set", () => {
+    throw new WireError(
+      "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+      -32013,
+      { evenerErrorInfo: "conflict" },
+    );
+  });
+  // What the recovery re-read finds: the moved endpoint, nothing stored.
+  client.on("evener/instance/list", () => structuredClone(fingerprintList("fp-2025")));
+
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+
+  // The write asserted the endpoint this flow showed the user.
+  const setCall = client.calls.find((call) => call.method === "evener/auth/apiKey/set");
+  expect(setCall?.params).toMatchObject({ provider: "anthropic", expectedEndpointFingerprint: "fp-2024" });
+  // The draft belonged to the endpoint that is gone: dropped, re-anchored, and
+  // said so, rather than left as a save that silently went somewhere else.
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
   expect(
     await screen.findByText(

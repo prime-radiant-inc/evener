@@ -311,6 +311,7 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `AuthCredentialJsonSetParams`
@@ -319,6 +320,7 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `AuthDevicePollParams`

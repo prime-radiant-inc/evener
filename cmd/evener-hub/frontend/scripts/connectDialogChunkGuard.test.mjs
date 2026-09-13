@@ -23,7 +23,7 @@ const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src")
 // list that is inline-type-only (`import { type X } from …`) is still flagged;
 // that is rare, and erring toward reporting is the safe direction.
 const STATIC_IMPORT =
-  /^[ \t]*(?:import\s+(?!type\s)[\s\S]*?\sfrom\s+|import\s+(?!type\s)|export\s+(?!type\s)[\s\S]*?\sfrom\s+)["'][^"']*\/ConnectProviderDialog["']/m;
+  /^[ \t]*(?:import\s+(?!type\s)[\s\S]*?\sfrom\s+|import\s+(?!type\s)|export\s+(?!type\s)[\s\S]*?\sfrom\s+)["'][^"']*\/ConnectProviderDialog(?:\.(?:ts|tsx|js|jsx))?["']/m;
 
 function sourceFiles(dir) {
   const out = [];
@@ -61,9 +61,15 @@ test("the static-reference matcher covers value references and skips erased type
   assert.equal(flagged('import "../x/ConnectProviderDialog";'), true);
   assert.equal(flagged('export { ConnectProviderDialog } from "../x/ConnectProviderDialog";'), true);
   assert.equal(flagged('export * from "../x/ConnectProviderDialog";'), true);
+  // A specifier may carry the extension (bundlers resolve it), and that must
+  // be flagged the same: the quote does not follow the module name directly.
+  assert.equal(flagged('import ConnectProviderDialog from "../x/ConnectProviderDialog.tsx";'), true);
+  assert.equal(flagged('export * from "../x/ConnectProviderDialog.ts";'), true);
 
   assert.equal(flagged('import type { ConnectProviderDialogProps } from "../x/ConnectProviderDialog";'), false);
   assert.equal(flagged('export type { ConnectProviderDialogProps } from "../x/ConnectProviderDialog";'), false);
+  assert.equal(flagged('import type { ConnectProviderDialogProps } from "../x/ConnectProviderDialog.tsx";'), false);
+  assert.equal(flagged('export type { ConnectProviderDialogProps } from "../x/ConnectProviderDialog.js";'), false);
   assert.equal(flagged('const load = () => import("../x/ConnectProviderDialog");'), false);
   assert.equal(flagged('import { other } from "../x/somethingElse";'), false);
 });

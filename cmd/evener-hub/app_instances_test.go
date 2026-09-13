@@ -90,6 +90,18 @@ func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir strin
 	return &hubInstancesController{reg: auth.reg, providersConfigPath: tomlPath, auth: auth}
 }
 
+// pinEndpointFingerprintKey gives a state root a fixed fingerprint key, so a
+// corpus that compares a committed file byte for byte has the same digests on
+// every run. A state root without one gets its own key, created there and
+// different from every other root's.
+func pinEndpointFingerprintKey(t *testing.T, stateDir string) {
+	t.Helper()
+	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
+	if err := os.WriteFile(path, []byte("pinned-test-endpoint-fingerprint-key"), 0o600); err != nil {
+		t.Fatalf("pin %s: %v", path, err)
+	}
+}
+
 // newInstancesFixture is one isolated instances pane over a fresh temp dir.
 func newInstancesFixture(t *testing.T, env map[string]string) *instancesFixture {
 	t.Helper()
@@ -1384,6 +1396,114 @@ func TestInstances_ListExposesAnEndpointFingerprint(t *testing.T) {
 	}
 	if second.EndpointFingerprint == first.EndpointFingerprint {
 		t.Fatal("a query-parameter-only endpoint change left the fingerprint unchanged, so a client cannot see it")
+	}
+}
+
+// The fingerprint stands in for parts of the endpoint that can be low-entropy
+// (a password in userinfo, a short query token), so it is keyed with the hub's
+// own secret: an unkeyed digest of a guessable secret is a guessable function
+// of it, and a client holding the listing could recover the secret by brute
+// force - exactly what the sanitized copy exists to prevent.
+func TestInstances_EndpointFingerprintIsKeyedWithTheHubSecret(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	const endpoint = "https://gateway.test/v1?token=hunter2"
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", BaseURL: endpoint}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if again := entry(t, f.ctl.List(), "work").EndpointFingerprint; again != got {
+		t.Fatalf("the fingerprint moved between listings: %q then %q", got, again)
+	}
+	// The same endpoint under a second state root has its own key and so a
+	// different digest. That is what keying means here: the value a client
+	// holds is a function of the hub's secret, not of the endpoint alone, so
+	// the secret parts it covers cannot be recovered from it.
+	other := newInstancesFixture(t, nil)
+	if err := other.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", BaseURL: endpoint}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if otherFP := entry(t, other.ctl.List(), "work").EndpointFingerprint; otherFP == got {
+		t.Fatal("two state roots fingerprinted the same endpoint identically, so the digest is not keyed")
+	}
+	// The key is machine-local and closed to other users, the same discipline
+	// the OAuth records beside it keep.
+	info, err := os.Stat(filepath.Join(f.stateDir, endpointFingerprintKeyFile))
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("the key file is %v, want 0600", perm)
+	}
+}
+
+// A state root the hub cannot key under omits the fingerprint rather than
+// serving a digest anyone can recompute.
+func TestInstances_EndpointFingerprintIsOmittedWithoutAKey(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A directory where the key file belongs: neither reading nor creating it
+	// can succeed, which is the shape of a state root the hub cannot key under.
+	if err := os.Mkdir(filepath.Join(f.stateDir, endpointFingerprintKeyFile), 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
+		t.Fatalf("EndpointFingerprint = %q, want it omitted when no key is available", got)
+	}
+}
+
+// A credential write may assert the endpoint whose form the user was shown, and
+// the hub checks that assertion where the write lands. A client's own
+// comparison reads a listing a concurrent change can outdate, so without this
+// the secret could still land on an endpoint the user never reviewed.
+func TestInstances_ApiKeySetRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://gateway.test/v1?api-version=2024-02-01",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	shown := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if shown == "" {
+		t.Fatal("the listing carried no fingerprint to assert")
+	}
+	// The endpoint moves after the form was opened: only the query parameter
+	// changes, so the displayed URL stays identical.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://gateway.test/v1?api-version=2025-01-01"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+
+	_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "work",
+		Value:                       "sk-stale",
+		ExpectedEndpointFingerprint: shown,
+	})
+	if err == nil {
+		t.Fatal("ApiKeySet stored a key against an endpoint its caller no longer sees")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("ApiKeySet = %v, want a conflict wire error", err)
+	}
+	if v, ok := f.store.Get("work"); ok {
+		t.Fatalf("stored key = %q, want nothing stored for the stale endpoint", v)
+	}
+
+	// The endpoint the caller can see now is accepted.
+	current := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "work",
+		Value:                       "sk-current",
+		ExpectedEndpointFingerprint: current,
+	}); err != nil {
+		t.Fatalf("ApiKeySet with the endpoint the caller sees: %v", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-current" {
+		t.Fatalf("stored key = %q, want the matching write to land", v)
 	}
 }
 
