@@ -37,7 +37,7 @@ baseline. Facts 1, 2, 3 and 5 have since been acted on; the delta section says
 how. Fact 4 still holds.
 
 1. **The shipped package was six files, not sixteen** — until A1.
-   `protocol/tsconfig.build.json:13` lists
+   `protocol/tsconfig.build.json:14` lists
    `files: ["index.ts", "client.ts", "errors.ts", "transport.ts", "types.gen.ts", "askAnswers.ts"]`.
    The other ten runtime modules in that directory (`model.ts`, `reducer.ts`,
    `activityData.ts`, `activityList.ts`, `activityMerge.ts`, `jobOutput.ts`,
@@ -358,5 +358,6 @@ Statuses observed at `f39aa2c83`; re-query before acting.
 | A3c #1207 | `2a8163eb0` | The qualification manifest is per specifier rather than root-only, so a published subpath can be qualified at all — the prerequisite for the plan's A3d and C1 |
 | A3d #1209 | `f39aa2c83` | Publishes `./docContent` as the package's second specifier and turns `readDocFile` into `readDocFile(session, path, fetchDoc)`, where `DocFetch` returns a `DocResponseLike` — the minimal `{ ok, status, headers.get, arrayBuffer }` a real `Response` satisfies, because a `Promise<Response>` in the `.d.ts` fails the runner's DOM-free declaration consumers. The web's adapter is `panes/doc/browserDocFetch.ts`; the root keeps the pure helpers. §3's `docContent` seam row is answered by this |
 
-A3 and A4 are unstarted and together block all of phase C. Unrelated to this
-lane, #1098 merged as `cb211c5f8`.
+A3 and A4 are unstarted and block every phase-C relocation; the plan's C24
+depends only on A1 and A3d and could start now. Unrelated to this lane, #1098
+merged as `cb211c5f8`.
