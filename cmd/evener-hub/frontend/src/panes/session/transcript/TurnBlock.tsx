@@ -46,6 +46,11 @@ export interface TurnBlockProps {
   // The transcript-wide set of exchange-opening agent item ids, threaded from
   // Session.tsx so item renderers can know whether to show an eyebrow.
   exchangeOpeners?: ReadonlySet<string>;
+  // The transcript-wide set of exchange-closing agent item ids (the last
+  // text-bearing agentMessage before the next userMessage or transcript
+  // end), threaded from Session.tsx so the terminal message can carry its
+  // own treatment.
+  exchangeClosers?: ReadonlySet<string>;
   // The session's short model/provider label, threaded from Session.tsx.
   agentLabel?: string;
   // Renders the "you left off here" marker (SeenDivider, kata g2ez) above
@@ -206,6 +211,7 @@ export function TurnBlock({
   turn,
   sessionRef,
   exchangeOpeners,
+  exchangeClosers,
   agentLabel,
   showSeenDivider = false,
   viewAnchorIndex,
@@ -279,13 +285,16 @@ export function TurnBlock({
     }
     const item = entry.item;
     const ItemRenderer = itemRendererFor(item.type);
+    const opensExchange = exchangeOpeners?.has(item.id);
+    const closesExchange = exchangeClosers?.has(item.id);
     const renderedItem = (
       <ItemRenderer
         item={item}
         turn={shownTurn}
         live={isItemLive(item)}
         sessionRef={sessionRef}
-        opensExchange={exchangeOpeners?.has(item.id)}
+        opensExchange={opensExchange}
+        closesExchange={closesExchange}
         agentLabel={agentLabel}
         projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
         contentFree={entry.kind === "thinking"}
@@ -299,7 +308,7 @@ export function TurnBlock({
         )}
       />
     );
-    if (rowRoleFor(item, { opensExchange: exchangeOpeners?.has(item.id) }) === "speaker") {
+    if (rowRoleFor(item, { opensExchange }) === "speaker") {
       renderedEntries.push(
         <div key={entry.id} {...viewAnchorFor(entry)}>
           {renderedItem}

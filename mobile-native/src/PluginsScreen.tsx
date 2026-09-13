@@ -20,7 +20,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { PluginRefParams } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { PluginRefParams } from "../../appwire-client/typescript/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { InstalledPlugins } from "./installedPlugins";

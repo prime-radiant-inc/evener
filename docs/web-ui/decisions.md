@@ -5,6 +5,34 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-09-13 message prominence in the editorial transcript (option B)
+
+Jesse picked **option B (filled bubbles)** from the A/B/C mockup round for
+making user messages and exchange-concluding agent messages prominent in the
+editorial transcript. The editorial pass had removed both fills (the user's
+`--accent-bg` bubble and the agent's neutral wash); this restores containment
+with serif prose kept for both speakers.
+
+**User messages** get the exact pre-editorial bubble back
+(`usermessageitem.module.css`): `--accent-bg` fill, `fit-content` hug,
+`space-2/space-3` padding. The corners are uniformly 4px under the editorial
+radius scale, so the pre-editorial chat tail toward the avatar does not
+render as a distinct shape (roborev PR 1260). Known tension,
+accepted: accent means focus/selection/links under editorial law, not
+"user". If that reuse bothers later, the fallback is a neutral wash keeping
+this same geometry.
+
+**Terminal agent messages** (the final prose concluding an exchange, i.e.
+the last text-bearing settled `agentMessage` before the next `userMessage`
+or transcript end) get the 2026-07-30 neutral wash
+(`color-mix(in oklab, var(--ink-mid) 6%, transparent)`) on a new
+`exchangeClosersFor()` set mirroring `exchangeOpenersFor()`, threaded as
+`closesExchange` through `TranscriptBody`/`TurnBlock`/`ItemRenderProps`
+(including the `ignoringTurn` comparator). Mid-turn fragments stay flat
+documents. Settled-only (a live tail never closes, so no mid-stream
+flicker); a failed turn's prose never closes (the `TurnFailureEndCap` is
+already that turn's visual close).
+
 ## 2026-09-11 the reasoning placeholder is content-free, on Loader's grid
 
 Turning the Reasoning content flag off still streamed a live thought open and
@@ -40,7 +68,6 @@ banned, and `widgets/loader`'s own doc note no longer claims its motion is
 reserved away from agent liveness.
 
 ## Editorial instrument (2026-09-09)
-
 The user approved a comprehensive Tufte-inspired editorial direction and the
 `editorial-instrument` / `tools-and-collaborators` studies. The governing
 [specification](../superpowers/specs/2026-09-09-tufte-webui-design.md) supersedes the
@@ -342,7 +369,7 @@ mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.
 | Part | Verdict | Where it stands |
 | --- | --- | --- |
 | A — a run of finished calls folds to one summary line naming the consequential step | **ABSENT, unexplained**. Landed 2026-09-06: see below. | There is no cluster concept at all. `TurnBlock` renders items one at a time via `itemRendererFor`, and `toolRowGrammar.test.tsx` pins "exactly one per call." A run of read/grep/edit/test calls is a column of individually-collapsible rows. This is also principle 2 of the brief, so its absence is a gap against the design law, not only against one mockup. Landed 2026-09-06 as `transcript/toolRuns.ts` + `ToolRunGroup.tsx`; the fold rule is written up in the 2026-09-06 typography, measure and rhythm entry below. |
-| D — peek / ride / drop tri-state | CHANGED | **By design.** The anti-lying principle survives — `protocol/toolCallText.ts:tailFold` and `widgets/codeblock` never offer an "expand" over bytes that are gone, and say so inline. The explicit three-state vocabulary is gone; the state is prose, not a labelled UI state. |
+| D — peek / ride / drop tri-state | CHANGED | **By design.** The anti-lying principle survives — `appwire-client/typescript/toolCallText.ts:tailFold` and `widgets/codeblock` never offer an "expand" over bytes that are gone, and say so inline. The explicit three-state vocabulary is gone; the state is prose, not a labelled UI state. |
 
 **07 · System churn & silent success** — chose A (quiet one-liner) + B
 (coalesced "N system events"). Shipped `42b233353`.
@@ -471,7 +498,7 @@ queued send). Shipped `79cdb7b30`.
 Verdict **CHANGED.** The banner survives but is deliberately off the colour
 allowlist — `shell/ConnectionBanner.module.css` says "same understated treatment
 either state, not a loud color", declining the mockup's amber-while-reconnecting
-rule. **Queued send does not exist:** `protocol/client.ts:request` rejects
+rule. **Queued send does not exist:** `appwire-client/typescript/client.ts:request` rejects
 immediately whenever the connection is not ready, so a send while disconnected
 simply fails. The comment there points at a server-side auto-resume layer as the
 replacement resilience strategy. `TurnFailureEndCap` (mockup 15's Alt C idea) is
@@ -530,7 +557,7 @@ D (provenance-grouped) was dropped for want of a backend signal. Shipped
 Verdict **CHANGED, with real information loss.** The shared lightbox is live and
 wraps correctly. The grid is a flex strip of fixed 96px thumbnails, not a
 contact sheet. More importantly: **captions are gone.** The wire's `OutputImage`
-carries `source`, `name` and `path`, and `protocol/reducer.ts:imagesToStrings`
+carries `source`, `name` and `path`, and `appwire-client/typescript/reducer.ts:imagesToStrings`
 collapses each to a single fallback string before the UI ever sees it — so the
 frontend has nothing left to label or group by. A caption was constant across
 all four alternatives, not a feature of B alone.

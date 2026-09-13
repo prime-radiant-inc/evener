@@ -96,7 +96,7 @@ mid-turn, and this card previously asserted that it was.
   model B.
 - **Step 3 (AC 1)**: tab 2's readout has already updated to model B **without
   a reload** — driven by the `thread/model/changed` notification, which the
-  reducer applies wholesale (`protocol/reducer.ts:685-700`; note it
+  reducer applies wholesale (`appwire-client/typescript/reducer.ts:685-700`; note it
   *replaces* `reasoningEffortLevels`/`supportsReasoning` rather than patching
   them, so an empty ladder on the new model clears the old one's).
   Falsification: tab 2 needs a manual reload to see model B.
@@ -108,7 +108,7 @@ mid-turn, and this card previously asserted that it was.
   error that hides which layer refused.
 - **Step 5**: the toast region contains `Couldn't change model:` followed by
   the same server detail (`ModelSwitch.tsx:110`,
-  `protocol/errors.ts:63-67`). Falsification: the picker's click silently
+  `appwire-client/typescript/errors.ts:63-67`). Falsification: the picker's click silently
   does nothing, or the model changes.
 - **Step 6**: the switch during the drain window is **also** rejected with
   the same 409 family. The daemon re-arms `SetProcessing(true)` for each

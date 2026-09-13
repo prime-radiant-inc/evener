@@ -10,14 +10,14 @@ import {
   withPluginSelection,
 } from "../../cmd/evener-hub/frontend/src/panes/spawn/pluginSelectionState";
 import { resolveScalars } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
-import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import { WireError } from "../../appwire-client/typescript/errors";
 import type {
   HarnessDescriptor,
   LaunchConfigLayer,
   ModelDescriptor,
   Thread,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/protocol/composerInput";
+} from "../../appwire-client/typescript/types.gen";
+import { buildComposerInput } from "../../appwire-client/typescript/composerInput";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
 import {
   type CreationDraft,

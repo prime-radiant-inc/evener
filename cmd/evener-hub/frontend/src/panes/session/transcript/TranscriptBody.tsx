@@ -13,6 +13,7 @@ import {
 import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { VirtualList, type VirtualListHandle } from "../../../widgets";
 import { modelLabel } from "../chrome/statusFormat";
+import { exchangeClosersFor } from "./exchangeClosers";
 import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
@@ -335,6 +336,7 @@ export function TranscriptBody({
     [projection, rows],
   );
   const openers = useMemo(() => exchangeOpenersFor(model.turns), [model.turns]);
+  const closers = useMemo(() => exchangeClosersFor(model.turns), [model.turns]);
   const agentLabel = modelLabel(model.modelProvider, model.model);
   const itemRenderFingerprint = [
     configFingerprint(config),
@@ -408,6 +410,7 @@ export function TranscriptBody({
           sessionRef={sessionRef}
           showSeenDivider={showSeenDivider && row.turn.source.id === seenTurnId}
           exchangeOpeners={openers}
+          exchangeClosers={closers}
           agentLabel={agentLabel}
           viewAnchorIndex={index}
           showTurnSeparator={row.showTurnSeparator}

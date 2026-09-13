@@ -1070,7 +1070,7 @@ func TestLintGeneratedRejectsOutputDeletedFromHEAD(t *testing.T) {
 
 	generated := []string{
 		"docs/appwire-protocol.md",
-		"cmd/evener-hub/frontend/src/protocol/types.gen.ts",
+		"appwire-client/typescript/types.gen.ts",
 		"docs/developing-evener/README.md",
 		"docs/developing-evener/building.md",
 		"docs/developing-evener/testing.md",

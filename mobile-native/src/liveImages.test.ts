@@ -3,7 +3,7 @@ import type {
   AnyNotification,
   Thread,
   ThreadItem,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import {
   type ConversationClientLike,
   createConversationService,

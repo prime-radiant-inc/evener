@@ -1,4 +1,4 @@
-import type { TerminalReason } from "../../cmd/evener-hub/frontend/src/protocol/client";
+import type { TerminalReason } from "../../appwire-client/typescript/client";
 
 export type ConnectionFailureKind = "protocol" | "transport";
 

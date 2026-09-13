@@ -22,7 +22,7 @@ import { sourceLabel } from "../../cmd/evener-hub/frontend/src/panes/settings/se
 import type {
   MarketplaceAddParams,
   PluginRefParams,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
 import type { InstalledPlugins } from "./installedPlugins";

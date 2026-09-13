@@ -14,7 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import type {
   LaunchConfigLayer,
   ModelDescriptor,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import { creationModel } from "./newSession";
 import { Action, Choice, Copy, styles, useColors } from "./ui";
 

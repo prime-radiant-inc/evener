@@ -273,7 +273,7 @@ func TestE2E_StopIsOfferedWheneverTheWireSaysActive(t *testing.T) {
 // ever measured. thread/read recomputes the set on demand, so a client that
 // re-reads is always told the truth. A subscriber is not: it holds whatever the
 // last thread/status/changed pushed, and the reducer replaces the set only on
-// that frame (frontend/src/protocol/reducer.ts, `n.params.capabilities ??
+// that frame (appwire-client/typescript/reducer.ts, `n.params.capabilities ??
 // model.capabilities`). Status does not change again until the turn ends, so a
 // set pushed at the start of a turn is the set the composer uses for all of it.
 //

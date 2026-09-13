@@ -73,7 +73,7 @@ Escape-to-dismiss, jumping between batches, focus return to the composer.
 `evener.prefs.*` keys). Server-persisted: `stores/transcriptDisplay.ts` uses
 the wire methods `evener/settings/transcriptDisplay/{get,patch}` plus a
 `.../changed` server push for cross-window sync
-(`src/protocol/types.gen.ts:2118-2120, 2295-2297`), with a store shape of
+(`appwire-client/typescript/types.gen.ts:2118-2120, 2295-2297`), with a store shape of
 local override + hub default + revision-stamped effective resolution. This is
 the template to clone as `evener/settings/keybindings/{get,patch,changed}` —
 with one scoping decision Phase 2 must make explicit: transcriptDisplay stores
@@ -88,7 +88,7 @@ chords. The palette's `HELP_ROWS` legend is hand-maintained and has already
 gone stale once — any overlay must be generated from the live registry.
 
 **Tests.** `AppShell.test.tsx` covers the existing chords via
-`fireEvent.keyDown`; `paletteTestUtils.tsx` and `protocol/testing/fakeClient.ts`
+`fireEvent.keyDown`; `paletteTestUtils.tsx` and `appwire-client/typescript/testing/fakeClient.ts`
 give FakeClient seams for server-persisted settings tests. jsdom tests that
 touch localStorage install a `MemoryStorage` global.
 
