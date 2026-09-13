@@ -21,7 +21,11 @@ func TestThreadEnvelopeSeedUsesStructuredMetaNotes(t *testing.T) {
 	// between words; SessionMeta already carries that canonical value.
 	wantHuman := strings.Repeat("x", 999) + " "
 	source.meta.HumanNote = wantHuman
-	source.meta.AgentNote = "agent hello"
+	// The same shape for the agent note: the checkpoint sample must project the
+	// canonical text rather than trimming it a second time, or thread/read
+	// disagrees with the live push after the next turn end.
+	wantAgent := strings.Repeat("y", 999) + " "
+	source.meta.AgentNote = wantAgent
 	source.meta.SessionURLs = []schema.SessionURL{
 		{ID: "u1", URL: "https://x.test/y", Label: "x", AddedBy: "agent", AddedAt: 7},
 	}
@@ -31,8 +35,8 @@ func TestThreadEnvelopeSeedUsesStructuredMetaNotes(t *testing.T) {
 	if thread.Evener.HumanNote != wantHuman {
 		t.Fatalf("thread.Evener.HumanNote = %q, want canonical %q", thread.Evener.HumanNote, wantHuman)
 	}
-	if thread.Evener.AgentNote != "agent hello" {
-		t.Fatalf("thread.Evener.AgentNote = %q, want agent hello", thread.Evener.AgentNote)
+	if thread.Evener.AgentNote != wantAgent {
+		t.Fatalf("thread.Evener.AgentNote = %q, want canonical %q", thread.Evener.AgentNote, wantAgent)
 	}
 	if len(thread.Evener.SessionURLs) != 1 {
 		t.Fatalf("thread.Evener.SessionURLs = %+v, want one entry", thread.Evener.SessionURLs)
