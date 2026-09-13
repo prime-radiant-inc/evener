@@ -16,6 +16,15 @@
 # attempts below plus their backoff before it fails, and it still fails with
 # the installer's own diagnostics on stderr.
 #
+# perl is required, and there is no fallback. Each attempt is exec'd through
+# perl's setpgrp(0, 0) so the whole `curl | sh` pipeline lands in a process group
+# of its own and can be stopped as one; without that a cancelled install leaves
+# curl and the upstream installer running, writing into the Go bin directory
+# after this script has exited. setsid(1) would do the same and is not on macOS.
+# perl is on macOS and on the CI image, the gate's runner already requires it for
+# the same reason, and a perl-less path would have to go back to signalling one
+# process and hoping. A missing perl fails here by name, before any attempt.
+#
 # The pinned version is the one in .tool-versions and is never chosen here.
 # There is no Go-toolchain fallback: docs/developing-evener/linting.md makes
 # `make tools` the install path and a missing golangci-lint a hard gate
