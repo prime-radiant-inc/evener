@@ -138,33 +138,6 @@ func goFlag(f string) string {
 	return f
 }
 
-// hasShortFlag says whether the caller asked for short mode, in any spelling go
-// accepts: --short and -short=true are -short, and an exact string compare read
-// neither, so the survey ran the long way round on a short run.
-//
-// The last occurrence wins and the value goes through strconv.ParseBool, because
-// that is what go's flag package does with a boolean: `-short=false -short` is a
-// short run and `-short -short=false` is not. A value ParseBool refuses is one
-// `go test` would refuse too; it is read as short here rather than dropping a
-// caller's short mode over a spelling this code guessed wrong about.
-//
-// The same rule is written again in scripts/gate/run-module-tests.sh, which
-// cannot import it. #1247 is where the two become one.
-func hasShortFlag(flags []string) bool {
-	short := false
-	for _, raw := range flags {
-		f := goFlag(raw)
-		switch {
-		case f == "-short":
-			short = true
-		case strings.HasPrefix(f, "-short="):
-			value, err := strconv.ParseBool(strings.TrimPrefix(f, "-short="))
-			short = err != nil || value
-		}
-	}
-	return short
-}
-
 // buildValueFlags take their value as the next argument; buildFlagPrefixes carry
 // it inline. Both change what gets compiled, so both belong to `go test -c`.
 var buildValueFlags = map[string]bool{
@@ -182,38 +155,47 @@ var buildBareFlags = map[string]bool{
 }
 
 // testValueFlags are the `go test` flags whose value is the next argument when
-// it is not written inline. Their values must be consumed before anything is
-// classified: `-run -race` is a regex of `-race`, and a reader that skipped the
-// value put the caller's regex into the build.
+// it is not written inline.
 var testValueFlags = map[string]bool{
 	"-run": true, "-skip": true, "-bench": true, "-benchtime": true,
 	"-count": true, "-timeout": true, "-cpu": true, "-parallel": true,
-	"-coverprofile": true, "-coverpkg": true, "-outputdir": true,
-	"-exec": true, "-o": true, "-fuzz": true, "-fuzztime": true,
-	"-fuzzminimizetime": true, "-cpuprofile": true, "-memprofile": true,
-	"-blockprofile": true, "-mutexprofile": true, "-trace": true,
-	"-gocoverdir": true, "-shuffle": true,
+	"-coverprofile": true, "-outputdir": true, "-fuzz": true,
+	"-fuzztime": true, "-fuzzminimizetime": true, "-cpuprofile": true,
+	"-memprofile": true, "-blockprofile": true, "-mutexprofile": true,
+	"-trace": true, "-gocoverdir": true, "-shuffle": true,
 }
 
-// splitFlags divides a caller's `go test` flags into the ones the build needs
-// and the ones the compiled binary needs.
+// parsedFlags is what one walk of a caller's flags says about them: which go to
+// the build, which go to the test binary, and whether short mode was asked for.
+type parsedFlags struct {
+	build []string
+	test  []string
+	short bool
+}
+
+// parseFlags walks a caller's `go test` flags once and classifies them.
 //
-// The two halves used to be one: every flag was translated towards the binary,
-// so `-race` became `-test.race`, which the binary has no such flag for, and the
-// build that produced it was a plain build — a sharded `-race` run tested a
-// binary with no race detector in it. Build flags go to `go test -c` now and
-// test flags to the shards, each in the spelling its side understands.
+// Once, and every reader takes its answer from here. Four readers used to walk
+// the arguments themselves and only some of them knew a value from a flag, so
+// `-run -race` put the caller's regex into the build and `-run -short` was a
+// short run. A value is consumed with its flag before anything is classified,
+// and a value taken from the next argument is forwarded exactly as the caller
+// wrote it, since a value is data and normalising it would rewrite a path or a
+// regex.
 //
-// Every value-taking flag is consumed with its value, whichever side it belongs
-// to, so a value is never read as a flag of its own. A value taken from the next
-// argument is forwarded exactly as the caller wrote it: it is data, not a flag,
-// and normalising it would rewrite a caller's regex or path.
+// Short mode is the last occurrence, parsed with strconv.ParseBool, which is
+// what go's flag package does with a boolean. A value ParseBool refuses is one
+// `go test` would refuse too, and is read as short rather than dropping a
+// caller's short mode over a spelling this code guessed wrong about.
 //
-// Flags outside both tables are dropped, the way the script's case statement
-// dropped them. The same rule is written again in
-// scripts/gate/run-module-tests.sh, which cannot import this; #1247 is where the
-// two become one.
-func splitFlags(flags []string) (build []string, test []string) {
+// -C is refused rather than forwarded, with the same sentence the gate's script
+// prints: it changes directory before the command runs, and everything here is
+// built and tested from the module's own directory.
+//
+// The same rule is written again in scripts/gate/run-module-tests.sh, which
+// cannot import this; #1247 is where the two become one.
+func parseFlags(flags []string) (parsedFlags, error) {
+	var out parsedFlags
 	for i := 0; i < len(flags); i++ {
 		f := goFlag(flags[i])
 		name := f
@@ -222,46 +204,52 @@ func splitFlags(flags []string) (build []string, test []string) {
 		if j := strings.IndexByte(f, '='); j > 0 {
 			name, inline, hasInline = f[:j], f[j+1:], true
 		}
-		nextValue := func() (string, bool) {
-			if hasInline {
-				return inline, true
+		if name == "-C" {
+			return parsedFlags{}, fmt.Errorf("-C is not supported here: every module is built and tested from its own directory, and a -C would move both somewhere this runner does not expect")
+		}
+		value := ""
+		hasValue := hasInline
+		if hasInline {
+			value = inline
+		} else if buildValueFlags[name] || testValueFlags[name] {
+			if i+1 >= len(flags) {
+				return parsedFlags{}, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
 			}
-			if i+1 < len(flags) {
-				i++
-				return flags[i], true
-			}
-			return "", false
+			i++
+			value = flags[i]
+			hasValue = true
 		}
 		switch {
 		case buildValueFlags[name]:
 			if hasInline {
-				build = append(build, f)
+				out.build = append(out.build, f)
 				continue
 			}
-			value, ok := nextValue()
-			build = append(build, name)
-			if ok {
-				build = append(build, value)
-			}
+			out.build = append(out.build, name, value)
 		case buildBareFlags[name]:
-			build = append(build, f)
-		case name == "-short" || name == "-v":
+			out.build = append(out.build, f)
+		case name == "-short":
+			out.short = true
 			if hasInline {
-				test = append(test, "-test."+strings.TrimPrefix(name, "-")+"="+inline)
+				parsed, err := strconv.ParseBool(inline)
+				out.short = err != nil || parsed
+				out.test = append(out.test, "-test.short="+inline)
 				continue
 			}
-			test = append(test, "-test."+strings.TrimPrefix(name, "-"))
-		case name == "-count":
-			if value, ok := nextValue(); ok {
-				test = append(test, "-test.count="+value)
+			out.test = append(out.test, "-test.short")
+		case name == "-v":
+			if hasInline {
+				out.test = append(out.test, "-test.v="+inline)
+				continue
 			}
-		case testValueFlags[name]:
-			// Consumed with its value and dropped: the shards get their -run
-			// from the plan, not from the caller.
-			_, _ = nextValue()
+			out.test = append(out.test, "-test.v")
+		case name == "-count":
+			if hasValue {
+				out.test = append(out.test, "-test.count="+value)
+			}
 		}
 	}
-	return build, test
+	return out, nil
 }
 
 // testSetKey is the survey cache key: the identity of the sorted test list.

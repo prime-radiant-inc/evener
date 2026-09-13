@@ -1,6 +1,8 @@
 package dev
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -138,7 +140,7 @@ func TestNameRegexAnchorsAndEscapes(t *testing.T) {
 	}
 }
 
-func TestHasShortFlagReadsEverySpelling(t *testing.T) {
+func TestParseFlagsReadsShortInEverySpelling(t *testing.T) {
 	for _, tc := range []struct {
 		flags []string
 		want  bool
@@ -146,29 +148,96 @@ func TestHasShortFlagReadsEverySpelling(t *testing.T) {
 		{flags: []string{"-short"}, want: true},
 		{flags: []string{"--short"}, want: true},
 		{flags: []string{"-short=true"}, want: true},
-		{flags: []string{"--short=true"}, want: true},
-		{flags: []string{"-short=false"}, want: false},
 		{flags: []string{"-short=f"}, want: false},
 		{flags: []string{"-short=FALSE"}, want: false},
 		{flags: []string{"-short=0"}, want: false},
-		{flags: []string{"-short=t"}, want: true},
-		{flags: []string{"-short=1"}, want: true},
 		// Last occurrence wins, as go's flag package reads them.
 		{flags: []string{"-short=false", "-short"}, want: true},
 		{flags: []string{"-short", "-short=false"}, want: false},
-		{flags: []string{"--short=false", "--short=true"}, want: true},
 		// A value go itself would refuse: read as short rather than dropped.
 		{flags: []string{"-short=yes"}, want: true},
-		{flags: []string{"-count=1", "-v"}, want: false},
+		// A flag's value is a value, not a flag.
+		{flags: []string{"-run", "-short"}, want: false},
 		{flags: nil, want: false},
 	} {
-		if got := hasShortFlag(tc.flags); got != tc.want {
-			t.Fatalf("hasShortFlag(%v) = %v, want %v", tc.flags, got, tc.want)
+		parsed, err := parseFlags(tc.flags)
+		if err != nil {
+			t.Fatalf("parseFlags(%v) = %v", tc.flags, err)
+		}
+		if parsed.short != tc.want {
+			t.Fatalf("parseFlags(%v).short = %v, want %v", tc.flags, parsed.short, tc.want)
 		}
 	}
 }
 
-func TestSplitFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
+func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
+	for _, flags := range [][]string{
+		{"-C", "/tmp"},
+		{"-C=/tmp"},
+		{"--C", "/tmp"},
+		{"-run"},
+		{"-tags"},
+	} {
+		if _, err := parseFlags(flags); err == nil {
+			t.Fatalf("parseFlags(%v) = no error, want one", flags)
+		}
+	}
+	// A -C that is another flag's value is a value.
+	parsed, err := parseFlags([]string{"-run", "-C", "-short"})
+	if err != nil {
+		t.Fatalf("parseFlags(-run -C -short) = %v", err)
+	}
+	if parsed.short != true || len(parsed.build) != 0 {
+		t.Fatalf("parseFlags(-run -C -short) = %+v, want short with no build flags", parsed)
+	}
+}
+
+func TestShellAndGoForwardTheSameBuildFlags(t *testing.T) {
+	// The two tables are one rule in two languages (#1247). This reads the
+	// shell's and fails on any difference in either direction, so neither can
+	// drift without the other hearing about it.
+	source, err := os.ReadFile(filepath.Join("..", "..", "scripts", "gate", "run-module-tests.sh"))
+	if err != nil {
+		t.Fatalf("reading the gate script: %v", err)
+	}
+	body := string(source)
+	start := strings.Index(body, "flag_is_build() {")
+	if start < 0 {
+		t.Fatal("flag_is_build is gone from the gate script; this check needs updating with it")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	shell := map[string]bool{}
+	for _, line := range strings.Split(body[start:start+end], "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "-") || !strings.HasSuffix(line, ")") {
+			continue
+		}
+		for _, name := range strings.Split(strings.TrimSuffix(line, ")"), "|") {
+			if name = strings.TrimSpace(name); name != "" {
+				shell[name] = true
+			}
+		}
+	}
+	golang := map[string]bool{}
+	for name := range buildValueFlags {
+		golang[name] = true
+	}
+	for name := range buildBareFlags {
+		golang[name] = true
+	}
+	for name := range shell {
+		if !golang[name] {
+			t.Errorf("the gate script forwards %s to the enumeration and this package does not", name)
+		}
+	}
+	for name := range golang {
+		if !shell[name] {
+			t.Errorf("this package forwards %s to the build and the gate script does not", name)
+		}
+	}
+}
+
+func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		flags []string
@@ -282,12 +351,15 @@ func TestSplitFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			build, test := splitFlags(tc.flags)
-			if !reflect.DeepEqual(build, tc.build) {
-				t.Fatalf("build flags = %v, want %v", build, tc.build)
+			parsed, err := parseFlags(tc.flags)
+			if err != nil {
+				t.Fatalf("parseFlags(%v) = %v", tc.flags, err)
 			}
-			if !reflect.DeepEqual(test, tc.test) {
-				t.Fatalf("test flags = %v, want %v", test, tc.test)
+			if !reflect.DeepEqual(parsed.build, tc.build) {
+				t.Fatalf("build flags = %v, want %v", parsed.build, tc.build)
+			}
+			if !reflect.DeepEqual(parsed.test, tc.test) {
+				t.Fatalf("test flags = %v, want %v", parsed.test, tc.test)
 			}
 		})
 	}
