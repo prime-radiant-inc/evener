@@ -174,7 +174,16 @@ func (h *daemonRetirementProcessHelper) nextProvider(input string) int {
 func (h *daemonRetirementProcessHelper) releaseProvider(seq int) {
 	h.provMu.Lock()
 	ch := h.releases[seq]
-	delete(h.releases, seq)
+	// The entry is deliberately retained, never deleted. The adapter records a
+	// sequence in nextProvider and then looks its release channel up; the
+	// fixture's release can land in that window (under load it does), and
+	// deleting the entry on delivery made the racing lookup return nil, which
+	// the adapter reported as "no release". The daemon classified that as a
+	// transient model failure and retried the call — a second model call for
+	// one mutation that the fixture never released, which is the observed hang.
+	// A closed channel found by a later lookup keeps the delivered release
+	// observable; sequences are monotonic per helper process, so the retained
+	// entries are bounded by that process's provider calls.
 	h.provMu.Unlock()
 	if ch != nil {
 		close(ch)
@@ -186,6 +195,41 @@ func (h *daemonRetirementProcessHelper) releaseChannel(seq int) chan struct{} {
 	h.provMu.Lock()
 	defer h.provMu.Unlock()
 	return h.releases[seq]
+}
+
+// TestDaemonRetirementProcessHelperReleaseSurvivesAnEarlyLookup pins the
+// handshake the scripted adapter relies on. The adapter records a provider
+// sequence in nextProvider and then looks up that sequence's release channel;
+// the fixture may deliver the release in the window between the two, which it
+// does under load. An implementation that forgets the release on delivery turns
+// that delivered release into a spurious "no release" provider error, which the
+// daemon then retries as a transient model failure — a second model call for the
+// same input that the fixture never releases. A delivered release must remain
+// observable to the lookup that races it.
+func TestDaemonRetirementProcessHelperReleaseSurvivesAnEarlyLookup(t *testing.T) {
+	evtR, evtW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evtR.Close() //nolint:errcheck // test pipe teardown
+	defer evtW.Close() //nolint:errcheck // test pipe teardown
+	go func() { _, _ = io.Copy(io.Discard, evtR) }()
+	h := newDaemonRetirementProcessHelper(nil, evtW)
+
+	seq := h.nextProvider("input")
+	// Deliver the release before the adapter's lookup, exactly the race the
+	// failing run hits under load.
+	h.releaseProvider(seq)
+
+	release := h.releaseChannel(seq)
+	if release == nil {
+		t.Fatalf("release for sequence %d was forgotten once delivered; the adapter would report no release and the daemon would retry the model call", seq)
+	}
+	select {
+	case <-release:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delivered release channel was not closed")
+	}
 }
 
 // daemonRetirementProcessClock is the helper-side retirement clock. Every
