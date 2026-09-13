@@ -144,7 +144,11 @@ export default defineConfig({
       // The package sits outside this app's root, and v8 coverage drops such
       // files silently without this - which would take ~45 well-tested source
       // files out of the denominator and move the `web` floor for a reason
-      // that has nothing to do with how well anything is tested.
+      // that has nothing to do with how well anything is tested. It brings in
+      // the package files a test LOADS; the include glob's other job, putting
+      // a file no test touches in the denominator at 0%, does not reach past
+      // the root either way, so scripts/package-coverage.mjs asserts after the
+      // run that every compiled package module is present.
       allowExternal: true,
       // Vitest reports only the files a test actually loaded, so a subsystem
       // with no test at all scores as ABSENT rather than as zero - the same
