@@ -346,7 +346,14 @@ pid_owned_by() {
 		kill -0 "$pid" 2>/dev/null || return 1
 		return 2
 	fi
+	# The state probe's own failure is an unknown, not an ownership: a process
+	# that exits between the two reads answers the first and not the second, and
+	# calling that "ours" is how a number nobody could confirm gets signalled.
 	state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+	if [ -z "$state" ]; then
+		kill -0 "$pid" 2>/dev/null || return 1
+		return 2
+	fi
 	case "$state" in
 	[Zz]*) return 1 ;;
 	esac

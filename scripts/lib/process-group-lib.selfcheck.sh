@@ -185,6 +185,20 @@ pid_is_running "$pid"
 check "unreadable listing kept, nothing signalled" "2 kept 0" "$status $(record_state "$rec") $?"
 stop_pgroup "$pid" "$grace" >/dev/null 2>&1 || :
 
+# 9b. a listing that answers one question and not the other: still unknown.
+rec="$work/9b.pgid"
+spawn "$rec" "$marker" sleep 30
+pid="$spawned"
+printf 'pid:%s:%s' "$pid" "$marker" >"$rec"
+mkdir -p "$work/psbin-partial"
+printf '#!/usr/bin/env bash\ncase "$*" in *"state="*) exit 1 ;; esac\nexec /bin/ps "$@"\n' \
+	>"$work/psbin-partial/ps"
+chmod +x "$work/psbin-partial/ps"
+PATH="$work/psbin-partial:$PATH" run_case "$rec"
+pid_is_running "$pid"
+check "partial listing kept, nothing signalled" "2 kept 0" "$status $(record_state "$rec") $?"
+stop_pgroup "$pid" "$grace" >/dev/null 2>&1 || :
+
 # 10. a child that ignores SIGTERM: the escalation reaches it inside the grace.
 rec="$work/10.pgid"
 spawn "$rec" "$marker" bash -c 'trap "" TERM; sleep 30'
@@ -196,4 +210,4 @@ if [ "$failures" -ne 0 ]; then
 	printf 'process-group-lib.selfcheck.sh: %s case(s) failed\n' "$failures" >&2
 	exit 1
 fi
-printf 'process-group-lib.selfcheck.sh: all 11 cases passed\n'
+printf 'process-group-lib.selfcheck.sh: all 12 cases passed\n'
