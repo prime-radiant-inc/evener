@@ -234,6 +234,10 @@ module_test_flags() {
 
 logdir=""
 keep_failed_logs=0
+# The runner's own process group, read once. An attempt that has recorded itself
+# but not yet split reports this group rather than one of its own, and telling
+# those two apart is what says whether the attempt may be signalled by pid.
+runner_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')"
 # A signal can arrive while a stream is running through /usr/bin/time and a
 # shell subshell, so the job PID alone is not enough to stop the actual test
 # process. Keep every stream job here and snapshot its descendants on exit.
@@ -558,6 +562,68 @@ stop_package_list_group() {
 	return 1
 }
 
+# package_list_pid_is_running PID — 0 when PID is a running process, 1 when it
+# is gone or a zombie waiting to be reaped, 2 when that could not be determined.
+#
+# `kill -0` alone cannot answer it: a zombie accepts signals as far as the
+# kernel is concerned, so a reaped-but-uncollected attempt would read as still
+# running for as long as nobody had waited on it. The state comes from `ps`, and
+# the pid is re-asked of the kernel when `ps` prints nothing, because a listing
+# that will not run and a process that has just gone print the same nothing.
+package_list_pid_is_running() {
+	local pid="$1" state
+	kill -0 "$pid" 2>/dev/null || return 1
+	state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+	if [ -z "$state" ]; then
+		kill -0 "$pid" 2>/dev/null || return 1
+		return 2
+	fi
+	case "$state" in
+	[Zz]*) return 1 ;;
+	*) return 0 ;;
+	esac
+}
+
+# stop_package_list_pid PID — stop an attempt that has recorded itself but has
+# not split into a group of its own yet, and prove it is gone. Same contract as
+# stop_package_list_group: 0 when confirmed gone, 1 when it is still there after
+# SIGTERM and SIGKILL, 2 when liveness could not be determined.
+#
+# By pid, because there is no group of its own to name: such an attempt is still
+# in the runner's group, which is the one group nothing here may ever signal. It
+# has spawned nothing yet either — it becomes `go` only at the exec that follows
+# the split — so the pid is the whole of it.
+stop_package_list_pid() {
+	local pid="$1" signal waited ticks status
+	ticks=$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))
+	for signal in TERM KILL; do
+		kill -"$signal" "$pid" 2>/dev/null || :
+		waited=0
+		while [ "$waited" -lt "$ticks" ]; do
+			package_list_pid_is_running "$pid"
+			status=$?
+			[ "$status" -eq 1 ] && return 0
+			if [ "$status" -eq 2 ]; then
+				# Same escalation as the group stop: a probe that cannot run
+				# says nothing about what survived, so SIGKILL goes out before
+				# the fail-closed answer does.
+				kill -KILL "$pid" 2>/dev/null || :
+				return 2
+			fi
+			sleep 0.1
+			waited=$((waited + 1))
+		done
+	done
+	package_list_pid_is_running "$pid"
+	status=$?
+	[ "$status" -eq 1 ] && return 0
+	if [ "$status" -eq 2 ]; then
+		kill -KILL "$pid" 2>/dev/null || :
+		return 2
+	fi
+	return 1
+}
+
 # run_bounded_package_list MODULE OUTPUT — enumerate MODULE's packages into
 # OUTPUT under the bound. MODULE is the runner's name for the module (".", or a
 # directory) and is used for the retry file and the diagnostic; the enumeration
@@ -652,7 +718,41 @@ run_bounded_package_list() {
 				if [ -z "$list_pgid" ] && ! kill -0 "$list_pid" 2>/dev/null; then
 					break
 				fi
-				if [ "$list_pgid" != "$list_pid" ]; then
+				stop_status=0
+				if [ "$list_pgid" = "$list_pid" ]; then
+					# Ask who is actually running before stopping anything. `kill -0`
+					# above answers for a zombie too, so an attempt that has already
+					# exited would otherwise be "stopped", reaped, and its own status
+					# read as the stop's — a verdict about the package list retried to
+					# the end of the budget and then reported as a timeout. Nothing
+					# running means it finished on its own and the completion path
+					# below reports what it decided; a listing that will not run is the
+					# same unknown as everywhere else here and fails closed.
+					if ! live_members="$(package_list_group_survivors "$list_pid")"; then
+						stop_status=2
+					elif [ -z "$live_members" ]; then
+						break
+					else
+						stop_package_list_group "$list_pid" || stop_status=$?
+					fi
+				elif [ -n "$runner_pgid" ] && [ "$list_pgid" = "$runner_pgid" ]; then
+					# The attempt has recorded itself and has not split yet: it is
+					# still in the runner's own group, the one group nothing here may
+					# signal, so the pid is the only aim there is. It has to be taken
+					# now. Returning on this state leaves a process that splits off a
+					# moment later and runs `go list` with nobody tracking it: the
+					# cleanup's group probe finds that group empty while it is still
+					# the runner's, drops the record, and the attempt outlives the run
+					# holding Go's cache locks. It has spawned nothing of its own yet,
+					# so the pid is the whole of it.
+					stop_package_list_pid "$list_pid" || stop_status=$?
+					if [ "$stop_status" -ne 0 ]; then
+						package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
+						printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: pid %s had not split into a group of its own and did not go after SIGTERM and SIGKILL with %ss of grace each. Not retrying, and its record is kept at %s.\n' \
+							"$attempt" "$list_pid" "$ROOT_PACKAGE_LIST_STOP_GRACE" "$(package_list_pgid_path "$module")" >&2
+						return 1
+					fi
+				else
 					# There is no group here this script may aim at, and every
 					# fallback is worse than saying so. A descendant walk reads
 					# the same process listing that just failed, and killing the
@@ -663,25 +763,9 @@ run_bounded_package_list() {
 					# stays: the EXIT cleanup stops the group by that name if a
 					# later listing can see it.
 					package_list_timeout_diagnostic "$package_list_stderr" "$attempt" "$module"
-					printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: its process group reads as %s, not %s, so it cannot be stopped as one. Not retrying, and its record is kept at %s.\n' \
+					printf 'run-module-tests.sh: attempt %s cannot be shown to have stopped: its process group reads as %s, which is neither its own pid %s nor this runner. Not retrying, and its record is kept at %s.\n' \
 						"$attempt" "${list_pgid:-<unreadable>}" "$list_pid" "$(package_list_pgid_path "$module")" >&2
 					return 1
-				fi
-				# Ask who is actually running before stopping anything. `kill -0`
-				# above answers for a zombie too, so an attempt that has already
-				# exited would otherwise be "stopped", reaped, and its own status
-				# read as the stop's — a verdict about the package list retried to
-				# the end of the budget and then reported as a timeout. Nothing
-				# running means it finished on its own and the completion path below
-				# reports what it decided; a listing that will not run is the same
-				# unknown as everywhere else here and takes the fail-closed branch.
-				stop_status=0
-				if ! live_members="$(package_list_group_survivors "$list_pid")"; then
-					stop_status=2
-				elif [ -z "$live_members" ]; then
-					break
-				else
-					stop_package_list_group "$list_pid" || stop_status=$?
 				fi
 				if [ "$stop_status" -ne 0 ]; then
 					# Deliberately no wait: SIGKILL does not land on a
