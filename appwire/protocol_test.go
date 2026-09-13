@@ -332,7 +332,7 @@ func TestFeatureSetKeybindingsJSONField(t *testing.T) {
 		t.Fatalf("true feature missing from JSON: %s", encoded)
 	}
 
-	generated, err := os.ReadFile("../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
+	generated, err := os.ReadFile("../appwire-client/typescript/types.gen.ts")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestFeatureSetTranscriptDisplayJSONField(t *testing.T) {
 		t.Fatalf("true feature missing from JSON: %s", encoded)
 	}
 
-	generated, err := os.ReadFile("../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
+	generated, err := os.ReadFile("../appwire-client/typescript/types.gen.ts")
 	if err != nil {
 		t.Fatal(err)
 	}

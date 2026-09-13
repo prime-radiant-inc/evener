@@ -276,7 +276,7 @@ concurrent agent's test hub.
   `type` action (real key events) for step 4's reply. Same trap as the ask dock's inputs —
   see `ask-web-answer.md`'s Sharp edges for the `eval`-only workaround.
 - **`composer-submit` has one label and two timings**: it routes to `turn/queue` while a
-  turn runs and `turn/start` otherwise (`protocol/submitRouting.ts:18-23`). At `awaiting`
+  turn runs and `turn/start` otherwise (`appwire-client/typescript/submitRouting.ts:18-23`). At `awaiting`
   it sends, which is what step 4 wants — but if you reply too early the message is queued
   instead and the title will not clear the way this card expects.
 - The interrupt variant's daemon-side contract (interrupted turns hard-code `idle`, never
