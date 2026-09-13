@@ -12,7 +12,7 @@
 // resolve from outside the Vitest root, which is a transform-time error a
 // collected-but-never-executed file hides.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -36,6 +36,12 @@ export function sourceFilesOnDisk(dir) {
   return found.sort();
 }
 
+// Every form that names a module, not only `from "..."`: a side-effect
+// `import "..."`, a `require("...")` and a dynamic `import("...")` all reach
+// into the app just as effectively. The leading keyword is what separates an
+// import from a comment that happens to mention an app path.
+const APP_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'][^"']*cmd\/evener-hub\//;
+
 // The package is a standalone library: nothing in it may reach back into the
 // app. Two test files did, and moving them out is only half the fix - this is
 // the half that keeps it fixed.
@@ -43,7 +49,7 @@ export function describeAppImports(files, read, dir) {
   const offenders = [];
   for (const file of files) {
     for (const line of read(file).split("\n")) {
-      if (/from\s+["'][^"']*cmd\/evener-hub\//.test(line)) offenders.push(`${path.relative(dir, file)}: ${line.trim()}`);
+      if (APP_IMPORT.test(line)) offenders.push(`${path.relative(dir, file)}: ${line.trim()}`);
     }
   }
   if (offenders.length === 0) return "";
@@ -92,7 +98,8 @@ export function describeProofRun(report, file, dir) {
   // there would read as "never executed".
   const key = (name) => path.relative(dir, path.resolve(name));
   const ran = report.testResults?.some((result) => key(result.name) === key(file)) ?? false;
-  if (!ran) return `${path.basename(file)} was not executed - the JSON report names ${(report.testResults ?? []).length} other file(s)`;
+  if (!ran)
+    return `${path.basename(file)} was not executed - the JSON report names ${(report.testResults ?? []).length} other file(s)`;
   if ((report.numTotalTests ?? 0) === 0) return `${path.basename(file)} ran no tests`;
   if ((report.numFailedTests ?? 0) > 0) return `${path.basename(file)} had ${report.numFailedTests} failing test(s)`;
   return "";
@@ -158,7 +165,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     encoding: "utf8",
   });
   if (ran.status !== 0 || !existsSync(reportFile)) {
-    console.error(`running ${path.relative(packageDir, proof)} failed (exit ${ran.status}):\n${ran.stdout ?? ""}${ran.stderr ?? ""}`);
+    console.error(
+      `running ${path.relative(packageDir, proof)} failed (exit ${ran.status}):\n${ran.stdout ?? ""}${ran.stderr ?? ""}`,
+    );
     process.exit(1);
   }
   const report = JSON.parse(readFileSync(reportFile, "utf8"));

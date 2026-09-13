@@ -1,6 +1,6 @@
 // reconcileBatches is the stateful half of the dock's multi-pending-set
 // bookkeeping (wave-5 plan T4: "late-arriving questions never swept into an
-// in-flight settlement"). protocol/deriveAskQuestions.ts's liveAskQuestions
+// in-flight settlement"). appwire-client/typescript/deriveAskQuestions.ts's liveAskQuestions
 // gives a purely POSITIONAL snapshot of "what the transcript currently says
 // is live" - sufficient for cold attach and the common (nothing in flight)
 // case, but not for the in-flight submission race: while our own composed

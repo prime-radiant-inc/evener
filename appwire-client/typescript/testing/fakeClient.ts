@@ -23,7 +23,7 @@ const KNOWN_METHODS: ReadonlySet<string> = new Set(METHOD_NAMES);
 function assertKnownMethod(method: string): void {
   if (!KNOWN_METHODS.has(method)) {
     throw new Error(
-      `FakeClient: unknown method "${method}" — not in the hub's generated method catalog (METHOD_NAMES in protocol/types.gen.ts). ` +
+      `FakeClient: unknown method "${method}" — not in the hub's generated method catalog (METHOD_NAMES in appwire-client/typescript/types.gen.ts). ` +
         `Either the method was renamed or removed on the wire, or this is a typo; there is no production code path this name can reach.`,
     );
   }
@@ -189,7 +189,7 @@ export class FakeClient implements AppwireClientLike {
   // retryNow records that it was called, for a consumer's wiring test
   // (ConnectionBanner.test.tsx) to assert against - AppwireClient's own
   // backoff/in-flight-dial semantics are exhaustively covered against the
-  // real class in protocol/reconnect.test.ts, so this fake doesn't attempt
+  // real class in appwire-client/typescript/reconnect.test.ts, so this fake doesn't attempt
   // to model them (no timers, no sockets, nothing to short-circuit).
   retryNowCalls = 0;
   retryNow(): void {
@@ -212,7 +212,7 @@ export class FakeClient implements AppwireClientLike {
   emitNotification(n: AnyNotification): void {
     if (!KNOWN_NOTIFICATIONS.has(n.method)) {
       throw new Error(
-        `FakeClient: unknown notification "${n.method}" — not in the hub's generated notification catalog (NOTIFICATION_NAMES in protocol/types.gen.ts). ` +
+        `FakeClient: unknown notification "${n.method}" — not in the hub's generated notification catalog (NOTIFICATION_NAMES in appwire-client/typescript/types.gen.ts). ` +
           `Either the notification was renamed or removed on the wire, or this is a typo; no production listener can ever see this name. ` +
           `If the test means to inject an unrecognized notification, call emitUnknownNotification instead.`,
       );

@@ -117,9 +117,31 @@ test("describeAppImports names every line that reaches into the app", () => {
   assert.match(message, /b\.ts: import type/);
 });
 
+test("describeAppImports catches a side-effect import, a require and a dynamic import", () => {
+  const files = [path.join(dir, "a.ts"), path.join(dir, "b.ts"), path.join(dir, "c.ts"), path.join(dir, "d.ts")];
+  const sources = {
+    [files[0]]: 'import "../../cmd/evener-hub/frontend/src/testSetup";\n',
+    [files[1]]: 'const s = require("../../cmd/evener-hub/frontend/src/stores/threads");\n',
+    [files[2]]: 'const m = await import("../../cmd/evener-hub/frontend/src/shell/clientContext");\n',
+    [files[3]]: 'export { x } from "../../cmd/evener-hub/frontend/src/panes/session/Session";\n',
+  };
+  const message = describeAppImports(files, (file) => sources[file], dir);
+  assert.match(message, /a\.ts: import "/);
+  assert.match(message, /b\.ts: const s = require\(/);
+  assert.match(message, /c\.ts: const m = await import\(/);
+  assert.match(message, /d\.ts: export \{ x \} from/);
+});
+
 test("describeAppImports does not fire on a comment that merely names the app path", () => {
   const files = [path.join(dir, "a.ts")];
-  const sources = { [files[0]]: "// mirrors cmd/evener-hub/frontend/src/stores/threads.ts\n" };
+  const sources = {
+    [files[0]]: [
+      "// mirrors cmd/evener-hub/frontend/src/stores/threads.ts",
+      '// the web side imports this as "cmd/evener-hub/frontend/src/x"',
+      'const label = "cmd/evener-hub/frontend/src/panes/session";',
+      "",
+    ].join("\n"),
+  };
   assert.equal(describeAppImports(files, (file) => sources[file], dir), "");
 });
 

@@ -126,8 +126,9 @@ export const GENERIC_ERROR_MESSAGE = "Something went wrong.";
 export const HUB_UNREACHABLE_MESSAGE = "Can't reach the hub right now.";
 
 // CLIENT_UNREACHABLE_PATTERN matches the shape both AppwireClient
-// (protocol/client.ts's request()/close()) and FakeClient (protocol/testing/
-// fakeClient.ts, used throughout the test suite) throw for that family:
+// (appwire-client/typescript/client.ts's request()/close()) and FakeClient
+// (appwire-client/typescript/testing/fakeClient.ts, used throughout the test
+// suite) throw for that family:
 // `"<Name>Client: cannot call "<method>" while state is "<state>""`,
 // `"<Name>Client: cannot call "<method>"; not connected"`, and
 // `"<Name>Client: closed"` (ConnectionClosedError's own message). Matching

@@ -92,7 +92,7 @@ function parseFixture(name: string, text: string): Fixture {
     if (!KNOWN_NOTIFICATIONS.has(method)) {
       throw new Error(
         `fixture ${name} line ${record.line}: unknown notification "${method}" — not in the hub's generated ` +
-          `notification catalog (NOTIFICATION_NAMES in protocol/types.gen.ts). Either the notification was ` +
+          `notification catalog (NOTIFICATION_NAMES in appwire-client/typescript/types.gen.ts). Either the notification was ` +
           `renamed or removed on the wire and this recorded replay is stale, or the name is a typo; either way ` +
           `the reducer would ignore this line via its default: case and the snapshot would record nothing.`,
       );
