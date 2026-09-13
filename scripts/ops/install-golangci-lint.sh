@@ -41,6 +41,7 @@ installer_url='https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/ins
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 . "$script_dir/../lib/scratch-lib.sh"
+. "$script_dir/../lib/process-group-lib.sh"
 
 attempts=${EVENER_GOLANGCI_INSTALL_ATTEMPTS:-3}
 if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
@@ -64,26 +65,50 @@ bindir="$(go env GOPATH)/bin"
 # fills it with printf -v and exits on any failure.
 attempt_scratch=""
 attempt_pid=""
-# stop_attempt — end the running attempt and reap it.
+# Seconds to wait for the attempt's group to empty after each of SIGTERM and
+# SIGKILL. Only a member that ignores or cannot take the signal reaches the end
+# of either wait, so an ordinary stop costs milliseconds.
+attempt_stop_grace=5
+# stop_attempt — end the running attempt, prove nothing of it is left, and reap
+# the one process this script spawned.
 #
-# The attempt is a whole pipeline of other people's programs, so stopping the
-# one process this script spawned is not enough: it runs in a process group of
-# its own and the group is what gets signalled, which reaches the curl and the
-# shell running the installer however late either appeared. The pid is signalled
-# too, for the instant before the group exists. Reaping matters as much as
-# signalling: without it the script can exit while the installer is still
-# writing into the Go bin directory.
+# The attempt is a whole pipeline of other people's programs — curl, and the
+# shell running the upstream installer — so the process this script spawned is
+# not the whole of it: it runs in a group of its own and the group is what gets
+# stopped, which reaches every member however late it appeared. What the stop
+# must not do is wait forever. The leader alone says nothing about the rest, and
+# an unbounded `wait` on a process wedged in uninterruptible sleep hangs the
+# signal handler that called it, so the group is probed under a bounded grace
+# and an unstoppable one is named rather than waited on.
 stop_attempt() {
 	[ -n "$attempt_pid" ] || return 0
-	kill -TERM "$attempt_pid" 2>/dev/null || :
-	kill -TERM -- -"$attempt_pid" 2>/dev/null || :
-	local waited=0
-	while [ "$waited" -lt 50 ] && kill -0 "$attempt_pid" 2>/dev/null; do
-		sleep 0.1
-		waited=$((waited + 1))
-	done
-	kill -KILL "$attempt_pid" 2>/dev/null || :
-	kill -KILL -- -"$attempt_pid" 2>/dev/null || :
+	local stop_status=0 members
+	if pid_leads_pgroup "$attempt_pid"; then
+		stop_pgroup "$attempt_pid" "$attempt_stop_grace" || stop_status=$?
+	else
+		# The number is not a group of this script's making: either the child
+		# has not run its setpgrp yet, or it has gone and the kernel has given
+		# the number to somebody else. `kill -- -PID` would name that somebody
+		# in the second case, so the child itself is what gets stopped — and
+		# then the group it may have formed in the meantime is asked about,
+		# because the split can land between the question and the signal.
+		stop_pid "$attempt_pid" "$attempt_stop_grace" || stop_status=$?
+		if [ "$stop_status" -eq 0 ]; then
+			if ! members="$(pgroup_survivors "$attempt_pid")"; then
+				stop_status=2
+			elif [ -n "$members" ]; then
+				stop_pgroup "$attempt_pid" "$attempt_stop_grace" || stop_status=$?
+			fi
+		fi
+	fi
+	if [ "$stop_status" -ne 0 ]; then
+		printf 'install-golangci-lint.sh: the install attempt could not be shown to have stopped; process group %s still holds %s. Not waiting on it.\n' \
+			"$attempt_pid" "$(pgroup_survivor_report "$attempt_pid")" >&2
+		attempt_pid=""
+		return 0
+	fi
+	# The group is empty, so this reap cannot block: the leader is a zombie or
+	# already collected, and bash keeps a reaped job's status either way.
 	wait "$attempt_pid" 2>/dev/null || :
 	attempt_pid=""
 }

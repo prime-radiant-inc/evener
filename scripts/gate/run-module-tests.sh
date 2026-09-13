@@ -52,6 +52,7 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 . "$script_dir/../lib/private-go-home.sh"
 . "$script_dir/../lib/scratch-lib.sh"
+. "$script_dir/../lib/process-group-lib.sh"
 
 # The load-aware budgets below degrade to their historical fixed values when
 # the helper is unreadable or answers with nothing. An unguarded source would
@@ -364,7 +365,7 @@ stop_recorded_package_list_groups() {
 		# that child writing its package list and holding Go's cache locks.
 		# A probe that cannot run knows nothing about the group, and blind is
 		# the one state in which -PID could name a stranger, so it is left.
-		members="$(package_list_group_survivors "$recorded")" || continue
+		members="$(pgroup_survivors "$recorded")" || continue
 		if [ -z "$members" ]; then
 			rm -f "$pgid_file"
 			continue
@@ -381,7 +382,7 @@ stop_recorded_package_list_groups() {
 			continue
 		fi
 		stop_status=0
-		stop_package_list_group "$recorded" || stop_status=$?
+		stop_pgroup "$recorded" "$ROOT_PACKAGE_LIST_STOP_GRACE" || stop_status=$?
 		if [ "$stop_status" -eq 0 ]; then
 			rm -f "$pgid_file"
 			continue
@@ -392,7 +393,7 @@ stop_recorded_package_list_groups() {
 		# looking. Said out loud too, because the retained logs are where the next
 		# person on this host starts.
 		printf 'run-module-tests.sh: process group %s could not be shown to have stopped; it still holds %s. Its record is kept at %s.\n' \
-			"$recorded" "$(package_list_group_survivor_report "$recorded")" "$pgid_file" >&2
+			"$recorded" "$(pgroup_survivor_report "$recorded")" "$pgid_file" >&2
 	done
 }
 
@@ -498,161 +499,6 @@ package_list_timeout_diagnostic() {
 		"$repo_root" "$((ROOT_PACKAGE_LIST_TIMEOUT * 2))" >&2
 }
 
-# package_list_group_survivors PGID — print `pid(state)` for every live
-# member of PGID, zombies excluded. Exit status 0 means the printed answer is
-# trustworthy; 2 means the process listing itself failed, so nothing is known
-# about the group and an empty answer must NOT be read as "gone".
-#
-# Zombies have to be excluded, and `kill -0 -- -PGID` cannot do it. A process
-# the kernel has finished with stays a member of its own group until its parent
-# reaps it, and a group signal is reported as delivered to it, so the leader
-# this function is asked about would read as "still running" for as long as the
-# shell had not got round to reaping it — a successful kill reported as a
-# survivor, purely on reap timing. Asking `ps` for the state instead makes the
-# answer independent of when anyone reaps.
-#
-# The status is separate from the output because the two failures look
-# identical otherwise. A `ps` that cannot run prints nothing, and a caller
-# reading that as "no live members" starts the next attempt while the timed-out
-# one is still writing its package list and holding Go's cache locks — the
-# exact race the stop exists to prevent.
-package_list_group_survivors() {
-	local pgid="$1" listing
-	if ! listing="$(ps -axo pid=,pgid=,state= 2>/dev/null)" || [ -z "$listing" ]; then
-		return 2
-	fi
-	printf '%s\n' "$listing" |
-		awk -v pgid="$pgid" '$2 == pgid && $3 !~ /^[Zz]/ { printf "%s(%s) ", $1, $3 }'
-}
-
-# package_list_group_survivor_report PGID — what is left of PGID, as a phrase a
-# diagnostic can print. "Nothing was there" and "nobody could look" are
-# different answers, and collapsing the second into the first tells the reader
-# the group was confirmed empty when in fact the process listing would not run.
-package_list_group_survivor_report() {
-	local report
-	if ! report="$(package_list_group_survivors "$1")"; then
-		printf '<unknown: the process listing would not run>'
-		return 0
-	fi
-	printf '%s' "${report:-<none at the final probe>}"
-}
-
-# stop_package_list_group PGID — stop one package-list attempt and prove
-# nothing of it is still running. Returns 0 when the group is confirmed empty,
-# 1 when it still has a live member after the escalation, and 2 when liveness
-# could not be determined at all. Only 0 permits a retry: both non-zero answers
-# mean the caller cannot show the attempt is gone.
-#
-# By group, not by process tree: a snapshot of descendants plus a signal to
-# what it showed misses a child forked after the snapshot, and one that
-# outlives the leader survives into the next attempt — still writing a package
-# list, still holding Go's build and module cache locks. A group signal reaches
-# every member however late it appeared.
-#
-# The group is made by the spawn, not here: the attempt is exec'd through
-# perl's setpgrp(0, 0), so the child becomes its own group leader and its pgid
-# is its pid — which is why the caller can pass the pid it already holds.
-# setsid(1) is the usual tool for that and is not present on macOS, which this
-# script has to run on; perl is, and so is the CI image's.
-stop_package_list_group() {
-	local pgid="$1" signal waited ticks alive
-	ticks=$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))
-	for signal in TERM KILL; do
-		kill -"$signal" -- -"$pgid" 2>/dev/null || :
-		waited=0
-		while [ "$waited" -lt "$ticks" ]; do
-			if ! alive="$(package_list_group_survivors "$pgid")"; then
-				# A probe that cannot run says nothing about what survived, so
-				# escalate before giving up. Returning here straight after
-				# SIGTERM left a TERM-ignoring attempt running, holding Go's
-				# build and module cache locks for every later run on this
-				# host. Escalating is not confirming, so the caller still gets
-				# the fail-closed status.
-				kill -KILL -- -"$pgid" 2>/dev/null || :
-				return 2
-			fi
-			if [ -z "$alive" ]; then
-				return 0
-			fi
-			sleep 0.1
-			waited=$((waited + 1))
-		done
-	done
-	if ! alive="$(package_list_group_survivors "$pgid")"; then
-		# Same escalation as above. By here SIGKILL has already been sent once,
-		# and sending it again to a group with nothing left in it is a no-op.
-		kill -KILL -- -"$pgid" 2>/dev/null || :
-		return 2
-	fi
-	if [ -z "$alive" ]; then
-		return 0
-	fi
-	return 1
-}
-
-# package_list_pid_is_running PID — 0 when PID is a running process, 1 when it
-# is gone or a zombie waiting to be reaped, 2 when that could not be determined.
-#
-# `kill -0` alone cannot answer it: a zombie accepts signals as far as the
-# kernel is concerned, so a reaped-but-uncollected attempt would read as still
-# running for as long as nobody had waited on it. The state comes from `ps`, and
-# the pid is re-asked of the kernel when `ps` prints nothing, because a listing
-# that will not run and a process that has just gone print the same nothing.
-package_list_pid_is_running() {
-	local pid="$1" state
-	kill -0 "$pid" 2>/dev/null || return 1
-	state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
-	if [ -z "$state" ]; then
-		kill -0 "$pid" 2>/dev/null || return 1
-		return 2
-	fi
-	case "$state" in
-	[Zz]*) return 1 ;;
-	*) return 0 ;;
-	esac
-}
-
-# stop_package_list_pid PID — stop an attempt that has recorded itself but has
-# not split into a group of its own yet, and prove it is gone. Same contract as
-# stop_package_list_group: 0 when confirmed gone, 1 when it is still there after
-# SIGTERM and SIGKILL, 2 when liveness could not be determined.
-#
-# By pid, because there is no group of its own to name: such an attempt is still
-# in the runner's group, which is the one group nothing here may ever signal. It
-# has spawned nothing yet either — it becomes `go` only at the exec that follows
-# the split — so the pid is the whole of it.
-stop_package_list_pid() {
-	local pid="$1" signal waited ticks status
-	ticks=$((ROOT_PACKAGE_LIST_STOP_GRACE * 10))
-	for signal in TERM KILL; do
-		kill -"$signal" "$pid" 2>/dev/null || :
-		waited=0
-		while [ "$waited" -lt "$ticks" ]; do
-			package_list_pid_is_running "$pid"
-			status=$?
-			[ "$status" -eq 1 ] && return 0
-			if [ "$status" -eq 2 ]; then
-				# Same escalation as the group stop: a probe that cannot run
-				# says nothing about what survived, so SIGKILL goes out before
-				# the fail-closed answer does.
-				kill -KILL "$pid" 2>/dev/null || :
-				return 2
-			fi
-			sleep 0.1
-			waited=$((waited + 1))
-		done
-	done
-	package_list_pid_is_running "$pid"
-	status=$?
-	[ "$status" -eq 1 ] && return 0
-	if [ "$status" -eq 2 ]; then
-		kill -KILL "$pid" 2>/dev/null || :
-		return 2
-	fi
-	return 1
-}
-
 # package_list_escalate PID — the last thing to do for an attempt nothing can
 # see: SIGTERM, the stop's own grace, then SIGKILL, to the group the pid may
 # lead and to the pid itself.
@@ -712,7 +558,7 @@ stop_package_list_attempt() {
 		# otherwise be "stopped", reaped, and its own status read as the stop's
 		# — a verdict about the package list retried to the end of the budget
 		# and then reported as a timeout.
-		if ! live="$(package_list_group_survivors "$pid")"; then
+		if ! live="$(pgroup_survivors "$pid")"; then
 			package_list_escalate "$pid"
 			package_list_stop_reason="$listing_failed"
 			return 2
@@ -720,7 +566,7 @@ stop_package_list_attempt() {
 		if [ -z "$live" ]; then
 			return 3
 		fi
-		stop_package_list_group "$pid" || status=$?
+		stop_pgroup "$pid" "$ROOT_PACKAGE_LIST_STOP_GRACE" || status=$?
 	elif [ -n "$runner_pgid" ] && [ "$pgid" = "$runner_pgid" ]; then
 		# Recorded itself, not split yet: still in the runner's own group, so
 		# the pid is the only aim there is. It has to be taken now — left alone
@@ -728,7 +574,7 @@ stop_package_list_attempt() {
 		# it, because the cleanup's group probe finds that group empty while the
 		# pid is still the runner's. It has spawned nothing yet either, since it
 		# becomes `go` only at the exec after the split.
-		stop_package_list_pid "$pid" || status=$?
+		stop_pid "$pid" "$ROOT_PACKAGE_LIST_STOP_GRACE" || status=$?
 		if [ "$status" -eq 2 ]; then
 			package_list_escalate "$pid"
 			package_list_stop_reason="$listing_failed"
@@ -743,13 +589,13 @@ stop_package_list_attempt() {
 		# instant after it, in which case the signal just sent took only the
 		# leader and left `go list`'s children in a group of their own. The pid
 		# is that group's number too, so ask whether one formed.
-		if ! live="$(package_list_group_survivors "$pid")"; then
+		if ! live="$(pgroup_survivors "$pid")"; then
 			package_list_escalate "$pid"
 			package_list_stop_reason="$listing_failed"
 			return 2
 		fi
 		if [ -n "$live" ]; then
-			stop_package_list_group "$pid" || status=$?
+			stop_pgroup "$pid" "$ROOT_PACKAGE_LIST_STOP_GRACE" || status=$?
 		fi
 	else
 		# No group here this script may aim at, and every fallback is worse than
@@ -770,7 +616,7 @@ stop_package_list_attempt() {
 		;;
 	esac
 	package_list_stop_reason="$(printf 'process group %s still holds %s after SIGTERM and SIGKILL with %ss of grace each.' \
-		"$pid" "$(package_list_group_survivor_report "$pid")" "$ROOT_PACKAGE_LIST_STOP_GRACE")"
+		"$pid" "$(pgroup_survivor_report "$pid")" "$ROOT_PACKAGE_LIST_STOP_GRACE")"
 	return 1
 }
 
@@ -805,7 +651,7 @@ run_bounded_package_list() {
 		attempt_list="${package_list}.attempt${attempt}"
 		printf '=== go list ./... attempt %s of %s ===\n' "$attempt" "$ROOT_PACKAGE_LIST_ATTEMPTS" >>"$package_list_stderr"
 		# The attempt is spawned into its own process group so that
-		# stop_package_list_group can stop it as one. perl's setpgrp(0, 0)
+		# stop_pgroup can stop it as one. perl's setpgrp(0, 0)
 		# does that inside the child, between fork and exec, where this shell
 		# cannot see it. `set -m` would also have made the job its own group, but
 		# only by turning job control on for the whole script: run_wave backgrounds
