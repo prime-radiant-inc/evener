@@ -222,9 +222,16 @@ export function resetHumanNoteDrafts(): void {
   }
   drafts.setState({ records: new Map() });
 }
+// Shared notes stay readable while a session is under the hub's recovery fence
+// (resumeRequired), so the SharedNotes capability and status alone admit edits
+// the hub refuses until an explicit resume. The fence closes the write gate
+// here; an edit made before the fence arrived stays in the draft store and an
+// already-queued mutation stays in the durable outbox, both for retry after
+// resume. Read rendering (canReadSharedNotes) is deliberately unaffected.
 export function canWriteHumanNote(model: ThreadModel | undefined): boolean {
   return (
     !!model?.capabilities.sharedNotes &&
+    model.resumeRequired !== true &&
     !["ended", "closed", "notLoaded", "restartRequired"].includes(model.status.type)
   );
 }

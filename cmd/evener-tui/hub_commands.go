@@ -1167,7 +1167,7 @@ func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expected
 // never wipe the note (nor wake the agent with a steer for a clear nobody
 // asked for).
 func (m *hubModel) runHubNotes(args string) tea.Cmd {
-	if !sharedNotesWritable(m.detail.Live, m.detail.State) {
+	if !sharedNotesWritable(m.detail.Live, m.detail.State, m.detail.Capabilities.ResumeRequired) {
 		m.addSessionSystem("Note editing is not available for this session.")
 		return nil
 	}
@@ -1257,7 +1257,7 @@ func sendHubURLRemove(client *appwire.Client, ref appwire.Ref, id string, expect
 // runHubURLRemove dispatches the /url-remove command, which takes the URL
 // entry id to remove.
 func (m *hubModel) runHubURLRemove(args string) tea.Cmd {
-	if !sharedNotesWritable(m.detail.Live, m.detail.State) {
+	if !sharedNotesWritable(m.detail.Live, m.detail.State, m.detail.Capabilities.ResumeRequired) {
 		m.addSessionSystem("URL removal is not available for this session.")
 		return nil
 	}

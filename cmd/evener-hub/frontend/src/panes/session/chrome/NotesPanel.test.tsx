@@ -13,6 +13,7 @@ import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
+import { editHumanNote, syncHumanNote } from "../../../stores/humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import {
   readMutationPersistence,
@@ -519,6 +520,36 @@ test("notes panel is read-only when restartRequired: values shown, no editor, no
   expect(screen.getByTestId("shared-notes-agent").textContent).toMatch(/agent hello/);
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
   expect(screen.queryByTestId("shared-notes-url-remove-u1")).toBeNull();
+});
+
+// A session under the recovery fence reads as live+idle with the SharedNotes
+// capability retained, so the status/capability gate admits edits the hub
+// refuses until an explicit resume. The panel must fall back to the read-only
+// rendering, and an edit made before the fence arrived must survive so it is
+// still there to retry once the fence clears.
+test("notes panel is read-only under the recovery fence and keeps a dirty draft for retry", () => {
+  const model = testModel({
+    status: { type: "idle" },
+    resumeRequired: true,
+    humanNote: "human hello",
+    agentNote: "agent hello",
+    sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }],
+  });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  syncHumanNote(model.ref, "human hello");
+  editHumanNote(model.ref, "draft written before the fence");
+
+  const panel = render(<NotesPanelBody sessionRef={model.ref} model={model} />);
+  expect(screen.getByTestId("shared-notes-section")).toBeTruthy();
+  expect(screen.getByTestId("shared-notes-human").textContent).toMatch(/human hello/);
+  expect(screen.getByTestId("shared-notes-agent").textContent).toMatch(/agent hello/);
+  expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
+  expect(screen.queryByTestId("shared-notes-url-remove-u1")).toBeNull();
+
+  // An explicit resume clears the fence on the refreshed model; the retained
+  // draft is editable again rather than having been discarded or submitted.
+  panel.rerender(<NotesPanelBody sessionRef={model.ref} model={{ ...model, resumeRequired: false }} />);
+  expect(editor().value).toBe("draft written before the fence");
 });
 
 test("ended-empty session shows inert text with no editor", () => {

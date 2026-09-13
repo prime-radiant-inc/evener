@@ -570,7 +570,7 @@ func sharedNotesLiveAvailable(ctx hubCommandContext) (bool, string) {
 	if !ctx.caps.SharedNotes {
 		return false, "source does not advertise shared notes"
 	}
-	if !sharedNotesWritable(ctx.live, ctx.state) {
+	if !sharedNotesWritable(ctx.live, ctx.state, ctx.caps.ResumeRequired) {
 		return false, "session cannot change notes"
 	}
 	return true, ""
@@ -578,11 +578,13 @@ func sharedNotesLiveAvailable(ctx hubCommandContext) (bool, string) {
 
 // sharedNotesWritable reports whether the shared-notes surface accepts edits.
 // The SharedNotes capability is retained wherever saved notes stay readable —
-// ended sessions and restart-required sessions — so it gates reading alone; a
-// session that can actually change notes must also be live and must not be
-// waiting behind a restart, where the daemon refuses every mutation.
-func sharedNotesWritable(live bool, state string) bool {
-	return live && state != appwire.ThreadStatusRestartRequired
+// ended sessions, restart-required sessions, and sessions under the hub's
+// recovery fence — so it gates reading alone; a session that can actually
+// change notes must also be live, must not be waiting behind a restart, and
+// must not be recovery-fenced (resumeRequired), where the hub refuses every
+// mutation until an explicit thread/resume.
+func sharedNotesWritable(live bool, state string, resumeRequired bool) bool {
+	return live && state != appwire.ThreadStatusRestartRequired && !resumeRequired
 }
 
 func capabilityAvailable(check func(hubSessionCapabilities) bool, reason string) func(hubCommandContext) (bool, string) {

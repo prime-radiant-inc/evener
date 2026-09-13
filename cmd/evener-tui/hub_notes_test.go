@@ -318,3 +318,83 @@ func TestSharedNotesCommandsRequireLiveness(t *testing.T) {
 		t.Fatalf("runHubURLRemove on live session returned nil, want a send command")
 	}
 }
+
+// fencedNotesThread builds the wire thread a session under the hub's recovery
+// fence presents: live and idle (so Live is true and State is editable by the
+// status check) with SharedNotes retained for reading.
+func fencedNotesThread(ref string, resumeRequired bool) appwire.Thread {
+	return appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Source:    "local",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Evener: appwire.EvenerThread{
+			Ref:            ref,
+			ResumeRequired: resumeRequired,
+			Capabilities:   appwire.ThreadCapabilities{SharedNotes: true},
+		},
+	}
+}
+
+// TestSharedNotesCommandUnavailableWhenResumeRequired pins the recovery fence:
+// a resumeRequired session presents as a live, idle thread with SharedNotes
+// retained for reading, so capability+status alone still advertise mutations
+// the hub refuses until an explicit resume. The command, palette, and slash
+// help must all refuse, while an unfenced live+idle session keeps offering
+// them and saved notes stay readable on the fenced session.
+func TestSharedNotesCommandUnavailableWhenResumeRequired(t *testing.T) {
+	fenced := hubDetailFromThread(fencedNotesThread("local:01FENCED", true))
+	if !fenced.Live || fenced.State != appwire.ThreadStatusIdle {
+		t.Fatalf("fenced session should present live+idle: %+v", fenced)
+	}
+	ctx := hubCommandContext{mode: hubModeSession, caps: fenced.Capabilities, live: fenced.Live, state: fenced.State}
+
+	notes, ok := hubCommandByName("notes")
+	if !ok {
+		t.Fatal("/notes command not registered")
+	}
+	urlRemove, ok := hubCommandByName("url-remove")
+	if !ok {
+		t.Fatal("/url-remove command not registered")
+	}
+	if available, reason := hubCommandAvailable(notes, ctx); available {
+		t.Fatalf("recovery-fenced session advertised /notes: %s", reason)
+	}
+	if available, reason := hubCommandAvailable(urlRemove, ctx); available {
+		t.Fatalf("recovery-fenced session advertised /url-remove: %s", reason)
+	}
+	// The fence closes writes only; saved notes must stay readable.
+	if !fenced.Capabilities.SharedNotes {
+		t.Fatalf("recovery fence zeroed SharedNotes; saved notes must stay readable: %+v", fenced)
+	}
+	for _, entry := range commandPaletteEntriesForSession(hubModeSession, fenced.Capabilities, fenced.Live, fenced.State, nil) {
+		if (entry.Command == "notes" || entry.Command == "url-remove") && entry.Item.DisabledReason == "" {
+			t.Fatalf("recovery-fenced palette offered /%s", entry.Command)
+		}
+	}
+	if help := hubSlashCommandHelpLive(fenced.Capabilities, fenced.Live, fenced.State); strings.Contains(help, "/notes") || strings.Contains(help, "/url-remove") {
+		t.Fatalf("recovery-fenced help offered a mutation:\n%s", help)
+	}
+
+	// Negative control: the same session without the fence still advertises
+	// both, so the fence is the only difference.
+	open := hubDetailFromThread(fencedNotesThread("local:01OPEN", false))
+	if available, reason := hubCommandAvailable(notes, hubCommandContext{mode: hubModeSession, caps: open.Capabilities, live: open.Live, state: open.State}); !available {
+		t.Fatalf("unfenced live idle session did not advertise /notes: %s", reason)
+	}
+}
+
+// TestHubNotesDispatchRefusesUnderRecoveryFence pins the Run-handler guards,
+// not just command availability: even if a caller reaches the handler, a
+// fenced session must not issue a write.
+func TestHubNotesDispatchRefusesUnderRecoveryFence(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.mode = hubModeSession
+	m.detail = hubDetailFromThread(fencedNotesThread("local:01FENCED", true))
+	if cmd := m.runHubNotes("hello"); cmd != nil {
+		t.Fatal("runHubNotes under the recovery fence returned a command, want refusal")
+	}
+	if cmd := m.runHubURLRemove("u1"); cmd != nil {
+		t.Fatal("runHubURLRemove under the recovery fence returned a command, want refusal")
+	}
+}

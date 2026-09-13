@@ -1,8 +1,15 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { ThreadModel } from "../protocol/model";
 import { connectionStore } from "./connection";
-import { acknowledgeHumanNote, editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
+import {
+  acknowledgeHumanNote,
+  canWriteHumanNote,
+  editHumanNote,
+  syncHumanNote,
+  useHumanNoteDraft,
+} from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests } from "./threads";
 
@@ -102,4 +109,18 @@ test("opening a second session discovers its durable note after the initial pers
   syncHumanNote("ref-a", "A");
   const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
   await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
+});
+
+// A resumeRequired session presents as a live, idle thread with the
+// SharedNotes read capability retained (appwire.ThreadCapabilities.SharedNotes
+// is not zeroed by the recovery fence), so the status/capability pair alone
+// cannot close the write gate. Like the ended/restartRequired sessions, notes
+// stay readable but must not accept edits until an explicit resume.
+test("the recovery fence closes the shared-notes write gate on a live idle session", () => {
+  const base = {
+    capabilities: { sharedNotes: true },
+    status: { type: "idle" },
+  } as unknown as ThreadModel;
+  expect(canWriteHumanNote(base)).toBe(true);
+  expect(canWriteHumanNote({ ...base, resumeRequired: true })).toBe(false);
 });

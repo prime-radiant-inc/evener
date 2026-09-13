@@ -62,6 +62,13 @@ type hubSessionCapabilities struct {
 	// sessions: notes stay readable on ended sessions and only the
 	// edit/remove commands gate on it.
 	SharedNotes bool
+	// ResumeRequired carries the hub's recovery fence
+	// (thread.Evener.ResumeRequired) beside the set. It is not a capability but
+	// a fence: the session is live and keeps SharedNotes so its saved notes stay
+	// readable, yet the hub refuses every mutation until an explicit
+	// thread/resume. The shared-notes write gate reads it from here so the
+	// command, palette, help, and drawer surfaces all see the same fence.
+	ResumeRequired bool
 }
 
 type hubSessionDetail struct {
@@ -262,6 +269,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		ChangeVisionModel: caps.ChangeVisionModel,
 		Queue:             caps.Queue,
 		SharedNotes:       caps.SharedNotes,
+		ResumeRequired:    thread.Evener.ResumeRequired,
 	}
 	if !node.Live {
 		capabilities.Send = false

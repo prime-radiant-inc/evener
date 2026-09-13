@@ -227,6 +227,14 @@ export interface ThreadModel {
   instanceId?: string;
   name: string;
   status: ThreadStatus;
+  // ResumeRequired is the hub's recovery fence, carried straight from
+  // appwire.EvenerThread.ResumeRequired on the snapshot: recovery stopped this
+  // session and every action waits for an explicit thread/resume, while saved
+  // transcripts and shared notes stay readable. The SharedNotes capability is
+  // deliberately retained while fenced, so this flag is the only model signal
+  // separating a fenced live+idle session from an editable one. Snapshot-only:
+  // an explicit resume re-hydrates the model with the flag cleared.
+  resumeRequired?: boolean;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;

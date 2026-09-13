@@ -71,6 +71,15 @@ test("hydrateThread defaults notes/urls when thread.evener omits them (old daemo
   expect(model.sessionUrls).toEqual([]);
 });
 
+// The notes write gate keys off the recovery fence, which rides the snapshot
+// as thread.evener.resumeRequired (absent means not fenced). Without this the
+// model cannot tell a fenced live+idle session from an editable one, since the
+// SharedNotes capability is deliberately retained for reading.
+test("hydrateThread carries the recovery fence from thread.evener.resumeRequired", () => {
+  expect(testHydrate().resumeRequired).toBe(false);
+  expect(testHydrate({ evener: { resumeRequired: true } }).resumeRequired).toBe(true);
+});
+
 test("evener/notes/updated replaces both notes and stamps lastFrameAt", () => {
   const initial = testHydrate({ evener: { humanNote: "old human", agentNote: "old agent" } });
   const updated = applyNotification(
