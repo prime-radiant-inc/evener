@@ -19,10 +19,19 @@ type RegistryLoader func(extra ...registry.Option) (*registry.Registry, *credent
 // error for the diagnostics, and refuses writes until a reload succeeds
 // (spec §10, §14.1).
 type ProviderRegistry struct {
-	load    RegistryLoader
-	mu      sync.RWMutex
-	current *registry.Registry
-	loadErr error
+	load RegistryLoader
+	mu   sync.RWMutex
+	// reloadMu serializes whole reloads - the load and the commit that follows
+	// it. Two reloads that load concurrently return in an order nothing
+	// controls, and one that read first can commit last, leaving the holder on
+	// the older view; mu alone does not order them, because a commit that waits
+	// on it still writes whatever that reload read. Callers do overlap (the auth
+	// controller's reload holds only the shared side of its credential lock, so
+	// two credential writes can reach this at once). Reads stay on mu, so Get is
+	// never held up for the length of a load.
+	reloadMu sync.Mutex
+	current  *registry.Registry
+	loadErr  error
 }
 
 // NewProviderRegistry returns a holder that loads through load. Nothing is
@@ -36,6 +45,8 @@ func NewProviderRegistry(load RegistryLoader) *ProviderRegistry {
 // launch, and the error is what refuses instance writes until the file is
 // fixed.
 func (h *ProviderRegistry) Reload() error {
+	h.reloadMu.Lock()
+	defer h.reloadMu.Unlock()
 	r, _, err := h.load()
 	if err != nil {
 		fallback, _, ferr := h.load(registry.WithNoUserLayer())

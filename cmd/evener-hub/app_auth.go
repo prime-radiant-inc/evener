@@ -480,6 +480,17 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		if c.instanceUsesGCPADC(name) {
 			return appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
 		}
+		// A name that is neither keeps the key where nothing reads it: the pane
+		// only offers this write for a row its listing had, so a name that no
+		// longer resolves is one an instance was removed from since - and the
+		// key would wait under it for whatever instance is authored under that
+		// name next (see Remove). Asking here, under the credential lock, is
+		// what makes the answer describe the state the write lands in: a removal
+		// holds that lock exclusively across its cleanup and its reload, so one
+		// cannot be in flight while the name is checked.
+		if !c.nameIsConnectable(name) {
+			return appwire.InvalidParams(fmt.Sprintf("%q is not a configured provider or instance: nothing reads a key stored under it", name))
+		}
 		return c.setCredential(name, params.Value)
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
@@ -702,6 +713,23 @@ func (c *hubAuthController) instanceAuthScheme(name string) (string, bool) {
 		return p.Transport.Auth, true
 	}
 	return "", false
+}
+
+// nameIsConnectable reports whether name is something this hub authenticates
+// with: an instance the registry holds or a curated implicit provider it
+// declares, the pair instanceAuthScheme answers for (spec §5.2, §11.3). A
+// credential write asks before it stores a secret, so a name that has stopped
+// meaning anything - an instance removed since the pane listed it - cannot take
+// a key nothing reads and hand it to whatever instance is authored under that
+// name next. Without a registry there is no view to answer from (Status and
+// List call the same configuration unsupported), so the write is not refused
+// on its account.
+func (c *hubAuthController) nameIsConnectable(name string) bool {
+	if c.registry() == nil {
+		return true
+	}
+	_, ok := c.instanceAuthScheme(name)
+	return ok
 }
 
 // instanceIsCodex reports whether name authenticates through the Codex

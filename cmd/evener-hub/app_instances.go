@@ -801,6 +801,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config")
 		}
+		// The credentials go back before the reload below, because a load
+		// resolves each instance's credential from the stores: one that runs
+		// while this call's deletions are still missing caches "none" as the
+		// source of the instance the caller still has, and putting the key back
+		// afterwards does not rebuild that view. The pane would then show a
+		// stored key beside no active source, and the next launch would be
+		// refused for missing credentials, until some later write happened to
+		// reload again.
+		restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
 		// The file this rollback put back is the pre-removal one, and the reload
 		// that just failed read the file this call wrote - so if the config was
 		// already unresolvable before the removal (Remove's own guard reads the
@@ -815,12 +825,9 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// told only that the removal "was rolled back" would read the hub as
 		// healthy.
 		if reloadErr := c.reg.Reload(); reloadErr != nil {
-			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-				fmt.Errorf("removing %q was rolled back, but the config it restored does not load either, so instance writes stay refused until it does (%w)", name, reloadErr),
-				"the instance is still configured")
+			return fmt.Errorf("%w; the config it restored does not load either, so instance writes stay refused until it does (%w)", restored, reloadErr)
 		}
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
-			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
+		return restored
 	}
 	return nil
 }

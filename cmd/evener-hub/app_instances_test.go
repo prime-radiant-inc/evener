@@ -943,6 +943,100 @@ func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
 	}
 }
 
+// The test above covers a rollback file that does not load either. This one
+// covers the branch where it does: the removal's reload fails, the rollback
+// lands, and the reload that follows it succeeds. The file the rollback puts
+// back is the pre-removal one, and the removal's own failed load read a file
+// that was not - which the real ones can only differ by if an external writer
+// replaced providers.toml between Remove's two reads (before and l are
+// adjacent statements), so the failure is injected at the loader instead: that
+// is what makes the ordering deterministic, and the error is still the real
+// registry error a load of an unresolvable layer produces (#711).
+func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	// A bearer base, so the stored key is the credential this instance
+	// resolves: the Codex transport reads an OAuth record and ignores the
+	// store (spec §5.1).
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// The layer the removal's reload is made to fail on: an entry that parses
+	// but cannot resolve an endpoint.
+	brokenPath := filepath.Join(filepath.Dir(f.tomlPath), "broken.toml")
+	if err := os.WriteFile(brokenPath, []byte("[providers.standalone]\nprotocol = \"openai-chat\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	var loads int
+	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		loads++
+		// Credentials from disk, the way cmdutil.LoadRegistry loads them: the
+		// registry then resolves each instance's credential from
+		// credentials.toml as it stood at that moment. The fixture's shared
+		// in-memory store would hide the order this test is about - the store
+		// object the controller restores into is not the one a reload builds
+		// its registry over.
+		store, err := credentials.LoadStore(f.credsPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		path := f.tomlPath
+		if loads == 2 {
+			path = brokenPath
+		}
+		opts := append(
+			testProbeRegistryOptions(f.stateDir, store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(path),
+		)
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, store, err
+	}
+	replacement := hubcore.NewProviderRegistry(loadFn)
+	f.ctl.reg = replacement
+	f.ctl.auth.reg = replacement
+	// Load 1 primes it over the clean file; load 2 is the removal's reload,
+	// load 3 is the implicit-only fallback that failure takes, and load 4 is
+	// the rollback's reload.
+	if err := replacement.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the reload failure")
+	}
+	if !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the reload rollback", err)
+	}
+	// Pins the branch: this rollback's reload succeeded, so the failure must not
+	// claim a config that does not load.
+	if strings.Contains(err.Error(), "does not load either") {
+		t.Fatalf("Remove = %v, want a rollback whose reload succeeded", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the rollback to have restored it", v)
+	}
+	// A reload resolves each instance's credential from the stores, so the key
+	// has to be back before it runs: this is what a launch reads
+	// (spawn.go's validateProviderCredentials) and what the pane shows as the
+	// active source. Reloading first caches "none" here, and restoring the key
+	// afterwards does not rebuild the view.
+	inst, ok := replacement.Get().Instance("work")
+	if !ok {
+		t.Fatal("the reloaded registry has no work instance")
+	}
+	if inst.CredentialSource != "store" {
+		t.Fatalf("the restored instance resolves CredentialSource = %q, want store", inst.CredentialSource)
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.ActiveSource != "store" || !got.HasStoredFile {
+		t.Fatalf("list row = activeSource %q hasStoredFile %v, want store/true", got.ActiveSource, got.HasStoredFile)
+	}
+}
+
 // The rollback write is itself a write, so it can fail too, and then there is
 // nothing left that can put the entry back while the file still refuses to
 // load. The removal stands, but the credentials the cleanup deleted belong to
@@ -1202,6 +1296,52 @@ func TestInstances_RemoveClearsACredentialItsRacerWrote(t *testing.T) {
 	}
 	if _, still := f.ctl.reg.Get().Instance("work"); still {
 		t.Fatal("the removed instance still resolves")
+	}
+}
+
+// A key is only worth storing under a name something reads. The pane offers
+// that write for the rows its listing had, so a name that is neither an
+// instance nor a curated provider is one an instance was removed from since -
+// and storing the key there would leave it under a name nothing curates until
+// a later instance of that name inherited it, which is the orphan credential
+// the removal's own cleanup exists to prevent.
+func TestInstances_ApiKeySetRefusesAKeyForARemovedInstance(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-orphan"})
+
+	if err == nil {
+		t.Fatal("ApiKeySet stored a key under a name no instance or provider has")
+	}
+	// The name the caller sent is theirs to fix, like every other refusal of an
+	// unknown instance (#717/#748).
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("ApiKeySet = %v, want an InvalidParams wire error", err)
+	}
+	if v, ok := f.store.Get("work"); ok {
+		t.Fatalf("stored key = %q, want nothing stored for a name nothing curates", v)
+	}
+	// The hazard the refusal removes: the name comes back as an instance and
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.ActiveSource != "none" || got.HasStoredFile {
+		t.Fatalf("recreated instance = activeSource %q hasStoredFile %v, want none/false", got.ActiveSource, got.HasStoredFile)
+	}
+	// Positive control: the names the pane does offer still take a key - a
+	// curated implicit provider here, an authored instance above.
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-ant-live"}); err != nil {
+		t.Fatalf("ApiKeySet(anthropic): %v", err)
+	}
+	if v, _ := f.store.Get("anthropic"); v != "sk-ant-live" {
+		t.Fatalf("stored key for anthropic = %q, want it stored", v)
 	}
 }
 
