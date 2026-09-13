@@ -84,6 +84,29 @@ func TestEstimateMessagesInputTokens_BillsReplayedEncryptedBlob(t *testing.T) {
 
 // Redacted thinking replays only its text payload: anthropic/request.go emits
 // "data": Text and never the signature, so a signature must not be billed.
+// An OpenAI-compatible encrypted reasoning_details array is replayed together
+// with the separately parsed text, so the text must be billed alongside the
+// blob; ID and Summary never ride a compat blob.
+func TestEstimateMessagesInputTokens_CompatEncryptedBlobBillsItsText(t *testing.T) {
+	const blob = `[{"type":"reasoning.text","text":"","signature":"sig-1"}]`
+	plain := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: blob}},
+	}}}
+	withText := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: blob, Text: strings.Repeat("t", 400)}},
+	}}}
+	a := EstimateMessagesInputTokens(plain).Tokens
+	if b := EstimateMessagesInputTokens(withText).Tokens; b <= a {
+		t.Fatalf("compat blob with replayed text = %d, want > %d", b, a)
+	}
+	extra := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: blob, ID: strings.Repeat("i", 400), Summary: []string{strings.Repeat("s", 400)}}},
+	}}}
+	if c := EstimateMessagesInputTokens(extra).Tokens; c != a {
+		t.Fatalf("compat blob ID/Summary changed the estimate: %d vs %d", c, a)
+	}
+}
+
 func TestEstimateMessagesInputTokens_RedactedThinkingBillsTextOnly(t *testing.T) {
 	withSig := []Message{{Role: RoleAssistant, Content: []ContentPart{
 		{Kind: ContentRedThinking, Thinking: &ThinkingData{Text: "redacted", Signature: strings.Repeat("s", 400)}},

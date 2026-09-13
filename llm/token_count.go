@@ -249,6 +249,15 @@ func thinkingReplayChars(p ContentPart) int {
 		return len(t.Text)
 	}
 	if t.EncryptedContent != "" {
+		// An OpenAI-compatible encrypted reasoning_details array is replayed by
+		// the chat adapter together with the separately parsed text
+		// (chatcompletions/messages.go), and the Anthropic adapter replays the
+		// text while ignoring the blob. The opaque OpenAI Responses blob is the
+		// other shape: it replays with its summary and id and puts no text on
+		// the wire, so only that shape bills them.
+		if IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
+			return len(t.EncryptedContent) + len(t.Text)
+		}
 		chars := len(t.EncryptedContent) + len(t.ID)
 		for _, s := range t.Summary {
 			chars += len(s)
