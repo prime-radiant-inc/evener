@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -271,6 +272,22 @@ func TestFailureFingerprint_MeaningfulDefaultsArePreserved(t *testing.T) {
 	// Empty and absent arguments are the same call.
 	if fp("read_transcript", ``) != fp("read_transcript", `{}`) {
 		t.Errorf("empty and {} must fingerprint the same")
+	}
+}
+
+// Canonicalization must not parse a body that ValidateRawArguments rejects:
+// the size and UTF-8 limits are the pre-parse boundary, so an oversized or
+// non-UTF-8 body falls back to the byte-exact signature rather than being
+// decoded and re-encoded first.
+func TestFailureFingerprint_RejectedRawArgumentsFallBackToExact(t *testing.T) {
+	oversized := append([]byte(`{"patch":"`), bytes.Repeat([]byte("a"), MaxToolArgumentBytes)...)
+	oversized = append(oversized, []byte(`"}`)...)
+	if got, want := fp("write_file", string(oversized)), exactSignature("write_file", oversized); got != want {
+		t.Errorf("oversized fingerprint = %q, want the exact signature %q", got, want)
+	}
+	invalid := []byte{'{', '"', 'x', '"', ':', '"', 0xff, '"', '}'}
+	if got, want := fp("write_file", string(invalid)), exactSignature("write_file", invalid); got != want {
+		t.Errorf("non-UTF-8 fingerprint = %q, want the exact signature %q", got, want)
 	}
 }
 

@@ -104,6 +104,13 @@ func failureFingerprint(name string, args []byte) string {
 // args is not a single well-formed JSON value, in which case the caller must
 // fall back to the exact signature.
 func canonicalArgumentBytes(name string, args []byte) ([]byte, bool) {
+	// The size and UTF-8 limits are the pre-parse boundary: a body the registry
+	// would reject must not be decoded and re-encoded here first. Falling back
+	// to the exact signature handles it as opaque bytes, which is both cheaper
+	// and what the dispatch path will do with it anyway.
+	if err := ValidateRawArguments(args); err != nil {
+		return nil, false
+	}
 	if len(bytes.TrimSpace(args)) == 0 {
 		return []byte("{}"), true
 	}
