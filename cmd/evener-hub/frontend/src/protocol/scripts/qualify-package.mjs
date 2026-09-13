@@ -39,7 +39,10 @@ async function qualify() {
     "transport",
     "types.gen",
     "askAnswers",
+    "askShared",
+    "deriveAskQuestions",
     "attachmentMarkers",
+    "composerInput",
     "activityData",
     "activityList",
     "activityMerge",
@@ -55,6 +58,7 @@ async function qualify() {
     "submitRouting",
     "displayFormat",
     "toolCallText",
+    "catalogCommands",
   ];
   // Every runtime export of the package root. The root's generated consumer
   // programs are built from this one list, so an export the entry point stops
@@ -80,7 +84,12 @@ async function qualify() {
     "sessionActionHeadline",
     "rpcURLFromLocation",
     "composeAskAnswers",
+    "parseAskUserQuestions",
+    "answeredAskUserSuffix",
+    "liveAskQuestions",
     "translateAttachmentMarkers",
+    "buildInput",
+    "buildComposerInput",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
     "STEERING_KINDS",
@@ -149,6 +158,8 @@ async function qualify() {
     "parseJSONObject",
     "trailingBracketFooter",
     "str",
+    "slashCommandInvocation",
+    "visibleCatalogCommands",
   ];
   // One exported type per shipped module that declares any, so the declaration
   // check covers each module's packed .d.ts and not just its runtime half.
@@ -157,7 +168,10 @@ async function qualify() {
     "AppwireClientLike",
     "WebSocketLike",
     "AskAnswerItem",
+    "AskUserQuestion",
+    "AskQuestionRef",
     "MarkerAttachment",
+    "InputAttachment",
     "ActivityNodeLike",
     "ActivityTree",
     "ActivityState",
@@ -178,7 +192,21 @@ async function qualify() {
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
+const askItem = {
+  id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
+  argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
+};
+assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
+assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
+assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
+assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
+assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
+assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
+  { type: "text", text: "(attached image 1: shot.png)go" },
+  { type: "image", mediaType: "image/png", data: "AA", name: "shot.png" },
+]);
 assert.equal(new client.WireError("nope", -32000).code, -32000);
 assert.equal(client.errorText(new Error("boom")), "boom");
 assert.equal(client.errorKind(new Error("boom")), "unknown");
@@ -232,6 +260,8 @@ assert.equal(client.formatElapsed(65000), "1m05s");
 assert.equal(client.firstLine("\\n  hello  \\n", 20), "hello");
 assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest: "rest" });
 assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
+assert.equal(client.slashCommandInvocation({ name: "plan", source: "plugin", pluginName: "acme" }), "/acme:plan");
+assert.deepEqual(client.visibleCatalogCommands([{ name: "plan", source: "plugin", pluginName: "acme" }], new Set()), []);
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 assert.equal(client.clip("hello", 3), "hel\u2026");

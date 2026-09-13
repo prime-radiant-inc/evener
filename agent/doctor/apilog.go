@@ -58,6 +58,8 @@ type APICallRow struct {
 	InputTokens        *int                       `json:"input_tokens,omitempty"`
 	OutputTokens       *int                       `json:"output_tokens,omitempty"`
 	CacheRead          *int                       `json:"cache_read_tokens,omitempty"`
+	CacheWrite         *int                       `json:"cache_write_tokens,omitempty"`
+	CacheWrite1h       *int                       `json:"cache_write_1h_tokens,omitempty"`
 	UncachedInput      *int                       `json:"uncached_input_tokens,omitempty"`
 	FinishReason       string                     `json:"finish_reason,omitempty"`
 	TextLength         *int                       `json:"text_length,omitempty"`
@@ -108,6 +110,8 @@ type APILogTotals struct {
 	InputTokens                  *int                                     `json:"input_tokens,omitempty"`
 	OutputTokens                 *int                                     `json:"output_tokens,omitempty"`
 	CacheReadTokens              *int                                     `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens             *int                                     `json:"cache_write_tokens,omitempty"`
+	CacheWrite1hTokens           *int                                     `json:"cache_write_1h_tokens,omitempty"`
 	TotalTokens                  *int                                     `json:"total_tokens,omitempty"`
 	AvgLatencyMs                 int64                                    `json:"avg_latency_ms"`
 	ContinuationByEndpointFamily map[string]ContinuationHistoryModeCounts `json:"continuation_by_endpoint_family,omitempty"`
@@ -172,7 +176,7 @@ func apiLog(stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode)
 	var retainedSettlements apiGroupSettlementRetention
 	partialTail := false
 	var latencySum int64
-	var inputTokens, outputTokens, cacheReadTokens, totalTokens optionalIntSum
+	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, totalTokens optionalIntSum
 	for {
 		record, decodeErr := decoder.Next()
 		if errors.Is(decodeErr, io.EOF) {
@@ -192,6 +196,8 @@ func apiLog(stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode)
 			inputTokens.add(row.InputTokens)
 			outputTokens.add(row.OutputTokens)
 			cacheReadTokens.add(row.CacheRead)
+			cacheWriteTokens.add(row.CacheWrite)
+			cacheWrite1hTokens.add(row.CacheWrite1h)
 			if record.Response != nil {
 				totalTokens.add(record.Response.Usage.TotalTokens)
 			}
@@ -219,6 +225,8 @@ func apiLog(stateBase, selector string, opts APILogOpts, mode apilog.DecodeMode)
 	res.Totals.InputTokens = inputTokens.result()
 	res.Totals.OutputTokens = outputTokens.result()
 	res.Totals.CacheReadTokens = cacheReadTokens.result()
+	res.Totals.CacheWriteTokens = cacheWriteTokens.result()
+	res.Totals.CacheWrite1hTokens = cacheWrite1hTokens.result()
 	res.Totals.TotalTokens = totalTokens.result()
 	if res.Totals.Calls > 0 {
 		res.Totals.AvgLatencyMs = latencySum / int64(res.Totals.Calls)
@@ -772,6 +780,8 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 		row.InputTokens = attempt.Response.Usage.InputTokens
 		row.OutputTokens = attempt.Response.Usage.OutputTokens
 		row.CacheRead = attempt.Response.Usage.CacheReadTokens
+		row.CacheWrite = attempt.Response.Usage.CacheWriteTokens
+		row.CacheWrite1h = attempt.Response.Usage.CacheWrite1hTokens
 		row.Empty = attempt.Outcome == apilog.AttemptSuccess &&
 			row.TextLength != nil && *row.TextLength == 0 &&
 			row.ToolCalls != nil && *row.ToolCalls == 0

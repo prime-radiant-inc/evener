@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
 import { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
+import type { ItemModel, ThreadModel, TurnModel } from "./model";
 
 // Direct unit coverage for the shared ask_user parsing helper (extracted
 // from transcript/tools/askUser.tsx per the wave-5 T4 manifest so the
