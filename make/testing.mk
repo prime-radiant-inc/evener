@@ -151,12 +151,18 @@ vet:
 ##   per-test ceiling.
 ## trigger: Local/on-demand; not required CI — deliberately not part of make
 ##   merge-approval-gate, since measuring durations means a second full test
-##   run. CHECK=1 enforces; bare invocation only measures and prints.
+##   run. CHECK=1 enforces the ratios; bare invocation only measures and
+##   prints them, except for a broken measurement, which is nonzero either way.
 ## requires: Deterministic; no provider calls. Reuses gate-surface-lib.sh, so
 ##   it measures the same surface ROOT_FULL=1 make test proves.
-## fails-when: Under CHECK=1 in a CI-shaped environment, a package over 1.5x
-##   its budget or any per-test ceiling breach is nonzero; a missing or
-##   empty budget file always exits zero.
+## fails-when: A broken measurement — go list or go test exiting nonzero, or a
+##   go list package with no terminal event in the stream — is nonzero in every
+##   mode, and --bless refuses it. A bless writes every package it measured and
+##   preserves the rest of the file, so a narrowed run refreshes part of the
+##   file instead of deleting the entries it did not measure. Under CHECK=1 in a
+##   CI-shaped environment a package over 1.5x its budget or any per-test
+##   ceiling breach is nonzero too; a missing or empty budget file always
+##   exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
 

@@ -19,8 +19,8 @@
 //     convention.
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import type { AppwireClientLike } from "../protocol/clientLike";
 import { errorText } from "../protocol/errors";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
   LaunchConfigLayer,
