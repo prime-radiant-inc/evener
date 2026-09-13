@@ -853,7 +853,10 @@ run_module() {
 		# nothing, because the two are independent and the list is not read
 		# until the shards have finished.
 		subpkg_list="$(package_list_path "$m")"
-		run_bounded_package_list "$m" "$subpkg_list" || return 1
+		# The status is the enumeration's own, as on every other module: a `go list`
+	# that failed on the package list says so with its exit code, and flattening
+	# it to 1 threw that away here alone.
+	run_bounded_package_list "$m" "$subpkg_list" || return $?
 		if [ "$AGENT_SHARDS" -eq 0 ]; then
 			# The unsharded mode, which is what make test-race uses. It used to
 			# fall through to `go test ./...`, whose own package discovery reads

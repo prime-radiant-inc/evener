@@ -282,11 +282,11 @@ fi
 # spaces means the token is surrounded by spaces even when it ends a line or
 # ends the output, which a bare *" version X "* pattern would reject.
 reported=" $(printf '%s' "$installed" | tr -s '[:space:]' ' ') "
-case "$reported" in
-*" version $version "*) ;;
-*)
+# The pin comes out of .tool-versions, so it is a string this script did not
+# choose, and a `case` pattern would let a `*` or a `?` in it match versions it
+# does not name. Quoting it inside [[ ]] compares the characters themselves.
+if [[ "$reported" != *" version $version "* ]]; then
 	printf 'install-golangci-lint.sh: %s/golangci-lint reports "%s", not the pinned v%s from %s\n' \
 		"$bindir" "$installed" "$version" "$repo_root/.tool-versions" >&2
 	exit 1
-	;;
-esac
+fi
