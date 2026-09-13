@@ -772,6 +772,14 @@ _(no fields)_
 | `writesRefused` | `bool` | yes |  |
 
 
+### `InstanceModelEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `disabled` | `bool` | yes |  |
+
+
 ### `InstanceRefreshModelsParams`
 
 | Field | Go type | Omitempty | Embedded |

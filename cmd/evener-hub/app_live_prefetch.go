@@ -20,21 +20,34 @@ const livePrefetchInterval = liveModelsTTL
 // same per-instance budget launch-check and the model picker use.
 const instanceLiveListTimeout = 8 * time.Second
 
-// fetchInstanceLive fetches one instance's live listing into reg, so later
-// InstanceModels calls include the live ids. It is the shared core behind
-// the manual refresh RPC and the background prefetch below.
-func fetchInstanceLive(ctx context.Context, reg *registry.Registry, name string) error {
-	return fetchInstanceLiveWith(ctx, cmdutil.NewRegistryClient(reg, ""), name)
+// fetchInstanceLive fetches one instance's live listing into the holder,
+// so later InstanceModels calls include the live ids. It is the shared
+// core behind the manual refresh RPC and the background prefetch below.
+// The fetch runs against the holder's current registry, then re-applies
+// the listing's resolved ids to whatever the holder holds now: a Reload
+// landing mid-fetch swaps in a fresh object (whose carryLive only knows
+// the before snapshot), and without the re-apply the successful fetch
+// would be silently lost on the detached registry.
+func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, name string) error {
+	reg, gen := holder.Current()
+	if reg == nil {
+		return nil
+	}
+	listing, err := fetchInstanceLiveWith(ctx, cmdutil.NewRegistryClient(reg, ""), name)
+	if err != nil {
+		return err
+	}
+	holder.ReapplyLive(gen, name, listing.Models)
+	return nil
 }
 
 // fetchInstanceLiveWith is fetchInstanceLive against a caller-supplied
 // client, so one prefetch pass shares a single client instead of building
 // one per instance.
-func fetchInstanceLiveWith(ctx context.Context, client *llm.Client, name string) error {
+func fetchInstanceLiveWith(ctx context.Context, client *llm.Client, name string) (llm.ModelListing, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, instanceLiveListTimeout)
 	defer cancel()
-	_, err := client.Models(fetchCtx, name)
-	return err
+	return client.Models(fetchCtx, name)
 }
 
 // visibleModelIDs snapshots an instance's currently visible model ids: the
@@ -55,7 +68,7 @@ func visibleModelIDs(reg *registry.Registry, name string) []string {
 // at least one instance's visible listing differs from its before snapshot,
 // so the caller broadcasts once per pass instead of per row.
 func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry, changed func()) {
-	reg := holder.Get()
+	reg, gen := holder.Current()
 	if reg == nil {
 		return
 	}
@@ -69,10 +82,12 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 		}
 		before := visibleModelIDs(reg, inst.Name)
 		wg.Go(func() {
-			if err := fetchInstanceLiveWith(ctx, client, inst.Name); err != nil {
+			listing, err := fetchInstanceLiveWith(ctx, client, inst.Name)
+			if err != nil {
 				return
 			}
-			if !slices.Equal(before, visibleModelIDs(reg, inst.Name)) {
+			holder.ReapplyLive(gen, inst.Name, listing.Models)
+			if !slices.Equal(before, visibleModelIDs(holder.Get(), inst.Name)) {
 				mu.Lock()
 				anyChanged = true
 				mu.Unlock()

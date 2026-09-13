@@ -71,19 +71,22 @@ describe("model toggles", () => {
   });
 
   test("models section shows the refresh button even when the instance carries no inventory", () => {
-    credentialsStore.setState({ instances: [{ ...entry(), models: undefined }], availableProviders: [] });
-    render(<InstanceSheet name="work" {...handlers()} />);
-    expect(screen.getByText("Models")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Refresh live models" })).toBeTruthy();
-    expect(screen.queryByRole("switch")).toBeNull();
-  });
-
-  test("refresh button renders even when the instance carries no inventory", () => {
     const h = handlers();
     credentialsStore.setState({ instances: [{ ...entry(), models: undefined }], availableProviders: [] });
     render(<InstanceSheet name="work" {...h} />);
     expect(screen.getByText("Models")).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
     const button = screen.getByRole("button", { name: "Refresh live models" });
+    fireEvent.click(button);
+    expect(h.onRefreshModels).toHaveBeenCalledTimes(1);
+  });
+
+  test("refresh button stays enabled when writes are refused: refresh is a read", () => {
+    const h = handlers();
+    credentialsStore.setState({ instances: [{ ...entry(), models: undefined }], availableProviders: [] });
+    render(<InstanceSheet name="work" {...h} writesRefused />);
+    const button = screen.getByRole("button", { name: "Refresh live models" });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(button);
     expect(h.onRefreshModels).toHaveBeenCalledTimes(1);
   });

@@ -70,6 +70,23 @@ func TestResolve_AliasOfDisabledTargetIsBlocked(t *testing.T) {
 	}
 }
 
+func TestResolve_CrossProviderAliasOfDisabledTargetIsBlocked(t *testing.T) {
+	// A cross-provider alias ("provider/id") must inherit its target's
+	// Disabled verdict from the target's instance record, not the
+	// curated-only record. The verdict's own repro:
+	// [providers.mine] base=openai-codex + openai/gpt-5.6 disabled.
+	r := fixtureLoad(t, nil, "[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n[providers.openai.models.\"gpt-5.6\"]\ndisabled = true\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n")
+	if _, err := r.Resolve("openai/gpt-5.6"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve target = %v, want ErrModelDisabled", err)
+	}
+	if _, err := r.Resolve("mine/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve cross-provider alias of disabled = %v, want ErrModelDisabled", err)
+	}
+	if got := r.FindModel("house-model"); len(got) != 0 {
+		t.Fatalf("FindModel(house-model) = %v, want no serving instance", got)
+	}
+}
+
 func TestResolve_AliasIgnoresOwnDisabledFlag(t *testing.T) {
 	// Lockstep: the alias follows its target. Its own Disabled never
 	// applies, so an alias-own disable with an enabled target resolves.

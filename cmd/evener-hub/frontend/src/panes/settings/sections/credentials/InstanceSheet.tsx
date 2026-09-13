@@ -477,7 +477,10 @@ export function InstanceSheet({
             <>
               <h3>Models</h3>
               <div className={CLASS.fullRow}>
-                <Button variant="quiet" onClick={onRefreshModels} disabled={busy || modelsRefreshing || writesRefused}>
+                {/* Refresh is a read: the RPC deliberately skips
+                    refuseWhenBroken, so it stays available while
+                    providers.toml cannot be written. */}
+                <Button variant="quiet" onClick={onRefreshModels} disabled={busy || modelsRefreshing}>
                   {modelsRefreshing ? "Refreshing live models…" : "Refresh live models"}
                 </Button>
               </div>

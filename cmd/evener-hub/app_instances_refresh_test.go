@@ -56,6 +56,34 @@ func TestInstances_RefreshModelsFetchesLiveIDs(t *testing.T) {
 	}
 }
 
+func TestInstances_RefreshModelsSurvivesConcurrentReload(t *testing.T) {
+	tomlPath := refreshGateway(t, `{"data":[{"id":"gpt-live"}]}`)
+	dir := filepath.Dir(tomlPath)
+	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// A reload landing between the fetch and its apply must not strand
+	// the listing on the detached registry: the refresh re-applies to
+	// whatever the holder holds now.
+	resp, err := ctl.RefreshModels(context.Background(), appwire.InstanceRefreshModelsParams{Name: "gw"})
+	if err != nil {
+		t.Fatalf("RefreshModels: %v", err)
+	}
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	got := entry(t, resp, "gw")
+	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
+		t.Fatalf("entry models = %+v, want live gpt-live", got.Models)
+	}
+	after := entry(t, ctl.List(), "gw")
+	if !slices.ContainsFunc(after.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "gpt-live" }) {
+		t.Fatalf("entry models after reload = %+v, want live gpt-live carried over", after.Models)
+	}
+}
+
 func TestInstances_RefreshModelsFailureKeepsCatalog(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")

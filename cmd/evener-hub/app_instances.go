@@ -757,7 +757,7 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	if _, ok := reg.Instance(name); !ok {
 		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	if err := fetchInstanceLive(ctx, reg, name); err != nil {
+	if err := fetchInstanceLive(ctx, c.reg, name); err != nil {
 		return appwire.InstanceListResponse{}, err
 	}
 	return c.List(), nil

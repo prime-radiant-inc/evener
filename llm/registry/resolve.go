@@ -578,21 +578,24 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 }
 
 // resolveAliasTarget resolves an alias target through the same machinery:
-// a same-provider row on rec, else "provider-id/id" on the curated record.
-// aliasTargetRow applies the alias-target acceptance rules both resolve
-// paths share: an exact non-alias row on the record, else a
-// provider-id/id reference against the curated registry. A glob pattern
-// never names a target, on either side of the slash.
+// a same-provider row on rec, else "provider-id/id" on the target's
+// instance record when one exists (so user-layer flags like Disabled
+// apply), else the curated record. aliasTargetRow applies the
+// alias-target acceptance rules both resolve paths share: an exact
+// non-alias row on the record, else a provider-id/id reference. A glob
+// pattern never names a target, on either side of the slash.
 func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string, bool) {
 	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
 		return rec, aliasOf, true
 	}
 	if i := strings.Index(aliasOf, "/"); i > 0 {
-		if prov, ok := r.curated[aliasOf[:i]]; ok {
-			if id := aliasOf[i+1:]; !isGlob(id) {
-				if m, ok := prov.head.Models[id]; ok && m.AliasOf == "" {
-					return prov, id, true
-				}
+		id := aliasOf[i+1:]
+		if isGlob(aliasOf[:i]) || isGlob(id) {
+			return nil, "", false
+		}
+		if target, ok := r.recordFor(aliasOf[:i]); ok {
+			if m, ok := target.head.Models[id]; ok && m.AliasOf == "" {
+				return target, id, true
 			}
 		}
 	}
@@ -955,8 +958,9 @@ func (r *Registry) AliasTarget(instance, model string) (Ref, error) {
 }
 
 // recordMayDisable reports whether any layer of rec or the top-level glob
-// rows set Disabled at all. Browse paths check this once before replaying
-// per row: with no flag anywhere every answer is false.
+// rows set Disabled at all — or any alias row names a cross-provider
+// target that may itself be disabled. Browse paths check this once before
+// replaying per row: with no flag anywhere every answer is false.
 func (r *Registry) recordMayDisable(rec *record) bool {
 	for _, layer := range rec.layers {
 		for _, m := range layer.rows {
@@ -968,6 +972,16 @@ func (r *Registry) recordMayDisable(rec *record) bool {
 	for _, rows := range r.topGlobs {
 		for _, m := range rows {
 			if m.Disabled != nil {
+				return true
+			}
+		}
+	}
+	for _, m := range rec.head.Models {
+		if m.AliasOf == "" {
+			continue
+		}
+		if i := strings.Index(m.AliasOf, "/"); i > 0 {
+			if target, ok := r.recordFor(m.AliasOf[:i]); ok && target != rec && r.recordMayDisable(target) {
 				return true
 			}
 		}

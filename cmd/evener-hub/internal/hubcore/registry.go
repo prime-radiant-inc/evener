@@ -23,6 +23,12 @@ type ProviderRegistry struct {
 	mu      sync.RWMutex
 	current *registry.Registry
 	loadErr error
+	// generation counts successful holder swaps: every Reload that
+	// installs a new current bumps it. Live fetches capture the holder
+	// alongside the registry pointer, so a fetch that returns against a
+	// detached registry can re-apply its listing to the current one
+	// instead of losing it.
+	generation uint64
 }
 
 // NewProviderRegistry returns a holder that loads through load. Nothing is
@@ -48,6 +54,7 @@ func (h *ProviderRegistry) Reload() error {
 		if ferr == nil {
 			carryLive(old, fallback)
 			h.current = fallback
+			h.generation++
 		}
 		return err
 	}
@@ -55,6 +62,7 @@ func (h *ProviderRegistry) Reload() error {
 	defer h.mu.Unlock()
 	carryLive(h.current, r)
 	h.current, h.loadErr = r, nil
+	h.generation++
 	return nil
 }
 
@@ -74,6 +82,35 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.current
+}
+
+// Current returns the held registry with its generation: a live fetch
+// captures both before the request and hands them to ReapplyLive after,
+// so a concurrent Reload cannot strand the listing on a detached object.
+func (h *ProviderRegistry) Current() (*registry.Registry, uint64) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.current, h.generation
+}
+
+// ReapplyLive applies rows fetched against generation gen to the current
+// registry: when no Reload landed in between it is the same object the
+// fetch already wrote, and ApplyLive re-filters idempotently; when a
+// reload did land, this carries the listing forward onto the fresh
+// object. Rows are the listing's resolved ids; ApplyLive keeps only
+// advertised facts per id, so the round trip holds exactly what the
+// holder would have kept had the fetch run against the fresh object.
+func (h *ProviderRegistry) ReapplyLive(gen uint64, instance string, rows []registry.Resolved) {
+	models := make([]registry.Model, 0, len(rows))
+	for _, row := range rows {
+		models = append(models, registry.Model{ID: row.ModelID})
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.current == nil {
+		return
+	}
+	h.current.ApplyLive(instance, models)
 }
 
 // LoadError is the error from the last Reload, or nil when it succeeded.
