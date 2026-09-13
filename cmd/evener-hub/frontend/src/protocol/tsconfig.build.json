@@ -19,6 +19,8 @@
     "transport.ts",
     "types.gen.ts",
     "askAnswers.ts",
+    "askShared.ts",
+    "deriveAskQuestions.ts",
     "attachmentMarkers.ts",
     "composerInput.ts",
     "activityData.ts",

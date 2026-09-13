@@ -38,6 +38,8 @@ export type {
 export { activityDelegateState, buildActivityRows, foldRowID, jobIsFailed } from "./activityRows";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
+export type { AskUserOption, AskUserQuestion } from "./askShared";
+export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
@@ -46,6 +48,8 @@ export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type { InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput } from "./composerInput";
+export type { AskQuestionRef } from "./deriveAskQuestions";
+export { liveAskQuestions } from "./deriveAskQuestions";
 export {
   firstLine,
   formatCharCount,

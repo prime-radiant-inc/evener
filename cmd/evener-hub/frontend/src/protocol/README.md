@@ -5,11 +5,13 @@ It has no runtime dependencies and exports the client, the connection seam
 applications program against, the transport contract, generated protocol
 types, wire errors with their session classifiers, the rejection classifier
 and the user-facing message helpers every failure display goes through, the
-pure question formatter, the translation that turns a composer's `[image N]`
-attachment markers into prose at send and the composer input assembly that
-applies that translation and stages the attached images beside the text, the
-thread view model and its notification reducer, the activity tree parser,
-merge and disclosure rules, the job log tail parser, the send/queue
+pure question formatter, the ask_user question parser and the answered recap
+it reads back out of a transcript, the live-question derivation an answering
+dock renders from a thread, the translation that turns a composer's `[image
+N]` attachment markers into prose at send and the composer input assembly
+that applies that translation and stages the attached images beside the
+text, the thread view model and its notification reducer, the activity tree
+parser, merge and disclosure rules, the job log tail parser, the send/queue
 availability table, the send/steer/queue/drain routing decisions a composer
 makes off it, the stable delegate status rule, the slash invocation and
 catalog visibility rules the palette and composer share, the display
