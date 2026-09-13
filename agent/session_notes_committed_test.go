@@ -296,6 +296,112 @@ func TestReadersSeeOnlyCommittedNotesWhileSaveIsParked(t *testing.T) {
 		assertNotesCutCommitted(t, "notesSnapshotAll() while the URL-remove save was parked", snapshot, want)
 		assertNotesSaveRejected(t, s, mutationErr, want)
 	})
+
+	// The human note does not ride the metadata save: its durability point is
+	// the mutation store's effect-snapshot write, so it needs its own parked
+	// case. Without it the committed-cut guarantee for the one field whose
+	// authority is the journal went unexercised (roborev's review asked for
+	// exactly this subtest).
+	t.Run("human-note", func(t *testing.T) {
+		// The durable harness is required here: the human note's durability
+		// point is the mutation store's filesystem write, and only a store built
+		// over the real filesystem reaches it (the same harness
+		// TestNotesPersistenceFailureBlocksSuccessJournal uses for this path).
+		s := newDurableHumanNoteSession(t)
+		if _, err := s.SetHumanNote("seed-human", "committed human note"); err != nil {
+			t.Fatal(err)
+		}
+		drainNotesEvents(s)
+		want := notesCut{human: "committed human note"}
+		release := parkHumanNoteSave(t, s, func(s *Session) error {
+			_, err := s.SetHumanNote("tentative-human", "tentative human note")
+			return err
+		})
+		meta, snapshot, toolOutput := readNotesReaders(t, s)
+		// Guard against a vacuous pass: the mutation must really be in flight,
+		// holding its reservation, or the parked window proves nothing.
+		if _, ok := s.clientMutations.snapshot().Journal["tentative-human"]; !ok {
+			t.Fatalf("the parked human-note mutation left no journal record, so the window under test is not real")
+		}
+		if strings.Contains(toolOutput, "tentative human note") {
+			t.Errorf("notes_read output carried the tentative human note while its save was parked:\n%s", toolOutput)
+		}
+		if !strings.Contains(toolOutput, "committed human note") {
+			t.Errorf("notes_read output dropped the committed human note while a new value's save was parked:\n%s", toolOutput)
+		}
+		mutationErr := release(errParkedNotesSave)
+		assertNotesCutCommitted(t, "Meta() while the human-note save was parked", meta, want)
+		assertNotesCutCommitted(t, "notesSnapshotAll() while the human-note save was parked", snapshot, want)
+		assertHumanNoteSaveRejected(t, s, mutationErr, want)
+	})
+}
+
+// assertHumanNoteSaveRejected mirrors assertNotesSaveRejected for the human-note
+// path: SetHumanNote normalizes its error into a wire error, so the injected
+// failure survives as text rather than identity, and the live agent-note and URL
+// assertions the shared helper makes do not apply to a mutation that only owns
+// the human note.
+func assertHumanNoteSaveRejected(t *testing.T, s *Session, mutationErr error, want notesCut) {
+	t.Helper()
+	if mutationErr == nil || !strings.Contains(mutationErr.Error(), errParkedNotesSave.Error()) {
+		t.Errorf("parked human-note mutation error = %v, want the injected save failure", mutationErr)
+	}
+	if canonical, _ := s.notesSnapshot(); canonical != want.human {
+		t.Errorf("canonical human note after rejected save = %q, want %q", canonical, want.human)
+	}
+	meta, snapshot, _ := readNotesReaders(t, s)
+	assertNotesCutCommitted(t, "Meta() after rejected human-note save", meta, want)
+	assertNotesCutCommitted(t, "notesSnapshotAll() after rejected human-note save", snapshot, want)
+	for {
+		select {
+		case ev := <-s.Events():
+			if ev.Kind == events.EventNotesUpdated || ev.Kind == events.EventUrlsUpdated {
+				t.Errorf("rejected human-note save emitted %s: %+v", ev.Kind, ev.Data)
+			}
+		default:
+			return
+		}
+	}
+}
+
+// parkHumanNoteSave parks a human-note mutation inside the mutation store's
+// effect-snapshot write, which is that path's durability point, and mirrors
+// parkNotesSave's contract: the returned release runs the write with faultErr
+// and returns the mutation's error, idempotently and again from t.Cleanup so a
+// failing read can never strand the goroutine.
+func parkHumanNoteSave(t *testing.T, s *Session, mutate func(*Session) error) func(error) error {
+	t.Helper()
+	entered := make(chan struct{})
+	releaseCh := make(chan error, 1)
+	var signaled sync.Once
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		signaled.Do(func() { close(entered) })
+		return <-releaseCh
+	}
+	done := make(chan error, 1)
+	go func() { done <- mutate(s) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second): // TRIPWIRE: the entry signal is the awaitable completion
+		s.clientMutations.faults.BeforeEffectSnapshotRename = nil
+		close(releaseCh)
+		<-done
+		t.Fatalf("human-note mutation never reached its snapshot write")
+	}
+	var (
+		releaseOnce sync.Once
+		releaseErr  error
+	)
+	release := func(faultErr error) error {
+		releaseOnce.Do(func() {
+			s.clientMutations.faults.BeforeEffectSnapshotRename = nil
+			releaseCh <- faultErr
+			releaseErr = <-done
+		})
+		return releaseErr
+	}
+	t.Cleanup(func() { release(errParkedNotesSave) })
+	return release
 }
 
 // runParkedAtomicCut seeds an already-projected notes state, parks mutate in
