@@ -107,6 +107,9 @@ func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, er
 func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	remote := params
 	remote.Harness = "evener"
+	// Source names this source in the controller's registry; the remote hub
+	// would resolve it against its own, so it is cleared before forwarding.
+	remote.Source = ""
 	var out appwire.ThreadStartResponse
 	if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
 		return appwire.ThreadStartResponse{}, err

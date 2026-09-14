@@ -1608,7 +1608,11 @@ type EvenerSubagentPreviewResponse struct {
 }
 
 type ThreadStartParams struct {
-	Harness         string             `json:"harness,omitempty"`
+	Harness string `json:"harness,omitempty"`
+	// Source names the registered source that should spawn this thread, e.g. a
+	// remote host's host name. It is a bare source ID, not a ref. Empty falls
+	// back to the harness/default routing (local).
+	Source          string             `json:"source,omitempty"`
 	CWD             string             `json:"cwd"`
 	Input           []InputItem        `json:"input,omitempty"`
 	ModelProvider   string             `json:"modelProvider,omitempty"`

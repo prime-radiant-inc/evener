@@ -1685,6 +1685,14 @@ func (m *Manager) liveChannel(name string) *Channel {
 	return ch
 }
 
+// Attached reports whether host currently has a live, closed-not channel.
+// A host that has never been Ensure'd is not attached; the hub's background
+// refresh attaches lazily, so this converges within one refresh interval.
+func (m *Manager) Attached(name string) bool {
+	ch := m.currentChannel(name)
+	return ch != nil && !ch.isClosed()
+}
+
 // publishChannel records ch as name's channel unless Close already ran, in which
 // case nothing would ever supervise it: the caller reaps ch and reports
 // ErrManagerClosed instead.

@@ -1973,6 +1973,7 @@ export interface ThreadShutdownParams {
 
 export interface ThreadStartParams {
   harness?: string;
+  source?: string;
   cwd: string;
   input?: InputItem[];
   modelProvider?: string;

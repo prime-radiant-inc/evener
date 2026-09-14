@@ -1820,6 +1820,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `harness` | `string` | yes |  |
+| `source` | `string` | yes |  |
 | `cwd` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
 | `modelProvider` | `string` | yes |  |

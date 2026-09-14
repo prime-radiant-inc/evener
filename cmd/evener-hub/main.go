@@ -475,6 +475,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			}
 			return remoteHostFacts(ch.Preflight(), ch.Client().Features()), nil
 		},
+		RemoteHostOnline: sshManager.Attached,
 	}, appwireTrace)
 	if appwireTrace != nil {
 		defer func() {
