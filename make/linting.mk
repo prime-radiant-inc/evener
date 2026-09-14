@@ -28,14 +28,6 @@ secret-scan:
 # chain pays one compile (via the build-dev prerequisite, which make runs
 # once per `make lint` since build-dev is .PHONY) instead of three. The
 # binary is built from the same source, so verdicts are identical.
-#
-# lint-golangci does not take that prerequisite. Its CI lane builds the binary
-# in a step with a bound of its own -- the whole subject of this change is a
-# download that must not hang, and a compile inside the gate is the same hazard
-# in a different place -- and a phony prerequisite would rebuild it there
-# immediately afterwards, unbounded. It checks for the binary instead and says
-# which target builds it. The other two keep the prerequisite until the file
-# target in #1263 makes it a no-op when the binary is current.
 lint-naming: build-dev
 	$(call run_quiet_lint,./evener-dev tomlcheck)
 
@@ -129,8 +121,8 @@ lint-internal: build-dev
 ## requires: golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so
 ##   the fuzz module's ordinary Go is covered too.
 ## fails-when: Either golangci-lint run fails for any module.
-lint-golangci:
-	$(call run_quiet_lint,test -x ./evener-dev || { echo "lint-golangci: ./evener-dev is missing; run \`make build-dev\` first" >&2; exit 2; } && MODULES="$(FUZZ_GO_MODULES)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" ./evener-dev dev module-lint && GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+lint-golangci: build-dev
+	$(call run_quiet_lint,MODULES="$(FUZZ_GO_MODULES)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" ./evener-dev dev module-lint && GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
 
 ## Remove the current worktree's golangci-lint cache without touching sibling
 ## worktrees or the user's global golangci-lint cache.

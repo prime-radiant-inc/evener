@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -165,39 +166,22 @@ func emptyReplyURL(t *testing.T) string {
 // TestInstallerRefusesABackoffBashWouldReadAsOctal covers the other guard: 08
 // passes a naive digits-only check and then fails inside the arithmetic that
 // uses it, which is a failure in the retry rather than in the validation.
-func TestInstallerRefusesABackoffBashWouldReadAsOctal(t *testing.T) {
+func TestInstallerRefusesABackoffItCannotUse(t *testing.T) {
 	t.Parallel()
 	requireInstallerScriptTools(t)
-	code, out := runInstaller(t, "EVENER_GOLANGCI_INSTALL_BACKOFF=08")
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2\n%s", code, out)
-	}
-	if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_BACKOFF must be a whole number") {
-		t.Fatalf("output = %q, want the knob and what it takes", out)
-	}
-	if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
-		t.Fatalf("output = %q, want no attempt made before the guard", out)
-	}
-}
-
-// TestInstallerRefusesTheOtherKnobsBadValues covers the same guard for the
-// retry count: a leading zero bash would read as octal, and a value that is
-// not a number at all.
-func TestInstallerRefusesTheOtherKnobsBadValues(t *testing.T) {
-	t.Parallel()
-	requireInstallerScriptTools(t)
+	// 08 is the one worth naming: it passes a digits-only check and then fails
+	// inside the arithmetic that uses it, because bash reads a leading zero as
+	// octal. The others are the same table its siblings have.
 	for _, value := range []string{"08", "abc", "21"} {
-		code, out := runInstaller(t, "EVENER_GOLANGCI_CURL_RETRIES="+value)
+		code, out := runInstaller(t, "EVENER_GOLANGCI_INSTALL_BACKOFF="+value)
 		if code != 2 {
-			t.Fatalf("EVENER_GOLANGCI_CURL_RETRIES=%s: exit code = %d, want 2\n%s", value, code, out)
+			t.Fatalf("EVENER_GOLANGCI_INSTALL_BACKOFF=%s: exit code = %d, want 2\n%s", value, code, out)
 		}
-		if !strings.Contains(out, "EVENER_GOLANGCI_CURL_RETRIES must be a whole number") {
-			t.Fatalf("EVENER_GOLANGCI_CURL_RETRIES=%s: output = %q, want the knob and what it takes", value, out)
+		if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_BACKOFF must be a whole number") {
+			t.Fatalf("EVENER_GOLANGCI_INSTALL_BACKOFF=%s: output = %q, want the knob and what it takes", value, out)
 		}
-		// Nothing was attempted: the script's own attempt diagnostics are the
-		// evidence, since they are written per attempt and nothing else is.
 		if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
-			t.Fatalf("EVENER_GOLANGCI_CURL_RETRIES=%s: output = %q, want no attempt made before the guard", value, out)
+			t.Fatalf("EVENER_GOLANGCI_INSTALL_BACKOFF=%s: output = %q, want no attempt made before the guard", value, out)
 		}
 	}
 }
@@ -273,14 +257,26 @@ func pinnedGolangciVersion(t *testing.T) string {
 // executable into the bindir it is given, printing reports as its version
 // line. An empty reports writes nothing, which is the installer that ran and
 // produced no binary.
-func installerServing(t *testing.T, reports string) (url, argsFile string) {
+// installerScript is the install.sh the loopback servers serve: it writes an
+// executable printing reports into the bindir it is given, and records the
+// arguments it was handed when a caller asked for them.
+func installerScript(t *testing.T, reports string, argsFile ...string) string {
 	t.Helper()
-	argsFile = filepath.Join(t.TempDir(), "installer-args")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + shellQuote(argsFile) +
-		"\nbindir=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in -b) bindir=\"$2\"; shift 2 ;; *) shift ;; esac\ndone\nmkdir -p \"$bindir\"\n"
+	script := "#!/bin/sh\n"
+	if len(argsFile) == 1 {
+		script += "printf '%s\\n' \"$*\" > " + shellQuote(argsFile[0]) + "\n"
+	}
+	script += "bindir=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in -b) bindir=\"$2\"; shift 2 ;; *) shift ;; esac\ndone\nmkdir -p \"$bindir\"\n"
 	if reports != "" {
 		script += "cat > \"$bindir/golangci-lint\" <<EOF\n#!/bin/sh\necho '" + reports + "'\nEOF\nchmod +x \"$bindir/golangci-lint\"\n"
 	}
+	return script
+}
+
+func installerServing(t *testing.T, reports string) (url, argsFile string) {
+	t.Helper()
+	argsFile = filepath.Join(t.TempDir(), "installer-args")
+	script := installerScript(t, reports, argsFile)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, script)
 	}))
@@ -355,5 +351,55 @@ func TestInstallerRefusesAnInstallThatProducedNoBinary(t *testing.T) {
 	}
 	if !strings.Contains(out, "did not run after installation") {
 		t.Fatalf("output = %q, want the branch that says the binary does not run", out)
+	}
+}
+
+// installerServingAfterOneFailure is the same served installer behind one
+// failure: the first request gets its connection closed without a reply, and
+// the second is served. An empty reply is not one of the transient HTTP
+// statuses curl retries on its own, so only --retry-all-errors recovers from
+// it -- which is what makes this a test of that flag rather than of --retry.
+func installerServingAfterOneFailure(t *testing.T, reports string) string {
+	t.Helper()
+	script := installerScript(t, reports)
+	var mu sync.Mutex
+	served := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		served++
+		first := served == 1
+		mu.Unlock()
+		if first {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijacking the first connection: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, script)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func TestInstallerRetriesADownloadThatDiedInTransit(t *testing.T) {
+	t.Parallel()
+	requireInstallerScriptTools(t, "curl")
+	version := pinnedGolangciVersion(t)
+	code, out := runInstaller(t,
+		"EVENER_GOLANGCI_INSTALLER_URL="+installerServingAfterOneFailure(t, "golangci-lint has version "+version+" built with go1.27.0"),
+		// One attempt of the script's own loop, one retry of curl's: whatever
+		// recovers here is curl retrying an empty reply, which is what
+		// --retry-all-errors buys and what nothing else in this script does.
+		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
+		"EVENER_GOLANGCI_CURL_RETRIES=1",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0: curl retries a download that died in transit\n%s", code, out)
+	}
+	if strings.Contains(out, "install attempt") {
+		t.Fatalf("output = %q, want the script's own loop not to have been used", out)
 	}
 }
