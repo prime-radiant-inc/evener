@@ -117,6 +117,9 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 	if gh.Head != sandboxGitHead {
 		t.Fatalf("git/head did not use the seam: head=%q want %q", gh.Head, sandboxGitHead)
 	}
+	if gh.OriginURL != sandboxGitOrigin {
+		t.Fatalf("git/head did not use the origin seam: originUrl=%q want %q", gh.OriginURL, sandboxGitOrigin)
+	}
 
 	// Network tripwire: nothing above may have dialed.
 	if attempts := deny.Attempts(); len(attempts) != 0 {

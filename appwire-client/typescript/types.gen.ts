@@ -471,6 +471,7 @@ export interface GitHeadParams {
 
 export interface GitHeadResponse {
   head: string;
+  originUrl?: string;
 }
 
 export interface GitInfo {

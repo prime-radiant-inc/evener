@@ -1139,6 +1139,39 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });
 
+// The location line rides under the prompt card: the cwd from the session
+// model, and the branch resolved from that cwd through the hub's git/head
+// method. This drives the real assembled tree only to prove the line is wired
+// in below the card and reaches the hub with the session's own cwd - the
+// component's own rendering rules are covered in RepoLocation.test.tsx.
+test("shows the session's cwd and git branch under the composer card", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_loc", { cwd: "/home/jesse/repo" }));
+  fake.on("evener/git/head", ({ cwd }) => {
+    expect(cwd).toBe("/home/jesse/repo");
+    return { head: "composer-line", originUrl: "git@github.com:owner/repo.git" };
+  });
+  await threadsStore.getState().ensureThread("ref_loc");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_loc" focused={false} />
+    </ClientProvider>,
+  );
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
+
+  const line = await screen.findByTestId("composer-repo-location");
+  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/home/jesse/repo");
+  expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe("https://github.com/owner/repo");
+  expect(screen.getByTestId("composer-repo-branch").textContent).toBe("composer-line");
+
+  // "underneath the composer": the line follows the prompt card in the DOM.
+  const card = screen.getByTestId("composer-input-card");
+  expect(card.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 // --- shared busy gate across Composer and QueueStrip (item 6) ---------------
 // Composer's own busyAction and QueueStrip's drain previously tracked busy
 // state independently, so a user could fire the classic drain (Shift+Enter

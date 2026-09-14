@@ -45,6 +45,51 @@ func TestHubGitHeadNonGitDirectoryReturnsEmpty(t *testing.T) {
 	if got.Head != "" {
 		t.Fatalf("head=%q, want empty for a non-git directory", got.Head)
 	}
+	if got.OriginURL != "" {
+		t.Fatalf("originUrl=%q, want empty for a non-git directory", got.OriginURL)
+	}
+}
+
+func TestHubGitHeadResolvesOriginAlongsideHead(t *testing.T) {
+	var headDir, originDir string
+	cfg := hubcore.WebConfig{
+		ResolveGitHead: func(_ context.Context, dir string) (string, error) {
+			headDir = dir
+			return "feature/x", nil
+		},
+		ResolveGitOrigin: func(_ context.Context, dir string) (string, error) {
+			originDir = dir
+			return "git@github.com:owner/repo.git", nil
+		},
+	}
+	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir()})
+	if got.Head != "feature/x" {
+		t.Fatalf("head=%q, want feature/x", got.Head)
+	}
+	if got.OriginURL != "git@github.com:owner/repo.git" {
+		t.Fatalf("originUrl=%q, want the seam's origin", got.OriginURL)
+	}
+	if headDir == "" || headDir != originDir {
+		t.Fatalf("seams saw dirs %q and %q, want the same non-empty directory", headDir, originDir)
+	}
+}
+
+// Origin failure must not suppress a resolved branch: a session in a repo whose
+// origin remote is unset or unreadable still shows its branch, just unlinked.
+func TestHubGitHeadOriginFailureKeepsHead(t *testing.T) {
+	cfg := hubcore.WebConfig{
+		ResolveGitHead: func(context.Context, string) (string, error) { return "main", nil },
+		ResolveGitOrigin: func(context.Context, string) (string, error) {
+			return "", errors.New("no origin remote")
+		},
+	}
+	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir()})
+	if got.Head != "main" {
+		t.Fatalf("head=%q, want main", got.Head)
+	}
+	if got.OriginURL != "" {
+		t.Fatalf("originUrl=%q, want empty on origin failure", got.OriginURL)
+	}
 }
 
 func TestHubRPCGitHeadUsesCanonicalDirectory(t *testing.T) {

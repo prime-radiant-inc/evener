@@ -2132,9 +2132,13 @@ type GitHeadParams struct {
 }
 
 // GitHeadResponse reports a branch name, detached short SHA, or an empty
-// string when the working directory has no readable git HEAD.
+// string when the working directory has no readable git HEAD, plus the
+// "origin" remote URL when one is configured. OriginURL is display metadata
+// for callers that link the branch to its forge repo page; git or
+// configuration failures leave it empty alongside a possibly-present Head.
 type GitHeadResponse struct {
-	Head string `json:"head"`
+	Head      string `json:"head"`
+	OriginURL string `json:"originUrl,omitempty"`
 }
 
 // MobilePairingParams supplies the authenticated web application's explicit
