@@ -300,6 +300,16 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 		}
 	}()
 
+	if turn.ContextReplay {
+		// A replay copy is a second physical record of a turn this file
+		// already holds: the original owns the UI item, and the copy exists so
+		// the model's history survives an anchor that discards what precedes
+		// it. Projecting one shows the same turn twice — and, worse, lets two
+		// readers of the same file disagree about a group's item count, which
+		// the bounded reader reports as a cache error. Answered here, at the
+		// one point every reader projects through.
+		return nil
+	}
 	if imageProjector == nil {
 		imageProjector = DefaultImageProjector
 	}
