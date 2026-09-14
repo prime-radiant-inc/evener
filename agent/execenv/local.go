@@ -815,6 +815,23 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 	_ = tmp.Cleanup()
 }
 
+// DisposeUnsandboxedScratch releases the lazily minted per-session scratch this
+// env provisioned and removes it, WITHOUT the process teardown Cleanup performs.
+// It is the unsandboxed twin of DisposeSandboxScratch: a resume that adopts a
+// retained unsandboxed allocation onto the launcher's environment must drop the
+// launcher's own replacement mint first, because RestoreSessionScratch refuses
+// to replace an exposed scratch. It must run only on such a launcher-owned mint,
+// never on an allocation the manifest still references. The next spawned command
+// lazily mints a replacement if the environment is left without one.
+func (e *LocalExecutionEnvironment) DisposeUnsandboxedScratch() {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	if tmp := e.unsandboxedScratch; tmp != nil {
+		e.unsandboxedScratch = nil
+		_ = tmp.Cleanup()
+	}
+}
+
 // DisposeUnadoptedScratch drops every per-session scratch directory this env
 // provisioned — the one it owns from EnableSandbox and the one an unsandboxed
 // env mints lazily on its first command — releasing each lease with its

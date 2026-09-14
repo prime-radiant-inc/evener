@@ -2024,7 +2024,22 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 		// belongs to this isolation step), so this is the only rollback for the
 		// scratch the construction's git snapshot minted on an unsandboxed lane,
 		// as well as for a sandboxed lane's owned one.
-		disposeUnadoptedScratch(isolation.env)
+		//
+		// A construction that failed AFTER it pinned this allocation into the
+		// root's durable retention manifest leaves a reference that names the
+		// directory. Removing the directory would leave that reference (and its
+		// binding slot) dangling, since references are append-only and there is
+		// no unpin API, and the root's retirement preparation would then refuse
+		// forever. Such an allocation is retained — its lease released, its
+		// directory kept — exactly as the restore-path teardowns do; only a
+		// fresh mint the manifest does not reference is disposed.
+		if s.ownsReferencedRetainedScratch(isolation.env) {
+			if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
+				local.RetainSessionScratch()
+			}
+		} else {
+			disposeUnadoptedScratch(isolation.env)
+		}
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
@@ -2354,7 +2369,7 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 		return false, nil
 	}
 	before := scratchRefDirs(env)
-	dir, ok := s.retainedConsumerSandboxDir(sessionID)
+	dir, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindSandbox)
 	if ownsFresh && ok && filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
 		if err := s.rebuildSandboxWrapper(env, dir); err != nil {
 			return false, err

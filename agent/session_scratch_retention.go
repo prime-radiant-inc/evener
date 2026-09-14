@@ -847,23 +847,57 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 // cannot wrap the retained directory refuses the restore while the minted
 // scratch is still intact. A failure after the disposal re-provisions the
 // environment's own scratch rather than leaving it with none.
+//
+// The unsandboxed kind gets the same replacement treatment. The launcher
+// environment handed to a restore may already own an unsandboxed scratch its own
+// command minted before the restore (session_worktree_resume.go), and that mint
+// means adoptRetainedScratchFor's same-kind guard would skip the persisted
+// unsandboxed slot. Without replacing it, the resumed root works in the empty
+// launch directory while its retained allocation stays unattributed.
 func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment, sessionID string) error {
 	if env == nil {
 		return nil
 	}
-	dir, ok := s.retainedConsumerSandboxDir(sessionID)
+	dir, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindSandbox)
 	if !ok || filepath.Clean(dir) == filepath.Clean(env.SessionScratchDir()) {
-		_, err := s.adoptConsumerScratch(env, sessionID)
-		return err
+		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+			return err
+		}
+	} else {
+		if err := s.rebuildSandboxWrapper(env, dir); err != nil {
+			return err
+		}
+		env.DisposeSandboxScratch()
+		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+			return reprovisionDiscardedSandboxScratch(env, err)
+		}
 	}
-	if err := s.rebuildSandboxWrapper(env, dir); err != nil {
-		return err
+	unsandboxed, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindUnsandboxed)
+	if !ok || filepath.Clean(unsandboxed) == filepath.Clean(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
+		return nil
 	}
-	env.DisposeSandboxScratch()
+	env.DisposeUnsandboxedScratch()
 	if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
-		return reprovisionDiscardedSandboxScratch(env, err)
+		return err
 	}
 	return nil
+}
+
+// envScratchRefDir returns env's currently owned scratch directory for kind, or
+// "" when it owns none. It reads every kind rather than SessionScratchDir, which
+// reports only one directory, so the unsandboxed comparison above is not
+// confused by a sandbox allocation the environment also owns.
+func envScratchRefDir(env *execenv.LocalExecutionEnvironment, kind string) string {
+	refs, err := env.ScratchRetentionReferences()
+	if err != nil {
+		return ""
+	}
+	for _, ref := range refs {
+		if ref.Kind == kind {
+			return ref.Dir
+		}
+	}
+	return ""
 }
 
 // reprovisionDiscardedSandboxScratch leaves env with a usable sandbox scratch
@@ -884,10 +918,10 @@ func reprovisionDiscardedSandboxScratch(env *execenv.LocalExecutionEnvironment, 
 	return cause
 }
 
-// retainedConsumerSandboxDir returns the directory sessionID's current binding
-// owns for the sandbox kind, or ok=false when there is no prepared pool, no
-// consumer, or no lease-owning sandbox slot.
-func (s *Session) retainedConsumerSandboxDir(sessionID string) (string, bool) {
+// retainedConsumerScratchDir returns the directory sessionID's current binding
+// owns for kind, or ok=false when there is no prepared pool, no consumer, or no
+// lease-owning slot of that kind.
+func (s *Session) retainedConsumerScratchDir(sessionID, kind string) (string, bool) {
 	pool := s.retainedScratch.Load()
 	if pool == nil {
 		return "", false
@@ -900,7 +934,7 @@ func (s *Session) retainedConsumerSandboxDir(sessionID string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	slot, ok := binding.Slots[sandbox.ScratchKindSandbox]
+	slot, ok := binding.Slots[kind]
 	if !ok || !slot.OwnsLease {
 		return "", false
 	}

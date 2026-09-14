@@ -1466,3 +1466,79 @@ func TestRetirementResumedRootScratchWrapperFailureRefusesBeforeDisposal(t *test
 		t.Fatalf("refused rebuild left the reported sandbox scratch %q unusable: %v", got, err)
 	}
 }
+
+// TestRetirementResumedUnsandboxedRootKeepsRetainedScratch is the regression for
+// a resumed unsandboxed root that kept a fresh launch mint instead of its
+// retained directory. The launcher environment handed to the restore may already
+// own an unsandboxed scratch its own command minted (session_worktree_resume.go).
+// adoptResumedRootScratch only ever looked at the retained SANDBOX slot, so for
+// an unsandboxed root it fell through to adoptRetainedScratchFor, whose
+// same-kind guard skipped the persisted unsandboxed slot because the launcher
+// mint already supplied that kind. The resumed root then worked in a brand-new
+// empty directory while its retained allocation, artifacts and all, stayed
+// unattributed in the pool.
+func TestRetirementResumedUnsandboxedRootKeepsRetainedScratch(t *testing.T) {
+	dir := t.TempDir()
+	root1 := newQueuePersistTestSession(t, dir)
+	env1, ok := root1.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("root has no local environment")
+	}
+	if _, err := env1.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
+		t.Fatalf("mint root scratch: %v", err)
+	}
+	scratchDir := env1.SessionScratchDir()
+	if scratchDir == "" {
+		t.Fatal("root minted no scratch")
+	}
+	artifact := filepath.Join(scratchDir, "root-required.bin")
+	want := []byte("root-aged-artifact")
+	if err := os.WriteFile(artifact, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := root1.installScratchRetention(env1); err != nil {
+		t.Fatalf("install root retention: %v", err)
+	}
+	meta := root1.Meta()
+
+	// Crash: release the scratch lease as process death would, close the store
+	// and transcript with no teardown appends.
+	env1.RetainSessionScratch()
+	_ = root1.jobManager.closeStoreOnly()
+	if err := root1.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A launcher environment whose own command already minted its unsandboxed
+	// scratch before the restore, exactly as session_worktree_resume.go describes.
+	launch := execenv.NewLocalExecutionEnvironment(dir)
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
+		t.Fatalf("mint launcher scratch: %v", err)
+	}
+	launchMint := launch.SessionScratchDir()
+	if launchMint == "" {
+		t.Fatal("launcher minted no scratch")
+	}
+	if filepath.Clean(launchMint) == filepath.Clean(scratchDir) {
+		t.Fatalf("fixture scratch dirs collide at %q", launchMint)
+	}
+
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	root2, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), launch, meta, RestoreSessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root2.Close()
+	env2, ok := root2.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("restored root has no local environment")
+	}
+	if got := env2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchDir) {
+		t.Fatalf("resumed root scratch = %q, want retained %q", got, scratchDir)
+	}
+	got, err := os.ReadFile(artifact)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("retained unsandboxed artifact lost at original path %q: bytes=%q err=%v", artifact, got, err)
+	}
+}
