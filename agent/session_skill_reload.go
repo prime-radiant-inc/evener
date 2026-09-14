@@ -179,8 +179,16 @@ func skillInventoryDiagnostics(diagnostics []skill.Diagnostic) []schema.SkillInv
 //
 // A receipt whose complete reminder cannot fit the remaining window is a
 // visible error — the full list is kept, never trimmed. Cancelled receipts
-// are terminal records: they authorize nothing and are left in place.
+// are terminal records: they authorize nothing, and this scan retires them so
+// they cannot accumulate.
 func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActivationBatch, []schema.SkillActivationOutcome, int, error) {
+	// A terminal cancellation receipt is a pure retirement record — the save that
+	// recorded it already cleared the operation slot — and, carrying no
+	// publication identity, it never coalesces. Retire every one this request
+	// observes so PendingHandoffs and this scan stay bounded over a long-lived
+	// session; a failed retirement save only warns and leaves them for the next
+	// request.
+	s.retireSkillCompactionCancellations()
 	s.mu.Lock()
 	handoffs := make([]schema.SkillCompactionReceipt, len(s.skillLifecycle.PendingHandoffs))
 	for i, handoff := range s.skillLifecycle.PendingHandoffs {
@@ -204,7 +212,7 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			return nil, nil, 0, err
 		}
 		if receipt.Phase == skillCompactionReceiptCancelled {
-			continue // a terminal retirement record authorizes nothing
+			continue // a cancellation recorded after this snapshot authorizes nothing
 		}
 		publicationID := receipt.Operation.PublicationID
 		switch receipt.Operation.Selection.State {
@@ -250,10 +258,16 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 						ErrorCode:    skillActivationErrorCode(err),
 					}
 					notice := systemNotificationf("Skill %q could not be reloaded after compaction: %v", name, err)
-					if err := s.recordSkillReloadNotification(notice, outcome, nil); err != nil {
-						return nil, nil, 0, err
+					// The explanation is durably recorded before the receipt is
+					// consumed. A retry after a failed consumption save re-derives
+					// this deterministic invocation, so it must recognize the notice
+					// already recorded for it instead of appending a second copy.
+					if !s.skillReloadOutcomeRecorded(invocation.InvocationID) {
+						if err := s.recordSkillReloadNotification(notice, outcome, nil); err != nil {
+							return nil, nil, 0, err
+						}
+						stagedTokens += skillReloadTurnTokens(notice)
 					}
-					stagedTokens += skillReloadTurnTokens(notice)
 					outcomes = append(outcomes, outcome)
 					continue
 				}
@@ -444,10 +458,12 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 			if outcome != nil {
 				outcome.Status = "already_present"
 				notice := skillReloadReuseNotification(identity.Name)
-				if err := s.recordSkillReloadNotification(notice, *outcome, nil); err != nil {
-					return err
+				if !s.skillReloadOutcomeRecorded(outcome.InvocationID) {
+					if err := s.recordSkillReloadNotification(notice, *outcome, nil); err != nil {
+						return err
+					}
+					budget.InputTokens += skillReloadTurnTokens(notice)
 				}
-				budget.InputTokens += skillReloadTurnTokens(notice)
 			}
 			obligations = append(obligations, obligation)
 			continue
@@ -464,10 +480,12 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 				outcome.Status = "failed"
 				outcome.ErrorCode = "context_budget"
 				notice := skillReloadContextBudgetNotification(identity.Name)
-				if err := s.recordSkillReloadNotification(notice, *outcome, nil); err != nil {
-					return err
+				if !s.skillReloadOutcomeRecorded(outcome.InvocationID) {
+					if err := s.recordSkillReloadNotification(notice, *outcome, nil); err != nil {
+						return err
+					}
+					budget.InputTokens += skillReloadTurnTokens(notice)
 				}
-				budget.InputTokens += skillReloadTurnTokens(notice)
 			}
 			continue
 		}
@@ -600,6 +618,35 @@ func (s *Session) recordSkillReloadNotification(message string, outcome schema.S
 // body admission already uses applies unchanged.
 func skillReloadTurnTokens(content string) int {
 	return llm.EstimateMessagesInputTokens([]llm.Message{llm.User(content)}).Tokens
+}
+
+// skillReloadOutcomeRecorded reports whether the live history already carries a
+// typed outcome for invocationID — the durable record that this reload's
+// notification (a failure explanation, a reuse notice, or a context_budget
+// explanation) has already been appended. Reload invocation identities are
+// deterministic (publication:name) and the notice is written durably BEFORE the
+// admission save that consumes its receipt, so a save failure followed by a
+// retry re-derives the same identity. Reading it back is what keeps a retry,
+// however many times it repeats, from appending the same notification turn
+// again and growing the history without bound.
+func (s *Session) skillReloadOutcomeRecorded(invocationID string) bool {
+	if invocationID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range s.history {
+		state := turn.SkillState
+		if state == nil {
+			continue
+		}
+		for _, outcome := range state.Outcomes {
+			if outcome.InvocationID == invocationID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // skillReloadReuseNotification renders the typed notice recorded when a
