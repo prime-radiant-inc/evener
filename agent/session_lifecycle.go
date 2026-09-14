@@ -860,7 +860,16 @@ func (s *Session) discardRestoredCandidate() {
 		// teardown (which RETAINS both scratch dirs for the human handoff), there
 		// is no one left to retain them for: both go, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
-		releaseOwnedChildEnvironment(s.environmentOwnedAtTeardown(), disposeChildScratch)
+		// The one exception is an allocation this candidate ADOPTED from the
+		// root's durable retention manifest: that directory is referenced on disk
+		// and a later resume reacquires it, so it is retained (lease released)
+		// instead of removed with the mint a fresh restore allocated.
+		env := s.environmentOwnedAtTeardown()
+		scratch := disposeChildScratch
+		if s.ownsReferencedRetainedScratch(env) {
+			scratch = retainChildScratch
+		}
+		releaseOwnedChildEnvironment(env, scratch)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}

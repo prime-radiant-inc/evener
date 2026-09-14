@@ -666,8 +666,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err != nil {
 			// A resume provisions this environment's sandbox from the
 			// session's persisted mode inside the restore, and the restore can
-			// fail after that with no session built to own what it took.
-			env.DisposeUnadoptedScratch()
+			// fail after that with no session built to own what it took. An
+			// allocation the resume adopted from the root's durable retention
+			// manifest is retained rather than removed; only a fresh mint is
+			// disposed.
+			agent.DisposeResumeScratchAfterFailure(sd, resumedMeta.ID, env)
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {

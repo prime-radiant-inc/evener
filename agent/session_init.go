@@ -1165,6 +1165,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if restoreComplete || sameEnvironment(reenteredEnv, env) {
 			return
 		}
+		// Re-entry moved the scratch the caller's environment already owned onto
+		// this clone, and that scratch may be an adopted retained allocation the
+		// manifest references. Retain it rather than remove the durable
+		// directory a later resume reacquires; only a fresh mint this restore
+		// allocated is disposed.
+		if s.ownsReferencedRetainedScratch(reenteredEnv) {
+			if local, ok := reenteredEnv.(*execenv.LocalExecutionEnvironment); ok {
+				local.RetainSessionScratch()
+			}
+			return
+		}
 		disposeUnadoptedScratch(reenteredEnv)
 	}()
 
@@ -2379,4 +2390,76 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 		Hint:    "The connection dropped and was automatically re-established; the in-flight tool call was retried. No action needed.",
 		Message: fmt.Sprintf("MCP server %q reconnected after a dropped connection", name),
 	}
+}
+
+// envOwnsReferencedRetainedScratch reports whether env currently owns a
+// per-session scratch directory that the durable retention manifest for owner
+// still references. Such a directory is adopted durable state a later resume
+// reacquires, so a failure teardown must retain it — release the lease, keep
+// the directory — rather than dispose it with os.RemoveAll. A freshly
+// provisioned allocation the manifest does not reference is the restore's own
+// mint and is still disposed. An environment that is not local, has no durable
+// owner, or owns nothing is not retained.
+func envOwnsReferencedRetainedScratch(owner sandbox.ScratchOwner, env execenv.ExecutionEnvironment) bool {
+	local, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok || owner.StateDir == "" || owner.RootSessionID == "" {
+		return false
+	}
+	refs, err := local.ScratchRetentionReferences()
+	if err != nil || len(refs) == 0 {
+		return false
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil || manifest.Released || len(manifest.References) == 0 {
+		return false
+	}
+	referenced := make(map[string]struct{}, len(manifest.References))
+	for _, ref := range manifest.References {
+		dir, err := filepath.Abs(ref.Dir)
+		if err != nil {
+			continue
+		}
+		referenced[filepath.Clean(dir)] = struct{}{}
+	}
+	for _, ref := range refs {
+		dir, err := filepath.Abs(ref.Dir)
+		if err != nil {
+			continue
+		}
+		if _, ok := referenced[filepath.Clean(dir)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// ownsReferencedRetainedScratch is envOwnsReferencedRetainedScratch bound to
+// this session's root retention authority, so an internal failure teardown can
+// decide between retaining and disposing an environment it built.
+func (s *Session) ownsReferencedRetainedScratch(env execenv.ExecutionEnvironment) bool {
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		return false
+	}
+	return envOwnsReferencedRetainedScratch(owner, env)
+}
+
+// DisposeResumeScratchAfterFailure settles the per-session scratch a failed
+// resume left on the launch environment. RestoreSessionFromMetaWithConfig can
+// adopt a durable retained allocation onto env before a later initialization
+// failure, and env.DisposeUnadoptedScratch would then run os.RemoveAll over a
+// directory the root's retention manifest still references, destroying data a
+// later resume reacquires. An allocation the manifest references is therefore
+// retained (its lease released, its directory kept); anything else is the
+// restore's own fresh mint and is disposed. rootSessionID is the manifest's
+// root, exactly as the restore's own scratchRetentionOwner resolves it.
+func DisposeResumeScratchAfterFailure(stateDir, rootSessionID string, env *execenv.LocalExecutionEnvironment) {
+	if env == nil {
+		return
+	}
+	if envOwnsReferencedRetainedScratch(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootSessionID}, env) {
+		env.RetainSessionScratch()
+		return
+	}
+	env.DisposeUnadoptedScratch()
 }
