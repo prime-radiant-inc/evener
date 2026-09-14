@@ -13,13 +13,12 @@ package dev
 //	AGENT_SHARD_COUNT      number of shards (default 4)
 //	AGENT_SHARD_PARALLEL   -parallel within each shard (default 3)
 //	AGENT_SHARD_SURVEY_PARALLEL  -parallel for the survey pass (default 6)
-//	AGENT_SHARD_SKIP       regex handed to the SURVEY's -test.skip, and only
-//	                       to it: a skipped test draws no cost line, so it
-//	                       lands in no shard. The shards themselves never
-//	                       receive the flag, so on a cache hit or under
-//	                       AGENT_SHARD_NO_SURVEY the variable does nothing at
-//	                       all. The script behaved the same way; pinned by
-//	                       TestAgentShardsSkipOnlyReachesTheSurvey.
+//	AGENT_SHARD_SKIP       regex handed to the survey's -test.skip and to
+//	                       every shard's: a skipped test draws no cost line,
+//	                       so it lands in no shard, but a cached survey means
+//	                       no survey ran and the shards would otherwise run
+//	                       the test the operator asked to skip. Pinned by
+//	                       TestAgentShardsSkipReachesTheShardsToo.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 //	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-agent-shards)
@@ -49,7 +48,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,13 +125,26 @@ func runAgentShards(args []string) int {
 // split that work. Keeping the two separate is what lets a loaded host lower
 // the survey's parallelism through AGENT_SHARD_SURVEY_PARALLEL without
 // changing the shard split.
-func surveyArgs(parallel int, skip string, short bool) []string {
+//
+// The caller's -timeout comes here too, and for the same reason it was raised:
+// the survey is the longest single run of the lot, one binary over the whole
+// suite, so a timeout that the shards need is a timeout the survey needed
+// first. -failfast stays with the shards: a survey that stops at the first
+// failure has measured part of the suite, and a partial measurement is worse
+// than none, since the shards would be packed from it as though it were
+// complete.
+func surveyArgs(parallel int, skip string, short bool, testFlags []string) []string {
 	// A config built without runAgentShards leaves the field zero; never hand
 	// the test binary "-test.parallel 0".
 	if parallel < 1 {
 		parallel = defaultSurveyParallel
 	}
 	args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(parallel), "-test.run", "^(Test|Example)", "-test.v"}
+	for _, f := range testFlags {
+		if strings.HasPrefix(f, "-test.timeout=") {
+			args = append(args, f)
+		}
+	}
 	if skip != "" {
 		args = append(args, "-test.skip", skip)
 	}
@@ -272,7 +283,27 @@ func runShards(cfg shardsConfig) int {
 	// Build the test binary once; every shard runs it.
 	build := filepath.Join(logdir, "agent.test")
 	buildLog := filepath.Join(logdir, "build.log")
-	if err := cfg.runToLog(in, buildLog, cfg.agentDir, "go", "test", "-c", "-o", build, "."); err != nil {
+	// The build gets the caller's build flags: a -race run has to compile a
+	// race-detector binary, and a -tags run has to compile the files that tag
+	// selects, or the shards test something the caller did not ask for.
+	parsed, err := parseFlags(cfg.flags)
+	if err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		return 1
+	}
+	goflags, err := effectiveGoflags()
+	if err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		return 1
+	}
+	if err := checkGoflags(goflags); err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		return 1
+	}
+	extraFlags := parsed.test
+	buildArgs := append([]string{"test", "-c"}, parsed.build...)
+	buildArgs = append(buildArgs, "-o", build, ".")
+	if err = cfg.runToLog(in, buildLog, cfg.agentDir, "go", buildArgs...); err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
 		}
@@ -290,7 +321,7 @@ func runShards(cfg shardsConfig) int {
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
-	cachedSurvey := cfg.cachedSurveyPath(listOut)
+	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
 	var costs []testCost
 	if !cfg.noSurvey {
@@ -308,7 +339,7 @@ func runShards(cfg shardsConfig) int {
 		}
 		if !cacheHit {
 			_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: surveying test costs (one-time for this test set)")
-			args := surveyArgs(cfg.surveyParallel, cfg.skip, slices.Contains(cfg.flags, "-short"))
+			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
 			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
@@ -358,7 +389,6 @@ func runShards(cfg shardsConfig) int {
 	// Launch every shard, each waited by its own goroutine so its reported
 	// wall time is its OWN clock (the script measured with /usr/bin/time -p
 	// inside each invocation); results are still reported in shard order.
-	extraFlags := translateFlags(cfg.flags)
 	type shardResult struct {
 		err     error
 		seconds float64
@@ -376,6 +406,12 @@ func runShards(cfg shardsConfig) int {
 			return 1
 		}
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
+		// The skip reaches the shards, not just the survey: a cached survey
+		// means no survey runs at all, and the shards would then run the very
+		// test the operator asked to skip.
+		if cfg.skip != "" {
+			args = append(args, "-test.skip", cfg.skip)
+		}
 		args = append(args, extraFlags...)
 		log, err := os.Create(filepath.Join(logdir, fmt.Sprintf("shard%d.log", i)))
 		if err != nil {
@@ -448,6 +484,21 @@ func runShards(cfg shardsConfig) int {
 	return 0
 }
 
+// effectiveGoflags is what the toolchain will actually apply, which is the
+// environment's GOFLAGS layered over `go env -w`'s. It is part of the survey
+// cache key: a flag that arrives this way changes the binary without appearing
+// in any argument list the runner can see. An unreadable answer is not treated
+// as an empty one -- that is the key for "no GOFLAGS at all", and handing one
+// run's survey to another under a different build is the mistake this is in
+// the key to prevent -- so the run stops instead.
+func effectiveGoflags() (string, error) {
+	out, err := exec.CommandContext(context.Background(), "go", "env", "GOFLAGS").Output()
+	if err != nil {
+		return "", fmt.Errorf("reading GOFLAGS: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // surveyRedLine is the excerpt grep the script used when the survey pass came
 // back red. The survey has no per-shard verdict to sort by — it is one pass
 // over the whole suite whose log is pointed at in full — so the excerpt stays
@@ -457,7 +508,7 @@ var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
 // cachedSurveyPath resolves the survey cache file for this test set, or ""
 // when there is nowhere to cache. Cache trouble is never fatal — it only
 // costs the next run a survey.
-func (cfg shardsConfig) cachedSurveyPath(listOut string) string {
+func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags, goflags string) string {
 	cacheDir := cfg.cacheDir
 	if cacheDir == "" {
 		out, err := exec.CommandContext(context.Background(), "go", "env", "GOCACHE").Output()
@@ -469,7 +520,7 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string) string {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut)+".log")
+	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed, goflags, cfg.skip)+".log")
 }
 
 // surveyCoversTestSet reports whether a cached survey accounts for every test

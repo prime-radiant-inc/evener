@@ -50,6 +50,22 @@ func configureShardRunFile() error {
 	return nil
 }
 
+// TestFixtureFlagsGate is how agent-shards' e2e test sees whether the caller's
+// flags reached the two places they have to reach: -tags the compiler, and the
+// test-side flags the invocation of this binary. It is inert unless the test
+// asks for it, so every other fixture run is unaffected.
+func TestFixtureFlagsGate(t *testing.T) {
+	if os.Getenv("SHARDFIXTURE_GATE") != "1" {
+		t.Skip("not asked for: this gate belongs to one e2e test")
+	}
+	if !fixtureBuiltWithTag {
+		t.Error("this binary was built without the shardfixturetag tag, so the build did not get the caller's build flags")
+	}
+	if !testing.Verbose() {
+		t.Error("this invocation did not get -test.v, so the shards did not get the caller's test flags")
+	}
+}
+
 func TestFixtureAlpha(t *testing.T) { time.Sleep(30 * time.Millisecond) }
 
 func TestFixtureBeta(t *testing.T) {

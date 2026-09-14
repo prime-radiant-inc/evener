@@ -24,6 +24,21 @@ func fixtureModule(t *testing.T) string {
 	return abs
 }
 
+// isolateToolchainEnv keeps a run from inheriting the developer's toolchain
+// settings. The runner refuses a test-side flag in GOFLAGS, so
+// `go env -w GOFLAGS=-short` on someone's machine would fail every test that
+// calls runShards -- and a build flag there would quietly change what is
+// built and measured. GOENV=off ignores the written file; the empty GOFLAGS
+// overrides whatever is already exported.
+//
+// Every test that builds a shardsConfig and calls runShards, or that runs the
+// built binary, needs this.
+func isolateToolchainEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", "")
+}
+
 // e2eConfig is a runShards config over the fixture module with isolated
 // TMPDIR and survey cache, capture buffers attached.
 func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string) {
@@ -33,6 +48,7 @@ func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string
 	// The fixture module lives under testdata, outside the repo's go.work
 	// workspace; the child toolchain must resolve its own go.mod instead.
 	t.Setenv("GOWORK", "off")
+	isolateToolchainEnv(t)
 	resolved, err := filepath.EvalSymlinks(tmp)
 	if err != nil {
 		t.Fatalf("resolving TMPDIR fixture: %v", err)
@@ -99,6 +115,22 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	}
 	if !strings.Contains(stdout2.String(), "PASS  agent:1") {
 		t.Fatalf("cached rerun did not pass:\n%s", &stdout2)
+	}
+}
+
+// TestAgentShardsBuildsAndRunsWithTheCallersFlags is the wiring: parseFlags is
+// unit-tested, but nothing proved that runShards hands the build half to
+// `go test -c` and the test half to the shard invocations. The fixture's gate
+// test answers both questions from inside the binary -- a build tag only the
+// caller's -tags can set for the compile, testing.Verbose() for the invocation
+// -- so dropping either half turns this run red. Neither flag needs cgo, so
+// this runs wherever the suite does.
+func TestAgentShardsBuildsAndRunsWithTheCallersFlags(t *testing.T) {
+	cfg, stdout, stderr, _ := e2eConfig(t)
+	cfg.flags = []string{"-tags", "shardfixturetag", "-count=1", "-v"}
+	t.Setenv("SHARDFIXTURE_GATE", "1")
+	if code := runShards(cfg); code != 0 {
+		t.Fatalf("runShards = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -204,6 +236,7 @@ func TestShardRunFileExplicitFailuresAndValidSelection(t *testing.T) {
 
 func buildShardFixture(t *testing.T) string {
 	t.Helper()
+	isolateToolchainEnv(t)
 	bin := filepath.Join(t.TempDir(), "shardfixture.test")
 	cmd := exec.Command("go", "test", "-c", "-o", bin, ".")
 	cmd.Dir = fixtureModule(t)
@@ -418,13 +451,12 @@ func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestAgentShardsSkipOnlyReachesTheSurvey pins how far AGENT_SHARD_SKIP
-// actually reaches. The script only ever appended -test.skip to the survey
-// pass, and this port keeps that: skipping works by leaving a test out of the
-// cost table, so a run that does not survey does not skip. Fixing the wart —
-// threading the regex into the shard invocations and into the cache key —
-// means changing this pin with it.
-func TestAgentShardsSkipOnlyReachesTheSurvey(t *testing.T) {
+// TestAgentShardsSkipReachesTheShardsToo pins AGENT_SHARD_SKIP's contract:
+// the regex reaches the survey and every shard, so the test it names does not
+// run on either path. The survey alone was not enough -- a cached survey means
+// no survey runs, and the shards were then given the very test the operator
+// had asked to skip.
+func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
 
 	surveyed, stdout, stderr, _ := e2eConfig(t)
@@ -433,14 +465,18 @@ func TestAgentShardsSkipOnlyReachesTheSurvey(t *testing.T) {
 		t.Fatalf("surveyed run with the red test skipped: rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 	}
 
+	// The path that used to run the skipped test: no survey, so nothing had
+	// filtered it out before the shards were packed. The shards are given the
+	// skip themselves now, which is what makes the knob mean the same thing on
+	// a cache hit as on a cold run.
 	unsurveyed, stdout2, stderr2, _ := e2eConfig(t)
 	unsurveyed.skip = "^TestFixtureBeta$"
 	unsurveyed.noSurvey = true
-	if rc := runShards(unsurveyed); rc != 1 {
-		t.Fatalf("unsurveyed run: rc = %d, want 1 — AGENT_SHARD_SKIP reaches the shards now, so the interface comment and this pin are both stale\nstdout:\n%s\nstderr:\n%s", rc, stdout2, stderr2)
+	if rc := runShards(unsurveyed); rc != 0 {
+		t.Fatalf("unsurveyed run with the red test skipped: rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout2, stderr2)
 	}
-	if !strings.Contains(stdout2.String(), "--- FAIL: TestFixtureBeta") {
-		t.Fatalf("the unsurveyed run failed for some reason other than the unskipped test:\n%s", stdout2)
+	if strings.Contains(stdout2.String(), "TestFixtureBeta") {
+		t.Fatalf("the skipped test ran anyway:\n%s", stdout2)
 	}
 }
 
@@ -459,6 +495,7 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 // runs agent-shards) for signal-delivery scenarios.
 func buildEvenerDev(t *testing.T) string {
 	t.Helper()
+	isolateToolchainEnv(t)
 	bin := filepath.Join(t.TempDir(), "evener-dev")
 	cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
 	out, err := cmd.CombinedOutput()
