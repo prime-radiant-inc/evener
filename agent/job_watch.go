@@ -2552,6 +2552,42 @@ func (s *Session) liveWatchStatuses() []WatchStatusInfo {
 	return aggregateWatchStatuses(s.ID(), managers)
 }
 
+// LiveWatchesForDescendant returns the live watch rows visible to the descendant
+// session sessionID, so its own thread row can carry them. Today a session's
+// watches are projected only onto its own row by the daemon's status sampler;
+// a subagent session's watches reached no row at all, because the root's status
+// is the only one the daemon projects. This resolves the descendant through the
+// manager that owns children and delegates to that child's own liveWatchStatuses,
+// so isolation matches the root's: a receiver watch the child holds for an
+// ancestor is filtered out here (it belongs on the ancestor's row), and a
+// keyless watch the child owns never surfaces on an ancestor's projection. The
+// root is not its own descendant, so a root (or unknown) session ID returns nil.
+//
+// This is sampled on read, not cached: watch state changes without a per-child
+// app event on this daemon, so the caller re-derives it on every list/read.
+func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
+	if s == nil || sessionID == "" || sessionID == s.ID() {
+		return nil
+	}
+	for _, child := range s.liveSubagentSessions() {
+		if child != nil && child.ID() == sessionID {
+			return child.liveWatchStatuses()
+		}
+	}
+	// A nested descendant is reached through its own parent, so the lookup
+	// recurses rather than building the whole descendant set for every thread on
+	// a list read.
+	for _, child := range s.liveSubagentSessions() {
+		if child == nil {
+			continue
+		}
+		if rows := child.LiveWatchesForDescendant(sessionID); rows != nil {
+			return rows
+		}
+	}
+	return nil
+}
+
 // watchStatusInfoFromConfig projects one live config into its structured
 // status row. It reads only config fields and never mutates them.
 func watchStatusInfoFromConfig(cfg *watchConfig) WatchStatusInfo {

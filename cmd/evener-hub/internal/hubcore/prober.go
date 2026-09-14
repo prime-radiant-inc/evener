@@ -94,6 +94,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	seen := make(map[string]bool)
 	var runningSubagentIDs []string
 	var runningSubagentStates map[string]string
+	var childWatches map[string][]appwire.EvenerWatchInfo
 	for i := range listResponse.Data {
 		thread := listResponse.Data[i]
 		if isRootThread(thread, root) {
@@ -116,6 +117,16 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 				runningSubagentStates = make(map[string]string)
 			}
 			runningSubagentStates[id] = state
+		}
+		// Each child thread now carries its own watches in its diagnostics (the
+		// daemon samples them on read). Record them per child so the tree can
+		// attach them to the child's row; a child with none stays absent, which
+		// the tree reads as "no watches".
+		if watches := diagnosticsWatches(thread.Evener.Diagnostics); len(watches) > 0 {
+			if childWatches == nil {
+				childWatches = make(map[string][]appwire.EvenerWatchInfo)
+			}
+			childWatches[id] = append([]appwire.EvenerWatchInfo(nil), watches...)
 		}
 	}
 	if listedRoot == nil {
@@ -146,6 +157,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		RunningJobs:           runningJobs,
 		CompletedJobs:         completedJobs,
 		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
+		ChildWatches:          childWatches,
 		OK:                    true,
 	}
 }

@@ -390,14 +390,22 @@ type Server struct {
 	// Nil is a legitimate answer: a fresh (never-persisted) descendant has
 	// nothing to seed from.
 	appDescendantTranscriptPathFunc func(threadID string) string
-	retrySafeTurns                  RetrySafeTurnFunctions
-	cancelFunc                      context.CancelFunc
-	interruptWired                  bool
-	steerFunc                       func(string)
-	steerWithImagesFunc             func(string, []ImageAttachment)
-	queueFunc                       func(string) error
-	queueWithImagesFunc             func(string, []ImageAttachment) error
-	goalFunc                        func(objective string) (bool, error)
+	// appDescendantLiveWatchesFunc resolves a descendant thread ID to that
+	// session's own live watch rows, when the daemon can reach the child session.
+	// The thread list/read path consults it per descendant thread to attach the
+	// child's watches to its row; a descendant projection carries no diagnostics
+	// block of its own, so without this a subagent's watches appear on no row.
+	// Nil is a legitimate answer: no descendant watch source is wired, and the
+	// descendants then carry no watch rows (the historical behavior).
+	appDescendantLiveWatchesFunc func(threadID string) []agent.WatchStatusInfo
+	retrySafeTurns               RetrySafeTurnFunctions
+	cancelFunc                   context.CancelFunc
+	interruptWired               bool
+	steerFunc                    func(string)
+	steerWithImagesFunc          func(string, []ImageAttachment)
+	queueFunc                    func(string) error
+	queueWithImagesFunc          func(string, []ImageAttachment) error
+	goalFunc                     func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
 	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)

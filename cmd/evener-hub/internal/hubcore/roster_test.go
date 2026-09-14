@@ -709,6 +709,44 @@ func TestRosterFingerprintIncludesWatchDeliveryTimes(t *testing.T) {
 	}
 }
 
+// A listed child's own watches render on the child's row, so any change the
+// sidebar shows there — a new watch, a delivery, a flip to inactive — must move
+// the fingerprint or onChange never invalidates navigation and the child keeps a
+// stale watch list.
+func TestRosterFingerprintIncludesChildWatches(t *testing.T) {
+	withChild := func(watches []appwire.EvenerWatchInfo) map[string]LiveEntry {
+		return map[string]LiveEntry{"parent": {
+			RunningSubagentIDs: []string{"child"},
+			ChildWatches:       map[string][]appwire.EvenerWatchInfo{"child": watches},
+		}}
+	}
+	base := withChild([]appwire.EvenerWatchInfo{{
+		ID: "watch-child", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true, Deliveries: 1,
+	}})
+	same := withChild([]appwire.EvenerWatchInfo{{
+		ID: "watch-child", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true, Deliveries: 1,
+	}})
+	renamed := withChild([]appwire.EvenerWatchInfo{{
+		ID: "watch-renamed", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true, Deliveries: 1,
+	}})
+	disarmed := withChild([]appwire.EvenerWatchInfo{{
+		ID: "watch-child", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: false, Deliveries: 1,
+	}})
+	emptied := withChild(nil)
+	if rosterFingerprint(base) != rosterFingerprint(same) {
+		t.Fatal("roster fingerprint must not change when a child's watches are identical")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(renamed) {
+		t.Fatal("roster fingerprint must change when a child's watch identity changes")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(disarmed) {
+		t.Fatal("roster fingerprint must change when a child's watch flips inactive")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(emptied) {
+		t.Fatal("roster fingerprint must change when a child's watches are emptied")
+	}
+}
+
 // An event watch's every-Nth throttle and its filter change how often it fires,
 // so changing either must move the fingerprint or the sidebar keeps a row whose
 // cadence no longer matches the daemon. A daemon that reports the same watches

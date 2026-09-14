@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
@@ -22,6 +23,9 @@ type probeDaemonConfig struct {
 	hubToken    string
 	source      wireProbeEnvelopeSource
 	descendants map[string]string
+	// childWatches is installed as the daemon's descendant watch accessor, so
+	// each listed child thread carries its own watches on read.
+	childWatches map[string][]agent.WatchStatusInfo
 }
 
 func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rendezvous.Entry) {
@@ -30,6 +34,11 @@ func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rende
 	srv.SetAppIdentity("local", cfg.sessionID)
 	srv.SetState(cfg.state)
 	srv.SetThreadEnvelopeSource(cfg.source)
+	if cfg.childWatches != nil {
+		srv.SetDescendantLiveWatchesFunc(func(threadID string) []agent.WatchStatusInfo {
+			return cfg.childWatches[threadID]
+		})
+	}
 	for id, state := range cfg.descendants {
 		srv.RecordDescendantAppEvent(cfg.sessionID, events.SessionEvent{
 			Kind:      events.EventUserInput,
@@ -218,6 +227,30 @@ func fuzzScenarioStatusProber_DecodesRunningSubagentStates(t *testing.T) {
 
 func TestProbeRunningSubagentStates(t *testing.T) {
 	fuzzScenarioStatusProber_DecodesRunningSubagentStates(t)
+}
+
+// A listed child thread now carries its own watches; the prober must record them
+// per child so the tree can attach them to that child's row. The root's own
+// watches stay on the root, and the child's never leak onto the root's list.
+func TestProbeCarriesChildWatches(t *testing.T) {
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "parent", state: appwire.ThreadStatusIdle,
+		descendants: map[string]string{"child-a": appwire.ThreadStatusIdle},
+		childWatches: map[string][]agent.WatchStatusInfo{
+			"child-a": {{ID: "watch-child", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}},
+		},
+	})
+	result := prober.Probe(entry)
+	if !result.OK {
+		t.Fatal("expected successful status probe")
+	}
+	rows := result.ChildWatches["child-a"]
+	if len(rows) != 1 || rows[0].ID != "watch-child" || !rows[0].Active {
+		t.Fatalf("child watches = %+v, want the child's own watch", result.ChildWatches)
+	}
+	if len(result.Watches) != 0 {
+		t.Fatalf("root watches = %+v, want none (the child's watch stays on the child)", result.Watches)
+	}
 }
 
 func TestProbeIgnoresRetiredDetailedJobType(t *testing.T) {

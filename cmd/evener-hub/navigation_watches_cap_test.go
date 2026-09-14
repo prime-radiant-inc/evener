@@ -3,7 +3,9 @@ package hub
 import (
 	"fmt"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
@@ -129,5 +131,56 @@ func TestCloneNavigationSummaryCopiesOmittedWatches(t *testing.T) {
 	clone := cloneNavigationSummary(original)
 	if clone.OmittedWatches != 7 {
 		t.Fatalf("clone OmittedWatches = %d, want 7", clone.OmittedWatches)
+	}
+}
+
+// A nested child summary is bounded exactly like a root row: the same cap keeps
+// its armed rows and the same omitted counter reports what it dropped. This runs
+// the whole path — BuildTreeAt attaches the parent's ChildWatches to the child
+// row, then the projector shapes it — because a hand-built Tree would only prove
+// the projector caps a node, not that the child row ever gets its watches.
+func TestNavigationChildSummaryCapsItsOwnWatches(t *testing.T) {
+	const inert = 12
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "child", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []hubcore.LiveEntry{{
+		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle,
+		RunningSubagentIDs: []string{"child"},
+		ChildWatches:       map[string][]appwire.EvenerWatchInfo{"child": watchListForCap(40, inert)},
+	}}
+	tree := hubcore.BuildTreeAt(metas, live, nil, now)
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := projection.LivePage(0, 0)
+	if len(resource.Sessions) != 1 {
+		t.Fatalf("live sessions = %+v, want one parent row", resource.Sessions)
+	}
+	parent := resource.Sessions[0]
+	if len(parent.Watches) != 0 || parent.OmittedWatches != 0 {
+		t.Fatalf("parent watches = %+v / omitted %d, want none", parent.Watches, parent.OmittedWatches)
+	}
+	if len(parent.Children) != 1 {
+		t.Fatalf("parent children = %+v, want the child summary", parent.Children)
+	}
+	child := parent.Children[0]
+	if len(child.Watches) != maxNavigationWatches {
+		t.Fatalf("child kept watches = %d, want the cap %d", len(child.Watches), maxNavigationWatches)
+	}
+	if child.OmittedWatches != 40-maxNavigationWatches {
+		t.Fatalf("child OmittedWatches = %d, want %d", child.OmittedWatches, 40-maxNavigationWatches)
+	}
+	armedKept := 0
+	for _, watch := range child.Watches {
+		if watch.Active {
+			armedKept++
+		}
+	}
+	if armedKept != 40-inert {
+		t.Fatalf("child armed watches kept = %d, want all %d", armedKept, 40-inert)
 	}
 }

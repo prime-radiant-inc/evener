@@ -91,10 +91,17 @@ func TestBuildTreeCarriesSessionWatchesForNavigation(t *testing.T) {
 	metas := []schema.SessionMeta{
 		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "sibling", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "child", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle,
-			Watches: []appwire.EvenerWatchInfo{{ID: "watch-parent", Source: "timer", Note: "owner"}}},
+			Watches:            []appwire.EvenerWatchInfo{{ID: "watch-parent", Source: "timer", Note: "owner"}},
+			RunningSubagentIDs: []string{"child"},
+			// The child has no LiveEntry of its own; its watches ride the parent's
+			// ChildWatches, the way the prober now reports them.
+			ChildWatches: map[string][]appwire.EvenerWatchInfo{
+				"child": {{ID: "watch-child", Source: "self", Note: "child-own"}},
+			}},
 		{PID: 2, SessionID: "sibling", Status: appwire.ThreadStatusIdle,
 			Watches: []appwire.EvenerWatchInfo{{ID: "watch-sibling", Source: "output", Note: "receiver"}}},
 	}
@@ -121,6 +128,21 @@ func TestBuildTreeCarriesSessionWatchesForNavigation(t *testing.T) {
 		if watch.ID == "watch-parent" {
 			t.Fatalf("sibling carries the parent's watch: %+v", siblingRow.Watches)
 		}
+	}
+	// The in-process child carries its own watches on its nested row — live and
+	// project — and neither the parent's nor the sibling's.
+	if len(parentRow.Children) != 1 {
+		t.Fatalf("parent children = %+v, want the one nested subagent", parentRow.Children)
+	}
+	childRow := parentRow.Children[0]
+	if childRow.ID != "child" {
+		t.Fatalf("child row ID = %q, want child", childRow.ID)
+	}
+	if len(childRow.Watches) != 1 || childRow.Watches[0].ID != "watch-child" {
+		t.Fatalf("child live watches = %+v, want only watch-child", childRow.Watches)
+	}
+	if len(parentProject.Children) != 1 || len(parentProject.Children[0].Watches) != 1 || parentProject.Children[0].Watches[0].ID != "watch-child" {
+		t.Fatalf("child project watches = %+v, want only watch-child", parentProject.Children)
 	}
 }
 

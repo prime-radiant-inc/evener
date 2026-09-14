@@ -913,6 +913,11 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	liveRefMap := make(map[string]string, len(live))
 	runningSubagentIDs := make(map[string]bool)
 	runningSubagentStates := make(map[string]string)
+	// childWatches indexes each listed in-process child's own live watches by
+	// child session ID. A child has no LiveEntry of its own, so buildNode cannot
+	// read them off liveMap; without this index a child row got the zero value
+	// and rendered no watches at all.
+	childWatches := make(map[string][]appwire.EvenerWatchInfo)
 	for _, le := range live {
 		if le.SessionID != "" {
 			liveMap[le.SessionID] = le
@@ -933,6 +938,9 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				runningSubagentIDs[childID] = true
 				if state := le.RunningSubagentStates[childID]; state != "" {
 					runningSubagentStates[childID] = state
+				}
+				if watches := le.ChildWatches[childID]; len(watches) > 0 {
+					childWatches[childID] = watches
 				}
 			}
 		}
@@ -956,6 +964,16 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			return NormalizeState(state)
 		}
 		return "idle"
+	}
+
+	// watchesFor resolves a session's own live watches: a root's ride its live
+	// entry, a listed child's ride the per-child index. CloneEvenerWatches copies
+	// the slices, so a node never aliases the roster snapshot or another node.
+	watchesFor := func(id string) []appwire.EvenerWatchInfo {
+		if watches, ok := childWatches[id]; ok {
+			return appwire.CloneEvenerWatches(watches)
+		}
+		return appwire.CloneEvenerWatches(liveMap[id].Watches)
 	}
 
 	// stateFor resolves the display state for a session ID.
@@ -1160,7 +1178,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Age:           AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
 			RunningJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
 			CompletedJobs: appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
-			Watches:       appwire.CloneEvenerWatches(liveMap[m.ID].Watches),
+			Watches:       watchesFor(m.ID),
 		}
 
 		childMetas := childrenByParent[m.ID]
