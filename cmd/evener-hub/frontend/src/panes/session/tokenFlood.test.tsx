@@ -17,7 +17,9 @@ import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } 
 import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
-import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";:cmd/evener-hub/frontend/src/panes/session/tokenFlood.test.tsx
+import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import Session from "./Session";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./transcript/types";
 
 const FLOOD_SIZE = 10_000;
 
