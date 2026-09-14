@@ -217,7 +217,8 @@ type Cache[T any] struct {
 	// stat is os.Stat, indirected so a test can pin what happens to the
 	// file between the looks this cache takes at it — orderings no fixture
 	// can produce from the outside, because nothing else runs in those
-	// windows.
+	// windows. Read it through statFile, never directly: a zero-value
+	// Cache is a usable, caching-disabled cache and leaves this nil.
 	stat func(string) (os.FileInfo, error)
 
 	hits, misses, coalesced, evictions, fullRescans int
@@ -257,7 +258,7 @@ func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Resu
 		return c.readUncached(ctx, path, extend)
 	}
 
-	info, statErr := c.stat(path)
+	info, statErr := c.statFile(path)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			return Result[T]{Absent: true, Epoch: c.drop(path)}, nil
@@ -492,7 +493,7 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 			// changed underneath its index. Stat again: the append that tore
 			// the first stat has completed by now and reports the larger
 			// size, while a rewrite still reports the same one.
-			fresh, statErr := c.stat(path)
+			fresh, statErr := c.statFile(path)
 			if statErr != nil {
 				var zero Result[T]
 				return zero, statErr
@@ -580,7 +581,7 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 	recordedMod := info.ModTime()
 	if offset > recordedSize {
 		recordedSize = offset
-		fresh, statErr := c.stat(path)
+		fresh, statErr := c.statFile(path)
 		if statErr != nil {
 			return Result[T]{}, statErr
 		}
@@ -688,7 +689,7 @@ func captureTailProbe(path string, offset int64) ([]byte, error) {
 // path does not apply here — there is no shared flight for one caller's
 // cancellation to poison in the first place.
 func (c *Cache[T]) readUncached(ctx context.Context, path string, extend Extend[T]) (Result[T], error) {
-	if _, err := c.stat(path); err != nil {
+	if _, err := c.statFile(path); err != nil {
 		if os.IsNotExist(err) {
 			return Result[T]{Absent: true}, nil
 		}
@@ -702,6 +703,17 @@ func (c *Cache[T]) readUncached(ctx context.Context, path string, extend Extend[
 		return zeroResult, err
 	}
 	return Result[T]{Value: value, Offset: offset}, nil
+}
+
+// statFile is how this cache looks at a file. New fills stat in; a
+// zero-value Cache does not, and that configuration is supported (see
+// New's doc comment on maxEntries <= 0), so fall back rather than
+// depending on a constructor nobody is required to call.
+func (c *Cache[T]) statFile(path string) (os.FileInfo, error) {
+	if c.stat != nil {
+		return c.stat(path)
+	}
+	return os.Stat(path)
 }
 
 func (c *Cache[T]) publishLocked(path string, e entry[T]) {

@@ -1295,3 +1295,37 @@ func TestCache_DeletedPathReportsOneStableGeneration(t *testing.T) {
 		t.Fatal("a path that was deleted and recreated must not report the generation of a path nothing has happened to")
 	}
 }
+
+// TestCache_ZeroValueReadsWithoutCaching pins that the caching-disabled path
+// works on a Cache nobody constructed. maxEntries <= 0 is a documented,
+// deliberately inert configuration — every Get reads from byte zero and
+// nothing is retained — and a zero-value Cache is the simplest way to reach
+// it, so it must not depend on a field only New fills in.
+func TestCache_ZeroValueReadsWithoutCaching(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2, 3})
+	var calls []int64
+	var c Cache[intsFold]
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+
+	got, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get on a zero-value cache: %v", err)
+	}
+	if got.Value.sum != 6 {
+		t.Fatalf("value = %+v, want 1+2+3", got.Value)
+	}
+	if got.Absent {
+		t.Fatal("an existing file must not read as absent")
+	}
+
+	missing, err := c.Get(ctx, filepath.Join(dir, "gone.txt"), extend)
+	if err != nil {
+		t.Fatalf("Get on a missing path: %v", err)
+	}
+	if !missing.Absent {
+		t.Fatal("a missing path must read as absent even with caching disabled")
+	}
+}
