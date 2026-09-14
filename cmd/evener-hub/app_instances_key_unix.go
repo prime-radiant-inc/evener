@@ -3,6 +3,7 @@
 package hub
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -46,4 +47,48 @@ func createEndpointFingerprintKey(path string) (*os.File, error) {
 		return nil, fmt.Errorf("open endpoint fingerprint key %s", path)
 	}
 	return file, nil
+}
+
+// lockEndpointFingerprintKey takes the advisory lock that serializes repairs of
+// the key at path across processes: the lock file is path plus ".lock", and the
+// flock is blocking, so a process that finds another holding the lock waits for
+// it and then judges the file the holder left behind rather than running beside
+// it. The open keeps the read side's O_NOFOLLOW discipline - a link planted at
+// the lock path must not be able to redirect the lock, and what answers is
+// judged a regular file before it is locked - and O_CLOEXEC keeps the
+// descriptor out of any child. The caller calls the returned release exactly
+// once, when the key path is no longer in use.
+func lockEndpointFingerprintKey(path string) (func(), error) {
+	lockPath := path + ".lock"
+	fd, err := unix.Open(lockPath, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open endpoint fingerprint key lock %s: %w", lockPath, err)
+	}
+	file := os.NewFile(uintptr(fd), lockPath)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open endpoint fingerprint key lock %s", lockPath)
+	}
+	closeOnError := func(err error) (func(), error) {
+		if closeErr := file.Close(); closeErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("close endpoint fingerprint key lock %s: %w", lockPath, closeErr))
+		}
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return closeOnError(fmt.Errorf("stat endpoint fingerprint key lock %s: %w", lockPath, err))
+	}
+	if !info.Mode().IsRegular() {
+		return closeOnError(fmt.Errorf("%s is not a regular file", lockPath))
+	}
+	// Blocking, not LOCK_NB: waiting for the holder is the point. The loser of
+	// the race has to judge the key the winner published.
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		return closeOnError(fmt.Errorf("lock endpoint fingerprint key %s: %w", lockPath, err))
+	}
+	return func() {
+		_ = unix.Flock(fd, unix.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }

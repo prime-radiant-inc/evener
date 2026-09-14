@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -221,5 +222,117 @@ func TestEndpointFingerprintWriteFaultHelper(t *testing.T) {
 	}
 	if _, err := repairEndpointFingerprintKey(path); err == nil {
 		t.Fatal("the size-limited repair succeeded, so this helper cannot pin the partial-write behavior")
+	}
+}
+
+// Two hub processes can share a state directory, and the key file is repaired
+// under a lock only one of them can hold, so a repair that finds another holder
+// has to wait for it: the winner publishes its key inside the critical section,
+// and the loser judges that file afterwards instead of replacing it with a key
+// of its own. Without the lock both processes see the same unusable key, each
+// creates a replacement, and the last rename wins - the first process then
+// serves fingerprints keyed by a key that is no longer on disk. Here the lock
+// is taken directly, standing in for the other process: flock is per open file
+// description, so a second open in this same process conflicts exactly as
+// another process's would.
+func TestEndpointFingerprintKeyRepairWaitsForAnotherProcess(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, endpointFingerprintKeyFile)
+	// An empty 0600 file at the key path: a regular file, but not a usable key,
+	// which is the state both processes observe before either repairs it.
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+
+	release, err := lockEndpointFingerprintKey(path)
+	if err != nil {
+		t.Fatalf("lockEndpointFingerprintKey: %v", err)
+	}
+	released := false
+	releaseLock := func() {
+		if released {
+			return
+		}
+		released = true
+		release()
+	}
+	// The lock is released exactly once: on every path out of this test.
+	defer releaseLock()
+
+	type repaired struct {
+		key []byte
+		err error
+	}
+	done := make(chan repaired, 1)
+	go func() {
+		key, err := repairEndpointFingerprintKey(path)
+		done <- repaired{key: key, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		t.Fatalf("the repair returned (key %q, err %v) while another process held the lock; want it waiting for the holder", got.key, got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// The other process publishes its key inside its critical section; the
+	// repair has to adopt exactly this key rather than replace it with one of
+	// its own.
+	published := []byte("the-key-the-other-hub-published")
+	if err := os.WriteFile(path, published, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+	releaseLock()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("repairEndpointFingerprintKey: %v", got.err)
+		}
+		if !bytes.Equal(got.key, published) {
+			t.Fatalf("repair returned %q, want the key the other process published", got.key)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the repair did not return after the lock was released")
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if !bytes.Equal(raw, published) {
+		t.Fatalf("the key file now holds %q, want the other process's key left in place", raw)
+	}
+}
+
+// The lock file is opened under the same discipline the key file is: a symlink
+// planted at path+".lock" must not be able to redirect the hub's lock - and,
+// through it, what the locked section then does - at another file. The repair
+// fails closed with an error instead of following the link, and the link's
+// target is left exactly as it was.
+func TestEndpointFingerprintKeyRepairRefusesALinkedLockPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, endpointFingerprintKeyFile)
+	const targetContent = "an-operators-file-the-hub-must-not-touch"
+	target := filepath.Join(dir, "operator-file")
+	if err := os.WriteFile(target, []byte(targetContent), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", target, err)
+	}
+	if err := os.Symlink(target, path+".lock"); err != nil {
+		t.Fatalf("Symlink(%s.lock): %v", path, err)
+	}
+
+	if _, err := repairEndpointFingerprintKey(path); err == nil {
+		t.Fatal("the repair accepted a symlinked lock path; want it failing closed")
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", target, err)
+	}
+	if string(raw) != targetContent {
+		t.Fatalf("the lock symlink's target is now %q, want it untouched: the hub must not write through the lock path", raw)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Lstat(%s) = %v, want no key published behind a lock path the repair refused", path, err)
 	}
 }

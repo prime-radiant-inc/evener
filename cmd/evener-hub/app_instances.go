@@ -467,7 +467,16 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 }
 
 // repairEndpointFingerprintKey puts a usable key at path: it creates one where
-// there is none, and replaces one that cannot be read. The fresh key is written
+// there is none, and replaces one that cannot be read. Repairs are serialized
+// across the processes sharing the state root - the lock beside path is held
+// across the judgement and the publish, and the re-read that precedes a
+// replacement happens under it - so a usable key another process published is
+// adopted rather than replaced: "a usable key is never replaced" is a property
+// of the file, not only of this process's mutex. The state root is the
+// registry's (reg.StateRoot(), app_rpc.go's hubAuthStateRoot), which
+// hub_state_root does not move, so two hub processes with different
+// hub_state_root - and so different hub.lock files - can still repair this one
+// key file together. The fresh key is written
 // to a temp file beside path and published atomically: os.Link creates it only
 // while the path is still absent, so a key another hub wrote first is used
 // as-is - two hubs must not each key their own digests - and a path that is
@@ -477,6 +486,18 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 // planted in stays recoverable (a non-empty one is left as the obstacle it
 // is). A usable key is never replaced.
 func repairEndpointFingerprintKey(path string) ([]byte, error) {
+	// The lock file is a sibling of the key, so a state root that does not
+	// exist yet has to be created before the lock can be taken; otherwise the
+	// lock open fails ENOENT ahead of publishFreshEndpointFingerprintKey's own
+	// MkdirAll.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	release, err := lockEndpointFingerprintKey(path)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	var lastErr error
 	for range 2 {
 		key, err := publishFreshEndpointFingerprintKey(path)
