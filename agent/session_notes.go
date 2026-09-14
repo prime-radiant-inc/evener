@@ -96,7 +96,11 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 	// per past entry and the absent case is the common one, which is why the
 	// walk was worth removing. A false positive (the spelling inside some string
 	// value) costs only the walk this used to do unconditionally.
-	if !bytes.Contains(data, []byte(notesHumanNoteFieldKey)) {
+	// The pre-filter trusts the key's bytes, which is only sound while the
+	// document carries no escapes: "\u0068uman_note" is a valid JSON spelling of
+	// the same key and the strict reader decodes it, so any backslash falls
+	// through to the token walk instead of being reported absent.
+	if !bytes.Contains(data, []byte("\\")) && !bytes.Contains(data, []byte(notesHumanNoteFieldKey)) {
 		return "", false, nil
 	}
 

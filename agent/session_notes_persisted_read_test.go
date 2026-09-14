@@ -204,3 +204,22 @@ func BenchmarkReadPersistedHumanNoteAbsent(b *testing.B) {
 		})
 	}
 }
+
+// The absence pre-filter trusts the key's bytes, which is only sound while the
+// document carries no escapes: "\u0068uman_note" is a valid JSON spelling of the
+// same key, and the strict reader decodes it, so reporting absence there would
+// silently hide a note the authority shows (roborev's sixth round).
+func TestReadPersistedHumanNoteAcceptsAnEscapedKey(t *testing.T) {
+	sessionID := identifier.MustNewSessionID()
+	stateDir := t.TempDir()
+	data := strings.Replace(strictSnapshotJSON(sessionID, "escaped-key note"), `"human_note"`, `"\u0068uman_note"`, 1)
+	writeMutationSnapshotFile(t, stateDir, sessionID, data)
+	if _, _, err := ReadCanonicalHumanNote(stateDir, sessionID); err != nil {
+		t.Fatalf("strict reader rejected the escaped-key fixture: %v", err)
+	}
+
+	note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+	if err != nil || !present || note != "escaped-key note" {
+		t.Fatalf("light read = (%q, %v, %v), want the escaped-key note", note, present, err)
+	}
+}
