@@ -1314,6 +1314,7 @@ test("fresh guided connection waits for Continue and explicit model choice witho
     credentialRequired: true,
     authModes: ["apiKey"],
     baseUrl: "https://provider.example/v1",
+    endpointFingerprint: "fp-provider",
   };
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => {
@@ -1395,6 +1396,7 @@ test("closing the handoff without choosing requires an explicit model before Sta
     credentialRequired: true,
     authModes: ["apiKey"],
     baseUrl: "https://provider.example/v1",
+    endpointFingerprint: "fp-provider",
   };
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => {
@@ -3593,6 +3595,7 @@ test("entering onboarding for one draft scope does not suppress the fallback for
             credentialRequired: true,
             authModes: ["apiKey"],
             baseUrl: "https://provider.example/v1",
+            endpointFingerprint: "fp-provider",
           },
         },
       ],
@@ -3656,6 +3659,7 @@ test("onboarding a second draft scope does not forget the first scope's explicit
             credentialRequired: true,
             authModes: ["apiKey"],
             baseUrl: "https://provider.example/v1",
+            endpointFingerprint: "fp-provider",
           },
         },
       ],
@@ -3802,6 +3806,7 @@ test("an Advanced-options model override after onboarding satisfies the requirem
     credentialRequired: true,
     authModes: ["apiKey"],
     baseUrl: "https://provider.example/v1",
+    endpointFingerprint: "fp-provider",
   };
   const client = readyClient((fake) => {
     fake.on("evener/launch/schema", () => ({
