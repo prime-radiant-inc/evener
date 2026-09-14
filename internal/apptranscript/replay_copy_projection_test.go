@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -92,5 +93,47 @@ func TestReplayCopiesProjectNoItems(t *testing.T) {
 	}
 	if got := pagedTexts["ask turn_m1"]; got != 1 {
 		t.Fatalf("the copied user turn appears %d times across the pages, want once", got)
+	}
+}
+
+// A copy carries the same usage its original does, so a group that counts both
+// reports the round twice — and a copy that consumed an item ordinal moves
+// every later key. Both readers have to see the same entries for either to
+// hold.
+func TestReplayCopiesAddNoUsageAndNoOrdinals(t *testing.T) {
+	spend := llm.Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110}
+	opener := schema.NewTurn(schema.TurnUserInput, llm.User("ask"))
+	opener.StableTurnID = "turn_m1"
+	answer := schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer"))
+	answer.Usage = spend
+	copyOf := func(turn schema.Turn) schema.Turn {
+		turn.ContextReplay = true
+		turn.CompactionFoldID = "fold_usage"
+		return turn
+	}
+	marker := schema.NewTurn(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"))
+	marker.CompactionFoldID = "fold_usage"
+	path := writeEntries(t,
+		transcript.Entry{Kind: "entry", Seq: 1, Turn: opener},
+		transcript.Entry{Kind: "entry", Seq: 2, Turn: answer},
+		transcript.Entry{Kind: "entry", Seq: 3, Turn: copyOf(opener)},
+		transcript.Entry{Kind: "entry", Seq: 4, Turn: copyOf(answer)},
+		transcript.Entry{Kind: "entry", Seq: 5, Turn: marker},
+	)
+
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	for _, turn := range full {
+		if turn.ID != "turn_m1" || turn.Usage == nil {
+			continue
+		}
+		if turn.Usage.TotalTokens != 110 {
+			t.Fatalf("the opener's group reports %d total tokens, want the round's 110 counted once", turn.Usage.TotalTokens)
+		}
+	}
+	fullKeys := keysForTurns(full)
+
+	indexed, _ := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 100, boundedTestProjector)
+	if got := keysForTurns(indexed); !reflect.DeepEqual(got, fullKeys) {
+		t.Fatalf("bounded keys=%v, full keys=%v: a copy moved one reader's ordinals and not the other's", got, fullKeys)
 	}
 }

@@ -138,6 +138,15 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // its per-entry turn id (the per-entry contract unchanged) and buffers the
 // result for grouping.
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
+	if turn.ContextReplay {
+		// A copy consumes a physical record and nothing else: it adds no item,
+		// no usage and no group boundary, because the turn it copies is
+		// already in this file and already accounted for. Excluded here, where
+		// the scan hands entries to the accumulator, so every group-level
+		// stamp below — usage, failure, timestamps, ordinals — sees the same
+		// entries the bounded reader's index does.
+		return
+	}
 	turnID := persistedTurnID(turn, entryIndex)
 	var items []appwire.ThreadItem
 	if project != nil {

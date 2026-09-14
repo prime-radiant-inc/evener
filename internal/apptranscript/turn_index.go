@@ -892,6 +892,26 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			}
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
+			if entry.Turn.ContextReplay {
+				// A copy consumes a physical record — the index still needs its
+				// extent to resume a scan and to answer divergence — and
+				// nothing else: no item, no usage, no tool state, and above all
+				// no logical boundary, since the turn it copies already drew
+				// one. The full read excludes copies where its own scan hands
+				// entries to the accumulator; this is the same exclusion on the
+				// indexed side, so the two readers agree by construction.
+				if len(appended) > 0 {
+					record.TurnID = appended[len(appended)-1].TurnID
+				} else if n := index.recordCount(); n > 0 {
+					record.TurnID = index.recordAt(n - 1).TurnID
+				}
+				record.VisibleIndex = visibleRecords
+				appended = append(appended, record)
+				offset += length
+				index.CompleteSize = offset
+				index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, framedLine)
+				continue
+			}
 			record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
 			// Logical-group bookkeeping runs BEFORE projection: the entry is
