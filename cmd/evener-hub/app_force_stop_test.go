@@ -1880,8 +1880,7 @@ func TestForceStopRefusesStaleIdentityAmongSameRefResidents(t *testing.T) {
 	if err == nil {
 		t.Fatal("stale identity was accepted against same-ref replacements")
 	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
+	if _, ok := errors.AsType[appwire.WireError](err); !ok {
 		t.Fatalf("stale refusal is not a typed wire error: %v", err)
 	}
 	if slices.Contains(events, "kill") || slices.Contains(events, "wait") {

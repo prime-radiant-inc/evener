@@ -921,8 +921,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			// so it is reported as accepted. The failure is logged (serveLogf)
 			// and stays in the lifecycle's Failure field; it is observability,
 			// not an RPC error the caller could misread as a refused retire.
-			var teardown *retirementTeardownError
-			if !errors.As(err, &teardown) {
+			if _, ok := errors.AsType[*retirementTeardownError](err); !ok {
 				return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, err
 			}
 		}
