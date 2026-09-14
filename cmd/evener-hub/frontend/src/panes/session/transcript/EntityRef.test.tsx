@@ -172,6 +172,26 @@ test("navigable renders exactly one OpenButton that opens the pane", () => {
   });
 });
 
+test("EntityRef reuses an already-open exact transcript pane", () => {
+  const workspace = workspaceStore.getState();
+  const owner = workspace.openPane("session", { ref: "local:s" });
+  const exact = workspace.openPane("transcript", { ref: "job:job_x", parentRef: "local:s" });
+  const unrelated = workspace.openPane("transcript", { ref: "local:other" });
+  workspace.focusPane(unrelated);
+  render(<EntityRef view={jobView()} id="job_x" />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Open job log" }));
+
+  const transcriptPanes = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "transcript" && (pane.params as { ref?: unknown }).ref === "job:job_x");
+  expect(transcriptPanes).toHaveLength(1);
+  expect(transcriptPanes[0]?.id).toBe(exact);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
+  expect(workspaceStore.getState().focusedPaneId).toBe(exact);
+  expect(workspaceStore.getState().panes.some((pane) => pane.id === unrelated)).toBe(true);
+});
+
 test("delegate renders exactly one OpenButton for its open target", () => {
   render(<EntityRef view={delegateView()} id="dlg_x" />);
 
@@ -220,11 +240,14 @@ test("watch renders a card trigger with no OpenButton", () => {
   expect(card.textContent).toContain("last-known");
 });
 
-test("shows the card after the shared focus delay, describes the trigger, and hides immediately", () => {
+test("shows the card after the shared focus delay, describes both controls, and hides immediately", () => {
   vi.useFakeTimers();
   render(<EntityRef view={jobView()} id="job_x" />);
   const trigger = screen.getByTestId("entity-trigger");
+  const openButton = screen.getByRole("button", { name: "Open job log" });
 
+  expect(trigger.getAttribute("aria-describedby")).toBeNull();
+  expect(openButton.getAttribute("aria-describedby")).toBeNull();
   fireEvent.focus(trigger);
   expect(screen.queryByRole("tooltip")).toBeNull();
   advance(299);
@@ -234,11 +257,26 @@ test("shows the card after the shared focus delay, describes the trigger, and hi
   const card = screen.getByRole("tooltip");
   expect(card.parentElement).toBe(document.body);
   expect(trigger.getAttribute("aria-describedby")).toBe(card.id);
+  expect(openButton.getAttribute("aria-describedby")).toBe(card.id);
   expect(card.querySelector("button, a, input, select, textarea, [tabindex]")).toBeNull();
 
   fireEvent.blur(trigger);
   expect(screen.queryByRole("tooltip")).toBeNull();
   expect(trigger.getAttribute("aria-describedby")).toBeNull();
+  expect(openButton.getAttribute("aria-describedby")).toBeNull();
+});
+
+test("focusing the OpenButton reveals the entity card after the shared delay", () => {
+  vi.useFakeTimers();
+  render(<EntityRef view={jobView()} id="job_x" />);
+
+  fireEvent.focus(screen.getByRole("button", { name: "Open job log" }));
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  advance(299);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  advance(1);
+
+  expect(screen.getByRole("tooltip").textContent).toContain("Compile the frontend");
 });
 
 test("falls back to the shared render-context entity map", () => {

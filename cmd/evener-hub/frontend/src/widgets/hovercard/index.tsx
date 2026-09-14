@@ -18,7 +18,11 @@ import { useFloatingLabel } from "./useFloatingLabel";
 
 export interface HoverCardProps {
   label: ReactNode;
-  children: ReactNode;
+  children: ReactNode | ((association: HoverCardAssociation) => ReactNode);
+}
+
+export interface HoverCardAssociation {
+  describedBy?: string;
 }
 
 const CLASS = {
@@ -60,12 +64,17 @@ export function HoverCard({ label, children }: HoverCardProps) {
     measure();
   }, [measure, visible]);
 
-  const singleChild = Children.count(children) === 1 && isValidElement(children) ? children : null;
-  const describedChild = singleChild
-    ? cloneElement(singleChild as ReactElement<DescribableProps>, {
-        "aria-describedby": visible ? cardId : undefined,
-      })
-    : children;
+  const describedBy = visible ? cardId : undefined;
+  const singleChild =
+    typeof children !== "function" && Children.count(children) === 1 && isValidElement(children) ? children : null;
+  const describedChild =
+    typeof children === "function"
+      ? children({ describedBy })
+      : singleChild
+        ? cloneElement(singleChild as ReactElement<DescribableProps>, {
+            "aria-describedby": describedBy,
+          })
+        : children;
 
   return (
     <span ref={wrapperRef} className={CLASS.wrapper} {...triggerProps}>

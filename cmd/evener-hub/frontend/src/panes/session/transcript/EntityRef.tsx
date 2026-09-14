@@ -236,16 +236,26 @@ export function EntityRef({ view, id, display, triggerOnly, embedded }: EntityRe
   return (
     <span className={CLASS.group}>
       <HoverCard label={<EntityCard view={resolved} />}>
-        <span data-testid="entity-trigger" tabIndex={embedded ? undefined : 0} className={CLASS.trigger}>
-          {text}
-        </span>
+        {({ describedBy }) => (
+          <>
+            <span
+              data-testid="entity-trigger"
+              tabIndex={embedded ? undefined : 0}
+              className={CLASS.trigger}
+              aria-describedby={describedBy}
+            >
+              {text}
+            </span>
+            {target && !triggerOnly ? (
+              <OpenButton
+                label={resolved.kind === "job" ? "Open job log" : "Open delegate transcript"}
+                describedBy={describedBy}
+                onClick={() => openTranscript(target.ref, target.parentRef)}
+              />
+            ) : null}
+          </>
+        )}
       </HoverCard>
-      {target && !triggerOnly ? (
-        <OpenButton
-          label={resolved.kind === "job" ? "Open job log" : "Open delegate transcript"}
-          onClick={() => openTranscript(target.ref, target.parentRef)}
-        />
-      ) : null}
     </span>
   );
 }
