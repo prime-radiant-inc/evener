@@ -1586,14 +1586,17 @@ func TestAppEventProjectorProjectsCompactionTurn(t *testing.T) {
 		},
 	})
 
-	if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+	// A marker is a standalone turn of its own, the shape reload gives its
+	// record: the frames are that turn's lifecycle with the announcement in
+	// it.
+	if len(out) != 3 || out[0].Method != appwire.NotifyTurnStarted || out[2].Method != appwire.NotifyTurnCompleted {
 		t.Fatalf("notifications=%+v", out)
 	}
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
-	if turn.ID == "" || turn.Status != appwire.TurnStatusCompleted || turn.ItemsView != "full" || len(turn.Items) != 1 {
+	if turn.ID == "" || turn.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("turn=%+v", turn)
 	}
-	item := turn.Items[0]
 	if item.TurnID != turn.ID || item.Type != "systemMessage" || item.Description != "Context summary" || item.Text != "[CONTEXT SUMMARY]\nkept the useful state" || item.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("item=%+v", item)
 	}
@@ -1613,11 +1616,14 @@ func TestAppEventProjectorProjectsCompactionTurnInActiveTurn(t *testing.T) {
 		},
 	})
 
-	if len(out) != 1 || out[0].Method != appwire.NotifyItemCompleted {
+	// The marker does not join the turn it interrupted: reload gives its
+	// record a turn of its own, so the live announcement takes one too, and
+	// the thread is re-announced active because the round is still running.
+	if len(out) != 5 || out[0].Method != appwire.NotifyTurnCompleted || out[4].Method != appwire.NotifyThreadStatusChanged {
 		t.Fatalf("notifications=%+v", out)
 	}
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
-	if item.TurnID != turnID || item.Type != "systemMessage" || item.Description != "Context checkpoint" || item.Text != "[CONTEXT CHECKPOINT]\nkept raw context" || item.Status != appwire.TurnStatusCompleted {
+	if item.TurnID == turnID || item.Type != "systemMessage" || item.Description != "Context checkpoint" || item.Text != "[CONTEXT CHECKPOINT]\nkept raw context" || item.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("item=%+v", item)
 	}
 }

@@ -237,3 +237,81 @@ func TestAppEventProjectorEveryLayerOfAnInterruptedFoldKeepsTheThreadActive(t *t
 		t.Fatalf("active frames for a compaction with no turn running = %d, want 0", got)
 	}
 }
+
+// A fold that runs both layers writes four records — one per layer, then the
+// checkpoint and the summary it produced — and reload gives each its own turn.
+// The markers' live announcements shared one turn, so the conversation had one
+// turn where a reader coming back finds two, and every item after it moved.
+func TestAppEventProjectorAFoldsMarkersGroupLikeTheirRecords(t *testing.T) {
+	layers := []events.ContextCompactionData{
+		{Layer: "checkpoint", TurnsBefore: 20, TurnsAfter: 12},
+		{Layer: "summarize", TurnsBefore: 12, TurnsAfter: 6},
+	}
+	markers := []struct {
+		kind schema.TurnKind
+		text string
+	}{
+		{schema.TurnCheckpoint, "[CHECKPOINT]"},
+		{schema.TurnSummary, "[CONTEXT SUMMARY]"},
+	}
+
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	var live []appwire.Turn
+	record := func(out []AppNotification) {
+		for _, notification := range out {
+			live = applyLiveNotification(t, live, notification)
+		}
+	}
+	record(projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "ask"}}))
+	for _, layer := range layers {
+		record(projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: layer}))
+	}
+	for _, marker := range markers {
+		record(projector.Project(events.SessionEvent{Kind: events.EventCompactionTurn, SessionID: "th_1", Data: events.CompactionTurnData{Kind: string(marker.kind), Text: marker.text}}))
+	}
+
+	entries := []transcript.Entry{{Turn: schema.NewTurn(schema.TurnUserInput, llm.User("ask"))}}
+	for _, layer := range layers {
+		entries = append(entries, transcript.Entry{Turn: compactionRecord(layer)})
+	}
+	for _, marker := range markers {
+		entries = append(entries, transcript.Entry{Turn: schema.NewTurn(marker.kind, llm.System(marker.text))})
+	}
+	cold, err := apptranscript.ItemTurnsFromEntries(transcript.Header{SessionID: "th_1"}, entries, coldCompactionProjector)
+	if err != nil {
+		t.Fatalf("cold projection: %v", err)
+	}
+
+	if got, want := turnShapes(live), turnShapes(cold); !reflect.DeepEqual(got, want) {
+		t.Fatalf("live and reload group a two-layer fold differently:\nlive: %v\ncold: %v", got, want)
+	}
+	if got := len(turnShapes(live)); got != 5 {
+		t.Fatalf("live turns = %d, want the input, a turn per layer and a turn per marker", got)
+	}
+}
+
+// The markers are part of the same interruption as the layers before them: the
+// round that triggered the fold is still running behind all four
+// announcements, so the last of them must not leave a client believing the
+// session went idle.
+func TestAppEventProjectorAFoldsMarkersKeepTheThreadActive(t *testing.T) {
+	activeFrames := func(out []AppNotification) int {
+		count := 0
+		for _, notification := range out {
+			params, ok := notification.Params.(appwire.ThreadStatusChangedParams)
+			if notification.Method == appwire.NotifyThreadStatusChanged && ok && params.Status.Type == appwire.ThreadStatusActive {
+				count++
+			}
+		}
+		return count
+	}
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "ask"}})
+	projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: events.ContextCompactionData{Layer: "checkpoint", TurnsBefore: 20, TurnsAfter: 12}})
+	for _, kind := range []schema.TurnKind{schema.TurnCheckpoint, schema.TurnSummary} {
+		out := projector.Project(events.SessionEvent{Kind: events.EventCompactionTurn, SessionID: "th_1", Data: events.CompactionTurnData{Kind: string(kind), Text: "marker"}})
+		if got := activeFrames(out); got != 1 {
+			t.Fatalf("active frames after the %s marker = %d, want 1: the round the fold interrupted is still running", kind, got)
+		}
+	}
+}

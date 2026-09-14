@@ -270,10 +270,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	if p.threadID == "" {
 		p.threadID = event.SessionID
 	}
-	if event.Kind != events.EventContextCompaction {
-		// The fold's layers arrive back to back, and only the first of them
-		// finds the interrupted turn still open. Anything else marks the end
-		// of that batch. See compactionBatchInterrupted.
+	if event.Kind != events.EventContextCompaction && event.Kind != events.EventCompactionTurn {
+		// A fold's layer announcements and its markers arrive back to back,
+		// and only the first of them finds the interrupted turn still open.
+		// Anything else marks the end of that batch. See
+		// compactionBatchInterrupted.
 		p.compactionBatchInterrupted = false
 	}
 
@@ -1033,7 +1034,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventCompactionTurn:
 		p.clearSkillCandidate()
 		data := eventData[events.CompactionTurnData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindCompaction, apptranscript.CompactionDescription(data.Kind), data.Text)
+		// A fold's markers are durable records of the same kind its layer
+		// announcements are, and reload gives each one its own turn. A fold
+		// that produced a checkpoint AND a summary announces both, so sharing
+		// one turn here is a turn a reader coming back does not find.
+		return p.compactionAnnouncement(event, appwire.ThreadItemEventKindCompaction, apptranscript.CompactionDescription(data.Kind), data.Text, nil)
 	case events.EventTurnLimit:
 		p.clearSkillCandidate()
 		data := eventData[events.TurnLimitData](event.Data)
@@ -1077,45 +1082,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventContextCompaction:
 		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
-		// A compaction is a standalone saved turn — the CONTEXT_COMPACTION
-		// record closes the group it lands in on reload — so it opens and
-		// closes its own turn here rather than joining whichever turn is
-		// running. Folded into the open turn, the announcement (and the items
-		// recorded after it) would change turns after a restart, and a client
-		// reconciling by turn shows them twice. Same shape as EventEnvironment
-		// above, for the same reason.
-		//
-		// EVERY compaction event does this, including the second and third
-		// layer of one fold: each layer publishes its own event and is
-		// written as its own record, so sharing a turn — the gap bucket every
-		// other no-active-turn announcement folds into — would put two
-		// layers in one live turn that reload shows as two.
-		reserved := p.reservedTurnID
-		wasRealTurnStarted := p.anyTurnStarted
-		// The first layer of a fold closes the turn it interrupted, so the
-		// layers after it find none open. They are the same interruption, and
-		// the round is still running behind all of them.
-		interrupted := p.activeTurnID != "" || p.compactionBatchInterrupted
-		p.compactionBatchInterrupted = interrupted
-		p.reservedTurnID = ""
-		_, out := p.openTurn("", event.Timestamp)
-		// Compaction is session bookkeeping, not a runnable turn: prelude and
-		// reserved-turn state stay based on real work.
-		p.anyTurnStarted = wasRealTurnStarted
-		out = append(out, p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))...)
-		out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
-		if interrupted {
-			// The round that was running is still running: a compaction
-			// happens mid-turn, at a model call. The turn it interrupted was
-			// just announced complete, and a client that reads "the active
-			// turn completed" as "the session went idle" (the TUI does, kata
-			// s8x8) would offer to send into a session still working. Say
-			// what is true — and say nothing when no turn was running, which
-			// would claim work that is not happening.
-			out = append(out, p.threadStatus(appwire.ThreadStatusActive))
-		}
-		p.reservedTurnID = reserved
-		return out
+		return p.compactionAnnouncement(event, appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
 	case events.EventPluginLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PluginLoadedData](event.Data)
@@ -1614,6 +1581,40 @@ func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
 		return
 	}
 	turn.Cost = appwire.EstimateCost(p.costLookup(p.activeTurnProvider, p.activeTurnModel), usage)
+}
+
+// compactionAnnouncement publishes one record a fold writes — a layer's
+// CONTEXT_COMPACTION or a CHECKPOINT/SUMMARY marker — as the standalone turn
+// reload gives it. Those records close the group they land in when the
+// transcript is re-projected, so an announcement folded into whichever turn is
+// running (or shared with the announcement before it) is a turn a reader
+// coming back does not find, and a client reconciling by turn shows the items
+// around it twice.
+//
+// A fold publishes all of these in one flush, and only the first finds the
+// turn it interrupted still open — it closes it. They are one interruption:
+// the round is still running behind every one of them, and a client that reads
+// "the active turn completed" as "the session went idle" (the TUI does, kata
+// s8x8) must not be left there by the last of the batch.
+func (p *AppEventProjector) compactionAnnouncement(event events.SessionEvent, eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage) []AppNotification {
+	reserved := p.reservedTurnID
+	wasRealTurnStarted := p.anyTurnStarted
+	interrupted := p.activeTurnID != "" || p.compactionBatchInterrupted
+	p.compactionBatchInterrupted = interrupted
+	p.reservedTurnID = ""
+	_, out := p.openTurn("", event.Timestamp)
+	// Compaction is session bookkeeping, not a runnable turn: prelude and
+	// reserved-turn state stay based on real work.
+	p.anyTurnStarted = wasRealTurnStarted
+	out = append(out, p.systemAnnouncementWithRaw(eventKind, description, text, raw)...)
+	out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
+	if interrupted {
+		// Say what is true — and say nothing when no turn was running, which
+		// would claim work that is not happening.
+		out = append(out, p.threadStatus(appwire.ThreadStatusActive))
+	}
+	p.reservedTurnID = reserved
+	return out
 }
 
 func (p *AppEventProjector) systemAnnouncement(eventKind appwire.ThreadItemEventKind, description, text string) []AppNotification {

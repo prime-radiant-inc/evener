@@ -187,3 +187,73 @@ func TestHubModelEveryCompactionLayerRendersInItsOwnTurn(t *testing.T) {
 		t.Fatalf("layers rendered out of order or with the wrong text: %+v", system)
 	}
 }
+
+// A fold announces its markers the way it announces its layers: each in a turn
+// of its own, with the thread said to be active behind them because the round
+// that triggered the fold is still running. The session view must show one
+// line per marker, in its own turn, and keep offering interrupt rather than
+// send.
+func TestHubModelAFoldsMarkersRenderInTheirOwnTurns(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "th_1"}
+
+	var updated tea.Model = m
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			ThreadID: "th_1", Ref: "local:th_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		}).Notification,
+	})
+	for i, marker := range []string{"[CONTEXT CHECKPOINT]", "[CONTEXT SUMMARY]"} {
+		turnID := fmt.Sprintf("turn_%d", i+1)
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+				ThreadID: "th_1", Ref: "local:th_1", Turn: appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
+			}).Notification,
+		})
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+				"threadId": "th_1",
+				"turnId":   turnID,
+				"item": appwire.ThreadItem{
+					Type: "systemMessage", ID: fmt.Sprintf("item_compaction_%d", i+1), TurnID: turnID,
+					Description: "Context compaction", Text: marker,
+					EventKind: appwire.ThreadItemEventKindCompaction, Status: appwire.TurnStatusCompleted,
+				},
+			}).Notification,
+		})
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+				"threadId": "th_1", "ref": "local:th_1",
+				"turn": appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted},
+			}).Notification,
+		})
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+				ThreadID: "th_1", Ref: "local:th_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			}).Notification,
+		})
+	}
+
+	got := updated.(hubModel)
+	var system []transcript.ChatMessage
+	for _, msg := range got.session.messages {
+		if msg.Kind == transcript.MsgSystem {
+			system = append(system, msg)
+		}
+	}
+	if len(system) != 2 {
+		t.Fatalf("system messages = %+v, want one per marker", system)
+	}
+	if system[0].TurnID == system[1].TurnID {
+		t.Fatalf("both markers rendered in turn %q, want a turn each", system[0].TurnID)
+	}
+	if !got.session.processing || got.detail.State != appwire.ThreadStatusActive {
+		t.Fatalf("after the fold's markers: processing=%v state=%q, want the session still active", got.session.processing, got.detail.State)
+	}
+}
