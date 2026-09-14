@@ -587,21 +587,19 @@ func publishFreshEndpointFingerprintKey(path string) ([]byte, error) {
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	if err := endpointFingerprintKeyLink(tmp, path); err != nil && !errors.Is(err, os.ErrExist) {
-		// Hard links are unavailable (FAT/exFAT, some FUSE/SMB mounts), and a key
-		// that cannot be published is a hub that refuses every credential write:
-		// verifyEndpointFingerprint refuses both an empty and a non-empty
-		// assertion while the key state errors. Fall through to the atomic replace
-		// below, which keeps publication complete-or-nothing for readers - the
-		// property the failed-write test pins - and still adopts a key that
-		// appeared meanwhile. Only the no-clobber guarantee os.Link gives is lost,
-		// and a filesystem without hard links has no primitive that keeps it while
-		// publishing a finished file in one step.
+	if err := endpointFingerprintKeyLink(tmp, path); err == nil {
+		return key, nil
 	}
-	// Another hub published first, or an unusable file is in the way: a usable
-	// key is the one to use, anything else is replaced atomically. On a link-less
-	// filesystem this read is also what stops the fallback from replacing a key a
-	// hub published in the meantime.
+	// The link did not publish the key: either the path is taken (another hub won
+	// the race, or something unusable is in the way) or the filesystem cannot
+	// hard-link at all (FAT/exFAT, some FUSE/SMB mounts), where no primitive keeps
+	// the no-clobber property os.Link gives while publishing a finished file in
+	// one step. A key that cannot be published is a hub that refuses every
+	// credential write - verifyEndpointFingerprint refuses both an empty and a
+	// non-empty assertion while the key state errors - so both cases land on the
+	// same atomic replace below. The read is what keeps "a usable key is never
+	// replaced" there, in every non-racing case; publication stays
+	// complete-or-nothing for readers, which the failed-write test pins.
 	if existing, readErr := readEndpointFingerprintKey(path); readErr == nil {
 		return existing, nil
 	}
