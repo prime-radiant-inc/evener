@@ -206,15 +206,68 @@ func canonicalizeValue(v any, topLevel, dropDescription bool) any {
 }
 
 // canonicalNumber folds a JSON number into a canonical Go representation so
-// equivalent literals (1, 1.0, 1e0) share a fingerprint.
+// equivalent literals share a fingerprint: within int64, "1", "1.0" and "1e0"
+// all fold, and an integer token that overflows int64 is kept as its exact
+// json.Number text rather than rounded through float64. ParseFloat is lossy
+// above 2^53, so rounding would let two distinct integers collapse to the same
+// float and therefore the same fingerprint, giving two different failing calls
+// one shared failure run. json.Number marshals as its raw literal, so the value
+// stays exact and distinct. The ParseInt path runs first, so every value that
+// fits int64 keeps its exact folded form, and the float path still serves
+// literals that are not integer-shaped.
+//
+// KNOWN LIMITATION. Only a BARE integer token overflows exactly. Suffixed
+// spellings of an integer beyond int64 -- "9223372036854775808.0",
+// "9223372036854775808e0" -- are not integer-shaped, so they still round
+// through ParseFloat. That has two narrow consequences of opposite severity.
+// A suffixed spelling does not fold with the bare form of the same number,
+// which is the safe direction: the breaker fires later than it otherwise
+// would. But two distinct integers beyond int64 written with the same suffix
+// still collapse to one fingerprint, which is the HARMFUL direction -- the same
+// collision class this fix closes for bare tokens, just narrower, because a
+// genuinely changed call is then treated as a repeat and parked rather than
+// executed. Folding them exactly needs arbitrary-precision parsing,
+// which is deliberately NOT done here: big.Rat materializes a token's exponent
+// before it can ask whether the value is an integer, so an eleven-byte
+// "1e1000000" expands to a million digits (measured: ~19ms and ~3MB against
+// ~3us through ParseFloat). This runs before argument validation on
+// model-supplied input, so that expansion is a CPU and memory amplification.
+// Do not reintroduce it without bounding the exponent first.
 func canonicalNumber(n json.Number) any {
-	if i, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
+	s := n.String()
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return i
 	}
-	if f, err := strconv.ParseFloat(n.String(), 64); err == nil {
+	if isIntegerLiteral(s) {
+		return n
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
 		return f
 	}
 	return n
+}
+
+// isIntegerLiteral reports whether s is an integer-shaped JSON number token: an
+// optional leading sign followed by one or more decimal digits and nothing
+// else. Such a token denotes an exact integer that may exceed int64, so it must
+// not be rounded through float64.
+func isIntegerLiteral(s string) bool {
+	if s == "" {
+		return false
+	}
+	i := 0
+	if s[0] == '+' || s[0] == '-' {
+		i++
+	}
+	if i == len(s) {
+		return false
+	}
+	for ; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // breakerThreshold is how many times a signature may produce the same answer
