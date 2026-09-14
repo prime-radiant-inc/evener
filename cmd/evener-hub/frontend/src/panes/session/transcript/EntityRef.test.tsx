@@ -187,6 +187,18 @@ test("triggerOnly keeps the resolved hover-card trigger and omits its OpenButton
   expect(focusCard().textContent).toContain("Delegate");
 });
 
+test("embedded keeps the resolved hover card while omitting the trigger tab stop", () => {
+  vi.useFakeTimers();
+  render(<EntityRef view={watchView()} id="watch_x" embedded />);
+
+  const trigger = screen.getByTestId("entity-trigger");
+  expect(trigger.getAttribute("tabindex")).toBeNull();
+  expect(screen.queryByRole("button")).toBeNull();
+  fireEvent.mouseEnter(trigger);
+  advance(300);
+  expect(screen.getByRole("tooltip").textContent).toContain("Watch");
+});
+
 test("the id trigger does not navigate", () => {
   render(<EntityRef view={jobView()} id="job_x" />);
 

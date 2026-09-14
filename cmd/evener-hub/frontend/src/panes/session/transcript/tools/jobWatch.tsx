@@ -683,7 +683,8 @@ function WatchListRow({ row }: { row: WatchRow }) {
       >
         <Chip>{chip}</Chip>
         <span className={CLASS.rowId} title={row.id}>
-          <EntityRef id={row.id} display={clipJobID(row.id)} />
+          {/* The surrounding button is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. */}
+          <EntityRef id={row.id} display={clipJobID(row.id)} embedded />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
       </button>

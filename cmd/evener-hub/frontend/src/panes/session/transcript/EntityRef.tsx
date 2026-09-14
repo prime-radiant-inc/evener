@@ -20,6 +20,7 @@ export interface EntityRefProps {
   id: string;
   display?: string;
   triggerOnly?: boolean;
+  embedded?: boolean;
 }
 
 const CLASS = {
@@ -225,7 +226,7 @@ function EntityCard({ view }: { view: EntityView }) {
   return <WatchCard view={view} />;
 }
 
-export function EntityRef({ view, id, display, triggerOnly }: EntityRefProps) {
+export function EntityRef({ view, id, display, triggerOnly, embedded }: EntityRefProps) {
   const context = useTranscriptRenderContext();
   const resolved = view ?? context.entities?.get(id);
   const text = display ?? id;
@@ -235,8 +236,7 @@ export function EntityRef({ view, id, display, triggerOnly }: EntityRefProps) {
   return (
     <span className={CLASS.group}>
       <HoverCard label={<EntityCard view={resolved} />}>
-        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: the non-opening description trigger must be keyboard reachable */}
-        <span data-testid="entity-trigger" tabIndex={0} className={CLASS.trigger}>
+        <span data-testid="entity-trigger" tabIndex={embedded ? undefined : 0} className={CLASS.trigger}>
           {text}
         </span>
       </HoverCard>

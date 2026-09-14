@@ -208,9 +208,50 @@ test("list watch IDs are clipped entity triggers with no open control or navigat
   const row = screen.getByTestId("job-watch-row");
   const trigger = within(row).getByTestId("entity-trigger");
   expect(trigger.textContent).toBe("watch_034KEfj…foUaPeHJcLXY");
+  expect(trigger.getAttribute("tabindex")).toBe("0");
   expect(within(row).queryByRole("button")).toBeNull();
   fireEvent.click(trigger);
   expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+test("detail-bearing watch IDs are embedded triggers and the row remains the disclosure control", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  const id = "watch_034KEfjYFbfoUaPeHJcLXY";
+  const listed = watchItem(
+    { operation: "list" },
+    {
+      watches: [{ watch_id: id, source: "job_a1b2", watching: true, condition: "output_match: ready" }],
+      count: 1,
+    },
+  );
+  listed.position = { entry: 1, item: 1 };
+  const entities = buildEntityView({
+    sessionRef: "local:s",
+    turns: [{ id: "turn_1", status: "completed", items: [listed] }],
+    stale: false,
+    ended: false,
+  });
+  render(
+    <TranscriptRenderProvider entities={entities}>
+      <Body item={listed} live={false} />
+    </TranscriptRenderProvider>,
+  );
+
+  const row = screen.getByTestId("job-watch-row");
+  const trigger = within(row).getByTestId("entity-trigger");
+  expect(row.tagName).toBe("BUTTON");
+  expect(trigger.getAttribute("tabindex")).toBeNull();
+  expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();
+
+  fireEvent.click(row);
+  expect(screen.getByTestId("job-watch-row-detail").textContent).toContain("ready");
+  fireEvent.click(row);
+  expect(screen.queryByTestId("job-watch-row-detail")).toBeNull();
+
+  fireEvent.click(trigger);
+  expect(workspaceStore.getState().panes).toEqual([]);
+  expect(screen.getByTestId("job-watch-row-detail").textContent).toContain("ready");
 });
 
 test("list rows are buttons that expand the row's detail sentence (RoboRev PR #954)", async () => {
