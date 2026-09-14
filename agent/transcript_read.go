@@ -170,19 +170,6 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 // the copies of the turns recorded while the fold ran — which the publication
 // merges in after everything the fold itself produced, though the transaction
 // writes every copy first and the steering last.
-// resumedTurn strips the roles a record carries in the FILE from the turn a
-// session gets back. ContextReplay and its merge-back mark say which half of a
-// fold's run an entry was; CompactionFoldID says which fold wrote it. Neither
-// is true of a turn in a running session's history, and leaving them on makes
-// a history written down again — a fork child's inherited prefix — replay as
-// a fold run that is not there.
-func resumedTurn(turn schema.Turn) schema.Turn {
-	turn.ContextReplay = false
-	turn.ContextReplayMergedTail = false
-	turn.CompactionFoldID = ""
-	return turn
-}
-
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// Scan backward for the last compaction turn.
 	compactionIdx := -1
@@ -266,6 +253,19 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	}
 	repaired, _ := repairOrphanedToolResults(result)
 	return repaired
+}
+
+// resumedTurn strips the roles a record carries in the FILE from the turn a
+// session gets back. ContextReplay and its merge-back mark say which half of a
+// fold's run an entry was; CompactionFoldID says which fold wrote it. Neither
+// is true of a turn in a running session's history, and leaving them on makes
+// a history written down again — a fork child's inherited prefix — replay as
+// a fold run that is not there.
+func resumedTurn(turn schema.Turn) schema.Turn {
+	turn.ContextReplay = false
+	turn.ContextReplayMergedTail = false
+	turn.CompactionFoldID = ""
+	return turn
 }
 
 // foldRun reports the half-open span of entries written by the fold that owns
