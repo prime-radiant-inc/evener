@@ -387,6 +387,43 @@ func TestSkillCompaction_ClearNotePersistsWithoutPendingOperation(t *testing.T) 
 	}
 }
 
+// TestSkillCompaction_CancellationReceiptsAreRetired pins that a terminal
+// cancellation receipt does not accumulate. A cancellation authorizes nothing —
+// the same save already cleared the operation slot — and identity-less receipts
+// never coalesce, so leaving every retirement record in PendingHandoffs grows
+// the persisted snapshot (cloned on every autosave) and the per-request scan by
+// one per cancel for the session's lifetime. The request scan must retire them.
+func TestSkillCompaction_CancellationReceiptsAreRetired(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	for i := 0; i < 3; i++ {
+		generation, err := s.requestSkillCompaction(context.Background(), "keep", "opaque-instructions",
+			schema.SkillReloadSelection{State: "valid", Names: []string{}})
+		if err != nil {
+			t.Fatalf("requestSkillCompaction %d: %v", i, err)
+		}
+		if err := s.cancelSkillCompaction(context.Background(), generation, "test"); err != nil {
+			t.Fatalf("cancelSkillCompaction %d: %v", i, err)
+		}
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 3 {
+		t.Fatalf("test setup: pending cancellation receipts = %d, want 3 recorded before the scan", len(handoffs))
+	}
+	batch, outcomes, _, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if (batch != nil && len(batch.Items) != 0) || len(outcomes) != 0 {
+		t.Fatalf("a cancelled receipt authorized delivery: batch=%+v outcomes=%+v", batch, outcomes)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("cancellation receipts after the request scan = %+v, want none: terminal records authorize nothing and must not accumulate", handoffs)
+	}
+	if loaded := loadSkillsSnapshot(t, stateDir, s.Meta().ID); loaded == nil || len(loaded.PendingHandoffs) != 0 {
+		t.Fatalf("persisted cancellation receipts = %+v, want none", loaded)
+	}
+}
+
 // breakSessionMetaPath replaces the session's real meta.json path with a
 // directory so the real filesystem refuses every subsequent metadata write,
 // and returns the repair that restores writability.

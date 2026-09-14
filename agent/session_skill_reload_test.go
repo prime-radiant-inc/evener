@@ -1864,3 +1864,145 @@ func TestSkillReload_IncompleteIdentitySelectionRetiresReceipt(t *testing.T) {
 		t.Fatalf("obligations grew from %d to %d on re-processing a retired receipt", obligations1, got)
 	}
 }
+
+// countReloadOutcomes returns how many recorded turns carry a typed outcome for
+// one reload invocation — the notice count a retry must not increase.
+func countReloadOutcomes(s *Session, invocationID string) int {
+	n := 0
+	for _, state := range skillTurnStates(s) {
+		for _, outcome := range state.Outcomes {
+			if outcome.InvocationID == invocationID {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// plantReloadReceipt seeds one valid-selection handoff for opaque under the
+// given publication identity — the deterministic invocation identity a retry
+// re-derives is publicationID + ":" + name.
+func plantReloadReceipt(s *Session, publicationID string) {
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+			PublicationID: publicationID,
+		},
+	}}
+	s.mu.Unlock()
+}
+
+// TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure pins the
+// idempotence of a reload-failure notice across a transient admission-save
+// failure. The explanation is durably recorded in preparation, BEFORE the
+// admission save consumes the receipt; when that save fails the receipt is
+// restored, so the retry re-prepares the SAME deterministic invocation
+// (publication:name) and must recognize the notice already recorded for it
+// instead of appending a second copy. Without that, every transient disk-save
+// failure adds another duplicate notification turn and the count grows with
+// each retry.
+func TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	source := writeSkillMDRel(t, root, "skills", "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_notice_retry\n")
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_notice_retry", nil))
+	plantOrdinaryRecord(t, s, root, "opaque", true)
+	if err := os.Remove(source); err != nil {
+		t.Fatalf("remove the fixture source: %v", err)
+	}
+	const publication = "pub-notice-retry"
+	plantReloadReceipt(s, publication)
+	invocationID := publication + ":opaque"
+
+	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if got := countReloadOutcomes(s, invocationID); got != 1 {
+		t.Fatalf("notices after the first preparation = %d, want exactly one", got)
+	}
+
+	repair := breakSessionMetaPath(t, s)
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, staged, batch, outcomes); err == nil {
+		t.Fatal("a failed admission save must surface an error")
+	}
+	repair()
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 1 {
+		t.Fatalf("the failed save must leave the receipt pending, got %+v", handoffs)
+	}
+
+	batch, outcomes, staged, err = s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
+	}
+	if batch != nil {
+		if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, staged, batch, outcomes); err != nil {
+			t.Fatalf("admitCompactedSkillReloads (retry): %v", err)
+		}
+	}
+	if got := countReloadOutcomes(s, invocationID); got != 1 {
+		t.Fatalf("notices after the retry = %d, want 1: the durable notice must not be re-appended", got)
+	}
+}
+
+// TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure pins the same
+// idempotence for the reuse notice admission appends. The notice is recorded
+// before the admission save; a failed save restores the receipt, and the retry
+// re-runs the reuse decision. It must recognize the already-durable notice for
+// the deterministic invocation instead of appending it again.
+func TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reuse_retry\n")
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_reuse_retry", nil))
+	plantOrdinaryRecord(t, s, root, "opaque", true)
+	const publication = "pub-reuse-retry"
+	plantReloadReceipt(s, publication)
+	invocationID := publication + ":opaque"
+
+	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if batch == nil || len(batch.Items) != 1 {
+		t.Fatalf("test setup: prepared batch = %+v, want the one selected reload", batch)
+	}
+	// Retain the complete body in the live history so the admission reuses it
+	// and records the reuse notice.
+	s.mu.Lock()
+	s.history = append(s.history, schema.NewTurn(schema.TurnSystem, llm.User(batch.Items[0].Rendered.Content)))
+	s.mu.Unlock()
+
+	repair := breakSessionMetaPath(t, s)
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, staged, batch, outcomes); err == nil {
+		t.Fatal("a failed admission save must surface an error")
+	}
+	repair()
+	if got := countReloadOutcomes(s, invocationID); got != 1 {
+		t.Fatalf("reuse notices after the failed save = %d, want exactly one", got)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 1 {
+		t.Fatalf("the failed save must leave the receipt pending, got %+v", handoffs)
+	}
+
+	batch, outcomes, staged, err = s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
+	}
+	if batch == nil || len(batch.Items) != 1 {
+		t.Fatalf("test setup: retried batch = %+v, want the one selected reload", batch)
+	}
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, staged, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads (retry): %v", err)
+	}
+	if got := countReloadOutcomes(s, invocationID); got != 1 {
+		t.Fatalf("reuse notices after the retry = %d, want 1: the durable notice must not be re-appended", got)
+	}
+}
