@@ -65,14 +65,21 @@ const (
 	// maxLiveTimers caps timers per job manager; with the 60-second floor it
 	// bounds a session to eight timer wakes a minute.
 	maxLiveTimers = 8
-	// maxLiveWatches caps the live watches one job manager holds. Every live row
-	// is projected onto AppWire for the hub, which clones, fingerprints, and only
-	// then caps the rows it displays, so an unbounded live set put an unbounded
-	// watch payload on every roster probe. The cap is the same 32 the hub's
-	// maxNavigationWatches uses for display: the per-watch delivery ring is
-	// bounded too, so one number covers both sides. Registration refuses a key
-	// that would grow the set rather than trimming, so no live watch goes
-	// missing without the agent hearing about it.
+	// maxLiveWatches caps the live watches one job manager holds, the way
+	// maxLiveTimers bounds timers: it bounds what that manager stores, projects
+	// and ships for its own session, and it is what keeps a single session's
+	// registration from arming watches without end.
+	//
+	// It is deliberately not a bound on a session's projected row. That row is a
+	// rollup -- the session's own manager's rows plus the receiver watches it owns
+	// on descendants, each of those managers capped here -- so it grows with the
+	// number of source sessions holding watches for the receiver. That is the
+	// design, not the gap: a receiver watch belongs on its receiver's row (a
+	// subtree rollup counts each watch once, for its receiver), and the hub caps
+	// the rows it displays and counts what it drops.
+	//
+	// Registration refuses a key that would grow the set rather than trimming it,
+	// so no live watch goes missing without the agent hearing about it.
 	maxLiveWatches = 32
 	// runawaySelfInfluenceDepth caps how many delivered self-influenced priors a
 	// watch send may descend from before the breaker drops it as a runaway. The
@@ -2568,6 +2575,48 @@ func (s *Session) liveWatchStatuses() []WatchStatusInfo {
 	return aggregateWatchStatuses(s.ID(), managers)
 }
 
+// LiveWatchRowsForSessions resolves the supplied thread IDs to the live watch
+// rows that belong on each of their rows, in one pass over this session's live
+// tree.
+//
+// It is the batch form of LiveWatchesForSession, and the thread LIST path is why
+// it exists: that path knows every row ID before it samples any of them, and
+// resolving them one at a time searched the descendant tree once per row -- a
+// wide root scanned every sibling for each row and a nested one walked the
+// subtrees ahead of the target -- so a page of N live sessions paid up to N
+// searches. One walk now answers the whole page.
+//
+// An entry exists only for an ID this session can answer for: the root, or a
+// live descendant. A present entry with an empty non-nil slice is a real answer
+// -- that row has no watches now -- exactly as the single-ID resolvers' non-nil
+// empty is; an absent ID is their nil answer (an empty or unknown ID, and the
+// root asked through LiveWatchesForDescendant). No IDs means no answers: nil.
+func (s *Session) LiveWatchRowsForSessions(sessionIDs []string) map[string][]WatchStatusInfo {
+	if s == nil || len(sessionIDs) == 0 {
+		return nil
+	}
+	answerable := make(map[string]*Session, len(sessionIDs))
+	answerable[s.ID()] = s
+	for _, descendant := range s.liveDescendantSessions() {
+		if descendant != nil {
+			answerable[descendant.ID()] = descendant
+		}
+	}
+	out := make(map[string][]WatchStatusInfo, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		target, ok := answerable[sessionID]
+		if !ok {
+			continue
+		}
+		rows := target.liveWatchStatuses()
+		if rows == nil {
+			rows = []WatchStatusInfo{}
+		}
+		out[sessionID] = rows
+	}
+	return out
+}
+
 // LiveWatchesForDescendant returns the live watch rows visible to the descendant
 // session sessionID, so its own thread row can carry them. Today a session's
 // watches are projected only onto its own row by the daemon's status sampler;
@@ -2581,43 +2630,17 @@ func (s *Session) liveWatchStatuses() []WatchStatusInfo {
 // A KNOWN descendant with no watches is a third case: it returns a NON-nil empty
 // slice, because the list path must be able to tell "this descendant has no
 // watches now" from "this ID is not a descendant I can see". nil therefore means
-// only the root, an empty ID, an unknown ID, or (inside the recursion) a subtree
-// that does not contain the queried session.
+// only the root, an empty ID, or an unknown ID.
 //
 // This is sampled on read, not cached: watch state changes without a per-child
-// app event on this daemon, so the caller re-derives it on every list/read.
+// app event on this daemon, so the caller re-derives it on every list/read. The
+// walk itself is LiveWatchRowsForSessions', so a single-ID caller and a page
+// caller can never disagree about which sessions are answerable.
 func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
 	if s == nil || sessionID == "" || sessionID == s.ID() {
 		return nil
 	}
-	// One snapshot serves both the direct-match loop and the recursion: taking it
-	// twice would walk the subagent manager a second time per lookup and could
-	// recurse on a different membership set under a concurrent change.
-	children := s.liveSubagentSessions()
-	for _, child := range children {
-		if child != nil && child.ID() == sessionID {
-			if rows := child.liveWatchStatuses(); rows != nil {
-				return rows
-			}
-			// A known descendant with no watches is still a real answer: the
-			// non-nil empty slice is how a descendant that just lost its last
-			// watch leaves its thread row. nil stays reserved for the root, an
-			// empty ID, an unknown ID, and the recursion's "not found here".
-			return []WatchStatusInfo{}
-		}
-	}
-	// A nested descendant is reached through its own parent, so the lookup
-	// recurses rather than building the whole descendant set for every thread on
-	// a list read.
-	for _, child := range children {
-		if child == nil {
-			continue
-		}
-		if rows := child.LiveWatchesForDescendant(sessionID); rows != nil {
-			return rows
-		}
-	}
-	return nil
+	return s.LiveWatchRowsForSessions([]string{sessionID})[sessionID]
 }
 
 // LiveWatchesForSession resolves a row's thread ID to the live watch rows that
@@ -2639,13 +2662,7 @@ func (s *Session) LiveWatchesForSession(sessionID string) []WatchStatusInfo {
 	if s == nil || sessionID == "" {
 		return nil
 	}
-	if sessionID == s.ID() {
-		if rows := s.liveWatchStatuses(); rows != nil {
-			return rows
-		}
-		return []WatchStatusInfo{}
-	}
-	return s.LiveWatchesForDescendant(sessionID)
+	return s.LiveWatchRowsForSessions([]string{sessionID})[sessionID]
 }
 
 // watchStatusInfoFromConfig projects one live config into its structured

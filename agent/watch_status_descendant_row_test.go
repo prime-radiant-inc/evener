@@ -5,6 +5,57 @@ import (
 	"testing"
 )
 
+// The thread LIST path holds every row ID before it samples any of them, so it
+// resolves the page in one call: one walk of the live tree answers the root, a
+// descendant that has rows, and a descendant that has none. An ID this session
+// cannot answer for is absent, which is the single-ID resolvers' nil; a known
+// descendant with no watches is present with a non-nil empty slice, which is how
+// its row sheds a cleared watch. No IDs means no answer map at all.
+func TestLiveWatchRowsForSessionsAnswersThePageInOneWalk(t *testing.T) {
+	root := newDescendantWatchSession(t)
+	child := newDescendantWatchSession(t)
+	grandchild := newDescendantWatchSession(t)
+	registerDescendantSession(t, root, child)
+	registerDescendantSession(t, child, grandchild)
+
+	root.jobManager.mu.Lock()
+	root.jobManager.watches[watchKey{Target: "job_root"}] = &watchConfig{
+		id: "watch-root", watchID: "watch-root", sourcePublic: "self", target: "job_root",
+		createdAt: frozenTestTime,
+	}
+	root.jobManager.mu.Unlock()
+	grandchild.jobManager.mu.Lock()
+	grandchild.jobManager.watches[watchKey{Target: "job_grandchild"}] = &watchConfig{
+		id: "watch-grandchild", watchID: "watch-grandchild", sourcePublic: "self", target: "job_grandchild",
+		createdAt: frozenTestTime,
+	}
+	grandchild.jobManager.mu.Unlock()
+
+	page := root.LiveWatchRowsForSessions([]string{root.ID(), child.ID(), grandchild.ID(), "nobody", ""})
+	if len(page) != 3 {
+		t.Fatalf("page answers = %+v, want exactly the root and its two live descendants", page)
+	}
+	if rows := page[root.ID()]; len(rows) != 1 || rows[0].ID != "watch-root" {
+		t.Fatalf("root answer = %+v, want its own watch", rows)
+	}
+	childRows, present := page[child.ID()]
+	if !present || childRows == nil || len(childRows) != 0 {
+		t.Fatalf("known descendant with no watches = %+v (present %v), want a present non-nil empty answer", childRows, present)
+	}
+	if rows := page[grandchild.ID()]; len(rows) != 1 || rows[0].ID != "watch-grandchild" {
+		t.Fatalf("nested descendant answer = %+v, want its own watch", rows)
+	}
+	if _, present := page["nobody"]; present {
+		t.Fatalf("unknown ID was answered: %+v", page)
+	}
+	if _, present := page[""]; present {
+		t.Fatalf("empty ID was answered: %+v", page)
+	}
+	if got := root.LiveWatchRowsForSessions(nil); got != nil {
+		t.Fatalf("no IDs = %+v, want nil", got)
+	}
+}
+
 // A subagent session's own live watches appear on no row today: the daemon
 // projects only the root session's status, so the child's row carries none.
 // LiveWatchesForDescendant resolves a descendant session by ID and returns

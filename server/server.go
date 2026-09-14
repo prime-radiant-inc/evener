@@ -390,14 +390,14 @@ type Server struct {
 	// Nil is a legitimate answer: a fresh (never-persisted) descendant has
 	// nothing to seed from.
 	appDescendantTranscriptPathFunc func(threadID string) string
-	// appDescendantLiveWatchesFunc resolves a descendant thread ID to that
-	// session's own live watch rows, when the daemon can reach the child session.
-	// The thread list/read path consults it per descendant thread to attach the
-	// child's watches to its row; a descendant projection carries no diagnostics
-	// block of its own, so without this a subagent's watches appear on no row.
-	// Nil is a legitimate answer: no descendant watch source is wired, and the
-	// descendants then carry no watch rows (the historical behavior).
-	appDescendantLiveWatchesFunc func(threadID string) []agent.WatchStatusInfo
+	// appDescendantLiveWatchesFunc resolves the row IDs of one thread LIST page
+	// to the live watch rows that belong on each of them, when the daemon can
+	// reach the child session. The list path consults it once per page to attach
+	// a child's watches to the child's row; a descendant projection carries no
+	// diagnostics block of its own, so without this a subagent's watches appear
+	// on no row. An ID the answer omits keeps its cached projection, which is the
+	// historical behavior when no watch source is wired.
+	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
 	retrySafeTurns               RetrySafeTurnFunctions
 	cancelFunc                   context.CancelFunc
 	interruptWired               bool

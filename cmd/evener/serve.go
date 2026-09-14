@@ -112,7 +112,7 @@ type serveServer interface {
 	SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions)
 	RecordDescendantAppEvent(string, events.SessionEvent)
 	SetDescendantTranscriptPathFunc(func(threadID string) string)
-	SetDescendantLiveWatchesFunc(func(threadID string) []agent.WatchStatusInfo)
+	SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo)
 	InputCh() <-chan server.InputMessage
 	SubmitContinuation(string)
 	SubmitNotification()
@@ -918,13 +918,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// root's own row also carries watches the diagnostics facet only re-samples
 		// on a few events and a turn boundary, so it can lag a watch armed in
 		// between. The appwire thread LIST samples both on read through this seam,
-		// resolving the root to its own rows and a descendant to that child's,
-		// exactly as the transcript path is resolved on a descendant's first
-		// observation. Wire it beside the transcript resolver: both reach across
-		// the appwire-server/delegate-controller boundary, and both must track the
-		// session that is current after a thread/clear identity swap.
-		srv.SetDescendantLiveWatchesFunc(func(threadID string) []agent.WatchStatusInfo {
-			return s.LiveWatchesForSession(threadID)
+		// resolving the root to its own rows and a descendant to that child's, for
+		// every row of a page in one walk of the live tree. Wire it beside the
+		// transcript resolver: both reach across the appwire-server/delegate-controller
+		// boundary, and both must track the session that is current after a
+		// thread/clear identity swap.
+		srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
+			return s.LiveWatchRowsForSessions(threadIDs)
 		})
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire

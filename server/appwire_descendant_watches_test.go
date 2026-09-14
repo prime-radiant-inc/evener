@@ -17,18 +17,14 @@ import (
 // read path does not sample: it returns the already-projected thread.
 func TestThreadListCarriesDescendantSessionWatches(t *testing.T) {
 	var calls int
-	srv := seedDescendantWatchServer(t, func(threadID string) []agent.WatchStatusInfo {
-		// The root is now sampled too, but this seam has no fresh root answer:
-		// nil leaves the root row's own envelope watches in place.
-		if threadID == "root" {
-			return nil
-		}
-		if threadID != "child" {
-			t.Errorf("accessor consulted for %q, want only the descendant", threadID)
-			return nil
-		}
+	srv := seedDescendantWatchServer(t, func(threadIDs []string) map[string][]agent.WatchStatusInfo {
 		calls++
-		return []agent.WatchStatusInfo{{ID: "watch-child", Source: "self", Events: []string{"output"}}}
+		assertPageIDs(t, threadIDs, "root", "child")
+		// The root is now sampled too, but this seam has no fresh root answer: an
+		// omitted ID leaves the root row's own envelope watches in place.
+		return map[string][]agent.WatchStatusInfo{
+			"child": {{ID: "watch-child", Source: "self", Events: []string{"output"}}},
+		}
 	})
 
 	response, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
@@ -77,6 +73,38 @@ func TestThreadListCarriesDescendantSessionWatches(t *testing.T) {
 	}
 }
 
+// The list path samples the whole page in ONE resolver call. A per-row call
+// searched the agent's live tree once per row, so a page of many live sessions
+// paid that walk once per session; the request carries every row ID, in row
+// order, and the answer is looked up per row.
+func TestThreadListSamplesLiveWatchesOncePerPage(t *testing.T) {
+	var samples int
+	var page []string
+	srv := seedDescendantWatchServer(t, func(threadIDs []string) map[string][]agent.WatchStatusInfo {
+		samples++
+		page = append([]string(nil), threadIDs...)
+		return map[string][]agent.WatchStatusInfo{
+			"root":  {{ID: "watch-root-live", Source: "self", Events: []string{"output"}}},
+			"child": {{ID: "watch-child", Source: "self", Events: []string{"output"}}},
+		}
+	})
+
+	response, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	if samples != 1 {
+		t.Fatalf("resolver samples = %d, want exactly one for the page", samples)
+	}
+	assertPageIDs(t, page, "root", "child")
+	for index, want := range []string{"watch-root-live", "watch-child"} {
+		got := response.Data[index].Evener.Diagnostics
+		if got == nil || len(got.Watches) != 1 || got.Watches[0].ID != want {
+			t.Fatalf("row %d diagnostics = %+v, want %s from the one sample", index, got, want)
+		}
+	}
+}
+
 // The root row's watches are refreshed on the LIST path too. A watch armed on
 // the root session after the last diagnostics refresh (no turn boundary) appears
 // in the next thread/list response, merged from the live sample exactly as a
@@ -84,16 +112,13 @@ func TestThreadListCarriesDescendantSessionWatches(t *testing.T) {
 // READ path still does not sample.
 func TestThreadListSamplesRootLiveWatchesWithoutTurnBoundary(t *testing.T) {
 	var rootSamples int
-	srv := seedDescendantWatchServer(t, func(threadID string) []agent.WatchStatusInfo {
-		switch threadID {
-		case "root":
-			rootSamples++
-			return []agent.WatchStatusInfo{{ID: "watch-root-new", Source: "self", Events: []string{"output"}}}
-		case "child":
-			return nil
-		default:
-			t.Errorf("accessor consulted for %q, want root or child", threadID)
-			return nil
+	srv := seedDescendantWatchServer(t, func(threadIDs []string) map[string][]agent.WatchStatusInfo {
+		assertPageIDs(t, threadIDs, "root", "child")
+		rootSamples++
+		// The child is sampled too, with no fresh answer for it: an omitted ID
+		// leaves the child row's cached projection standing.
+		return map[string][]agent.WatchStatusInfo{
+			"root": {{ID: "watch-root-new", Source: "self", Events: []string{"output"}}},
 		}
 	})
 	// Nothing refreshes the diagnostics facet when a watch is armed, so the
@@ -135,11 +160,10 @@ func TestThreadListSamplesRootLiveWatchesWithoutTurnBoundary(t *testing.T) {
 // resolver's non-nil empty answer is what tells "the root has no watches now"
 // apart from "this ID is unknown", which leaves the cached projection alone.
 func TestThreadListClearsClearedRootWatchFromLiveSample(t *testing.T) {
-	srv := seedDescendantWatchServer(t, func(threadID string) []agent.WatchStatusInfo {
-		if threadID == "root" {
-			return []agent.WatchStatusInfo{}
-		}
-		return nil
+	srv := seedDescendantWatchServer(t, func([]string) map[string][]agent.WatchStatusInfo {
+		// A present entry with an empty non-nil slice is the "no watches now"
+		// answer; the child stays omitted, which leaves its row alone.
+		return map[string][]agent.WatchStatusInfo{"root": {}}
 	})
 
 	response, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
@@ -159,11 +183,13 @@ func TestThreadListClearsClearedRootWatchFromLiveSample(t *testing.T) {
 // projection standing.
 func TestThreadListClearsRemovedDescendantWatchFromLiveSample(t *testing.T) {
 	answer := []agent.WatchStatusInfo{}
-	srv := seedDescendantWatchServer(t, func(threadID string) []agent.WatchStatusInfo {
-		if threadID == "child" {
-			return answer
+	srv := seedDescendantWatchServer(t, func([]string) map[string][]agent.WatchStatusInfo {
+		if answer == nil {
+			// No entry for the child is the nil answer: no fresh sample, so the
+			// cached projection stands.
+			return nil
 		}
-		return nil
+		return map[string][]agent.WatchStatusInfo{"child": answer}
 	})
 	// The child's cached projection still carries the watch it held before the
 	// clear.
@@ -203,7 +229,9 @@ func TestThreadListDescendantWatchesDoNotAliasTheSource(t *testing.T) {
 		Events:        []string{"output"},
 		DeliveryTimes: []string{"t0"},
 	}}
-	srv := seedDescendantWatchServer(t, func(string) []agent.WatchStatusInfo { return statuses })
+	srv := seedDescendantWatchServer(t, func([]string) map[string][]agent.WatchStatusInfo {
+		return map[string][]agent.WatchStatusInfo{"child": statuses}
+	})
 
 	response, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
 	if err != nil {
@@ -226,8 +254,10 @@ func TestThreadListDescendantWatchesDoNotAliasTheSource(t *testing.T) {
 // the rest of the cached projection's block (Tools, Skills, Agents, ...) must not
 // be reachable from the returned thread.
 func TestThreadListDescendantWatchesDeepCopyDiagnostics(t *testing.T) {
-	srv := seedDescendantWatchServer(t, func(string) []agent.WatchStatusInfo {
-		return []agent.WatchStatusInfo{{ID: "watch-child", Source: "self", Events: []string{"output"}}}
+	srv := seedDescendantWatchServer(t, func([]string) map[string][]agent.WatchStatusInfo {
+		return map[string][]agent.WatchStatusInfo{
+			"child": {{ID: "watch-child", Source: "self", Events: []string{"output"}}},
+		}
 	})
 	srv.mu.Lock()
 	srv.appDescendants["child"].thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{
@@ -262,7 +292,7 @@ func TestThreadListDescendantWatchesDeepCopyDiagnostics(t *testing.T) {
 
 // seedDescendantWatchServer builds a server with a root envelope carrying one
 // watch and a child descendant thread, and installs the descendant accessor.
-func seedDescendantWatchServer(t *testing.T, fn func(threadID string) []agent.WatchStatusInfo) *Server {
+func seedDescendantWatchServer(t *testing.T, fn func(threadIDs []string) map[string][]agent.WatchStatusInfo) *Server {
 	t.Helper()
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")
@@ -275,4 +305,19 @@ func seedDescendantWatchServer(t *testing.T, fn func(threadID string) []agent.Wa
 	srv.mu.Unlock()
 	srv.SetDescendantLiveWatchesFunc(fn)
 	return srv
+}
+
+// assertPageIDs pins the IDs one resolver call was handed: the list path samples
+// every row of the page at once, so the request carries the page's IDs in row
+// order.
+func assertPageIDs(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("resolver page = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("resolver page = %v, want %v", got, want)
+		}
+	}
 }

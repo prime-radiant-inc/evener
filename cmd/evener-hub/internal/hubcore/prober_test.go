@@ -35,8 +35,14 @@ func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rende
 	srv.SetState(cfg.state)
 	srv.SetThreadEnvelopeSource(cfg.source)
 	if cfg.childWatches != nil {
-		srv.SetDescendantLiveWatchesFunc(func(threadID string) []agent.WatchStatusInfo {
-			return cfg.childWatches[threadID]
+		srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
+			rows := make(map[string][]agent.WatchStatusInfo, len(threadIDs))
+			for _, threadID := range threadIDs {
+				if watches, ok := cfg.childWatches[threadID]; ok {
+					rows[threadID] = watches
+				}
+			}
+			return rows
 		})
 	}
 	for id, state := range cfg.descendants {
