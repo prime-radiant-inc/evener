@@ -466,9 +466,16 @@ function mergePresent(_prior: WatchSummary, row: SummaryRow): Partial<WatchSumma
   };
 }
 
+function compareTranscriptPosition(left: ItemModel, right: ItemModel): number {
+  const leftPosition = left.position;
+  const rightPosition = right.position;
+  if (!leftPosition || !rightPosition) return 0;
+  return leftPosition.entry - rightPosition.entry || leftPosition.item - rightPosition.item;
+}
+
 export function foldWatchSummaries(items: ItemModel[]): Map<string, WatchSummary> {
   const byId = new Map<string, WatchSummary>();
-  for (const item of items) {
+  for (const item of [...items].sort(compareTranscriptPosition)) {
     const raw = asJsonObject(item.raw);
     if (!raw || item.toolName !== "job_watch") continue;
     const args = asJsonObject(parseArgs(item.argumentsJSON));

@@ -14,13 +14,57 @@ function watchItem(id: string, raw: unknown, turnId = "t1", argumentsJSON?: stri
   } as unknown as ItemModel;
 }
 
-test("folds snapshots in caller-supplied transcript order", () => {
+test("keeps caller order when snapshots have no transcript positions", () => {
   const watching = watchItem("a", { watch_id: "watch_x", watching: true, source: "job_y" }, "t2");
   const ended = watchItem("b", { watch_id: "watch_x", watching: false, end_reason: "job_completed" }, "t1");
 
-  // The caller supplies transcript order; the final array snapshot wins.
+  // Without positions the caller's stable array order remains authoritative.
   expect(foldWatchSummaries([ended, watching]).get("watch_x")?.state).toBe("watching");
   expect(foldWatchSummaries([watching, ended]).get("watch_x")?.state).toBe("ended");
+});
+
+test("folds positioned snapshots in transcript order when supplied in reverse", () => {
+  const older = {
+    ...watchItem("a", {
+      watch_id: "watch_x",
+      watching: true,
+      source: "job_old",
+      condition: "output_match: old",
+      deliveries: 1,
+    }),
+    position: { entry: 2, item: 3 },
+  };
+  const middle = {
+    ...watchItem("b", {
+      watch_id: "watch_x",
+      source: "job_middle",
+      condition: "output_match: middle",
+      deliveries: 2,
+    }),
+    position: { entry: 3, item: 0 },
+  };
+  const newer = {
+    ...watchItem("c", {
+      watch_id: "watch_x",
+      watching: false,
+      source: "job_new",
+      condition: "output_match: new",
+      deliveries: 4,
+      end_reason: "job_completed",
+    }),
+    position: { entry: 3, item: 1 },
+  };
+  const transcriptOrder = foldWatchSummaries([older, middle, newer]).get("watch_x");
+
+  expect(foldWatchSummaries([newer, middle, older]).get("watch_x")).toEqual(transcriptOrder);
+  expect(transcriptOrder).toEqual({
+    id: "watch_x",
+    state: "ended",
+    source: "job_new",
+    condition: "output_match: new",
+    deliveries: 4,
+    endReason: "job_completed",
+  });
 });
 
 test("folds reducer-prepended history before live-appended turns with last-present-field-wins", () => {
