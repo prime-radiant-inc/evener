@@ -28,6 +28,19 @@ export function queueEntryPreviewText(text: string, imageCount: number): string 
   return normalized || imagePlaceholder(imageCount);
 }
 
+// skillMarkers renders an entry's canonical skill selections for display and
+// copy: the name is the selection's whole user-visible identity - the part of
+// an entry that is distinct from its typed text. Without it a skill-only entry
+// previews blank and copies as an empty string.
+//
+// One definition shared by QueueStrip's durable/daemon/pending rows and
+// PendingChips' in-flight chips, so every surface of the same submission names
+// a selection identically - the split that let a skill-only pending chip
+// render an empty body while the queue row named it.
+export function skillMarkers(names: readonly string[]): string {
+  return names.map((name) => `[skill: ${name}]`).join(" ");
+}
+
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;
 
 // The client-side visual cap layered on top of the daemon's own first-line
