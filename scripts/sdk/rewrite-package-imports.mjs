@@ -339,8 +339,12 @@ function main() {
         } else if (wholeModule) {
           // A namespace object, a re-export of everything, or a runtime load of
           // one module: all of them need the module itself, and the package
-          // publishes exactly one besides the root.
-          if (moduleID === "docContent") target = DOC_CONTENT_SUBPATH;
+          // publishes two -- the root and ./docContent. `index` is the root
+          // under another name: both `.../typescript` and `.../typescript/index`
+          // resolve to index.ts, and refusing them said the root was not
+          // published.
+          if (moduleID === "index") target = PACKAGE_NAME;
+          else if (moduleID === "docContent") target = DOC_CONTENT_SUBPATH;
           else problems.push(`${where}: ${site.kind} of "${moduleID}", which the package does not publish as a subpath`);
         } else if (named.every((binding) => rootExports.has(binding))) {
           target = PACKAGE_NAME;

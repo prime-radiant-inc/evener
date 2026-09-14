@@ -234,3 +234,34 @@ test("an import-equals require of the package is refused like any other whole-mo
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a whole-module site naming the package root is rewritten to the package name", () => {
+  // Both spellings resolve to index.ts, and the root is published: refusing
+  // them said otherwise.
+  for (const specifier of ["../../appwire-client/typescript", "../../appwire-client/typescript/index"]) {
+    const root = fixture({ "mobile/src/state.ts": `import * as pkg from "${specifier}";\nvoid pkg;\n` });
+    try {
+      const run = rewrite(root);
+      assert.equal(run.status, 0, `${specifier}: ${run.output}`);
+      assert.match(
+        readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
+        /from "@evener\/appwire-client";/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a whole-module site naming a module the package does not publish is still refused", () => {
+  const before = 'import * as errors from "../../appwire-client/typescript/errors";\nvoid errors;\n';
+  const root = fixture({ "mobile/src/state.ts": before });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 2);
+    assert.match(run.output, /import-namespace of "errors"/);
+    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
