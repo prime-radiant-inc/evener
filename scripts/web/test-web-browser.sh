@@ -73,10 +73,10 @@ if [ ! -f dist/index.html ]; then
 		exit "$build_status"
 	fi
 fi
-# TestSkillGuardDriverTail rides along: it is a plain unit test of the failure
-# reporting this guard leans on, it needs no browser, and the browserguard tag
-# is the only build that compiles it.
-if (cd "$repo_root" && go test -tags browserguard ./cmd/evener-hub -run '^TestSkillComposerBrowser$|^TestSkillGuardDriverTail$' -count=1 >"$dir/skillguard.log" 2>&1); then
+# The TestSkillGuard* unit tests ride along: they cover the failure reporting
+# this guard leans on, they need no browser, and the browserguard tag is the
+# only build that compiles them.
+if (cd "$repo_root" && go test -tags browserguard ./cmd/evener-hub -run '^TestSkillComposerBrowser$|^TestSkillGuard' -count=1 >"$dir/skillguard.log" 2>&1); then
 	printf 'PASS  web-skillguard\n'
 else
 	guard_status=$?
