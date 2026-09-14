@@ -2230,6 +2230,13 @@ const (
 
 type AuthTestParams struct {
 	Provider string `json:"provider"`
+	// ExpectedEndpointFingerprint is the endpoint this client reviewed Provider
+	// against (InstanceEntry.endpointFingerprint), when it captured one. The hub
+	// validates it against the configuration the probe will dial and refuses the
+	// check rather than send the stored credential to an endpoint the client
+	// never showed. Empty asserts nothing, which is what the TUI's credential
+	// panel always sends.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 type AuthTestResponse struct {

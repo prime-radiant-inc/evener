@@ -413,16 +413,27 @@ function SelectedConnection({
     setError("");
     setReview(null);
     try {
+      // The probe carries the destination this flow reviewed. The hub validates
+      // it against the configuration the probe will dial, so a name re-pointed
+      // between the refresh above and this call cannot receive the stored
+      // credential.
       const response = safeCredentialTestResult(
         target.name,
-        await credentialsStore.getState().testCredentials(target.name),
+        await credentialsStore.getState().testCredentials(target.name, target.endpointFingerprint),
       );
       if (!current(token)) return;
       setResult(response);
       setPhase("result");
       if (response.status !== "success") setError(response.message);
-    } catch {
+    } catch (err) {
       if (!current(token)) return;
+      // A refused assertion means the destination moved under the check - the
+      // same change submit() reports. Reset the flow and re-anchor rather than
+      // dress the refusal up as an endpoint failure.
+      if (isEndpointConflict(err)) {
+        await recoverChangedEndpoint();
+        return;
+      }
       const response = safeCredentialTestResult(target.name, {
         provider: target.name,
         status: "endpoint_failure",

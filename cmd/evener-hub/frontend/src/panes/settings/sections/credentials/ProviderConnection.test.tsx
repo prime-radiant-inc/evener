@@ -1195,3 +1195,56 @@ test("the hub's endpoint refusal re-anchors the flow instead of saving to the mo
     ),
   ).toBeTruthy();
 });
+
+// The probe must carry the destination this flow reviewed, so the hub can
+// compare it where the request lands. Without the fingerprint on the wire the
+// probe would only name the instance, and a name re-pointed between the refresh
+// above and the call could send the stored credential to an endpoint the user
+// never saw.
+test("the check asserts the reviewed endpoint", async () => {
+  const { user, client } = setup(fingerprintList("fp-reviewed"));
+  await choose(user, "Anthropic");
+  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  // The post-save listing carries the same destination as the baseline, so the
+  // flow goes straight to the check rather than pausing on the review step.
+  scriptSave(client, savedList("anthropic", { endpointFingerprint: "fp-reviewed" }));
+
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+
+  expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+  expect(client.calls.find((call) => call.method === "evener/auth/test")?.params).toEqual({
+    provider: "anthropic",
+    expectedEndpointFingerprint: "fp-reviewed",
+  });
+});
+
+// A refused endpoint assertion is the same change submit() reports: the
+// destination moved under the check. It must reset the flow and say so, not
+// masquerade as an unreachable endpoint that invites the user to retry against
+// a destination that is gone.
+test("a refused assertion is reported as a changed connection, not an endpoint failure", async () => {
+  const { user, client } = setup(fingerprintList("fp-reviewed"));
+  await choose(user, "Anthropic");
+  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(client, savedList("anthropic", { endpointFingerprint: "fp-reviewed" }));
+  // The hub refuses the asserted endpoint (appwire.Conflict with evenerErrorInfo
+  // "conflict"): the name no longer resolves to the endpoint the flow reviewed.
+  client.on("evener/auth/test", () => {
+    throw new WireError(
+      "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+      -32013,
+      { evenerErrorInfo: "conflict" },
+    );
+  });
+
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+
+  expect(
+    await screen.findByText(
+      "This connection changed to a different endpoint. Check its destination and enter the key again.",
+    ),
+  ).toBeTruthy();
+  expect(
+    screen.queryByText("The provider endpoint could not be reached. Check the endpoint and network connection."),
+  ).toBeNull();
+});

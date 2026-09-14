@@ -156,6 +156,7 @@ export interface AuthStatusResponse {
 
 export interface AuthTestParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface AuthTestResponse {

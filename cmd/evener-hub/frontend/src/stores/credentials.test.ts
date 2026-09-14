@@ -1050,6 +1050,74 @@ describe("notification-triggered refetch", () => {
     expect(listSpy.mock.calls.length).toBe(before + 1);
   });
 
+  test("a stale save failure from a replaced connection cannot retire the new connection's marker", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    let rejectFirst: (reason: Error) => void = () => {};
+    const firstSave = new Promise<AuthStatusResponse>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    first.on("evener/auth/apiKey/set", () => firstSave);
+    await credentialsStore.getState().fetch();
+
+    const firstPending = credentialsStore.getState().setApiKey("work", "first");
+    // The connection is replaced while the first save is still in flight: the
+    // old connection's callback lands after its markers were cleared.
+    const second = connectFakeClient();
+    second.on("evener/instance/list", () => LIST_RESPONSE);
+    await vi.advanceTimersByTimeAsync(0); // the reconnect's restore fetch settles
+
+    let resolveSecond: (value: AuthStatusResponse) => void = () => {};
+    const secondSave = new Promise<AuthStatusResponse>((resolve) => {
+      resolveSecond = resolve;
+    });
+    second.on("evener/auth/apiKey/set", () => secondSave);
+    const secondPending = credentialsStore.getState().setApiKey("work", "second");
+
+    // The stale rejection must be ignored whole - it belongs to a connection
+    // that is gone - and must not retire the new connection's marker.
+    rejectFirst(new Error("hub refused the old key"));
+    await expect(firstPending).rejects.toThrow("hub refused the old key");
+
+    resolveSecond({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false });
+    await secondPending;
+    const before = credentialsStore.getState().selfRefresh;
+
+    // The new connection's own echo is still consumed as its own, so the
+    // coalesced read keeps the self mark.
+    second.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
+  });
+
+  test("a stale save success from a replaced connection does not schedule a self-marked read", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    let resolveFirst: (value: AuthStatusResponse) => void = () => {};
+    const firstSave = new Promise<AuthStatusResponse>((resolve) => {
+      resolveFirst = resolve;
+    });
+    first.on("evener/auth/apiKey/set", () => firstSave);
+    await credentialsStore.getState().fetch();
+
+    const firstPending = credentialsStore.getState().setApiKey("work", "first");
+    // The connection is replaced before the first save's success lands.
+    const second = connectFakeClient();
+    second.on("evener/instance/list", () => LIST_RESPONSE);
+    await vi.advanceTimersByTimeAsync(0); // the reconnect's restore fetch settles
+    const before = credentialsStore.getState().selfRefresh;
+
+    // The old connection's success must not schedule a read on the new one,
+    // let alone mark it as this connection's own refresh.
+    resolveFirst({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false });
+    await firstPending;
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(credentialsStore.getState().selfRefresh).toBe(before);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
   test("a background refetch race with no client connected is swallowed, not an unhandled rejection", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);

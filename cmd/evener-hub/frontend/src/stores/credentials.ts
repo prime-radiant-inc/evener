@@ -111,7 +111,7 @@ export interface CredentialsStoreState {
   loginComplete(provider: string, flowId: string, redirectUrl: string): Promise<AuthLoginCompleteResponse>;
   deviceStart(provider: string): Promise<AuthDeviceStartResponse>;
   devicePoll(provider: string, flowId: string): Promise<AuthDevicePollResponse>;
-  testCredentials(provider: string): Promise<AuthTestResponse>;
+  testCredentials(provider: string, expectedEndpointFingerprint?: string): Promise<AuthTestResponse>;
 }
 
 // listState normalizes one instance/list answer into the store's own always-
@@ -228,6 +228,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
 
   async setApiKey(provider, value, expectedEndpointFingerprint) {
     const client = requireClient();
+    const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/apiKey/set", {
@@ -242,16 +243,17 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       // `self` mark lets subscriptions (ProviderConnection's invalidation
       // watch) tell the refresh it schedules apart from a foreign listing
       // change.
-      completeLocalAuthMutation(provider);
+      completeLocalAuthMutation(provider, generation);
       return result;
     } catch (err) {
-      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
       throw err;
     }
   },
 
   async setCredentialJson(provider, value, expectedEndpointFingerprint) {
     const client = requireClient();
+    const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/credentialJson/set", {
@@ -259,42 +261,44 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         value,
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      completeLocalAuthMutation(provider); // same rationale as setApiKey
+      completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
       return result;
     } catch (err) {
-      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
       throw err;
     }
   },
 
   async clearStoredKey(provider, expectedEndpointFingerprint) {
     const client = requireClient();
+    const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/apiKey/clear", {
         provider,
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      completeLocalAuthMutation(provider); // same rationale as setApiKey
+      completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
       return result;
     } catch (err) {
-      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
       throw err;
     }
   },
 
   async logout(provider, expectedEndpointFingerprint) {
     const client = requireClient();
+    const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/logout", {
         provider,
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      completeLocalAuthMutation(provider); // same rationale as setApiKey
+      completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
       return result;
     } catch (err) {
-      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
       throw err;
     }
   },
@@ -306,13 +310,14 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
 
   async loginComplete(provider, flowId, redirectUrl) {
     const client = requireClient();
+    const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
-      completeLocalAuthMutation(provider); // same rationale as setApiKey
+      completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
       return result;
     } catch (err) {
-      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
       throw err;
     }
   },
@@ -324,6 +329,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
 
   async devicePoll(provider, flowId) {
     const client = requireClient();
+    const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
       const resp = await client.request("evener/auth/device/poll", { provider, flowId });
@@ -332,18 +338,21 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       // would silence unrelated same-provider changes tick after tick. An
       // authorized poll also refreshes the listing through the store - the
       // polling dialog may already be closed by the time authorization lands.
-      if (resp.state === "authorized") completeLocalAuthMutation(provider);
-      else endUnconfirmedAuthMutation(provider);
+      if (resp.state === "authorized") completeLocalAuthMutation(provider, generation);
+      else endUnconfirmedAuthMutation(provider, generation);
       return resp;
     } catch (err) {
-      endUnconfirmedAuthMutation(provider); // refused: no echo will follow
+      endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
       throw err;
     }
   },
 
-  async testCredentials(provider) {
+  async testCredentials(provider, expectedEndpointFingerprint) {
     const client = requireClient();
-    return client.request("evener/auth/test", { provider });
+    return client.request("evener/auth/test", {
+      provider,
+      ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+    });
   },
 }));
 
@@ -432,6 +441,15 @@ interface LocalAuthMutationMarker {
 }
 const localAuthMutations = new Map<string, LocalAuthMutationMarker>();
 
+// The connection the markers belong to. A marker's echo can only arrive on the
+// connection its mutation was issued on, so a callback that lands after that
+// connection is replaced or reconnects must not touch the markers of the
+// connection now in place - nor schedule a `self`-marked read there, which
+// would tell the guided flow that a read carrying someone else's change was
+// its own. Bumped exactly where the markers are cleared, so "the marker is
+// gone" and "the callback is stale" stay one fact (see the wrappers below).
+let connectionGeneration = 0;
+
 function noteLocalAuthMutation(provider: string): void {
   const existing = localAuthMutations.get(provider);
   localAuthMutations.set(provider, { count: (existing?.count ?? 0) + 1, issuedAt: Date.now() });
@@ -449,8 +467,11 @@ function clearLocalAuthMutation(provider: string): void {
 // marker is all this owes, and once the count reaches zero the next
 // same-provider notification is foreign again. Which mutation ended does not
 // matter - only how many echoed mutations remain outstanding - so this
-// decrements whether or not it was the mutation that failed.
-function endUnconfirmedAuthMutation(provider: string): void {
+// decrements whether or not it was the mutation that failed. A callback that
+// lands after the issuing connection is gone is ignored whole: its marker was
+// cleared with that connection, and an entry still here belongs to the new one.
+function endUnconfirmedAuthMutation(provider: string, generation: number): void {
+  if (generation !== connectionGeneration) return;
   const existing = localAuthMutations.get(provider);
   if (existing === undefined) return;
   if (existing.count <= 1) localAuthMutations.delete(provider);
@@ -469,7 +490,13 @@ function endUnconfirmedAuthMutation(provider: string): void {
 // re-stamping it is a no-op; a marker with no echo still ages out, now from
 // the later stamp. Also schedules the store's own refresh, which the echo
 // coalesces with instead of duplicating (see the correlation comment above).
-function completeLocalAuthMutation(provider: string): void {
+// A response from a connection that has since been replaced or reconnected is
+// ignored whole: its marker went with that connection, and the read it would
+// schedule would carry the new connection's `self` mark. Whatever the old
+// connection's write did to the listing is covered by the reconnect's own
+// restore load instead.
+function completeLocalAuthMutation(provider: string, generation: number): void {
+  if (generation !== connectionGeneration) return;
   const existing = localAuthMutations.get(provider);
   if (existing !== undefined) {
     localAuthMutations.set(provider, { count: existing.count, issuedAt: Date.now() });
@@ -580,8 +607,11 @@ connectionStore.subscribe((state, previous) => {
     // A marker belongs to the connection its mutation was issued on: the echo
     // cannot arrive on a different one, so a marker left over from a replaced
     // or reconnected client is pure suppression risk for whatever
-    // same-provider notification comes next on the new connection.
+    // same-provider notification comes next on the new connection, and the
+    // callbacks of mutations still in flight on the old one belong to a
+    // connection that is gone (see connectionGeneration).
     localAuthMutations.clear();
+    connectionGeneration += 1;
   }
   attachNotifications(state.client);
   // Once a view has requested credentials, reconnects must restore its list
@@ -609,6 +639,7 @@ export function resetCredentialsStoreForTests(): void {
   requestVersion += 1;
   requestedList = false;
   localAuthMutations.clear();
+  connectionGeneration += 1;
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;
