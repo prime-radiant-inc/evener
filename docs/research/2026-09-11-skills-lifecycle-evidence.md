@@ -972,3 +972,138 @@ new row matches the durable one exactly.
 - `recordSkillReloadNotification` still accepts an obligation pointer, which
   would make its turn a carrier; no call site passes one, and the ordering
   requirement is documented on the function.
+
+### Eighth round: roborev job 9943
+
+Job 9943 reviewed `42d27f9..191df52` — the head that carried rounds six and
+seven — and reported no critical or high issues, three Medium and four Low.
+Rounding to that verdict, all seven are addressed here. One of them was a
+regression this branch introduced in round seven, which is recorded as such.
+
+**Medium — within-batch reload dedup was lost (introduced in round seven).**
+Staging the reload carriers until after the obligation save (which round seven's
+durability finding required) removed a reuse check the immediate-record path got
+for free: the loop decided "this body is already present" by looking in the live
+history, and an earlier carrier in the same batch used to be there. Two pending
+handoffs selecting the same skill therefore admitted two complete instruction
+bodies, two obligations and two activation events instead of one body and one
+reuse notice. `admitCompactedSkillReloads` now tracks the identities it has
+staged in the batch, so the reuse decision matches what the history would show
+once the carriers are recorded. `TestSkillReload_DuplicateSelectionsAdmitOneBody`
+seeds two handoffs selecting one skill and pins exactly one body and one notice;
+it failed before the fix with "admitted 2 instruction bodies for one skill".
+
+**Medium — `cloneQueueState` aliased the new queue selections.**
+`CloneThread` feeds cached thread state and remote-cache snapshots, and
+`QueueState.SkillNames [][]string` was the one mutable field it copied by
+reference (outer and inner). `cloneQueueState` now deep-copies both.
+`TestCloneThreadDeepCopiesQueueSkillNames` failed before the fix with "inner
+slice aliased: original[0][0] = mutated".
+
+**Medium — an incomplete-identity reload selection was never retired.**
+A valid selection naming a skill whose recorded identity is incomplete (a legacy
+activation) was skipped with no outcome, and the receipts-consumed predicate
+requires an outcome per name, so its handoff stayed pending forever: every later
+request re-processed the same selection, re-announcing its reloadable names as
+already-present and collecting another delivery obligation each time, with no
+bound. The special-case skip is gone; the name now goes through
+`prepareSkillActivations`, which reports it as a typed `invalid_metadata`
+failure with a visible notification and lets the publication retire.
+`TestSkillReload_IncompleteIdentitySelectionRetiresReceipt` pins the visible
+report, the consumption, and (by preparing twice) that nothing grows on
+re-processing; it failed before the fix with "visible invalid_metadata notices
+after the first preparation = 0".
+
+That changed one pinned assertion. `TestSkillCompaction_CheckpointOnly` seeded
+exactly this legacy-identity selection and asserted "the winning publication must
+record exactly one handoff receipt" *after* the request preparation — i.e. it
+pinned the un-retired handoff that roborev identified as the defect. It now
+asserts the handoff is consumed, and replaces the old transcript-receipt↔handoff
+cross-check with a transcript-receipt↔typed-outcome cross-check (the recorded
+`invalid_metadata` outcome's invocation identity must carry the publication's
+identity from the transcript receipt), so the publication is still tied to its
+cycle. Roborev's finding is the independent evidence that the old assertion
+encoded the wrong behavior; no other pre-existing assertion changed.
+
+**Low — `mintSkillOperationID` failures were treated as missing skills.**
+Both role-preload sites swallowed a persistence error with `continue`, starting
+the delegate without the preloads its role configured — indistinguishable from
+"that skill is not available". Both now return the error, keeping fail-soft
+handling only for genuine resolution failures.
+`TestRolePreload_OperationIdentitySaveFailureFailsSpawn` and
+`…FailsDescribe` were proved load-bearing by reverting the two production hunks
+in place: without the fix they fail with "error = profile is nil, want the
+operation-identity persistence failure" (the spawn proceeded past the swallowed
+failure), and pass with it.
+
+**Low — `removeSkillSelection` did not canonicalize.** The add/remove contract
+this file documents promises identical behavior on a non-canonical list; round
+six canonicalized only `addSkillSelection`. Removal now canonicalizes the list
+and the target name too.
+`removeSkillSelection canonicalizes before filtering, like add does` failed
+before the fix with "expected [ ' pkg:probe ', 'pkg:other' ] to deeply equal
+[ 'pkg:other' ]".
+
+**Low — the `skillInput` gate measured raw length.** A whitespace-only or
+empty-name selection list canonicalizes to nothing, so the request would carry
+zero skill items, but the gate refused it as unsupported. It now measures
+`canonicalSkillNames(skillNames).length` — the same list `buildComposerInput`
+sends. `the skillInput gate measures the names the wire would actually carry`
+failed before the fix (the send rejected).
+
+**Low — `SkillLifecycleSnapshot.PendingSelection` was dead persisted state.**
+Production wrote and persisted it; the only reader was a test helper. Every
+writer already stored the same selection on the compaction operation that owns
+the cycle, so the field was a second copy that could drift — and did:
+`acceptAutomaticSkillCompaction` left a previous selection in place when an
+automatic selection was absent. Per Jesse's decision, the field, its clone
+handling, both writers in `session_skill_compaction.go`, its four occurrences in
+`reconcileSkillCompactionReceipts` and the two helpers in
+`skill_reload_selection.go` are removed. Test assertions that read the old slot
+now read the operation that owns the selection through a
+`cycleSkillReloadSelection` test helper; the round-trip test was renamed to
+`TestSkillCompactionRestore_ReloadSelectionRoundTrip` and now protects the
+authority's round-trip. Reading older snapshots that still carry the JSON field
+is unaffected — unknown fields are ignored — and nothing else changed about the
+compaction contract.
+
+Red-first evidence for this round:
+
+```
+--- FAIL: TestSkillReload_DuplicateSelectionsAdmitOneBody
+    admitted 2 instruction bodies for one skill, want exactly one (the second selection must reuse it)
+--- FAIL: TestCloneThreadDeepCopiesQueueSkillNames
+    inner slice aliased: original[0][0] = "mutated", want pkg:a
+--- FAIL: TestSkillReload_IncompleteIdentitySelectionRetiresReceipt
+    visible invalid_metadata notices after the first preparation = 0, want exactly one
+--- FAIL: TestRolePreload_OperationIdentitySaveFailureFailsSpawn   (patch-invert)
+    error = profile is nil, want the operation-identity persistence failure
+--- FAIL: removeSkillSelection canonicalizes before filtering, like add does  (patch-invert)
+    expected [ ' pkg:probe ', 'pkg:other' ] to deeply equal [ 'pkg:other' ]
+--- FAIL: the skillInput gate measures the names the wire would actually carry  (patch-invert)
+```
+
+The `PendingSelection` removal has no red test of its own: it is a deletion of
+dead state, and its coverage is that the re-pointed assertions still hold.
+
+**Gates.** All seven ran on `95eef0a04` and exited 0: `make generate` (zero
+generated diff), `make vet`, `make test-api-package`, `make test-web` (all three
+phases), `make merge-approval-gate` (every lint phase PASS, every module test
+wave PASS), the six-guard browser gate, and `make fuzz`.
+
+**Independent review.** A fresh reviewer returned READY with all seven findings
+RESOLVED and no new defects. It proved load-bearingness itself for all seven new
+tests — five Go and two frontend — by reverting each production change in place
+and capturing its own failure output, including `TestSkillCompaction_CheckpointOnly`
+failing under the reverted M-c fix ("a reported selection must consume its
+handoff"), which is the independent check that the re-pinned assertion is
+load-bearing; it then confirmed every file restored byte-identical and the
+worktree clean.
+
+Its assertion audit confirms this round's claim and adds the detail: exactly one
+real re-pin (`TestSkillCompaction_CheckpointOnly`), one renamed test, four
+fixture or literal deletions — and 23 mechanical read swaps, which are the
+deleted slot's observations now reading the operation that owns the selection,
+plus one diagnostic-only change in the live harness. It also corrected the
+review brief rather than the code: the brief said six new Go tests where five
+were added.
