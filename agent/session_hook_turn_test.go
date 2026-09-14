@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -600,6 +603,9 @@ func TestHookEndWaitsForTheFlushThatMakesItDurable(t *testing.T) {
 	if got := len(s.pendingHookEnds); got != 1 {
 		t.Fatalf("announcements waiting for the envelope = %d, want 1", got)
 	}
+	if got := len(s.history); got != 1 {
+		t.Fatalf("history turns after the flush = %d, want the completion the transcript now holds", got)
+	}
 	if hooks := transcriptHookTurns(t, path); len(hooks) != 1 {
 		t.Fatalf("HOOK_COMPLETED entries after the flush = %d, want 1", len(hooks))
 	}
@@ -621,4 +627,148 @@ func TestHookEndWaitsForTheFlushThatMakesItDurable(t *testing.T) {
 	if got := len(failing.pendingTranscriptWarnings); got != 1 {
 		t.Fatalf("warnings after a failed flush = %d, want the failure reported", got)
 	}
+	// And nothing of the turn is left in memory either: the history append and
+	// the fold's pair log are the other half of the pair the write failed.
+	if got := len(failing.history); got != 0 {
+		t.Fatalf("history turns after a failed flush = %d, want 0", got)
+	}
+	if got := len(failing.persistedAppendLog); got != 0 {
+		t.Fatalf("pair-log entries after a failed flush = %d, want 0: a fold would re-append a turn the transcript never held", got)
+	}
+}
+
+// syncCountingFS counts the fsyncs its files perform, which is what separates
+// the two doors into the writer: the buffered append can sit behind a sync
+// interval, the durable one cannot.
+type syncCountingFS struct {
+	afero.Fs
+	syncs atomic.Int32
+}
+
+func (fs *syncCountingFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &syncCountingFile{File: file, fs: fs}, nil
+}
+
+func (fs *syncCountingFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &syncCountingFile{File: file, fs: fs}, nil
+}
+
+type syncCountingFile struct {
+	afero.File
+	fs *syncCountingFS
+}
+
+func (file *syncCountingFile) Sync() error {
+	file.fs.syncs.Add(1)
+	return file.File.Sync()
+}
+
+// A hook completion's event goes out the moment its write returns, so the
+// entry has to be ON DISK by then. A buffered append can sit behind the
+// writer's sync interval, and a crash inside that window leaves a client
+// holding an announcement the transcript never kept.
+func TestHookCompletionEntryIsSyncedBeforeItIsAnnounced(t *testing.T) {
+	t.Parallel()
+	fs := &syncCountingFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/hook-sync.jsonl", transcript.Header{SessionID: "hook-sync"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	// A sync interval long enough that a buffered append would not sync on its
+	// own: only the durable door can move the counter here.
+	writer.SyncInterval = time.Hour
+	s := &Session{id: "hook-sync", events: make(chan events.SessionEvent, 8)}
+	s.attachTranscript(writer)
+	before := fs.syncs.Load()
+
+	s.emitHookCompleted(events.HookEndData{Event: "PreCompact", HookType: "command", PluginName: "hook-turn-plugin"})
+
+	if got := fs.syncs.Load(); got <= before {
+		t.Fatalf("fsyncs after the completion = %d, was %d: the entry was announced from a buffer", got, before)
+	}
+	if got := len(s.events); got != 1 {
+		t.Fatalf("events after the completion = %d, want the announcement", got)
+	}
+}
+
+// The fork delegate queues its boundary turn through the same door as every
+// other producer. When that boundary's write is the one that fails, the hooks
+// queued around it still land and still announce: each turn answers for
+// itself, which parallel queues could not promise.
+func TestHeldTurnsAnswerForThemselves(t *testing.T) {
+	t.Parallel()
+	const boundaryText = "inherited context boundary"
+	fs := &failTextWriteFS{Fs: afero.NewMemMapFs(), refuse: boundaryText}
+	writer, err := transcript.NewWriterWithFS(fs, "/held-mixed.jsonl", transcript.Header{SessionID: "held-mixed"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	s := &Session{id: "held-mixed", events: make(chan events.SessionEvent, 8)}
+
+	s.emitHookCompleted(events.HookEndData{Event: "SessionStart", HookType: "command", PluginName: "first"})
+	if !s.holdTurnUntilTranscriptReady(schema.NewTurn(schema.TurnSteering, llm.User(boundaryText))) {
+		t.Fatal("test setup: the boundary was not queued")
+	}
+	s.emitHookCompleted(events.HookEndData{Event: "SessionStart", HookType: "command", PluginName: "second"})
+
+	s.attachTranscript(writer)
+
+	if got := len(s.pendingHookEnds); got != 2 {
+		t.Fatalf("announcements after the flush = %d, want both hooks: the boundary's failure is not theirs", got)
+	}
+	plugins := []string{s.pendingHookEnds[0].PluginName, s.pendingHookEnds[1].PluginName}
+	if plugins[0] != "first" || plugins[1] != "second" {
+		t.Fatalf("announced hooks = %v, want first then second", plugins)
+	}
+	if got := len(s.pendingTranscriptWarnings); got != 1 {
+		t.Fatalf("warnings after the flush = %d, want the boundary's failure reported once", got)
+	}
+	if got := len(s.history); got != 2 {
+		t.Fatalf("history turns after the flush = %d, want the two completions that landed", got)
+	}
+}
+
+// failTextWriteFS refuses exactly the line carrying refuse, transferring no
+// bytes, which is the writer's unpoisoned failure arm.
+type failTextWriteFS struct {
+	afero.Fs
+	refuse string
+}
+
+func (fs *failTextWriteFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &failTextWriteFile{File: file, fs: fs}, nil
+}
+
+func (fs *failTextWriteFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &failTextWriteFile{File: file, fs: fs}, nil
+}
+
+type failTextWriteFile struct {
+	afero.File
+	fs *failTextWriteFS
+}
+
+func (file *failTextWriteFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(file.fs.refuse)) {
+		return 0, errors.New("injected write failure")
+	}
+	return file.File.Write(p)
 }

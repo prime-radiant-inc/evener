@@ -157,8 +157,12 @@ func TestAttachTranscriptWithNilWriterDrainsWithoutPanic(t *testing.T) {
 	sess.mu.Lock()
 	sess.transcript = nil
 	sess.transcriptReady = false
-	sess.pendingTranscriptTurns = []schema.Turn{schema.NewTurn(schema.TurnSteering, llm.User("orphan"))}
 	sess.mu.Unlock()
+	// Queued the way every producer queues, so this drains what production
+	// would have left behind rather than a shape only the test can build.
+	if !sess.holdTurnUntilTranscriptReady(schema.NewTurn(schema.TurnSteering, llm.User("orphan"))) {
+		t.Fatal("test setup: the turn was not held, so there is nothing to drain")
+	}
 
 	sess.attachTranscript(nil)
 

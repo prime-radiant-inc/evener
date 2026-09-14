@@ -348,16 +348,8 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	//
 	// This is THIS producer's discipline. Nothing yet requires every producer
 	// to write before announcing; issue #1150 carries that rule.
-	held := false
-	if err := s.appendTurnAfterTranscriptWrite(
-		turn,
-		func() error {
-			var writeErr error
-			held, writeErr = s.writeTranscriptLockedAnnouncing(turn, &data)
-			return writeErr
-		},
-		func() { s.history = append(s.history, turn) },
-	); err != nil {
+	held, err := s.recordHookCompletion(turn, data)
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		return
 	}

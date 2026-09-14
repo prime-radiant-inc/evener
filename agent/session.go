@@ -832,14 +832,7 @@ type Session struct {
 	// nil writer AFTER the transition is a session that will never have one,
 	// and its turns are dropped rather than accumulated. Guarded by s.mu.
 	transcriptReady        bool
-	pendingTranscriptTurns []schema.Turn
-	// pendingTranscriptAnnouncements pairs, index for index, with
-	// pendingTranscriptTurns: the live announcement each held turn owes once it
-	// reaches the writer, or nil for a turn that announces nothing. A hook
-	// completing before the writer exists has its entry queued rather than
-	// written, so announcing it there would put the event ahead of the entry —
-	// the one ordering emitHookCompleted exists to keep. Guarded by mu.
-	pendingTranscriptAnnouncements []*events.HookEndData
+	pendingTranscriptTurns []heldTranscriptTurn
 	// pendingHookEnds holds those announcements between the flush that made
 	// them durable and the SESSION_START envelope that releases them, so a
 	// hook exit never reaches the stream before the session does.
@@ -2017,20 +2010,39 @@ func (s *Session) writeTranscript(t schema.Turn) error {
 // other writer's entry can interleave between the publish and the fold's
 // compaction markers.
 func (s *Session) writeTranscriptLocked(t schema.Turn) error {
-	_, err := s.writeTranscriptLockedAnnouncing(t, nil)
-	return err
+	if s.holdTurnUntilTranscriptReady(t) {
+		return nil
+	}
+	return s.attachedTranscript().Append(t)
 }
 
-// writeTranscriptLockedAnnouncing is writeTranscriptLocked for a caller that
-// publishes a live event of its own once the entry is durable. It reports
-// whether the turn was HELD for a writer that does not exist yet: such a
-// caller must not announce now, and the flush at attachTranscript announces
-// for it — or, if that flush fails, nobody does.
-func (s *Session) writeTranscriptLockedAnnouncing(t schema.Turn, announce *events.HookEndData) (held bool, err error) {
-	if s.holdTurnUntilTranscriptReadyAnnouncing(t, announce) {
+// recordHookCompletion writes a hook completion's entry and reports whether
+// the rest of what that completion owes — its place in model history and the
+// event announcing it — must wait. A queued entry is not in the transcript
+// yet, so nothing else about it may happen until the flush that lands it; a
+// flush that fails leaves the completion nowhere, which is the honest outcome
+// for a hook exit no reader can get back.
+//
+// The entry is fsynced rather than buffered: its event goes out the moment the
+// write returns, so a crash inside the sync interval would leave a client
+// holding an announcement the transcript never kept.
+func (s *Session) recordHookCompletion(turn schema.Turn, data events.HookEndData) (held bool, err error) {
+	commit := func() {
+		s.mu.Lock()
+		s.history = append(s.history, turn)
+		s.logPairPersistedLocked(turn)
+		s.mu.Unlock()
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if s.holdTurnUntilTranscriptReadyHeld(heldTranscriptTurn{turn: turn, announce: &data, durable: true, commit: commit}) {
 		return true, nil
 	}
-	return false, s.attachedTranscript().Append(t)
+	if err := s.attachedTranscript().AppendDurable(turn); err != nil {
+		return false, err
+	}
+	commit()
+	return false, nil
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
@@ -2066,21 +2078,39 @@ func (s *Session) closeAttachedTranscript() error {
 // not yet reached attachTranscript. The caller snapshots the attached writer
 // under the same session lock after this readiness check.
 func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
-	return s.holdTurnUntilTranscriptReadyAnnouncing(t, nil)
+	return s.holdTurnUntilTranscriptReadyHeld(heldTranscriptTurn{turn: t})
 }
 
-// holdTurnUntilTranscriptReadyAnnouncing is holdTurnUntilTranscriptReady for a
-// turn that owes a live announcement: the two are queued together, so the flush
-// that makes the entry durable is what releases the announcement, and a turn
-// whose flush fails releases none.
-func (s *Session) holdTurnUntilTranscriptReadyAnnouncing(t schema.Turn, announce *events.HookEndData) bool {
+// heldTranscriptTurn is one turn waiting for a writer that does not exist yet,
+// with everything that turn owes once the writer takes it. One value rather
+// than parallel queues: a producer that queues a turn alone — the fork
+// delegate's boundary — cannot then shift another turn's announcement onto it.
+type heldTranscriptTurn struct {
+	turn schema.Turn
+	// announce is the live event this turn owes once its entry is durable, or
+	// nil for a turn that announces nothing.
+	announce *events.HookEndData
+	// durable asks for the fsyncing append. A turn whose event is published
+	// the moment its entry lands needs the entry ON DISK by then, not merely
+	// buffered behind a sync interval a crash can outrun.
+	durable bool
+	// commit is the in-memory half of this turn's append/write pair — the
+	// history append and the pair log — held back until the write succeeds, so
+	// a flush that fails leaves nothing of the turn anywhere.
+	commit func()
+}
+
+// holdTurnUntilTranscriptReadyHeld is holdTurnUntilTranscriptReady for a turn
+// that owes more than its entry. Everything it owes is queued with it, so the
+// flush that lands the entry is what releases the rest — and a flush that
+// fails releases none of it.
+func (s *Session) holdTurnUntilTranscriptReadyHeld(held heldTranscriptTurn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.transcriptReady {
 		return false
 	}
-	s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, t)
-	s.pendingTranscriptAnnouncements = append(s.pendingTranscriptAnnouncements, announce)
+	s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, held)
 	return true
 }
 
@@ -2095,12 +2125,14 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.transcript = w
 	s.transcriptReady = true
 	held := s.pendingTranscriptTurns
-	announcements := s.pendingTranscriptAnnouncements
 	s.pendingTranscriptTurns = nil
-	s.pendingTranscriptAnnouncements = nil
 	s.mu.Unlock()
-	for i, t := range held {
-		if err := w.Append(t); err != nil {
+	for _, pending := range held {
+		write := w.Append
+		if pending.durable {
+			write = w.AppendDurable
+		}
+		if err := write(pending.turn); err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
@@ -2108,11 +2140,16 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			continue
 		}
-		// The entry is durable now, so what it owes can be said. Buffered like
-		// the warnings above rather than emitted here: SESSION_START has not
-		// fired yet, and a hook exit must not precede it.
-		if i < len(announcements) && announcements[i] != nil {
-			s.pendingHookEnds = append(s.pendingHookEnds, *announcements[i])
+		// The entry is in the transcript now, so the rest of what this turn
+		// owes follows it: its place in model history, and then its
+		// announcement. The announcement is buffered like the warnings above
+		// rather than emitted here — SESSION_START has not fired yet, and a
+		// hook exit must not precede it.
+		if pending.commit != nil {
+			pending.commit()
+		}
+		if pending.announce != nil {
+			s.pendingHookEnds = append(s.pendingHookEnds, *pending.announce)
 		}
 	}
 }

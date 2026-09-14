@@ -1419,7 +1419,7 @@ func TestCovAppendSteeringTurn(t *testing.T) {
 	if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindHookContext || s.history[0].Message.Text() != "steer now" {
 		t.Fatalf("steering history = %+v", s.history)
 	}
-	if len(s.pendingTranscriptTurns) != 1 || s.pendingTranscriptTurns[0].SteeringKind != events.SteeringKindHookContext || s.pendingTranscriptTurns[0].Message.Text() != "steer now" {
+	if len(s.pendingTranscriptTurns) != 1 || s.pendingTranscriptTurns[0].turn.SteeringKind != events.SteeringKindHookContext || s.pendingTranscriptTurns[0].turn.Message.Text() != "steer now" {
 		t.Fatalf("persisted steering queue = %+v", s.pendingTranscriptTurns)
 	}
 	event := <-s.events
