@@ -46,10 +46,12 @@ import (
 // deliberately does not do.
 const shutdownDrainWaitBudget = 30 * time.Second
 
-// retirementReaderDrainBudget bounds how long a committed retirement waits
-// for in-flight readers to leave before release proceeds without them. A
-// drain that runs out never reopens admission and never forces a kill: the
-// process stays retiring.
+// retirementReaderDrainBudget bounds how long a committed retirement waits for
+// in-flight readers to leave before giving up on them. A drain that runs out
+// skips the release that follows it — release expects a drained readers set —
+// and the process exits anyway: once Commit has closed admission for good, a
+// teardown failure is reported to the caller, never a reason to stay resident.
+// Admission never reopens, and no kill is forced.
 const retirementReaderDrainBudget = 30 * time.Second
 
 // rendezvousRemovalAttempts bounds how many times shutdown asks for its
