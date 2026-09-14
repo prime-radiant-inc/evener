@@ -65,6 +65,15 @@ const (
 	// maxLiveTimers caps timers per job manager; with the 60-second floor it
 	// bounds a session to eight timer wakes a minute.
 	maxLiveTimers = 8
+	// maxLiveWatches caps the live watches one job manager holds. Every live row
+	// is projected onto AppWire for the hub, which clones, fingerprints, and only
+	// then caps the rows it displays, so an unbounded live set put an unbounded
+	// watch payload on every roster probe. The cap is the same 32 the hub's
+	// maxNavigationWatches uses for display: the per-watch delivery ring is
+	// bounded too, so one number covers both sides. Registration refuses a key
+	// that would grow the set rather than trimming, so no live watch goes
+	// missing without the agent hearing about it.
+	maxLiveWatches = 32
 	// runawaySelfInfluenceDepth caps how many delivered self-influenced priors a
 	// watch send may descend from before the breaker drops it as a runaway. The
 	// existing watchDeliveryBudget is the coarser whole-watch volume floor.
@@ -771,6 +780,13 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		return watchResult{}, fmt.Errorf("invalid_request: too many timers (%d live); clear one first", maxLiveTimers)
 	}
 	existing := jm.watches[key]
+	// Only a fresh key grows the set: re-registering or replacing one the
+	// manager already holds is refused by neither this guard nor the cap's
+	// intent. See maxLiveWatches.
+	if existing == nil && len(jm.watches) >= maxLiveWatches {
+		jm.mu.Unlock()
+		return watchResult{}, fmt.Errorf("invalid_request: too many watches (%d live); clear one first", maxLiveWatches)
+	}
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
 	if existing != nil {
 		equal := existing.configHash == cfg.configHash
