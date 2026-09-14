@@ -177,6 +177,25 @@ func emptyReplyURL(t *testing.T) string {
 	return "http://" + listener.Addr().String()
 }
 
+// requireKnobRefusal asks the same three things of every knob guard: exit 2,
+// the knob named along with what it takes, and nothing fetched before the
+// guard ran.
+func requireKnobRefusal(t *testing.T, knob string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		code, out := runInstaller(t, knob+"="+value)
+		if code != 2 {
+			t.Fatalf("%s=%s: exit code = %d, want 2\n%s", knob, value, code, out)
+		}
+		if !strings.Contains(out, knob+" must be a whole number") {
+			t.Fatalf("%s=%s: output = %q, want the knob and what it takes", knob, value, out)
+		}
+		if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
+			t.Fatalf("%s=%s: output = %q, want no attempt made before the guard", knob, value, out)
+		}
+	}
+}
+
 // TestInstallerRefusesABackoffItCannotUse covers the other guard: 08
 // passes a naive digits-only check and then fails inside the arithmetic that
 // uses it, which is a failure in the retry rather than in the validation.
@@ -186,37 +205,47 @@ func TestInstallerRefusesABackoffItCannotUse(t *testing.T) {
 	// 08 is the one worth naming: it passes a digits-only check and then fails
 	// inside the arithmetic that uses it, because bash reads a leading zero as
 	// octal. The others are the same table its siblings have.
-	for _, value := range []string{"08", "abc", "21"} {
-		code, out := runInstaller(t, "EVENER_GOLANGCI_INSTALL_BACKOFF="+value)
-		if code != 2 {
-			t.Fatalf("EVENER_GOLANGCI_INSTALL_BACKOFF=%s: exit code = %d, want 2\n%s", value, code, out)
-		}
-		if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_BACKOFF must be a whole number") {
-			t.Fatalf("EVENER_GOLANGCI_INSTALL_BACKOFF=%s: output = %q, want the knob and what it takes", value, out)
-		}
-		if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
-			t.Fatalf("EVENER_GOLANGCI_INSTALL_BACKOFF=%s: output = %q, want no attempt made before the guard", value, out)
-		}
-	}
+	requireKnobRefusal(t, "EVENER_GOLANGCI_INSTALL_BACKOFF", "08", "abc", "21")
 }
 
 // TestInstallerRefusesAnAttemptCountItCannotUse covers the guard that runs
 // before anything is fetched: a bad knob must cost nothing and say what it
-// wanted.
+// wanted. 0 belongs here and nowhere else: a run of no attempts is not a run.
 func TestInstallerRefusesAnAttemptCountItCannotUse(t *testing.T) {
 	t.Parallel()
 	requireInstallerScriptTools(t)
-	for _, value := range []string{"abc", "0", "21", "99999999999999999999"} {
-		code, out := runInstaller(t, "EVENER_GOLANGCI_INSTALL_ATTEMPTS="+value)
-		if code != 2 {
-			t.Fatalf("EVENER_GOLANGCI_INSTALL_ATTEMPTS=%s: exit code = %d, want 2\n%s", value, code, out)
-		}
-		if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a whole number") {
-			t.Fatalf("EVENER_GOLANGCI_INSTALL_ATTEMPTS=%s: output = %q, want the knob and what it takes", value, out)
-		}
-		if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
-			t.Fatalf("EVENER_GOLANGCI_INSTALL_ATTEMPTS=%s: output = %q, want no attempt made before the guard", value, out)
-		}
+	requireKnobRefusal(t, "EVENER_GOLANGCI_INSTALL_ATTEMPTS", "abc", "0", "21", "99999999999999999999")
+}
+
+// TestInstallerRefusesCurlRetrySettingsItCannotUse covers the two knobs that
+// reach curl rather than the loop around it. A value curl cannot use is worse
+// here than in the loop: it goes into the command line of the download itself,
+// where the failure would look like a download that did not work. 0 is a real
+// setting for both -- no retries, no delay between them -- and is what the
+// tests themselves run with.
+func TestInstallerRefusesCurlRetrySettingsItCannotUse(t *testing.T) {
+	t.Parallel()
+	requireInstallerScriptTools(t)
+	for _, knob := range []string{"EVENER_GOLANGCI_CURL_RETRIES", "EVENER_GOLANGCI_CURL_RETRY_DELAY"} {
+		requireKnobRefusal(t, knob, "abc", "08", "21")
+	}
+}
+
+// TestTheBoundedDownloadIsBuiltInOnePlace pins what keeps the probe honest.
+// The probe decides whether the download can be bounded by running a trivial
+// command under the same subcommand; if the two invocations are written out
+// separately, a flag added to the download is a flag the probe never tried,
+// and the answer it gave was about something else. The binary itself is the
+// anchor: every invocation names it.
+func TestTheBoundedDownloadIsBuiltInOnePlace(t *testing.T) {
+	t.Parallel()
+	script, err := os.ReadFile(repoScriptPath(t, "scripts/ops/install-golangci-lint.sh"))
+	if err != nil {
+		t.Fatalf("reading the installer script: %v", err)
+	}
+	const invocation = `"$evener_dev_bin" dev bounded-list`
+	if got := strings.Count(string(script), invocation); got != 1 {
+		t.Fatalf("the script runs %s in %d places, want one: the probe and the download share it", invocation, got)
 	}
 }
 

@@ -168,15 +168,31 @@ evener_dev_bin="${EVENER_GOLANGCI_DEV_BIN:-$repo_root/evener-dev}"
 bounded_list_support=
 announced_unbounded=0
 
+# The flags every bounded run gets. The probe and the download differ in how
+# long each is given and in nothing else, and both are built here: a probe that
+# answers for an invocation the download does not make is the wrong question,
+# however well it is asked.
+bounded_list_flags=(-attempts 1 -grace 5s)
+
+# run_bounded runs a command under bounded-list, with the timeout the caller
+# names and those flags.
+run_bounded() {
+	local timeout="$1"
+	shift
+	"$evener_dev_bin" dev bounded-list -timeout "$timeout" "${bounded_list_flags[@]}" -- "$@"
+}
+
 # bounded_list_available answers once per run: the binary is there and its
 # bounded-list runs a trivial command. Asking is the only honest test -- the
-# subcommand arrives with #1263 and this script is on main before it.
+# subcommand arrives with #1263 and this script is on main before it. The
+# probe's own bound is short because `true` is: what it is waiting for is the
+# binary answering at all.
 bounded_list_available() {
 	case "$bounded_list_support" in
 	yes) return 0 ;;
 	no) return 1 ;;
 	esac
-	if [ -x "$evener_dev_bin" ] && "$evener_dev_bin" dev bounded-list -timeout 10s -attempts 1 -- true >/dev/null 2>&1; then
+	if [ -x "$evener_dev_bin" ] && run_bounded 10s true >/dev/null 2>&1; then
 		bounded_list_support=yes
 		return 0
 	fi
@@ -186,7 +202,7 @@ bounded_list_available() {
 
 run_installer() {
 	if bounded_list_available; then
-		"$evener_dev_bin" dev bounded-list -timeout 300s -attempts 1 -grace 5s -- \
+		run_bounded 300s \
 			sh -c "$fetch_and_run" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries" "$install_script" "$curl_retry_delay"
 		return
 	fi
