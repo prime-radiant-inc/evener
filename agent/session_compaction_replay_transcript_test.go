@@ -375,12 +375,12 @@ func lastCompactionMarkerIndex(entries []transcript.Entry) int {
 }
 
 // A ForkContext delegate inherits the parent's conversation from the physical
-// transcript. After a fold that rewrote a concurrent tool round, that file
-// holds the originals AND their replay copies, so a fork that reads it
-// unfiltered starts with the round twice — the same duplicate ResumeHistory
-// drops when nothing discarded the originals, reached through a different
-// reader.
-func TestCompactionReplay_ForkContextSnapshotDropsReplayCopies(t *testing.T) {
+// transcript and replays it the way a resume does (session_init runs
+// ResumeHistory over the snapshot). So the snapshot carries the fold's run
+// whole — copies and the marker that claims them, each still marked as what it
+// is — and the conversation the child ends up with holds the round exactly
+// once, whichever branch of the replay produced it.
+func TestCompactionReplay_ForkContextSnapshotCarriesTheFoldsRun(t *testing.T) {
 	t.Parallel()
 	s := compactionReplaySession(t)
 
@@ -388,16 +388,33 @@ func TestCompactionReplay_ForkContextSnapshotDropsReplayCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot delegate context: %v", err)
 	}
-	calls, results := 0, 0
+	copies, markers := 0, 0
 	for _, entry := range entries {
 		if entry.Turn.ContextReplay {
-			t.Fatalf("the fork inherited a durable replay copy: %#v", entry.Turn)
+			copies++
+			if entry.Turn.CompactionFoldID == "" {
+				t.Fatalf("a copy reached the fork with no fold id, so no marker can claim it: %#v", entry.Turn)
+			}
 		}
-		c, r := replayToolRoundParts(entry.Turn.Message)
+		if entry.Turn.Kind == schema.TurnSummary || entry.Turn.Kind == schema.TurnCheckpoint {
+			markers++
+		}
+	}
+	if copies == 0 || markers == 0 {
+		t.Fatalf("fork snapshot carries %d copies and %d markers, want the fold's run: the copies are the only record of the turns the marker discards", copies, markers)
+	}
+
+	// What the child actually starts with.
+	calls, results := 0, 0
+	for _, turn := range ResumeHistory(entries) {
+		if turn.ContextReplay {
+			t.Fatalf("the child's history carried the durable replay marker: %#v", turn)
+		}
+		c, r := replayToolRoundParts(turn.Message)
 		calls += c
 		results += r
 	}
 	if calls != 1 || results != 1 {
-		t.Fatalf("fork context carries %d tool calls and %d results, want the round exactly once", calls, results)
+		t.Fatalf("the child's inherited history carries %d tool calls and %d results, want the round exactly once", calls, results)
 	}
 }

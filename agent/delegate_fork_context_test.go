@@ -310,3 +310,86 @@ func forkContextToolCall(id, name string) llm.Message {
 		ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"},
 	}}}
 }
+
+// A fork inherits the parent's conversation by replaying its transcript, and a
+// parent that has compacted has a marker in that transcript: ResumeHistory
+// anchors on it and discards everything before it, which is exactly why the
+// fold wrote replay copies just ahead of it. Dropping those copies before the
+// child replays them throws away the only record of the turns recorded while
+// the parent was folding — the child starts on a conversation missing its
+// most recent work. The parent that never folded must be unaffected: with no
+// anchor, resume keeps the originals and drops nothing.
+func TestDelegateForkContext_InheritsTheTurnsAParentsCompactionCopied(t *testing.T) {
+	for _, compacted := range []bool{false, true} {
+		name := "never compacted"
+		if compacted {
+			name = "compacted with a turn recorded during the fold"
+		}
+		t.Run(name, func(t *testing.T) {
+			root, client, _ := newDelegateResourceBootstrapSession(t)
+			adapter := newTask6FrozenDescriptorAdapter()
+			client.Register(adapter)
+			t.Cleanup(adapter.releaseRun)
+
+			root.appendTurn(schema.TurnUserInput, llm.User("before-the-fold-sentinel"))
+			during := schema.NewTurn(schema.TurnUserInput, llm.User("during-the-fold-sentinel"))
+			root.recordTurn(during, during)
+			if compacted {
+				// The fold's run as publishFoldTransaction writes it: the copy
+				// of the turn recorded while it ran, then the marker that
+				// claims the copy and discards everything before it.
+				copied := during
+				copied.ContextReplay = true
+				copied.CompactionFoldID = "fold_fork"
+				if err := root.writeTranscriptDurable(copied); err != nil {
+					t.Fatalf("write replay copy: %v", err)
+				}
+				marker := schema.NewTurn(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]\nparent summary\n[END SUMMARY]"))
+				marker.CompactionFoldID = "fold_fork"
+				if err := root.writeTranscriptDurable(marker); err != nil {
+					t.Fatalf("write compaction marker: %v", err)
+				}
+			}
+			root.appendTurn(schema.TurnUserInput, llm.User("after-the-fold-sentinel"))
+
+			args, err := decodeDelegateArgs(map[string]any{
+				"prompt":               "child-assignment-sentinel",
+				"delegation_allowance": float64(0),
+				"fork_context":         true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := root.createDelegate(context.Background(), args)
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			var request llm.Request
+			select {
+			case request = <-adapter.entered:
+			case <-time.After(10 * time.Second): // TRIPWIRE: the scripted provider signals the first request.
+				t.Fatal("child did not issue a request")
+			}
+
+			if !requestContainsText(request, "during-the-fold-sentinel") {
+				t.Error("the turn recorded during the parent's fold is missing from the child's inherited history")
+			}
+			if !requestContainsText(request, "after-the-fold-sentinel") {
+				t.Error("the turn recorded after the fold is missing from the child's inherited history")
+			}
+			seen := 0
+			for _, message := range request.Messages {
+				if strings.Contains(message.Text(), "during-the-fold-sentinel") {
+					seen++
+				}
+			}
+			if seen != 1 {
+				t.Errorf("the turn appears %d times in the child's history, want once", seen)
+			}
+			// Only a fold's anchor discards what came before it.
+			if got := requestContainsText(request, "before-the-fold-sentinel"); got != !compacted {
+				t.Errorf("inherited the pre-marker turn = %v, want %v", got, !compacted)
+			}
+		})
+	}
+}
