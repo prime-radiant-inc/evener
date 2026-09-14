@@ -3,6 +3,7 @@
 package hub
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -128,14 +129,14 @@ func TestInstances_EndpointFingerprintRepairReusesAUsableKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repairEndpointFingerprintKey: %v", err)
 	}
-	if string(first) != string(pinned) {
+	if !bytes.Equal(first, pinned) {
 		t.Fatalf("repair returned %q, want the usable key already at the path", first)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", path, err)
 	}
-	if string(raw) != string(pinned) {
+	if !bytes.Equal(raw, pinned) {
 		t.Fatalf("repair replaced a usable key: %q", raw)
 	}
 	temps, err := filepath.Glob(filepath.Join(dir, ".*.tmp"))
