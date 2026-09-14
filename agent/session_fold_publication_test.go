@@ -2814,9 +2814,10 @@ func providerMessageOutline(messages []llm.Message) []string {
 // steering record alike.
 type retainMarkerWriteFS struct {
 	afero.Fs
-	match  []byte
-	armed  atomic.Bool
-	failed atomic.Bool
+	match       []byte
+	armed       atomic.Bool
+	rollingBack atomic.Bool
+	failed      atomic.Bool
 }
 
 func (fs *retainMarkerWriteFS) Create(name string) (afero.File, error) {
@@ -2848,11 +2849,23 @@ func (file *retainMarkerWriteFile) Write(p []byte) (int, error) {
 }
 
 func (file *retainMarkerWriteFile) Sync() error {
-	if file.fs.armed.Swap(false) {
+	if file.fs.armed.Load() {
 		file.fs.failed.Store(true)
-		return errors.New("injected sync failure after the marker landed")
+		file.fs.rollingBack.Store(true)
+		file.fs.armed.Store(false)
+		return errors.New("injected sync failure after the record landed")
 	}
 	return file.File.Sync()
+}
+
+// Truncate refuses the rollback that would take the line back out, which is
+// what makes the entry RETAINED rather than merely failed. The durable door
+// attempts it; the buffered door never does.
+func (file *retainMarkerWriteFile) Truncate(size int64) error {
+	if file.fs.rollingBack.Swap(false) {
+		return errors.New("injected truncate failure: the line stays in the file")
+	}
+	return file.File.Truncate(size)
 }
 
 // A marker whose append failed with its entry RETAINED is a marker every
@@ -3357,5 +3370,119 @@ func TestFoldPublication_TheAdoptedAnchorReachesTheInFlightSliceAndTheRevision(t
 	_, _, staleCommit, _ := s.stageCompactionEffects(context.Background(), &staleCopy)
 	if _, ok, _ := s.publishFoldTransaction(staleLen, staleRevision, staleCopy, staleCommit, nil); ok {
 		t.Fatal("a fold that snapshotted the uncorrected head published over the correction")
+	}
+}
+
+// A write that failed with its whole line in the file leaves a record every
+// returning reader finds. The ordinary pair path dropped the turn anyway — no
+// history, no pair log — so the fold that came next had nothing to copy and
+// its marker discarded the only record of it. The live session that kept
+// running never had the turn either, which is the divergence from the other
+// side: the transcript holds a turn the conversation does not.
+func TestFoldPublication_ATurnRetainedByItsWriteSurvivesTheNextMarker(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "retained-pair-survives-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	const retained = "recorded by a write that kept its entry"
+	faultFS := &retainMarkerWriteFS{Fs: afero.NewOsFs(), match: []byte(retained)}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	writer.SyncInterval = 0 // every append syncs, so the matched record's own append fails
+	s.attachTranscript(writer)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	for i := range 6 {
+		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+	msg := llm.User(retained)
+	err = s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg)
+	if err == nil || !errors.Is(err, transcript.ErrEntryRetained) {
+		t.Fatalf("append error = %v, want one carrying ErrEntryRetained", err)
+	}
+	if indexOfTurnText(currentHistory(t, s), retained) < 0 {
+		t.Fatal("the turn is in the transcript and not in the history: a reader would find a turn the session never had")
+	}
+
+	// The fold's marker discards everything before it, so the turn survives
+	// only if the fold had its persisted form to copy.
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	seen := 0
+	for _, turn := range ResumeHistory(data.Entries) {
+		if turn.Message.Text() == retained {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("the retained turn appears %d times in the resumed history, want exactly once", seen)
+	}
+}
+
+// The steering a fold injects is a turn of the history it publishes, so it is
+// an append/write pair like any other: the NEXT fold's marker discards it, and
+// only a copy carries it past. Without its persisted form in the pair log
+// there is no copy to write, and the resumed conversation loses guidance the
+// live one kept.
+func TestFoldPublication_InjectedSteeringSurvivesTheFoldAfterIt(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "steering-survives-next-fold-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	for i := range 12 {
+		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+	s.setPinnedNote("REMEMBER: the API signature")
+	if err := s.Compact(context.Background()); err != nil { // fold A injects the note handoff
+		t.Fatalf("Compact (A): %v", err)
+	}
+	if n := countSteering(currentHistory(t, s), noteHandoffPrefix); n != 1 {
+		t.Fatalf("test setup: fold A injected %d note handoffs, want one", n)
+	}
+	// Few enough that fold A's steering is still inside the suffix fold B
+	// preserves: that is the turn whose copy has to carry it past B's marker.
+	for i := range 3 {
+		msg := llm.User(fmt.Sprintf("after the first fold %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+	if err := s.Compact(context.Background()); err != nil { // fold B's marker discards fold A's run
+		t.Fatalf("Compact (B): %v", err)
+	}
+
+	live := currentHistory(t, s)
+	if n := countSteering(live, noteHandoffPrefix); n != 1 {
+		t.Fatalf("test setup: fold B kept %d note handoffs, want the one fold A injected", n)
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	if got, want := expandHistory(resumed, replayScope{}), expandHistory(live, replayScope{}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the resumed history differs from the one two folds published:\nresumed: %v\nlive:    %v", providerMessageOutline(got), providerMessageOutline(want))
 	}
 }

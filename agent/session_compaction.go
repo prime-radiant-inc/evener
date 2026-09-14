@@ -568,8 +568,10 @@ func foldPublicationID(lifecycleRevision uint64) string {
 }
 
 // pairsStillInHistory picks the persisted forms the pair log holds for turns
-// the given history still has, in append order — which is history order, so
-// the copies go down in the order a resume must read them back.
+// the given history still has, IN HISTORY ORDER — the order a resume must read
+// them back, and the one the log itself cannot promise: the fold's own
+// steering is logged after its copies are chosen, while the history holds it
+// in the middle.
 //
 // The two forms of one turn are matched by schema.Turn.PairID: minted where
 // the turn is created and carried onto the persisted form, because every
@@ -581,22 +583,20 @@ func foldPublicationID(lifecycleRevision uint64) string {
 // occurrences rather than testing membership keeps a repeated id, if one ever
 // happened, from pulling in another turn's entry.
 func pairsStillInHistory(log, history []schema.Turn) []schema.Turn {
-	live := make(map[uint64]int, len(history))
-	for _, turn := range history {
-		if turn.PairID == 0 {
-			// Recovered, not created here: a restored or inherited turn has
-			// no pair in this process's log to be matched to (issue #1200).
-			continue
-		}
-		live[turn.PairID]++
+	forms := make(map[uint64][]schema.Turn, len(log))
+	for _, persisted := range log {
+		forms[persisted.PairID] = append(forms[persisted.PairID], persisted)
 	}
 	kept := make([]schema.Turn, 0, len(log))
-	for _, persisted := range log {
-		if live[persisted.PairID] == 0 {
+	for _, turn := range history {
+		// A turn with no mint was recovered, not created here: a restored or
+		// inherited turn has no pair in this process's log (issue #1200).
+		queue := forms[turn.PairID]
+		if turn.PairID == 0 || len(queue) == 0 {
 			continue
 		}
-		live[persisted.PairID]--
-		kept = append(kept, persisted)
+		kept = append(kept, queue[0])
+		forms[turn.PairID] = queue[1:]
 	}
 	return kept
 }
@@ -1171,6 +1171,18 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) [
 			continue
 		}
 		errs[i] = s.writeTranscriptLocked(record.turn)
+		if !entryIsRecorded(errs[i]) {
+			continue
+		}
+		// The fold's steering is a turn of the published history like any
+		// other, so it is an append/write pair like any other: without its
+		// persisted form in the log, the NEXT fold's marker discards it with
+		// no copy to carry it past, and the resumed conversation loses the
+		// guidance the live one kept.
+		holdPairMinted(record.turn)
+		s.mu.Lock()
+		s.logPairPersistedLocked(record.turn)
+		s.mu.Unlock()
 	}
 	return errs
 }
