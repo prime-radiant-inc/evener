@@ -242,39 +242,86 @@ class Driver {
   // through press(). Assigning through the native value setter is what makes
   // React's value tracker notice the change and fire onChange; selectAll
   // already drives the selection this way.
-  async typeText(text) {
-    const inserted = await evaluate(
-      this.send,
-      `(() => { const ta = document.activeElement;
-        if (!ta || ta.tagName !== "TEXTAREA") return { error: "no focused textarea to type into" };
-        // Bound once: every offset below is measured from the text as the page
-        // sees it, so nothing depends on how this literal was encoded on the
-        // way in.
-        const typed = ${JSON.stringify(text)};
-        const start = ta.selectionStart ?? ta.value.length;
-        const end = ta.selectionEnd ?? ta.value.length;
-        const next = ta.value.slice(0, start) + typed + ta.value.slice(end);
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-        setter.call(ta, next);
-        ta.selectionStart = ta.selectionEnd = start + typed.length;
-        ta.dispatchEvent(new Event("input", { bubbles: true }));
-        return { value: ta.value, expected: next, caret: ta.selectionStart, caretWant: start + typed.length }; })()`,
-    );
-    // A null comes back when the evaluate itself could not run -- a navigation
-    // between the send and the reply, or a CDP error -- and reading .value off
-    // it would report a TypeError from this line instead of that.
-    if (!inserted || inserted.error) {
-      throw new Error(`typeText: ${inserted ? inserted.error : "no result from the page (navigated or disconnected?)"}`);
+  // The composer's own reading of itself: value and selection together, as one
+  // comparable string. A re-render that lands on an edit changes one or both.
+  composerEditStateExpr() {
+    return `(() => { const ta = document.activeElement;
+      if (!ta || ta.tagName !== "TEXTAREA") return null;
+      return { value: ta.value, start: ta.selectionStart ?? ta.value.length, end: ta.selectionEnd ?? ta.value.length }; })()`;
+  }
+
+  // settleComposer waits until the focused textarea stops changing under it.
+  //
+  // The store updates that follow a send -- a drain committing, a turn
+  // clearing the composer -- re-render the controlled textarea, and a DOM edit
+  // that lands in the same tick is overwritten by the render that follows it.
+  // Two reads 80ms apart that agree is the signal that the last one has
+  // landed. It is not a proof that no further render is coming, which is why
+  // typeText re-applies rather than trusting this alone.
+  async settleComposer({ timeoutMs = 5000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let previous = null;
+    for (;;) {
+      const now = await evaluate(this.send, this.composerEditStateExpr());
+      if (!now) throw new Error("settleComposer: no focused textarea");
+      const key = JSON.stringify(now);
+      if (key === previous) return now;
+      previous = key;
+      if (Date.now() > deadline) {
+        throw new Error(`settleComposer: composer still changing after ${timeoutMs}ms (${key})`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
     }
-    if (inserted.value !== inserted.expected) {
-      throw new Error(
-        `typeText: composer holds ${JSON.stringify(inserted.value)} after the edit, expected ${JSON.stringify(inserted.expected)}`,
+  }
+
+  // typeText inserts text at the composer's selection through the DOM.
+  //
+  // It used to dispatch one CDP key event per character, which the controlled
+  // textarea's re-renders reordered (see #1308). It now computes the whole
+  // intended value once and ASSIGNS it, which makes the edit idempotent: a
+  // re-render that wipes it can be answered by applying the same value again,
+  // rather than by typing the text a second time.
+  //
+  // That matters because the race is real and was seen in CI: after the queue
+  // drain, run 34880821304's next insert came back with the value it wanted
+  // and the caret at 0 -- a render had landed inside the dispatch. The wait
+  // below removes the common case; the re-apply covers a render that arrives
+  // in the window after it. Each re-apply is logged, so an artifact shows the
+  // app fighting the driver rather than hiding it.
+  async typeText(text, { attempts = 4 } = {}) {
+    const before = await this.settleComposer();
+    const next = before.value.slice(0, before.start) + text + before.value.slice(before.end);
+    const caretWant = before.start + text.length;
+    for (let attempt = 1; ; attempt++) {
+      const applied = await evaluate(
+        this.send,
+        `(() => { const ta = document.activeElement;
+          if (!ta || ta.tagName !== "TEXTAREA") return { error: "no focused textarea to type into" };
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+          setter.call(ta, ${JSON.stringify(next)});
+          ta.selectionStart = ta.selectionEnd = ${caretWant};
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          return { value: ta.value, caret: ta.selectionStart }; })()`,
       );
-    }
-    // The caret decides where the NEXT insert lands, and a mid-draft insert
-    // is the case where a wrong offset stops being invisible.
-    if (inserted.caret !== inserted.caretWant) {
-      throw new Error(`typeText: caret at ${inserted.caret} after the edit, expected ${inserted.caretWant}`);
+      // A null comes back when the evaluate itself could not run -- a
+      // navigation between the send and the reply, or a CDP error -- and
+      // reading .value off it would report a TypeError from this line instead
+      // of that.
+      if (!applied || applied.error) {
+        throw new Error(`typeText: ${applied ? applied.error : "no result from the page (navigated or disconnected?)"}`);
+      }
+      // The caret decides where the NEXT insert lands, so it is as much part
+      // of the edit as the text is.
+      if (applied.value === next && applied.caret === caretWant) return;
+      if (attempt >= attempts) {
+        throw new Error(
+          `typeText: after ${attempts} attempts the composer holds ${JSON.stringify(applied.value)} with the caret at ${applied.caret}, expected ${JSON.stringify(next)} with the caret at ${caretWant}`,
+        );
+      }
+      console.error(
+        `skillguard: a re-render landed on the edit (value ${JSON.stringify(applied.value)}, caret ${applied.caret}); re-applying (attempt ${attempt + 1}/${attempts})`,
+      );
+      await this.settleComposer();
     }
   }
 
