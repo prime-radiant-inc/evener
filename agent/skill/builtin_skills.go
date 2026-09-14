@@ -122,15 +122,15 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			}
 			forgetEmbeddedSkillsLocked()
 		} else if embeddedSkillsCache.verified && cacheDirExists(cached) {
-			if err := claimEmbeddedSkillsLocked(cached); err == nil {
+			if err := claimEmbeddedSkillsLocked(cached); err == nil && cacheDirExists(cached) {
 				touchDir(cached)
 				return cached, nil
 			}
-			// The copy is being reaped: forget it and publish another rather
-			// than hand back one whose files may vanish mid-session.
+			// The copy was reaped or cannot be leased: forget it and publish
+			// another rather than hand back one whose files may vanish.
 			forgetEmbeddedSkillsLocked()
 		} else if !embeddedSkillsCache.verified && cacheDirUsable(cached, embeddedSkillsCache.digest) {
-			if err := claimEmbeddedSkillsLocked(cached); err == nil {
+			if err := claimEmbeddedSkillsLocked(cached); err == nil && cacheDirExists(cached) {
 				embeddedSkillsCache.verified = true
 				touchDir(cached)
 				return cached, nil
@@ -193,9 +193,12 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	// Tear down the previous copy first: forget releases any lease held for it
 	// (and removes an old fallback base), so the lease taken below survives.
 	forgetEmbeddedSkillsLocked()
-	// The lock machinery may still refuse a lease; the copy is still usable, it
-	// is just unprotected until the fallback base's age limit.
-	_ = claimEmbeddedSkillsLocked(dir)
+	if err := claimEmbeddedSkillsLocked(dir); err != nil {
+		// A copy that cannot be leased cannot be protected from the reaper, so it
+		// is refused rather than cached and returned.
+		_ = os.RemoveAll(base)
+		return "", fmt.Errorf("leasing private skills cache (last: %w): %w", lastErr, err)
+	}
 	skills := make(map[string]SkillMeta)
 	ScanSkillsDir(dir, skills)
 	embeddedSkillsCache.dir = dir
@@ -284,8 +287,9 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	tmpBase := os.TempDir()
 	// Cleanup runs on every resolution, not only when the predictable name is
 	// unusable, so a base that becomes usable again does not strand the fallback
-	// bases earlier runs left behind.
-	reapStaleFallbackBases(tmpBase, time.Now())
+	// bases earlier runs left behind. The caller holds the cache mutex, so the
+	// live paths passed here are read under it.
+	reapStaleFallbackBases(tmpBase, time.Now(), embeddedSkillsCache.fallbackBase, embeddedSkillsCache.dir)
 	dir := filepath.Join(tmpBase, embeddedSkillsPrefix+processOwnerTag())
 	if err := ensurePrivateCacheDir(dir); err == nil {
 		return dir, nil
@@ -305,8 +309,9 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 // reapStaleFallbackBases removes randomized fallback bases this user's earlier
 // processes abandoned. Only this user's exact prefix is matched, and only when
 // old enough that no live process is plausibly still reading it; a base holding
-// a leased cache directory is left alone.
-func reapStaleFallbackBases(tmpBase string, now time.Time) {
+// a leased cache directory is left alone. liveBase and liveDir are this
+// process's own copy, whose base is never removed.
+func reapStaleFallbackBases(tmpBase string, now time.Time, liveBase, liveDir string) {
 	prefix := embeddedSkillsPrefix + processOwnerTag() + "-"
 	entries, err := os.ReadDir(tmpBase)
 	if err != nil {
@@ -321,7 +326,7 @@ func reapStaleFallbackBases(tmpBase string, now time.Time) {
 			continue
 		}
 		path := filepath.Join(tmpBase, entry.Name())
-		if path == embeddedSkillsCache.fallbackBase || path == filepath.Dir(embeddedSkillsCache.dir) || path == embeddedSkillsCache.dir {
+		if path == liveBase || (liveDir != "" && (path == filepath.Dir(liveDir) || path == liveDir)) {
 			// Never remove this process's own live copy.
 			continue
 		}

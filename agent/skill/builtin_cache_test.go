@@ -60,6 +60,12 @@ func restoreEmbeddedSkillsCache(s embeddedSkillsCacheSnapshot) {
 	if embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease != s.lease {
 		_ = embeddedSkillsCache.lease.Release()
 	}
+	if s.lease != nil && !s.lease.Valid() {
+		// A lease that was released while the test ran must not be reinstalled:
+		// its file is closed and calling Release again could close a reused fd.
+		s.lease = nil
+		s.leasedDir = ""
+	}
 	embeddedSkillsCache.dir = s.dir
 	embeddedSkillsCache.digest = s.digest
 	embeddedSkillsCache.skills = s.skills
@@ -81,6 +87,10 @@ func pointEmbeddedSkillsAtBase(t *testing.T, base string) {
 	if embeddedSkillsCache.lease != nil {
 		_ = embeddedSkillsCache.lease.Release()
 	}
+	// The released lease is the one the snapshot captured, so it must not be
+	// reinstated by the restore.
+	saved.lease = nil
+	saved.leasedDir = ""
 	embeddedSkillsCache.dir = ""
 	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
@@ -512,31 +522,17 @@ func TestEmbeddedSkillsDir_MovesTheLeaseToTheNewCopy(t *testing.T) {
 	}
 }
 
-// When the shared copy can never be leased because it keeps being reaped, the
-// session must still get its bundled skills rather than an error.
-func TestEmbeddedSkillsDir_FallsBackWhenTheCacheKeepsBeingReaped(t *testing.T) {
+// A copy that cannot be leased must not be handed out: the reaper could delete it
+// mid-session.
+func TestEmbeddedSkillsDir_FailsWhenNoLeaseIsAvailable(t *testing.T) {
 	base := t.TempDir()
 	pointEmbeddedSkillsAtBase(t, base)
 	saved := acquireSkillsLease
 	acquireSkillsLease = func(string, bool) (skillsLease, bool, error) { return nil, true, nil }
 	t.Cleanup(func() { acquireSkillsLease = saved })
 
-	dir, err := EmbeddedSkillsDir()
-	if err != nil {
-		t.Fatalf("EmbeddedSkillsDir: %v", err)
-	}
-	fallbackBase := filepath.Dir(dir)
-	t.Cleanup(func() { _ = os.RemoveAll(fallbackBase) })
-	if _, err := os.Stat(filepath.Join(dir, "doctoring-evener", "SKILL.md")); err != nil {
-		t.Fatalf("fallback copy missing the bundled skill: %v", err)
-	}
-	// The fallback must live in a base under the prefix the fallback-base reaper
-	// scans, otherwise it leaks unbounded on every call.
-	if !strings.HasPrefix(filepath.Base(fallbackBase), embeddedSkillsPrefix+processOwnerTag()+"-") {
-		t.Fatalf("fallback base %q is not under the reaped prefix", fallbackBase)
-	}
-	if _, err := os.Stat(filepath.Join(fallbackBase, skillsLockDirName)); err != nil {
-		t.Fatalf("fallback base has no lease directory: %v", err)
+	if _, err := EmbeddedSkillsDir(); err == nil {
+		t.Fatal("EmbeddedSkillsDir returned a copy that could not be leased")
 	}
 }
 
@@ -623,15 +619,11 @@ func TestEmbeddedSkillsDir_FallbackKeepsItsLease(t *testing.T) {
 	}
 
 	// Disable the reaper's own-base skips so only the lease can save the base.
-	embeddedSkillsCache.mu.Lock()
-	embeddedSkillsCache.dir = ""
-	embeddedSkillsCache.fallbackBase = ""
-	embeddedSkillsCache.mu.Unlock()
 	past := time.Now().Add(-2 * staleRetainedMaxAge)
 	if err := os.Chtimes(fallbackBase, past, past); err != nil {
 		t.Fatalf("age fallback base: %v", err)
 	}
-	reapStaleFallbackBases(os.TempDir(), time.Now())
+	reapStaleFallbackBases(os.TempDir(), time.Now(), "", "")
 	if _, err := os.Stat(fallbackBase); err != nil {
 		t.Fatalf("leased fallback base was reaped: %v", err)
 	}
@@ -752,7 +744,7 @@ func TestReapStaleFallbackBases_SkipsBaseWithLeasedCopy(t *testing.T) {
 		t.Fatalf("age fallback base: %v", err)
 	}
 
-	reapStaleFallbackBases(tmp, time.Now())
+	reapStaleFallbackBases(tmp, time.Now(), "", "")
 	if _, err := os.Stat(base); err != nil {
 		t.Fatalf("in-use fallback base was reaped: %v", err)
 	}
@@ -760,7 +752,7 @@ func TestReapStaleFallbackBases_SkipsBaseWithLeasedCopy(t *testing.T) {
 	if err := lease.Release(); err != nil {
 		t.Fatalf("release lease: %v", err)
 	}
-	reapStaleFallbackBases(tmp, time.Now())
+	reapStaleFallbackBases(tmp, time.Now(), "", "")
 	if _, err := os.Stat(base); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("unleased fallback base was not reaped: %v", err)
 	}
@@ -782,7 +774,7 @@ func TestReapStaleFallbackBases_RemovesOnlyThisUsersStaleBases(t *testing.T) {
 		t.Fatalf("age base: %v", err)
 	}
 
-	reapStaleFallbackBases(tmp, time.Now())
+	reapStaleFallbackBases(tmp, time.Now(), "", "")
 
 	if _, err := os.Stat(old); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("stale fallback base not reaped: %v", err)
