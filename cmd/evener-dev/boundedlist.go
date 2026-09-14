@@ -129,6 +129,9 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		if drainErr == nil {
 			drainErr = feeds.copyErr()
 		}
+		if drainErr == nil {
+			drainErr = out.overflowErr()
+		}
 		if drainErr != nil && exitCode == 0 {
 			// The list this attempt would hand on is not the list the command
 			// wrote, and a caller cannot tell the difference from a short one.
@@ -450,18 +453,47 @@ func (r *attemptResult) takeLateSignal(latch *signalLatch) {
 	}
 }
 
-// syncBuffer collects the command's stdout, which exec fills from a goroutine
-// of its own. An attempt that gives up on an unreapable child reads it while
-// that goroutine may still be writing.
+// maxCapturedOutput is how much of a command's stdout one attempt will hold in
+// memory. What this helper exists to carry is a package list -- this
+// repository's whole `go list ./...` is some tens of kilobytes -- so anything
+// past this is not a list, and holding all of it would answer a bounded run
+// with an unbounded allocation. It is a variable only so a test can lower it;
+// nothing at runtime writes to it.
+var maxCapturedOutput = 64 << 20
+
+// syncBuffer collects the command's stdout, which a copier fills from a
+// goroutine of its own. An attempt that gives up on an unreapable child reads
+// it while that goroutine may still be writing.
 type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	overflow bool
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.overflow || b.buf.Len()+len(p) > maxCapturedOutput {
+		// The bytes are reported as taken and dropped: a copier told its write
+		// failed stops reading, and a command whose stdout stops being read
+		// blocks on a full pipe -- which turns a command that wrote too much
+		// into a command that hangs. What the caller is handed is not the
+		// whole answer, and overflowErr is what says so.
+		b.overflow = true
+		return len(p), nil
+	}
 	return b.buf.Write(p)
+}
+
+// overflowErr says that the command wrote more than this attempt would hold,
+// so what it collected stops short of what the command wrote.
+func (b *syncBuffer) overflowErr() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.overflow {
+		return nil
+	}
+	return fmt.Errorf("it wrote more than the %d bytes one attempt holds, and a package list is not that long", maxCapturedOutput)
 }
 
 // Bytes is a copy, so the caller reads something the copier cannot grow under
@@ -720,6 +752,13 @@ func waitForGroupToGo(g groupStopper, pgid int, grace time.Duration) bool {
 	}
 }
 
+// The bounds a caller gets without asking. The grace is also what a
+// subcommand with no bound of its own spends on handing its answer over.
+const (
+	defaultTimeout = 60 * time.Second
+	defaultGrace   = 5 * time.Second
+)
+
 // boundedListUsage is also where the exit statuses are written down, since a
 // caller's next move depends on which one it got.
 const boundedListUsage = `usage: evener-dev bounded-list [-timeout d] [-attempts n] [-grace d] -- command [args...]
@@ -760,9 +799,9 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Si
 	fs := flag.NewFlagSet("bounded-list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = fmt.Fprint(stderr, boundedListUsage) }
-	timeout := fs.Duration("timeout", 60*time.Second, "how long one attempt may take")
+	timeout := fs.Duration("timeout", defaultTimeout, "how long one attempt may take")
 	attempts := fs.Int("attempts", 3, "how many attempts a timed-out command gets")
-	grace := fs.Duration("grace", 5*time.Second, "how long the group has to answer SIGTERM before SIGKILL")
+	grace := fs.Duration("grace", defaultGrace, "how long the group has to answer SIGTERM before SIGKILL")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -793,16 +832,16 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Si
 		case result.stuck && result.interrupted == 0:
 			// Retrying stacks another `go list` on the volume that already
 			// has one stuck on it, and the attempt has said why on stderr.
-			return handOver(stdout, result, 124, latch, stderr)
+			return handOver(stdout, result, 124, latch, stderr, *grace)
 		case result.interrupted != 0:
 			// An interrupt is an answer about this run, not about the command:
 			// retrying it would be the opposite of what was asked.
-			return handOver(stdout, result, result.exitCode, latch, stderr)
+			return handOver(stdout, result, result.exitCode, latch, stderr, *grace)
 		case !result.timedOut:
 			// Whatever it decided, it decided: a command that exits non-zero
 			// has an answer about its input, and repeating it repeats the
 			// answer.
-			return handOver(stdout, result, result.exitCode, latch, stderr)
+			return handOver(stdout, result, result.exitCode, latch, stderr, *grace)
 		case attempt < *attempts:
 			_, _ = fmt.Fprintf(stderr, "bounded-list: attempt %d of %d timed out after %s; retrying.\n",
 				attempt, *attempts, *timeout)
@@ -811,7 +850,7 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Si
 				argv[0], *timeout, attemptCount(*attempts))
 			// Whatever it managed to print before the bound is the evidence a
 			// caller has to work from, so it is passed through here too.
-			return handOver(stdout, result, 124, latch, stderr)
+			return handOver(stdout, result, 124, latch, stderr, *grace)
 		}
 	}
 	return 124
@@ -830,8 +869,8 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Si
 // its answer stands: a command that decided before the signal arrived keeps
 // its own status, and one this helper stopped already carries 128+signal.
 // Only a run that had seen no signal at all can have its answer changed here.
-func handOver(stdout io.Writer, result attemptResult, code int, latch *signalLatch, stderr io.Writer) int {
-	if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
+func handOver(stdout io.Writer, result attemptResult, code int, latch *signalLatch, stderr io.Writer, grace time.Duration) int {
+	if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr, grace) {
 		code = 1
 	}
 	if result.interrupted != 0 {
@@ -847,16 +886,41 @@ func handOver(stdout io.Writer, result attemptResult, code int, latch *signalLat
 // not: what names whose answer it is. A caller reading a truncated package
 // list tests the packages it received and reports a pass for the rest, which
 // is the one failure this helper must never produce quietly.
-func forwardOutput(stdout io.Writer, data []byte, what string, stderr io.Writer) bool {
-	n, err := stdout.Write(data)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "%s: wrote %d of %d bytes: %v\n", what, n, len(data), err)
+//
+// The write is bounded like everything else here. The gate reads this end of a
+// pipe, and a reader that has gone away or stopped reading leaves the write
+// waiting on a buffer that never drains -- so the last thing a helper whose
+// subject is unbounded waits would do is hand its answer over and never
+// return. The diagnostic goes to stderr, which is a destination of its own:
+// whatever has stopped taking the answer has not stopped taking that.
+//
+// A write that never returns leaves its goroutine behind. Nothing can take a
+// blocked write off a descriptor, and this is the run's last act either way.
+func forwardOutput(stdout io.Writer, data []byte, what string, stderr io.Writer, grace time.Duration) bool {
+	type handoff struct {
+		n   int
+		err error
+	}
+	done := make(chan handoff, 1)
+	go func() {
+		n, err := stdout.Write(data)
+		done <- handoff{n, err}
+	}()
+	var wrote handoff
+	select {
+	case wrote = <-done:
+	case <-time.After(grace):
+		_, _ = fmt.Fprintf(stderr, "%s: it was still being written %s after the run ended; whoever was reading it is not reading it any more\n", what, grace)
 		return false
 	}
-	if n != len(data) {
+	if wrote.err != nil {
+		_, _ = fmt.Fprintf(stderr, "%s: wrote %d of %d bytes: %v\n", what, wrote.n, len(data), wrote.err)
+		return false
+	}
+	if wrote.n != len(data) {
 		// io.Writer may return a short count with no error at all, and a
 		// caller reading the short answer cannot tell.
-		_, _ = fmt.Fprintf(stderr, "%s: wrote %d of %d bytes\n", what, n, len(data))
+		_, _ = fmt.Fprintf(stderr, "%s: wrote %d of %d bytes\n", what, wrote.n, len(data))
 		return false
 	}
 	return true

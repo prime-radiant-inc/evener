@@ -64,6 +64,9 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		{name: "a flag with nothing after it", args: []string{"-short", "-tags"}, err: "-tags was given with nothing after it"},
 		{name: "and one whose value was the last word", args: []string{"-run"}, err: "-run was given with nothing after it"},
 		{name: "and what came before it still counts", args: []string{"-race", "-args", "-tags", "x"}, want: []string{"-race"}},
+		// -args takes no value of its own, so a trailing one is a valid end of
+		// the flags rather than a flag missing its value.
+		{name: "a trailing -args ends them too", args: []string{"-race", "-args"}, want: []string{"-race"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := packageSelectionFlags(tc.args)

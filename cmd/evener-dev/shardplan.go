@@ -231,7 +231,7 @@ var testForwardBareFlags = map[string]bool{
 // testRefusedValueFlags take a value and are refused: consuming the pair first
 // is what keeps `-run -race` from reading the caller's regex as a build flag.
 var testRefusedValueFlags = map[string]bool{
-	"-args": true, "-bench": true, "-benchtime": true, "-blockprofile": true,
+	"-bench": true, "-benchtime": true, "-blockprofile": true,
 	"-blockprofilerate": true, "-covermode": true, "-coverpkg": true,
 	"-coverprofile": true, "-cpu": true, "-cpuprofile": true, "-exec": true,
 	"-fuzz": true, "-fuzzminimizetime": true, "-fuzztime": true,
@@ -243,6 +243,11 @@ var testRefusedValueFlags = map[string]bool{
 
 // testRefusedBareFlags stand alone and are refused for the same reasons.
 var testRefusedBareFlags = map[string]bool{
+	// -args takes no value of its own: everything after it is the test
+	// binary's argument list, however many words that is, and a trailing
+	// -args is a valid end of the flags. Reading the next word as its value
+	// would make `go test -race -args` an error for want of a value.
+	"-args":      true,
 	"-artifacts": true, "-benchmem": true, "-c": true, "-cover": true,
 	"-json": true,
 	// -n prints the commands instead of running them, so the build it

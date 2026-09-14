@@ -138,7 +138,9 @@ func listBuildFlags(args []string, stdout, stderr io.Writer) int {
 		// than the tests are built with, which is the failure this subcommand
 		// exists to prevent -- so a write that did not land, in full, fails
 		// the run.
-		if !forwardOutput(stdout, []byte(f+"\n"), "list-build-flags: "+f, stderr) {
+		// The same bound the sibling subcommand gives its own hand-off: this
+		// one has no grace of its own to spend, so it spends that default.
+		if !forwardOutput(stdout, []byte(f+"\n"), "list-build-flags: "+f, stderr, defaultGrace) {
 			return 1
 		}
 	}

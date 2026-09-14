@@ -1247,3 +1247,72 @@ func TestBoundedAttemptReadsTheStatusOnlyAfterTheWaitHasIt(t *testing.T) {
 		t.Fatalf("timedOut = %v, stuck = %v for a command that exited on its own", result.timedOut, result.stuck)
 	}
 }
+
+// stalledWriter takes the write and does not return from it, which is what the
+// far end of the gate's pipe does once nobody is reading it.
+type stalledWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *stalledWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+func TestBoundedListDoesNotWaitForeverToHandTheAnswerOver(t *testing.T) {
+	// The command finished and its list is ready; the far end of the pipe it
+	// is written to is not reading. Every other wait in this helper is
+	// bounded, and the last one was not: the run would end by waiting for a
+	// buffer that never drains, which is the hang the bound exists to replace.
+	stdout := &stalledWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(stdout.release)
+	var stderr bytes.Buffer
+	start := time.Now()
+	code := boundedListWith([]string{"-timeout", "30s", "-attempts", "1", "-grace", "300ms", "--",
+		"sh", "-c", "echo listed"}, stdout, &stderr, nil)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1: the answer could not be handed over; stderr = %q", code, stderr.String())
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("the run took %s: the hand-over is bounded by the grace", elapsed)
+	}
+	if got := stderr.String(); !strings.Contains(got, "not reading it any more") {
+		t.Fatalf("stderr = %q, want it to name the hand-over that did not finish", got)
+	}
+	select {
+	case <-stdout.entered:
+	default:
+		t.Fatal("the answer was never written at all")
+	}
+}
+
+func TestBoundedAttemptSaysWhenTheCommandWroteMoreThanItWillHold(t *testing.T) {
+	// What the gate runs with, pinned here: a package list is tens of
+	// kilobytes, and the cap is the answer to a command that is not writing
+	// one.
+	if maxCapturedOutput != 64<<20 {
+		t.Fatalf("maxCapturedOutput = %d, want 64 MiB", maxCapturedOutput)
+	}
+	original := maxCapturedOutput
+	t.Cleanup(func() { maxCapturedOutput = original })
+	// Lowered so the test writes kilobytes rather than tens of megabytes; what
+	// is under test is the cap, not the number.
+	maxCapturedOutput = 4096
+	var stderr bytes.Buffer
+	result := runBoundedAttempt([]string{"sh", "-c", "head -c 100000 /dev/zero"},
+		30*time.Second, 5*time.Second, &stderr, nil)
+	if result.exitCode != 1 {
+		t.Fatalf("exitCode = %d, want 1: what it collected is not what the command wrote; stderr = %q",
+			result.exitCode, stderr.String())
+	}
+	if len(result.stdout) > maxCapturedOutput {
+		t.Fatalf("held %d bytes, want no more than the %d it caps at", len(result.stdout), maxCapturedOutput)
+	}
+	if got := stderr.String(); !strings.Contains(got, "could not be read in full") ||
+		!strings.Contains(got, "a package list is not that long") {
+		t.Fatalf("stderr = %q, want it to say what it could not hold", got)
+	}
+}

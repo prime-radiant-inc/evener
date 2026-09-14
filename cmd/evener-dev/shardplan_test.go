@@ -211,6 +211,12 @@ func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
 			t.Fatalf("parseFlags(%v) = no error, want one", flags)
 		}
 	}
+	// A trailing -args is a valid end of the flags: the refusal it gets is the
+	// one for -args, not a complaint that it was given nothing to take.
+	if _, err := parseFlags([]string{"-race", "-args"}); err == nil ||
+		!strings.Contains(err.Error(), "-args is not supported by agent-shards") {
+		t.Fatalf("parseFlags(-race -args) = %v, want the refusal for -args itself", err)
+	}
 	// A -C that is another flag's value is a value.
 	parsed, err := parseFlags([]string{"-tags", "-C", "-short"})
 	if err != nil {
