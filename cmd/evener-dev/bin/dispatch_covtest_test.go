@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -13,6 +14,8 @@ Subcommands:
   dev                        Dev tooling (agent-shards, bounded-list, covstmt, list-build-flags, module-lint)
   module-lint              Run golangci-lint across workspace modules in parallel waves
   agent-shards             Run agent test shards in parallel
+  bounded-list             Run a command under a time bound, stopping its process group
+  list-build-flags       Print the flags a package enumeration needs from a go test invocation
   fuzz-harvest             Harvest fuzz seed corpora from recorded traffic
   fuzzcov                  Static fuzz gap gate
   fuzzregistry             Audit the fuzz target registry
@@ -88,14 +91,18 @@ func TestDispatchAliasesReachTheSameSubcommand(t *testing.T) {
 		return code, string(out)
 	}
 
-	// One fixed invocation, run both ways: a command that prints and exits 0.
-	prefixed, prefixedOut := run("dev", "bounded-list", "-timeout", "10s", "-attempts", "1", "--", "echo", "from-the-subcommand")
-	bare, bareOut := run("bounded-list", "-timeout", "10s", "-attempts", "1", "--", "echo", "from-the-subcommand")
+	// One fixed invocation, run both ways. The command is this test binary
+	// re-executed, the repo's helper-process idiom, so the case does not
+	// depend on an ambient echo being where the test expects it.
+	command := []string{"-timeout", "30s", "-attempts", "1", "--", os.Args[0], "-test.run=TestDispatchPrintingHelper$"}
+	t.Setenv("DISPATCH_PRINTING_HELPER", "1")
+	prefixed, prefixedOut := run(append([]string{"dev", "bounded-list"}, command...)...)
+	bare, bareOut := run(append([]string{"bounded-list"}, command...)...)
 	if prefixed != 0 || bare != 0 {
 		t.Fatalf("exit codes = %d (dev bounded-list) and %d (bounded-list), want 0 from both", prefixed, bare)
 	}
-	if prefixedOut != "from-the-subcommand\n" || bareOut != prefixedOut {
-		t.Fatalf("stdout = %q (dev bounded-list) and %q (bounded-list), want the same line from both", prefixedOut, bareOut)
+	if !strings.Contains(prefixedOut, helperLine) || bareOut != prefixedOut {
+		t.Fatalf("stdout = %q (dev bounded-list) and %q (bounded-list), want %q from both", prefixedOut, bareOut, helperLine)
 	}
 	// The other aliases are here because the same line dispatches them.
 	for _, args := range [][]string{{"module-lint", "-h"}, {"agent-shards", "-h"}} {
@@ -105,4 +112,18 @@ func TestDispatchAliasesReachTheSameSubcommand(t *testing.T) {
 			t.Fatalf("dispatch(%q) = unknown subcommand; the alias is missing from the dispatch", args)
 		}
 	}
+}
+
+// helperLine is what the helper prints, and what both spellings of the alias
+// have to deliver unchanged.
+const helperLine = "from-the-subcommand"
+
+// TestDispatchPrintingHelper is not a test: it is the command the alias
+// comparison runs, re-executed from this test binary so nothing ambient is
+// involved.
+func TestDispatchPrintingHelper(t *testing.T) {
+	if os.Getenv("DISPATCH_PRINTING_HELPER") == "" {
+		t.Skip("helper process entry point; runs only under the alias comparison")
+	}
+	fmt.Println(helperLine)
 }

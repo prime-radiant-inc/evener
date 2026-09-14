@@ -36,7 +36,7 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "dev":
 		return devcmd.Run(args[1:], stdin, stdout, stderr)
-	case "module-lint", "agent-shards", "bounded-list":
+	case "module-lint", "agent-shards", "bounded-list", "list-build-flags":
 		return devcmd.Run(args, stdin, stdout, stderr)
 	case "fuzz-harvest":
 		return fuzzharvestcmd.Run(args[1:], stdin, stdout, stderr)
@@ -66,6 +66,8 @@ func usage(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  dev\t\t\tDev tooling (%s)\n", strings.Join(devcmd.SubcommandNames(), ", "))
 	_, _ = fmt.Fprintf(tw, "  module-lint\t\tRun golangci-lint across workspace modules in parallel waves\n")
 	_, _ = fmt.Fprintf(tw, "  agent-shards\t\tRun agent test shards in parallel\n")
+	_, _ = fmt.Fprintf(tw, "  bounded-list\t\tRun a command under a time bound, stopping its process group\n")
+	_, _ = fmt.Fprintf(tw, "  list-build-flags\tPrint the flags a package enumeration needs from a go test invocation\n")
 	_, _ = fmt.Fprintf(tw, "  fuzz-harvest\t\tHarvest fuzz seed corpora from recorded traffic\n")
 	_, _ = fmt.Fprintf(tw, "  fuzzcov\t\tStatic fuzz gap gate\n")
 	_, _ = fmt.Fprintf(tw, "  fuzzregistry\t\tAudit the fuzz target registry\n")

@@ -40,9 +40,12 @@ type attemptResult struct {
 	// interrupted is the signal this helper was sent while the command ran,
 	// and zero when it was not.
 	interrupted syscall.Signal
-	// unreaped records that the command outlived SIGKILL, which only a child
-	// stuck in the kernel does.
-	unreaped bool
+	// stuck records that the command's process group could not be cleared:
+	// either the direct child outlived SIGKILL, which only a child stuck in
+	// the kernel does, or the group still had members after the sweep killed
+	// it. Both mean the same to the runner -- there is nothing to retry, and
+	// another attempt would add a second stuck process to the first.
+	stuck    bool
 	exitCode int
 	pgid     int
 }
@@ -92,7 +95,12 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.stdout = out.Bytes()
 		result.err = err
 		result.exitCode = procgroup.ExitCode(cmd.ProcessState)
-		stopSurvivors(cmd.Path, result.pgid, grace, guarded)
+		if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
+			// The command answered, but its group is still there holding the
+			// caches; another attempt would add a second one.
+			result.stuck = true
+			result.exitCode = 124
+		}
 		result.takeLateSignal(latch)
 		return result
 	}
@@ -122,7 +130,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		// signalling a group that cannot answer, and leaving now hands the
 		// child to init, which is the one thing that can still clean it up.
 		result.stdout = out.Bytes()
-		result.unreaped = true
+		result.stuck = true
 		result.exitCode = 124
 		// A stuck child does not change what the operator asked for: an
 		// interrupt is still an interrupt, and reporting it as a timeout sends
@@ -133,9 +141,14 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		}
 		return result
 	}
-	stopSurvivors(cmd.Path, result.pgid, grace, guarded)
+	if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
+		result.stuck = true
+	}
 	result.stdout = out.Bytes()
 	result.exitCode = 1
+	if result.stuck {
+		result.exitCode = 124
+	}
 	if result.interrupted != 0 {
 		result.exitCode = 128 + int(result.interrupted)
 	}
@@ -149,15 +162,14 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 // reader never sees a half-written answer and never sees an empty one for a
 // command that has in fact finished.
 type waitResult struct {
-	mu        sync.Mutex
-	waitErr   error
-	published bool
+	mu      sync.Mutex
+	waitErr error
 }
 
 func (w *waitResult) publish(err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.waitErr, w.published = err, true
+	w.waitErr = err
 }
 
 func (w *waitResult) err() error {
@@ -298,29 +310,63 @@ func (s *serialWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
+// groupStopper is the process-group half of an attempt, injected so the case
+// that cannot be produced on demand -- a group that outlives SIGKILL -- can
+// still be tested.
+type groupStopper struct {
+	exists    func(int) bool
+	terminate func(int)
+	kill      func(int)
+}
+
+var realGroupStopper = groupStopper{
+	exists:    procgroup.Exists,
+	terminate: procgroup.Terminate,
+	kill:      procgroup.Kill,
+}
+
 // stopSurvivors stops whatever is still in the command's process group once
-// the leader is gone. The leader being reaped says nothing about the group: a
-// leader that handles SIGTERM and exits can leave a child that ignores it, and
-// that child goes on holding the build and module cache locks.
+// the leader is gone, and reports whether the group is empty afterwards. The
+// leader being reaped says nothing about the group: a leader that handles
+// SIGTERM and exits can leave a child that ignores it, and that child goes on
+// holding the build and module cache locks.
 //
 // Asking after the reap is safe exactly while the group is not empty, which is
 // what procgroup.Exists answers: a pid cannot be reused while it is still a
 // live group's id, and an empty group answers no, so nothing is sent.
-func stopSurvivors(name string, pgid int, grace time.Duration, stderr io.Writer) {
-	if !procgroup.Exists(pgid) {
-		return
+//
+// A group still there after the SIGKILL is the same situation as a child that
+// could not be reaped, and gets the same answer: false, and the caller stops
+// rather than starting an attempt that would leave a second one behind.
+func stopSurvivors(g groupStopper, name string, pgid int, grace time.Duration, stderr io.Writer) bool {
+	if !g.exists(pgid) {
+		return true
 	}
 	_, _ = fmt.Fprintf(stderr, "bounded-list: %s left processes running in its group; stopping them.\n", name)
-	procgroup.Terminate(pgid)
+	g.terminate(pgid)
+	if waitForGroupToGo(g, pgid, grace) {
+		return true
+	}
+	g.kill(pgid)
+	if waitForGroupToGo(g, pgid, grace) {
+		return true
+	}
+	_, _ = fmt.Fprintf(stderr,
+		"bounded-list: process group %d is still there after SIGKILL; it is stuck in the kernel, and is left to init.\n", pgid)
+	return false
+}
+
+// waitForGroupToGo polls until the group is empty or the grace runs out.
+func waitForGroupToGo(g groupStopper, pgid int, grace time.Duration) bool {
 	deadline := time.Now().Add(grace)
-	for time.Now().Before(deadline) {
-		if !procgroup.Exists(pgid) {
-			return
+	for {
+		if !g.exists(pgid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	if procgroup.Exists(pgid) {
-		procgroup.Kill(pgid)
 	}
 }
 
@@ -334,8 +380,12 @@ command wrote to stdout is passed through on every outcome.
 
 Exit status:
   the command's own   it finished within the bound
-  124                 every attempt timed out (coreutils' timeout convention)
+  124                 every attempt timed out (coreutils' timeout convention),
+                      or the command left a process group that could not be
+                      cleared -- either way, nothing to retry
   128+signal          this helper was interrupted and stopped the command
+  1                   the command could not be started, or its output could
+                      not be handed on in full
   2                   a usage error
 `
 
@@ -384,7 +434,7 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 		}
 		result := runBoundedAttempt(argv, *timeout, *grace, stderr, latch)
 		switch {
-		case result.unreaped && result.interrupted == 0:
+		case result.stuck && result.interrupted == 0:
 			// Retrying stacks another `go list` on the volume that already
 			// has one stuck on it, and the attempt has said why on stderr.
 			if !forwardOutput(stdout, result.stdout, stderr) {

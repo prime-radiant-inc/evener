@@ -16,7 +16,21 @@ import (
 
 // A child that ignores SIGTERM is what the bound exists for: a `go list` wedged
 // on a stalled cache volume does not answer the polite signal either.
-const termProofChild = `trap "" TERM; sleep 60`
+// The child says when it is running and when it has been sent SIGTERM, so the
+// tests wait on it rather than on a number of milliseconds. Local gates are
+// macOS and CI is Linux; a sleep that is long enough here is a guess there.
+const termProofChild = `trap ': > "${BOUNDED_LIST_TERMED:-/dev/null}"' TERM; : > "${BOUNDED_LIST_READY:-/dev/null}"; while :; do sleep 0.05; done`
+
+// readinessFiles gives the child its two paths and returns them. The child
+// inherits this process's environment, so t.Setenv is how they arrive.
+func readinessFiles(t *testing.T) (ready, termed string) {
+	t.Helper()
+	dir := t.TempDir()
+	ready, termed = filepath.Join(dir, "ready"), filepath.Join(dir, "termed")
+	t.Setenv("BOUNDED_LIST_READY", ready)
+	t.Setenv("BOUNDED_LIST_TERMED", termed)
+	return ready, termed
+}
 
 func TestBoundedAttemptPassesAFastChildsOutputThrough(t *testing.T) {
 	var stderr bytes.Buffer
@@ -138,9 +152,10 @@ func TestBoundedAttemptForwardsAnInterruptToTheGroup(t *testing.T) {
 	// The command runs in a process group of its own, so a signal sent to this
 	// helper does not reach it the way it reached a `go list` the shell ran in
 	// its foreground group. It has to be passed on.
+	ready, _ := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		awaitFile(t, ready, "the child never started")
 		signals <- syscall.SIGTERM
 	}()
 	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 30*time.Second, 300*time.Millisecond, &stderr, &signalLatch{ch: signals})
@@ -158,9 +173,10 @@ func TestBoundedAttemptForwardsAnInterruptToTheGroup(t *testing.T) {
 
 func TestBoundedListDoesNotRetryAfterAnInterrupt(t *testing.T) {
 	var stdout, stderr bytes.Buffer
+	ready, _ := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		awaitFile(t, ready, "the child never started")
 		signals <- syscall.SIGINT
 	}()
 	code := boundedListWith([]string{"-timeout", "30s", "-attempts", "3", "-grace", "300ms", "--", "sh", "-c", termProofChild}, &stdout, &stderr, signals)
@@ -195,13 +211,17 @@ func TestBoundedAttemptTakesASignalThatArrivesDuringCleanup(t *testing.T) {
 	// attempt spends the grace waiting to escalate. A signal arriving in that
 	// window is watched for by nobody: the select that would have caught it
 	// returned when the bound did.
+	_, termed := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
 	latch := &signalLatch{ch: signals}
 	go func() {
-		time.Sleep(400 * time.Millisecond)
+		// The child writes this when the bound's SIGTERM reaches it, which is
+		// the moment the cleanup's grace begins: a signal sent now lands in
+		// the window nobody is watching.
+		awaitFile(t, termed, "the child was never sent SIGTERM")
 		signals <- syscall.SIGTERM
 	}()
-	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 200*time.Millisecond, 800*time.Millisecond, &stderr, latch)
+	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 200*time.Millisecond, 5*time.Second, &stderr, latch)
 	if result.interrupted != syscall.SIGTERM {
 		t.Fatalf("interrupted = %v, want the signal that arrived during cleanup", result.interrupted)
 	}
@@ -216,12 +236,13 @@ func TestBoundedListStopsWhenASignalLandsBetweenAttempts(t *testing.T) {
 	// The signal lands while attempt 1 is being killed off, after the select
 	// that was watching for it has returned. The run must end there rather
 	// than announce a retry and start attempt 2.
+	_, termed := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
 	go func() {
-		time.Sleep(350 * time.Millisecond)
+		awaitFile(t, termed, "the child was never sent SIGTERM")
 		signals <- syscall.SIGTERM
 	}()
-	code := boundedListWith([]string{"-timeout", "200ms", "-attempts", "3", "-grace", "500ms", "--",
+	code := boundedListWith([]string{"-timeout", "200ms", "-attempts", "3", "-grace", "5s", "--",
 		"sh", "-c", termProofChild}, &stdout, &stderr, signals)
 	if code != 143 {
 		t.Fatalf("exit code = %d, want 143; stderr = %q", code, stderr.String())
@@ -256,11 +277,12 @@ func TestBoundedAttemptForwardsTheSignalItWasSentNotATermInstead(t *testing.T) {
 	// The child answers SIGHUP and ignores SIGTERM, so its own output says
 	// which one reached it. A helper that always sent SIGTERM would kill it
 	// after the grace with nothing on stdout.
-	const hupAnswerer = `trap 'echo got-hup; exit 0' HUP; trap "" TERM; while :; do sleep 0.05; done`
+	const hupAnswerer = `trap 'echo got-hup; exit 0' HUP; trap "" TERM; : > "${BOUNDED_LIST_READY:-/dev/null}"; while :; do sleep 0.05; done`
+	ready, _ := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
 	latch := &signalLatch{ch: signals}
 	go func() {
-		time.Sleep(150 * time.Millisecond)
+		awaitFile(t, ready, "the child never started")
 		signals <- syscall.SIGHUP
 	}()
 	result := runBoundedAttempt([]string{"sh", "-c", hupAnswerer}, 30*time.Second, time.Second, &stderr, latch)
@@ -322,8 +344,8 @@ func TestBoundedAttemptGivesUpOnAChildItCannotReap(t *testing.T) {
 	var stderr bytes.Buffer
 	start := time.Now()
 	result := runBoundedAttempt(escapeeCommand(t), 200*time.Millisecond, 300*time.Millisecond, &stderr, nil)
-	if !result.unreaped {
-		t.Fatalf("unreaped = false after %s; the attempt waited for a child it could not reap", time.Since(start))
+	if !result.stuck {
+		t.Fatalf("stuck = false after %s; the attempt waited for a child it could not reap", time.Since(start))
 	}
 	if result.exitCode != 124 {
 		t.Fatalf("exitCode = %d, want 124", result.exitCode)
@@ -353,8 +375,8 @@ func TestBoundedAttemptKeepsTheInterruptWhenItCannotReap(t *testing.T) {
 		signals <- syscall.SIGTERM
 	}()
 	result := runBoundedAttempt(escapeeCommand(t), 30*time.Second, 300*time.Millisecond, &stderr, latch)
-	if !result.unreaped {
-		t.Fatal("unreaped = false; this case needs the child that cannot be reaped")
+	if !result.stuck {
+		t.Fatal("stuck = false; this case needs the child that cannot be reaped")
 	}
 	if result.exitCode != 143 {
 		t.Fatalf("exitCode = %d, want 143: the run was interrupted, not timed out", result.exitCode)
@@ -461,5 +483,53 @@ func TestBoundedAttemptSaysWhyACommandNeverStarted(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "bounded-list:") || !strings.Contains(got, "not-a-command") {
 		t.Fatalf("stderr = %q, want the failure and the command in it", got)
+	}
+}
+
+func TestStopSurvivorsGivesUpOnAGroupThatOutlivesSigkill(t *testing.T) {
+	var stderr bytes.Buffer
+	// A group that survives SIGKILL cannot be produced on demand -- that is
+	// the point of SIGKILL -- so the probe is injected. Everything else is the
+	// real path: TERM, the grace, KILL, the grace again.
+	killed := 0
+	stubborn := groupStopper{
+		exists:    func(int) bool { return true },
+		terminate: func(int) {},
+		kill:      func(int) { killed++ },
+	}
+	if stopSurvivors(stubborn, "go", 4242, 20*time.Millisecond, &stderr) {
+		t.Fatal("stopSurvivors = true for a group that never went away")
+	}
+	if killed != 1 {
+		t.Fatalf("SIGKILL sent %d times, want exactly one escalation", killed)
+	}
+	if got := stderr.String(); !strings.Contains(got, "process group 4242 is still there after SIGKILL") {
+		t.Fatalf("stderr = %q, want the diagnostic naming the group", got)
+	}
+}
+
+func TestStopSurvivorsStopsWhenTheGroupGoes(t *testing.T) {
+	var stderr bytes.Buffer
+	// Gone after the TERM: no escalation, nothing said about SIGKILL.
+	alive := true
+	polite := groupStopper{
+		exists:    func(int) bool { return alive },
+		terminate: func(int) { alive = false },
+		kill:      func(int) { t.Error("SIGKILL sent to a group that answered SIGTERM") },
+	}
+	if !stopSurvivors(polite, "go", 4242, time.Second, &stderr) {
+		t.Fatal("stopSurvivors = false for a group that went away")
+	}
+	if got := stderr.String(); !strings.Contains(got, "left processes running in its group") {
+		t.Fatalf("stderr = %q, want the survivors named", got)
+	}
+	if strings.Contains(stderr.String(), "after SIGKILL") {
+		t.Fatalf("stderr = %q, want nothing said about an escalation that did not happen", stderr.String())
+	}
+	// And an empty group is silent altogether.
+	var quiet bytes.Buffer
+	empty := groupStopper{exists: func(int) bool { return false }}
+	if !stopSurvivors(empty, "go", 4242, time.Second, &quiet) || quiet.Len() != 0 {
+		t.Fatalf("an empty group said %q, want nothing", quiet.String())
 	}
 }

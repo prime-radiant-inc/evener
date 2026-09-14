@@ -23,9 +23,39 @@ import (
 	"strings"
 )
 
+// The two tables below are every flag `go help build` documents that changes
+// which packages or files `go list` selects. Each remaining build flag was
+// read and left out on purpose:
+//
+//   - -pgo, -gcflags, -ldflags, -asmflags, -gccgoflags, -toolexec, -installsuffix,
+//     -buildmode, -linkshared, -trimpath, -a, -n, -x, -v, -work, -p, -pkgdir,
+//     -modcacherw, -buildvcs, -json: they change how the same packages are
+//     compiled, linked, named or reported, not which ones exist;
+//   - -cover, -covermode, -coverpkg: instrumentation. -coverpkg selects
+//     packages to instrument, which is not the same as selecting packages to
+//     list, and the enumeration is about the latter;
+//   - -C: it moves the working directory, and the enumeration already runs in
+//     the module's own directory. Forwarding it would send `go list` somewhere
+//     the caller's `go test` is not.
+//
+// A flag `go help build` grows later belongs in one of these lists or in that
+// paragraph.
+
 // packageSelectionValueFlags take their value as the next argument and change
-// which packages exist.
-var packageSelectionValueFlags = map[string]bool{"-tags": true}
+// which packages exist:
+//
+//   - -tags: build constraints select files, and a package all of whose files
+//     are excluded does not exist;
+//   - -overlay: it replaces and adds files, so it can introduce a package that
+//     is not on disk at all;
+//   - -mod and -modfile: which module graph is resolved, and so which packages
+//     resolve;
+//   - -compiler: gc and gccgo are build tags of their own, and cgo availability
+//     differs between them.
+var packageSelectionValueFlags = map[string]bool{
+	"-tags": true, "-overlay": true, "-mod": true, "-modfile": true,
+	"-compiler": true,
+}
 
 // packageSelectionBareFlags stand alone and change which packages exist, each
 // by setting a build tag of its own name.
