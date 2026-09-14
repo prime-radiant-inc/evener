@@ -125,7 +125,7 @@ func TestRetainedWrite_FailedSteeringSelectionIsNotRequeued(t *testing.T) {
 	t.Parallel()
 	const cause = "the selection that failed"
 	s, fs := retainingSession(t, "failed-steering", cause)
-	s.recordFailedSteeringSelection(steeringMessage{Text: "steer me", ClientMutationID: "cm-steer-1", StableTurnID: "turn_steer_1"}, errRetainedSelection{})
+	s.recordFailedSteeringSelection(steeringMessage{Text: "steer me", ClientMutationID: "cm-steer-1", StableTurnID: "turn_steer_1"}, retainedSelectionError{})
 	if !fs.failed.Load() {
 		t.Fatal("test setup: no write was retained")
 	}
@@ -140,9 +140,9 @@ func TestRetainedWrite_FailedSteeringSelectionIsNotRequeued(t *testing.T) {
 	}
 }
 
-type errRetainedSelection struct{}
+type retainedSelectionError struct{}
 
-func (errRetainedSelection) Error() string { return "the selection that failed" }
+func (retainedSelectionError) Error() string { return "the selection that failed" }
 
 // The round's tool results carry the delegate delivery commits inside the
 // persisted turn. A write that kept its entry leaves that turn readable, so
