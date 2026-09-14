@@ -19,6 +19,7 @@ type RegistryLoader func(extra ...registry.Option) (*registry.Registry, *credent
 // load (an old-schema file) it holds an implicit-only registry, keeps the
 // error for the diagnostics, and refuses writes until a reload succeeds
 // (spec §10, §14.1).
+
 // liveSnapshot is one live listing with the endpoint identity it was
 // fetched from: rows from endpoint X must never publish onto an
 // instance now pointing at endpoint Y, however the swap happened
@@ -41,19 +42,15 @@ type ProviderRegistry struct {
 	// instance; ReapplyLive lands only above it, so stale responses
 	// are discarded while a failed newer fetch — which applies
 	// nothing — never blocks an older in-flight success.
-	// fetchIdentities binds each in-flight fetch token to the endpoint
-	// identity IT queried (not the latest for the name): a newer begin
-	// cannot overwrite what an older fetch is judged against.
 	// lastGoodLive is the live snapshot of the most recent
 	// successfully loaded registry, identity and all: a failed reload
 	// parks the holder on the implicit-only fallback, which knows none
 	// of the explicit instances, so carryLive alone would drop their
 	// rows — the next successful Reload re-applies this snapshot
 	// (identity-checked) instead.
-	generation      uint64
-	lastApplied     map[string]uint64
-	fetchIdentities map[uint64]string
-	lastGoodLive    map[string]liveSnapshot
+	generation   uint64
+	lastApplied  map[string]uint64
+	lastGoodLive map[string]liveSnapshot
 }
 
 // NewProviderRegistry returns a holder that loads through load. Nothing is
@@ -91,18 +88,19 @@ func (h *ProviderRegistry) Reload() error {
 	// instance whose identity still matches, so live-only ids survive
 	// failed-reload recovery without leaking across a re-point.
 	for instance, snap := range h.lastGoodLive {
-		after, ok := r.Instance(instance)
-		if !ok || instanceIdentity(after) != snap.identity {
+		if _, ok := r.Instance(instance); !ok {
+			continue
+		}
+		if instanceIdentity(r, instance) != snap.identity {
 			continue
 		}
 		r.ApplyLive(instance, snap.rows)
 	}
 	for instance, rows := range r.SnapshotLive() {
-		inst, ok := r.Instance(instance)
-		if !ok {
+		if _, ok := r.Instance(instance); !ok {
 			continue
 		}
-		h.noteLive(instance, instanceIdentity(inst), rows)
+		h.noteLive(instance, instanceIdentity(r, instance), rows)
 	}
 	h.current, h.loadErr = r, nil
 	h.generation++
@@ -119,12 +117,13 @@ func carryLive(old, r *registry.Registry) {
 		return
 	}
 	for instance, rows := range old.SnapshotLive() {
-		before, ok := old.Instance(instance)
-		if !ok {
+		if _, ok := old.Instance(instance); !ok {
 			continue
 		}
-		after, ok := r.Instance(instance)
-		if !ok || instanceIdentity(before) != instanceIdentity(after) {
+		if _, ok := r.Instance(instance); !ok {
+			continue
+		}
+		if instanceIdentity(old, instance) != instanceIdentity(r, instance) {
 			continue
 		}
 		r.ApplyLive(instance, rows)
@@ -132,13 +131,27 @@ func carryLive(old, r *registry.Registry) {
 }
 
 // instanceIdentity fingerprints what a live listing is fetched from:
-// the provider, protocol, endpoint, and credential source. A Reload
-// that removes, renames, or re-points an instance changes its identity,
-// and rows fetched from the old transport must not publish into the
-// new one. Auth-mode and display fields (default, warnings, vars) do
-// not affect where rows come from and are not part of it.
-func instanceIdentity(inst registry.Instance) string {
-	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, inst.Auth, inst.CredentialSource}, "\x00")
+// the provider, protocol, fully resolved endpoint routing (base URL
+// plus the protocol models endpoint -- a models_endpoint change
+// re-points the fetch as surely as a base_url change), and a
+// non-secret fingerprint of the credential material behind the source
+// label. A Reload that removes, renames, re-points, or re-credentials
+// an instance changes its identity, and rows fetched from the old
+// transport must not publish into the new one. Display fields
+// (default, warnings, vars) do not affect where rows come from and
+// are not part of it. The credential length covers rotation without
+// secret bytes entering the identity string; same-length rotation is
+// the residual gap, accepted deliberately.
+func instanceIdentity(r *registry.Registry, name string) string {
+	inst, ok := r.Instance(name)
+	if !ok {
+		return "unknown\x00" + name
+	}
+	endpoint := ""
+	if res, err := r.ResolveInstance(name); err == nil {
+		endpoint = res.Transport.ModelsEndpoint
+	}
+	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource}, "\x00")
 }
 
 // Get returns the registry currently held; nil before the first successful load.
@@ -162,14 +175,8 @@ func (h *ProviderRegistry) BeginLiveFetchReg(instance string) (*registry.Registr
 	h.generation++
 	id := ""
 	if h.current != nil {
-		if inst, ok := h.current.Instance(instance); ok {
-			id = instanceIdentity(inst)
-		}
+		id = instanceIdentity(h.current, instance)
 	}
-	if h.fetchIdentities == nil {
-		h.fetchIdentities = map[uint64]string{}
-	}
-	h.fetchIdentities[h.generation] = id
 	return h.current, h.generation, id
 }
 
@@ -202,12 +209,7 @@ func (h *ProviderRegistry) ReapplyLive(tok uint64, instance, identity string, ro
 	// listing on the new one, however many newer fetches began after.
 	// An empty fetched identity (a registry that never knew the name,
 	// as in the hermetic holder tests) matches an empty current one.
-	cur, ok := h.current.Instance(instance)
-	curID := ""
-	if ok {
-		curID = instanceIdentity(cur)
-	}
-	if identity != curID {
+	if identity != instanceIdentity(h.current, instance) {
 		return
 	}
 	if h.lastApplied == nil {

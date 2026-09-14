@@ -496,10 +496,12 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	// Extra top-level tags the record itself lacks, split around the
 	// live layer in spec order: snapshot/overlay extras replay with
 	// the layers below, config extras after live — so user config
-	// still wins over live facts on implicit records too.
+	// still wins over live facts on implicit records too. Missing
+	// overlay tags replay at their true position (before live and
+	// before config), never after config rows.
 	applyExtras := func(afterLive bool) {
-		for _, tag := range topTags {
-			if !topAt[tag] || seenTag[tag] {
+		for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
+			if seenTag[tag] || len(r.topGlobs[tag]) == 0 {
 				continue
 			}
 			if (tag == LayerConfig) != afterLive {
@@ -945,6 +947,12 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 		altID = hit.rowID
 	}
 	var disabled bool
+	// Mirror resolveOn's interleave: each layer's top-level globs
+	// replay immediately before that layer's rows, in layer order
+	// (snapshot → overlay → live → config), so a curated Disabled
+	// value never overwrites user config and FindModel agrees with
+	// Resolve. Tags the record lacks are covered by the trailing
+	// extras loop, also in layer order.
 	seenTag := map[string]bool{}
 	applyTop := func(tag string) {
 		for _, g := range orderedGlobKeys(r.topGlobs[tag], ref.Model, altID) {
@@ -953,13 +961,12 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 			}
 		}
 	}
-	// Top-level globs replay in layer order (snapshot → overlay →
-	// config), not record order: overlay values never overwrite user
-	// config. Tags the record lacks are covered by the trailing loop.
-	for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
-		if !seenTag[tag] && len(r.topGlobs[tag]) > 0 {
-			seenTag[tag] = true
-			applyTop(tag)
+	applyExtras := func() {
+		for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
+			if !seenTag[tag] && len(r.topGlobs[tag]) > 0 {
+				seenTag[tag] = true
+				applyTop(tag)
+			}
 		}
 	}
 	for _, layer := range rec.layers {
@@ -978,6 +985,7 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 			}
 		}
 	}
+	applyExtras()
 	return disabled
 }
 

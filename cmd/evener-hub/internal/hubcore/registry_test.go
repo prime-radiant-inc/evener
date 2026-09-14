@@ -115,11 +115,10 @@ func mustBegin(t *testing.T, h *ProviderRegistry, instance string) uint64 {
 
 func (h *ProviderRegistry) identityOf(t *testing.T, instance string) string {
 	t.Helper()
-	inst, ok := h.Get().Instance(instance)
-	if !ok {
-		t.Fatalf("no %s instance to fingerprint", instance)
+	if h.Get() == nil {
+		t.Fatalf("no registry to fingerprint %s", instance)
 	}
-	return instanceIdentity(inst)
+	return instanceIdentity(h.Get(), instance)
 }
 
 func TestReapplyLiveDiscardsListingForChangedEndpoint(t *testing.T) {
@@ -164,9 +163,9 @@ func TestReapplyLiveFailedNewerDoesNotBlockOlderSuccess(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	_, older, _ := h.BeginLiveFetchReg("gw")
+	_, older, idOlder := h.BeginLiveFetchReg("gw")
 	_, _, _ = h.BeginLiveFetchReg("gw") // newer fetch, fails: applies nothing
-	h.ReapplyLive(older, "gw", "", []registry.Model{{ID: "gpt-live-x"}})
+	h.ReapplyLive(older, "gw", idOlder, []registry.Model{{ID: "gpt-live-x"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))
 	for _, m := range got {
@@ -188,10 +187,10 @@ func TestReapplyLiveDiscardsOutOfOrderFetch(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	_, slow, _ := h.BeginLiveFetchReg("gw")
-	_, fast, _ := h.BeginLiveFetchReg("gw")
-	h.ReapplyLive(fast, "gw", "", []registry.Model{{ID: "gpt-new-x"}})
-	h.ReapplyLive(slow, "gw", "", []registry.Model{{ID: "gpt-old-x"}})
+	_, slow, idSlow := h.BeginLiveFetchReg("gw")
+	_, fast, idFast := h.BeginLiveFetchReg("gw")
+	h.ReapplyLive(fast, "gw", idFast, []registry.Model{{ID: "gpt-new-x"}})
+	h.ReapplyLive(slow, "gw", idSlow, []registry.Model{{ID: "gpt-old-x"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))
 	for _, m := range got {
@@ -220,9 +219,9 @@ func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
 		t.Fatal("holder has no registry after Reload")
 	}
 	_, older, idOld := h.BeginLiveFetchReg("gw")
-	_, newer, _ := h.BeginLiveFetchReg("gw")
+	_, newer, idNew := h.BeginLiveFetchReg("gw")
 	h.ReapplyLive(older, "gw", idOld, []registry.Model{{ID: "gpt-old-x"}})
-	h.ReapplyLive(newer, "gw", "", []registry.Model{{ID: "gpt-new-x"}})
+	h.ReapplyLive(newer, "gw", idNew, []registry.Model{{ID: "gpt-new-x"}})
 	h.ReapplyLive(older, "gw", idOld, []registry.Model{{ID: "gpt-old-x"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))

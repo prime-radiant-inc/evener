@@ -48,19 +48,26 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 	return nil
 }
 
-// liveClientGlobals wires NewRegistryClient's two process-wide seams
-// (the Codex authenticator's state root and the build User-Agent) exactly
-// once per process: every prefetch goroutine used to call it
-// concurrently, racing on the same globals. The values are
-// process-constant (the state root comes from the environment, the
-// version from the build), so wiring them once is the whole fix — the
-// per-fetch client itself stays cheap and goroutine-local.
-var liveClientGlobals sync.Once
+// liveClientState guards NewRegistryClient's two process-wide seams
+// (the Codex authenticator's state root and the build User-Agent):
+// every prefetch goroutine used to wire them concurrently, racing on
+// the same globals, and a sync.Once would pin the FIRST snapshot's
+// state root forever. Re-wire under the mutex whenever the state root
+// changes; the per-fetch client itself stays cheap and goroutine-local.
+var liveClientState struct {
+	sync.Mutex
+	root  string
+	wired bool
+}
 
 func newLiveClient(reg *registry.Registry) *llm.Client {
-	liveClientGlobals.Do(func() {
+	root := reg.StateRoot()
+	liveClientState.Lock()
+	if !liveClientState.wired || liveClientState.root != root {
 		cmdutil.NewRegistryClient(reg, "")
-	})
+		liveClientState.root, liveClientState.wired = root, true
+	}
+	liveClientState.Unlock()
 	return llm.NewClient(llm.WithRegistry(reg), llm.WithClientStateDir(""))
 }
 
