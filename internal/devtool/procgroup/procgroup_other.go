@@ -8,6 +8,7 @@ package procgroup
 import (
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -34,6 +35,12 @@ func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
 	case <-reaped:
 	case <-time.After(grace):
 	}
+}
+
+// StopWith has no signal to forward on a platform with one way to stop a
+// process, so it is Stop.
+func StopWith(pgid int, _ syscall.Signal, reaped <-chan struct{}, grace time.Duration) {
+	Stop(pgid, reaped, grace)
 }
 
 func ExitCode(state *os.ProcessState) int {

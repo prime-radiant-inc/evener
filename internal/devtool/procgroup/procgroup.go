@@ -60,10 +60,29 @@ func Exists(pgid int) bool {
 // runner's window was zero only because a single-threaded shell cannot
 // reap concurrently with its own stop loop.
 func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
+	StopWith(pgid, syscall.SIGTERM, reaped, grace)
+}
+
+// StopWith is Stop for a caller that was itself signalled: the group is sent
+// that signal first, and gets the grace to act on it, before the TERM-then-KILL
+// escalation starts. A child that distinguishes SIGHUP from SIGTERM -- a
+// runner asked to reopen its logs, a shell asked to hang up -- sees what the
+// operator actually sent rather than a TERM this layer chose on its behalf.
+// The wait is therefore at most two graces when the forwarded signal is not
+// SIGTERM itself, which is the price of passing on what was sent.
+func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) {
 	select {
 	case <-reaped:
 		return
 	default:
+	}
+	if sig != 0 && sig != syscall.SIGTERM {
+		_ = syscall.Kill(-pgid, sig)
+		select {
+		case <-reaped:
+			return
+		case <-time.After(grace):
+		}
 	}
 	Terminate(pgid)
 	select {

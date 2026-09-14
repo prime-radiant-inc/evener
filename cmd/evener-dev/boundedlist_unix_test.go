@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux || darwin
 
 package dev
 
@@ -246,5 +246,78 @@ func TestSignalLatchHoldsTheFirstSignalItIsGiven(t *testing.T) {
 	}
 	if got := latch.receive(syscall.SIGTERM); got != syscall.SIGHUP {
 		t.Fatalf("receive after latching = %v, want SIGHUP", got)
+	}
+}
+
+func TestBoundedAttemptForwardsTheSignalItWasSentNotATermInstead(t *testing.T) {
+	var stderr bytes.Buffer
+	// The child answers SIGHUP and ignores SIGTERM, so its own output says
+	// which one reached it. A helper that always sent SIGTERM would kill it
+	// after the grace with nothing on stdout.
+	const hupAnswerer = `trap 'echo got-hup; exit 0' HUP; trap "" TERM; while :; do sleep 0.05; done`
+	signals := make(chan os.Signal, 1)
+	latch := &signalLatch{ch: signals}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		signals <- syscall.SIGHUP
+	}()
+	result := runBoundedAttempt([]string{"sh", "-c", hupAnswerer}, 30*time.Second, time.Second, &stderr, latch)
+	if result.interrupted != syscall.SIGHUP {
+		t.Fatalf("interrupted = %v, want SIGHUP", result.interrupted)
+	}
+	if result.exitCode != 129 {
+		t.Fatalf("exitCode = %d, want 129 (128+SIGHUP)", result.exitCode)
+	}
+	if got := string(result.stdout); !strings.Contains(got, "got-hup") {
+		t.Fatalf("stdout = %q, want the child's own word that it was sent SIGHUP", got)
+	}
+	requireGroupGone(t, result.pgid)
+}
+
+func TestBoundedAttemptGivesUpOnAChildItCannotReap(t *testing.T) {
+	var stderr bytes.Buffer
+	// A grandchild that leaves the group keeps the stdout pipe open, so the
+	// wait cannot return even once the group is killed -- the same shape as a
+	// child stuck in an uninterruptible kernel wait, which is what a stalled
+	// volume produces and what SIGKILL does not reach. It exits on its own,
+	// so nothing here has to signal it.
+	const escapee = `perl -e 'setpgrp(0,0); sleep 3' & exec sleep 60`
+	start := time.Now()
+	result := runBoundedAttempt([]string{"sh", "-c", escapee}, 200*time.Millisecond, 300*time.Millisecond, &stderr, nil)
+	if !result.unreaped {
+		t.Fatalf("unreaped = false after %s; the attempt waited for a child it could not reap", time.Since(start))
+	}
+	if result.exitCode != 124 {
+		t.Fatalf("exitCode = %d, want 124", result.exitCode)
+	}
+	if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
+		t.Fatalf("the attempt took %s, which is not a bound", elapsed)
+	}
+	if got := stderr.String(); !strings.Contains(got, "stuck in the kernel") {
+		t.Fatalf("stderr = %q, want it to say the child could not be reaped", got)
+	}
+	// The sweep is skipped in this state, so nothing here waited another grace
+	// on a group that cannot answer.
+	if strings.Contains(stderr.String(), "left processes running in its group") {
+		t.Fatalf("stderr = %q, want no survivor sweep after giving up", stderr.String())
+	}
+}
+
+func TestReapOrGiveUpSaysWhichItWas(t *testing.T) {
+	var stderr bytes.Buffer
+	reaped := make(chan error, 1)
+	reaped <- nil
+	if !reapOrGiveUp(reaped, time.Second, "sh", &stderr) {
+		t.Fatal("reapOrGiveUp = false for a child that was reaped")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want nothing said about a reap that happened", stderr.String())
+	}
+	never := make(chan error)
+	if reapOrGiveUp(never, 20*time.Millisecond, "sh", &stderr) {
+		t.Fatal("reapOrGiveUp = true for a child that never reaped")
+	}
+	if got := stderr.String(); !strings.Contains(got, "did not exit after SIGKILL") {
+		t.Fatalf("stderr = %q, want the diagnostic naming the failed reap", got)
 	}
 }

@@ -40,15 +40,18 @@ type attemptResult struct {
 	// interrupted is the signal this helper was sent while the command ran,
 	// and zero when it was not.
 	interrupted syscall.Signal
-	exitCode    int
-	pgid        int
+	// unreaped records that the command outlived SIGKILL, which only a child
+	// stuck in the kernel does.
+	unreaped bool
+	exitCode int
+	pgid     int
 }
 
 // runBoundedAttempt runs argv with its own process group, returning when it
 // finishes or when timeout passes, whichever comes first. On the bound it sends
 // the group SIGTERM, waits grace, and sends SIGKILL.
 func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Writer, latch *signalLatch) attemptResult {
-	var out bytes.Buffer
+	var out syncBuffer
 	// The command's stderr goes where this helper's diagnostics go, and exec
 	// copies it from a goroutine of its own. Both writers are live at once --
 	// the interrupt line below is written while the command is still running --
@@ -93,10 +96,20 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	case <-time.After(timeout):
 		result.timedOut = true
 	}
-	// SIGTERM, the grace, then SIGKILL -- and nothing at all if the child was
-	// reaped first, whose pid may already belong to someone else.
-	procgroup.Stop(result.pgid, reaped, grace)
-	<-done
+	// The signal this helper was sent, if it was sent one, then SIGTERM, the
+	// grace, and SIGKILL -- and nothing at all if the child was reaped first,
+	// whose pid may already belong to someone else.
+	procgroup.StopWith(result.pgid, result.interrupted, reaped, grace)
+	if !reapOrGiveUp(done, grace, argv[0], guarded) {
+		// Nothing this process can do reaches a child the kernel will not let
+		// go of. The sweep is skipped on purpose: it would spend another grace
+		// signalling a group that cannot answer, and leaving now hands the
+		// child to init, which is the one thing that can still clean it up.
+		result.stdout = out.Bytes()
+		result.unreaped = true
+		result.exitCode = 124
+		return result
+	}
 	stopSurvivors(cmd.Path, result.pgid, grace, guarded)
 	result.stdout = out.Bytes()
 	result.exitCode = 1
@@ -105,6 +118,23 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	}
 	result.takeLateSignal(latch)
 	return result
+}
+
+// reapOrGiveUp waits for the reap that the stop above should have produced,
+// and says so when it does not come. A child in an uninterruptible kernel wait
+// -- a stalled volume is exactly how one gets there, and a stalled volume is
+// this helper's whole subject -- does not die of SIGKILL, and waiting on it
+// forever is the unbounded hang the bound exists to replace.
+func reapOrGiveUp(done <-chan error, grace time.Duration, name string, stderr io.Writer) bool {
+	select {
+	case <-done:
+		return true
+	case <-time.After(grace):
+		_, _ = fmt.Fprintf(stderr,
+			"bounded-list: %s did not exit after SIGKILL within %s; it is stuck in the kernel, and is left to init.\n",
+			name, grace)
+		return false
+	}
 }
 
 // signalLatch remembers the first stop signal this helper is sent. One that
@@ -171,6 +201,28 @@ func (r *attemptResult) takeLateSignal(latch *signalLatch) {
 		r.interrupted = sig
 		r.exitCode = 128 + int(sig)
 	}
+}
+
+// syncBuffer collects the command's stdout, which exec fills from a goroutine
+// of its own. An attempt that gives up on an unreapable child reads it while
+// that goroutine may still be writing.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// Bytes is a copy, so the caller reads something the copier cannot grow under
+// it.
+func (b *syncBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
 }
 
 // serialWriter is one writer two goroutines can use: this helper's own
