@@ -511,7 +511,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             {model.status.type === "notLoaded" &&
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
-              !model.capabilities.send && <SessionChrome ref={ref} placement="menu" />}
+              !model.capabilities.send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}

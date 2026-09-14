@@ -29,6 +29,10 @@ export interface ActivityPanelProps {
   // trigger, but still needs the trigger-owned background summary refresh.
   // The store's loading/bump gate keeps this second owner duplicate-free.
   refreshWhenHidden?: boolean;
+  // Defaults to refreshWhenHidden for direct hidden owners. SessionChrome
+  // opts in only at live-session mount sites so isolated/read-only chrome
+  // consumers keep the body's established first-attempt ownership contract.
+  discoverWhenHidden?: boolean;
 }
 
 export interface ActivityPanelBodyProps {
@@ -268,7 +272,14 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
 }
 
 export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
-  { sessionRef, model, now: _now, hideTrigger = false, refreshWhenHidden = false },
+  {
+    sessionRef,
+    model,
+    now: _now,
+    hideTrigger = false,
+    refreshWhenHidden = false,
+    discoverWhenHidden = refreshWhenHidden,
+  },
   ref,
 ) {
   const [open, setOpen] = useState(false);
@@ -287,7 +298,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     suppressed: hideTrigger && !refreshWhenHidden,
     // SessionChrome's hidden owner is the only closed trigger that establishes
     // a fresh summary; ordinary visible triggers retain their fetch-on-open contract.
-    discoverUnestablished: hideTrigger && refreshWhenHidden,
+    discoverUnestablished: hideTrigger && discoverWhenHidden,
   });
 
   return (
