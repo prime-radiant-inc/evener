@@ -1722,9 +1722,7 @@ func TestContextManager_UsageEstimatePairsOneProfilesWindow(t *testing.T) {
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := 0; ; i++ {
 			select {
 			case <-stop:
@@ -1737,7 +1735,7 @@ func TestContextManager_UsageEstimatePairsOneProfilesWindow(t *testing.T) {
 				cm.SetProfile(openai)
 			}
 		}
-	}()
+	})
 
 	for range 200 {
 		got := cm.EstimateUsage(history, 0)
