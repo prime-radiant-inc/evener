@@ -528,6 +528,29 @@ func TestEstimateInputTokens_ProviderNameDominatesTheClaudeModelFallback(t *test
 	}
 }
 
+// The resolved row decides the media family too: a caller that supplied no
+// names (the history entry point) must not fall back to the generic placeholder
+// for a row whose protocol has its own image-token rules.
+func TestEstimateMessagesInputTokensForResolved_UsesTheResolvedMediaFamily(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+
+	anthropic := registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic}
+	if got, want := EstimateMessagesInputTokensForResolved(anthropic, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+		t.Fatalf("resolved anthropic image history = %d, want %d: the row's media family decides", got, want)
+	}
+	openai := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}
+	if got, want := EstimateMessagesInputTokensForResolved(openai, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+		t.Fatalf("resolved openai image history = %d, want %d", got, want)
+	}
+	// Without a row there is no identity to key on, so the generic fallback stands.
+	if got, want := EstimateMessagesInputTokens(messages).Tokens, fallbackMediaTokens+len("image/png")/4; got != want {
+		t.Fatalf("targetless image history = %d, want %d", got, want)
+	}
+}
+
 // The history entry point the context manager uses decides by the row too, so
 // compaction pressure sees replayable thinking text and does not see text the
 // adapter drops.

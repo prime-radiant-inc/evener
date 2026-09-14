@@ -213,7 +213,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 			chars += len(p.Text)
 		case ContentImage:
 			if p.Image != nil {
-				tokens += estimateImageTokens(t.provider, t.model, p.Image)
+				tokens += estimateImageTokens(t, p.Image)
 			}
 		case ContentAudio:
 			tokens += fallbackMediaTokens
@@ -232,7 +232,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				chars += len(p.ToolResult.ToolCallID)
 				chars += len(p.ToolResult.Name)
 				if len(p.ToolResult.ImageData) > 0 || p.ToolResult.ImageMediaType != "" {
-					tokens += estimateImageTokens(t.provider, t.model, &ImageData{Data: p.ToolResult.ImageData, MediaType: p.ToolResult.ImageMediaType})
+					tokens += estimateImageTokens(t, &ImageData{Data: p.ToolResult.ImageData, MediaType: p.ToolResult.ImageMediaType})
 				}
 				switch x := p.ToolResult.Content.(type) {
 				case string:
@@ -316,7 +316,23 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 // thinking part that carries text and no replay metadata.
 type targetInfo struct {
 	provider, model  string
+	protocol         string
 	unsignedThinking bool
+}
+
+// mediaFamily is the image-token family for the target: the resolved protocol
+// decides it exactly, and a caller that passed only names falls back to the
+// name rule.
+func (t targetInfo) mediaFamily() string {
+	switch t.protocol {
+	case registry.ProtocolAnthropic:
+		return "anthropic"
+	case registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses:
+		return "openai"
+	case registry.ProtocolGoogle:
+		return "google"
+	}
+	return providerTokenFamily(t.provider, t.model)
 }
 
 // targetFromNames builds the name-based view used by the exported entry points
@@ -325,9 +341,17 @@ func targetFromNames(provider, model string) targetInfo {
 	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayedByName(provider, model)}
 }
 
-// targetFromResolved builds the exact view from a resolved registry row.
+// targetFromResolved builds the exact view from a resolved registry row. Names
+// the caller did not supply come from the row, so media estimation uses the
+// resolved identity rather than the generic fallback.
 func targetFromResolved(res registry.Resolved, provider, model string) targetInfo {
-	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayed(res)}
+	if strings.TrimSpace(provider) == "" {
+		provider = res.Instance
+	}
+	if strings.TrimSpace(model) == "" {
+		model = res.ModelID
+	}
+	return targetInfo{provider: provider, model: model, protocol: res.Protocol, unsignedThinking: unsignedThinkingReplayed(res)}
 }
 
 // unsignedThinkingReplayed reports whether the adapter the resolved target
@@ -394,7 +418,7 @@ func unsignedThinkingReplayedByName(provider, model string) bool {
 	}
 }
 
-func estimateImageTokens(provider, model string, img *ImageData) int {
+func estimateImageTokens(t targetInfo, img *ImageData) int {
 	if img == nil {
 		return 0
 	}
@@ -402,7 +426,7 @@ func estimateImageTokens(provider, model string, img *ImageData) int {
 	if !ok {
 		return fallbackMediaTokens + len(img.URL)/4 + len(img.MediaType)/4 + len(img.Detail)/4
 	}
-	switch providerTokenFamily(provider, model) {
+	switch t.mediaFamily() {
 	case "google":
 		return estimateGoogleImageTokens(width, height)
 	case "anthropic":
