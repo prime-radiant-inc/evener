@@ -400,3 +400,35 @@ test("a subpath alias satisfies its own specifier without the root being aliased
   assert.equal(describeUnaliasedImports(bare, new Set(["@evener/appwire-client/testing"])), "");
   assert.match(describeUnaliasedImports(bare, new Set(["@evener/appwire-client/other"])), /does not alias/);
 });
+
+test("an erased import does not demand an alias", () => {
+  // `import type X from "pkg"` is gone before Vite resolves anything, so a
+  // package test that only names a dependency that way needs no alias entry.
+  const files = {
+    "/pkg/a.test.ts": 'import type { Program } from "typescript";\nexport type P = Program;\n',
+  };
+  const bare = reachableBareImports(["/pkg/a.test.ts"], (file) => files[file], () => null, "/pkg");
+  assert.deepEqual([...bare.keys()], []);
+});
+
+test("an import that mixes a value member with a type one still demands its alias", () => {
+  const files = {
+    "/pkg/a.test.ts": 'import ts, { type Program } from "typescript";\nvoid ts;\nexport type P = Program;\n',
+  };
+  const bare = reachableBareImports(["/pkg/a.test.ts"], (file) => files[file], () => null, "/pkg");
+  assert.deepEqual([...bare.keys()], ["typescript"]);
+});
+
+test("the walk does not follow an erased relative import either", () => {
+  const files = {
+    "/pkg/a.test.ts": 'import type { Helper } from "./helper";\nexport type H = Helper;\n',
+    "/pkg/helper.ts": 'import ts from "typescript";\nvoid ts;\n',
+  };
+  const bare = reachableBareImports(
+    ["/pkg/a.test.ts"],
+    (file) => files[file],
+    (_from, specifier) => (specifier === "./helper" ? "/pkg/helper.ts" : null),
+    "/pkg",
+  );
+  assert.deepEqual([...bare.keys()], []);
+});

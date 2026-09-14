@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
-import { moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
+import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
 import { resolveSourceFile } from "../../../../scripts/sdk/resolve-source.mjs";
 import { isTestFile } from "../../../../scripts/sdk/source-files.mjs";
 
@@ -130,11 +130,15 @@ export function aliasKeysFrom(configText) {
   return keys;
 }
 
-// Every module this file names, by any form: a vi.mock or a require reaches a
+// Every module this file LOADS, by any form: a vi.mock or a require reaches a
 // dependency exactly as an import does, and an alias it needs is needed just
-// as much.
-function moduleSpecifiersIn(file, text) {
-  return moduleSpecifierSites(ts, parseSource(ts, file, text)).map((site) => site.text);
+// as much. An erased one reaches nothing -- `import type X from "pkg"` is gone
+// before Vite resolves anything -- so counting it would demand an alias for a
+// dependency no run has.
+function loadedSpecifiersIn(file, text) {
+  return moduleSpecifierSites(ts, parseSource(ts, file, text))
+    .filter(isLoadedAtRuntime)
+    .map((site) => site.text);
 }
 
 // The package's own files are TypeScript, plus the .mjs tooling its tests
@@ -155,7 +159,7 @@ export function reachableBareImports(testFiles, read, resolveRelative, dir) {
   const walk = (file) => {
     if (walked.has(file)) return;
     walked.add(file);
-    for (const specifier of moduleSpecifiersIn(file, read(file))) {
+    for (const specifier of loadedSpecifiersIn(file, read(file))) {
       if (specifier.startsWith("node:")) continue;
       if (specifier.startsWith(".")) {
         const resolved = resolveRelative(file, specifier);

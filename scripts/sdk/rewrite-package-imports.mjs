@@ -136,7 +136,16 @@ function exportedNames(file, seen = new Set()) {
         for (const element of statement.exportClause.elements) names.add(element.name.text);
         continue;
       }
-      // `export * from "./x"` / `export type * from "./x"`
+      if (statement.exportClause && ts.isNamespaceExport(statement.exportClause)) {
+        // `export * as ns from "./x"` publishes ONE name, the namespace. Its
+        // members are reachable through that name and are not exports of this
+        // module, so recursing here would have said the root publishes each
+        // of them.
+        names.add(statement.exportClause.name.text);
+        continue;
+      }
+      // `export * from "./x"` / `export type * from "./x"`: every name x
+      // exports becomes a name this module exports.
       if (!statement.moduleSpecifier) continue;
       const target = resolveSpecifier(file, statement.moduleSpecifier.text);
       if (!target) continue;

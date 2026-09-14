@@ -278,3 +278,35 @@ test("an empty named import binds nothing, so it is refused", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("export * as ns publishes the namespace, not the module's members", () => {
+  // Recursing into it said the root publishes alpha, beta and Thing, none of
+  // which a consumer can import from the root -- only `ns` can.
+  const index = 'export { errorText } from "./errors";\nexport * as ns from "./model";\n';
+
+  const named = fixture({
+    "appwire-client/typescript/index.ts": index,
+    "mobile/src/state.ts": 'import { alpha } from "../../appwire-client/typescript/model";\nalpha();\n',
+  });
+  try {
+    const run = rewrite(named);
+    assert.equal(run.status, 2);
+    assert.match(run.output, /exports alpha, which @evener\/appwire-client does not publish/);
+  } finally {
+    rmSync(named, { recursive: true, force: true });
+  }
+
+  const namespace = fixture({
+    "appwire-client/typescript/index.ts": index,
+    "mobile/src/state.ts": 'import { ns } from "../../appwire-client/typescript/index";\nvoid ns;\n',
+  });
+  try {
+    assert.equal(rewrite(namespace).status, 0);
+    assert.match(
+      readFileSync(path.join(namespace, "mobile/src/state.ts"), "utf8"),
+      /import \{ ns \} from "@evener\/appwire-client";/,
+    );
+  } finally {
+    rmSync(namespace, { recursive: true, force: true });
+  }
+});
