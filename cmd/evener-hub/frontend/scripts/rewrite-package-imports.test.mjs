@@ -179,21 +179,6 @@ test("a backtick specifier is rewritten like a quoted one", () => {
   }
 });
 
-test("a side-effect import of the package is refused, not mapped onto the root", () => {
-  // There is no binding to look up, and @evener/appwire-client is a different
-  // module from the one the author wrote.
-  const before = 'import "../../appwire-client/typescript/errors";\n';
-  const root = fixture({ "mobile/src/state.ts": before });
-  try {
-    const run = rewrite(root);
-    assert.equal(run.status, 2);
-    assert.match(run.output, /side-effect import of "errors"/);
-    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test("a namespace import of a module the package does not publish is refused", () => {
   const before = 'import * as errors from "../../appwire-client/typescript/errors";\nvoid errors;\n';
   const root = fixture({ "mobile/src/state.ts": before });
@@ -308,5 +293,57 @@ test("export * as ns publishes the namespace, not the module's members", () => {
     );
   } finally {
     rmSync(namespace, { recursive: true, force: true });
+  }
+});
+
+test("a side-effect import of a published module is migrated, not refused", () => {
+  const root = fixture({
+    "mobile/src/state.ts": [
+      'import "../../appwire-client/typescript/index";',
+      'import "../../appwire-client/typescript/docContent";',
+      "",
+    ].join("\n"),
+  });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 0, run.output);
+    const after = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
+    assert.match(after, /^import "@evener\/appwire-client";$/m);
+    assert.match(after, /^import "@evener\/appwire-client\/docContent";$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a side-effect import of a module the package does not publish is still refused", () => {
+  const root = fixture({ "mobile/src/state.ts": 'import "../../appwire-client/typescript/errors";\n' });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 2);
+    assert.match(run.output, /import-side-effect of "errors"/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a comment above a removed duplicate goes with it", () => {
+  const root = fixture({
+    "mobile/src/state.ts": [
+      'import { errorText } from "../../appwire-client/typescript/errors";',
+      "// about the second import, which is about to be merged away",
+      'import { alpha } from "../../appwire-client/typescript/model";',
+      "// about the code below, which stays",
+      "export const used = [errorText, alpha];",
+      "",
+    ].join("\n"),
+  });
+  try {
+    assert.equal(rewrite(root).status, 0);
+    const after = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
+    assert.doesNotMatch(after, /about the second import/);
+    assert.match(after, /\/\/ about the code below, which stays\nexport const used/);
+    assert.equal(after.match(/@evener\/appwire-client/g).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

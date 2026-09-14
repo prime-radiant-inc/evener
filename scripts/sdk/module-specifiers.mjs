@@ -40,7 +40,8 @@ function namedBindings(ts, elements) {
 //   node      the string-literal-like node holding the specifier, for edits
 //   text      the specifier itself
 //   kind      import-named | import-namespace | import-default | import-side-effect
-//             | export-from | export-star-from | dynamic-import | require
+//             | export-from | export-namespace-from | export-star-from
+//             | dynamic-import | require
 //             | require-equals | mock-call
 //   typeOnly  the statement was `import type` / `export type`, so it is erased
 //   bindings  {imported, local, typeOnly} per named member; empty otherwise
@@ -82,14 +83,19 @@ export function moduleSpecifierSites(ts, source) {
     } else if (ts.isExportDeclaration(node)) {
       const specifier = literal(node.moduleSpecifier);
       if (specifier) {
-        const named = node.exportClause && ts.isNamedExports(node.exportClause);
-        sites.push({
-          node: specifier,
-          text: specifier.text,
-          kind: named ? "export-from" : "export-star-from",
-          typeOnly: Boolean(node.isTypeOnly),
-          bindings: named ? namedBindings(ts, node.exportClause.elements) : [],
-        });
+        const clause = node.exportClause;
+        // Three shapes, and they answer different questions: a named list
+        // names what it takes, `export * as ns` names one binding and needs
+        // the module to exist, and a bare `export *` names nothing at all.
+        let kind = "export-star-from";
+        let bindings = [];
+        if (clause && ts.isNamedExports(clause)) {
+          kind = "export-from";
+          bindings = namedBindings(ts, clause.elements);
+        } else if (clause && ts.isNamespaceExport(clause)) {
+          kind = "export-namespace-from";
+        }
+        sites.push({ node: specifier, text: specifier.text, kind, typeOnly: Boolean(node.isTypeOnly), bindings });
       }
     } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       // `import X = require("./x")`: TypeScript's own CommonJS import, binding

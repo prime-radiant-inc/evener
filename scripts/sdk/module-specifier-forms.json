@@ -88,5 +88,10 @@
     "name": "named re-export with no whitespace at all",
     "kind": "export-from",
     "source": "export{errorText}from\"@@SPEC@@\";\n"
+  },
+  {
+    "name": "namespace re-export",
+    "kind": "export-namespace-from",
+    "source": "export * as everything from \"@@SPEC@@\";\n"
   }
 ]

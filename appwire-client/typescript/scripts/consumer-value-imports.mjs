@@ -40,12 +40,19 @@ export function parse(file, text) {
 // anything runs.
 const ACCOUNTABLE_KINDS = new Set(["import-named", "export-from"]);
 
+// `export * as ns from "pkg"` takes the module, not any value out of it, so
+// there is nothing for this derivation to add -- and nothing it cannot
+// account for either. Refusing it would fail a re-export that is perfectly
+// resolvable against the tarball.
+const NAMES_NO_VALUE_KINDS = new Set(["export-namespace-from"]);
+
 export function packageValuesIn(source, file, problems) {
   const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
   for (const site of moduleSpecifierSites(ts, source)) {
     const names = bySpecifier.get(site.text);
     if (!names) continue;
     if (site.typeOnly) continue;
+    if (NAMES_NO_VALUE_KINDS.has(site.kind)) continue;
     if (!ACCOUNTABLE_KINDS.has(site.kind)) {
       problems?.push(`${file}: ${site.kind} of ${site.text} names no binding this check can account for`);
       continue;

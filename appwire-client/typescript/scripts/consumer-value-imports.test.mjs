@@ -95,3 +95,15 @@ test("the two forms that name what they take are still accepted", () => {
   expect(problemsFor(`export { errorText } from "${ROOT}";\n`)).toEqual([]);
   expect(problemsFor(`import type { ThreadModel } from "${ROOT}";\nexport type A = ThreadModel;\n`)).toEqual([]);
 });
+
+test("a namespace re-export of the package is accounted for, not refused", () => {
+  // `export * as ns from "pkg"` takes the module, not a value out of it: there
+  // is nothing to add to the list and nothing this derivation cannot answer.
+  // Refusing it failed a re-export that resolves against the tarball perfectly.
+  expect(problemsFor(`export * as everything from "${ROOT}";\n`)).toEqual([]);
+  expect([...valuesIn(`export * as everything from "${ROOT}";\n`).get(ROOT)]).toEqual([]);
+  // A bare `export *` still is refused: it names nothing at all.
+  expect(problemsFor(`export * from "${ROOT}";\n`)).toEqual([
+    `fixture.ts: export-star-from of ${ROOT} names no binding this check can account for`,
+  ]);
+});

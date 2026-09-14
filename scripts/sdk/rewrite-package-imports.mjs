@@ -264,10 +264,22 @@ function mergeDuplicateImports(file, text, conflicts) {
       text: renderImport(members, first.specifier, first.typeOnly, indent),
     });
     for (const entry of rest) {
-      // Take the trailing newline with the statement so no blank line is left.
+      // From the full start, so the comment ABOVE a removed duplicate goes
+      // with it. Starting at the statement left that comment behind, where it
+      // reattached to whatever line followed and read as documenting it.
+      // Trailing newline included, so no blank line is left either.
+      // getFullStart() sits immediately after the PREVIOUS statement, before
+      // the newline that ends its line. Advance to the start of the first line
+      // this statement's trivia occupies, so the line above keeps its
+      // terminator and only whole lines are removed.
+      let start = entry.statement.getFullStart();
+      for (let scan = start; scan < text.length && /\s/.test(text[scan]); ) {
+        scan += 1;
+        if (text[scan - 1] === "\n") start = scan;
+      }
       let end = entry.statement.getEnd();
       if (text[end] === "\n") end += 1;
-      edits.push({ start: entry.statement.getStart(source), end, text: "" });
+      edits.push({ start, end, text: "" });
     }
   }
   if (edits.length === 0) return null;
@@ -332,7 +344,16 @@ function main() {
         // is nothing to look up, and `@evener/appwire-client` is a different
         // module from the one the author wrote. Only the published subpath can
         // stand in for a whole module.
-        const wholeModule = ["import-namespace", "import-side-effect", "export-star-from", "dynamic-import", "require", "require-equals", "mock-call"].includes(
+        const wholeModule = [
+          "import-namespace",
+          "import-side-effect",
+          "export-namespace-from",
+          "export-star-from",
+          "dynamic-import",
+          "require",
+          "require-equals",
+          "mock-call",
+        ].includes(
           site.kind,
         );
         const named = site.bindings.map((binding) => binding.imported);
@@ -341,10 +362,6 @@ function main() {
           target = TESTING_PREFIX + moduleID.slice("testing/".length);
         } else if (site.kind === "import-default") {
           problems.push(`${where}: default import of "${moduleID}"; the package publishes no default export`);
-        } else if (site.kind === "import-side-effect") {
-          problems.push(
-            `${where}: side-effect import of "${moduleID}" names no binding, so there is nothing to map onto ${PACKAGE_NAME}`,
-          );
         } else if (wholeModule) {
           // A namespace object, a re-export of everything, or a runtime load of
           // one module: all of them need the module itself, and the package
