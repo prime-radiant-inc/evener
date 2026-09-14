@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -145,6 +146,19 @@ func entry(t *testing.T, resp appwire.InstanceListResponse, name string) appwire
 	}
 	t.Fatalf("List has no instance %q; got %+v", name, resp.Instances)
 	return appwire.InstanceEntry{}
+}
+
+// assertKeyFileMode0600 pins the mode the hub writes its key with, where the
+// platform records POSIX permission bits at all: Windows synthesizes 0666 for
+// every file (0444 when read-only), so there is no 0600 there to assert.
+func assertKeyFileMode0600(t *testing.T, info os.FileInfo, what string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("%s is %v, want 0600", what, perm)
+	}
 }
 
 // authoredEntry re-reads providers.toml and returns the authored entry, which
@@ -1765,9 +1779,7 @@ func TestInstances_EndpointFingerprintIsKeyedWithTheHubSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("the key file is %v, want 0600", perm)
-	}
+	assertKeyFileMode0600(t, info, "the key file")
 }
 
 // A state root the hub cannot key under omits the fingerprint rather than
@@ -1912,9 +1924,7 @@ func TestInstances_EndpointFingerprintRotatesAKeyOthersCanRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("the key file is %v after the read, want 0600", perm)
-	}
+	assertKeyFileMode0600(t, info, "the key file after the read")
 	rotated, err := os.ReadFile(keyPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
@@ -2037,9 +2047,7 @@ func TestInstances_EndpointFingerprintRepairsAnEmptyKeyFile(t *testing.T) {
 	if info.Size() == 0 {
 		t.Fatal("the empty key file was left in place")
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("the repaired key file is %v, want 0600", perm)
-	}
+	assertKeyFileMode0600(t, info, "the repaired key file")
 }
 
 // Something unusable at the key path does not leave the state root unkeyable
@@ -2066,8 +2074,49 @@ func TestInstances_EndpointFingerprintRepairsAnEmptyKeyPathDirectory(t *testing.
 	if !info.Mode().IsRegular() {
 		t.Fatalf("key path mode = %v, want a regular key file", info.Mode())
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("the repaired key file is %04o, want 0600", perm)
+	assertKeyFileMode0600(t, info, "the repaired key file")
+}
+
+// A platform that does not record POSIX permission bits - Windows synthesizes
+// 0666 for every file, 0444 when read-only - must not have the hub's own key
+// refused for the mode it reports: the refusal would send every read through
+// the repair, so the hub would rotate the key on every use and every
+// fingerprint a client had been shown would stop matching. The seam stands in
+// for that platform, answering unjudged, which no mode written on this host
+// makes the real helper do.
+func TestInstances_EndpointFingerprintIsReadWhereThePlatformDoesNotReportModes(t *testing.T) {
+	original := endpointFingerprintKeyMode
+	endpointFingerprintKeyMode = func(os.FileInfo) (os.FileMode, bool) { return 0, false }
+	t.Cleanup(func() { endpointFingerprintKeyMode = original })
+
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	// What the hub's own 0600 key reads back as on Windows: a mode the hub has
+	// to accept as its own rather than judge against a POSIX 0600.
+	if err := os.WriteFile(keyPath, []byte("a-key-the-hub-just-wrote"), 0o666); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+
+	first := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if first == "" {
+		t.Fatal("a key the platform reports no modes for left the endpoint fingerprint omitted")
+	}
+	if second := entry(t, f.ctl.List(), "work").EndpointFingerprint; second != first {
+		t.Fatal("the key was rotated between two reads on a platform that reports no modes")
+	}
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("the hub rotated a key it should have accepted; every fingerprint a client was shown would stop matching")
 	}
 }
 

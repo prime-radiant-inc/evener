@@ -15,3 +15,9 @@ func fileOwnerUID(info os.FileInfo) (int, bool) {
 	}
 	return int(st.Uid), true
 }
+
+// fileModePerm reports the POSIX permission bits info carries, judged: unix
+// records them, so the caller can hold a file to the 0600 this hub writes.
+func fileModePerm(info os.FileInfo) (os.FileMode, bool) {
+	return info.Mode().Perm(), true
+}

@@ -330,17 +330,32 @@ func destinationIdentity(resolved registry.Resolved) string {
 	}, "\x00")
 }
 
+// destinationInstance reports the instance behind inst when it has a
+// destination this hub can name at all: not hidden, resolvable, and carrying a
+// base URL. Whether the hub can *key* that destination's fingerprint is a
+// separate question - the key file can be unreadable while the destination is
+// perfectly real - and the credential guards must not read one as the other
+// (endpointFingerprintFor's empty answer conflates them; app_auth.go's
+// endpointHasDestination asks this question instead).
+func destinationInstance(r *registry.Registry, inst registry.Instance) (registry.Resolved, bool) {
+	if inst.Hidden || r == nil {
+		return registry.Resolved{}, false
+	}
+	resolved, err := r.ResolveInstance(inst.Name)
+	if err != nil || strings.TrimSpace(resolved.Transport.BaseURL) == "" {
+		return registry.Resolved{}, false
+	}
+	return resolved, true
+}
+
 // destinationFingerprint is the value a listing row serves and a credential
 // write is checked against: the digest of where name resolves now. Empty when
 // it resolves no destination here - a hidden provider keeps its destination out
 // of the listing, and an unresolvable one has nothing to describe - or when the
 // hub has no key to digest with.
 func destinationFingerprint(stateDir string, r *registry.Registry, inst registry.Instance) string {
-	if inst.Hidden || r == nil {
-		return ""
-	}
-	resolved, err := r.ResolveInstance(inst.Name)
-	if err != nil || strings.TrimSpace(resolved.Transport.BaseURL) == "" {
+	resolved, ok := destinationInstance(r, inst)
+	if !ok {
 		return ""
 	}
 	return endpointFingerprint(stateDir, destinationIdentity(resolved))
@@ -356,6 +371,16 @@ var (
 	// real uid cannot be varied the way the check needs to be exercised, so it
 	// is a seam in the same sense as the auth store's file operations.
 	endpointFingerprintKeyOwner = os.Getuid
+	// endpointFingerprintKeyMode reports the permission bits a key file carries,
+	// judged, where the platform records them as POSIX modes - unix does
+	// (fileModePerm, fileowner_unix.go). Windows synthesizes 0666 (0444 when
+	// read-only) for every file, so it answers unjudged and the check is skipped
+	// there: judging the synthesized bits would refuse every key the hub writes,
+	// and the repair would then rotate the key on every read - every fingerprint
+	// a client was shown would stop matching. Another seam, for the same reason
+	// as endpointFingerprintKeyOwner: the unjudged path is what a non-unix host
+	// runs, and no mode a test writes on this host makes it answer that way.
+	endpointFingerprintKeyMode = fileModePerm
 )
 
 // endpointFingerprintKey returns the key the endpoint fingerprints are keyed
@@ -445,7 +470,7 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm, judged := endpointFingerprintKeyMode(info); judged && perm != 0o600 {
 		return nil, fmt.Errorf("%s is %04o, want 0600", path, perm)
 	}
 	if uid, known := fileOwnerUID(info); known && uid != endpointFingerprintKeyOwner() {
