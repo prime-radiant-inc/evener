@@ -75,11 +75,14 @@ type AppEventProjector struct {
 	// real turn, so it must keep minting its own gap id (kata 9ekv) rather
 	// than folding into the prelude turn at the very top of the transcript.
 	historySeeded bool
-	// compactionBatchInterrupted remembers that this run of compaction events
-	// — a fold publishes one per layer, back to back — began while a turn was
-	// running. Only the first layer sees that turn open, because it closes it;
-	// without this the later layers would tell every client the session went
-	// idle while the round that triggered the fold is still going.
+	// compactionBatchInterrupted remembers that this run of compaction
+	// announcements — a fold publishes one per layer and one per marker, in a
+	// single flush that also emits its warnings and its steering — began while
+	// a turn was running. Only the first of them sees that turn open, because
+	// it closes it; without this the later ones would tell every client the
+	// session went idle while the round that triggered the fold is still
+	// going. It ends where the interruption does: at the next real turn
+	// (startTurn) or when the session ends.
 	compactionBatchInterrupted bool
 	// midSessionAnnouncementTurnID is the shared synthetic turn id for the
 	// CURRENT gap between two real turns (nextTurn > 0, activeTurnID == "").
@@ -269,13 +272,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 
 	if p.threadID == "" {
 		p.threadID = event.SessionID
-	}
-	if event.Kind != events.EventContextCompaction && event.Kind != events.EventCompactionTurn {
-		// A fold's layer announcements and its markers arrive back to back,
-		// and only the first of them finds the interrupted turn still open.
-		// Anything else marks the end of that batch. See
-		// compactionBatchInterrupted.
-		p.compactionBatchInterrupted = false
 	}
 
 	switch event.Kind {
@@ -1329,6 +1325,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		return nil
 	case events.EventSessionEnd:
 		p.clearSkillCandidate()
+		// The round a fold interrupted is over, so its batch is too.
+		p.compactionBatchInterrupted = false
 		data := eventData[events.SessionEndData](event.Data)
 		state := appwire.ThreadStatusClosed
 		switch data.State {
@@ -1600,9 +1598,11 @@ func (p *AppEventProjector) compactionAnnouncement(event events.SessionEvent, ev
 	reserved := p.reservedTurnID
 	wasRealTurnStarted := p.anyTurnStarted
 	interrupted := p.activeTurnID != "" || p.compactionBatchInterrupted
-	p.compactionBatchInterrupted = interrupted
 	p.reservedTurnID = ""
 	_, out := p.openTurn("", event.Timestamp)
+	// openTurn ended the batch (startTurn clears it); this announcement is
+	// part of it, so it says so again for the one after it.
+	p.compactionBatchInterrupted = interrupted
 	// Compaction is session bookkeeping, not a runnable turn: prelude and
 	// reserved-turn state stay based on real work.
 	p.anyTurnStarted = wasRealTurnStarted
@@ -2137,6 +2137,14 @@ func (p *AppEventProjector) resetProvisionalCommunicates() []AppNotification {
 }
 
 func (p *AppEventProjector) startTurn() string {
+	// A real turn starting is the end of a fold's batch: whatever that fold
+	// interrupted is over. The compaction announcements open a turn of their
+	// own through here too and re-arm the flag for themselves afterwards, so
+	// a batch survives everything the fold publishes in one flush — its
+	// warnings for records that failed, its steering, its markers — and
+	// nothing else. See compactionBatchInterrupted.
+	p.compactionBatchInterrupted = false
+
 	// Every started turn spends exactly one number, whatever it ends up being
 	// called. internal/apptranscript numbers a persisted turn by its ENTRY
 	// INDEX and falls back to "turn_%d" only for entries carrying no durable

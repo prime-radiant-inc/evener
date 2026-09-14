@@ -315,3 +315,42 @@ func TestAppEventProjectorAFoldsMarkersKeepTheThreadActive(t *testing.T) {
 		}
 	}
 }
+
+// A fold publishes everything in one flush: a layer's announcement, a warning
+// for a record whose write failed, the next layer, its markers. The warning is
+// not the end of the interruption — the round that triggered the fold is still
+// running behind all of it — so the announcement after it must still leave the
+// thread said to be active. A client that reads the last completed turn as
+// "the session went idle" otherwise offers to send into a session mid-round.
+func TestAppEventProjectorAFoldsWarningDoesNotEndItsBatch(t *testing.T) {
+	lastIsActive := func(out []AppNotification) bool {
+		if len(out) == 0 {
+			return false
+		}
+		last := out[len(out)-1]
+		params, ok := last.Params.(appwire.ThreadStatusChangedParams)
+		return last.Method == appwire.NotifyThreadStatusChanged && ok && params.Status.Type == appwire.ThreadStatusActive
+	}
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "ask"}})
+	if out := projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: events.ContextCompactionData{Layer: "checkpoint", TurnsBefore: 20, TurnsAfter: 12}}); !lastIsActive(out) {
+		t.Fatalf("the first layer did not leave the thread active: %+v", out)
+	}
+	// The middle layer's record could not be written; the fold reports it.
+	projector.Project(events.SessionEvent{Kind: events.EventWarning, SessionID: "th_1", Data: events.WarningData{Message: "transcript write failed: injected"}})
+	if out := projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: events.ContextCompactionData{Layer: "summarize", TurnsBefore: 12, TurnsAfter: 6}}); !lastIsActive(out) {
+		t.Fatalf("the layer after the warning ended the batch: %+v", out)
+	}
+	projector.Project(events.SessionEvent{Kind: events.EventWarning, SessionID: "th_1", Data: events.WarningData{Message: "transcript write failed: injected marker"}})
+	if out := projector.Project(events.SessionEvent{Kind: events.EventCompactionTurn, SessionID: "th_1", Data: events.CompactionTurnData{Kind: string(schema.TurnSummary), Text: "[CONTEXT SUMMARY]"}}); !lastIsActive(out) {
+		t.Fatalf("the marker after the warning ended the batch: %+v", out)
+	}
+
+	// The batch ends where the interruption does. A real turn starting is one
+	// end of it; the session ending is the other.
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "next"}})
+	projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{}})
+	if out := projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: events.ContextCompactionData{Layer: "checkpoint", TurnsBefore: 8, TurnsAfter: 6}}); lastIsActive(out) {
+		t.Fatalf("a compaction between turns claimed the session was working: %+v", out)
+	}
+}
