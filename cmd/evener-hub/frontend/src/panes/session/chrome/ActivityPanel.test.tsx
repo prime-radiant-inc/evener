@@ -970,6 +970,65 @@ describe("ActivityPanel", () => {
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
   });
 
+  test("a closed panel queues one hydration refresh while the summary is loading", async () => {
+    const fake = connectFakeClient();
+    const bumpGate = deferred<{ data: unknown }>();
+    const generationGate = deferred<{ data: unknown }>();
+    fake.on("evener/jobs/list", () =>
+      fake.calls.filter((call) => call.method === "evener/jobs/list").length === 1
+        ? bumpGate.promise
+        : generationGate.promise,
+    );
+    activitySummaryStore.setState({
+      entries: new Map([
+        [
+          "ref_pending_gen",
+          {
+            counts: undefined,
+            established: true,
+            mountedBodies: 0,
+            loading: false,
+            lastFetchedBump: 1,
+            requestID: 1,
+          },
+        ],
+      ]),
+    });
+
+    const panel = (bump: number) => (
+      <ActivityPanel
+        sessionRef="ref_pending_gen"
+        model={testModel({ ref: "ref_pending_gen", jobsUpdatedAt: bump })}
+        now={0}
+      />
+    );
+    const { rerender } = render(panel(1));
+    rerender(panel(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
+
+    act(() => {
+      threadsStore.setState({ hydrations: new Map([["ref_pending_gen", 1]]) });
+    });
+    await act(async () => Promise.resolve());
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
+
+    await act(async () => {
+      bumpGate.resolve({ data: activityTree() });
+      await bumpGate.promise;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
+
+    await act(async () => {
+      generationGate.resolve({ data: activityTree(2) });
+      await generationGate.promise;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_pending_gen")?.loading).toBe(false));
+    await act(async () => Promise.resolve());
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
+  });
+
   test("derives the root badge from the merged tree after continuation", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

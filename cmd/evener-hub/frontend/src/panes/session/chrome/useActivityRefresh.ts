@@ -99,8 +99,9 @@ export function useActivityRefresh(
   }, [hydrationGeneration, model.jobsUpdatedAt, owner.kind, ref, reportFailure]);
 
   // Background owners observe establishment and bump changes, but retained
-  // load completion remains sampled so it cannot create a retry loop.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: entry.load is sampled only to choose force during initial discovery
+  // load completion remains sampled so it cannot create a retry loop. Loading
+  // is sampled only to queue a generation that arrived during an older request.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: entry.load and summary.loading are deliberately sampled, not completion triggers
   useEffect(() => {
     if (owner.kind !== "background") return;
     if (bodyOwnsFreshness) {
@@ -128,9 +129,18 @@ export function useActivityRefresh(
     if (!(initialDiscovery || generationChanged || bumpMismatch)) return;
 
     const force = generationChanged || (initialDiscovery && (retainedNonReady || unprovenFreshness));
-    handledGenerationRef.current = hydrationGeneration;
-    if (force && activitySummaryStore.getState().entries.get(ref)?.loading) return;
+    if (force && activitySummaryStore.getState().entries.get(ref)?.loading) {
+      // A generation observed while the render's request was already loading
+      // must enter refreshRoot's one-shot queue. If loading only began after
+      // this render, a co-mounted owner issued the same refresh first; do not
+      // manufacture a duplicate forced follow-up for it.
+      if (!(generationChanged && summary.loading)) {
+        handledGenerationRef.current = hydrationGeneration;
+        return;
+      }
+    }
     refreshActivityRoot(ref, model.jobsUpdatedAt, undefined, force);
+    handledGenerationRef.current = hydrationGeneration;
   }, [
     backgroundEstablished,
     backgroundLastFetchedBump,

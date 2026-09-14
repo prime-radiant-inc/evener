@@ -107,6 +107,32 @@ test("blur cancels a pending focus show", () => {
   expect(screen.queryByTestId("observed-label")).toBeNull();
 });
 
+test("scroll cancels a pending show", () => {
+  vi.useFakeTimers();
+  render(<Harness />);
+  const trigger = screen.getByRole("button", { name: "Trigger" });
+
+  fireEvent.mouseEnter(trigger);
+  advance(150);
+  act(() => window.dispatchEvent(new Event("scroll")));
+  advance(300);
+
+  expect(screen.queryByTestId("observed-label")).toBeNull();
+});
+
+test("viewport resize cancels a pending show", () => {
+  vi.useFakeTimers();
+  render(<Harness />);
+  const trigger = screen.getByRole("button", { name: "Trigger" });
+
+  fireEvent.mouseEnter(trigger);
+  advance(150);
+  act(() => window.dispatchEvent(new Event("resize")));
+  advance(300);
+
+  expect(screen.queryByTestId("observed-label")).toBeNull();
+});
+
 test("scroll dismisses a visible label and cancels a re-armed show", () => {
   vi.useFakeTimers();
   render(<Harness />);

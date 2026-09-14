@@ -22,6 +22,7 @@ interface UseFloatingLabelResult {
 
 export function useFloatingLabel({ measure, observe }: UseFloatingLabelArgs): UseFloatingLabelResult {
   const [visible, setVisible] = useState(false);
+  const [pending, setPending] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const wrapperRef = useRef<HTMLSpanElement>(null);
 
@@ -49,13 +50,15 @@ export function useFloatingLabel({ measure, observe }: UseFloatingLabelArgs): Us
   // element left alone through a scroll would visibly detach from its trigger.
   // Re-triggering brings it straight back.
   useEffect(() => {
-    if (!visible) return;
+    if (!visible && !pending) return;
     function dismiss() {
       // Cancels the pending show too, not just the visible element: a trigger
       // that takes focus after a click can already have re-armed the delay, and
       // that timer would otherwise pop the element back 300ms after the scroll
       // that dismissed it.
       clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+      setPending(false);
       setVisible(false);
     }
     window.addEventListener("scroll", dismiss, true);
@@ -64,15 +67,22 @@ export function useFloatingLabel({ measure, observe }: UseFloatingLabelArgs): Us
       window.removeEventListener("scroll", dismiss, true);
       window.removeEventListener("resize", dismiss);
     };
-  }, [visible]);
+  }, [pending, visible]);
 
   function show() {
     clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setVisible(true), SHOW_DELAY_MS);
+    setPending(true);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = undefined;
+      setPending(false);
+      setVisible(true);
+    }, SHOW_DELAY_MS);
   }
 
   function hide() {
     clearTimeout(timerRef.current);
+    timerRef.current = undefined;
+    setPending(false);
     setVisible(false);
   }
 
