@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  aliasKeysFrom,
+  aliasesFrom,
   collectedUnder,
   describeAppImports,
   describeCwdRelativeReads,
@@ -303,7 +303,7 @@ test("describeProofRun matches when one side reaches the file through a symlink"
   assert.equal(describeProofRun({ ...report, testResults: [{ name: realFile }] }, viaLink, linkDir), "");
 });
 
-test("aliasKeysFrom reads every key of the resolve.alias block", () => {
+test("aliasesFrom reads every key of the resolve.alias block, and what it serves", () => {
   const config = [
     "export default defineConfig({",
     "  resolve: {",
@@ -316,11 +316,31 @@ test("aliasKeysFrom reads every key of the resolve.alias block", () => {
     "  },",
     "});",
   ].join("\n");
-  assert.deepEqual([...aliasKeysFrom(config)].sort(), [
-    "@evener/appwire-client/docContent",
-    "react",
-    "typescript",
-  ]);
+  const aliases = aliasesFrom(config);
+  assert.deepEqual([...aliases.keys()].sort(), ["@evener/appwire-client/docContent", "react", "typescript"]);
+  // A file target answers its own specifier and nothing below it; a directory
+  // target answers both.
+  assert.equal(aliases.get("@evener/appwire-client/docContent").servesSubpaths, false);
+  assert.equal(aliases.get("react").servesSubpaths, true);
+  assert.equal(aliases.get("typescript").servesSubpaths, true);
+});
+
+test("the package root does not stand in for a specifier below it", () => {
+  // The root alias points at index.ts. Vite would build
+  // index.ts/testing/fakeClient, which is not a path, so accepting the root
+  // as a prefix match said an unresolvable import was aliased.
+  const subpath = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
+  assert.match(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client"])), /does not alias/);
+  assert.equal(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client/testing"])), "");
+  assert.equal(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client/testing/fakeClient"])), "");
+});
+
+test("with the config's targets in hand, a directory alias serves subpaths and a file alias does not", () => {
+  const subpath = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
+  const asFile = new Map([["@evener/appwire-client", { servesSubpaths: false }]]);
+  const asDirectory = new Map([["@evener/appwire-client", { servesSubpaths: true }]]);
+  assert.match(describeUnaliasedImports(subpath, asFile), /does not alias/);
+  assert.equal(describeUnaliasedImports(subpath, asDirectory), "");
 });
 
 test("reachableBareImports follows relative imports and stops at bare ones", () => {
@@ -356,9 +376,9 @@ test("describeUnaliasedImports names the specifier and the file that imports it"
   assert.match(problem, /CI's web job/);
 });
 
-test("describeUnaliasedImports matches a subpath against its package alias", () => {
+test("describeUnaliasedImports matches a subpath against a package alias that serves one", () => {
   const bare = new Map([["@testing-library/react/pure", ["b.test.tsx"]]]);
-  assert.equal(describeUnaliasedImports(bare, new Set(["@testing-library/react"])), "");
+  assert.equal(describeUnaliasedImports(bare, new Map([["@testing-library/react", { servesSubpaths: true }]])), "");
 });
 
 test("resolvePackageImport answers a directory import with its index, not the directory", () => {

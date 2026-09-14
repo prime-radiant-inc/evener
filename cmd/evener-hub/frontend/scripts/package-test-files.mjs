@@ -105,12 +105,30 @@ export function describeAppImports(files, read, dir) {
   ].join("\n");
 }
 
-// The keys of vite.config.ts's `resolve.alias`, read off its AST rather than
-// matched: this is the list the package's bare imports are held against, and a
-// regex that missed an entry would fail the gate over an alias that is there.
-export function aliasKeysFrom(configText) {
+// vite.config.ts's `resolve.alias`, read off its AST rather than matched: this
+// is the list the package's bare imports are held against, and a regex that
+// missed an entry would fail the gate over an alias that is there.
+//
+// Each key maps to whether that alias can serve a SUBPATH, which is decided by
+// its target: a directory can, a file cannot. `@evener/appwire-client` points
+// at index.ts, so it answers `@evener/appwire-client` and nothing below it --
+// Vite would build index.ts/testing/fakeClient, which is not a path. The
+// target is classified from the last string literal of its expression, since
+// the expressions are path.join calls this file cannot evaluate.
+const TARGET_IS_A_FILE = /\.[cm]?[jt]sx?$|\.json$/;
+
+export function aliasesFrom(configText) {
   const source = ts.createSourceFile("vite.config.ts", configText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const keys = new Set();
+  const aliases = new Map();
+  const lastLiteral = (node) => {
+    let found = null;
+    const walk = (child) => {
+      if (ts.isStringLiteralLike(child)) found = child.text;
+      ts.forEachChild(child, walk);
+    };
+    walk(node);
+    return found;
+  };
   const visit = (node) => {
     if (
       ts.isPropertyAssignment(node) &&
@@ -121,13 +139,27 @@ export function aliasKeysFrom(configText) {
       for (const property of node.initializer.properties) {
         if (!ts.isPropertyAssignment(property)) continue;
         const name = property.name;
-        if (ts.isIdentifier(name) || ts.isStringLiteral(name)) keys.add(name.text);
+        if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) continue;
+        const target = lastLiteral(property.initializer);
+        aliases.set(name.text, { servesSubpaths: target !== null && !TARGET_IS_A_FILE.test(target) });
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return keys;
+  return aliases;
+}
+
+// Whether `key` can stand in for a specifier BELOW it. With the config's
+// targets in hand that is a fact; given a bare Set of keys -- which is all a
+// caller has when it is testing the matching itself -- it is assumed of a key
+// that already carries a subpath and denied of a bare package name, whose
+// alias in this config is an entry-point file.
+function servesSubpaths(key, aliases) {
+  const entry = aliases instanceof Map ? aliases.get(key) : undefined;
+  if (entry) return entry.servesSubpaths;
+  const segments = key.startsWith("@") ? key.split("/").slice(2) : key.split("/").slice(1);
+  return segments.length > 0;
 }
 
 // Every module this file LOADS, by any form: a vi.mock or a require reaches a
@@ -176,10 +208,15 @@ export function reachableBareImports(testFiles, read, resolveRelative, dir) {
 
 // The alias Vite would use for a specifier: the longest key that is the
 // specifier itself or a path prefix of it. Null when nothing covers it.
-export function longestAliasPrefix(specifier, aliasKeys) {
+export function longestAliasPrefix(specifier, aliases) {
   let longest = null;
-  for (const key of aliasKeys) {
-    if (specifier !== key && !specifier.startsWith(`${key}/`)) continue;
+  for (const key of aliases.keys?.() ?? aliases) {
+    if (specifier !== key) {
+      // An exact match always answers; a prefix match answers only if that
+      // alias serves subpaths at all.
+      if (!specifier.startsWith(`${key}/`)) continue;
+      if (!servesSubpaths(key, aliases)) continue;
+    }
     if (longest === null || key.length > longest.length) longest = key;
   }
   return longest;
@@ -190,7 +227,7 @@ export function longestAliasPrefix(specifier, aliasKeys) {
 // appwire-client/typescript` has run for make test-api-package, and fails in
 // CI's web job, which installs only this app - a green local gate over an
 // import CI cannot resolve. This is the check that stops the two diverging.
-export function describeUnaliasedImports(bare, aliasKeys) {
+export function describeUnaliasedImports(bare, aliases) {
   const offenders = [];
   for (const [specifier, files] of [...bare].sort()) {
     if (SELF_RESOLVING.has(specifier)) continue;
@@ -198,7 +235,7 @@ export function describeUnaliasedImports(bare, aliasKeys) {
     // entry does not stand in for the subpath entry beside it, and reading
     // only the first two segments called the testing specifier satisfied by
     // the root alias, which maps at index.ts and cannot serve it.
-    if (longestAliasPrefix(specifier, aliasKeys) !== null) continue;
+    if (longestAliasPrefix(specifier, aliases) !== null) continue;
     offenders.push(`${specifier}, imported by ${files.join(", ")}`);
   }
   if (offenders.length === 0) return "";
@@ -312,7 +349,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     describeCwdRelativeReads(packageSources, readFile, packageDir),
     describeUnaliasedImports(
       reachableBareImports(testFilesOnDisk(packageDir), readFile, resolvePackageImport, packageDir),
-      aliasKeysFrom(readFile(path.join(frontend, "vite.config.ts"))),
+      aliasesFrom(readFile(path.join(frontend, "vite.config.ts"))),
     ),
   ]) {
     if (problem) {
