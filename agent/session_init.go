@@ -304,6 +304,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
+	// Publish the first committed notes cut before anything can read one: a
+	// fresh session's live store is empty, and its mutation store may already
+	// carry a canonical human note for a reserved session id.
+	s.seedCommittedNotes()
 	if inheritedContext != nil {
 		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
 		// Copied history is background text only: a new or forked delegate
@@ -1047,8 +1051,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
 	s.pinnedNote = meta.PinnedNote
-	s.agentNote = meta.AgentNote
-	s.sessionURLs = append([]schema.SessionURL(nil), meta.SessionURLs...)
+	// Legacy values predate the write-path control strip: a note or URL label
+	// persisted then can still drive a terminal through the details drawer, the
+	// model copy or the tool output. Normalizing at the load boundary closes
+	// that for resumed sessions, and the next metadata save persists the cleaned
+	// values.
+	// Strip rather than normalize: the persisted value already carries the write
+	// path's collapse and clamp, and re-normalizing could reshape it (a clamped
+	// note can end in a space that a second collapse would drop).
+	s.agentNote = stripTextControls(meta.AgentNote)
+	s.sessionURLs = sanitizeRestoredURLs(meta.SessionURLs)
 	// Seed the notes-projection record from the raw form captured above, so the
 	// change-gated projection (maybeAppendNotesContext) does not re-emit a
 	// snapshot the model already saw: the last NOTES_CONTEXT turn in the resumed
@@ -1077,6 +1089,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.origin = meta.Origin
 
 	s.restoreDurableClientMutationQueues()
+	// Seed the published committed cut from the restored store: readers must
+	// see the restored notes (and the mutation store's canonical human note)
+	// without waiting for the next mutation to publish.
+	s.seedCommittedNotes()
 
 	// ask_user root-only gating (spec §7.1): a bare `serve --resume
 	// <delegate-id>` restores with an empty spawn carrier (spawn is json:"-",
@@ -2082,12 +2098,15 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 // conversationSignals reports the two numbers the re-injection detector weighs,
 // read together under one lock so they describe the same instant.
 //
-// The turn count is conversation only, excluding hook execution records and
-// environment context saved before the user's first input. It answers
+// The turn count is conversation only, excluding hook execution records and the
+// harness-injected context turns — environment context saved before the user's
+// first input and shared-notes context projected at turn start — that no user
+// or model utterance produced. It answers
 // "does this session already carry a conversation?" — the question the detector asks — with a number no hook
-// dispatch can inflate. modelResponses is guarded by the same mutex (see the
-// field's documentation on Session), and the detector reaches it on the drain
-// path, where steering turns append from other goroutines.
+// dispatch or context projection can inflate. modelResponses is guarded by the
+// same mutex (see the field's documentation on Session), and the detector
+// reaches it on the drain path, where steering turns append from other
+// goroutines.
 func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	if s == nil {
 		return 0, 0
@@ -2095,9 +2114,11 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		if t.Kind != schema.TurnHookCompleted && t.Kind != schema.TurnEnvironment {
-			historyTurns++
+		switch t.Kind {
+		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext:
+			continue
 		}
+		historyTurns++
 	}
 	return historyTurns, s.modelResponses
 }
