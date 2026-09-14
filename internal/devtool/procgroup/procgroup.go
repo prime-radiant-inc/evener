@@ -15,6 +15,11 @@ import (
 	"time"
 )
 
+// Supported says whether this platform has the process groups everything here
+// depends on. A caller whose whole purpose is stopping a group can refuse to
+// run rather than no-op its way through.
+const Supported = true
+
 // Start starts cmd in its own process group. The caller keeps ownership of
 // Wait; Stop only signals.
 func Start(cmd *exec.Cmd) error {

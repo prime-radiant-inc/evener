@@ -25,6 +25,8 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		name string
 		args []string
 		want []string
+		// err is the substring a refusal must carry.
+		err string
 	}{
 		{name: "nothing to forward", args: []string{"-short", "-count=1"}},
 		{name: "the race tag selects files", args: []string{"-race", "-short"}, want: []string{"-race"}},
@@ -49,11 +51,25 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		{name: "-args ends the flags", args: []string{"-args", "foo", "-race"}},
 		// -C takes a directory: the word after it is that directory, whatever
 		// it is spelled like.
-		{name: "-C takes the next word", args: []string{"-C", "-race", "./..."}},
+		// -C is refused rather than consumed: the gate decides which directory
+		// each module is enumerated in, and this would move one.
+		{name: "-C is refused", args: []string{"-C", "/tmp"}, err: "-C is not supported here"},
+		{name: "a flag with nothing after it", args: []string{"-short", "-tags"}, err: "-tags was given with nothing after it"},
+		{name: "and one whose value was the last word", args: []string{"-run"}, err: "-run was given with nothing after it"},
 		{name: "and what came before it still counts", args: []string{"-race", "-args", "-tags", "x"}, want: []string{"-race"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := packageSelectionFlags(tc.args); !reflect.DeepEqual(got, tc.want) {
+			got, err := packageSelectionFlags(tc.args)
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("packageSelectionFlags(%q) = %v, want a refusal naming %q", tc.args, err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("packageSelectionFlags(%q) = %v", tc.args, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("packageSelectionFlags(%q) = %q, want %q", tc.args, got, tc.want)
 			}
 		})
@@ -122,7 +138,10 @@ func TestPackageSelectionFlagsForwardAnOverlayThatIntroducesAPackage(t *testing.
 	if got := list(); strings.Contains(got, "overlayfixture/added") {
 		t.Fatalf("go list without the overlay = %q, want the added package missing", got)
 	}
-	forwarded := packageSelectionFlags([]string{"-overlay", overlay, "-count=1"})
+	forwarded, err := packageSelectionFlags([]string{"-overlay", overlay, "-count=1"})
+	if err != nil {
+		t.Fatalf("packageSelectionFlags: %v", err)
+	}
 	if got := list(forwarded...); !strings.Contains(got, "overlayfixture/added") {
 		t.Fatalf("go list %q = %q, want the overlay's package listed", forwarded, got)
 	}
@@ -166,7 +185,10 @@ func TestPackageSelectionFlagsDecideWhatGoListCanSee(t *testing.T) {
 	if got := list(); strings.Contains(got, "listfixture/tagged") {
 		t.Fatalf("go list without the tag = %q, want the tagged package missing", got)
 	}
-	forwarded := packageSelectionFlags([]string{"-tags", "listfixture", "-short", "-count=1"})
+	forwarded, err := packageSelectionFlags([]string{"-tags", "listfixture", "-short", "-count=1"})
+	if err != nil {
+		t.Fatalf("packageSelectionFlags: %v", err)
+	}
 	if got := list(forwarded...); !strings.Contains(got, "listfixture/tagged") {
 		t.Fatalf("go list %q = %q, want the tagged package listed", forwarded, got)
 	}
@@ -215,11 +237,24 @@ func TestEveryBuildFlagIsAccountedFor(t *testing.T) {
 		return packageSelectionValueFlags[name] || packageSelectionBareFlags[name]
 	}
 
-	cmd := exec.Command("go", "help", "build")
+	seen := 0
+	for _, page := range []string{"build", "testflag"} {
+		seen += checkDocumentedFlags(t, page, selects, consumed, forwarded)
+	}
+	if seen == 0 {
+		t.Fatal("go help listed no flags; the parser is broken, not the toolchain")
+	}
+}
+
+// checkDocumentedFlags reads one `go help` page and reports how many flags it
+// found, failing for any the tables do not account for.
+func checkDocumentedFlags(t *testing.T, page string, selects map[string]bool, consumed, forwarded func(string) bool) int {
+	t.Helper()
+	cmd := exec.Command("go", "help", page)
 	cmd.Env = fixtureToolchainEnv()
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("go help build: %v", err)
+		t.Fatalf("go help %s: %v", page, err)
 	}
 	seen := 0
 	for line := range strings.Lines(string(out)) {
@@ -230,21 +265,15 @@ func TestEveryBuildFlagIsAccountedFor(t *testing.T) {
 		if len(field) == 0 || !strings.HasPrefix(field[0], "-") || strings.Contains(field[0], "=") {
 			continue // prose, or a spelling with its value written in
 		}
-		name, takesValue := field[0], len(field) > 1
+		_, name, _, _ := normalisedFlag(field[0])
+		takesValue := len(field) > 1
 		seen++
 		if takesValue && !consumed(name) {
-			t.Errorf("%s takes a value and no table consumes it: the word after it would be read as a flag of its own", name)
+			t.Errorf("go help %s: %s takes a value and no table consumes it: the word after it would be read as a flag of its own", page, name)
 		}
 		if selects[name] && !forwarded(name) {
-			t.Errorf("%s changes what `go list` selects and is not forwarded: the enumeration would see a different tree from the one the tests are built for", name)
+			t.Errorf("go help %s: %s changes what `go list` selects and is not forwarded: the enumeration would see a different tree from the one the tests are built for", page, name)
 		}
 	}
-	if seen == 0 {
-		t.Fatal("go help build listed no flags; the parser is broken, not the toolchain")
-	}
-	for name := range selects {
-		if !forwarded(name) {
-			t.Errorf("%s is named here as selecting packages but is in no forwarding table", name)
-		}
-	}
+	return seen
 }

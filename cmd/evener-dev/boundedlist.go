@@ -19,7 +19,6 @@ package dev
 import (
 	"bytes"
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -68,18 +67,26 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Cancel = func() error { return nil }
-	// A copier that will not finish cannot hold Wait open past the stop: after
-	// this long exec closes the pipes itself, and the wait returns with what
-	// it has.
-	cmd.WaitDelay = grace
-	cmd.Stdout = &out
-	cmd.Stderr = guarded
-	if err := procgroup.Start(cmd); err != nil {
-		// The gate reads this log and nothing else; a start that failed with
-		// nothing written is a module that failed for no stated reason.
+	// The output goes through pipes this attempt owns, and the copying is done
+	// here rather than by exec. Handing exec an io.Writer makes cmd.Wait wait
+	// for its own copiers too, so the wait returns when the output stops
+	// arriving rather than when the process exits -- and then the bound cannot
+	// tell a command that is still running from one whose last bytes are in
+	// flight. With pipes, `reaped` closes at the exit, and the drain is a
+	// separate wait this attempt can bound on its own terms.
+	feeds, err := openOutputPipes(cmd)
+	if err != nil {
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v\n", err)
 		return attemptResult{err: err, exitCode: 1}
 	}
+	if err := procgroup.Start(cmd); err != nil {
+		// The gate reads this log and nothing else; a start that failed with
+		// nothing written is a module that failed for no stated reason.
+		feeds.closeAll()
+		_, _ = fmt.Fprintf(guarded, "bounded-list: %v\n", err)
+		return attemptResult{err: err, exitCode: 1}
+	}
+	drained := feeds.copyInto(&out, guarded)
 	// The child leads its own group, so the group id is its pid.
 	result := attemptResult{pgid: cmd.Process.Pid}
 	// The wait publishes its answer before it says the child is gone, so
@@ -97,14 +104,19 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// whether that was noticed while waiting or at the moment the bound
 	// expired.
 	completed := func(err error) attemptResult {
+		// The process is gone; its last bytes may not be. Wait for them, and
+		// no longer than the grace: a pipe still held open by something that
+		// escaped the group would otherwise hold this attempt as well.
+		drainErr := awaitDrain(drained, grace, latch)
 		result.stdout = out.Bytes()
 		exitCode := procgroup.ExitCode(cmd.ProcessState)
-		if _, isExit := errors.AsType[*exec.ExitError](err); err != nil && !isExit && exitCode == 0 {
-			// The command exited cleanly and the wait still failed, which
-			// means its output did not all arrive: the list this attempt would
-			// hand on is not the list the command wrote, and a caller cannot
-			// tell the difference from a short one. Say so, and fail.
-			_, _ = fmt.Fprintf(guarded, "bounded-list: %s finished, but its output could not be read in full: %v\n", argv[0], err)
+		if drainErr == nil {
+			drainErr = feeds.copyErr()
+		}
+		if drainErr != nil && exitCode == 0 {
+			// The list this attempt would hand on is not the list the command
+			// wrote, and a caller cannot tell the difference from a short one.
+			_, _ = fmt.Fprintf(guarded, "bounded-list: %s finished, but its output could not be read in full: %v\n", argv[0], drainErr)
 			exitCode = 1
 		}
 		result.completeWith(exitCode, err, latch)
@@ -146,21 +158,9 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.interrupted = latch.receive(received)
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v — stopping %s.\n", received, argv[0])
 	case <-time.After(timeout):
-		// The command may have exited already and be draining: Wait returns
-		// only once the copiers are done, so the bound can expire against a
-		// command that has decided. Give the drain the grace the stop would
-		// have taken, before anything is sent -- if the wait returns in it,
-		// nothing needed stopping and the command's own answer stands, with no
-		// timeout for the runner to retry.
-		//
-		// Before the stop, and only there. A child that answers our SIGTERM by
-		// exiting 0 exited because we asked, and calling that its own decision
-		// would report a killed run as a success.
-		select {
-		case <-reaped:
-			return completed(waited.err())
-		case <-time.After(grace):
-		}
+		// `reaped` closes when the process exits, not when its output stops
+		// arriving, so this arm means the command is still running: it gets
+		// stopped now, with no grace spent guessing.
 		result.timedOut = true
 	}
 	// The signal this helper was sent, if it was sent one, then SIGTERM, the
@@ -172,6 +172,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		// go of. The sweep is skipped on purpose: it would spend another grace
 		// signalling a group that cannot answer, and leaving now hands the
 		// child to init, which is the one thing that can still clean it up.
+		_ = awaitDrain(drained, grace, latch)
 		result.stdout = out.Bytes()
 		result.stuck = true
 		result.exitCode = 124
@@ -187,6 +188,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
 		result.stuck = true
 	}
+	_ = awaitDrain(drained, grace, latch)
 	result.stdout = out.Bytes()
 	result.exitCode = 1
 	if result.stuck {
@@ -353,6 +355,96 @@ func (b *syncBuffer) Bytes() []byte {
 	return append([]byte(nil), b.buf.Bytes()...)
 }
 
+// outputPipes is the command's stdout and stderr, carried by pipes this
+// attempt owns. exec would copy them itself if it were handed writers, and
+// cmd.Wait would then wait for those copies -- which is the difference between
+// a wait that ends at the process's exit and one that ends when its output
+// stops arriving.
+type outputPipes struct {
+	stdoutR, stderrR *os.File
+	stdoutW, stderrW *os.File
+
+	mu   sync.Mutex
+	fail error
+}
+
+// openOutputPipes attaches a pipe to each of the command's streams.
+func openOutputPipes(cmd *exec.Cmd) (*outputPipes, error) {
+	feeds := &outputPipes{}
+	var err error
+	if feeds.stdoutR, feeds.stdoutW, err = os.Pipe(); err != nil {
+		return nil, fmt.Errorf("opening a pipe for the command's output: %w", err)
+	}
+	if feeds.stderrR, feeds.stderrW, err = os.Pipe(); err != nil {
+		feeds.closeAll()
+		return nil, fmt.Errorf("opening a pipe for the command's diagnostics: %w", err)
+	}
+	cmd.Stdout, cmd.Stderr = feeds.stdoutW, feeds.stderrW
+	return feeds, nil
+}
+
+func (o *outputPipes) closeAll() {
+	for _, f := range []*os.File{o.stdoutR, o.stdoutW, o.stderrR, o.stderrW} {
+		if f != nil {
+			_ = f.Close()
+		}
+	}
+}
+
+// copyInto starts the copying and returns a channel closed when both streams
+// have ended, which is when the command's last byte has arrived.
+func (o *outputPipes) copyInto(stdout io.Writer, stderr io.Writer) <-chan struct{} {
+	// The write ends belong to the child now: holding a copy here would keep
+	// the reads open forever after it exits.
+	_ = o.stdoutW.Close()
+	_ = o.stderrW.Close()
+	var copies sync.WaitGroup
+	copies.Add(2)
+	carry := func(dst io.Writer, src *os.File) {
+		defer copies.Done()
+		defer func() { _ = src.Close() }()
+		if _, err := io.Copy(dst, src); err != nil {
+			o.mu.Lock()
+			if o.fail == nil {
+				o.fail = err
+			}
+			o.mu.Unlock()
+		}
+	}
+	go carry(stdout, o.stdoutR)
+	go carry(stderr, o.stderrR)
+	drained := make(chan struct{})
+	go func() {
+		copies.Wait()
+		close(drained)
+	}()
+	return drained
+}
+
+// copyErr is whatever went wrong while carrying the output, and nil when
+// nothing did.
+func (o *outputPipes) copyErr() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.fail
+}
+
+// awaitDrain waits for the command's last bytes, for no longer than the grace,
+// and latches a signal that arrives meanwhile: every wait in this attempt is
+// also a place an operator can interrupt it.
+func awaitDrain(drained <-chan struct{}, grace time.Duration, latch *signalLatch) error {
+	for {
+		select {
+		case <-drained:
+			return nil
+		case received := <-latch.waiting():
+			latch.receive(received)
+		case <-time.After(grace):
+			return fmt.Errorf("the output was still arriving %s after the command ended", grace)
+		}
+	}
+}
+
 // serialWriter is one writer two goroutines can use: this helper's own
 // diagnostics and the copier exec runs for the command's stderr.
 type serialWriter struct {
@@ -477,6 +569,12 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if !procgroup.Supported {
+		// Everything this subcommand does is stopping a process group: without
+		// them it would run the command and call whatever happened a bound.
+		_, _ = fmt.Fprintln(stderr, "bounded-list needs a platform with process groups (linux, darwin)")
+		return 2
+	}
 	argv := fs.Args()
 	if len(argv) == 0 {
 		_, _ = fmt.Fprintln(stderr, "bounded-list: give it a command to run, after --")
@@ -540,8 +638,14 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 // helper must never produce quietly.
 func forwardOutput(stdout io.Writer, data []byte, stderr io.Writer) bool {
 	n, err := stdout.Write(data)
-	if err != nil || n != len(data) {
+	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "bounded-list: wrote %d of %d bytes of the command's output: %v\n", n, len(data), err)
+		return false
+	}
+	if n != len(data) {
+		// io.Writer may return a short count with no error at all, and a
+		// caller reading the short list cannot tell.
+		_, _ = fmt.Fprintf(stderr, "bounded-list: wrote %d of %d bytes of the command's output\n", n, len(data))
 		return false
 	}
 	return true

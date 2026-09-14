@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// Supported is false here: there are no process groups to stop.
+const Supported = false
+
 func Start(cmd *exec.Cmd) error { return cmd.Start() }
 
 func Terminate(pgid int) { Kill(pgid) }

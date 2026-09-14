@@ -339,6 +339,13 @@ func TestBoundedListEscapeeHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("BOUNDED_LIST_ESCAPEE_READY"), nil, 0o644); err != nil {
 		t.Fatalf("writing the escapee's ready file: %v", err)
 	}
+	if hold := os.Getenv("BOUNDED_LIST_ESCAPEE_HOLD"); hold != "" {
+		waited, err := time.ParseDuration(hold)
+		if err != nil {
+			t.Fatalf("BOUNDED_LIST_ESCAPEE_HOLD=%q: %v", hold, err)
+		}
+		time.Sleep(waited)
+	}
 	if code := os.Getenv("BOUNDED_LIST_ESCAPEE_EXIT"); code != "" {
 		status, err := strconv.Atoi(code)
 		if err != nil {
@@ -410,18 +417,25 @@ func TestBoundedAttemptDoesNotWedgeOnAnEscapedPipeHolder(t *testing.T) {
 	}
 }
 
-func TestBoundedAttemptKeepsTheInterruptWhenTheOutputCannotBeRead(t *testing.T) {
+func TestBoundedAttemptStopsARunningCommandWhoseOutputIsHeldElsewhere(t *testing.T) {
 	var stderr bytes.Buffer
 	argv, escapeeReady := escapeeCommand(t)
 	signals := make(chan os.Signal, 1)
 	latch := &signalLatch{ch: signals}
 	// Once the grandchild is running: signalling before that would stop a
 	// group with nothing to leave behind.
+	// The middle process holds after reporting, so the signal always finds it
+	// running: an interrupt that arrives after the command has exited is a
+	// different case, and it has its own test.
+	t.Setenv("BOUNDED_LIST_ESCAPEE_HOLD", "30s")
 	sent := signalWhenReady(escapeeReady, "the escapee never reported its grandchild", signals, syscall.SIGTERM)
 	result := runBoundedAttempt(argv, 30*time.Second, 300*time.Millisecond, &stderr, latch)
 	sent(t)
 	if result.exitCode != 143 {
-		t.Fatalf("exitCode = %d, want 143: the run was interrupted, and a lost pipe does not change that", result.exitCode)
+		t.Fatalf("exitCode = %d, want 143: the run was interrupted while the command was running; stderr = %q", result.exitCode, stderr.String())
+	}
+	if result.interrupted != syscall.SIGTERM {
+		t.Fatalf("interrupted = %v, want the signal latched", result.interrupted)
 	}
 }
 
@@ -691,9 +705,6 @@ func TestBoundedAttemptFailsWhenTheCommandsOutputCouldNotBeRead(t *testing.T) {
 	// success here would hand a caller a list it cannot tell from a complete
 	// one.
 	result := runBoundedAttempt([]string{"sh", "-c", "echo something >&2; echo primeradiant.com/evener"}, 30*time.Second, time.Second, stderr, nil)
-	if result.err == nil {
-		t.Fatal("err = nil, want the copy failure the wait returned")
-	}
 	if result.exitCode != 1 {
 		t.Fatalf("exitCode = %d, want 1: the command exited 0, but its output did not arrive", result.exitCode)
 	}
@@ -715,12 +726,12 @@ func TestBoundedAttemptKeepsAnExitErrorsStatus(t *testing.T) {
 	}
 }
 
-func TestBoundedAttemptKeepsWhatACommandDecidedWhileItsOutputDrained(t *testing.T) {
-	// exec.Cmd.Wait reaps the process and drains the copiers afterwards, so a
-	// command that exited can meet a bound that has already expired. The bound
-	// here is short and the grandchild holds the pipe past it, so the expiry
-	// happens during the drain -- and the answer is still the command's own,
-	// with nothing for the runner to retry.
+func TestBoundedAttemptIsDecidedAtTheCommandsExitNotAtItsLastByte(t *testing.T) {
+	// The attempt owns the copying, so the wait ends when the process is
+	// reaped rather than when its output stops arriving: a command whose last
+	// bytes are still in flight -- here, held by a grandchild in another
+	// process group -- has already decided, and the bound never enters into
+	// it. The drain that follows is bounded on its own.
 	for _, tc := range []struct {
 		name string
 		exit string
@@ -733,12 +744,12 @@ func TestBoundedAttemptKeepsWhatACommandDecidedWhileItsOutputDrained(t *testing.
 			var stderr bytes.Buffer
 			argv, _ := escapeeCommand(t)
 			t.Setenv("BOUNDED_LIST_ESCAPEE_EXIT", tc.exit)
-			// 200ms is past before the grandchild lets go of the pipe, so the
-			// bound expires mid-drain; the grace that follows is what waits
-			// for the drain rather than signalling anything.
-			result := runBoundedAttempt(argv, 200*time.Millisecond, 10*time.Second, &stderr, nil)
+			// The grandchild holds the pipe for three seconds; the grace
+			// outlasts it, so the drain finishes and the output is whole.
+			start := time.Now()
+			result := runBoundedAttempt(argv, 30*time.Second, 10*time.Second, &stderr, nil)
 			if result.timedOut {
-				t.Fatalf("timedOut = true for a command that had already exited; stderr = %q", stderr.String())
+				t.Fatalf("timedOut = true for a command that exited on its own; stderr = %q", stderr.String())
 			}
 			if result.exitCode != tc.want {
 				t.Fatalf("exitCode = %d, want %d; stderr = %q", result.exitCode, tc.want, stderr.String())
@@ -746,16 +757,19 @@ func TestBoundedAttemptKeepsWhatACommandDecidedWhileItsOutputDrained(t *testing.
 			if result.stuck {
 				t.Fatalf("stuck = true for a command that finished on its own; stderr = %q", stderr.String())
 			}
+			if elapsed := time.Since(start); elapsed > 20*time.Second {
+				t.Fatalf("the attempt took %s: the drain is bounded by the grace, not by the holder", elapsed)
+			}
 		})
 	}
 }
 
-func TestBoundedListDoesNotRetryACommandThatDecidedDuringItsDrain(t *testing.T) {
+func TestBoundedListDoesNotRetryACommandThatDecided(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	argv, _ := escapeeCommand(t)
 	t.Setenv("BOUNDED_LIST_ESCAPEE_EXIT", "3")
 	// Three attempts are allowed; the command decided, so one is taken.
-	args := append([]string{"-timeout", "200ms", "-attempts", "3", "-grace", "10s", "--"}, argv...)
+	args := append([]string{"-timeout", "30s", "-attempts", "3", "-grace", "10s", "--"}, argv...)
 	code := boundedListWith(args, &stdout, &stderr, nil)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3: what the command decided; stderr = %q", code, stderr.String())

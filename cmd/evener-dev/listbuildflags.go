@@ -16,6 +16,7 @@ package dev
 // the enumeration a sanitiser the caller never asked for.
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -99,7 +100,7 @@ func normalisedFlag(raw string) (whole, name, value string, inline bool) {
 }
 
 // packageSelectionFlags is the answer, in the spelling `go list` will be given.
-func packageSelectionFlags(args []string) []string {
+func packageSelectionFlags(args []string) ([]string, error) {
 	var out []string
 	for i := 0; i < len(args); i++ {
 		whole, name, _, inline := normalisedFlag(args[i])
@@ -108,7 +109,13 @@ func packageSelectionFlags(args []string) []string {
 			// test`: a word spelled -race there is an argument whose text is
 			// -race, and enumerating under it would build a tree nobody asked
 			// for.
-			return out
+			return out, nil
+		}
+		if name == "-C" {
+			// The same refusal the shard runner gives it: the gate decides
+			// which directory each module is enumerated and tested in, and a
+			// -C would move one of them.
+			return nil, errors.New("-C is not supported here: the gate enumerates and tests each module from its own directory")
 		}
 		switch {
 		case packageSelectionValueFlags[name]:
@@ -116,18 +123,22 @@ func packageSelectionFlags(args []string) []string {
 				out = append(out, whole)
 				continue
 			}
-			if i+1 < len(args) {
-				i++
-				out = append(out, name, args[i])
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s was given with nothing after it, and its value decides which packages exist", name)
 			}
+			i++
+			out = append(out, name, args[i])
 		case packageSelectionBareFlags[name]:
 			out = append(out, whole)
 		case goTestValueFlags[name] && !inline:
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
+			}
 			// Its value is a value, whatever it looks like.
 			i++
 		}
 	}
-	return out
+	return out, nil
 }
 
 func listBuildFlagsMain(args []string) int {
@@ -147,7 +158,12 @@ func listBuildFlags(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	for _, f := range packageSelectionFlags(fs.Args()) {
+	forward, err := packageSelectionFlags(fs.Args())
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "list-build-flags: %v\n", err)
+		return 2
+	}
+	for _, f := range forward {
 		// A caller reading a truncated answer enumerates under fewer flags
 		// than the tests are built with, which is the failure this subcommand
 		// exists to prevent -- so a write that did not land fails the run.
