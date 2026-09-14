@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
 import { buildEntityView, type EntityView } from "../../../protocol/entityView";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
@@ -32,9 +33,9 @@ function jobView(
   id = "job_x",
   description = "Compile the frontend",
   state: { stale?: boolean; ended?: boolean } = {},
+  overrides: Partial<ActivityJob> = {},
 ): EntityView {
   const job: ActivityJob = {
-    jobId: id,
     ownerSessionId: "s",
     ownerRef: "local:s",
     type: "shell",
@@ -49,6 +50,8 @@ function jobView(
     endedAt: "2026-09-13T20:00:01Z",
     exitCode: 0,
     outputBytes: 12,
+    ...overrides,
+    jobId: id,
   };
   const tree: ActivityTree = {
     revision: 1,
@@ -74,7 +77,16 @@ function jobView(
   return view;
 }
 
-function watchView(id = "watch_x"): EntityView {
+function watchView(
+  id = "watch_x",
+  raw: Record<string, unknown> = {
+    watch_id: id,
+    watching: true,
+    source: "job_x",
+    condition: "output_match: ready",
+    deliveries: 2,
+  },
+): EntityView {
   const item: ItemModel = {
     id: "watch-item",
     turnId: "turn-1",
@@ -84,13 +96,7 @@ function watchView(id = "watch_x"): EntityView {
     toolName: "job_watch",
     argumentsJSON: '{"operation":"inspect","watch_id":"watch_x"}',
     output: "",
-    raw: {
-      watch_id: id,
-      watching: true,
-      source: "job_x",
-      condition: "output_match: ready",
-      deliveries: 2,
-    },
+    raw,
     status: "completed",
   };
   const turns: TurnModel[] = [{ id: "turn-1", status: "completed", items: [item] }];
@@ -99,12 +105,15 @@ function watchView(id = "watch_x"): EntityView {
   return view;
 }
 
-function delegateView(id = "dlg_x"): EntityView {
+function delegateView(
+  id = "dlg_x",
+  state: { stale?: boolean; ended?: boolean } = {},
+  overrides: Partial<EvenerDelegateInfo> = {},
+): EntityView {
   const view = buildEntityView({
     sessionRef: "local:s",
     delegates: [
       {
-        delegateId: id,
         ownerSessionId: "s",
         rootSessionId: "s",
         childSessionId: "child",
@@ -121,11 +130,13 @@ function delegateView(id = "dlg_x"): EntityView {
         resolvedModel: "gpt-test",
         runningForMs: 2_000,
         usage: { inputTokens: 1_200, outputTokens: 300 },
+        ...overrides,
+        delegateId: id,
       },
     ],
     turns: [],
-    stale: false,
-    ended: false,
+    stale: state.stale ?? false,
+    ended: state.ended ?? false,
   }).get(id);
   if (!view) throw new Error("expected delegate fixture to resolve");
   return view;
@@ -237,9 +248,9 @@ test("an explicit view takes precedence over the context entity map", () => {
   expect(text).not.toContain("Context view");
 });
 
-test("job card carries normalized detail plus stale and ended captions", () => {
+test("job card carries normalized detail plus a stale caption", () => {
   vi.useFakeTimers();
-  render(<EntityRef view={jobView("job_old", "Archived compile", { stale: true, ended: true })} id="job_old" />);
+  render(<EntityRef view={jobView("job_old", "Archived compile", { stale: true })} id="job_old" />);
 
   const text = focusCard().textContent;
   expect(text).toContain("completed");
@@ -249,7 +260,6 @@ test("job card carries normalized detail plus stale and ended captions", () => {
   expect(text).toContain("exit 0");
   expect(text).toContain("12 bytes");
   expect(text).toContain("stale");
-  expect(text).toContain("ended");
 });
 
 test("delegate card carries status, mandate, agent/model, duration, and usage", () => {
@@ -263,4 +273,73 @@ test("delegate card carries status, mandate, agent/model, duration, and usage", 
   expect(text).toContain("gpt-test");
   expect(text).toContain("2s");
   expect(text).toContain("↑1k ↓300");
+});
+
+test("an ended running job shows ended without a live indicator or stale caption", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={jobView(
+        "job_ended",
+        "Retained job",
+        { stale: true, ended: true },
+        { status: "running", outcome: undefined, terminal: false, endedAt: undefined, exitCode: undefined },
+      )}
+      id="job_ended"
+    />,
+  );
+
+  const card = focusCard();
+  expect(card.textContent).toContain("ended");
+  expect(card.textContent).not.toContain("stale");
+  expect(card.textContent?.toLowerCase()).not.toContain("running");
+  expect(card.querySelector('[data-state="running"]')).toBeNull();
+});
+
+test("a stale running job shows stale without a live indicator", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={jobView(
+        "job_stale",
+        "Retained job",
+        { stale: true },
+        { status: "running", outcome: undefined, terminal: false, endedAt: undefined, exitCode: undefined },
+      )}
+      id="job_stale"
+    />,
+  );
+
+  const card = focusCard();
+  expect(card.textContent).toContain("stale");
+  expect(card.textContent?.toLowerCase()).not.toContain("running");
+  expect(card.querySelector('[data-state="running"]')).toBeNull();
+});
+
+test("an ended delegate suppresses retained running and quiet indicators", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={delegateView("dlg_ended", { ended: true }, { status: "running", runningForMs: 9_000, quietForMs: 4_000 })}
+      id="dlg_ended"
+    />,
+  );
+
+  const text = focusCard().textContent?.toLowerCase();
+  expect(text).toContain("ended");
+  expect(text).not.toContain("stale");
+  expect(text).not.toContain("running");
+  expect(text).not.toContain("quiet");
+});
+
+test.each([
+  ["missing", { watch_id: "watch_missing", watching: false }],
+  ["ended", { watch_id: "watch_missing", watching: false, end_reason: "cleared" }],
+])("a source-less %s watch does not claim this session as its source", (_state, raw) => {
+  vi.useFakeTimers();
+  render(<EntityRef view={watchView("watch_missing", raw)} id="watch_missing" />);
+
+  const text = focusCard().textContent;
+  expect(text).not.toContain("Source");
+  expect(text).not.toContain("this session");
 });

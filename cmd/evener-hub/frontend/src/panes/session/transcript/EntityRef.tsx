@@ -49,13 +49,7 @@ function CardRow({ label, value, mono = false }: { label: string; value: ReactNo
 
 function ViewCaptions({ view }: { view: EntityView }) {
   if (!view.stale && !view.ended) return null;
-  return (
-    <span className={CLASS.caption}>
-      {view.stale ? "stale" : null}
-      {view.stale && view.ended ? " · " : null}
-      {view.ended ? "ended" : null}
-    </span>
-  );
+  return <span className={CLASS.caption}>{view.ended ? "ended" : "stale"}</span>;
 }
 
 function elapsedBetween(startedAt: string | undefined, endedAt: string | undefined): string | undefined {
@@ -75,7 +69,7 @@ function usageText(usage: { inputTokens?: number; outputTokens?: number; cacheRe
   });
 }
 
-function JobCard({ view }: { view: Extract<EntityView, { kind: "job" }> }) {
+function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; live: boolean }) {
   const { job } = view.row;
   const duration = elapsedBetween(job.startedAt, job.endedAt);
   const started = duration === undefined ? formatClockTime(job.startedAt) : undefined;
@@ -83,13 +77,22 @@ function JobCard({ view }: { view: Extract<EntityView, { kind: "job" }> }) {
   const command = job.command && job.command !== detail ? job.command : undefined;
   const statusKind = classifyJobStatus(job.status);
   const failed = isActivityFailure(job.outcome, job.status);
+  const status = live
+    ? job.status
+    : failed
+      ? "failed"
+      : statusKind === "done" || statusKind === "failed" || statusKind === "stopped"
+        ? job.status
+        : undefined;
   return (
     <div className={CLASS.card} data-entity-kind="job">
       <div className={CLASS.head}>
         <strong className={CLASS.kind}>Job</strong>
-        <span className={CLASS.status} data-state={failed ? "failed" : statusKind}>
-          {job.status}
-        </span>
+        {status ? (
+          <span className={CLASS.status} data-state={failed ? "failed" : statusKind}>
+            {status}
+          </span>
+        ) : null}
         <ViewCaptions view={view} />
       </div>
       {detail ? <div className={CLASS.summary}>{detail}</div> : null}
@@ -104,7 +107,7 @@ function JobCard({ view }: { view: Extract<EntityView, { kind: "job" }> }) {
   );
 }
 
-function DelegateCard({ view }: { view: Extract<EntityView, { kind: "delegate" }> }) {
+function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "delegate" }>; live: boolean }) {
   let status: string;
   let mandateSource: string | undefined;
   let agent: string | undefined;
@@ -131,17 +134,22 @@ function DelegateCard({ view }: { view: Extract<EntityView, { kind: "delegate" }
     runningForMs = stable.runningForMs;
     quietForMs = stable.quietForMs;
   }
+  const statusKind = classifyJobStatus(status);
+  const displayedStatus =
+    live || statusKind === "done" || statusKind === "failed" || statusKind === "stopped" ? status : undefined;
   const mandate = mandateSource ? plainQuoteLine(mandateSource) : undefined;
   const duration = durationMs == null ? undefined : formatElapsed(durationMs);
-  const running = duration === undefined && runningForMs != null ? formatElapsed(runningForMs) : undefined;
-  const quiet = quietForMs == null ? undefined : formatQuietAge(quietForMs);
+  const running = live && duration === undefined && runningForMs != null ? formatElapsed(runningForMs) : undefined;
+  const quiet = live && quietForMs != null ? formatQuietAge(quietForMs) : undefined;
   return (
     <div className={CLASS.card} data-entity-kind="delegate">
       <div className={CLASS.head}>
         <strong className={CLASS.kind}>Delegate</strong>
-        <span className={CLASS.status} data-state={classifyJobStatus(status)}>
-          {status}
-        </span>
+        {displayedStatus ? (
+          <span className={CLASS.status} data-state={statusKind}>
+            {displayedStatus}
+          </span>
+        ) : null}
         <ViewCaptions view={view} />
       </div>
       {mandate ? <div className={CLASS.summary}>{mandate}</div> : null}
@@ -181,6 +189,10 @@ function watchConditionSentence(condition: string | undefined, note: string | un
 function WatchCard({ view }: { view: Extract<EntityView, { kind: "watch" }> }) {
   const { watch } = view;
   const condition = watchConditionSentence(watch.condition, watch.note);
+  const source =
+    watch.source !== undefined || watch.state === "watching" || watch.state === "pending"
+      ? sourceLabel(watch.source)
+      : undefined;
   return (
     <div className={CLASS.card} data-entity-kind="watch">
       <div className={CLASS.head}>
@@ -198,7 +210,7 @@ function WatchCard({ view }: { view: Extract<EntityView, { kind: "watch" }> }) {
               : `${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`
           }
         />
-        <CardRow label="Source" value={sourceLabel(watch.source)} mono />
+        <CardRow label="Source" value={source} mono />
         <CardRow label="Ended" value={watch.endReason} />
       </dl>
     </div>
@@ -206,8 +218,9 @@ function WatchCard({ view }: { view: Extract<EntityView, { kind: "watch" }> }) {
 }
 
 function EntityCard({ view }: { view: EntityView }) {
-  if (view.kind === "job") return <JobCard view={view} />;
-  if (view.kind === "delegate") return <DelegateCard view={view} />;
+  const live = !view.stale && !view.ended;
+  if (view.kind === "job") return <JobCard view={view} live={live} />;
+  if (view.kind === "delegate") return <DelegateCard view={view} live={live} />;
   return <WatchCard view={view} />;
 }
 
