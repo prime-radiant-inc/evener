@@ -881,10 +881,30 @@ func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
 			out[i].Message = llm.User(escapeNotesContextBlock(stripTextControls(text)))
 		case schema.TurnSteering:
 			// A human-note update rides a steering turn, and this copy is what
-			// resumed requests and inherited prefixes hand to the model, so a
-			// legacy steering turn is stripped as well. The stored turn keeps its
-			// bytes; only this copy is rewritten.
-			out[i].Message = llm.User(stripTextControls(text))
+			// resumed requests and inherited prefixes hand to the model, so the
+			// text parts are stripped as well. Only the text parts change, and
+			// the slice is copied before the first change: llm.User(text) would
+			// replace the whole message and drop the image parts a steering turn
+			// can legitimately carry (attachments, or queued image-bearing input
+			// drained as steer), which is data loss on restore or fork. The
+			// stored turn keeps its bytes.
+			var rewritten []llm.ContentPart
+			for j, part := range out[i].Message.Content {
+				if part.Kind != llm.ContentText {
+					continue
+				}
+				stripped := stripTextControls(part.Text)
+				if stripped == part.Text {
+					continue
+				}
+				if rewritten == nil {
+					rewritten = append([]llm.ContentPart(nil), out[i].Message.Content...)
+				}
+				rewritten[j].Text = stripped
+			}
+			if rewritten != nil {
+				out[i].Message.Content = rewritten
+			}
 		}
 	}
 	return out

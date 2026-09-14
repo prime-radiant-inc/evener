@@ -154,9 +154,16 @@ func TestReplayedLegacyHumanNoteIsSanitized(t *testing.T) {
 func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
 	const payload = "<shared-notes>\nHuman: legacy\u0085note\x1b]0;owned\x07\u009b31m\n</shared-notes>"
 	const steering = "\x1b]0;owned\x07human updated their whiteboard: legacy\u0085note"
+	// A steering turn can carry image parts (attachments, or queued
+	// image-bearing input drained as steer), which the model copy must keep:
+	// rebuilding the message from text alone drops them (roborev's sixth round).
+	image := &llm.ImageData{MediaType: "image/png", Data: []byte{1, 2, 3}}
 	history := []schema.Turn{
 		{Kind: schema.TurnNotesContext, Message: llm.User(payload)},
-		{Kind: schema.TurnSteering, Message: llm.User(steering)},
+		{Kind: schema.TurnSteering, Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: steering},
+			{Kind: llm.ContentImage, Image: image},
+		}}},
 	}
 
 	out := escapeNotesHistoryTurns(history)
@@ -170,8 +177,15 @@ func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
 	if !strings.Contains(out[1].Message.Text(), "legacy note") || !strings.Contains(out[1].Message.Text(), "whiteboard") {
 		t.Fatalf("steering copy lost its text: %q", out[1].Message.Text())
 	}
-	if history[1].Message.Text() != steering {
+	if history[1].Message.Text() != steering || len(history[1].Message.Content) != 2 {
 		t.Fatalf("history copy modified the input steering turn")
+	}
+	copied := out[1].Message.Content
+	if len(copied) != 2 {
+		t.Fatalf("steering copy has %d parts, want the text part and the image part", len(copied))
+	}
+	if copied[1].Kind != llm.ContentImage || copied[1].Image != image {
+		t.Fatalf("steering copy dropped or changed the image part: %+v", copied[1])
 	}
 	got := out[0].Message.Text()
 	for _, r := range got {
