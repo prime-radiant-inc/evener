@@ -1,9 +1,17 @@
 import { expect, test } from "vitest";
-import type { ItemModel } from "./model";
+import type { ItemModel, ThreadModel } from "./model";
+import { applyNotification, mergeOlderItemPage } from "./reducer";
 import { foldWatchSummaries } from "./watchRows";
 
-function watchItem(id: string, raw: unknown, turnId = "t1"): ItemModel {
-  return { id, turnId, type: "commandExecution", toolName: "job_watch", raw } as unknown as ItemModel;
+function watchItem(id: string, raw: unknown, turnId = "t1", argumentsJSON?: string): ItemModel {
+  return {
+    id,
+    turnId,
+    type: "commandExecution",
+    toolName: "job_watch",
+    raw,
+    argumentsJSON,
+  } as unknown as ItemModel;
 }
 
 test("folds snapshots in caller-supplied transcript order", () => {
@@ -13,6 +21,127 @@ test("folds snapshots in caller-supplied transcript order", () => {
   // The caller supplies transcript order; the final array snapshot wins.
   expect(foldWatchSummaries([ended, watching]).get("watch_x")?.state).toBe("watching");
   expect(foldWatchSummaries([watching, ended]).get("watch_x")?.state).toBe("ended");
+});
+
+test("folds reducer-prepended history before live-appended turns with last-present-field-wins", () => {
+  const turn = (id: string, itemId: string, raw: unknown) => ({
+    id,
+    status: "inProgress" as const,
+    itemsView: "full" as const,
+    items: [
+      {
+        id: itemId,
+        turnId: id,
+        type: "commandExecution" as const,
+        text: "",
+        toolName: "job_watch",
+        raw,
+        status: "completed" as const,
+      },
+    ],
+  });
+  let model = { threadId: "thr_t", ref: "ref_t", turns: [] } as unknown as ThreadModel;
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: turn("turn_2", "live-create", {
+          watch_id: "watch_x",
+          watching: true,
+          source: "job_live",
+          condition: "output_match: live",
+        }),
+      },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: turn("turn_3", "live-inspect", { watch_id: "watch_x", deliveries: 7 }),
+      },
+    },
+    1002,
+  );
+
+  const paged = mergeOlderItemPage(model, {
+    data: [
+      turn("turn_1", "historical-create", {
+        watch_id: "watch_x",
+        watching: false,
+        source: "job_stale",
+        condition: "output_match: stale",
+        deliveries: 1,
+      }),
+    ],
+  });
+  const view = foldWatchSummaries(paged.turns.flatMap((entry) => entry.items));
+
+  expect(paged.turns.map((entry) => entry.id)).toEqual(["turn_1", "turn_2", "turn_3"]);
+  expect(view.get("watch_x")).toEqual({
+    id: "watch_x",
+    state: "watching",
+    source: "job_live",
+    condition: "output_match: live",
+    deliveries: 7,
+  });
+});
+
+test("derives the inspect-format condition from a producer-shaped create and its arguments", () => {
+  const raw = {
+    watch_id: "watch_x",
+    source: "job_y",
+    watching: true,
+    output_match: "READY.*",
+    events: ["assistant.tool", "turn.completed"],
+    event_filter: { tool_name: "exec_command", status: "error" },
+    progress_interval_ms: 1500,
+    note: "wake parent",
+    send: { to: "caller", message: "done", include_excerpt: true },
+    replaced_existing: false,
+    fired: false,
+    status: "running",
+  };
+  const view = foldWatchSummaries([watchItem("a", raw, "t1", JSON.stringify({ operation: "create", every: 3 }))]);
+
+  expect(view.get("watch_x")).toEqual({
+    id: "watch_x",
+    state: "watching",
+    source: "job_y",
+    condition:
+      "output_match: READY.*; progress_interval_ms: 1500; note: wake parent; events: [assistant.tool, turn.completed] every 3 where tool_name=exec_command, status=error",
+    note: "wake parent",
+  });
+
+  const triggerless = foldWatchSummaries([
+    watchItem("b", {
+      watch_id: "watch_plain",
+      source: "job_z",
+      watching: true,
+      send: { to: "caller" },
+      replaced_existing: false,
+      fired: false,
+      status: "running",
+    }),
+  ]);
+  expect(triggerless.get("watch_plain")).toEqual({ id: "watch_plain", state: "watching", source: "job_z" });
+});
+
+test.each([
+  ["one-shot", { after_seconds: 90 }, "after_seconds: 90"],
+  ["repeating", { repeat_seconds: 120 }, "repeat_seconds: 120"],
+] as const)("derives the %s timer clause from a producer-shaped create", (_label, timer, expected) => {
+  const view = foldWatchSummaries([
+    watchItem("a", { watch_id: "watch_x", watching: true, source: "self", note: "timer note", ...timer }),
+  ]);
+  expect(view.get("watch_x")?.condition).toBe(`${expected}; note: timer note`);
 });
 
 test("absent watching is not coerced to false", () => {
@@ -72,10 +201,18 @@ test.each([
   ],
 ] as const)("a later %s marker wins over an earlier create", (_label, later, expected) => {
   const view = foldWatchSummaries([
-    watchItem("a", { watch_id: "watch_x", watching: true, source: "job_y" }),
+    watchItem(
+      "a",
+      { watch_id: "watch_x", watching: true, source: "job_y", events: ["assistant.tool"] },
+      "t1",
+      JSON.stringify({ operation: "create", every: 4 }),
+    ),
     watchItem("b", later),
   ]);
-  expect(view.get("watch_x")?.state).toBe(expected);
+  expect(view.get("watch_x")).toMatchObject({
+    state: expected,
+    condition: "events: [assistant.tool] every 4",
+  });
 });
 
 test("a snapshot lacking watching does not downgrade an earlier watching state", () => {

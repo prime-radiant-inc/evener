@@ -1,4 +1,5 @@
 import type { ItemModel } from "./model";
+import { parseArgs } from "./toolCallText";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -139,6 +140,38 @@ export function conditionSpec(raw: JsonObject, args?: JsonObject): ConditionSpec
   }
   return { outputMatch, progressIntervalMS, events, every, filterToolName, filterStatus, note };
 }
+
+// createConditionText mirrors watchConditionSummary (agent/job_watch.go): it
+// converges a create-shaped result on the same "; "-joined Condition string
+// that list/inspect rows carry. Keep its clause order and event-filter grammar
+// pinned to that producer function; parseConditionText below is the one reader
+// for both result shapes.
+function createConditionText(raw: JsonObject, args?: JsonObject): string | undefined {
+  const spec = conditionSpec(raw, args);
+  const afterSeconds = numField(raw, "after_seconds");
+  const repeatSeconds = numField(raw, "repeat_seconds");
+  const parts: string[] = [];
+  if (spec?.outputMatch) parts.push(`output_match: ${spec.outputMatch}`);
+  if (afterSeconds !== undefined) parts.push(`after_seconds: ${afterSeconds}`);
+  else if (repeatSeconds !== undefined) parts.push(`repeat_seconds: ${repeatSeconds}`);
+  else if (spec?.progressIntervalMS !== undefined) {
+    parts.push(`progress_interval_ms: ${spec.progressIntervalMS}`);
+  }
+  if (spec?.note) parts.push(`note: ${spec.note}`);
+  if (spec?.events.includes("*")) {
+    parts.push("events: [*]");
+  } else if (spec && spec.events.length > 0) {
+    let events = `events: [${spec.events.join(", ")}]`;
+    if (spec.every !== undefined) events += ` every ${spec.every}`;
+    const filter: string[] = [];
+    if (spec.filterToolName) filter.push(`tool_name=${spec.filterToolName}`);
+    if (spec.filterStatus) filter.push(`status=${spec.filterStatus}`);
+    if (filter.length > 0) events += ` where ${filter.join(", ")}`;
+    parts.push(events);
+  }
+  return parts.length > 0 ? parts.join("; ") : undefined;
+}
+
 export function sourceLabel(source: string | undefined): string {
   // The producer's self source is internal vocabulary (watchPublicSource):
   // readers see "this session" (mockups 23-job-watch), never a bare "self".
@@ -392,7 +425,7 @@ interface SummaryRow extends WatchRow {
   statePresent: boolean;
 }
 
-function normalizeSummaryRow(value: unknown): SummaryRow | undefined {
+function normalizeSummaryRow(value: unknown, args?: JsonObject): SummaryRow | undefined {
   const raw = asJsonObject(value);
   const row = normalizeRow(value);
   if (!raw || !row) return undefined;
@@ -401,6 +434,7 @@ function normalizeSummaryRow(value: unknown): SummaryRow | undefined {
   const watchingPresent = typeof raw.watching === "boolean";
   return {
     ...row,
+    condition: row.condition ?? createConditionText(raw, args),
     state: watchDisplayState(row, { watchingPresent, clear, terminalCatchup }),
     statePresent: terminalCatchup || row.endReason !== undefined || watchingPresent,
   };
@@ -432,6 +466,7 @@ export function foldWatchSummaries(items: ItemModel[]): Map<string, WatchSummary
   for (const item of items) {
     const raw = asJsonObject(item.raw);
     if (!raw || item.toolName !== "job_watch") continue;
+    const args = asJsonObject(parseArgs(item.argumentsJSON));
     const entries =
       Array.isArray(raw.watches) || Array.isArray(raw.recent_watches)
         ? [
@@ -440,7 +475,7 @@ export function foldWatchSummaries(items: ItemModel[]): Map<string, WatchSummary
           ]
         : [raw];
     for (const entry of entries) {
-      const row = normalizeSummaryRow(entry);
+      const row = normalizeSummaryRow(entry, args);
       if (!row) continue;
       const prior = byId.get(row.id);
       byId.set(row.id, prior ? { ...prior, ...mergePresent(prior, row) } : summaryOf(row));
