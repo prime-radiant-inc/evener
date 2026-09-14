@@ -1194,3 +1194,77 @@ func mustStat(t *testing.T, path string) os.FileInfo {
 	}
 	return info
 }
+
+// TestCache_DeletedPathReportsOneStableGeneration pins both halves of what a
+// deletion means. The deletion itself is a discarded fold, so it advances the
+// generation and the absent read has to report the number it was judged by --
+// reporting 0 there says "nothing has ever happened to this path", which is
+// not what happened. Every later look at the same missing path is the same
+// absence, though, so it must report that same number rather than advancing
+// again: a generation that moves on every request refuses every continuation
+// on the request that carries it.
+func TestCache_DeletedPathReportsOneStableGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after the delete: %v", err)
+	}
+	if !first.Absent {
+		t.Fatal("a deleted path must read as absent")
+	}
+	if first.Epoch <= folded.Epoch {
+		t.Fatalf("generation %d after a delete, want it past %d -- the fold this cache held is gone, and the read that says so has to be judged by the generation that says it", first.Epoch, folded.Epoch)
+	}
+
+	for i := range 4 {
+		again, err := c.Get(ctx, path, extend)
+		if err != nil {
+			t.Fatalf("Get %d after the delete: %v", i+2, err)
+		}
+		if !again.Absent {
+			t.Fatal("a deleted path must keep reading as absent")
+		}
+		if again.Epoch != first.Epoch {
+			t.Fatalf("generation %d on look %d at the same missing path, want it to stay at %d -- nothing happened between these reads, and a generation that moves anyway refuses every continuation on the request that carries it", again.Epoch, i+2, first.Epoch)
+		}
+	}
+
+	// The path coming back with different content is a new fold, and it
+	// must not be mistaken for the absence that preceded it.
+	writeLines(t, path, []int{5, 6, 7})
+	recreated, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after the recreate: %v", err)
+	}
+	if recreated.Absent {
+		t.Fatal("a recreated path must not read as absent")
+	}
+	if recreated.Value.sum != 18 {
+		t.Fatalf("value = %+v, want the recreated content (5+6+7)", recreated.Value)
+	}
+	// The deletion is the discard, and it already moved the generation; the
+	// path coming back does not discard anything further. What separates
+	// "absent at 1" from "present at 1" is Absent, which a continuation
+	// carries and compares. What must NOT happen is a restart at 0, which
+	// would read as a path nothing had ever happened to.
+	if recreated.Epoch != first.Epoch {
+		t.Fatalf("generation %d after the path came back, want the absence's %d -- the deletion was the discard, and a recreate must not restart the count", recreated.Epoch, first.Epoch)
+	}
+	if recreated.Epoch == 0 {
+		t.Fatal("a path that was deleted and recreated must not report the generation of a path nothing has happened to")
+	}
+}

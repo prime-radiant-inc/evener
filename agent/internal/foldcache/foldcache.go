@@ -157,6 +157,11 @@ type epochState struct {
 	offset int64  // where tail ends; mirrors the entry's offset at the time this was captured
 	tail   []byte // last min(tailProbeBytes, offset) bytes ending at offset
 	epoch  uint64
+	// absent marks this state as a tombstone: the path was gone when it was
+	// recorded, and the fields above describe nothing. It is what makes a
+	// deletion something that happened once rather than something that
+	// happens again on every later look at the same missing path.
+	absent bool
 }
 
 type entry[T any] struct {
@@ -255,8 +260,7 @@ func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Resu
 	info, statErr := c.stat(path)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
-			c.drop(path)
-			return Result[T]{Absent: true}, nil
+			return Result[T]{Absent: true, Epoch: c.drop(path)}, nil
 		}
 		var zero Result[T]
 		return zero, statErr
@@ -724,16 +728,35 @@ func (c *Cache[T]) publishLocked(path string, e entry[T]) {
 // drop leaves epochStates untouched for it rather than fabricating one.
 // Unlike the *Locked methods above, drop manages its own locking: its only
 // caller (Get, on ErrNotExist) does not hold mu.
-func (c *Cache[T]) drop(path string) {
+// drop records that path is gone and returns the generation that absence is
+// judged by, which the caller reports so a page minted over a missing file
+// and the request that resumes it compare the same number.
+//
+// Losing a fold advances the generation exactly once. Every later look at
+// the same missing path is the same absence and returns the same number:
+// advancing again would describe a change nobody made, and since a client
+// must re-read to page, each request would refuse the continuation the
+// previous one just minted and the rest of the tree would be unreachable.
+func (c *Cache[T]) drop(path string) uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element, ok := c.entries[path]; ok {
 		delete(c.entries, path)
 		c.order.Remove(element)
 	}
-	if st, ok := c.epochStates[path]; ok {
-		c.epochStates[path] = &epochState{epoch: st.epoch + 1}
+	st, ok := c.epochStates[path]
+	if !ok {
+		// Never folded: absence is the first thing known about this path,
+		// and generation 0 is what a first fold would report too. No state
+		// is recorded, so a path that never existed costs nothing.
+		return 0
 	}
+	if st.absent {
+		return st.epoch
+	}
+	next := st.epoch + 1
+	c.epochStates[path] = &epochState{epoch: next, absent: true}
+	return next
 }
 
 func (c *Cache[T]) finishFlight(flightKey string) {

@@ -1837,6 +1837,13 @@ func TestLoadSessionJobActivityTree_PaginatesWithNoJobJournal(t *testing.T) {
 	rootID := "nojobsroot"
 	_, want := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
 
+	walkActivityDelegatesToExhaustion(t, stateDir, rootID, want)
+}
+
+// walkActivityDelegatesToExhaustion follows rootID's continuations until a
+// page mints none, and fails unless every delegate in want was delivered.
+func walkActivityDelegatesToExhaustion(t *testing.T, stateDir, rootID string, want []string) {
+	t.Helper()
 	delivered := map[string]bool{}
 	continuation := ""
 	for page := 1; ; page++ {
@@ -1855,7 +1862,7 @@ func TestLoadSessionJobActivityTree_PaginatesWithNoJobJournal(t *testing.T) {
 		next := tree.Root.Branch.Continuation
 		if next == "" {
 			if tree.Root.Branch.Truncated {
-				t.Fatalf("page %d is truncated but minted no continuation; diagnostics %q -- a session whose job journal was never there still has to be pageable", page, tree.Root.Diagnostics)
+				t.Fatalf("page %d is truncated but minted no continuation; diagnostics %q", page, tree.Root.Diagnostics)
 			}
 			break
 		}
@@ -1869,6 +1876,33 @@ func TestLoadSessionJobActivityTree_PaginatesWithNoJobJournal(t *testing.T) {
 			t.Fatalf("delegate %q was never delivered across the walk", id)
 		}
 	}
+}
+
+// TestLoadSessionJobActivityTree_PaginatesAfterTheJobJournalIsDeleted pins
+// that a journal disappearing leaves the rest of the tree reachable. The
+// fold cache records a deletion by advancing the path's generation, and
+// advancing it again on every later look would refuse each page's own
+// continuation on the request that carries it: the walk would never move
+// past page two, and the delegates would be unreachable for good.
+func TestLoadSessionJobActivityTree_PaginatesAfterTheJobJournalIsDeleted(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "deletedjobsroot"
+	rootJobsPath, want := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+	started := time.Unix(900, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_a",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	// Fold the journal while it is there, so its deletion is something the
+	// cache has to record rather than a path it never knew.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm the fold: %v", err)
+	}
+	if err := os.Remove(rootJobsPath); err != nil {
+		t.Fatal(err)
+	}
+
+	walkActivityDelegatesToExhaustion(t, stateDir, rootID, want)
 }
 
 // TestLoadSessionJobActivityTree_RefusesWhenJournalPresenceChanges pins what
