@@ -54,13 +54,19 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 // the same globals, and a sync.Once would pin the FIRST snapshot's
 // state root forever. Re-wire under the mutex whenever the state root
 // changes; the per-fetch client itself stays cheap and goroutine-local.
+// LiveRegistryClient is the shared serialized constructor every hub
+// path that builds a registry client must use — including the
+// credential-test probe — so no unguarded NewRegistryClient call can
+// race it from another goroutine.
 var liveClientState struct {
 	sync.Mutex
 	root  string
 	wired bool
 }
 
-func newLiveClient(reg *registry.Registry) *llm.Client {
+// LiveRegistryClient builds a registry client with the process-wide
+// seams serialized (see liveClientState): safe from any goroutine.
+func LiveRegistryClient(reg *registry.Registry) *llm.Client {
 	root := reg.StateRoot()
 	liveClientState.Lock()
 	if !liveClientState.wired || liveClientState.root != root {
@@ -69,6 +75,10 @@ func newLiveClient(reg *registry.Registry) *llm.Client {
 	}
 	liveClientState.Unlock()
 	return llm.NewClient(llm.WithRegistry(reg), llm.WithClientStateDir(""))
+}
+
+func newLiveClient(reg *registry.Registry) *llm.Client {
+	return LiveRegistryClient(reg)
 }
 
 // fetchInstanceLiveWith is fetchInstanceLive against a caller-supplied

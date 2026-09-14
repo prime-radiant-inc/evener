@@ -86,6 +86,21 @@ func TestResolve_UserTopGlobBeatsLiveForImplicitInstance(t *testing.T) {
 	}
 }
 
+func TestResolve_UserConfigBeatsOverlayTopGlobScalar(t *testing.T) {
+	// The curated overlay's *claude-opus-4-5* top glob sets a scalar;
+	// a user exact row setting its own value must win. Disabled-only
+	// tests cannot catch an ordering inversion because no overlay
+	// glob sets Disabled today.
+	r := fixtureLoad(t, nil, "[providers.custom]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = \"sk\"\n[providers.custom.models.\"claude-opus-4-5-x\"]\nthinking_shape = \"budget\"\n")
+	res, err := r.Resolve("custom/claude-opus-4-5-x")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Caps.ThinkingShape == nil || *res.Caps.ThinkingShape != "budget" {
+		t.Fatalf("ThinkingShape = %+v, want user budget over overlay budget+effort", res.Caps.ThinkingShape)
+	}
+}
+
 func TestResolve_UserDisabledBeatsCuratedOverlayGlob(t *testing.T) {
 	// Standalone instance with a user exact disabled=true: layer rows
 	// replay per layer in order, so the user's verdict must stand no

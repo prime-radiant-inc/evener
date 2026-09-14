@@ -46,7 +46,7 @@ func loadCredentialTestClient(path string, noUserLayer bool) (credentialProbeCli
 		if err != nil {
 			return nil, err
 		}
-		return cmdutil.NewRegistryClient(r, ""), nil
+		return LiveRegistryClient(r), nil
 	}
 	var (
 		client *llm.Client

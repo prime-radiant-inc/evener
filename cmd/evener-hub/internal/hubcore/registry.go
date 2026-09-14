@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 
@@ -151,7 +152,21 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	if res, err := r.ResolveInstance(name); err == nil {
 		endpoint = res.Transport.ModelsEndpoint
 	}
-	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource}, "\x00")
+	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, strconv.Itoa(credentialLength(r, name))}, "\x00")
+}
+
+// credentialLength reports the length of the resolved credential value
+// behind name, or -1 when resolution yields none: rotation to a
+// different-length secret changes the fingerprint, and presence flips
+// (credential added/removed) change it too. Same-length rotation is
+// the residual gap — accepted, since secret bytes must never enter
+// the identity string.
+func credentialLength(r *registry.Registry, name string) int {
+	res, err := r.ResolveInstance(name)
+	if err != nil || res.Credential.Value == "" {
+		return -1
+	}
+	return len(res.Credential.Value)
 }
 
 // Get returns the registry currently held; nil before the first successful load.

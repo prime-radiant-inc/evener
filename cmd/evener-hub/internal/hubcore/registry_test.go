@@ -65,6 +65,42 @@ func TestProviderRegistryDegradesOnOldSchema(t *testing.T) {
 // a Reload) must not overwrite the newer listing. Tokens are claimed
 // once a fetch has a listing to publish, so a failed fetch never mints
 // one at all.
+func TestInstanceIdentityChangesOnCredentialRotation(t *testing.T) {
+	// Rotating the credential behind a stable source label must
+	// change the identity: rows fetched under the old secret must
+	// not publish into the newly-credentialed instance.
+	mkRegistry := func(t *testing.T, key string) *registry.Registry {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "providers.toml")
+		cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key_env = [\"ROT_KEY\"]\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := registry.Load(
+			registry.WithConfigPath(path),
+			registry.WithEnv(func(k string) (string, bool) {
+				if k == "ROT_KEY" {
+					return key, true
+				}
+				return "", false
+			}),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	r1 := mkRegistry(t, "sk-old")
+	r2 := mkRegistry(t, "sk-new-rotated-longer")
+	if instanceIdentity(r1, "gw") == instanceIdentity(r2, "gw") {
+		t.Fatal("identity unchanged across credential rotation")
+	}
+}
+
 func TestReloadFailurePreservesLiveForRestoredInstances(t *testing.T) {
 	// A failed reload parks the holder on the implicit-only fallback;
 	// when the file is fixed and the last-good registry comes back,

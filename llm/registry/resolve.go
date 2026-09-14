@@ -488,29 +488,37 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 
 	seenTag := map[string]bool{}
 	liveApplied := false
-	topTags := r.topGlobTags(rec)
-	topAt := map[string]bool{}
-	for _, tag := range topTags {
-		topAt[tag] = true
-	}
-	// Extra top-level tags the record itself lacks, split around the
-	// live layer in spec order: snapshot/overlay extras replay with
-	// the layers below, config extras after live — so user config
-	// still wins over live facts on implicit records too. Missing
-	// overlay tags replay at their true position (before live and
-	// before config), never after config rows.
-	applyExtras := func(afterLive bool) {
-		for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
-			if seenTag[tag] || len(r.topGlobs[tag]) == 0 {
-				continue
-			}
-			if (tag == LayerConfig) != afterLive {
-				continue
-			}
-			r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
+	// Missing top-level tags replay at their true layer positions,
+	// interleaved with the present layers: snapshot extras before the
+	// first layer, overlay extras before live and before config, config
+	// extras after live. An overlay extra never lands after config
+	// rows, so curated values cannot overwrite user config; a config
+	// extra still lands after live, so user config wins over live
+	// facts on implicit records too.
+	layerOrder := map[string]int{LayerSnapshot: 0, LayerOverlay: 1, LayerConfig: 2}
+	applyExtrasBefore := func(tag string) {
+		if seenTag[tag] || len(r.topGlobs[tag]) == 0 {
+			return
 		}
+		if tag == LayerConfig {
+			return
+		}
+		r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
+	}
+	applyConfigExtras := func() {
+		if seenTag[LayerConfig] || len(r.topGlobs[LayerConfig]) == 0 {
+			return
+		}
+		r.applyGlobs(&caps, &row, r.topGlobs[LayerConfig], LayerConfig, ref.Model, altID, rowProto, crossProto, prov)
 	}
 	for _, layer := range rec.layers {
+		// Missing tags that sort before this layer replay first.
+		for _, tag := range []string{LayerSnapshot, LayerOverlay} {
+			if !seenTag[tag] && layerOrder[tag] < layerOrder[layer.tag] {
+				applyExtrasBefore(tag)
+				seenTag[tag] = true
+			}
+		}
 		if layer.tag == LayerConfig && !liveApplied {
 			r.applyLive(&caps, rec, ref.Model, hit, prov)
 			liveApplied = true
@@ -535,14 +543,18 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 			}
 		}
 	}
-	// Tags with top-level rows the record itself lacks (user globs over
-	// an implicit instance): snapshot/overlay extras join the layers
-	// below; config extras replay after live, so user config wins.
-	applyExtras(false)
+	// Missing snapshot/overlay tags that sort after every present
+	// layer replay before live; missing config replays after live.
+	for _, tag := range []string{LayerSnapshot, LayerOverlay} {
+		if !seenTag[tag] {
+			applyExtrasBefore(tag)
+			seenTag[tag] = true
+		}
+	}
 	if !liveApplied {
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
-	applyExtras(true)
+	applyConfigExtras()
 	seedFields(&caps, rowProto)
 	if aliasLockstep {
 		row.Disabled = aliasDisabled
@@ -666,28 +678,6 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string)
 		row.Family = target.Model.Family
 		prov["Family"] = provAlias
 	}
-}
-
-// topGlobTags lists the layer tags whose top-level globs a replay must
-// consult, in layer order (snapshot → overlay → config): every tag the
-// record carries, plus any tag with top-level rows the record lacks (an
-// implicit instance built on a curated record has no LayerConfig layer,
-// but user top-level globs still apply to it — they are "applied to
-// every provider"). The order is the fix: overlay globs replay before
-// user config, never after, so curated values cannot overwrite user
-// settings or disabled flags.
-func (r *Registry) topGlobTags(rec *record) []string {
-	seen := map[string]bool{}
-	for _, layer := range rec.layers {
-		seen[layer.tag] = true
-	}
-	var out []string
-	for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
-		if seen[tag] || len(r.topGlobs[tag]) > 0 {
-			out = append(out, tag)
-		}
-	}
-	return out
 }
 
 // target first) in spec §4.1 order: shorter patterns first, each pattern at
@@ -947,12 +937,11 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 		altID = hit.rowID
 	}
 	var disabled bool
-	// Mirror resolveOn's interleave: each layer's top-level globs
-	// replay immediately before that layer's rows, in layer order
-	// (snapshot → overlay → live → config), so a curated Disabled
-	// value never overwrites user config and FindModel agrees with
-	// Resolve. Tags the record lacks are covered by the trailing
-	// extras loop, also in layer order.
+	// Mirror resolveOn's interleave: missing tags replay at their true
+	// layer positions (snapshot → overlay → config), never bunched
+	// after the loop — so a curated overlay Disabled value cannot
+	// overwrite user config here either, and FindModel agrees with
+	// Resolve.
 	seenTag := map[string]bool{}
 	applyTop := func(tag string) {
 		for _, g := range orderedGlobKeys(r.topGlobs[tag], ref.Model, altID) {
@@ -961,15 +950,16 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 			}
 		}
 	}
-	applyExtras := func() {
+	layerOrder := map[string]int{LayerSnapshot: 0, LayerOverlay: 1, LayerConfig: 2}
+	for _, layer := range rec.layers {
+		// Missing tags that sort before this layer replay first, at
+		// their true positions — never bunched after config rows.
 		for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
-			if !seenTag[tag] && len(r.topGlobs[tag]) > 0 {
+			if !seenTag[tag] && layerOrder[tag] < layerOrder[layer.tag] && len(r.topGlobs[tag]) > 0 {
 				seenTag[tag] = true
 				applyTop(tag)
 			}
 		}
-	}
-	for _, layer := range rec.layers {
 		if !seenTag[layer.tag] {
 			seenTag[layer.tag] = true
 			applyTop(layer.tag)
@@ -985,7 +975,12 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 			}
 		}
 	}
-	applyExtras()
+	for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
+		if !seenTag[tag] && len(r.topGlobs[tag]) > 0 {
+			seenTag[tag] = true
+			applyTop(tag)
+		}
+	}
 	return disabled
 }
 
