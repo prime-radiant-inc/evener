@@ -541,3 +541,51 @@ test("a nested page cannot replace or add coverage on an unrelated branch", () =
   expect(ids(child.delegate.child)).toEqual(["job:a", "job:b"]);
   expect(child.delegate.child.branch).toEqual({});
 });
+
+// A child page fetched through a delegate-keyed continuation arrives wrapped
+// in the ancestor chain that leads to it, so the page carries its own copy of
+// this delegate -- and that copy is whatever the daemon rendered for the
+// chain, which can be older than what the panel already holds. Grafting it
+// must not cost the row the newer parent-side metadata it is displaying.
+test("a child page grafted under the delegate keeps the delegate's newer metadata", () => {
+  const displayed: ActivityDelegateEntry = {
+    kind: "delegate",
+    delegate: {
+      ...delegate(session("child", [shell("a")], "child-page")).delegate,
+      projectionRevision: 5,
+      terminal: false,
+      outcome: undefined,
+      status: "running",
+      mandate: "the parent-side mandate",
+      warnings: ["watch delivery delayed"],
+      latestActivityAt: "2026-09-07T00:05:00Z",
+    },
+  };
+  const stalePage: ActivityDelegateEntry = {
+    kind: "delegate",
+    delegate: {
+      ...delegate(session("child", [shell("b")])).delegate,
+      projectionRevision: 2,
+      status: "completed",
+      terminal: true,
+      outcome: "completed",
+    },
+  };
+  const current = tree([displayed]);
+  const patch = tree([stalePage]);
+
+  const result = graftContinuationTree(current, "delegate:delegate", patch);
+
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing delegate child");
+  expect(entry.delegate.projectionRevision).toBe(5);
+  expect(entry.delegate.status).toBe("running");
+  expect(entry.delegate.terminal).toBe(false);
+  expect(entry.delegate.mandate).toBe("the parent-side mandate");
+  expect(entry.delegate.warnings).toEqual(["watch delivery delayed"]);
+  expect(entry.delegate.latestActivityAt).toBe("2026-09-07T00:05:00Z");
+  // The page answered the child's continuation, so the child's own entries
+  // extend and the branch it consumed is spent.
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(entry.delegate.child.branch).toEqual({});
+});
