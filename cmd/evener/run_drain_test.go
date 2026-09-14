@@ -416,13 +416,26 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 	// from A's notification turn, and a notification turn owns its current
 	// batch (no post-tool yield), so B's completion always waits for the next
 	// drain wake.
+	//
+	// Releasing A is not enough: the drain must also not START until A has
+	// finalized. A drain that begins while A is still running finds a sole
+	// undisposed background job, arms the announcement ladder on its first
+	// pass and parks; if the 250ms recheck tick then beats A's completion
+	// wake, the second pass announces the undisposed job instead of
+	// delivering the completion, and the third request carries no frame at
+	// all (#1310: "shell A notification request count = 0, want 1", on a
+	// loaded runner). awaitDurableJobCompletion is the barrier the held-shell
+	// scenario already uses for the same seam. The half-second A spends
+	// after the gate opens is deliberate and longer than the recheck
+	// interval: without the barrier it makes the tick win every time, so the
+	// scenario fails outright rather than once in a thousand runs.
 	gate := filepath.Join(t.TempDir(), "release-shell-a")
-	shellACommand := "while [ ! -f " + gate + " ]; do sleep 0.02; done; printf shell-a"
+	shellACommand := "while [ ! -f " + gate + " ]; do sleep 0.02; done; sleep 0.5; printf shell-a"
 	releaseOnDrainStart(t, func() {
 		if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
 			t.Errorf("release shell A: %v", err)
 		}
-	}, nil)
+	}, func(sess *agent.Session) { awaitDurableJobCompletion(t, sess) })
 	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
 	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
