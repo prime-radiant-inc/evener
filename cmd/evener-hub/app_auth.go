@@ -65,11 +65,13 @@ type hubAuthController struct {
 	// record written between those steps is one the check never saw and lands
 	// against an instance the client never reviewed. A reload commits what it
 	// read, so one running across a credential clear would publish a view the
-	// clear had already invalidated. Writers take the read side: they are
-	// already safe against each other through the credentials store's own
-	// mutex and the OAuth state files. Create, Edit (including a rename),
-	// Remove, SetDefault and logout take it exclusively for their complete
-	// check-and-write operations.
+	// clear had already invalidated. Credential writers take the write side
+	// too - credentialWrite and credentialWriteExclusive hold it across the
+	// store write and the registry reload that follows it, so a reload can
+	// never pair a pre-write registry with a post-write credential - and
+	// Create, Edit (including a rename), Remove, SetDefault and logout hold it
+	// exclusively for their complete check-and-write operations. List is the
+	// read side.
 	credMu sync.RWMutex
 
 	mu          sync.Mutex
@@ -86,6 +88,14 @@ type hubAuthController struct {
 // controller is byte-for-byte identical to before this hook existed.
 var hubAuthControllerSetup func(*hubAuthController)
 
+// hubAuthFlowTTL bounds both sign-in flow maps: a login flow the user never
+// completes and a device flow they never authorize. LoginStart sweeps expired
+// entries as it records a new one, and a completion refuses a flow older than
+// the window and drops it - without that, an abandoned flow and its PKCE
+// verifier would sit in the map for the life of the process. Device codes
+// expire on the provider's side in about this time.
+const hubAuthFlowTTL = 15 * time.Minute
+
 type hubAuthFlow struct {
 	Provider string
 	State    string
@@ -94,6 +104,9 @@ type hubAuthFlow struct {
 	EndpointFingerprint string
 	CodeVerifier        string
 	RedirectURI         string
+	// StartedAt is when the flow was created, for the same expiry deviceFlows
+	// carry (hubAuthFlowTTL).
+	StartedAt time.Time
 }
 
 type deviceFlow struct {
@@ -288,12 +301,23 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 	if c.flows == nil {
 		c.flows = map[string]hubAuthFlow{}
 	}
+	// Abandoned flows have no other reaper: a start that was never completed
+	// would otherwise keep its PKCE verifier for the life of the process. The
+	// sweep runs as a new flow is recorded, under the same lock, so the map
+	// holds only live flows plus the one being added.
+	now := c.now()
+	for id, flow := range c.flows {
+		if now.Sub(flow.StartedAt) >= hubAuthFlowTTL {
+			delete(c.flows, id)
+		}
+	}
 	c.flows[state] = hubAuthFlow{
 		Provider:            provider,
 		State:               state,
 		EndpointFingerprint: endpoint,
 		CodeVerifier:        verifier,
 		RedirectURI:         redirectURI,
+		StartedAt:           now,
 	}
 	c.mu.Unlock()
 
@@ -318,6 +342,15 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	}
 	if flow.Provider != provider {
 		return appwire.AuthLoginCompleteResponse{}, appwire.InvalidParams("auth login provider does not match flow")
+	}
+	// The same window deviceFlows expire on: a sign-in started long ago is one
+	// the browser abandoned, and its flow is dropped here rather than left to
+	// the next start's sweep.
+	if c.now().Sub(flow.StartedAt) >= hubAuthFlowTTL {
+		c.mu.Lock()
+		delete(c.flows, flowID)
+		c.mu.Unlock()
+		return appwire.AuthLoginCompleteResponse{}, appwire.Conflict("the sign-in flow expired; start the sign-in again")
 	}
 
 	code, returnedState, err := authopenai.ParseRedirectURL(params.RedirectURL)
@@ -733,7 +766,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	if flow.Provider != provider {
 		return appwire.AuthDevicePollResponse{}, appwire.InvalidParams("auth device provider does not match flow")
 	}
-	if c.now().Sub(flow.StartedAt) >= 15*time.Minute {
+	if c.now().Sub(flow.StartedAt) >= hubAuthFlowTTL {
 		c.mu.Lock()
 		delete(c.deviceFlows, flowID)
 		c.mu.Unlock()

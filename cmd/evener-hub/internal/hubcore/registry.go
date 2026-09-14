@@ -25,10 +25,12 @@ type ProviderRegistry struct {
 	// it. Two reloads that load concurrently return in an order nothing
 	// controls, and one that read first can commit last, leaving the holder on
 	// the older view; mu alone does not order them, because a commit that waits
-	// on it still writes whatever that reload read. Callers do overlap (the auth
-	// controller's reload holds only the shared side of its credential lock, so
-	// two credential writes can reach this at once). Reads stay on mu, so Get is
-	// never held up for the length of a load.
+	// on it still writes whatever that reload read. Callers do overlap: Reload
+	// is called directly at startup and by tests, and nothing but the credential
+	// lock's call discipline keeps a future caller from reloading beside a
+	// credential write - so the load and its commit are serialized as one
+	// operation regardless of who calls it. Reads stay on mu, so Get is never
+	// held up for the length of a load.
 	reloadMu sync.Mutex
 	current  *registry.Registry
 	loadErr  error

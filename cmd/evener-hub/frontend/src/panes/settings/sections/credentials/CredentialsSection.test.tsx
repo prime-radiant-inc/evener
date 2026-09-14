@@ -15,7 +15,7 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
-import { ENDPOINT_CHANGED_TEST_MESSAGE } from "./credentialLabels";
+import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -490,8 +490,21 @@ describe("credential verification", () => {
 
   test("resets pending state and ignores a late result after same-name instance refresh", async () => {
     const fake = connectFakeClient();
-    const oldInstance = instance({ name: "work", providerId: "anthropic", baseUrl: "https://old.example/v1" });
-    const refreshedInstance = instance({ name: "work", providerId: "anthropic", baseUrl: "https://new.example/v1" });
+    // A destination carries a fingerprint in production unless the hub cannot
+    // key one, and this test is about the late result, not a fingerprint
+    // refusal: both rows assert their own destination so the probe is sent.
+    const oldInstance = instance({
+      name: "work",
+      providerId: "anthropic",
+      baseUrl: "https://old.example/v1",
+      endpointFingerprint: "fp-old",
+    });
+    const refreshedInstance = instance({
+      name: "work",
+      providerId: "anthropic",
+      baseUrl: "https://new.example/v1",
+      endpointFingerprint: "fp-new",
+    });
     const response = deferred<AuthTestResponse>();
     let listCalls = 0;
     fake.on("evener/instance/list", () => {
@@ -520,6 +533,35 @@ describe("credential verification", () => {
       await response.promise;
     });
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  // A destination the hub cannot fingerprint has no assertion to send, and an
+  // unasserted probe would dial whatever the name resolves to now: the test is
+  // refused before any RPC is sent, with an error toast and no pending state.
+  test("the test refuses a destination the hub cannot fingerprint", async () => {
+    const fake = connectFakeClient();
+    const unkeyed = instance({
+      name: "work",
+      providerId: "anthropic",
+      baseUrl: "https://unkeyed.example/v1",
+    });
+    fake.on("evener/instance/list", () => ({ instances: [unkeyed], availableProviders: [] }));
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toEqual([]);
+    await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+    expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 
   // roborev PR #1136: the probe asserts the destination the row was read from,

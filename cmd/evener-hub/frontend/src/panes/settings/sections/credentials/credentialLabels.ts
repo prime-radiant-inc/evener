@@ -172,3 +172,20 @@ export function isEndpointConflict(err: unknown): boolean {
 // screen.
 export const ENDPOINT_CHANGED_TEST_MESSAGE =
   "This connection changed to a different endpoint. Check its destination and test again.";
+
+// FINGERPRINT_UNAVAILABLE_TEST_MESSAGE is what a credential test says when the
+// row has a destination but no fingerprint to assert: the hub would have
+// nothing to compare and would dial whatever the name resolves to now, so the
+// check is refused before it is sent (instanceDialogs refuses a write the same
+// way).
+export const FINGERPRINT_UNAVAILABLE_TEST_MESSAGE =
+  "The hub cannot check this endpoint right now, so the test was not run. Review its destination and try again once it can be checked.";
+
+// fingerprintUnavailable reports the row a credential test must not run for: it
+// has a destination, and the listing could not key a fingerprint for it. A row
+// with no destination - a provider without a base URL - is not this case, and
+// keeps testing as before: there is nothing for the hub to check, which is the
+// rule instanceDialogs applies to a write.
+export function fingerprintUnavailable(row: InstanceEntry | undefined): boolean {
+  return row !== undefined && (row.baseUrl ?? "") !== "" && (row.endpointFingerprint ?? "") === "";
+}

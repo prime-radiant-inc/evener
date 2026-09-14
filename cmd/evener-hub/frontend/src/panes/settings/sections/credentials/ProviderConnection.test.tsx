@@ -6,6 +6,7 @@ import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 import { ProviderConnection } from "./ProviderConnection";
 
 function provider(
@@ -33,6 +34,7 @@ function provider(
       credentialRequired: true,
       authModes: modes,
       baseUrl: `https://${id}.example/v1`,
+      endpointFingerprint: `fp-${id}`,
       ...extra,
     },
   };
@@ -131,7 +133,10 @@ test("device authorization survives its own delayed listing refresh and proceeds
   await user.click(await screen.findByRole("button", { name: "Continue" }));
   expect(connected).toHaveBeenCalledWith("openai-codex");
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
-    { method: "evener/auth/test", params: { provider: "openai-codex" } },
+    {
+      method: "evener/auth/test",
+      params: { provider: "openai-codex", expectedEndpointFingerprint: "fp-openai-codex" },
+    },
   ]);
 });
 
@@ -348,9 +353,12 @@ test("saves directly to the real public ID then reloads and checks before explic
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
   expect(client.calls.slice(1)).toEqual([
-    { method: "evener/auth/apiKey/set", params: { provider: "anthropic", value: "fixture-key" } },
+    {
+      method: "evener/auth/apiKey/set",
+      params: { provider: "anthropic", value: "fixture-key", expectedEndpointFingerprint: "fp-anthropic" },
+    },
     { method: "evener/instance/list", params: {} },
-    { method: "evener/auth/test", params: { provider: "anthropic" } },
+    { method: "evener/auth/test", params: { provider: "anthropic", expectedEndpointFingerprint: "fp-anthropic" } },
   ]);
   expect(screen.queryByText("raw-provider-secret")).toBeNull();
   expect(connected).not.toHaveBeenCalled();
@@ -457,6 +465,7 @@ test("ADC JSON is masked and sent to the JSON route, not API-key auth", async ()
   expect(client.calls.find((c) => c.method === "evener/auth/credentialJson/set")?.params).toEqual({
     provider: "google-vertex",
     value: '{"type":"service_account"}',
+    expectedEndpointFingerprint: "fp-google-vertex",
   });
   expect(client.calls.some((c) => c.method === "evener/auth/apiKey/set")).toBe(false);
 });
@@ -494,6 +503,7 @@ test("settings saved then key failed repairs the actual named connection without
     providerId: "azure",
     base: "azure",
     baseUrl: "https://team.azure.example/v1",
+    endpointFingerprint: "fp-azure-team",
     protocol: "openai-chat",
     auth: "api-key",
     authModes: ["apiKey"],
@@ -532,8 +542,8 @@ test("settings saved then key failed repairs the actual named connection without
   expect(connected).toHaveBeenCalledWith("azure-team");
   expect(client.calls.filter((c) => c.method === "evener/instance/create")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set").map((c) => c.params)).toEqual([
-    { provider: "azure-team", value: "retained-draft" },
-    { provider: "azure-team", value: "retained-draft" },
+    { provider: "azure-team", value: "retained-draft", expectedEndpointFingerprint: "fp-azure-team" },
+    { provider: "azure-team", value: "retained-draft", expectedEndpointFingerprint: "fp-azure-team" },
   ]);
 });
 test.each(["save", "refresh", "check"])(
@@ -958,7 +968,7 @@ test.each([
       availableProviders: catalogue.map((row) =>
         row.id === "anthropic"
           ? provider("anthropic", "Anthropic", ["apiKey"], {
-              ...(baselineFp ? { endpointFingerprint: baselineFp } : {}),
+              endpointFingerprint: baselineFp,
             })
           : row,
       ),
@@ -975,7 +985,7 @@ test.each([
       ...catalogue.find((candidate) => candidate.id === base)!.setup!,
       name: "recovered-team",
       implicit: false,
-      ...(rowFp ? { endpointFingerprint: rowFp } : {}),
+      endpointFingerprint: rowFp,
     };
     const recovered: InstanceListResponse = {
       instances: [row],
@@ -1104,7 +1114,7 @@ test("adopting a created instance clears a credential draft typed for the previo
 // survive adoption into a connection nobody can describe (roborev finding:
 // undefined === undefined must not be read as a match).
 test("adopting a created instance with no fingerprints on either side clears the draft", async () => {
-  const { user, client } = setup(savedList("anthropic"));
+  const { user, client } = setup(savedList("anthropic", { endpointFingerprint: undefined }));
   await choose(user);
   await user.type(screen.getByLabelText("API key"), "anthropic-private-draft");
 
@@ -1112,6 +1122,7 @@ test("adopting a created instance with no fingerprints on either side clears the
     ...catalogue[0]!.setup!,
     name: "anthropic-team",
     implicit: false,
+    endpointFingerprint: undefined,
   };
   client.on("evener/instance/create", () => ({
     instances: [created],
@@ -1216,6 +1227,19 @@ test("the check asserts the reviewed endpoint", async () => {
     provider: "anthropic",
     expectedEndpointFingerprint: "fp-reviewed",
   });
+});
+
+test("a destination the hub cannot fingerprint refuses the check without a probe", async () => {
+  const noAuth = provider("unfingerprinted", "Team endpoint", ["none"], {
+    auth: "none",
+    credentialRequired: false,
+    endpointFingerprint: undefined,
+  });
+  const { user, client } = setup({ instances: [], availableProviders: [noAuth] });
+  await choose(user, "Team endpoint");
+  await user.click(screen.getByRole("button", { name: "Check connection" }));
+  expect(await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE)).toBeTruthy();
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
 });
 
 // A refused endpoint assertion is the same change submit() reports: the

@@ -4,7 +4,13 @@ import { connectionStore, useConnectionStore } from "../../../../stores/connecti
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
-import { activeSourceLabel, isEndpointConflict, safeCredentialTestResult } from "./credentialLabels";
+import {
+  activeSourceLabel,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
+  isEndpointConflict,
+  safeCredentialTestResult,
+} from "./credentialLabels";
 import { AddInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
@@ -400,6 +406,14 @@ function SelectedConnection({
 
   async function check(token: number, target: InstanceEntry) {
     if (!current(token)) return;
+    // A row whose destination the listing could not fingerprint has no
+    // assertion to carry, and an unasserted probe dials whatever the name
+    // resolves to now: refuse it before the call.
+    if (fingerprintUnavailable(target)) {
+      setPhase("idle");
+      setError(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+      return;
+    }
     setPhase("checking");
     setError("");
     setReview(null);

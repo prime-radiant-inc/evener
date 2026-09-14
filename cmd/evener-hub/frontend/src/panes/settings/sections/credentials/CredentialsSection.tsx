@@ -33,6 +33,8 @@ import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./
 import styles from "./CredentialsSection.module.css";
 import {
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
   groupByProvider,
   isEndpointConflict,
   safeCredentialTestResult,
@@ -195,6 +197,13 @@ export function CredentialsSection({
   async function handleTestCredentials(name: string): Promise<void> {
     const version = instanceVersion.current;
     if (credentialTests[name]?.version === version && credentialTests[name]?.pending) return;
+    // A destination the hub cannot fingerprint has no assertion to send, and an
+    // unasserted probe dials whatever the name resolves to now: refuse it here
+    // rather than let the hub check a destination the user never reviewed.
+    if (fingerprintUnavailable(instances.find((row) => row.name === name))) {
+      toast.push("error", FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+      return;
+    }
     setCredentialTests((current) => ({ ...current, [name]: { version, pending: true } }));
     // A result lands only on the request that is still pending for the
     // instance list it was started against: a refreshed list bumps the

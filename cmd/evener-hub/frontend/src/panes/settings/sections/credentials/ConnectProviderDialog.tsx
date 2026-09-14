@@ -11,6 +11,8 @@ import { CredentialsSection } from "./CredentialsSection";
 import {
   activeSourceLabel,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
   isEndpointConflict,
   safeCredentialTestResult,
 } from "./credentialLabels";
@@ -214,6 +216,19 @@ function ManageConnections({
   }
 
   async function testConnection(name: string): Promise<void> {
+    // A destination the hub cannot fingerprint has no assertion to send: the
+    // probe would dial whatever the name resolves to now, so it is refused here
+    // with the same notice an interrupted test gets.
+    if (fingerprintUnavailable(instances.find((candidate) => candidate.name === name))) {
+      beginOperation();
+      setTestState({
+        name,
+        version: instanceVersion.current,
+        pending: false,
+        notice: FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+      });
+      return;
+    }
     const operation = beginOperation();
     const version = instanceVersion.current;
     setTestState({ name, version, pending: true });

@@ -17,7 +17,7 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { CredentialsSection } from "./CredentialsSection";
-import { ENDPOINT_CHANGED_TEST_MESSAGE } from "./credentialLabels";
+import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 
 // Existing cases exercise management, now reached explicitly from discovery.
 function render(element: ReactElement) {
@@ -130,8 +130,8 @@ test("full-editor repair returns to the created connection and retained credenti
   expect(connected).toHaveBeenCalledWith("team-custom");
   expect(fake.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").map((call) => call.params)).toEqual([
-    { provider: "team-custom", value: "repair-draft" },
-    { provider: "team-custom", value: "repair-draft" },
+    { provider: "team-custom", value: "repair-draft", expectedEndpointFingerprint: "fp-fixture" },
+    { provider: "team-custom", value: "repair-draft", expectedEndpointFingerprint: "fp-fixture" },
   ]);
 });
 
@@ -329,6 +329,7 @@ test("a rename in full provider settings follows the guided flow back to the ren
   expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").at(-1)?.params).toEqual({
     provider: "openai-renamed",
     value: "excursion-draft",
+    expectedEndpointFingerprint: "fp-fixture",
   });
 });
 
@@ -459,6 +460,7 @@ test("a rename reported while no guided owner is mounted cannot re-point a fresh
   expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").at(-1)?.params).toEqual({
     provider: "openai",
     value: "fresh-selection-key",
+    expectedEndpointFingerprint: "fp-fixture",
   });
 });
 
@@ -512,8 +514,8 @@ test.each(["destination", "source"])(
     await h.user.click(review);
     expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
     expect(h.fake.calls.filter((call) => call.method === "evener/auth/test").map((call) => call.params)).toEqual([
-      { provider: "openai" },
-      { provider: "openai" },
+      { provider: "openai", expectedEndpointFingerprint: "fp-fixture" },
+      { provider: "openai", expectedEndpointFingerprint: "fp-fixture" },
     ]);
   },
 );
@@ -560,7 +562,7 @@ test.each(["change", "cancel", "dismiss-away"])("%s after repair does not retain
 });
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
-  return {
+  const row: InstanceEntry = {
     protocol: "openai-chat",
     auth: "bearer",
     implicit: true,
@@ -570,6 +572,13 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
     credentialRequired: true,
     ...overrides,
   };
+  // A production row with a destination carries an endpoint fingerprint (the
+  // hub keys one unless it cannot): these fixtures build reachable
+  // destinations, so stand one in unless the test names its own.
+  if ((row.baseUrl ?? "") !== "" && (row.endpointFingerprint ?? "") === "") {
+    row.endpointFingerprint = "fp-fixture";
+  }
+  return row;
 }
 
 function connectFakeClient(list: InstanceListResponse): FakeClient {
@@ -962,6 +971,28 @@ describe("ConnectProviderDialog", () => {
         "The provider endpoint could not be reached. Check the endpoint and network connection.",
       ),
     ).toBeNull();
+  });
+
+  test("a destination the hub cannot fingerprint refuses the connection test", async () => {
+    // The row has a destination but the listing could not key a fingerprint for
+    // it, so there is no assertion to send and the probe must not run.
+    const row = instance({
+      name: "work",
+      providerId: "anthropic",
+      authModes: ["apiKey"],
+      baseUrl: "https://unkeyed.example/v1",
+    });
+    delete row.endpointFingerprint;
+    const fake = connectFakeClient({ instances: [row], availableProviders: [] });
+    const onConnected = vi.fn();
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Test connection" }));
+
+    expect(await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE)).toBeTruthy();
+    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Retry test" })).toBeTruthy();
+    expect(onConnected).not.toHaveBeenCalled();
   });
 
   test("cancelling the API-key editor destroys its secret and returns to the chooser", async () => {
