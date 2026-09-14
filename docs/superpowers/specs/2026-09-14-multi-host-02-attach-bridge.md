@@ -1,0 +1,87 @@
+# Component spec 02 — Hub attach bridge (stdio ↔ loopback /rpc)
+
+Parent: `2026-09-14-multi-host-evener-design.md`. Spike-backed
+(`2026-09-14-multi-host-spikes-findings.md`).
+
+## Purpose
+
+A process that runs **on the remote host**, connects to that host's already
+running hub at its loopback AppWire edge, and proxies AppWire messages between
+that WebSocket and its own stdin/stdout — so the controller can speak to the hub
+over an SSH channel with no additionally exposed port.
+
+## Scope
+
+- A new subcommand (working name `evener hub attach --stdio`) that:
+  1. resolves the hub's loopback address and reads the capability token from the
+     host state root (`<stateRoot>/auth-token`, trimmed);
+  2. dials `ws://<addr>/rpc` with `Authorization: Bearer <token>`;
+  3. proxies `Message`s in both directions between the WebSocket transport and a
+     `StreamTransport` over stdin/stdout;
+  4. exits when either side closes.
+- This command is a **client** of the running hub. It must not start a hub, take
+  `hostlock`, or bind any port.
+
+## Non-scope
+
+- Starting or supervising the hub (that is the connection manager's job).
+- Auth beyond passing the host's own capability token.
+
+## Contract
+
+- stdin/stdout: newline-delimited AppWire `Message` JSON only.
+- **stdout carries framed AppWire exclusively**; every diagnostic goes to stderr
+  (a stray stdout write corrupts the stream — this is a hard rule and a test).
+- Exit 0 on clean channel close; nonzero with a stderr diagnostic on failure.
+
+## Implementation
+
+- `cmd/evener/…` subcommand wired like the other `evener hub` subcommands.
+- Reuse: `appwire.DialWebSocketWithHeaders`, `appwire.NewStreamTransport`,
+  `appwire.Transport` — a two-goroutine pump (spike `spike/bridge/main.go`).
+- Token: read from the state root, `strings.TrimSpace` (the file ends with a
+  newline; untrimmed it is an invalid header value — spike finding).
+
+## Data flow
+
+```
+controller hub
+  appwire.Client over StreamTransport
+    → ssh process stdin/stdout  ──────────────►  sshd on host
+                                                   → bridge process
+                                                       (stdout discipline: frames only)
+                                                   → WebSocket ws://127.0.0.1:<hubaddr>/rpc
+                                                   → hub AppWire router
+```
+
+The bridge is a bidirectional pump: each frame received on one transport is
+sent on the other, in both directions.
+
+## Error handling
+
+- Dial failure → stderr message, nonzero exit.
+- Either direction's error → close both transports, exit.
+- No hub running → clear stderr message ("no hub at <addr>").
+
+## Testing
+
+- In-memory pipe pair + an in-process hub test server: assert framed messages
+  round-trip and that stdout contains only frames.
+- Assert the command never writes to stdout on the error path.
+
+## Acceptance criteria
+
+- Against a running hub, `initialize` and `thread/list` succeed over the bridge's
+  stdio (spike proved this end to end).
+- No port is bound by the bridge; `hostlock` is untouched.
+
+## PR size
+
+Small–medium: ~150–300 LOC plus tests.
+
+## Open questions
+
+- How the bridge discovers the hub's actual loopback address when `addr` is
+  configured away from the default (`127.0.0.1:9180`).
+- Whether to fold the bridge into `evener hub attach` or a dedicated
+  `evener hub-bridge` binary.
