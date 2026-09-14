@@ -803,7 +803,14 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				continue
 			}
 			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
-			if compactionTurnWriteErrs[i] != nil {
+			// Landed means the record is in the file, which a retained entry
+			// is (entryIsRecorded, the same rule the hook completions'
+			// write-and-decide follows): the failure is still reported, it
+			// just no longer decides that the record does not exist. A marker
+			// a returning reader will anchor on must dispatch its effects
+			// here, or the live session and that reader disagree about
+			// whether the compaction happened.
+			if !entryIsRecorded(compactionTurnWriteErrs[i]) {
 				continue
 			}
 			compactionTurnLanded[i] = true

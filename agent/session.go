@@ -2089,13 +2089,23 @@ func writeHeldTranscriptTurn(w *transcript.Writer, pending heldTranscriptTurn) (
 		write = w.AppendDurable
 	}
 	err = write(pending.turn)
-	if err != nil && !errors.Is(err, transcript.ErrEntryRetained) {
+	if !entryIsRecorded(err) {
 		return false, err
 	}
 	if pending.commit != nil {
 		pending.commit()
 	}
 	return true, err
+}
+
+// entryIsRecorded reports whether a write left its entry in the transcript: a
+// clean write, or one that failed with the entry RETAINED — the whole line
+// landed and the rollback could not take it back out, so a returning reader
+// finds it. Every producer that decides what a record is owed once it exists
+// asks here, so the fold's markers and the hook completions cannot come to
+// different conclusions about the same failure.
+func entryIsRecorded(err error) bool {
+	return err == nil || errors.Is(err, transcript.ErrEntryRetained)
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
