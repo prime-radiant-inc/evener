@@ -353,6 +353,16 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 	if err != nil {
 		t.Fatalf("fixture root: %v", err)
 	}
+	// The daemon reports the skill paths it scanned, and it scans resolved
+	// directories (skill.projectSkillDirs and plugin.SkillSources both run
+	// filepath.EvalSymlinks). On macOS this root lands under /var/folders,
+	// a symlink to /private/var/folders, so an expectation built from the
+	// unresolved spelling compares two names for one file. Resolving here
+	// names the same directory, so the artifacts kept on failure are
+	// unaffected; on Linux the spellings already match.
+	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
+		root = resolved
+	}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("test failed; keeping artifacts under %s", root)

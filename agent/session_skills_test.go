@@ -676,7 +676,7 @@ func TestSkillCatalogInspectionCopiesFullMetadata(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	root, plug := t.TempDir(), t.TempDir()
+	root, plug := skillFixtureRoot(t), skillFixtureRoot(t)
 	dir := filepath.Join(plug, ".claude-plugin")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -751,7 +751,7 @@ func TestSkillCatalogPluginStartupMetadataOnly(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	first, second := t.TempDir(), t.TempDir()
+	first, second := skillFixtureRoot(t), skillFixtureRoot(t)
 	for _, dir := range []string{first, second} {
 		for _, sub := range []string{".claude-plugin", "skills/probe"} {
 			if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {

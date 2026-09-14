@@ -5,6 +5,7 @@ package tuitext
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -94,4 +95,30 @@ func MultilineLines(text string) []string {
 		return nil
 	}
 	return strings.Split(text, "\n")
+}
+
+// StripControls removes every control character except the newline and the tab,
+// which the TUI's layout needs. It is the terminal-boundary rule for text the
+// TUI re-renders from data another boundary already stored — notes text written
+// before the write-path strip existed, for instance, can still carry ESC, OSC,
+// BEL, or C1 sequences, and any of them reaches the terminal as an instruction
+// rather than as the characters the note was typed to contain. General command,
+// tool, and file output is deliberately not routed through this rule: ANSI
+// there is legitimate, and stripping it would rewrite real shell output.
+func StripControls(text string) string {
+	if !strings.ContainsFunc(text, isStrippableControl) {
+		return text
+	}
+	return strings.Map(func(r rune) rune {
+		if isStrippableControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+// isStrippableControl reports whether r is a control character that must not
+// reach the terminal; newline and tab are the layout's two exceptions.
+func isStrippableControl(r rune) bool {
+	return unicode.IsControl(r) && r != '\n' && r != '\t'
 }
