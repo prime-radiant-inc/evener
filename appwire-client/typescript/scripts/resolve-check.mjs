@@ -1,122 +1,206 @@
-// Runtime resolution proof for the native trees, run inside the qualification
-// runner's packed consumer.
+// Runtime resolution proof for this repository's consumers, run inside the
+// qualification runner's packed consumer.
 //
-// mobile-native and mobile/src import this package by name, but neither
-// declares a dependency on it: both resolve the name through a repo alias
-// (tsconfig paths, the vitest config, Metro's resolveRequest) onto TypeScript
-// source. So `make test-native` proves the aliases agree with the source tree
-// and proves nothing about the package a consumer actually installs. This file
-// runs where that question can be answered: against the tarball, unpacked into
+// The web app, mobile-native and mobile/src all import this package by name,
+// and none of them declares a dependency on it: each resolves the name through
+// a repo alias (tsconfig paths, the Vite and vitest configs, Metro's
+// resolveRequest) onto TypeScript source. So `make test-web` and
+// `make test-native` prove the aliases agree with the source tree and prove
+// nothing about the package a consumer actually installs. This file runs where
+// that question can be answered: against the tarball, unpacked into
 // node_modules, loaded by plain Node.
 //
-// It names every runtime VALUE the native trees take from the package. Types
-// are out of scope - they are erased before anything runs. qualify-package.mjs
-// re-derives both lists from the native import graph and fails if they have
-// drifted, so a value native starts importing cannot slip past this check.
+// The import statements below ARE the list, and the only one: Node throws a
+// SyntaxError for a named import the installed CommonJS build does not export,
+// before a line of this runs. qualify-package.mjs parses these two clauses and
+// checks them against every value an in-repo consumer imports, so a value one
+// of them starts importing cannot slip past this check. Types are out of
+// scope -- they are erased before anything runs.
 import assert from "node:assert/strict";
 import {
   ActivityList,
   AppwireClient,
+  activityDelegateState,
+  activityNodeID,
+  answeredAskUserSuffix,
+  applyNotification,
   buildActivityRows,
   buildComposerInput,
   buildInput,
+  ClientNotReadyError,
+  ConnectionClosedError,
+  canReadSharedNotes,
+  clip,
+  clipJobID,
+  collectAuthoritativeMutationIds,
   composeAskAnswers,
   decideSteerRoute,
+  decideSubmitRoute,
+  defaultExpandedIDs,
+  deriveSendQueueAvailability,
+  docFileRawURL,
+  docImageURL,
+  errorKind,
+  errorText,
+  fenceRootSession,
   filterSlashMenuItems,
+  firstLine,
+  formatByteCount,
+  formatCharCount,
+  formatClockTime,
+  formatDurationMs,
   formatElapsed,
+  formatTokenCount,
   friendlyErrorMessage,
+  friendlyLaunchErrorMessage,
+  graftContinuationTree,
+  hasErrorText,
+  hasFailureStatus,
   hasItemFailure,
+  hydrateThread,
   isActionUnavailable,
+  isActivityFailure,
+  isHubLaunchError,
   isInProgressStatus,
+  isNonZeroExit,
   isStaleCursorError,
   isThreadNotFound,
+  isTurnActive,
+  jobIsFailed,
+  lineCount,
+  liveAskQuestions,
+  mergeOlderItemPage,
   mergeSlashCommands,
+  mutationErrorData,
+  notificationRoutingKey,
   parseActivityTree,
+  parseArgs,
+  parseAskUserQuestions,
   parseJobLogTail,
+  parseJSONObject,
   parseSlashToken,
+  pendingTextJoined,
+  plainQuoteLine,
+  reconcileActivityState,
   reconcileBatches,
+  resolvePendingEscalation,
+  rpcURLFromLocation,
+  SYSTEM_PRELUDE_TURN_ID,
   sessionActionError,
+  sessionActionHeadline,
+  slashCommandInvocation,
   spliceSlashCommand,
   splitMandate,
   stableDelegateDisplayStatus,
+  str,
+  tailFold,
+  tailSlice,
+  trailingBracketFooter,
   translateAttachmentMarkers,
   visibleCatalogCommands,
   WireError,
 } from "@evener/appwire-client";
-import { docImageURL, readDocFile } from "@evener/appwire-client/docContent";
+import {
+  DOC_FILE_MAX_BYTES,
+  DocFileError,
+  docImageURL as docImageURLAtSubpath,
+  readDocFile,
+} from "@evener/appwire-client/docContent";
 
-// Parsed out of this file by qualify-package.mjs and checked against the
-// native import graph, so keep both as plain arrays of string literals.
-const ROOT_VALUES = [
-  "ActivityList",
-  "AppwireClient",
-  "WireError",
-  "buildActivityRows",
-  "buildComposerInput",
-  "buildInput",
-  "composeAskAnswers",
-  "decideSteerRoute",
-  "filterSlashMenuItems",
-  "formatElapsed",
-  "friendlyErrorMessage",
-  "hasItemFailure",
-  "isActionUnavailable",
-  "isInProgressStatus",
-  "isStaleCursorError",
-  "isThreadNotFound",
-  "mergeSlashCommands",
-  "parseActivityTree",
-  "parseJobLogTail",
-  "parseSlashToken",
-  "reconcileBatches",
-  "sessionActionError",
-  "spliceSlashCommand",
-  "splitMandate",
-  "stableDelegateDisplayStatus",
-  "translateAttachmentMarkers",
-  "visibleCatalogCommands",
-];
-const DOC_CONTENT_VALUES = ["docImageURL", "readDocFile"];
-
-const bound = {
+// Naming every binding keeps the two clauses above load-bearing rather than
+// decorative: a name imported and not listed here is an unused import Biome
+// rejects, and a name listed and not imported is a ReferenceError. So the
+// lists cannot drift from each other, only from the consumers -- which is
+// what the runner checks.
+const arrived = {
   ActivityList,
   AppwireClient,
+  ClientNotReadyError,
+  ConnectionClosedError,
+  SYSTEM_PRELUDE_TURN_ID,
   WireError,
+  activityDelegateState,
+  activityNodeID,
+  answeredAskUserSuffix,
+  applyNotification,
   buildActivityRows,
   buildComposerInput,
   buildInput,
+  canReadSharedNotes,
+  clip,
+  clipJobID,
+  collectAuthoritativeMutationIds,
   composeAskAnswers,
   decideSteerRoute,
+  decideSubmitRoute,
+  defaultExpandedIDs,
+  deriveSendQueueAvailability,
+  docFileRawURL,
+  docImageURL,
+  errorKind,
+  errorText,
+  fenceRootSession,
   filterSlashMenuItems,
+  firstLine,
+  formatByteCount,
+  formatCharCount,
+  formatClockTime,
+  formatDurationMs,
   formatElapsed,
+  formatTokenCount,
   friendlyErrorMessage,
+  friendlyLaunchErrorMessage,
+  graftContinuationTree,
+  hasErrorText,
+  hasFailureStatus,
   hasItemFailure,
+  hydrateThread,
   isActionUnavailable,
+  isActivityFailure,
+  isHubLaunchError,
   isInProgressStatus,
+  isNonZeroExit,
   isStaleCursorError,
   isThreadNotFound,
+  isTurnActive,
+  jobIsFailed,
+  lineCount,
+  liveAskQuestions,
+  mergeOlderItemPage,
   mergeSlashCommands,
+  mutationErrorData,
+  notificationRoutingKey,
   parseActivityTree,
+  parseArgs,
+  parseAskUserQuestions,
+  parseJSONObject,
   parseJobLogTail,
   parseSlashToken,
+  pendingTextJoined,
+  plainQuoteLine,
+  reconcileActivityState,
   reconcileBatches,
+  resolvePendingEscalation,
+  rpcURLFromLocation,
   sessionActionError,
+  sessionActionHeadline,
+  slashCommandInvocation,
   spliceSlashCommand,
   splitMandate,
   stableDelegateDisplayStatus,
+  str,
+  tailFold,
+  tailSlice,
+  trailingBracketFooter,
   translateAttachmentMarkers,
   visibleCatalogCommands,
-  docImageURL,
+  DOC_FILE_MAX_BYTES,
+  DocFileError,
+  docImageURLAtSubpath,
   readDocFile,
 };
-
-// The import statements above are already most of the proof - Node throws a
-// SyntaxError for a named import the installed CommonJS build does not export,
-// before a line of this runs. What the loop adds is that each name arrived as
-// something callable, and that these two lists stay load-bearing at run time
-// rather than becoming a comment the runner alone reads.
-for (const name of [...ROOT_VALUES, ...DOC_CONTENT_VALUES]) {
-  assert.equal(typeof bound[name], "function", `native imports ${name}, which the installed package does not provide`);
+for (const [name, value] of Object.entries(arrived)) {
+  assert(value !== undefined, `${name} resolves from the installed package but arrived undefined`);
 }
 
 // readDocFile needs a DocPort from the host and is deliberately not called.
