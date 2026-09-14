@@ -516,8 +516,13 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		}
 		// The buffered door attempts no rollback, so whatever landed stays
 		// exactly where it is — including the writer's position, which only
-		// the bytes it wrote have moved.
-		w.poisonLandedBytesLocked(turn, written, len(data))
+		// the bytes it wrote have moved. A WHOLE line that landed is a record
+		// every reader of this file will find, which is what the durable door
+		// says with ErrEntryRetained: the same failure has to mean the same
+		// thing whichever door the caller used.
+		if w.poisonLandedBytesLocked(turn, written, len(data)) {
+			return fmt.Errorf("write transcript entry: %w; %w", err, ErrEntryRetained)
+		}
 		return fmt.Errorf("write transcript entry: %w", err)
 	}
 

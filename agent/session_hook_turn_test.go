@@ -889,3 +889,64 @@ func TestHeldHookCompletionRetainedByAFailedFlushIsStillAnnounced(t *testing.T) 
 		t.Fatalf("warnings after the retained flush = %d, want the failure reported once", got)
 	}
 }
+
+// landThenFailWriteFS writes everything it is given and then reports failure:
+// the buffered door rolls nothing back, so the whole line stays in the file.
+type landThenFailWriteFS struct {
+	afero.Fs
+	armed atomic.Bool
+}
+
+func (fs *landThenFailWriteFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &landThenFailWriteFile{File: file, fs: fs}, nil
+}
+
+func (fs *landThenFailWriteFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &landThenFailWriteFile{File: file, fs: fs}, nil
+}
+
+type landThenFailWriteFile struct {
+	afero.File
+	fs *landThenFailWriteFS
+}
+
+func (file *landThenFailWriteFile) Write(p []byte) (int, error) {
+	n, err := file.File.Write(p)
+	if err == nil && file.fs.armed.Load() {
+		return n, errors.New("injected write failure with the line landed")
+	}
+	return n, err
+}
+
+// The rule reaches the buffered door too. A turn whose append reported failure
+// with its whole line in the file is a record a returning reader finds, so
+// what it owes — its place in history, the pair log the next fold copies from
+// — is owed still. Only the durable door used to say so.
+func TestHeldTurnRetainedByABufferedWriteIsStillCommitted(t *testing.T) {
+	t.Parallel()
+	fs := &landThenFailWriteFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/retained-buffered.jsonl", transcript.Header{SessionID: "retained-buffered"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	fs.armed.Store(true)
+
+	committed := false
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("the line that landed"))
+	recorded, writeErr := writeHeldTranscriptTurn(writer, heldTranscriptTurn{turn: turn, commit: func() { committed = true }})
+	if writeErr == nil {
+		t.Fatal("the injected write failure never reached the writer")
+	}
+	if !recorded || !committed {
+		t.Fatalf("recorded=%v committed=%v for an entry the transcript holds (%v)", recorded, committed, writeErr)
+	}
+}

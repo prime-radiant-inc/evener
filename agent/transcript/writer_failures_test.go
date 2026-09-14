@@ -1,10 +1,16 @@
 package transcript
 
 import (
+	"bytes"
+	"errors"
+	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -127,5 +133,73 @@ func TestWriterDoesNotCountAnEntryThatFailedToLand(t *testing.T) {
 	}
 	if count, _ := w.FailedToolCalls(); count != 0 {
 		t.Fatalf("FailedToolCalls() = %d, want 0: the entry never reached the transcript", count)
+	}
+}
+
+// landThenFailFS writes everything it is given and then reports failure: the
+// one shape where a buffered append leaves a whole, readable entry behind and
+// still returns an error.
+type landThenFailFS struct {
+	afero.Fs
+	armed atomic.Bool
+}
+
+func (fs *landThenFailFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &landThenFailFile{File: file, fs: fs}, nil
+}
+
+func (fs *landThenFailFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &landThenFailFile{File: file, fs: fs}, nil
+}
+
+type landThenFailFile struct {
+	afero.File
+	fs *landThenFailFS
+}
+
+func (file *landThenFailFile) Write(p []byte) (int, error) {
+	n, err := file.File.Write(p)
+	if err == nil && file.fs.armed.Load() {
+		return n, errors.New("injected write failure with the line landed")
+	}
+	return n, err
+}
+
+// The buffered door rolls nothing back, so a write that reported failure with
+// the whole line written leaves a record every reader of this file will find.
+// The durable door says so with ErrEntryRetained; this one has to say the same
+// thing, or the same failure means two different things depending on which
+// door the caller used.
+func TestBufferedAppendReportsAnEntryItCouldNotTakeBack(t *testing.T) {
+	fs := &landThenFailFS{Fs: afero.NewMemMapFs()}
+	w, err := NewWriterWithFS(fs, "/retained-buffered.jsonl", Header{SessionID: "sess-retained"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	fs.armed.Store(true)
+
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("the line that landed"))
+	appendErr := w.Append(turn)
+	if appendErr == nil {
+		t.Fatal("Append reported success; the injected write failure never reached it")
+	}
+	if !errors.Is(appendErr, ErrEntryRetained) {
+		t.Fatalf("Append error = %v, want it to carry ErrEntryRetained: the whole line is in the file", appendErr)
+	}
+	data, readErr := afero.ReadFile(fs, "/retained-buffered.jsonl")
+	if readErr != nil {
+		t.Fatalf("read transcript: %v", readErr)
+	}
+	if !bytes.Contains(data, []byte("the line that landed")) {
+		t.Fatalf("test setup: the line is not in the file, so nothing was retained: %q", data)
 	}
 }
