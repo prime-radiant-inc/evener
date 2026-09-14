@@ -64,8 +64,15 @@ var notesHumanNoteEscapedKeyProbes = func() [][]byte {
 }()
 
 // containsEscapedNotesKey reports whether the document contains an escape that
-// could spell part of the human-note key.
+// could spell part of the human-note key. Every probe contains a backslash byte,
+// so a document with no backslash byte cannot hold any escape spelling and the
+// probe loop is skipped after one single-byte scan. A document that does contain
+// a backslash pays one extra single-byte pass before the probes (roborev's
+// combined review of this fast path).
 func containsEscapedNotesKey(data []byte) bool {
+	if bytes.IndexByte(data, '\\') < 0 {
+		return false
+	}
 	for _, probe := range notesHumanNoteEscapedKeyProbes {
 		if bytes.Contains(data, probe) {
 			return true
