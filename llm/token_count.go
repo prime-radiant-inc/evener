@@ -322,14 +322,15 @@ type targetInfo struct {
 	unsignedThinking bool
 }
 
-// mediaFamily is the image-token family for the target. The model's own family
-// decides it first — the surface records that — because a tokenizer family is a
-// property of the model, not of the wire protocol: OpenRouter serves
-// anthropic/claude-* and google/gemini-* rows over openai-chat. The row's
-// recorded model family is the next axis, for a gateway whose surface stays
-// generic while the model it fronts is a vendor's. A row with neither falls
-// back to the protocol, then to the name rule for callers that passed names
-// only.
+// mediaFamily is the image-token family for the target, resolved from the most
+// particular fact available to the least: the row's surface, then its recorded
+// model family, then the model's own name, and only then the wire protocol. A
+// tokenizer family is a property of the model, not of the endpoint that serves
+// it: OpenRouter serves anthropic/claude-* and google/gemini-* rows over
+// openai-chat, and a row the registry never classified still carries a name
+// that says which model it is. The protocol answers last because it describes
+// only the endpoint; the name rule is the last resort for callers that passed
+// names only.
 func (t targetInfo) mediaFamily() string {
 	switch t.surface {
 	case registry.SurfaceAnthropic:
@@ -342,6 +343,9 @@ func (t targetInfo) mediaFamily() string {
 	if f := mediaFamilyFromModelFamily(t.family); f != "" {
 		return f
 	}
+	if f := providerTokenFamily(t.provider, t.model); f != "" {
+		return f
+	}
 	switch t.protocol {
 	case registry.ProtocolAnthropic:
 		return "anthropic"
@@ -350,22 +354,27 @@ func (t targetInfo) mediaFamily() string {
 	case registry.ProtocolGoogle:
 		return "google"
 	}
-	return providerTokenFamily(t.provider, t.model)
+	return ""
 }
 
-// mediaFamilyFromModelFamily maps the registry's model family ("claude-opus",
-// "gemini-flash", "gpt") to the image-token family it bills as. A family with
-// no image-token rules of its own — llama, minimax, kimi, deepseek — returns
-// "" so its caller keeps falling back.
+// mediaFamilyFromModelFamily maps the registry's model family to the image-token
+// family it bills as. The rule mirrors the registry's own family → surface rule
+// (llm/registry §6.1) so one classification serves both: claude* and
+// gemini*/gemma* keep their vendors' rules, gpt*/o/o-mini/o-pro are OpenAI's,
+// and gpt-oss is deliberately generic — its rows declare text-only input, so no
+// image rule is claimed for it. A family with no rule of its own (llama,
+// minimax, kimi, deepseek) returns "" so its caller keeps looking.
 func mediaFamilyFromModelFamily(family string) string {
 	f := strings.ToLower(strings.TrimSpace(family))
 	switch {
 	case strings.HasPrefix(f, "claude"):
 		return "anthropic"
-	case strings.HasPrefix(f, "gemini"):
-		return "google"
-	case f == "gpt" || strings.HasPrefix(f, "gpt-"):
+	case strings.HasPrefix(f, "gpt-oss"):
+		return ""
+	case strings.HasPrefix(f, "gpt"), f == "o", f == "o-mini", f == "o-pro":
 		return "openai"
+	case strings.HasPrefix(f, "gemini"), strings.HasPrefix(f, "gemma"):
+		return "google"
 	default:
 		return ""
 	}

@@ -646,3 +646,50 @@ func TestEstimateMessagesInputTokensForResolved_BillsAndSparesUnsignedThinking(t
 		t.Fatalf("targetless history = %d, want 0: the name fallback has no row to decide from", got)
 	}
 }
+
+// A resolved row the registry did not classify still honors a model name that
+// identifies the vendor: the name describes the model, where the wire protocol
+// describes only the endpoint, so a gateway row served over openai-chat must not
+// lose its Claude family to the protocol. The family map mirrors the registry's
+// own family → surface rule (llm/registry §6.1): claude, gemini/gemma, gpt and
+// the o family are recognized, and gpt-oss is deliberately generic.
+func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRowDoesNot(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+
+	// The gateway shape the review named: generic surface, no recorded family,
+	// and a model name that identifies the vendor.
+	unnamedGatewayClaude := registry.Resolved{
+		Instance: "openrouter", ModelID: "anthropic/claude-opus-5",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(unnamedGatewayClaude, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+		t.Fatalf("name-only claude image history = %d, want %d: the model name identifies the family", got, want)
+	}
+	// The recognized families the registry maps for itself.
+	gemma := registry.Resolved{
+		Instance: "gateway", ModelID: "gemma-3-27b",
+		Protocol: registry.ProtocolOpenAIChat, Model: registry.Model{Family: "gemma"},
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(gemma, messages).Tokens, estimateGoogleImageTokens(1024, 1024); got != want {
+		t.Fatalf("gemma image history = %d, want %d: gemma is a Google family", got, want)
+	}
+	oSeries := registry.Resolved{
+		Instance: "gateway", ModelID: "o4-mini",
+		Protocol: registry.ProtocolAnthropic, Model: registry.Model{Family: "o"},
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(oSeries, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+		t.Fatalf("o-series image history = %d, want %d: the o family is OpenAI's", got, want)
+	}
+	// gpt-oss is generic per §6.1, not an OpenAI claim: with no vendor marker in
+	// the names, the protocol decides.
+	gptOSS := registry.Resolved{
+		Instance: "cerebras", Protocol: registry.ProtocolAnthropic,
+		Model: registry.Model{Family: "gpt-oss"},
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(gptOSS, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+		t.Fatalf("gpt-oss image history = %d, want %d: the gpt-oss family must not claim OpenAI", got, want)
+	}
+}
