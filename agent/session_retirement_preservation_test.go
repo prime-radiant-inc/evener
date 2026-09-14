@@ -647,6 +647,16 @@ func newRetirementPreservationFixture(t *testing.T) *retirementPreservationFixtu
 		t.Fatal("first delegate did not create a nested delegate")
 	}
 	f.recordIsolatedChild(secondID, secondChildID, "retirement-lane-two")
+	// The nested delegate runs asynchronously: its terminal result, and the root
+	// attention that result arms, can land AFTER the explicit drain above. Under
+	// load that leaves a genuinely undelivered delegate notification pending, and
+	// retirement then correctly refuses (a safety property of this branch). Settle
+	// the whole tree through the production drain before capturing the live
+	// reference, so retirement is attempted only once the tree is quiescent. This
+	// is a real readiness condition -- DrainJobTree runs notification turns until
+	// every job notification, delegate attention and running child has settled --
+	// never a timing guess.
+	awaitTreeQuiesced(t, root)
 	// One clean and one tracked-dirty occupied lane.
 	if err := os.WriteFile(filepath.Join(f.lanePaths[1], "README.md"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -659,6 +669,22 @@ func newRetirementPreservationFixture(t *testing.T) *retirementPreservationFixtu
 	}
 	f.primaryBefore = readRetirementPrimaryFiles(t, repo.stateDir)
 	return f
+}
+
+// awaitTreeQuiesced settles the whole delegate tree through the production
+// drain before any retirement attempt. DrainJobTree is the real readiness
+// signal: it runs notification turns until no job notification, delegate
+// attention, delegate delivery or running/finalizing/driving child remains, so
+// a retirement that follows cannot be refused for work the tree had not yet
+// surfaced when an ad-hoc drain returned. The deadline only bounds a genuinely
+// wedged tree; a well-formed tree quiesces on its own.
+func awaitTreeQuiesced(t *testing.T, root *Session) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := root.DrainJobTree(ctx); err != nil {
+		t.Fatalf("settle delegate tree before retirement: %v", err)
+	}
 }
 
 // nestedDelegateUnder returns the delegate whose descriptor names parentID as
@@ -1070,6 +1096,70 @@ func TestRetirementPreservationNestedColdRestore(t *testing.T) {
 
 	restored := f.assertRestored()
 	restored.Close()
+}
+
+// TestRetirementTreeSettleDrainsPendingRootAttention is the deterministic
+// regression for the load-dependent nested-cold-restore flake. A delegate
+// completion arms a durable, undelivered root delegate attention; while it is
+// pending the retirement safety property correctly refuses. The fixture must
+// therefore settle the whole tree through the production drain before
+// retiring. This test builds a real delegate, lets it finish WITHOUT draining
+// its result, requires the armed attention to be observable, then requires the
+// settle step to drain it and leave retirement claimable. It fails if the
+// settle step is absent or a no-op.
+func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
+	repo := newRetirementWorktreeRepo(t)
+	root := repo.s
+	t.Cleanup(func() { root.Close() })
+	root.client.Register(&retirementDelegateAdapter{name: "openai"})
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	result := root.createDelegate(context.Background(), delegateArgs{Task: "late-root-attention"})
+	if result.Err != nil {
+		t.Fatalf("create delegate: %v", result.Err)
+	}
+	sub := root.subagents.get(result.ChildSessionID)
+	if sub == nil {
+		t.Fatal("created delegate missing from the manager")
+	}
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	// Wait for the runner only: no ProcessInput drain, so the completion's root
+	// attention stays genuinely undelivered -- the state the flake retired in.
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second): // TRIPWIRE: bounds a fixture bug only.
+		t.Fatal("delegate runner did not finish")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !root.hasPendingRootDelegateAttention() {
+		if time.Now().After(deadline) {
+			t.Fatal("fixture: the delegate completion armed no pending root attention to drain")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The safety property holds while the attention is pending: retirement
+	// refuses rather than discarding an undelivered delegate notification.
+	if _, state, err := c.TryClaim(true); err != nil || !hasRetirementBlocker(state.Blockers, "notification") {
+		t.Fatalf("claim with pending root attention = %+v %v, want a notification refusal", state, err)
+	}
+	// The production readiness path drains the tree, after which retirement is
+	// claimable.
+	awaitTreeQuiesced(t, root)
+	if root.hasPendingRootDelegateAttention() {
+		t.Fatal("tree settle left the root delegate attention pending")
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim after tree settle = %+v %v, want a claim", state, err)
+	}
+	c.Abort(claim, "")
 }
 
 // toleratedRetirementPrimaryAddition reports whether name is a legitimate
