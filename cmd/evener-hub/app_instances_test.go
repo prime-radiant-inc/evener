@@ -4063,7 +4063,22 @@ func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
 	}
 
 	listDone := make(chan appwire.InstanceListResponse, 1)
-	go func() { listDone <- f.ctl.List() }()
+	listFinished := make(chan struct{})
+	go func() {
+		defer close(listFinished)
+		listDone <- f.ctl.List()
+	}()
+	t.Cleanup(func() {
+		release()
+		// The listing is joined before the fixture's temp roots are removed:
+		// building a row can still land the endpoint-fingerprint key file under
+		// the state root, and one still running at cleanup races RemoveAll.
+		select {
+		case <-listFinished:
+		case <-time.After(10 * time.Second):
+			t.Error("the listing goroutine was still blocked after the section was released")
+		}
+	})
 
 	// The exclusive section is held, so List has to be waiting on it: one that
 	// returns here read a credential state a writer is still deciding.
