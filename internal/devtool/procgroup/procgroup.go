@@ -128,3 +128,16 @@ func ExitCode(state *os.ProcessState) int {
 	}
 	return 1
 }
+
+// DiedOfSignal reports the signal that killed the process, when one did. A
+// caller that stopped the process itself uses this to tell its own SIGTERM
+// from a command that decided its own fate.
+func DiedOfSignal(state *os.ProcessState) (syscall.Signal, bool) {
+	if state == nil {
+		return 0, false
+	}
+	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return ws.Signal(), true
+	}
+	return 0, false
+}

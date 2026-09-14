@@ -68,6 +68,10 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Cancel = func() error { return nil }
+	// A copier that will not finish cannot hold Wait open past the stop: after
+	// this long exec closes the pipes itself, and the wait returns with what
+	// it has.
+	cmd.WaitDelay = grace
 	cmd.Stdout = &out
 	cmd.Stderr = guarded
 	if err := procgroup.Start(cmd); err != nil {
@@ -168,6 +172,18 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		}
 		return result
 	}
+	if result.interrupted == 0 && finishedOnItsOwn(cmd.ProcessState, result.interrupted) {
+		// The bound expired while the command was already finishing: Wait
+		// reaps the process first and drains the copiers after, so the clock
+		// can run out against a command that had decided. Its own status says
+		// which happened, and a command that decided is not a timeout.
+		//
+		// Only on this path. An interrupted run is interrupted whatever the
+		// command did next: a child that answers SIGHUP by exiting cleanly
+		// exited because the operator said so, and reporting its 0 would call
+		// that run a success.
+		return completed(waited.err())
+	}
 	if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
 		result.stuck = true
 	}
@@ -217,6 +233,22 @@ func finishedFirst(reaped <-chan struct{}, waited *waitResult) (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+// finishedOnItsOwn reports whether the command decided its own fate rather
+// than being stopped here: an exit status is its own answer, and so is a death
+// by a signal this helper did not send. Only a death by our SIGTERM or SIGKILL
+// -- or no status at all -- means the bound, or the interrupt, is what ended
+// it.
+func finishedOnItsOwn(state *os.ProcessState, sent syscall.Signal) bool {
+	if state == nil {
+		return false
+	}
+	sig, killed := procgroup.DiedOfSignal(state)
+	if !killed {
+		return state.Exited()
+	}
+	return sig != syscall.SIGTERM && sig != syscall.SIGKILL && sig != sent
 }
 
 // reapOrGiveUp waits for the reap that the stop above should have produced,
@@ -372,8 +404,13 @@ var realGroupStopper = groupStopper{
 // holding the build and module cache locks.
 //
 // Asking after the reap is safe exactly while the group is not empty, which is
-// what procgroup.Exists answers: a pid cannot be reused while it is still a
-// live group's id, and an empty group answers no, so nothing is sent.
+// what procgroup.Exists answers. A pid is not recycled while it is a live
+// group's id, so a group that answers kill(-pgid, 0) is the group this attempt
+// started, until its last member is gone -- and once it is gone the sweep
+// sends nothing, because Exists says so first. The window between that check
+// and the signal is microseconds against a pid space handed out in sequence,
+// and closing it would mean probing process identity, which is a great deal of
+// machinery for a race nothing here has been able to produce.
 //
 // A group still there after the SIGKILL is the same situation as a child that
 // could not be reaped, and gets the same answer: false, and the caller stops

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -338,6 +339,15 @@ func TestBoundedListEscapeeHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("BOUNDED_LIST_ESCAPEE_READY"), nil, 0o644); err != nil {
 		t.Fatalf("writing the escapee's ready file: %v", err)
 	}
+	if code := os.Getenv("BOUNDED_LIST_ESCAPEE_EXIT"); code != "" {
+		status, err := strconv.Atoi(code)
+		if err != nil {
+			t.Fatalf("BOUNDED_LIST_ESCAPEE_EXIT=%q: %v", code, err)
+		}
+		// The point of this exit: the command has decided, and its output is
+		// still draining through the grandchild's copy of the pipe.
+		os.Exit(status)
+	}
 }
 
 // TestBoundedListSleeperHelper is the grandchild: it holds the inherited pipe
@@ -350,7 +360,15 @@ func TestBoundedListSleeperHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("BOUNDED_LIST_SLEEPER_READY"), nil, 0o644); err != nil {
 		t.Fatalf("writing the grandchild's ready file: %v", err)
 	}
-	time.Sleep(3 * time.Second)
+	hold := 3 * time.Second
+	if value := os.Getenv("BOUNDED_LIST_SLEEPER_HOLD"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			t.Fatalf("BOUNDED_LIST_SLEEPER_HOLD=%q: %v", value, err)
+		}
+		hold = parsed
+	}
+	time.Sleep(hold)
 }
 
 // escapeeCommand is the attempt's command for the give-up tests: this test
@@ -367,76 +385,63 @@ func escapeeCommand(t *testing.T) ([]string, string) {
 	return []string{os.Args[0], "-test.run=TestBoundedListEscapeeHelper$"}, escapeeReady
 }
 
-func TestBoundedAttemptGivesUpOnAChildItCannotReap(t *testing.T) {
+func TestBoundedAttemptDoesNotWedgeOnAnEscapedPipeHolder(t *testing.T) {
 	var stderr bytes.Buffer
 	argv, escapeeReady := escapeeCommand(t)
-	// The middle process exits as soon as its grandchild holds the pipe, so
-	// the unreapable state is entered by the command itself rather than at
-	// some elapsed time. The bound below only has to outlast that fork, which
-	// takes single-digit milliseconds here: a second is a tripwire two orders
-	// of magnitude clear of it, and a machine slower than that fails this test
-	// loudly rather than passing it for the wrong reason.
+	// The middle process exits as soon as its grandchild holds the pipe, and
+	// the grandchild is in a group of its own, so the attempt's stop cannot
+	// reach it. Nothing here may wait for it: the wait delay closes the pipes
+	// and the attempt reports what it has. The bound is far away on purpose --
+	// what ends this attempt is the delay, not the clock, so the test does not
+	// depend on how long a fork takes under the race detector.
 	start := time.Now()
-	result := runBoundedAttempt(argv, time.Second, 300*time.Millisecond, &stderr, nil)
+	result := runBoundedAttempt(argv, 30*time.Second, 300*time.Millisecond, &stderr, nil)
 	awaitFile(t, escapeeReady, "the escapee never reported its grandchild")
-	if !result.stuck {
-		t.Fatalf("stuck = false after %s; the attempt waited for a child it could not reap", time.Since(start))
-	}
-	if result.exitCode != 124 {
-		t.Fatalf("exitCode = %d, want 124", result.exitCode)
-	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Fatalf("the attempt took %s, which is not a bound", elapsed)
+		t.Fatalf("the attempt took %s, so it waited for the grandchild's hold rather than giving up on the pipe", elapsed)
 	}
-	if got := stderr.String(); !strings.Contains(got, "stuck in the kernel") {
-		t.Fatalf("stderr = %q, want it to say the child could not be reaped", got)
+	// The command exited 0, and its output did not all arrive: reporting that
+	// as success would hand a caller a list it cannot tell from a whole one.
+	if result.exitCode != 1 {
+		t.Fatalf("exitCode = %d, want 1; stderr = %q", result.exitCode, stderr.String())
 	}
-	// The sweep is skipped in this state, so nothing here waited another grace
-	// on a group that cannot answer.
-	if strings.Contains(stderr.String(), "left processes running in its group") {
-		t.Fatalf("stderr = %q, want no survivor sweep after giving up", stderr.String())
+	if got := stderr.String(); !strings.Contains(got, "could not be read in full") {
+		t.Fatalf("stderr = %q, want it to say the output was lost", got)
 	}
 }
 
-func TestBoundedAttemptKeepsTheInterruptWhenItCannotReap(t *testing.T) {
+func TestBoundedAttemptKeepsTheInterruptWhenTheOutputCannotBeRead(t *testing.T) {
 	var stderr bytes.Buffer
-	// An interrupt is what the operator asked for; a child the kernel will not
-	// let go of does not turn that into a timeout, whose diagnostic would send
-	// them looking at their caches for a signal they sent themselves.
 	argv, escapeeReady := escapeeCommand(t)
 	signals := make(chan os.Signal, 1)
 	latch := &signalLatch{ch: signals}
 	// Once the grandchild is running: signalling before that would stop a
-	// group that has nothing to leave behind.
+	// group with nothing to leave behind.
 	sent := signalWhenReady(escapeeReady, "the escapee never reported its grandchild", signals, syscall.SIGTERM)
 	result := runBoundedAttempt(argv, 30*time.Second, 300*time.Millisecond, &stderr, latch)
 	sent(t)
-	if !result.stuck {
-		t.Fatal("stuck = false; this case needs the child that cannot be reaped")
-	}
 	if result.exitCode != 143 {
-		t.Fatalf("exitCode = %d, want 143: the run was interrupted, not timed out", result.exitCode)
+		t.Fatalf("exitCode = %d, want 143: the run was interrupted, and a lost pipe does not change that", result.exitCode)
 	}
 }
 
-func TestBoundedListDoesNotRetryAChildItCannotReap(t *testing.T) {
+func TestBoundedListDoesNotRetryWhenTheOutputCouldNotBeRead(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	argv, escapeeReady := escapeeCommand(t)
-	// Same shape as the attempt-level case: the command puts itself into the
-	// unreapable state and exits, and the bound is the tripwire that notices.
-	args := append([]string{"-timeout", "1s", "-attempts", "3", "-grace", "300ms", "--"}, argv...)
+	// Same shape: the wait delay ends the attempt, not the bound.
+	args := append([]string{"-timeout", "30s", "-attempts", "3", "-grace", "300ms", "--"}, argv...)
 	code := boundedListWith(args, &stdout, &stderr, nil)
 	awaitFile(t, escapeeReady, "the escapee never reported its grandchild")
-	if code != 124 {
-		t.Fatalf("exit code = %d, want 124; stderr = %q", code, stderr.String())
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr.String())
 	}
-	// Another attempt would stack a second stuck process on the volume that
-	// already has one.
-	if got := strings.Count(stderr.String(), "did not exit after SIGKILL"); got != 1 {
-		t.Fatalf("gave up %d times, want exactly one attempt; stderr = %q", got, stderr.String())
+	// One attempt: the command answered, and what failed was reading its
+	// output, which another attempt would not change.
+	if got := strings.Count(stderr.String(), "could not be read in full"); got != 1 {
+		t.Fatalf("the attempt was made %d times, want one; stderr = %q", got, stderr.String())
 	}
 	if strings.Contains(stderr.String(), "retrying") {
-		t.Fatalf("stderr = %q: a child that cannot be reaped is not retried", stderr.String())
+		t.Fatalf("stderr = %q: nothing here is worth retrying", stderr.String())
 	}
 }
 
@@ -707,5 +712,39 @@ func TestBoundedAttemptKeepsAnExitErrorsStatus(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "could not be read in full") {
 		t.Fatalf("stderr = %q, want nothing said about an output failure that did not happen", stderr.String())
+	}
+}
+
+func TestBoundedAttemptKeepsWhatACommandDecidedWhileItsOutputDrained(t *testing.T) {
+	// exec.Cmd.Wait reaps the process and only then drains the copiers, so a
+	// command that exited while its output was still on its way can meet a
+	// bound that has already expired. What decided it is its own status, and a
+	// command that decided is not a timeout however long the drain took.
+	for _, tc := range []struct {
+		name string
+		exit string
+		want int
+	}{
+		{name: "a clean exit", exit: "0", want: 0},
+		{name: "a failure of its own", exit: "3", want: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			argv, _ := escapeeCommand(t)
+			// The grandchild holds the pipe past the bound and then lets go,
+			// so the drain finishes inside the reap's grace.
+			t.Setenv("BOUNDED_LIST_SLEEPER_HOLD", "600ms")
+			t.Setenv("BOUNDED_LIST_ESCAPEE_EXIT", tc.exit)
+			// The grace outlasts the hold, so the drain finishes and the
+			// command's own status is what comes back; the bound is far away
+			// so that a slow fork cannot turn this into a timeout.
+			result := runBoundedAttempt(argv, 30*time.Second, 5*time.Second, &stderr, nil)
+			if result.exitCode != tc.want {
+				t.Fatalf("exitCode = %d, want %d; stderr = %q", result.exitCode, tc.want, stderr.String())
+			}
+			if result.stuck {
+				t.Fatalf("stuck = true for a command that finished on its own; stderr = %q", stderr.String())
+			}
+		})
 	}
 }

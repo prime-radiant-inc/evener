@@ -55,3 +55,6 @@ func ExitCode(state *os.ProcessState) int {
 	}
 	return 1
 }
+
+// DiedOfSignal has nothing to report on a platform without them.
+func DiedOfSignal(*os.ProcessState) (syscall.Signal, bool) { return 0, false }

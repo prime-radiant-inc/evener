@@ -1,7 +1,8 @@
 // Command evener-dev is the dev/test infrastructure binary: it dispatches
 // the dev and test tooling subcommands that an end-user install never needs
-// (agent-shards, covstmt, module-lint, fuzz-harvest, fuzzcov, fuzzregistry,
-// internalcheck, tomlcheck, transcript-v2-upgrade).
+// (agent-shards, bounded-list, covstmt, list-build-flags, module-lint,
+// fuzz-harvest, fuzzcov, fuzzregistry, internalcheck, tomlcheck,
+// transcript-v2-upgrade).
 //
 // The end-user binary is `evener`; this binary is built and used by repo
 // contributors via `make` targets and `go run ./cmd/evener-dev/bin`.
