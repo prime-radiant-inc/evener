@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -86,6 +89,42 @@ func TestPastThreadForListToleratesCorruptMutationJournal(t *testing.T) {
 	}
 }
 
+// TestPastThreadForListReadsNoteFromStrictRejectedSnapshot pins the roster's
+// use of the lightweight projection read: a well-formed document the strict
+// authority decode refuses (an unknown top-level field) still contributes its
+// top-level human note to the read-only list. That is what proves the
+// per-entry roster read no longer strict-decodes the mutations journal; under
+// the strict reader the roster would degrade to "no canonical note" and this
+// would fail.
+func TestPastThreadForListReadsNoteFromStrictRejectedSnapshot(t *testing.T) {
+	cfg, sessionID, stateDir := seedPastSessionWithTasks(t, nil)
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	dir := filepath.Join(stateDir, "mutations")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := fmt.Sprintf(
+		`{"unknown_notes_state":true,"version":1,"session_id":%q,"human_note":"roster light","accepted_turns":0,"journal":{},"input_queue":[],"queue_revision":0,"next_turn_sequence":0,"next_queue_entry_sequence":0,"budget_reservations":{},"pending_executions":{}}`,
+		sessionID)
+	if err := os.WriteFile(filepath.Join(dir, sessionID+".json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := agent.ReadCanonicalHumanNote(stateDir, sessionID); err == nil {
+		t.Fatal("strict reader accepted the fixture; the roster contrast needs a document it rejects")
+	}
+
+	thread, err := pastEntryThreadForList(context.Background(), cfg, entry)
+	if err != nil {
+		t.Fatalf("pastEntryThreadForList: %v", err)
+	}
+	if thread.Evener.HumanNote != "roster light" {
+		t.Fatalf("roster human note = %q, want %q", thread.Evener.HumanNote, "roster light")
+	}
+}
+
 func TestPastThreadReadNotesAbsentWhenUnset(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
 	entry, ok := cfg.Past.Find(sessionID)
@@ -137,5 +176,45 @@ func TestPastThreadReadCanonicalHumanNote(t *testing.T) {
 				t.Fatal("past read rewrote journal")
 			}
 		})
+	}
+}
+
+// A legacy session's hub-side metadata predates the write-path strip: the agent
+// note and the URL fields are projected straight onto the wire for the roster,
+// which the TUI prints directly, so the projection sanitizes them rather than
+// trusting what was persisted (roborev's fifth round).
+func TestPastThreadListSanitizesLegacyAgentNoteAndURLs(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	const payload = "\x1b]0;owned\x07note\u009b31m\u0085"
+	entry.Meta.AgentNote = payload
+	entry.Meta.SessionURLs = []schema.SessionURL{{
+		ID: "u\x1b1", URL: "https://x.test/a\u0085b", Label: payload, AddedBy: "agent", AddedAt: 7,
+	}}
+
+	thread, err := pastEntryThreadForList(context.Background(), cfg, entry)
+	if err != nil {
+		t.Fatalf("pastEntryThreadForList: %v", err)
+	}
+	assertPlain := func(surface, text string) {
+		t.Helper()
+		for _, r := range text {
+			if unicode.IsControl(r) && r != '\n' {
+				t.Fatalf("%s = %q carries control rune %U", surface, text, r)
+			}
+		}
+	}
+	assertPlain("projected agent note", thread.Evener.AgentNote)
+	if len(thread.Evener.SessionURLs) != 1 {
+		t.Fatalf("projected urls = %+v, want one entry", thread.Evener.SessionURLs)
+	}
+	assertPlain("projected URL", thread.Evener.SessionURLs[0].URL)
+	assertPlain("projected URL id", thread.Evener.SessionURLs[0].ID)
+	assertPlain("projected URL label", thread.Evener.SessionURLs[0].Label)
+	if !strings.Contains(thread.Evener.AgentNote, "note") {
+		t.Fatalf("projected agent note %q lost its text", thread.Evener.AgentNote)
 	}
 }
