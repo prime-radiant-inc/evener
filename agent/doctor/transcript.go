@@ -65,6 +65,16 @@ func loadTranscriptWithMaxLineBytes(path string, maxLineBytes int) (transcriptDo
 		if err != nil {
 			return transcriptDoc{}, fmt.Errorf("parse transcript entry line %d: %w", lineNumber, err)
 		}
+		if e.Turn.ContextReplay {
+			// A compaction fold re-appends the turns its marker would discard,
+			// so the model's history survives the anchor. Those copies are
+			// second records of rounds this file already holds, and every
+			// doctor answer is about the conversation: how many times a tool
+			// was called, how many turns there are, which one ended the
+			// session. Excluded here, at the one place the doctor turns lines
+			// into entries, so no reader has to remember.
+			continue
+		}
 		doc.Entries = append(doc.Entries, e)
 	}
 	if !headerRead {

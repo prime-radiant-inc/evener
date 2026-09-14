@@ -449,3 +449,37 @@ func TestTranscript_ResultToolFromMeta(t *testing.T) {
 		t.Error("submit_answer should be flagged as the result tool")
 	}
 }
+
+// A compaction fold writes replay copies of the turns its marker would
+// otherwise discard: second records of rounds the file already holds. The
+// doctor answers questions about the conversation — how many times a tool was
+// called, how many turns there are — so a copy must not be counted as another
+// call or another turn.
+func TestDoctorReadsCountAReplayCopiedRoundOnce(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+	call := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		toolCall("read_file", `{"path":"x"}`),
+	}})
+	copied := call
+	copied.ContextReplay = true
+	copied.CompactionFoldID = "fold_doctor"
+	marker := schema.NewTurn(schema.TurnSummary, llm.Message{Role: llm.RoleSystem, Content: []llm.ContentPart{assistantText("[CONTEXT SUMMARY]")}})
+	marker.CompactionFoldID = "fold_doctor"
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("please read the file")}}),
+		call,
+		copied,
+		marker,
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	got, err := Count(base, sid, "read_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Calls != 1 {
+		t.Errorf("read_file calls = %d, want 1: the fold's copy is the same call written down again", got.Calls)
+	}
+}
