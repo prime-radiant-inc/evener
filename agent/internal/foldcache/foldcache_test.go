@@ -1125,3 +1125,72 @@ func TestCache_AppendDuringTheFoldRecordsAMatchingMtime(t *testing.T) {
 		t.Fatalf("value = %+v, want 6", after.Value)
 	}
 }
+
+// TestCache_AppendRacingTheStatIsNotServedFromTheCachedFold pins that a
+// decision to read nothing rests on the length the probe's own handle
+// reports. The stat Get takes can predate an append that lands before the
+// probe opens the file; the recorded tail still matches, because an append
+// leaves it where it was, so a hit decided on that stale length returns a
+// fold that is missing everything the append added.
+func TestCache_AppendRacingTheStatIsNotServedFromTheCachedFold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	original := make([]int, 0, 40)
+	for v := 10; v < 50; v++ {
+		original = append(original, v)
+	}
+	writeLines(t, path, original)
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if folded.Value.sum != 1180 {
+		t.Fatalf("first fold summed %d, want 1180", folded.Value.sum)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	stale := tornStatInfo{FileInfo: mustStat(t, path), size: st.size, mod: st.mod}
+
+	appended := make([]int, 0, 10)
+	for v := 50; v < 60; v++ {
+		appended = append(appended, v)
+	}
+	appendLines(t, path, appended)
+
+	// The next Get's own stat is the one that predates the append; every
+	// later look at the file sees it.
+	stats := 0
+	c.stat = func(p string) (os.FileInfo, error) {
+		stats++
+		if stats == 1 {
+			return stale, nil
+		}
+		return os.Stat(p)
+	}
+
+	after, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after an append that raced the stat: %v", err)
+	}
+	if after.Value.sum != 1725 {
+		t.Fatalf("value = %+v, want the appended lines read too (sum 1725) -- the probe's handle reports a longer file than the stat did, so nothing here may be served from the cached fold", after.Value)
+	}
+	if after.Epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a pure append, want it to stay at %d", after.Epoch, folded.Epoch)
+	}
+}
+
+func mustStat(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}

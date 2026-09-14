@@ -168,6 +168,34 @@ type entry[T any] struct {
 
 // Cache incrementally folds append-only files, keyed by path, bounded to a
 // fixed number of entries evicted least-recently-used.
+//
+// What it checks, and what it tolerates. Every mutation of the journals it
+// folds is an append or an in-place truncate on the writer's own handle:
+// jobstore repairs a torn trailing line and rolls a failed append back
+// (agent/internal/jobstore/store.go, recoverTrailingJSONLineLocked and
+// rollbackAppendLocked), and delegatestore does the same for a torn version
+// header, an unterminated trailing batch, and a failed append
+// (agent/internal/delegatestore/store.go, repair and rollbackLocked).
+// Nothing renames a replacement over either path and nothing compacts them,
+// so a rewrite always shrinks the file before it regrows. Per Get this
+// cache compares the recorded length and mtime against the file, re-reads
+// the trailing bytes it recorded, and — wherever it would otherwise return
+// the cached fold without reading anything — takes the length from the same
+// handle that probe read through, never from a stat that may predate a
+// write. A same-size ambiguity is settled by a second stat, and growth
+// reported by that stat is probed again.
+//
+// One shape still slips through: a change landing between two of those
+// reads that leaves the file at the recorded length with the recorded
+// trailing bytes intact — a truncate followed by an append back to the same
+// length whose last tailProbeBytes match, inside the window between a
+// handle's fstat and its ReadAt. No writer above produces that, and no
+// further probing would close it, because every check is itself two reads
+// and so opens a window of its own. Locking is not available either: the
+// writers are separate processes holding nothing a reader could take. The
+// cost is bounded and worth stating plainly — a fold whose generation does
+// not move, so an outstanding continuation is accepted and its position
+// applied to content that changed underneath it.
 type Cache[T any] struct {
 	mu         sync.Mutex
 	entries    map[string]*list.Element
@@ -182,7 +210,7 @@ type Cache[T any] struct {
 	group   singleflight.Group
 
 	// stat is os.Stat, indirected so a test can pin what happens to the
-	// file between the reads refresh makes of it — orderings no fixture
+	// file between the looks this cache takes at it — orderings no fixture
 	// can produce from the outside, because nothing else runs in those
 	// windows.
 	stat func(string) (os.FileInfo, error)
@@ -297,13 +325,19 @@ func (c *Cache[T]) tryFastHit(path string, info os.FileInfo) (Result[T], bool, e
 		return Result[T]{}, false, nil
 	}
 	value, offset, epoch, tail := e.value, e.offset, st.epoch, st.tail
+	size, mod := st.size, st.mod
 	c.mu.Unlock()
 
-	match, err := tailProbeMatches(path, offset, tail)
+	// info above is Get's own stat, taken before this probe opens the file;
+	// it is worth checking first because it costs nothing, but it cannot be
+	// what decides a hit — a rewrite landing between that stat and this
+	// open would leave the length coming from the old file and the bytes
+	// from the new one. Both come from the probe's handle instead.
+	match, probed, err := probeTailFromHandle(path, offset, tail)
 	if err != nil {
 		return Result[T]{}, false, err
 	}
-	if !match {
+	if !match || probed == nil || probed.Size() != size || !mod.Equal(probed.ModTime()) {
 		return Result[T]{}, false, nil
 	}
 
@@ -404,15 +438,21 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 	}
 
 	if sameSizeAmbiguous {
-		match, tailErr := tailProbeMatches(path, st.offset, st.tail)
+		// Probed through the handle, because the branch below can return
+		// the cached value without reading anything: info is Get's stat,
+		// taken before this probe opens the file, so a decision to read
+		// nothing must rest on the length the probe's own handle reports
+		// rather than on a length that may predate an append.
+		match, probed, tailErr := probeTailFromHandle(path, st.offset, st.tail)
 		if tailErr != nil {
 			var zero Result[T]
 			return zero, tailErr
 		}
+		probeAgreesWithState := probed != nil && probed.Size() == st.size && probed.ModTime().Equal(st.mod)
 		switch {
 		case !match:
 			epoch++
-		case sameSizeMtimeAgrees:
+		case sameSizeMtimeAgrees && probeAgreesWithState:
 			if element != nil {
 				if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
 					// Confirmed unchanged, and the cached value is still
@@ -429,10 +469,12 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 			// intact; only the cached value is gone (evicted or replaced).
 			// Reread it from zero without moving the generation.
 		default:
-			// The prefix survived but the mtime moved, which leaves two
-			// candidates the first stat cannot separate: a torn append (old
-			// size, new mtime) and a rewrite that landed on the same length
-			// and kept the bytes the probe reads — a journal rewritten with
+			// The prefix survived, but either the mtime moved or the
+			// handle reported a file that is not the one the recorded
+			// state describes. Both leave two candidates the first stat
+			// cannot separate: a torn or racing append (the stat's size
+			// predates the write) and a rewrite that landed on the same
+			// length and kept the bytes the probe reads — a journal rewritten with
 			// the same trailing record is exactly that, and accepting it
 			// would let an outstanding continuation resume into content that
 			// changed underneath its index. Stat again: the append that tore
@@ -554,26 +596,42 @@ func tailProbeMatches(path string, offset int64, want []byte) (bool, error) {
 		// contradict.
 		return true, nil
 	}
+	match, _, err := probeTailFromHandle(path, offset, want)
+	return match, err
+}
+
+// probeTailFromHandle opens path once and answers from that single handle
+// both questions a reader asks of the file: how long it is, and whether the
+// bytes this cache recorded are still where it left them. Taking the length
+// from the handle rather than from an earlier os.Stat is what keeps the two
+// answers describing the same file — a stat taken before the open can
+// describe a length the probed bytes never belonged to. A missing file is a
+// mismatch, not an error, for the same reason tailProbeMatches gives.
+func probeTailFromHandle(path string, offset int64, want []byte) (bool, os.FileInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return false, nil, nil
 		}
-		return false, err
+		return false, nil, err
 	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return false, nil, err
+	}
+	if len(want) == 0 {
+		return true, info, nil
+	}
 	start := offset - int64(len(want))
 	if start < 0 {
-		return false, nil
-	}
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return false, err
+		return false, info, nil
 	}
 	got := make([]byte, len(want))
-	if _, err := io.ReadFull(f, got); err != nil {
-		return false, nil // shorter than expected: file changed underneath
+	if _, err := f.ReadAt(got, start); err != nil {
+		return false, info, nil // shorter than expected: file changed underneath
 	}
-	return bytes.Equal(got, want), nil
+	return bytes.Equal(got, want), info, nil
 }
 
 // captureTailProbe reads the last min(tailProbeBytes, offset) bytes ending
