@@ -39,6 +39,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
+import { watchEventLabel } from "../watchEventLabel";
 import { HeadClippedOutputBody } from "./bodies";
 import styles from "./jobWatch.module.css";
 
@@ -110,13 +111,6 @@ function heartbeatPhrase(spec: ConditionSpec): string | undefined {
 function cadenceSuffix(spec: ConditionSpec): string | undefined {
   if (spec.progressIntervalMS === undefined) return undefined;
   return `· ${humanizeInterval(spec.progressIntervalMS / 1000)}`;
-}
-
-// eventDisplayName renders one watched event kind in words. The producer's
-// wildcard "*" reads as "any event" everywhere — rows, summaries, sentences,
-// details — never as a bare "*" (combined RoboRev review).
-function eventDisplayName(name: string): string {
-  return name === "*" ? "any event" : name;
 }
 
 function noteHead(note: string): string {
@@ -265,7 +259,7 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
   if (condition.outputMatch) clauses.push(`“${condition.outputMatch}”`);
   if (condition.events.length > 0) {
     const throttle = condition.every !== undefined ? ` (every ${condition.every})` : "";
-    clauses.push(`${condition.events.map(eventDisplayName).join(", ")}${throttle}`);
+    clauses.push(`${condition.events.map(watchEventLabel).join(", ")}${throttle}`);
   }
   if (condition.filterStatus || condition.filterToolName) {
     // An event-filter watch names the watched shape in words — both
@@ -322,7 +316,7 @@ function rowConditionPhrase(row: WatchRow): string {
       // "(every N)" shape (RoboRev PR #954 review 3).
       const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
       if (parsed.events.length > 0) {
-        const names = parsed.events.map(eventDisplayName).join(", ");
+        const names = parsed.events.map(watchEventLabel).join(", ");
         bits.push(`${names}${every}`);
       }
       if (parsed.filterToolName || parsed.filterStatus) {
@@ -560,7 +554,7 @@ function ConditionSentence({ source, spec, meta }: { source: string; spec: Condi
     if (spec.events.length === 1) {
       parts.push(
         <span key="filter-event">
-          (<span className={CLASS.mono}>{eventDisplayName(spec.events[0] ?? "")}</span>)
+          (<span className={CLASS.mono}>{watchEventLabel(spec.events[0] ?? "")}</span>)
         </span>,
       );
     }
@@ -574,7 +568,7 @@ function ConditionSentence({ source, spec, meta }: { source: string; spec: Condi
     const throttle = spec.every !== undefined ? ` (every ${spec.every})` : "";
     head.push(
       <span key="events">
-        wakes on <span className={CLASS.mono}>{spec.events.map(eventDisplayName).join(", ")}</span>
+        wakes on <span className={CLASS.mono}>{spec.events.map(watchEventLabel).join(", ")}</span>
         {throttle}
       </span>,
     );
@@ -724,7 +718,7 @@ function rowDetailPhrase(row: WatchRow): string | undefined {
     const bits: string[] = [`“${parsed.outputMatch}”`];
     const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
     if (parsed.events.length > 0) {
-      const names = parsed.events.map(eventDisplayName).join(", ");
+      const names = parsed.events.map(watchEventLabel).join(", ");
       bits.push(`${names}${every}`);
     }
     if (parsed.filterToolName || parsed.filterStatus) {
@@ -747,7 +741,7 @@ function rowDetailPhrase(row: WatchRow): string | undefined {
   const bits: string[] = [];
   const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
   if (parsed.events.length > 0) {
-    const names = parsed.events.map(eventDisplayName).join(", ");
+    const names = parsed.events.map(watchEventLabel).join(", ");
     bits.push(`${names}${every}`);
   }
   if (parsed.filterToolName || parsed.filterStatus) {

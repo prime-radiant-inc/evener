@@ -1,5 +1,5 @@
 import { buildEntityView, type EntityView } from "@evener/appwire-client";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
@@ -240,6 +240,81 @@ test("watch renders a card trigger with no OpenButton", () => {
   expect(card.textContent).toContain("last-known");
 });
 
+test("watch card renders a trigger and its note separately", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={watchView("watch_noted", {
+        watch_id: "watch_noted",
+        watching: true,
+        source: "job_x",
+        condition: "output_match: ready; note: Preserve the release context",
+        note: "Preserve the release context",
+      })}
+      id="watch_noted"
+    />,
+  );
+
+  const card = focusCard();
+  expect(card.textContent).toContain("output matching “ready”");
+  const noteLabel = within(card).getByText("Note");
+  expect(noteLabel.tagName).toBe("DT");
+  expect(noteLabel.nextElementSibling?.textContent).toBe("Preserve the release context");
+});
+
+test("note-only watch card renders note content without raw condition grammar", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={watchView("watch_note_only", {
+        watch_id: "watch_note_only",
+        watching: true,
+        source: "job_x",
+        condition: "note: Follow up after the release",
+      })}
+      id="watch_note_only"
+    />,
+  );
+
+  const card = focusCard();
+  expect(within(card).getByText("Follow up after the release")).toBeTruthy();
+  expect(card.textContent).not.toContain("note: Follow up after the release");
+});
+
+test("watch card without a trigger or note has no summary content", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={watchView("watch_empty", {
+        watch_id: "watch_empty",
+        watching: true,
+        source: "job_x",
+      })}
+      id="watch_empty"
+    />,
+  );
+
+  const card = focusCard().querySelector('[data-entity-kind="watch"]');
+  expect(card?.children).toHaveLength(2);
+});
+
+test("wildcard watch card renders any event with the watch-list cadence wording", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={watchView("watch_wildcard", {
+        watch_id: "watch_wildcard",
+        watching: true,
+        source: "job_x",
+        condition: "events: [*] every 3",
+      })}
+      id="watch_wildcard"
+    />,
+  );
+
+  expect(focusCard().textContent).toContain("any event (every 3)");
+});
+
 test("shows the card after the shared focus delay, describes both controls, and hides immediately", () => {
   vi.useFakeTimers();
   render(<EntityRef view={jobView()} id="job_x" />);
@@ -260,7 +335,12 @@ test("shows the card after the shared focus delay, describes both controls, and 
   expect(openButton.getAttribute("aria-describedby")).toBe(card.id);
   expect(card.querySelector("button, a, input, select, textarea, [tabindex]")).toBeNull();
 
-  fireEvent.blur(trigger);
+  fireEvent.blur(trigger, { relatedTarget: openButton });
+  fireEvent.focus(openButton, { relatedTarget: trigger });
+  expect(screen.getByRole("tooltip")).toBe(card);
+  expect(openButton.getAttribute("aria-describedby")).toBe(card.id);
+
+  fireEvent.blur(openButton);
   expect(screen.queryByRole("tooltip")).toBeNull();
   expect(trigger.getAttribute("aria-describedby")).toBeNull();
   expect(openButton.getAttribute("aria-describedby")).toBeNull();

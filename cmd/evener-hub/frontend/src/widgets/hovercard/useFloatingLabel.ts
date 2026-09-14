@@ -82,8 +82,15 @@ export function useFloatingLabel({ measure, observe }: UseFloatingLabelArgs): Us
     triggerProps: {
       onMouseEnter: show,
       onMouseLeave: hide,
-      onFocus: show,
-      onBlur: hide,
+      // Bubbling focus events within a multi-control wrapper must not flicker the label.
+      onFocus: (event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        show();
+      },
+      onBlur: (event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        hide();
+      },
     },
   };
 }

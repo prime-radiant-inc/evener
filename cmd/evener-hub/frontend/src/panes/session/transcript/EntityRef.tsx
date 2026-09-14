@@ -20,6 +20,7 @@ import { formatQuietAge, formatUsagePair } from "../chrome/activityFormat";
 import styles from "./entityref.module.css";
 import { openTranscript } from "./openTranscript";
 import { classifyJobStatus } from "./tools/subagentModuleStore";
+import { watchEventLabel } from "./watchEventLabel";
 
 export interface EntityRefProps {
   view?: EntityView;
@@ -172,8 +173,13 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
   );
 }
 
-function watchConditionSentence(condition: string | undefined, note: string | undefined): string | undefined {
-  if (!condition) return undefined;
+interface WatchConditionContent {
+  note?: string;
+  summary?: string;
+}
+
+function watchConditionContent(condition: string | undefined, note: string | undefined): WatchConditionContent {
+  if (!condition) return { note };
   const parsed = parseConditionText(condition, note);
   const clauses: string[] = [];
   if (parsed.outputMatch) clauses.push(`output matching “${parsed.outputMatch}”`);
@@ -183,20 +189,27 @@ function watchConditionSentence(condition: string | undefined, note: string | un
     clauses.push(`heartbeat ${humanizeInterval(parsed.progressIntervalMS / 1000)}`);
   }
   if (parsed.events.length > 0) {
+    const names = parsed.events.map(watchEventLabel).join(", ");
     const every = parsed.every === undefined ? "" : ` every ${parsed.every}`;
-    clauses.push(`events ${parsed.events.join(", ")}${every}`);
+    const wildcardEvery = parsed.every === undefined ? "" : ` (every ${parsed.every})`;
+    clauses.push(
+      parsed.events.length === 1 && parsed.events[0] === "*" ? `${names}${wildcardEvery}` : `events ${names}${every}`,
+    );
   }
   if (parsed.filterToolName || parsed.filterStatus) {
     clauses.push(
       `tool calls${parsed.filterToolName ? ` on ${parsed.filterToolName}` : ""}${parsed.filterStatus ? ` with ${parsed.filterStatus}` : ""}`,
     );
   }
-  return clauses.length > 0 ? clauses.join(" · ") : condition;
+  return {
+    note: note ?? parsed.note,
+    summary: clauses.length > 0 ? clauses.join(" · ") : undefined,
+  };
 }
 
 function WatchCard({ view }: { view: Extract<EntityView, { kind: "watch" }> }) {
   const { watch } = view;
-  const condition = watchConditionSentence(watch.condition, watch.note);
+  const condition = watchConditionContent(watch.condition, watch.note);
   const source =
     watch.source !== undefined || watch.state === "watching" || watch.state === "pending"
       ? sourceLabel(watch.source)
@@ -208,8 +221,9 @@ function WatchCard({ view }: { view: Extract<EntityView, { kind: "watch" }> }) {
         <span className={CLASS.status}>{watch.state}</span>
         <span className={CLASS.caption}>last-known</span>
       </div>
-      {condition ? <div className={CLASS.summary}>{condition}</div> : null}
+      {condition.summary ? <div className={CLASS.summary}>{condition.summary}</div> : null}
       <dl className={CLASS.rows}>
+        <CardRow label="Note" value={condition.note} />
         <CardRow
           label="Deliveries"
           value={
