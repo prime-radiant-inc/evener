@@ -323,7 +323,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// escaped copy, exactly as the parent's own requests do. The child's own
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
-		s.history = escapeNotesHistoryTurns(ResumeHistory(inheritedContext))
+		// The child's own journal holds no record for the parent's turns, so the
+		// inherited prefix is decided by kind and text shape alone.
+		s.history = escapeNotesHistoryTurns(ResumeHistory(inheritedContext), clientMutations.steeringOrigins())
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
@@ -856,7 +858,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// history becomes model context. The projection record is read first, because
 	// it is compared against raw renders (see lastNotesProjection).
 	restoredNotesBlock, notesEverProjected := lastNotesProjection(resumeHistory)
-	resumeHistory = escapeNotesHistoryTurns(resumeHistory)
+	resumeHistory = escapeNotesHistoryTurns(resumeHistory, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
 	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {
