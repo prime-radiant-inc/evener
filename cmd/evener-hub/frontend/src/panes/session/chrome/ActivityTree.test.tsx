@@ -281,18 +281,27 @@ describe("ActivityTree", () => {
     expect(openSessionByRef).toHaveBeenCalledWith("local:sess_deep_child");
   });
 
-  test("a rendered child that can still be paged offers Load more, not an open-session link", () => {
+  test("a rendered child that can still be paged offers Load more, not an open-session link", async () => {
+    const user = userEvent.setup();
+    const onContinue = vi.fn();
     render(
       <ActivityTree
         tree={renderedChildTree({ truncated: true, continuation: "token_child" })}
         expandedFoldIDs={[]}
         onToggleFold={vi.fn()}
-        onContinue={vi.fn()}
+        onContinue={onContinue}
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Load more" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+    // The two ids keep their separate jobs: the delegate row owns the strip
+    // and keys the graft (and the panel's failure map), while the child's
+    // token is what the request carries. A page fetched this way arrives
+    // wrapped in the ancestor chain, and the graft is fenced by projection
+    // revision, so it cannot cost this row its newer parent-side metadata —
+    // see activityMerge.test.ts.
+    expect(onContinue).toHaveBeenCalledWith("delegate:dlg_deep", "token_child");
   });
 
   test("a delegate that can still be paged offers Load more, not an open-session link", () => {
