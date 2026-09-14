@@ -202,14 +202,20 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 			t.Fatal("cloneSkillMetaMap exposed the original map")
 		}
 
-		cachedDir, cachedSkills := embeddedSkillsCache.dir, embeddedSkillsCache.skills
-		embeddedSkillsCache.dir = filepath.Join(root, "missing-cache")
-		embeddedSkillsCache.skills = nil
-		t.Setenv("TMPDIR", filepath.Join(root, "missing-tmp"))
+		// A publish failure must propagate rather than hand back a stale or
+		// empty cache: point the materializer at a base that cannot be used.
+		savedDir, savedBase := embeddedSkillsDir, embeddedSkillsBaseDir
+		embeddedSkillsMu.Lock()
+		embeddedSkillsDir = ""
+		embeddedSkillsMu.Unlock()
+		embeddedSkillsBaseDir = func() string { return filepath.Join(root, "missing-base") }
 		if _, err := EmbeddedSkills(); err == nil {
-			t.Fatal("EmbeddedSkills temp-directory failure did not propagate")
+			t.Fatal("EmbeddedSkills publish failure did not propagate")
 		}
-		embeddedSkillsCache.dir, embeddedSkillsCache.skills = cachedDir, cachedSkills
+		embeddedSkillsMu.Lock()
+		embeddedSkillsDir = savedDir
+		embeddedSkillsMu.Unlock()
+		embeddedSkillsBaseDir = savedBase
 
 		skillProgramAssertExtractionFailures(t)
 	})
