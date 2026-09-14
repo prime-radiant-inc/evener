@@ -205,3 +205,152 @@ it("keeps a failed continuation retryable and supersedes it with live root updat
   expect(list.getSnapshot().tree?.revision).toBe(3);
   expect(list.getSnapshot().tree?.root.entries).toHaveLength(1);
 });
+
+function delegateTree(
+  branch: Record<string, unknown>,
+  childBranch?: Record<string, unknown>,
+) {
+  return {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: "thread",
+      ref: "local:test",
+      label: "Test",
+      aggregate: "running",
+      counts: { active: 1, completed: 0, failed: 0, complete: false },
+      branch: {},
+      entries: [
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_deep",
+            ownerSessionId: "thread",
+            rootSessionId: "thread",
+            childSessionId: "sess_deep_child",
+            childRef: "local:sess_deep_child",
+            type: "delegate",
+            lifecycle: "running",
+            phase: "running",
+            status: "running",
+            projectionRevision: 1,
+            terminal: false,
+            resumable: true,
+            description: "Deep work",
+            branch,
+            ...(childBranch
+              ? {
+                  child: {
+                    kind: "session",
+                    sessionId: "sess_deep_child",
+                    ref: "local:sess_deep_child",
+                    label: "Deep child",
+                    aggregate: "running",
+                    counts: {
+                      active: 0,
+                      completed: 0,
+                      failed: 0,
+                      complete: false,
+                    },
+                    branch: childBranch,
+                    entries: [],
+                  },
+                }
+              : {}),
+          },
+        },
+      ],
+    },
+  };
+}
+
+// A branch the daemon truncated at the depth or continuation-path bound mints
+// no token on purpose (#1269): a token there would name this child as a fresh
+// root at position 0, which is the page a direct request already returns. The
+// child is still addressable as its own session, so the branch has to say
+// which one, or the sheet has nothing to offer and the subtree is unreachable.
+it("a truncated delegate branch with no continuation names the child session to open", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({ data: delegateTree({ truncated: true }) });
+  await list.refresh();
+  const branch = list.branches()[0];
+  expect(branch).toMatchObject({ truncated: true });
+  expect(branch?.continuation).toBeUndefined();
+  expect(branch?.openSessionRef).toBe("local:sess_deep_child");
+});
+
+it("a delegate branch that can still be paged names no session to open", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({
+    data: delegateTree({ truncated: true, continuation: "cursor" }),
+  });
+  await list.refresh();
+  const branch = list.branches()[0];
+  expect(branch?.continuation).toBe("cursor");
+  expect(branch?.openSessionRef).toBeUndefined();
+});
+
+// A delegate whose child session WAS rendered carries two branch states: its
+// own, which the depth bound truncates, and the child's, which the
+// continuation-path bound and a size trim inside the child land on. Reading
+// only the delegate's own misses every case that stopped below it.
+it("a rendered child truncated with no continuation names the session to open", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({
+    data: delegateTree({}, { truncated: true }),
+  });
+  await list.refresh();
+  const branch = list.branches().find((candidate) => candidate.openSessionRef);
+  expect(branch?.openSessionRef).toBe("local:sess_deep_child");
+});
+
+it("a rendered child that can still be paged names no session to open", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({
+    data: delegateTree({}, { truncated: true, continuation: "cursor" }),
+  });
+  await list.refresh();
+  for (const branch of list.branches())
+    expect(branch.openSessionRef).toBeUndefined();
+  expect(
+    list.branches().some((branch) => branch.continuation === "cursor"),
+  ).toBe(true);
+});
+
+// One owner per token. A delegate row reports for the child session it
+// rendered, so appending that child as a row of its own repeats the same
+// continuation under a second id -- a duplicate "Load more" whose session-keyed
+// id no delegate graft matches, or a second, un-actionable copy of a row the
+// delegate already answers for.
+it("reports the root and one row per delegate, never a delegate's child twice", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({ data: tree(1, ["a"], "cursor") });
+  await list.refresh();
+  expect(list.branches()).toEqual([
+    { id: "session:thread", label: "Test", truncated: true, continuation: "cursor" },
+  ]);
+
+  io.read = async () => ({ data: delegateTree({}, { truncated: true }) });
+  await list.refresh();
+  expect(list.branches()).toEqual([
+    {
+      id: "delegate:dlg_deep",
+      label: "Deep work",
+      truncated: true,
+      openSessionRef: "local:sess_deep_child",
+    },
+  ]);
+
+  io.read = async () => ({
+    data: delegateTree({}, { truncated: true, continuation: "child-cursor" }),
+  });
+  await list.refresh();
+  expect(list.branches()).toEqual([
+    {
+      id: "delegate:dlg_deep",
+      label: "Deep work",
+      truncated: true,
+      continuation: "child-cursor",
+    },
+  ]);
+});

@@ -2038,6 +2038,22 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
+	// The generation this test asserts is published by the attention wake's
+	// start commit, on the owner's drive path. armDelegateAttention below does
+	// not promise to have done that by the time it returns: it either opens
+	// the wake itself or leaves it armed for that drive path, and both are
+	// correct. Reading the aggregate straight after the arm therefore asserts
+	// one of the two schedules rather than the rule, which is how this fixture
+	// failed on a loaded runner (#1294). This observer is the edge the read
+	// actually depends on -- it fires with the generation committed and the
+	// run goroutine not yet started.
+	attentionCommitted := make(chan struct{})
+	var committedOnce sync.Once
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionStartCommitted = func(*subagent) {
+			committedOnce.Do(func() { close(attentionCommitted) })
+		}
+	})
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "warm retained runtime", 60_000)
 	if outcome.result.Err != nil || outcome.commit == nil {
 		t.Fatalf("initial stable run = %#v", outcome)
@@ -2060,6 +2076,7 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 	if err := sub.sess.armDelegateAttention(attentionID); err != nil {
 		t.Fatalf("arm resident attention: %v", err)
 	}
+	<-attentionCommitted
 	root.delegateController.mu.Lock()
 	aggregate := root.delegateController.durable[fixture.delegateID]
 	generation := aggregate.Generation
