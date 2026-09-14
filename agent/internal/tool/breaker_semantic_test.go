@@ -419,3 +419,58 @@ func TestBreakerDispatch_IntentChangeDoesNotTriggerRepetitionNudge(t *testing.T)
 		t.Fatalf("intent-only output = %q, want the unmodified %q", materialized.Output, body)
 	}
 }
+
+// A successful dispatch carries no failure evidence worth remembering, so it
+// must not create a semantic entry or consume an LRU slot. Under the defect,
+// every success inserted a key into the bounded semantic store, so more than
+// maxFailureLedgerEntries distinct successful calls between two failures of one
+// fingerprint evicted the pending run and the semantic breaker silently forgot
+// it. This drives the real registry dispatch path: a failure, a flood of
+// distinct successes, then the calls that must continue the run and park.
+func TestBreakerDispatch_SuccessFloodDoesNotEvictPendingFailureRun(t *testing.T) {
+	r := NewRegistry()
+	flaky := registerBreakerFake(t, r, "flaky", func(int) (any, error) {
+		return nil, errors.New(semanticBoom)
+	})
+	churn := registerBreakerFake(t, r, "churn", func(int) (any, error) { return "ok", nil })
+	env := breakerEnv(t)
+	ctx := context.Background()
+
+	failing := breakerCall("f1", "flaky", `{"target":"a"}`)
+	if res := r.ExecuteCall(ctx, env, failing); !res.IsError {
+		t.Fatalf("setup failure did not run: %#v", res)
+	}
+	if flaky.calls != 1 {
+		t.Fatalf("setup invocations = %d, want 1", flaky.calls)
+	}
+
+	// More distinct successful dispatches than the semantic store can hold. Each
+	// carries a different semantic fingerprint, so under the defect each one
+	// consumes a slot and pushes the pending run out.
+	for i := range maxFailureLedgerEntries + 1 {
+		r.ExecuteCall(ctx, env, breakerCall(fmt.Sprintf("churn-%d", i), "churn", fmt.Sprintf(`{"i":%d}`, i)))
+	}
+	if churn.calls != maxFailureLedgerEntries+1 {
+		t.Fatalf("churn invocations = %d, want %d", churn.calls, maxFailureLedgerEntries+1)
+	}
+	if streak, _, _ := r.breaker.check(newDispatchKey("flaky", []byte(`{"target":"a"}`))); streak != 1 {
+		t.Fatalf("pending failure run was evicted by successful traffic: streak = %d, want 1", streak)
+	}
+
+	// The run continues rather than restarting at 1: the second failure is the
+	// one that nudges, and the third is refused.
+	second := r.ExecuteCall(ctx, env, failing)
+	if flaky.calls != 2 {
+		t.Fatalf("the run's second failure was not dispatched: invocations = %d, want 2", flaky.calls)
+	}
+	if !strings.HasSuffix(second.Output, wantFailureNudge) {
+		t.Fatalf("the continued run did not reach the nudge on its second failure: %q", second.Output)
+	}
+	third := r.ExecuteCall(ctx, env, failing)
+	if flaky.calls != 2 {
+		t.Fatalf("the run's third failure was not parked: invocations = %d, want 2", flaky.calls)
+	}
+	if !strings.HasPrefix(third.Output, wantFailurePark("flaky")) {
+		t.Fatalf("the run's third failure was not parked: %q", third.Output)
+	}
+}
