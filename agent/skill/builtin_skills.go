@@ -21,6 +21,13 @@ import (
 // publish writes before renaming into place.
 const embeddedSkillsPrefix = "evener-skills-"
 
+// retainedSkillsPrefix names a private fallback copy that could not take the
+// published name and is handed to the caller for the process lifetime. It is
+// deliberately not the staging prefix, because reapStaleStaging removes
+// abandoned staging directories and must never remove a copy a live process is
+// still reading.
+const retainedSkillsPrefix = embeddedSkillsPrefix + "copy-"
+
 // Bounds on what the digest will read from a tree. The bundled skills are a
 // dozen small markdown files; these exist because the published name lives in a
 // shared temp directory, so an occupant this process did not write could be a
@@ -35,11 +42,12 @@ const (
 	staleStagingMaxAge = 24 * time.Hour
 )
 
-// embeddedSkillsCache holds the published bundled-skills directory and its
-// scanned metadata, both process-wide under one mutex.
+// embeddedSkillsCache holds the published bundled-skills directory, the digest
+// of its contents, and its scanned metadata, all process-wide under one mutex.
 var embeddedSkillsCache struct {
 	mu     sync.Mutex
 	dir    string
+	digest string
 	skills map[string]SkillMeta
 }
 
@@ -85,7 +93,7 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 // is gone and refreshes the cached metadata. The caller holds the cache mutex.
 func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
-		if cacheDirUsable(embeddedSkillsCache.dir) {
+		if cacheDirUsable(embeddedSkillsCache.dir, embeddedSkillsCache.digest) {
 			return embeddedSkillsCache.dir, nil
 		}
 	}
@@ -93,13 +101,14 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir, err := materializeEmbeddedSkills(bundled.Skills(), base)
+	dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base)
 	if err != nil {
 		return "", err
 	}
 	skills := make(map[string]SkillMeta)
 	ScanSkillsDir(dir, skills)
 	embeddedSkillsCache.dir = dir
+	embeddedSkillsCache.digest = digest
 	embeddedSkillsCache.skills = skills
 	return dir, nil
 }
@@ -112,10 +121,19 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 // cannot occupy the name or read the published copy.
 func defaultEmbeddedSkillsBaseDir() (string, error) {
 	dir := filepath.Join(os.TempDir(), embeddedSkillsPrefix+processOwnerTag())
-	if err := ensurePrivateCacheDir(dir); err != nil {
-		return "", err
+	if err := ensurePrivateCacheDir(dir); err == nil {
+		return dir, nil
 	}
-	return dir, nil
+	// The predictable name can still be squatted on a shared host, and the
+	// sticky bit prevents removing a foreign directory. A randomized private
+	// directory keeps the bundled skills available instead of failing the
+	// session; it is not shared between processes, which is the price of the
+	// name being unusable.
+	fallback, err := os.MkdirTemp("", embeddedSkillsPrefix+processOwnerTag()+"-*")
+	if err != nil {
+		return "", fmt.Errorf("creating private skill cache: %w", err)
+	}
+	return fallback, nil
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that
@@ -143,27 +161,27 @@ func ensurePrivateCacheDir(dir string) error {
 }
 
 // materializeEmbeddedSkills publishes skillsFS into base under a directory named
-// for the digest of its contents and returns that directory. A copy already
-// published for the same content is reused; otherwise the tree is staged in a
-// private directory and renamed into place, so a concurrent publisher leaves a
-// complete copy and readers never see a partial tree. An occupant of the
-// published name is adopted only when its content matches the digest; anything
-// else leaves the private staging copy in place, because a session without its
-// bundled skills is worse than one that did not reuse the cache.
-func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, error) {
+// for the digest of its contents and returns that directory and digest. A copy
+// already published for the same content is reused; otherwise the tree is staged
+// in a private directory and renamed into place, so a concurrent publisher
+// leaves a complete copy and readers never see a partial tree. An occupant of
+// the published name is adopted only when its content matches the digest; any
+// other occupant leaves the staged private copy in place, because a session
+// without its bundled skills is worse than one that did not reuse the cache.
+func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, error) {
 	reapStaleStaging(base, time.Now())
 	digest, err := digestSkillsFS(skillsFS)
 	if err != nil {
-		return "", fmt.Errorf("digesting embedded skills: %w", err)
+		return "", "", fmt.Errorf("digesting embedded skills: %w", err)
 	}
 	dest := filepath.Join(base, embeddedSkillsPrefix+digest)
 	if publishedSkillsDir(dest, digest) {
-		return dest, nil
+		return dest, digest, nil
 	}
 
 	staging, err := os.MkdirTemp(base, embeddedSkillsPrefix+"stage-*")
 	if err != nil {
-		return "", fmt.Errorf("staging embedded skills: %w", err)
+		return "", "", fmt.Errorf("staging embedded skills: %w", err)
 	}
 	keepStaging := false
 	defer func() {
@@ -173,64 +191,71 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, error) {
 	}()
 
 	if err := copyEmbeddedSkills(skillsFS, staging); err != nil {
-		return "", fmt.Errorf("extracting embedded skills: %w", err)
+		return "", "", fmt.Errorf("extracting embedded skills: %w", err)
 	}
 	// A concurrent publisher for the same content may have finished while this
 	// copy was made.
 	if publishedSkillsDir(dest, digest) {
-		return dest, nil
+		return dest, digest, nil
 	}
 	// Never rename onto an existing entry: on some platforms that replaces a
-	// symlink or file this process just rejected. The base is private, so an
-	// occupant that is not a valid copy is abandoned and the caller uses the
-	// private copy already staged rather than extracting the tree again.
+	// symlink or file this process just rejected. Re-check first, because a
+	// concurrent publisher can publish between the check above and this one.
 	if _, err := os.Lstat(dest); err == nil {
-		keepStaging = true
-		return staging, nil
+		if publishedSkillsDir(dest, digest) {
+			return dest, digest, nil
+		}
+		dir, keptDigest := retainStagedCopy(staging, base, digest, &keepStaging)
+		return dir, keptDigest, nil
 	}
 	if err := os.Rename(staging, dest); err != nil {
 		if publishedSkillsDir(dest, digest) {
-			return dest, nil
+			return dest, digest, nil
 		}
-		keepStaging = true
-		return staging, nil
+		dir, keptDigest := retainStagedCopy(staging, base, digest, &keepStaging)
+		return dir, keptDigest, nil
 	}
-	return dest, nil
+	return dest, digest, nil
 }
 
-// cacheDirUsable reports whether a cached directory is still the published copy
-// it claims to be. Lstat rejects a symlinked replacement, and the digest encoded
-// in the directory name is re-derived, so a tampered or stale copy is
-// republished rather than trusted.
-func cacheDirUsable(dir string) bool {
+// retainStagedCopy hands back the private copy already staged when the published
+// name is unusable. It renames the staging directory under the retained prefix,
+// which reapStaleStaging does not match, so a live process's copy is never
+// reaped. A rename that cannot reserve a name leaves the staging directory in
+// place (and keepStaging set) rather than failing the caller, because the caller
+// having its bundled skills matters more than where they came from.
+func retainStagedCopy(staging, base, digest string, keepStaging *bool) (string, string) {
+	placeholder, err := os.MkdirTemp(base, retainedSkillsPrefix+"*")
+	if err != nil {
+		*keepStaging = true
+		return staging, digest
+	}
+	// MkdirTemp reserved a unique name; swap the empty directory for the copy.
+	_ = os.Remove(placeholder)
+	if err := os.Rename(staging, placeholder); err != nil {
+		*keepStaging = true
+		return staging, digest
+	}
+	return placeholder, digest
+}
+
+// cacheDirUsable reports whether a cached directory still holds the content it
+// is supposed to. Lstat rejects a symlinked replacement, and the content is
+// re-digested against the expected digest rather than trusted from the
+// directory name, so a tampered or partial copy is republished.
+func cacheDirUsable(dir, expected string) bool {
 	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() {
+	if err != nil || !info.IsDir() || expected == "" {
 		return false
 	}
-	digest, ok := embeddedSkillsDigestFromDirName(filepath.Base(dir))
-	if !ok {
-		// A private fallback copy is not digest-named; there is no digest to
-		// check it against.
-		return true
-	}
 	actual, err := digestSkillsFS(os.DirFS(dir))
-	return err == nil && actual == digest
-}
-
-// embeddedSkillsDigestFromDirName returns the content digest a published
-// directory's name carries, when the name is a published-copy name.
-func embeddedSkillsDigestFromDirName(name string) (string, bool) {
-	digest, ok := strings.CutPrefix(name, embeddedSkillsPrefix)
-	if !ok || len(digest) != sha256.Size*2 {
-		return "", false
-	}
-	return digest, true
+	return err == nil && actual == expected
 }
 
 // reapStaleStaging removes staging directories earlier publishes abandoned, so a
-// machine where the published name stays unusable does not accumulate one copy
-// per run. A staging directory younger than the threshold may still belong to a
-// live process and is left alone.
+// machine where the published name stays unusable does not accumulate a copy per
+// run. Only the staging prefix is matched: a retained copy is in use by a live
+// process for its lifetime and is never reaped here.
 func reapStaleStaging(base string, now time.Time) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
@@ -309,12 +334,12 @@ func digestSkillsFS(fsys fs.FS) (string, error) {
 			return err
 		}
 		_, _ = fmt.Fprintf(sum, "%s\x00%d\x00", path, info.Size())
-		// Streamed and never read past the size the entry declared, so a file
-		// growing under the walk cannot read unbounded and one that no longer
-		// matches its own size is not the copy this is trying to recognize.
-		// Closed here rather than deferred so each file is released before the
-		// walk moves on.
-		read, err := io.Copy(sum, io.LimitReader(file, maxEmbeddedSkillBytes))
+		// Read at most the size the entry declared, so a file that grows or
+		// misreports its size cannot push the read past the total bound, and a
+		// file that no longer matches its own size is not the copy this is
+		// trying to recognize. Closed here rather than deferred so each file is
+		// released before the walk moves on.
+		read, err := io.Copy(sum, io.LimitReader(file, info.Size()))
 		if closeErr := file.Close(); err == nil {
 			err = closeErr
 		}

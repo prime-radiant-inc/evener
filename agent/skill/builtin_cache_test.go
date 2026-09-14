@@ -31,28 +31,29 @@ func sampleSkillFS() fstest.MapFS {
 	})
 }
 
-// embeddedSkillsCacheState reads the guarded cache for save/restore in tests.
-func embeddedSkillsCacheState() (string, map[string]SkillMeta) {
+func embeddedSkillsCacheState() (string, string, map[string]SkillMeta) {
 	embeddedSkillsCache.mu.Lock()
 	defer embeddedSkillsCache.mu.Unlock()
-	return embeddedSkillsCache.dir, embeddedSkillsCache.skills
+	return embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills
 }
 
 // pointEmbeddedSkillsAtBase sends the bundled-skills cache to base, clears the
-// cached directory so the next call republishes, and restores every global it
-// touched when the test ends.
+// cached copy so the next call republishes, and restores every global it touched
+// when the test ends.
 func pointEmbeddedSkillsAtBase(t *testing.T, base string) {
 	t.Helper()
 	savedBase := embeddedSkillsBaseDir
-	savedDir, savedSkills := embeddedSkillsCacheState()
+	savedDir, savedDigest, savedSkills := embeddedSkillsCacheState()
 	embeddedSkillsCache.mu.Lock()
 	embeddedSkillsCache.dir = ""
+	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
 	embeddedSkillsCache.mu.Unlock()
 	embeddedSkillsBaseDir = func() (string, error) { return base, nil }
 	t.Cleanup(func() {
 		embeddedSkillsCache.mu.Lock()
 		embeddedSkillsCache.dir = savedDir
+		embeddedSkillsCache.digest = savedDigest
 		embeddedSkillsCache.skills = savedSkills
 		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = savedBase
@@ -141,9 +142,12 @@ func TestMaterializeEmbeddedSkills_PublishesOnceAndReuses(t *testing.T) {
 		t.Fatalf("digestSkillsFS: %v", err)
 	}
 
-	first, err := materializeEmbeddedSkills(fsys, base)
+	first, gotDigest, err := materializeEmbeddedSkills(fsys, base)
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
+	}
+	if gotDigest != digest {
+		t.Fatalf("materializeEmbeddedSkills digest = %q, want %q", gotDigest, digest)
 	}
 	want := filepath.Join(base, embeddedSkillsPrefix+digest)
 	if first != want {
@@ -153,7 +157,7 @@ func TestMaterializeEmbeddedSkills_PublishesOnceAndReuses(t *testing.T) {
 		t.Fatalf("published copy missing its skill: %v", err)
 	}
 
-	second, err := materializeEmbeddedSkills(fsys, base)
+	second, _, err := materializeEmbeddedSkills(fsys, base)
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills (second): %v", err)
 	}
@@ -176,12 +180,12 @@ func TestMaterializeEmbeddedSkills_PublishesOnceAndReuses(t *testing.T) {
 
 func TestMaterializeEmbeddedSkills_DistinctContentDistinctDirs(t *testing.T) {
 	base := t.TempDir()
-	first, err := materializeEmbeddedSkills(sampleSkillFS(), base)
+	first, _, err := materializeEmbeddedSkills(sampleSkillFS(), base)
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
 	other := skillFSFixture(map[string]string{"sample/SKILL.md": sampleSkillDocument + "other\n"})
-	second, err := materializeEmbeddedSkills(other, base)
+	second, _, err := materializeEmbeddedSkills(other, base)
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills (other): %v", err)
 	}
@@ -192,7 +196,7 @@ func TestMaterializeEmbeddedSkills_DistinctContentDistinctDirs(t *testing.T) {
 
 // A foreign or tampered occupant of the published name must never be adopted:
 // the content is verified against the digest, and the caller still gets a
-// readable private copy.
+// readable private copy under the retained prefix, which the reaper ignores.
 func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsOccupied(t *testing.T) {
 	base := t.TempDir()
 	fsys := sampleSkillFS()
@@ -205,13 +209,16 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsOccupied(t *testi
 		t.Fatalf("occupy published name: %v", err)
 	}
 
-	dir, err := materializeEmbeddedSkills(fsys, base)
+	dir, _, err := materializeEmbeddedSkills(fsys, base)
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
 	defer os.RemoveAll(dir)
 	if dir == dest {
 		t.Fatalf("adopted the occupied name %q", dest)
+	}
+	if !strings.HasPrefix(filepath.Base(dir), retainedSkillsPrefix) {
+		t.Fatalf("fallback dir %q is not under the retained prefix", dir)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "sample", "SKILL.md")); err != nil {
 		t.Fatalf("fallback copy missing its skill: %v", err)
@@ -233,7 +240,7 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedCopyIsTampered(t *testi
 		t.Fatalf("write tampered copy: %v", err)
 	}
 
-	dir, err := materializeEmbeddedSkills(fsys, base)
+	dir, _, err := materializeEmbeddedSkills(fsys, base)
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
@@ -246,7 +253,7 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedCopyIsTampered(t *testi
 	}
 }
 
-// A symlinked occupant of the published name is not followed.
+// A symlinked occupant of the published name is not followed or overwritten.
 func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsSymlink(t *testing.T) {
 	base := t.TempDir()
 	fsys := sampleSkillFS()
@@ -255,17 +262,22 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsSymlink(t *testin
 		t.Fatalf("digestSkillsFS: %v", err)
 	}
 	dest := filepath.Join(base, embeddedSkillsPrefix+digest)
-	if err := os.Symlink(t.TempDir(), dest); err != nil {
+	target := t.TempDir()
+	if err := os.Symlink(target, dest); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	dir, err := materializeEmbeddedSkills(fsys, base)
+	dir, _, err := materializeEmbeddedSkills(fsys, base)
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
 	defer os.RemoveAll(dir)
 	if dir == dest {
 		t.Fatalf("adopted the symlinked name %q", dest)
+	}
+	info, err := os.Lstat(dest)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("symlink occupant was replaced: %v %v", info, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "sample", "SKILL.md")); err != nil {
 		t.Fatalf("fallback copy missing its skill: %v", err)
@@ -274,7 +286,7 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsSymlink(t *testin
 
 func TestMaterializeEmbeddedSkills_StagingFailureErrors(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "missing")
-	if _, err := materializeEmbeddedSkills(sampleSkillFS(), base); err == nil {
+	if _, _, err := materializeEmbeddedSkills(sampleSkillFS(), base); err == nil {
 		t.Fatal("materializeEmbeddedSkills succeeded with an unusable base")
 	}
 }
@@ -284,13 +296,13 @@ type unreadableFS struct{}
 func (unreadableFS) Open(string) (fs.File, error) { return nil, errors.New("unreadable") }
 
 func TestMaterializeEmbeddedSkills_DigestFailureIsReported(t *testing.T) {
-	if _, err := materializeEmbeddedSkills(unreadableFS{}, t.TempDir()); err == nil {
+	if _, _, err := materializeEmbeddedSkills(unreadableFS{}, t.TempDir()); err == nil {
 		t.Fatal("expected a digest failure to propagate")
 	}
 }
 
-// A cached copy is only reused while it still holds the content its name
-// promises; a tampered copy is not trusted.
+// A cached copy is only reused while it still holds the content its digest
+// promises; a tampered copy is not trusted, whatever it is named.
 func TestCacheDirUsable_RejectsTamperedCopy(t *testing.T) {
 	base := t.TempDir()
 	fsys := sampleSkillFS()
@@ -302,39 +314,45 @@ func TestCacheDirUsable_RejectsTamperedCopy(t *testing.T) {
 	if err := copyEmbeddedSkills(fsys, dir); err != nil {
 		t.Fatalf("copyEmbeddedSkills: %v", err)
 	}
-	if !cacheDirUsable(dir) {
+	if !cacheDirUsable(dir, digest) {
 		t.Fatal("fresh published copy reported unusable")
 	}
+
+	retained := filepath.Join(base, retainedSkillsPrefix+"abc")
+	if err := copyEmbeddedSkills(fsys, retained); err != nil {
+		t.Fatalf("copyEmbeddedSkills (retained): %v", err)
+	}
+	if !cacheDirUsable(retained, digest) {
+		t.Fatal("retained copy reported unusable")
+	}
+
 	if err := os.WriteFile(filepath.Join(dir, "sample", "SKILL.md"), []byte("tampered"), 0o644); err != nil {
 		t.Fatalf("tamper copy: %v", err)
 	}
-	if cacheDirUsable(dir) {
+	if cacheDirUsable(dir, digest) {
 		t.Fatal("tampered copy reported usable")
 	}
-
-	// A private fallback copy is not digest-named and has nothing to verify.
-	fallback := filepath.Join(base, embeddedSkillsPrefix+"stage-test")
-	if err := os.Mkdir(fallback, 0o700); err != nil {
-		t.Fatalf("create fallback dir: %v", err)
-	}
-	if !cacheDirUsable(fallback) {
-		t.Fatal("private fallback copy reported unusable")
+	if cacheDirUsable(dir, "") {
+		t.Fatal("copy with no expected digest reported usable")
 	}
 }
 
-func TestReapStaleStaging_RemovesOnlyOldStaging(t *testing.T) {
+func TestReapStaleStaging_RemovesOnlyAbandonedStaging(t *testing.T) {
 	base := t.TempDir()
 	old := filepath.Join(base, embeddedSkillsPrefix+"stage-old")
 	fresh := filepath.Join(base, embeddedSkillsPrefix+"stage-fresh")
 	published := filepath.Join(base, embeddedSkillsPrefix+strings.Repeat("a", sha256.Size*2))
-	for _, dir := range []string{old, fresh, published} {
+	retained := filepath.Join(base, retainedSkillsPrefix+"old")
+	for _, dir := range []string{old, fresh, published, retained} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatalf("create %s: %v", dir, err)
 		}
 	}
 	past := time.Now().Add(-2 * staleStagingMaxAge)
-	if err := os.Chtimes(old, past, past); err != nil {
-		t.Fatalf("age staging dir: %v", err)
+	for _, dir := range []string{old, retained} {
+		if err := os.Chtimes(dir, past, past); err != nil {
+			t.Fatalf("age %s: %v", dir, err)
+		}
 	}
 
 	reapStaleStaging(base, time.Now())
@@ -342,11 +360,10 @@ func TestReapStaleStaging_RemovesOnlyOldStaging(t *testing.T) {
 	if _, err := os.Stat(old); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("stale staging dir not reaped: %v", err)
 	}
-	if _, err := os.Stat(fresh); err != nil {
-		t.Fatalf("fresh staging dir reaped: %v", err)
-	}
-	if _, err := os.Stat(published); err != nil {
-		t.Fatalf("published dir reaped: %v", err)
+	for _, keep := range []string{fresh, published, retained} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Fatalf("%s was reaped: %v", keep, err)
+		}
 	}
 }
 
@@ -370,9 +387,10 @@ func TestEmbeddedSkillsDir_ReusesPublishedCopyAfterCacheReset(t *testing.T) {
 		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
 
-	// Simulate a later process: drop the cached directory, keep the published copy.
+	// Simulate a later process: drop the cached copy, keep the published one.
 	embeddedSkillsCache.mu.Lock()
 	embeddedSkillsCache.dir = ""
+	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.mu.Unlock()
 
 	second, err := EmbeddedSkillsDir()
@@ -399,7 +417,7 @@ func TestEmbeddedSkillsDir_ReusesPublishedCopyAfterCacheReset(t *testing.T) {
 func TestEmbeddedSkillsDir_RepublishesWhenCachedDirDisappears(t *testing.T) {
 	base := t.TempDir()
 	savedBase := embeddedSkillsBaseDir
-	savedDir, savedSkills := embeddedSkillsCacheState()
+	savedDir, savedDigest, savedSkills := embeddedSkillsCacheState()
 	embeddedSkillsBaseDir = func() (string, error) { return base, nil }
 	embeddedSkillsCache.mu.Lock()
 	embeddedSkillsCache.dir = filepath.Join(t.TempDir(), "gone")
@@ -407,6 +425,7 @@ func TestEmbeddedSkillsDir_RepublishesWhenCachedDirDisappears(t *testing.T) {
 	t.Cleanup(func() {
 		embeddedSkillsCache.mu.Lock()
 		embeddedSkillsCache.dir = savedDir
+		embeddedSkillsCache.digest = savedDigest
 		embeddedSkillsCache.skills = savedSkills
 		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = savedBase

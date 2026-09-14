@@ -49,3 +49,31 @@ func TestEnsurePrivateCacheDir_RefusesUnsafeDirectories(t *testing.T) {
 		t.Fatal("accepted a group/other-accessible cache dir")
 	}
 }
+
+// A predictable per-user path another local user has already taken must not
+// cost the session its bundled skills.
+func TestDefaultEmbeddedSkillsBaseDir_FallsBackWhenPredictableNameIsUnusable(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	squatted := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag())
+	if err := os.Mkdir(squatted, 0o700); err != nil {
+		t.Fatalf("create squatted path: %v", err)
+	}
+	// Chmod, not the Mkdir mode, so the ambient umask cannot leave it private.
+	if err := os.Chmod(squatted, 0o755); err != nil {
+		t.Fatalf("open up squatted path: %v", err)
+	}
+
+	dir, err := defaultEmbeddedSkillsBaseDir()
+	if err != nil {
+		t.Fatalf("defaultEmbeddedSkillsBaseDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if dir == squatted {
+		t.Fatalf("used the squatted path %q", dir)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("fallback base dir = %q, %v, %v", dir, info, err)
+	}
+}
