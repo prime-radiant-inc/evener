@@ -651,15 +651,20 @@ func digestSkillsFS(fsys fs.FS) (string, error) {
 	entries := 0
 	var total int64
 	err := walkSkillsFS(fsys, func(path string, d fs.DirEntry, isDir bool) error {
-		if isDir {
-			return nil
-		}
+		// Every visited entry counts, directories included: a tree of nested
+		// directories must not be able to bypass the bound that files obey.
 		entries++
 		if entries > maxEmbeddedSkillEntries {
 			return fmt.Errorf("embedded skills: more than %d entries", maxEmbeddedSkillEntries)
 		}
 		if strings.Count(path, "/") > maxEmbeddedSkillDepth {
 			return fmt.Errorf("embedded skills: %s is nested too deeply", path)
+		}
+		if isDir {
+			// Directories are part of the tree being verified, so their names are
+			// hashed too.
+			_, _ = fmt.Fprintf(sum, "dir %s\x00", path)
+			return nil
 		}
 		info, err := d.Info()
 		if err != nil {

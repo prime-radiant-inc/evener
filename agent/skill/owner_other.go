@@ -1,4 +1,4 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package skill
 
@@ -12,6 +12,5 @@ func processOwnerTag() string { return "user" }
 // directory is per-user on these platforms.
 func cacheDirOwnedByCurrentUser(fs.FileInfo) bool { return true }
 
-// cacheDirHasPrivatePermissions cannot be checked portably: Windows synthesizes
-// directory modes, so a 0700 directory does not read back as 0700.
+// cacheDirHasPrivatePermissions cannot be checked portably on these platforms.
 func cacheDirHasPrivatePermissions(fs.FileInfo) bool { return true }
