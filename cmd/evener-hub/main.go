@@ -22,8 +22,10 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/appserver"
@@ -369,6 +371,25 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	pluginRoot := plugins.NewManager("").Root
 
 	// Web
+	hostEntries := make([]hostreg.Host, 0, len(cfg.Hosts))
+	for _, h := range cfg.Hosts {
+		hostEntries = append(hostEntries, hostreg.Host{Name: h.Name, SSH: h.SSH, User: h.User, EvenerPath: h.EvenerPath, Roots: h.Roots})
+	}
+	// Config loading already validated these through hostreg.New; build the
+	// real registry used by the SSH manager and handle the (impossible) error
+	// like any other startup failure.
+	hostRegistry, err := hostreg.New(hostEntries)
+	if err != nil {
+		_ = hubListener.Close()
+		return fmt.Errorf("validate hosts: %w", err)
+	}
+	sshManager := sshconn.New(hostRegistry, sshconn.Options{
+		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
+	})
+	// The manager owns every live SSH channel; tie their lifetime to this
+	// process so they die with the hub.
+	defer func() { _ = sshManager.Close() }()
+
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -401,6 +422,14 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		PokeAttention:             pokeAttention,
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
+		RemoteHosts:               hostEntries,
+		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
+			ch, err := sshManager.Ensure(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			return ch.Client(), nil
+		},
 	}, appwireTrace)
 	if appwireTrace != nil {
 		defer func() {
