@@ -1009,6 +1009,10 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 
 func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult, parts []llm.ContentPart) error {
 	var persistErr error
+	// Computed before the durable append: the round's use_skill executions carry
+	// their pending identity in the tool-state side channel (or a typed error),
+	// and it attaches to the recorded turn's SkillTurnState first.
+	skillState := s.skillTurnStateForToolRound(results)
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		commits := s.takeDelegateDeliveryCommits(calls)
 		if len(commits) != 0 {
@@ -1023,13 +1027,35 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 				return
 			}
 		}
+		// Obligations must be durable BEFORE the carrier turn that announces them
+		// is recorded — the same order admitSkillActivationBatch holds for the
+		// selection route. A crash or failed save in between must never leave a
+		// durable carrier whose obligation the snapshot lost, because a later fold
+		// would then drop the body with nothing left to reload it. The reverse
+		// window is the safe one: an obligation whose carrier never landed
+		// re-delivers from its recorded source at the next dispatch seam.
+		if persistErr = s.persistSkillToolObligations(skillState); persistErr != nil {
+			// The round will not persist, so release the inline delivery receipts
+			// it acquired before the failure and leave their durable heads
+			// replayable.
+			abortDelegateToolCallDeliveryCommits(commits)
+			return
+		}
 		persistedParts := projectToolResultsForTranscript(calls, results, parts)
 		live := llm.Message{Role: llm.RoleTool, Content: parts}
 		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
 		if len(commits) != 0 {
-			persistErr = s.appendToolResultsWithDeliveryCommitsDurably(live, persisted, commits)
+			persistErr = s.appendToolResultsWithDeliveryCommitsDurably(live, persisted, commits, skillState)
 		} else if hasSuccessfulTerminalJobStatusResult(calls, results) {
-			persistErr = s.appendTurnWithDurableTranscriptMessage(schema.TurnToolResults, live, persisted)
+			persistErr = s.appendToolResultsDurably(live, persisted, skillState)
+		} else if skillState != nil {
+			liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+			liveTurn.SkillState = skillState
+			persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
+			persistedTurn.SkillState = skillState
+			// The obligation is already durable above, so a failed carrier write
+			// returns rather than reporting a recorded round.
+			persistErr = s.recordSkillCarrierDurably(liveTurn, persistedTurn)
 		} else {
 			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
 		}
@@ -1119,10 +1145,33 @@ func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delega
 	return commits
 }
 
-func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []delegateToolCallDeliveryCommit) error {
+// appendToolResultsDurably mirrors appendTurnWithDurableTranscriptMessage
+// (session.go) with the round's typed skill state attached to both copies.
+func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillState *schema.SkillTurnState) error {
 	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	liveTurn.SkillState = skillState.Clone()
+	persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
+	persistedTurn.SkillState = skillState.Clone()
+	err := s.appendTurnAfterTranscriptWrite(
+		persistedTurn,
+		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
+		func() { s.history = append(s.history, liveTurn) },
+	)
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	return err
+}
+
+// appendToolResultsWithDeliveryCommitsDurably persists the round's tool
+// results durably with their delegate delivery commits and, when the round
+// included skill tool calls, the typed skill state on both turn copies.
+func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []delegateToolCallDeliveryCommit, skillState *schema.SkillTurnState) error {
+	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	liveTurn.SkillState = skillState.Clone()
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted
+	persistedTurn.SkillState = skillState.Clone()
 	for _, binding := range commits {
 		if binding.commit != nil {
 			persistedTurn.DelegateDeliveryCommits = append(persistedTurn.DelegateDeliveryCommits, schema.DelegateDeliveryCommit{

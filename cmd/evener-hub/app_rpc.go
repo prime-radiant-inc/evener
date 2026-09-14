@@ -747,6 +747,9 @@ func registerThreadHandlers(
 			if err != nil {
 				return appwire.TurnSteerResponse{}, err
 			}
+			if err := ensureSkillInputSupported(ctx, source, params.Ref, params.ThreadID, params.Input); err != nil {
+				return appwire.TurnSteerResponse{}, err
+			}
 			return source.SteerTurn(ctx, params)
 		})
 	})
@@ -786,6 +789,9 @@ func registerThreadHandlers(
 			if err != nil {
 				return appwire.TurnQueueResponse{}, err
 			}
+			if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
+				return appwire.TurnQueueResponse{}, err
+			}
 			return source.QueueTurn(ctx, params)
 		})
 	})
@@ -799,6 +805,9 @@ func registerThreadHandlers(
 		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
+				return appwire.TurnDrainAsSteerResponse{}, err
+			}
+			if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
 				return appwire.TurnDrainAsSteerResponse{}, err
 			}
 			return source.DrainAsSteer(ctx, params)
