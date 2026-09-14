@@ -50,9 +50,20 @@ const shutdownDrainWaitBudget = 30 * time.Second
 // in-flight readers to leave before giving up on them. A drain that runs out
 // skips the release that follows it — release expects a drained readers set —
 // and the process exits anyway: once Commit has closed admission for good, a
-// teardown failure is reported to the caller, never a reason to stay resident.
-// Admission never reopens, and no kill is forced.
+// teardown failure is logged and left observable in the lifecycle, never a
+// reason to stay resident and never a refused retire. Admission never reopens,
+// and no kill is forced.
 const retirementReaderDrainBudget = 30 * time.Second
+
+// retirementTeardownError marks a retirement teardown failure that happened
+// AFTER Commit. Commit is terminal: admission is closed permanently and the
+// process exits regardless, so the failure is observability — it is logged and
+// left in the lifecycle's Failure field — never a refused retire. requestRetirement
+// maps it to the truthful accepted outcome instead of an RPC error.
+type retirementTeardownError struct{ err error }
+
+func (e *retirementTeardownError) Error() string { return e.err.Error() }
+func (e *retirementTeardownError) Unwrap() error { return e.err }
 
 // rendezvousRemovalAttempts bounds how many times shutdown asks for its
 // rendezvous entry to be removed. Registration.Remove keeps a failed removal
@@ -880,7 +891,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// Exit is unconditional after Commit: teardown success is not the
 		// precondition for terminating the process.
 		cancel()
-		return teardownErr
+		if teardownErr != nil {
+			return &retirementTeardownError{err: teardownErr}
+		}
+		return nil
 	}
 	// requestRetirement serves evener/daemon/retire. Exact-ownership
 	// revalidation runs BEFORE the admission fence is touched: a caller
@@ -902,7 +916,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
 		}
 		if err := consumeRetirementClaim(ctx, claim); err != nil {
-			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, err
+			// A post-commit teardown failure means the retirement already
+			// succeeded — admission is closed for good and the process exits —
+			// so it is reported as accepted. The failure is logged (serveLogf)
+			// and stays in the lifecycle's Failure field; it is observability,
+			// not an RPC error the caller could misread as a refused retire.
+			var teardown *retirementTeardownError
+			if !errors.As(err, &teardown) {
+				return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, err
+			}
 		}
 		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
 	}

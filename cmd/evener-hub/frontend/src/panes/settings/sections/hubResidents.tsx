@@ -68,10 +68,15 @@ function effectiveTimeout(daemon: DaemonResident): string {
 // the blocking entity (e.g. "turn (session-abc)" or "delegate (dlg-xyz)").
 // A delegate blocker carries both its root session id and its delegate id, so
 // both are rendered as "(session/delegate)"; dropping either would leave the
-// operator unable to tell which delegate blocks retirement.
+// operator unable to tell which delegate blocks retirement. The single-id arm
+// uses logical OR, not ??, so an empty-string sessionId falls through to the
+// delegate id instead of being treated as present and dropping it. (The Go
+// producer's `omitempty` tag normally omits the field entirely, but the TS type
+// still admits sessionId: "", and the both-ids arm above is already
+// truthiness-based; ?? was the inconsistent arm.)
 function formatBlocker(b: DaemonBlocker): string {
   if (b.sessionId && b.delegateId) return `${b.category} (${b.sessionId}/${b.delegateId})`;
-  const id = b.sessionId ?? b.delegateId;
+  const id = b.sessionId || b.delegateId;
   return id ? `${b.category} (${id})` : b.category;
 }
 
@@ -288,10 +293,19 @@ export function HubResidents() {
                 // List-snapshot blockers from the current probe result.
                 const snapshotBlockers = daemon.lifecycle?.blockers ?? [];
 
+                // React keys must be unique among siblings. listDaemons dedups
+                // by identity.generation, not ref, so two rows can legitimately
+                // share a ref (an unconfirmed rendezvous alongside a confirmed
+                // one, or a replacement in flight). Key by generation, falling
+                // back to ref when it is empty. aria-label includes identity.ref
+                // so rows sharing a display name remain distinguishable.
                 return (
-                  // aria-label includes identity.ref so rows sharing a display
-                  // name remain distinguishable by accessible name.
-                  <tr key={daemon.identity.ref} aria-label={`${daemon.name} ${daemon.identity.ref}`}>
+                  <tr
+                    key={
+                      daemon.identity.generation ? `gen:${daemon.identity.generation}` : `ref:${daemon.identity.ref}`
+                    }
+                    aria-label={`${daemon.name} ${daemon.identity.ref}`}
+                  >
                     <td>
                       <div>{daemon.name}</div>
                       {/* Root reference — shown under the name per spec. Two

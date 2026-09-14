@@ -572,6 +572,102 @@ func TestServeRetirementRequestCancelAfterCommitStillExits(t *testing.T) {
 	<-retireErr
 }
 
+// TestServeRetirementPostCommitTeardownFailureStillAccepted pins M5-2: a
+// committed retirement never reopens admission and the process exits
+// regardless, so a post-commit teardown failure must surface to the caller as
+// an ACCEPTED retire with the failure kept observable in the lifecycle — never
+// as a refused retire plus an RPC error. The failure is induced the only way
+// the daemon itself can produce one: a routed reader is still borrowed when the
+// daemon's lifetime context is canceled, so DrainReaders cannot complete.
+func TestServeRetirementPostCommitTeardownFailureStillAccepted(t *testing.T) {
+	deps, state, args, gated := newGatedReadServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	t.Cleanup(cancelServe)
+	deps.notifyContext = func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+		return serveCtx, cancelServe
+	}
+	// The skipped release leaves a bridge drain the shutdown teardown would wait
+	// out for its full 30s budget. That budget is not what this test asserts, so
+	// drive its expiry immediately via the documented injectable seam; the
+	// retirement drain under test uses retirementReaderDrainBudget, not this one.
+	drainExpired := make(chan time.Time)
+	close(drainExpired)
+	deps.drainWaitExpiry = func() <-chan time.Time { return drainExpired }
+	args = append(args, "--daemon-idle-timeout", "1h")
+	runDir := serveArgValue(args, "--run-dir")
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	clk.awaitArm(t)
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	// Hold a real routed read so a reader is still borrowed when the drain runs:
+	// DrainReaders can only fail while readers > 0 (with none, Commit has
+	// already closed readersDone and the drain returns immediately).
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerJobsList, appwire.JobsListParams{})
+		readErr <- err
+	}()
+	select {
+	case <-gated.readEntered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("routed jobs/list read never entered its handler")
+	}
+	defer gated.releaseRead()
+
+	releaseGate := rec.gateAt("committed")
+	type retireOutcome struct {
+		resp appwire.DaemonRetireResponse
+		err  error
+	}
+	outcomeCh := make(chan retireOutcome, 1)
+	go func() {
+		out, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonRetire,
+			appwire.DaemonRetireParams{Identity: daemonIdentityFor(entry)})
+		outcome := retireOutcome{err: err}
+		if resp, ok := out.(appwire.DaemonRetireResponse); ok {
+			outcome.resp = resp
+		}
+		outcomeCh <- outcome
+	}()
+	rec.await(t, "committed")
+	// Commit has returned: admission is closed forever. Cancel the daemon's
+	// lifetime context so the post-commit drain (bounded by that context, not
+	// the request) fails while the reader is still borrowed.
+	cancelServe()
+	releaseGate()
+
+	outcome := <-outcomeCh
+	if outcome.err != nil {
+		t.Fatalf("retire after a post-commit teardown failure = %v, want the accepted response (the process retires regardless)", outcome.err)
+	}
+	if !outcome.resp.Accepted {
+		t.Fatalf("retire after a post-commit teardown failure = %+v, want accepted", outcome.resp)
+	}
+	if outcome.resp.Lifecycle.Failure != "reader_drain_failed" {
+		t.Fatalf("lifecycle failure = %q, want %q: the teardown failure must stay observable, not be swallowed", outcome.resp.Lifecycle.Failure, "reader_drain_failed")
+	}
+
+	gated.releaseRead()
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("held read: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("held read did not return after its gate was released")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit after a committed retirement: %v", err)
+	}
+}
+
 // TestServeRetirementPreparingRefusalTypesAsPreparing pins the phase vocabulary
 // the Hub's retirement gate depends on: a mutation refused while a claim is
 // still preparing carries LifecycleReason "preparing", never "retiring". Only a

@@ -899,6 +899,55 @@ func TestRetirementResumeFences(t *testing.T) {
 	})
 }
 
+// TestResumeAfterConfirmedRetirementSpawnsResolvedTarget pins H5-2: when
+// resumeOwnership resolves the requested alias to a different current target
+// (a session cleared via thread/clear), the spawn half must name the RESOLVED
+// target. Before the fix it received the pre-resolution requested id, so the
+// replacement was discovered and launched for the obsolete alias — resurrecting
+// stale state and dropping the cleared session's state.
+func TestResumeAfterConfirmedRetirementSpawnsResolvedTarget(t *testing.T) {
+	const (
+		requested = "session-stale-alias"
+		target    = "session-resolved-target"
+	)
+	locks := hubcore.NewResumeLocks()
+	// A completed clear: the requested alias and its replacement shared one
+	// ownership group, explicit recovery acknowledged it, and the resolved
+	// routing records requested -> target. resumeOwnershipStep reads exactly
+	// this state to return a target distinct from the request.
+	if err := locks.PersistForceStop([]string{requested, target}, target); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	epoch := locks.RecoveryState(requested).Epoch
+	if err := locks.ExplicitResumeCompleted(target, epoch); err != nil {
+		t.Fatalf("ExplicitResumeCompleted: %v", err)
+	}
+	locks.RecordResolvedSession(requested, target, epoch)
+	resolveCfg := hubcore.WebConfig{ResumeLocks: locks, RunDir: t.TempDir()}
+	if got, _, err := resumeOwnership(resolveCfg, requested, requested); err != nil || got != target {
+		t.Fatalf("resumeOwnership(%q) = (%q, err=%v), want the resolved target %q", requested, got, err, target)
+	}
+
+	var spawned string
+	spawner := &fakeRPCSpawner{resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		spawned = req.SessionID
+		return rendezvous.Entry{}, nil
+	}}
+	runDir := t.TempDir()
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      hubcore.NewRoster(runDir, nil),
+		ResumeLocks: locks,
+		Spawner:     spawner,
+	}
+	// The spawn identity is the assertion; the zero rendezvous entry cannot
+	// project a responsive thread, so the call's own error is not the subject.
+	_ = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
+	if spawned != target {
+		t.Fatalf("spawn request session = %q, want the resolved target %q (not the requested alias %q)", spawned, target, requested)
+	}
+}
+
 func TestRetirementResumeUnreadableDiscoveryFails(t *testing.T) {
 	// A run dir that is a regular file makes rendezvous discovery unreadable;
 	// turn/start must fail instead of guessing at a replacement.

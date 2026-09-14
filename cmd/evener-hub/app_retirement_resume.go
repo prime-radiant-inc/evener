@@ -194,7 +194,11 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	// The owner is confirmed absent under discovery authority (an incompatible
 	// owner falls through to resume's own restart-required authority). Spawn
 	// under the held alias locks so a concurrent resumer double-checks instead
-	// of launching twice.
-	_, err = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: sessionID})
+	// of launching twice. resumeThreadLocked does not re-walk ownership aliases,
+	// so it must be handed the RESOLVED target: passing the pre-resolution
+	// sessionID would drive discovery and spawn for a stale alias whenever
+	// resumeOwnership resolved a different current owner (thread/clear), the
+	// same convention resumeThread follows by assigning sessionID = target.
+	_, err = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
 	return err
 }

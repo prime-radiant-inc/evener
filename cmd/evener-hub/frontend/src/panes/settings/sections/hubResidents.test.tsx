@@ -168,6 +168,87 @@ test("delegate blocker with both ids renders the root session id and the delegat
   expect(within(row).getByText(/delegate \(session-root\/dlg-xyz\)/)).toBeTruthy();
 });
 
+test("delegate blocker with an empty session id falls through to the delegate id", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Delegate-only blocked daemon",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: {
+          phase: "resident",
+          timeoutMillis: 3600000,
+          // An empty-string sessionId (the TS type admits it) must fall through
+          // to the delegate id; the Go producer normally omits the field via
+          // `omitempty`, but ?? would still drop the delegate id here.
+          blockers: [{ category: "delegate", sessionId: "", delegateId: "dlg-only" }],
+        },
+        canRetire: false,
+        canForceStop: true,
+      },
+    ],
+  }));
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Delegate-only blocked daemon/ });
+  // The empty session id must not swallow the delegate id: the operator has to
+  // be able to tell which delegate is blocking retirement.
+  expect(within(row).getByText(/delegate \(dlg-only\)/)).toBeTruthy();
+});
+
+test("residents sharing a ref but differing in generation render without duplicate React keys", async () => {
+  const fake = connectFakeClient();
+  const sharedRef = "local:replaced-resident";
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: { ref: sharedRef, pid: 401, startedAt: "2026-09-10T00:00:00Z", generation: "gen-old" },
+        name: "Replacee old",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+        canRetire: true,
+        canForceStop: true,
+      },
+      {
+        identity: { ref: sharedRef, pid: 402, startedAt: "2026-09-10T00:01:00Z", generation: "gen-new" },
+        name: "Replacee new",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+        canRetire: true,
+        canForceStop: true,
+      },
+    ],
+  }));
+
+  // listDaemons dedups by generation (fingerprint), not ref, so a replacement
+  // in flight legitimately yields two rows with one ref. React keys must still
+  // be unique; the duplicate-key warning is the observable symptom.
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    render(<HubResidents />);
+    await screen.findByRole("row", { name: /Replacee old/ });
+    await screen.findByRole("row", { name: /Replacee new/ });
+    const duplicates = errorSpy.mock.calls.filter((call) =>
+      call.some((arg) => typeof arg === "string" && arg.includes("same key")),
+    );
+    expect(duplicates).toEqual([]);
+  } finally {
+    errorSpy.mockRestore();
+  }
+});
+
 // ─── Polling: no further calls after unmount ──────────────────────────────────
 
 test("polling stops after unmount: no further calls after unmount", async () => {
