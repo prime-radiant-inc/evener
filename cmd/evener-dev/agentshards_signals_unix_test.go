@@ -41,6 +41,11 @@ func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, str
 	cmd.Env = append(os.Environ(),
 		"TMPDIR="+tmp,
 		"GOWORK=off", // the fixture module lives outside the repo workspace
+		// Neither the developer's `go env -w` file nor an exported GOFLAGS:
+		// the runner refuses a test-side flag there, and a build flag would
+		// change what these tests are running.
+		"GOENV=off",
+		"GOFLAGS=",
 		"SHARD_FIXTURE_HOLD="+holdDir,
 		"AGENT_SHARD_COUNT=2",
 		"AGENT_SHARD_PARALLEL=1",
@@ -234,6 +239,7 @@ func TestAgentShardsSIGKILLLeftoverIsReclaimedByNextRun(t *testing.T) {
 	// the dead runner's scratch and completes green.
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("GOWORK", "off")
+	isolateToolchainEnv(t)
 	var stdout, stderr bytes.Buffer
 	cfg := shardsConfig{
 		agentDir: fixtureModule(t),
