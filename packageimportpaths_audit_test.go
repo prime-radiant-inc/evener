@@ -64,15 +64,15 @@ func runPackageImportCheck(t *testing.T, root string) (bool, string) {
 	return true, string(output)
 }
 
-// A tree where nothing names the package by path, including the two spellings
-// that are allowed to: the carve-out's relative import and the resolver config
-// that maps the name onto the path in the first place.
+// A tree where nothing names the package by path, including the scripts/*.mts
+// tools, which used to be carved out, and the one spelling still allowed: the
+// resolver config that maps the name onto the path in the first place.
 func cleanPackageImportTree() map[string]string {
 	return map[string]string{
 		"cmd/evener-hub/frontend/src/app.ts":  "import { WireError } from \"@evener/appwire-client\";\n",
 		"mobile-native/src/screen.tsx":        "import { AppwireClient } from \"@evener/appwire-client\";\n",
 		"mobile/src/state.ts":                 "import { hasItemFailure } from \"@evener/appwire-client\";\n",
-		"mobile-native/scripts/check-hub.mts": "import type { WebSocketLike } from \"../../appwire-client/typescript/transport\";\n",
+		"mobile-native/scripts/check-hub.mts": "import type { WebSocketLike } from \"@evener/appwire-client\";\n",
 		"mobile-native/vitest.config.mts":     "const shared = new URL(\"../appwire-client/typescript/index.ts\", import.meta.url);\n",
 	}
 }
@@ -108,7 +108,7 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 			expects: "by path",
 		},
 		{
-			name:    "the directory the package moved out of, from the carve-out",
+			name:    "the directory the package moved out of",
 			path:    "mobile-native/scripts/check-hub.mts",
 			line:    "import type { W } from \"../../cmd/evener-hub/frontend/src/protocol/transport\";\n",
 			expects: "no longer exists",

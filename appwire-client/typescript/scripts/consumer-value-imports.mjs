@@ -15,11 +15,7 @@ import ts from "typescript";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
 
-// mobile-native/scripts/*.mts is the SDK migration's named carve-out: those
-// files run under tsx and keep a relative import, so they are not consumers of
-// the package name and their imports say nothing about the tarball.
 const CONSUMER_TREES = ["mobile-native", join("mobile", "src"), join("cmd", "evener-hub", "frontend", "src")];
-const CARVE_OUT = join("mobile-native", "scripts");
 // Tests and test support are not shipped and are not consumers of the tarball;
 // the in-repo `testing` specifier they reach for is deliberately absent from
 // the exports map.
@@ -29,7 +25,7 @@ function sources(dir, found = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIPPED.has(entry.name) && full !== CARVE_OUT) sources(full, found);
+      if (!SKIPPED.has(entry.name)) sources(full, found);
     } else if (entry.isFile() && [".ts", ".tsx"].includes(extname(entry.name)) && !entry.name.includes(".test.")) {
       found.push(full);
     }

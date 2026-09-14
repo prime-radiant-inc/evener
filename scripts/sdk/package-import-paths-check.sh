@@ -9,9 +9,9 @@
 # import line reintroduces -- silently, because a path import typechecks just
 # as well as the package name and nothing else in the tree would notice.
 #
-# mobile-native/scripts/*.mts is the plan's named carve-out: those files run
-# under tsx, which reads no tsconfig `paths`, so they keep a relative import
-# into the package directory. They must still never name the old path.
+# There is no carve-out. mobile-native/scripts/*.mts was one while the premise
+# held that tsx reads no tsconfig `paths`; it reads mobile-native/tsconfig.json,
+# which simply had none, so those five tools import the package by name too.
 #
 # Usage:
 #   scripts/sdk/package-import-paths-check.sh [--root DIR]
@@ -40,7 +40,6 @@ done
 cd "$root" || { printf 'package-import-paths-check.sh: cannot enter %s\n' "$root" >&2; exit 2; }
 
 trees=(cmd/evener-hub/frontend/src mobile-native mobile/src)
-carve_out=mobile-native/scripts
 # The resolver configs are excluded, and only they: mapping the package name
 # onto its path is exactly what they are for, so a path there is the fix rather
 # than the defect. Everything else in these trees is app or test code.
@@ -81,30 +80,31 @@ done
 # grep exits 1 for "no matches" and 2 or more for a real error -- an unreadable
 # file, a bad pattern. Swallowing everything with `|| true` turned a broken
 # sweep into a pass, which is the one verdict this gate must never invent.
-# Written as if/else rather than a helper because a helper would have to run
-# inside a command substitution, where `exit` leaves only the subshell and the
-# failure reads as "no matches" again.
-if by_path="$(grep -rnE "${opener}[\"'][^\"']*(${seam}|${package})" "${trees[@]}" "${sources[@]}")"; then
-	# The carve-out keeps a relative import into the package by design; it is
-	# held to the second sweep below instead.
-	by_path="$(printf '%s\n' "$by_path" | grep -v "^${carve_out}/" || true)"
+# Written inline rather than through a helper, because a helper runs inside a
+# command substitution, where `exit` leaves only the subshell and the failure
+# reads as "no matches" again.
+#
+# The option arrays come before the pattern and the operands: BSD and GNU grep
+# both accept options after operands, but only by permuting them, and a file
+# named like an option would be read as one.
+#
+# One sweep, two verdicts. A specifier still naming the directory the package
+# moved out of is a subset of "names the package by path" -- it matches the
+# same pattern -- but it earns its own message, because the fix is not "import
+# it by name" so much as "that directory is gone".
+old_seam=cmd/evener-hub/frontend/src/protocol/
+if found="$(grep "${sources[@]}" -rnE "${opener}[\"'][^\"']*(${seam}|${package})" "${trees[@]}")"; then
+	old_path="$(printf '%s\n' "$found" | grep -F "$old_seam" || true)"
+	if [ -n "$old_path" ]; then
+		report "$old_path" "these imports name the protocol directory the package moved out of; it no longer exists:"
+	fi
+	by_path="$(printf '%s\n' "$found" | grep -vF "$old_seam" || true)"
 	if [ -n "$by_path" ]; then
 		report "$by_path" "these imports name the AppWire package by path; import it as @evener/appwire-client, @evener/appwire-client/docContent, or @evener/appwire-client/testing/<module>:"
 	fi
 elif [ "$?" -ne 1 ]; then
 	printf 'package-import-paths-check.sh: the sweep over %s failed\n' "${trees[*]}" >&2
 	exit 2
-fi
-
-# Not required to exist: it is a subdirectory of a tree, not one of the three,
-# and a checkout that has dropped it has nothing to sweep here.
-if [ -d "$carve_out" ]; then
-	if old_path="$(grep -rnE "${opener}[\"'][^\"']*cmd/evener-hub/frontend/src${seam}" "$carve_out" "${sources[@]}")"; then
-		report "$old_path" "these imports name the protocol directory the package moved out of; it no longer exists:"
-	elif [ "$?" -ne 1 ]; then
-		printf 'package-import-paths-check.sh: the sweep over %s failed\n' "$carve_out" >&2
-		exit 2
-	fi
 fi
 
 exit "$status"

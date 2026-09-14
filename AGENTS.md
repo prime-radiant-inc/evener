@@ -61,6 +61,11 @@ directory:
 The name resolves through `tsconfig` `paths`, the Vite and vitest configs, and
 Metro's `resolveRequest`; the frontend and `mobile-native` declare no npm
 dependency on the package. `make lint-package-imports` fails on a path import,
-because nothing else would notice one. The exception is
-`mobile-native/scripts/*.mts`: those run under `tsx`, which reads no `paths`,
-so they keep a relative import and are the only files the gate exempts.
+because nothing else would notice one, and it exempts nothing.
+
+`mobile-native` needs the `paths` in **`tsconfig.json`**, not only in
+`tsconfig.check.json`: `tsc --noEmit` is passed the latter explicitly, but
+`tsx` reads the former, and the `scripts/*.mts` tools the README tells you to
+run load app modules that import the package by name. `npm run check:scripts`
+(part of `make test-native`) resolves those scripts' module graphs without
+loading them, since each opens a socket the moment its body runs.
