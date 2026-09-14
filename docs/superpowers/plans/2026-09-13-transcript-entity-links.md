@@ -4,7 +4,7 @@
 
 **Goal:** Detect `job_`/`dlg_`/`watch_` ids in transcript prose and structured id fields, link jobs and delegates to the entity beside, and show hover cards summarizing current client-side state.
 
-**Architecture:** A pure identity module validates ids against the server's rules; a derived entity view indexes the session's retained activity tree, live delegate projections, and loaded `job_watch` payloads; a shared `EntityRef` renders the trigger plus the standard `OpenButton`; a prose enhancer walks sanitized Markdown text nodes. No backend, AppWire, cache, or refresh-owner changes.
+**Architecture:** A pure identity module validates ids against the server's rules; a derived entity view indexes the session's retained activity tree, live delegate projections, and loaded `job_watch` payloads; a shared `EntityRef` renders the trigger plus the standard `OpenButton`; a prose enhancer walks sanitized Markdown text nodes. No backend, AppWire, cache, or new request engine was added. Existing activity-refresh ownership gained an explicit initial-discovery opt-in: live `SessionChrome` mounts pass `discoverActivity`, which forwards to `ActivityPanel.discoverWhenHidden`, while isolated/read-only chrome defaults off.
 
 **Tech Stack:** TypeScript, React 18, Zustand, Vitest + @testing-library/react, Biome. Frontend only: `cmd/evener-hub/frontend/`.
 
@@ -23,13 +23,13 @@
 
 ---
 
-### Task 1: Resolve initial-discovery ownership
+### Task 1: Implement initial-discovery ownership
 
-**Why first:** The spec leaves one open decision. A fresh session's activity
-tree is only established when `ActivityPanelBody` mounts (opened sheet);
-`ActivityPanel`'s background effect returns early while `!summary.established`
-(`ActivityPanel.tsx:335`). Job ids therefore stay unresolved until the Activity
-panel has been opened once. Settle this before building on it.
+**Why first:** A fresh session's activity tree previously was established only
+when `ActivityPanelBody` mounted (opened sheet), leaving job ids unresolved
+until Activity had been opened once. The shipped decision extracts the shared
+refresh owner and makes initial discovery an explicit live-chrome opt-in;
+isolated/read-only mounts remain passive by default.
 
 **Files:**
 - Read: `src/panes/session/chrome/ActivityPanel.tsx`, `src/stores/activitySummary.ts`, `src/panes/session/chrome/SessionChrome.tsx`
@@ -49,18 +49,16 @@ the gap is real.
 Run: `cd cmd/evener-hub/frontend && npx vitest run src/panes/session/chrome/ActivityPanel.test.tsx`
 Expected: the new test passes, proving no request fires.
 
-- [ ] **Step 2: Decide**
+- [ ] **Step 2: Implement the shipped decision**
 
-Apply option 1 (preferred): extract the body's refresh effect into
+Extract the body's refresh effect into
 `useActivityRefresh` (conditions `retainedNonReady`/`unprovenFreshness`, `force`
 handling, the `hydrationGeneration` dependency, completion-independent deps),
-use it from `ActivityPanelBody` and from a body-less owner mounted by the
-entity view's surface, and skip a forced refresh while `summary.loading` so
-co-mounted owners cannot queue duplicate forced follow-ups.
-
-If the extraction proves too invasive, apply option 2: keep the current
-behavior and record in the spec that job entities require a prior Activity-panel
-opening; then narrow Task 8/9 acceptance to delegates and watches.
+use it from `ActivityPanelBody` and the hidden `ActivityPanel`, and skip a forced
+refresh while `summary.loading` so co-mounted owners cannot queue duplicate
+forced follow-ups. `SessionChrome.discoverActivity` forwards the opt-in as
+`ActivityPanel.discoverWhenHidden`; live session mounts pass it and isolated or
+read-only consumers retain the default-off behavior.
 
 - [ ] **Step 3: Prove the decision**
 
@@ -854,7 +852,7 @@ Expected: only intended files. Remove any scratch files.
 
 ## Self-Review
 
-**Spec coverage:** identity rules → Task 2; current-session sources and ownership → Tasks 1, 4, 5; open targets → Task 5; watch normalization/ordering → Task 3; hover card + lifecycle reuse → Tasks 6, 7; EntityRef branches and accessibility → Task 7; prose enhancement and preservation → Task 8; structured fields → Task 9; gates → Task 10. The spec's open initial-discovery decision is Task 1.
+**Spec coverage:** identity rules → Task 2; current-session sources and the shipped opt-in initial-discovery ownership → Tasks 1, 4, 5; open targets → Task 5; watch normalization/ordering → Task 3; hover card + lifecycle reuse → Tasks 6, 7; EntityRef branches and accessibility → Task 7; prose enhancement and preservation → Task 8; structured fields → Task 9; gates → Task 10.
 
 **Placeholder scan:** no "TBD"/"add error handling" left. Tasks 3, 7, 8, and 9
 give the exact helper names and behavioral contracts, with the full bodies for

@@ -803,10 +803,25 @@ test("mobile chrome opens Sheets without changing workspace panes", async () => 
 
 // --- activity panel background refresh ---------------------------------------
 //
-// The panels stay mounted triggerless, and ActivityPanel's refreshWhenHidden
-// is unconditional: the menu's "Activity · N" label reads the same summary
-// the hidden panel refreshes, so background refresh must run without any
-// trigger on the row.
+// The panels stay mounted triggerless. Established summaries refresh in the
+// background for the menu's "Activity · N" label, while initial discovery is
+// an explicit opt-in at live-session chrome mounts.
+
+test("live composer chrome opts its hidden Activity panel into initial discovery", async () => {
+  const fake = connectFakeClient();
+  let calledRef: unknown;
+  fake.on("thread/read", () => readResponse("ref_activity_live"));
+  fake.on("evener/jobs/list", (params) => {
+    calledRef = params.ref;
+    return { data: emptyActivityTree() };
+  });
+  await threadsStore.getState().ensureThread("ref_activity_live");
+
+  render(<SessionChrome ref="ref_activity_live" placement="composer" discoverActivity />);
+
+  await waitFor(() => expect(calledRef).toBe("ref_activity_live"));
+  expect(activitySummaryStore.getState().entries.get("ref_activity_live")?.established).toBe(true);
+});
 
 test("triggerless chrome refreshes an established Activity summary in the background", async () => {
   const fake = connectFakeClient();

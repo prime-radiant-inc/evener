@@ -114,13 +114,24 @@ The view is a read-only derived consumer of `activityPanelStore`'s retained
 tree, `ThreadModel.delegates[]`, and the loaded turns. It adds no second cache
 and no freshness value of its own.
 
-Initial discovery belongs to the hidden `ActivityPanel` already mounted by
-`SessionChrome` with `hideTrigger refreshWhenHidden`. `useActivityRefresh`
-shares the complete freshness effect between that background owner and
-`ActivityPanelBody`: while a body is mounted it owns freshness, and a hidden
-trigger without `refreshWhenHidden` remains suppressed. The chrome owner may
-establish an unestablished summary, so its first retained tree is available for
-job resolution without requiring the Activity sheet to have been opened.
+Initial discovery is an explicit opt-in at live-session chrome mounts.
+`SessionChrome.discoverActivity` defaults off and is forwarded to the hidden
+`ActivityPanel` as `discoverWhenHidden`; the live composer mount and the local
+notLoaded/send-disabled menu fallback opt in. `useActivityRefresh` shares the
+complete freshness effect between that background owner and `ActivityPanelBody`:
+while a body is mounted it owns freshness, and a hidden trigger without
+`refreshWhenHidden` remains suppressed. An opted-in chrome owner may establish
+an unestablished summary, so its first retained tree is available for job
+resolution without requiring the Activity sheet to have been opened. Isolated
+or read-only consumers retain the default-off behavior and do not initiate
+initial discovery.
+
+This ownership intentionally follows the chrome that is actually mounted. A
+freshly opened saved notLoaded/send-enabled session does not mount composer
+chrome until its follow-up composer is engaged, so job ids may remain unresolved
+until that engagement. The menu-only Session fallback covers the corresponding
+local notLoaded/send-disabled case; universal saved-session discovery is not the
+shipped scope.
 
 Forced refreshes are skipped while the summary is loading. This keeps
 co-mounted owners from queuing a duplicate forced follow-up after the initial
@@ -156,18 +167,23 @@ after a fold change.
 
 ### Derivation ownership
 
-One index exists per `(session ref, retained tree, delegates[])`, shared by
-every `EntityRef` on screen through a memoized selector or store subscription;
-inline references must not each flatten the tree.
+`TranscriptBody` is the shared owner: it calls `useEntityView` once and places
+the resulting `entities` map in its transcript render context. Every
+`EntityRef` in that body reads the same map; inline references neither subscribe
+to the source stores nor flatten the tree. A separately mounted
+`TranscriptBody` owns its own derivation. The map is memoized over the session
+ref, retained tree, delegate projection, watch-fold key, and stale/ended state.
 
 The watch fold keys on its actual inputs, not on the turns array: `ThreadModel`
 has no turns version, and agent prose deltas replace that array, so keying on it
 would re-fold every loaded `job_watch` result on each delta. Key on the ordered
 watch-relevant inputs: each `job_watch` item's position, arguments, output,
-error, and completion state. Prose deltas do not change those; tool completion,
-output merged during paging, and full-snapshot replacement do, which is correct.
-Ids plus completion state alone are not sufficient, because a snapshot or a
-paging merge can enrich a completed item without changing either.
+error, completion state, and parsed raw payload content. The raw value is
+serialized into the key so equal content remains stable across object identity
+changes. Prose deltas do not change those; tool completion, output or raw data
+merged during paging, and full-snapshot replacement do, which is correct. Ids
+plus completion state alone are not sufficient, because a snapshot or a paging
+merge can enrich a completed item without changing either.
 
 ### State
 
@@ -202,15 +218,21 @@ tree response can carry a higher `projectionRevision` than the live array
 
 ### `EntityRef`
 
-The id text is always rendered the same way: a focusable, non-opening trigger
-with the hover card. The only variable is whether a verified open target
-exists:
+By default the id text is rendered as a focusable, non-opening trigger with the
+hover card. Whether a verified open target exists determines the standard
+branches:
 
 - **Unresolved:** plain text. No trigger, no card, no control.
 - **Resolved:** the trigger plus its card.
 - **Resolved with an open target:** the above, plus the standard `OpenButton`
   as the sole open control. The id text is never a second button for the same
   action.
+
+`EntityRef` also has two composition props. `triggerOnly` keeps the trigger and
+card but suppresses its `OpenButton` when the structured surface already owns
+the sole open control. `embedded` deliberately omits the trigger's tab stop when
+the id sits inside the watch row's disclosure button: that surrounding button is
+the focusable control, and its expanded detail carries the same information.
 
 ### Hover card
 
@@ -331,7 +353,9 @@ resolves and navigates from a live `delegates[]` record without any tree row.
 
 - The id trigger is focusable (`tabindex="0"`) and non-opening, with
   `aria-describedby` pointing at the card while shown; focus reveals the
-  description, as `Tooltip` triggers already do.
+  description, as `Tooltip` triggers already do. The `embedded` watch-row
+  exception is out of the tab order because the surrounding disclosure button
+  owns focus and its expanded detail carries the same information.
 - On a navigable entity, the `OpenButton` is the single focusable open
   control; it also carries `aria-describedby`. Do not rely on `Tooltip`'s
   single-child `cloneElement`; wire the association explicitly.
@@ -354,12 +378,14 @@ Acceptance: resolution from loaded fixtures for all three kinds; resolution
 identical before and after a fold change (disclosure-independent index);
 revision-aware delegate selection including the tree-lacks-revision case; the
 live-only delegate branch yields a card entity and an open target from
-`EvenerDelegateInfo`; one shared index per `(ref, tree, delegates)`; the watch
-fold keys on ordered watch-relevant inputs and does not re-run on prose-only
-deltas; retained refresh failure yields stale metadata and a retained `ended`
-tree yields ended metadata (normalized, not rendered); operation-aware watch
-normalization with field presence preserved; positional ordering across
-older-history paging; no resolution outside the current session's tree. An
+`EvenerDelegateInfo`; one shared `entities` map per `TranscriptBody`, consumed
+by every `EntityRef` in that body without leaf store subscriptions; the watch
+fold keys on ordered watch-relevant inputs, including raw payload content, and
+does not re-run on prose-only deltas; retained refresh failure yields stale
+metadata and a retained `ended` tree yields ended metadata (normalized, not
+rendered); operation-aware watch normalization with field presence preserved;
+positional ordering across older-history paging; no resolution outside the
+current session's tree. An
 integration case starts with empty activity stores and mounted session chrome
 and asserts the chosen initial-discovery behavior. `jobWatch`'s existing tests
 still pass after the extraction.

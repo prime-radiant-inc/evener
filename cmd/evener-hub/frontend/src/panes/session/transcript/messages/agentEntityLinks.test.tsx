@@ -179,27 +179,34 @@ test("stream growth and settlement keep one affordance per id occurrence", () =>
 
   expect(screen.getByTestId("agent-bubble").textContent).toBe(`${initial}\n`);
   expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Open job log" })).toHaveLength(1);
   expect(container.querySelectorAll("[data-entity-host]")).toHaveLength(1);
 
   rerender(agentMessage(final, entities, true));
   expect(screen.getByTestId("agent-bubble").textContent).toBe(`${final}\n`);
   expect(screen.getAllByTestId("entity-trigger")).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: "Open job log" })).toHaveLength(2);
   expect(container.querySelectorAll("[data-entity-host]")).toHaveLength(2);
 
   rerender(agentMessage(final));
   expect(screen.getByTestId("agent-bubble").textContent).toBe(`${final}\n`);
   expect(screen.getAllByTestId("entity-trigger")).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: "Open job log" })).toHaveLength(2);
   expect(container.querySelectorAll("[data-entity-host]")).toHaveLength(2);
 });
 
 test("an effect replay with unchanged source preserves visible text", () => {
   const source = `Before ${JOB}, after.`;
   const { container, rerender } = render(<StrictMode>{agentMessage(source)}</StrictMode>);
-  const before = container.textContent;
+  const canonical = `${source}\n`;
 
-  rerender(<StrictMode>{agentMessage(source)}</StrictMode>);
+  expect(screen.getByTestId("agent-bubble").textContent).toBe(canonical);
 
-  expect(container.textContent).toBe(before);
+  // Changing live replays the enhancement effect while leaving source byte-for-byte
+  // unchanged. StrictMode also replays the initial mount before the first assertion.
+  rerender(<StrictMode>{agentMessage(source, entities, true)}</StrictMode>);
+
+  expect(screen.getByTestId("agent-bubble").textContent).toBe(canonical);
   expect(container.querySelectorAll("[data-entity-host]")).toHaveLength(1);
   expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
 });
