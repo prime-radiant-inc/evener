@@ -1172,6 +1172,46 @@ test("shows the session's cwd and git branch under the composer card", async () 
   expect(card.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
+// A finished session collapses its card to (at most) a one-line follow-up
+// invitation, and a fenced one renders no card at all. The location line is not
+// part of that card: "where is this agent working" must survive the collapse,
+// which is exactly the state the composer is in when you are reading a session
+// that has already finished.
+test("keeps the location line under a finished session with no composer card", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_ended", {
+      cwd: "/home/jesse/repo",
+      status: { type: "closed" },
+      evener: {
+        ref: "ref_ended",
+        mutationStateAuthoritative: true,
+        // send false: showFollowUpCard is false, so the form card is not rendered
+        // at all and the location line is the composer's only visible content.
+        capabilities: { ...FULL_CAPABILITIES, send: false },
+        queue: { revision: 0 },
+      },
+      turns: [],
+    }),
+  );
+  fake.on("evener/git/head", () => ({ head: "ended-branch", originUrl: "git@github.com:owner/repo.git" }));
+  await threadsStore.getState().ensureThread("ref_ended");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_ended" focused={false} />
+    </ClientProvider>,
+  );
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
+
+  expect(screen.queryByTestId("composer-input-card")).toBeNull();
+  expect((await screen.findByTestId("composer-repo-path")).textContent).toBe("/home/jesse/repo");
+  expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe("https://github.com/owner/repo");
+  expect(screen.getByTestId("composer-repo-branch").textContent).toBe("ended-branch");
+});
+
 // --- shared busy gate across Composer and QueueStrip (item 6) ---------------
 // Composer's own busyAction and QueueStrip's drain previously tracked busy
 // state independently, so a user could fire the classic drain (Shift+Enter
