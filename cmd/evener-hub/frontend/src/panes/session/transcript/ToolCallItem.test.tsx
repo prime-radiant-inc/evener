@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import {
   createTranscriptRenderContext,
@@ -128,26 +128,27 @@ function expandRow(): void {
 // collapsed-by-default row (e.g. to test the collapsed→expanded transition)
 // use a tools-level config where expandByDefault is false.
 const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+const intentConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
 
-function renderTools(node: ReactElement) {
+// One provider wrapper for the verbosity-level renders below; the two named
+// renderers keep each test reading in the level it is about.
+function renderAtLevel(config: TranscriptDisplayConfigV1, disclosureScope: string, node: ReactElement) {
   return render(
-    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="test:tools">
+    <TranscriptRenderProvider config={config} surface="readOnly" disclosureScope={disclosureScope}>
       {node}
     </TranscriptRenderProvider>,
   );
 }
 
+function renderTools(node: ReactElement) {
+  return renderAtLevel(toolsConfig, "test:tools", node);
+}
+
 // Intent level (toolCalls=false) collapses every intent-bearing row's summary
 // line, leaving only the stated rationale - the view in which an open
 // affordance must NOT appear, because there is no tool-call line to ride.
-const intentConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
-
 function renderIntentLevel(node: ReactElement) {
-  return render(
-    <TranscriptRenderProvider config={intentConfig} surface="readOnly" disclosureScope="test:intent">
-      {node}
-    </TranscriptRenderProvider>,
-  );
+  return renderAtLevel(intentConfig, "test:intent", node);
 }
 
 // The disclosure trigger is a real button[aria-expanded] (see ToolRow.tsx),
@@ -1085,22 +1086,18 @@ test("a read_file card's Open beside control rides inline between the file name 
 // The open affordance belongs to the tool-call summary line. When the row
 // shows only its intent (summary line collapsed) there is no such line to
 // carry it, so it is withheld - the control must never trail the rationale.
+// One intent-bearing read_file row, rendered at both levels below.
+const intentReadFileRow = item({
+  toolName: "read_file",
+  description: "Reading writeAndReload restore path",
+  argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/a.ts" }),
+  output: "x",
+});
+
 test("an intent-bearing read_file row at intent level withholds Open beside", () => {
   resetThreadsStoreForTests();
   seedThreadCwd("ref_a", "/home/proj");
-  renderIntentLevel(
-    <ToolCallItem
-      item={item({
-        toolName: "read_file",
-        description: "Reading writeAndReload restore path",
-        argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/a.ts" }),
-        output: "x",
-      })}
-      turn={turn}
-      live={false}
-      sessionRef="ref_a"
-    />,
-  );
+  renderIntentLevel(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
   // Only the intent line survives at this level: no summary, no affordance.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Reading writeAndReload restore path");
   expect(screen.queryByTestId("tool-row-summary")).toBe(null);
@@ -1113,19 +1110,7 @@ test("an intent-bearing read_file row at intent level withholds Open beside", ()
 test("the same read_file row at tools level still shows Open beside on its summary line", () => {
   resetThreadsStoreForTests();
   seedThreadCwd("ref_a", "/home/proj");
-  renderTools(
-    <ToolCallItem
-      item={item({
-        toolName: "read_file",
-        description: "Reading writeAndReload restore path",
-        argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/a.ts" }),
-        output: "x",
-      })}
-      turn={turn}
-      live={false}
-      sessionRef="ref_a"
-    />,
-  );
+  renderTools(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
   expect(screen.getByTestId("tool-row-summary").textContent).toContain("Read /home/proj/src/a.ts");
   const trailing = screen.getByTestId("tool-row-trailing");
   expect(trailing.contains(screen.getByRole("button", { name: /open beside/i }))).toBe(true);

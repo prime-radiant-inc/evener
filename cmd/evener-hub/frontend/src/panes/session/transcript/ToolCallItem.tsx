@@ -339,14 +339,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const summaryFallback = summaryConfigDefault || (failed && !superseded && hasSummaryText);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryFallback);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
-  // The open affordances ride the tool-call summary line (ToolRow's grammar),
-  // so the one state that must withhold them is the collapsed intent-only row:
-  // the summary line collapsed at chat/intent verbosity with no body open,
-  // showing the stated intent alone. Withholding beats letting the control
-  // trail the rationale. Still visible: an expanded body counts as showing the
-  // tool, and a delegate card is intent-only by design - its descriptor puts
-  // the open control on the intent line deliberately ("visible folded or not",
-  // subagentModule.tsx).
+  // The open affordances ride the tool-call summary line (ToolRow's grammar).
+  // Withhold them when that line is hidden and no body is open - the row then
+  // shows its stated intent alone, and the control must not trail the
+  // rationale. An expanded body still counts as showing the tool; a delegate
+  // card keeps its control because its descriptor places the open control on
+  // the intent line by design (subagentModule.tsx, "visible folded or not").
   const trailingVisible = isDelegate || summaryOpen || expanded;
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
