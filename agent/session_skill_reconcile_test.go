@@ -376,3 +376,89 @@ func TestSkillActivation_LostSteeringAdmissionGatesNextDispatch(t *testing.T) {
 		}
 	})
 }
+
+// TestSkillActivation_RestoredSelectionAdmissionGatesNextDispatch pins the same
+// gate on the restore path: when the restore-time reconciliation of a durable
+// prepared selection cannot write its obligations, the restored session must
+// retain the selection and gate the next request on it, exactly like a live
+// steering admission. Discarding that error would leave the restored session
+// building requests with the steering prose in history, no skill instructions
+// and no error — the silent omission this contract exists to prevent.
+func TestSkillActivation_RestoredSelectionAdmissionGatesNextDispatch(t *testing.T) {
+	root := t.TempDir()
+	stateDir := t.TempDir()
+	body := "BODY_restored_gate"
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+
+	repair := breakSessionMetaPath(t, s)
+	if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+		t.Fatal("steering message was not durably consumed")
+	}
+	if got := lifecycleObligations(s); len(got) != 0 {
+		t.Fatalf("failed admission left live obligations: %+v", got)
+	}
+	repair()
+	if err := s.saveMeta(); err != nil {
+		t.Fatalf("save after repair: %v", err)
+	}
+	s.Close()
+
+	meta, err := schema.LoadSessionMeta(stateDir, s.Meta().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The metadata store is read-only for the restore: the reconciliation can
+	// read the durable prepared record but cannot persist an admission.
+	metaPath := filepath.Join(stateDir, sessionsSubdir, s.Meta().ID+".meta.json")
+	if err := os.Remove(metaPath); err != nil {
+		t.Fatalf("remove meta file: %v", err)
+	}
+	if err := os.Mkdir(metaPath, 0o755); err != nil {
+		t.Fatalf("break meta path: %v", err)
+	}
+	restoreMeta := func() {
+		_ = os.Remove(metaPath)
+	}
+	defer restoreMeta()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), meta, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	// Preparing a request while the store is still unwritable must not dispatch
+	// the steering without its instructions: the retained selection makes it
+	// fail visibly instead.
+	var rt events.RoundTimings
+	_, _, _, req, _, _, err := restored.prepareModelRequestWithError(context.Background(), 0, &rt)
+	if err == nil && len(requestSkillEnvelopes(t, req)) == 0 {
+		t.Fatal("the restored session prepared a request without the selection's instructions and without an error")
+	}
+	if len(restored.pendingSkillAdmissions) != 1 {
+		t.Fatalf("pending admissions after the failed retry = %d, want the unadmitted restored selection retained for retry", len(restored.pendingSkillAdmissions))
+	}
+	// With the store writable again the retry admits the selection and the next
+	// request carries the complete instructions.
+	restoreMeta()
+	var rt2 events.RoundTimings
+	_, _, _, req2, _, _, err2 := restored.prepareModelRequestWithError(context.Background(), 0, &rt2)
+	if err2 != nil {
+		t.Fatalf("prepareModelRequestWithError after repair: %v", err2)
+	}
+	found := false
+	for _, env := range requestSkillEnvelopes(t, req2) {
+		if env.Doc.Name == "opaque" && strings.Contains(env.Doc.Instructions, body) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the retried restored selection was not admitted into the next request")
+	}
+	if got := lifecycleObligations(restored); len(got) != 1 {
+		t.Fatalf("obligations after the retried admission = %+v, want exactly one", got)
+	}
+}

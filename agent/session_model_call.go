@@ -161,7 +161,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
 	// A skill-bearing steering message whose admission never reached durable
-	// obligations is retained in memory (admitSteeringSelectionBatch). Retry it
+	// obligations is retained in memory (admitPreparedSkillSelection). Retry it
 	// here, before this request is built, so the turn either carries the
 	// instructions the selection asked for or fails visibly — the steering prose
 	// is already durable, so dispatching without the selection would silently

@@ -163,18 +163,18 @@ func (s *Session) contextWithSelectedSkills(ctx context.Context, queued queuedIn
 	})
 }
 
-// admitSteeringSelectionBatch admits a prepared selection a consumed steering
-// message carried. The steering turn is already durably delivered, so a
-// failure cannot unwrite its prose; the selection must therefore not be lost,
-// in this process or the next. A failure that left no durable obligation keeps
-// the batch in pendingSkillAdmissions, where the next model request retries it
-// before building anything (admitPendingSkillSelections) — the request either
-// carries the instructions or fails visibly, and is never dispatched without
-// them. A failure whose obligations DID reach disk is already recoverable at
-// the next dispatch seam, so it is not retained. Either way the steering
-// turn's typed input record keeps the prepared invocations, and
-// reconcilePendingSkillSelections re-drives the admission at restore.
-func (s *Session) admitSteeringSelectionBatch(batch *skillActivationBatch) {
+// admitPreparedSkillSelection admits one prepared selection whose input turn is
+// already durably recorded — a consumed steering message's, or a restored
+// session's reconciliation of one. The prose cannot be unwritten, so the
+// selection must not be lost, in this process or the next. A failure that left
+// no durable obligation keeps the batch in pendingSkillAdmissions, where the
+// next model request retries it before building anything
+// (admitPendingSkillSelections) — the request either carries the instructions
+// or fails visibly, and is never dispatched without them. A failure whose
+// obligations DID reach disk is already recoverable at the next dispatch seam,
+// so it is not retained. Either way the turn's typed input record keeps the
+// prepared invocations for the next restore's reconciliation.
+func (s *Session) admitPreparedSkillSelection(batch *skillActivationBatch) {
 	if batch == nil {
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Session) admitSteeringSelectionBatch(batch *skillActivationBatch) {
 			s.pendingSkillAdmissions = append(s.pendingSkillAdmissions, batch)
 		}
 		s.mu.Unlock()
-		s.emit(events.EventWarning, warningDataFromError("admitting steering skill selection failed", err))
+		s.emit(events.EventWarning, warningDataFromError("admitting a prepared skill selection failed", err))
 	}
 }
 
@@ -317,9 +317,14 @@ func (s *Session) reconcilePendingSkillSelections(ctx context.Context, entries [
 			s.emit(events.EventWarning, warningDataFromError("reconciling lost skill selection failed", err))
 			continue
 		}
-		// Admission warns on its own save failure; the durable input record
-		// stays for the next restore either way.
-		_ = s.admitSkillActivationBatch(batch)
+		// Admission gates the next request on its own failure (it retains the
+		// batch when nothing durable was written), while the durable input
+		// record stays for the next restore either way. A preparation failure
+		// above only warns: its source is gone, so there is nothing to admit,
+		// and the durable record re-drives the same preparation at the next
+		// restore rather than wedging this session on a source the user may
+		// still repair.
+		s.admitPreparedSkillSelection(batch)
 		appended = len(s.history) > historyBefore || appended
 	}
 	return appended

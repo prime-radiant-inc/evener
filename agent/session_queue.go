@@ -1050,12 +1050,12 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			return true
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-		s.admitSteeringSelectionBatch(selectionBatch)
+		s.admitPreparedSkillSelection(selectionBatch)
 		return true
 	}
 	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-	s.admitSteeringSelectionBatch(selectionBatch)
+	s.admitPreparedSkillSelection(selectionBatch)
 	return true
 }
 
