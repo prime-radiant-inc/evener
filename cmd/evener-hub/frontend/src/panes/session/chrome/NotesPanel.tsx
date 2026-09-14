@@ -12,6 +12,7 @@ import {
   unmountHumanNote,
   useHumanNoteDraft,
 } from "../../../stores/humanNoteDrafts";
+import { beginUrlRemoval, endUrlRemoval, usePendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Sheet, Textarea, useToasts } from "../../../widgets";
 import { isWebHref } from "../../../widgets/contextcard";
@@ -153,16 +154,11 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   const saved = state?.saved ?? false;
   const error = state?.error ?? null;
   // A double-click on one row's Remove must not fire twice: the first request
-  // succeeds and the second reports the entry as already gone, surfacing a
-  // spurious "Couldn't remove link" toast. Each row's button is disabled for
-  // exactly as long as its own request is pending.
-  const [removingURLs, setRemovingURLs] = useState<ReadonlySet<string>>(() => new Set());
-  // The guard has to be synchronous: a click handler reads the pending set from
-  // the render it was created in, so two clicks inside one tick both see it
-  // empty and both fire (the disabled attribute only appears after the
-  // re-render). The ref is checked and updated in the handler; the state exists
-  // to disable the row.
-  const removingURLsRef = useRef(new Set<string>());
+  // succeeds and the second reports the entry as already gone. The guard lives
+  // in a store keyed by session and entry id rather than in this component,
+  // because the mobile sheet unmounts the body mid-request and a pane can be
+  // reused for another session (see stores/pendingUrlRemovals).
+  const removingURLs = usePendingUrlRemovals(sessionRef);
   // Editability here tracks the store's own write gate: rendering controls that
   // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
   const live = canWriteHumanNote(model);
@@ -188,9 +184,9 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   // removal of an entry the server no longer has reads as success below, so a
   // duplicate request is harmless whichever way it slips through.
   async function handleRemoveURL(url: SessionURL) {
-    if (removingURLsRef.current.has(url.id)) return;
-    removingURLsRef.current.add(url.id);
-    setRemovingURLs((prev) => new Set(prev).add(url.id));
+    // Check and mark in one synchronous step: two clicks inside one tick both
+    // run this handler before any re-render.
+    if (!beginUrlRemoval(sessionRef, url.id)) return;
     try {
       await threadsStore.getState().removeURL(sessionRef, url.id);
     } catch (err) {
@@ -201,12 +197,7 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
         toasts.push("error", sessionActionError("Couldn't remove link", err));
       }
     } finally {
-      removingURLsRef.current.delete(url.id);
-      setRemovingURLs((prev) => {
-        const next = new Set(prev);
-        next.delete(url.id);
-        return next;
-      });
+      endUrlRemoval(sessionRef, url.id);
     }
   }
 

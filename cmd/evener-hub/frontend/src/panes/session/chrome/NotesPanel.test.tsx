@@ -15,6 +15,7 @@ import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { editHumanNote, syncHumanNote } from "../../../stores/humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { resetPendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -305,6 +306,7 @@ test("a definite refusal stays visible and keeps its draft across close and reop
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetPendingUrlRemovals();
   resetToastStoreForTests();
 });
 
@@ -949,6 +951,100 @@ test("a failed Remove clears the guard so a retry can fire", async () => {
   // the user's retry has to reach the wire.
   await user.click(button);
   await waitFor(() => expect(calls).toBe(2));
+});
+
+test("a Remove in flight survives closing and reopening the panel", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return answered.then(() => ({}));
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  const panel = render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  await user.click(screen.getByTestId("shared-notes-url-remove-u1"));
+  await waitFor(() => expect(calls).toBe(1));
+
+  // The mobile sheet unmounts the body while the request is still in flight; a
+  // guard that lives in the component resets here and lets a duplicate through.
+  panel.unmount();
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  await user.click(screen.getByTestId("shared-notes-url-remove-u1"));
+  expect(calls).toBe(1);
+
+  release();
+  await act(async () => {
+    await answered;
+  });
+});
+
+test("a pending removal does not disable another session's row", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return answered.then(() => ({}));
+  });
+
+  const first = testModel({
+    ref: "local:aaaa",
+    threadId: "aaaa",
+    sessionUrls: [{ id: "u1", url: "https://a.test/y", label: "a" }],
+  });
+  threadsStore.setState({ threads: new Map([[first.ref, first]]) });
+  void threadsStore.getState().ensureThread(first.ref);
+  const panel = render(
+    <>
+      <NotesPanelBody sessionRef={first.ref} model={first} />
+      <Toast />
+    </>,
+  );
+  await user.click(screen.getByTestId("shared-notes-url-remove-u1"));
+  await waitFor(() => expect(calls).toBe(1));
+
+  // The same mounted pane, a different session: the guard is keyed by session,
+  // so this row is its own.
+  const second = testModel({
+    ref: "local:bbbb",
+    threadId: "bbbb",
+    sessionUrls: [{ id: "u1", url: "https://b.test/y", label: "b" }],
+  });
+  threadsStore.setState({ threads: new Map([[second.ref, second]]) });
+  void threadsStore.getState().ensureThread(second.ref);
+  panel.rerender(
+    <>
+      <NotesPanelBody sessionRef={second.ref} model={second} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+
+  release();
+  await act(async () => {
+    await answered;
+  });
 });
 
 // --- save coalescing -------------------------------------------------------------
