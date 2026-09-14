@@ -96,6 +96,13 @@ jobs:
             go.work.sum
             **/go.sum
 
+      # Built before the install so the installer's own download can run under
+      # `evener-dev dev bounded-list` once that subcommand exists (#1263);
+      # until then the script probes, finds it missing, and says so.
+      - name: Build the dev binary the installer runs under
+        timeout-minutes: 5
+        run: make build-dev
+
       - name: Install golangci-lint
         run: |
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"

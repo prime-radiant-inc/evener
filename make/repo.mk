@@ -10,9 +10,7 @@ tools:
 
 ## Install the CI-pinned golangci-lint version from .tool-versions.
 tools-golangci:
-	@set -eu; \
-	golangci=$$(awk '$$1=="golangci-lint" {print $$2}' .tool-versions); \
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" "v$$golangci"
+	@scripts/ops/install-golangci-lint.sh
 
 ## Install the CI-pinned gitleaks version from .tool-versions.
 tools-gitleaks:
