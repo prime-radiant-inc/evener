@@ -493,6 +493,21 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	for _, tag := range topTags {
 		topAt[tag] = true
 	}
+	// Extra top-level tags the record itself lacks, split around the
+	// live layer in spec order: snapshot/overlay extras replay with
+	// the layers below, config extras after live — so user config
+	// still wins over live facts on implicit records too.
+	applyExtras := func(afterLive bool) {
+		for _, tag := range topTags {
+			if !topAt[tag] || seenTag[tag] {
+				continue
+			}
+			if (tag == LayerConfig) != afterLive {
+				continue
+			}
+			r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
+		}
+	}
 	for _, layer := range rec.layers {
 		if layer.tag == LayerConfig && !liveApplied {
 			r.applyLive(&caps, rec, ref.Model, hit, prov)
@@ -519,16 +534,13 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		}
 	}
 	// Tags with top-level rows the record itself lacks (user globs over
-	// an implicit instance): replayed last, so user config still wins.
-	for _, tag := range topTags {
-		if !topAt[tag] || seenTag[tag] {
-			continue
-		}
-		r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
-	}
+	// an implicit instance): snapshot/overlay extras join the layers
+	// below; config extras replay after live, so user config wins.
+	applyExtras(false)
 	if !liveApplied {
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
+	applyExtras(true)
 	seedFields(&caps, rowProto)
 	if aliasLockstep {
 		row.Disabled = aliasDisabled

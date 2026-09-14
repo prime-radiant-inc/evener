@@ -674,13 +674,11 @@ describe("model live refresh", () => {
     // Settle personal's first: work's must still read pending.
     gates.get("personal")?.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
     await waitFor(() =>
-      expect(
-        within(personalInspector).queryByRole("button", { name: "Refreshing live models…" }),
-      ).toBeNull(),
+      expect(within(personalInspector).queryByRole("button", { name: "Refreshing live models…" })).toBeNull(),
     );
     await user.click(within(personalInspector).getByRole("button", { name: "Close" }));
     const workAgain = await openSheet(user, "work");
-    expect(workAgain.getByRole("button", { name: "Refreshing live models…" })).toBeTruthy();
+    expect(within(workAgain).getByRole("button", { name: "Refreshing live models…" })).toBeTruthy();
     gates.get("work")?.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
     await within(workAgain).findByRole("button", { name: "Refresh live models" });
   });

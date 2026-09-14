@@ -71,6 +71,21 @@ func TestResolve_AliasOfDisabledTargetIsBlocked(t *testing.T) {
 	}
 }
 
+func TestResolve_UserTopGlobBeatsLiveForImplicitInstance(t *testing.T) {
+	// Spec order is layers, then live, then user config: a user
+	// top-level glob scalar must win over the live listing's value on
+	// an implicit instance too — not just on explicit ones.
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "sk"}, "[models.\"gpt-*\"]\ncontext_window = 100\n")
+	r.ApplyLive("openai", []Model{{ID: "gpt-5.6", Caps: Caps{ContextWindow: new(200)}}})
+	res, err := r.Resolve("openai/gpt-5.6")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 100 {
+		t.Fatalf("ContextWindow = %v, want 100 from user config over live 200", res.Caps.ContextWindow)
+	}
+}
+
 func TestResolve_UserTopGlobDisablesImplicitInstance(t *testing.T) {
 	// A user top-level [models."<glob>"] disabled=true applies to every
 	// provider — including an implicit instance whose record has no

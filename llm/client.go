@@ -494,8 +494,8 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 		// An override owns its instance name: its listing seam is the only
 		// way it can list, so no registry-only fallback stands in for it.
 		// Its rows stay out of the registry -- a client without WithRegistry
-		// shares EmbeddedRegistry with every other such client (spec \u00a75.1,
-		// \u00a78.1) -- and only an instance's own transport may speak for it.
+		// shares EmbeddedRegistry with every other such client (spec §5.1,
+		// §8.1) -- and only an instance's own transport may speak for it.
 		lister, ok := override.(LiveModelLister)
 		if !ok {
 			return nil, false, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", instance)}
@@ -535,9 +535,9 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 }
 
 // resolveListing resolves every id the registry knows for instance --
-// after the caller applied the live rows -- and filters by the \u00a75
+// after the caller applied the live rows -- and filters by the §5
 // visibility rule. live reports whether a live listing was fetched;
-// false means registry-only (spec \u00a78.1: an unsupported models endpoint
+// false means registry-only (spec §8.1: an unsupported models endpoint
 // is not a failure).
 func (c *Client) resolveListing(instance string, live bool) ModelListing {
 	r := c.Registry()

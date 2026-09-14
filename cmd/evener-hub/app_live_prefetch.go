@@ -33,7 +33,7 @@ const instanceLiveListTimeout = 8 * time.Second
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, name string) error {
 	// Paired atomically: the client is built from the same snapshot the
 	// token belongs to, so no Reload can slip between the two.
-	reg, tok := holder.BeginLiveFetchReg()
+	reg, tok := holder.BeginLiveFetchReg(name)
 	if reg == nil {
 		return nil
 	}
@@ -98,7 +98,7 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 			// Paired atomically per fetch: each goroutine builds its
 			// client from the same snapshot its token belongs to, so a
 			// Reload between goroutines cannot cross-wire them.
-			reg, tok := holder.BeginLiveFetchReg()
+			reg, tok := holder.BeginLiveFetchReg(name)
 			if reg == nil {
 				return
 			}
