@@ -179,8 +179,12 @@ name, and the gate stays green while saying nothing about it. C13 taught the
 sharpest half of that — **the `shippedModules` entry is what arms the
 reachability assertion, so a module emitted into `dist/` but missing from that
 array passes silently**, which is exactly the hole the assertion exists to
-close. Filed as **#1224**; its fix lands after #1222 and #1223, and until then
-every phase-C and phase-D row must add the `shippedModules` entry by hand.
+close. Filed as **#1224** and **closed by A3** (`57509ffd5`): `shippedModules` is
+now derived from `tsconfig.build.json`, so adding a module to the build list is
+what arms the assertion for it. Phase-C and phase-D rows therefore add the
+`files` entry and get the reachability check for free — they must no longer
+maintain a second list by hand, which is what an earlier draft of this paragraph
+told them to do.
 
 | # | Store migrated | Native twin deleted | Lines | Deps | Risk |
 | --- | --- | --- | --- | --- | --- |
@@ -250,13 +254,13 @@ Exactly two, each with its removal PR named.
    stubs everywhere. Stub the web: its 689 import lines sit four levels below
    the repo root across five distinct `../` depths, so rewriting them *lengthens*
    every specifier and A4 would rewrite the same 689 lines again three PRs later
-   — about 30 one-line stub files (25 top-level modules plus five under
-   `testing/`) instead. Sed the mobile trees: all 166 of their lines
+   — **32** one-line stub files (28 directly under `src/protocol/`, 4 under
+   `testing/`, as #1241 built them) instead. Sed the mobile trees: all 166 of their lines
    (138 `mobile-native`, 22 `mobile/src`, 6 `.mts`) sit at a *single* uniform
    depth each, so three mechanical seds do it, the paths get **shorter**, and
    it is the same rewrite the `.mts` carve-out already requires. That is roughly
-   200 changed lines plus 33 new files (32 web stubs and a `testing/` stub
-   directory, as #1241 built it), against ~855 rewritten lines. **19
+   200 changed lines plus **32** new stub files (28 under `src/protocol/`, 4 under
+   `testing/`), against ~855 rewritten lines. **19
    modules are imported by both trees at run time** — `activityData`,
    `activityRows`, `askAnswers`, `attachmentMarkers`, `catalogCommands`,
    `client`, `composerInput`, `displayFormat`, `docContent`, `errors`,
@@ -428,7 +432,7 @@ before acting on it.
 | C5 | #1229 | **merged** as `31a5a4370` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
 | C15 | #1230 | **merged** as `0acebbb0d` — `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
-| — | #1224 | open issue — `shippedModules` arms the reachability assertion, so a `dist/` module missing from it passes silently |
+| — | #1224 | **closed by A3** (`57509ffd5`) — `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, so a shipped module cannot go missing from it |
 | — | #1228 | open issue — `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` now sit together at the package root with different rules; naming pass after C11b |
 | A3d | #1209 | **merged** as `f39aa2c83` — `./docContent` published; `readDocFile` took a required `DocFetch`, since widened by C24 to a `DocPort`; browser adapter at `panes/doc/browserDocPort.ts` (named `browserDocFetch.ts` until C24 renamed it), wired at `DocPane.tsx:49` |
 | B3b | #1203 | **merged** as `4da382482` — native's two `projectUsage` copies collapsed to one |
