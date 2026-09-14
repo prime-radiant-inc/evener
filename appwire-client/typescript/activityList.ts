@@ -22,6 +22,13 @@ export interface ActivityState {
 export interface ActivityBranch extends ActivityBranchState {
   id: string;
   label: string;
+  // openSessionRef is set for a delegate branch the page stopped at with
+  // nothing to page: the daemon truncated it at the depth or
+  // continuation-path bound and deliberately minted no token, because a token
+  // there would name this child as a fresh root at position 0 -- the page a
+  // direct request already returns. The child is still addressable as its own
+  // session, and this is the ref that reaches it.
+  openSessionRef?: string;
 }
 
 /** Own activity requests and retained results for one hub/session lifetime. */
@@ -64,14 +71,22 @@ export class ActivityList {
   }
   branches = (): ActivityBranch[] => {
     const branches: ActivityBranch[] = [];
-    const append = (id: string, label: string, branch: ActivityBranchState) => {
-      if (branch.error || branch.truncated || branch.continuation) branches.push({ id, label, ...branch });
+    const append = (id: string, label: string, branch: ActivityBranchState, openSessionRef?: string) => {
+      if (branch.error || branch.truncated || branch.continuation)
+        branches.push({ id, label, ...branch, ...(openSessionRef ? { openSessionRef } : {}) });
     };
     const visit = (node: ActivitySessionNode) => {
       append(activityNodeID(node), node.label, node.branch);
       for (const entry of node.entries)
         if (entry.kind === "delegate") {
-          append(activityNodeID(entry), entry.delegate.description ?? entry.delegate.childRef, entry.delegate.branch);
+          const branch = entry.delegate.branch;
+          const childRef = entry.delegate.childRef.trim();
+          append(
+            activityNodeID(entry),
+            entry.delegate.description ?? entry.delegate.childRef,
+            branch,
+            !branch.continuation && branch.truncated && childRef ? childRef : undefined,
+          );
           if (entry.delegate.child) visit(entry.delegate.child);
         }
     };

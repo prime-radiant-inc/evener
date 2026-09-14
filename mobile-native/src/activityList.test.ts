@@ -205,3 +205,65 @@ it("keeps a failed continuation retryable and supersedes it with live root updat
   expect(list.getSnapshot().tree?.revision).toBe(3);
   expect(list.getSnapshot().tree?.root.entries).toHaveLength(1);
 });
+
+function delegateTree(branch: Record<string, unknown>) {
+  return {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: "thread",
+      ref: "local:test",
+      label: "Test",
+      aggregate: "running",
+      counts: { active: 1, completed: 0, failed: 0, complete: false },
+      branch: {},
+      entries: [
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_deep",
+            ownerSessionId: "thread",
+            rootSessionId: "thread",
+            childSessionId: "sess_deep_child",
+            childRef: "local:sess_deep_child",
+            type: "delegate",
+            lifecycle: "running",
+            phase: "running",
+            status: "running",
+            projectionRevision: 1,
+            terminal: false,
+            resumable: true,
+            description: "Deep work",
+            branch,
+          },
+        },
+      ],
+    },
+  };
+}
+
+// A branch the daemon truncated at the depth or continuation-path bound mints
+// no token on purpose (#1269): a token there would name this child as a fresh
+// root at position 0, which is the page a direct request already returns. The
+// child is still addressable as its own session, so the branch has to say
+// which one, or the sheet has nothing to offer and the subtree is unreachable.
+it("a truncated delegate branch with no continuation names the child session to open", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({ data: delegateTree({ truncated: true }) });
+  await list.refresh();
+  const branch = list.branches()[0];
+  expect(branch).toMatchObject({ truncated: true });
+  expect(branch?.continuation).toBeUndefined();
+  expect(branch?.openSessionRef).toBe("local:sess_deep_child");
+});
+
+it("a delegate branch that can still be paged names no session to open", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({
+    data: delegateTree({ truncated: true, continuation: "cursor" }),
+  });
+  await list.refresh();
+  const branch = list.branches()[0];
+  expect(branch?.continuation).toBe("cursor");
+  expect(branch?.openSessionRef).toBeUndefined();
+});
