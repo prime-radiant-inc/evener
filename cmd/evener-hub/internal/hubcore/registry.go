@@ -23,22 +23,15 @@ type ProviderRegistry struct {
 	mu      sync.RWMutex
 	current *registry.Registry
 	loadErr error
-	// generation orders holder swaps and live fetches: every Reload
-	// that installs a new current and every BeginLiveFetch bumps it.
-	// A fetch mints its token at request start, so a slower fetch that
-	// returns after a newer one began holds a lower token. ReapplyLive
-	// applies only above lastApplied, so stale responses are discarded
-	// while a failed newer fetch — which applies nothing — never blocks
-	// an older in-flight success.
-	generation uint64
-	// liveTokens holds each instance's latest fetch token: minted by
-	// BeginLiveFetch at request start, so overlapping fetches stay
-	// ordered. lastApplied holds the highest token actually applied by
-	// ReapplyLive. The split is what keeps a failed newer fetch from
-	// invalidating an older in-flight success: the failure applies
-	// nothing and leaves lastApplied untouched, while a
-	// later-started success still wins by applying a higher token.
-	liveTokens  map[string]uint64
+	// generation is the monotonic token source: every Reload that
+	// installs a new current and every BeginLiveFetch bumps it. A fetch
+	// mints its token at request start, so a slower fetch that returns
+	// after a newer one began holds a lower token. lastApplied holds
+	// the highest token actually applied per instance; ReapplyLive
+	// lands only above it, so stale responses are discarded while a
+	// failed newer fetch — which applies nothing — never blocks an
+	// older in-flight success.
+	generation  uint64
 	lastApplied map[string]uint64
 }
 
@@ -102,20 +95,30 @@ func (h *ProviderRegistry) Current() *registry.Registry {
 	return h.current
 }
 
-// BeginLiveFetch mints instance's fetch token at request start. A fetch
-// that returns after a newer fetch for the same instance began — or
-// after a Reload swapped the registry — holds a stale token, and
-// ReapplyLive discards it. Minting at start (not at apply) is what
-// orders overlapping fetches; ReapplyLive staying claim-free is what
-// keeps a failed fetch from superseding a successful concurrent one.
-func (h *ProviderRegistry) BeginLiveFetch(instance string) uint64 {
+// BeginLiveFetchReg atomically pairs instance's fetch token with the
+// registry snapshot the fetch must run against: the client is built
+// from the returned registry, so a Reload landing between the two
+// cannot strand a new-generation token on an old-registry fetch (or
+// vice versa). ReapplyLive's lastApplied check then orders the result
+// against every overlapping fetch and swap.
+func (h *ProviderRegistry) BeginLiveFetchReg() (*registry.Registry, uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.generation++
-	if h.liveTokens == nil {
-		h.liveTokens = map[string]uint64{}
-	}
-	h.liveTokens[instance] = h.generation
+	return h.current, h.generation
+}
+
+// BeginLiveFetch mints a fetch token at request start; BeginLiveFetchReg
+// above is the paired form the fetch paths use. A fetch that returns
+// after a newer fetch began — or after a Reload swapped the registry —
+// holds a lower token, and ReapplyLive discards it. Minting at start
+// (not at apply) is what orders overlapping fetches; only successful
+// fetches reaching ReapplyLive is what keeps a failed fetch from
+// superseding a successful concurrent one.
+func (h *ProviderRegistry) BeginLiveFetch() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.generation++
 	return h.generation
 }
 

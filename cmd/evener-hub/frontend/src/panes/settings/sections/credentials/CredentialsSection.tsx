@@ -97,18 +97,23 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // instance's listing at startup and every few minutes after, so the
   // Models toggles read cached inventory. The Refresh button below
   // re-fetches on demand; failures toast and keep the cached rows. The
-  // pending flag is keyed to the in-flight instance, so a refresh for A
-  // never disables B's sheet while the user has it open.
-  const [refreshingInstance, setRefreshingInstance] = useState<string | null>(null);
+  // pending set holds every in-flight instance, so concurrent refreshes
+  // for A and B each disable only their own sheet.
+  const [refreshingInstances, setRefreshingInstances] = useState<ReadonlySet<string>>(new Set());
 
   async function handleRefreshModels(name: string): Promise<void> {
-    setRefreshingInstance(name);
+    setRefreshingInstances((current) => new Set(current).add(name));
     try {
       await credentialsStore.getState().refreshModels(name);
     } catch (err) {
       toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`);
     } finally {
-      setRefreshingInstance((current) => (current === name ? null : current));
+      setRefreshingInstances((current) => {
+        if (!current.has(name)) return current;
+        const next = new Set(current);
+        next.delete(name);
+        return next;
+      });
     }
   }
   const previousInstances = useRef(instances);
@@ -308,7 +313,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         onRefreshModels={() => {
           if (selectedInstance !== null) void handleRefreshModels(selectedInstance);
         }}
-        modelsRefreshing={refreshingInstance === selectedInstance}
+        modelsRefreshing={selectedInstance !== null && refreshingInstances.has(selectedInstance)}
         onTestCredentials={() => {
           if (selectedInstance !== null) void handleTestCredentials(selectedInstance);
         }}

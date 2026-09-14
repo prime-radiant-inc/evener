@@ -646,6 +646,45 @@ describe("model live refresh", () => {
     await within(inspector).findByRole("switch", { name: "claude-live-new" });
   });
 
+  test("two concurrent refreshes each track their own pending state", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const gates = new Map<string, ReturnType<typeof deferred<InstanceListResponse>>>();
+    fake.on("evener/instance/refreshModels", (params: { name: string }) => {
+      const gate = deferred<InstanceListResponse>();
+      gates.set(params.name, gate);
+      return gate.promise;
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    // Start work's refresh, then personal's while work's is still in
+    // flight: both sheets must show pending independently.
+    const workInspector = await openSheet(user, "work");
+    await user.click(within(workInspector).getByRole("button", { name: "Refresh live models" }));
+    await user.click(within(workInspector).getByRole("button", { name: "Close" }));
+    const personalInspector = await openSheet(user, "personal");
+    await user.click(within(personalInspector).getByRole("button", { name: "Refresh live models" }));
+    await within(personalInspector).findByRole("button", { name: "Refreshing live models…" });
+    // Settle personal's first: work's must still read pending.
+    gates.get("personal")?.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
+    await waitFor(() =>
+      expect(
+        within(personalInspector).queryByRole("button", { name: "Refreshing live models…" }),
+      ).toBeNull(),
+    );
+    await user.click(within(personalInspector).getByRole("button", { name: "Close" }));
+    const workAgain = await openSheet(user, "work");
+    expect(workAgain.getByRole("button", { name: "Refreshing live models…" })).toBeTruthy();
+    gates.get("work")?.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
+    await within(workAgain).findByRole("button", { name: "Refresh live models" });
+  });
+
   test("a refresh in flight for another instance does not disable this sheet's button", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);

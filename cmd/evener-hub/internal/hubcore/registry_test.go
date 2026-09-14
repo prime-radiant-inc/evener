@@ -76,8 +76,8 @@ func TestReapplyLiveFailedNewerDoesNotBlockOlderSuccess(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	older := h.BeginLiveFetch("gw")
-	_ = h.BeginLiveFetch("gw") // newer fetch, fails: applies nothing
+	older := h.BeginLiveFetch()
+	_ = h.BeginLiveFetch() // newer fetch, fails: applies nothing
 	h.ReapplyLive(older, "gw", []registry.Model{{ID: "gpt-live"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))
@@ -100,8 +100,8 @@ func TestReapplyLiveDiscardsOutOfOrderFetch(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	slow := h.BeginLiveFetch("gw")
-	fast := h.BeginLiveFetch("gw")
+	slow := h.BeginLiveFetch()
+	fast := h.BeginLiveFetch()
 	h.ReapplyLive(fast, "gw", []registry.Model{{ID: "gpt-new"}})
 	h.ReapplyLive(slow, "gw", []registry.Model{{ID: "gpt-old"}})
 	got := h.Get().LiveModels("gw")
@@ -120,6 +120,10 @@ func TestReapplyLiveDiscardsOutOfOrderFetch(t *testing.T) {
 }
 
 func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
+	// The genuinely out-of-order pair: the older token applies first,
+	// then the newer claim overwrites it and a repeat of the older
+	// apply is discarded — coverage the failed-newer and
+	// out-of-order arrivals above do not give.
 	h := NewProviderRegistry(hermeticLoader)
 	if err := h.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
@@ -127,10 +131,11 @@ func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	stale := h.BeginLiveFetch("gw")
-	fresh := h.BeginLiveFetch("gw")
-	h.ReapplyLive(fresh, "gw", []registry.Model{{ID: "gpt-new"}})
-	h.ReapplyLive(stale, "gw", []registry.Model{{ID: "gpt-old"}})
+	older := h.BeginLiveFetch()
+	newer := h.BeginLiveFetch()
+	h.ReapplyLive(older, "gw", []registry.Model{{ID: "gpt-old"}})
+	h.ReapplyLive(newer, "gw", []registry.Model{{ID: "gpt-new"}})
+	h.ReapplyLive(older, "gw", []registry.Model{{ID: "gpt-old"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))
 	for _, m := range got {
@@ -138,7 +143,10 @@ func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
 	}
 	for _, id := range ids {
 		if id == "gpt-old" {
-			t.Fatalf("live ids = %v, want superseded gpt-old discarded", ids)
+			t.Fatalf("live ids = %v, want replayed older apply discarded", ids)
 		}
+	}
+	if len(ids) == 0 {
+		t.Fatal("live ids empty, want gpt-new applied")
 	}
 }

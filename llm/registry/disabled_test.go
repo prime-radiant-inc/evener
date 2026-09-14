@@ -71,6 +71,19 @@ func TestResolve_AliasOfDisabledTargetIsBlocked(t *testing.T) {
 	}
 }
 
+func TestResolve_UserTopGlobDisablesImplicitInstance(t *testing.T) {
+	// A user top-level [models."<glob>"] disabled=true applies to every
+	// provider — including an implicit instance whose record has no
+	// LayerConfig layer of its own.
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "sk"}, "[models.\"gpt-*\"]\ndisabled = true\n")
+	if _, err := r.Resolve("openai/gpt-5.6"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve implicit under user top glob = %v, want ErrModelDisabled", err)
+	}
+	if got := r.FindModel("gpt-5.6"); len(got) != 0 {
+		t.Fatalf("FindModel(gpt-5.6) = %v, want no serving instance", got)
+	}
+}
+
 func TestResolve_CrossProviderAliasOfDisabledTargetIsBlocked(t *testing.T) {
 	// A cross-provider alias ("provider/id") must inherit its target's
 	// Disabled verdict from the target's instance record, not the

@@ -31,11 +31,12 @@ const instanceLiveListTimeout = 8 * time.Second
 // it on the detached registry. An unsupported listing (ok == false)
 // carries no live facts, so it applies nothing.
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, name string) error {
-	reg := holder.Current()
+	// Paired atomically: the client is built from the same snapshot the
+	// token belongs to, so no Reload can slip between the two.
+	reg, tok := holder.BeginLiveFetchReg()
 	if reg == nil {
 		return nil
 	}
-	tok := holder.BeginLiveFetch(name)
 	rows, ok, err := fetchInstanceLiveWith(ctx, cmdutil.NewRegistryClient(reg, ""), name)
 	if err != nil {
 		return err
@@ -75,30 +76,38 @@ func visibleModelIDs(reg *registry.Registry, name string) []string {
 // at least one instance's visible listing differs from its before snapshot,
 // so the caller broadcasts once per pass instead of per row.
 func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry, changed func()) {
-	reg := holder.Get()
-	if reg == nil {
-		return
+	names := []string{}
+	if reg := holder.Get(); reg != nil {
+		for _, inst := range reg.Instances() {
+			if !inst.Hidden {
+				names = append(names, inst.Name)
+			}
+		}
 	}
-	client := cmdutil.NewRegistryClient(reg, "")
+	before := map[string][]string{}
+	if reg := holder.Get(); reg != nil {
+		for _, name := range names {
+			before[name] = visibleModelIDs(reg, name)
+		}
+	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	anyChanged := false
-	for _, inst := range reg.Instances() {
-		if inst.Hidden {
-			continue
-		}
-		before := visibleModelIDs(reg, inst.Name)
+	for _, name := range names {
 		wg.Go(func() {
-			// Minted at request start, so overlapping fetches for one
-			// instance stay ordered: a slower success loses to a newer
-			// begin, while a failed fetch spends nothing.
-			tok := holder.BeginLiveFetch(inst.Name)
-			rows, ok, err := fetchInstanceLiveWith(ctx, client, inst.Name)
+			// Paired atomically per fetch: each goroutine builds its
+			// client from the same snapshot its token belongs to, so a
+			// Reload between goroutines cannot cross-wire them.
+			reg, tok := holder.BeginLiveFetchReg()
+			if reg == nil {
+				return
+			}
+			rows, ok, err := fetchInstanceLiveWith(ctx, cmdutil.NewRegistryClient(reg, ""), name)
 			if err != nil || !ok {
 				return
 			}
-			holder.ReapplyLive(tok, inst.Name, rows)
-			if !slices.Equal(before, visibleModelIDs(holder.Get(), inst.Name)) {
+			holder.ReapplyLive(tok, name, rows)
+			if !slices.Equal(before[name], visibleModelIDs(holder.Get(), name)) {
 				mu.Lock()
 				anyChanged = true
 				mu.Unlock()

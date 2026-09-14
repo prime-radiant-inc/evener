@@ -488,6 +488,11 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 
 	seenTag := map[string]bool{}
 	liveApplied := false
+	topTags := r.topGlobTags(rec)
+	topAt := map[string]bool{}
+	for _, tag := range topTags {
+		topAt[tag] = true
+	}
 	for _, layer := range rec.layers {
 		if layer.tag == LayerConfig && !liveApplied {
 			r.applyLive(&caps, rec, ref.Model, hit, prov)
@@ -512,6 +517,14 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 				applyRowScalars(&row, lr, layer.tag+"/row", prov)
 			}
 		}
+	}
+	// Tags with top-level rows the record itself lacks (user globs over
+	// an implicit instance): replayed last, so user config still wins.
+	for _, tag := range topTags {
+		if !topAt[tag] || seenTag[tag] {
+			continue
+		}
+		r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
 	}
 	if !liveApplied {
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
@@ -641,7 +654,28 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string)
 	}
 }
 
-// orderedGlobKeys lists rows' glob patterns matching ref (or its altID,
+// topGlobTags lists the layer tags whose top-level globs a replay must
+// consult, in layer order: every tag the record carries, plus any tag
+// with top-level rows the record lacks (an implicit instance built on a
+// curated record has no LayerConfig layer, but user top-level globs
+// still apply to it — they are "applied to every provider").
+func (r *Registry) topGlobTags(rec *record) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, layer := range rec.layers {
+		if !seen[layer.tag] {
+			seen[layer.tag] = true
+			out = append(out, layer.tag)
+		}
+	}
+	for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
+		if !seen[tag] && len(r.topGlobs[tag]) > 0 {
+			out = append(out, tag)
+		}
+	}
+	return out
+}
+
 // target first) in spec §4.1 order: shorter patterns first, each pattern at
 // most once. applyGlobs and modelDisabled share it so the two replays
 // cannot disagree about matching order.
@@ -900,14 +934,17 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 	}
 	var disabled bool
 	seenTag := map[string]bool{}
+	applyTop := func(tag string) {
+		for _, g := range orderedGlobKeys(r.topGlobs[tag], ref.Model, altID) {
+			if d := r.topGlobs[tag][g].Disabled; d != nil {
+				disabled = *d
+			}
+		}
+	}
 	for _, layer := range rec.layers {
 		if !seenTag[layer.tag] {
 			seenTag[layer.tag] = true
-			for _, g := range orderedGlobKeys(r.topGlobs[layer.tag], ref.Model, altID) {
-				if d := r.topGlobs[layer.tag][g].Disabled; d != nil {
-					disabled = *d
-				}
-			}
+			applyTop(layer.tag)
 		}
 		for _, g := range orderedGlobKeys(layer.rows, ref.Model, altID) {
 			if d := layer.rows[g].Disabled; d != nil {
@@ -918,6 +955,11 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 			if lr, ok := layer.rows[hit.rowID]; ok && lr.Disabled != nil {
 				disabled = *lr.Disabled
 			}
+		}
+	}
+	for _, tag := range r.topGlobTags(rec) {
+		if !seenTag[tag] {
+			applyTop(tag)
 		}
 	}
 	return disabled
