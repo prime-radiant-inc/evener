@@ -229,7 +229,9 @@ func sanitizeRestoredURLs(urls []schema.SessionURL) []schema.SessionURL {
 		// leaves those back for a collapse that these values never see.
 		entry.URL = stripDisplayControls(entry.URL)
 		entry.ID = stripDisplayControls(entry.ID)
-		entry.Label = normalizeNote(entry.Label)
+		// Only controls are removed on the way in: the load path must not reshape
+		// what was persisted (a label already carries the write path's collapse).
+		entry.Label = stripNoteControls(entry.Label)
 		sanitized = append(sanitized, entry)
 	}
 	return sanitized
