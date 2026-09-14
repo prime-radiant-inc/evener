@@ -74,15 +74,24 @@ test("specifiers this package does not publish are not collected", () => {
   expect([...found.get(DOC_CONTENT)]).toEqual([]);
 });
 
-test("a namespace or default import of the package is reported, not skipped", () => {
+test.each([
+  ["import-namespace", `import * as everything from "${ROOT}";\nvoid everything;\n`],
+  ["import-default", `import theDefault from "${ROOT}";\nvoid theDefault;\n`],
+  ["import-side-effect", `import "${ROOT}";\n`],
+  ["export-star-from", `export * from "${ROOT}";\n`],
+  ["dynamic-import", `const loaded = await import("${ROOT}");\nvoid loaded;\n`],
+  ["require", `const loaded = require("${ROOT}");\nvoid loaded;\n`],
+  ["mock-call", `vi.mock("${ROOT}", () => ({}));\n`],
+])("%s of the package is reported, not skipped", (kind, source) => {
   // This derivation says what the tarball must provide. It cannot answer that
   // for a module taken whole, and answering nothing looked identical to a file
   // that imports nothing.
-  expect(problemsFor(`import * as everything from "${ROOT}";\nvoid everything;\n`)).toEqual([
-    "fixture.ts: import-namespace of @evener/appwire-client names no binding this check can account for",
-  ]);
-  expect(problemsFor(`import theDefault from "${ROOT}";\nvoid theDefault;\n`)).toEqual([
-    "fixture.ts: import-default of @evener/appwire-client names no binding this check can account for",
-  ]);
+  expect(problemsFor(source)).toEqual([`fixture.ts: ${kind} of ${ROOT} names no binding this check can account for`]);
+  expect([...valuesIn(source).get(ROOT)]).toEqual([]);
+});
+
+test("the two forms that name what they take are still accepted", () => {
   expect(problemsFor(`import { errorText } from "${ROOT}";\nvoid errorText;\n`)).toEqual([]);
+  expect(problemsFor(`export { errorText } from "${ROOT}";\n`)).toEqual([]);
+  expect(problemsFor(`import type { ThreadModel } from "${ROOT}";\nexport type A = ThreadModel;\n`)).toEqual([]);
 });

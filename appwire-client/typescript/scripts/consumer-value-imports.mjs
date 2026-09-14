@@ -12,7 +12,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import ts from "typescript";
-import { isRuntimeSite, moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
+import { moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
 
@@ -30,17 +30,22 @@ export function parse(file, text) {
 // is a consumer taking a value, exactly like an import. Type-only statements
 // and inline `type` members do not: they are erased before anything runs.
 //
-// A site that names the package without naming a binding -- a namespace or
-// default import, a bare require, a whole-module dynamic import -- is a
-// refusal, not a skip: this derivation's whole job is to say what the tarball
-// must provide, and it cannot answer that for a module taken as a whole.
+// Only a site that NAMES what it takes can be accounted for, so the two kinds
+// that do are an allowlist and every other kind is a problem. Naming the
+// refused kinds instead left require, dynamic import, side-effect import,
+// mock call and star re-export falling through in silence -- each of them a
+// module taken whole, which is exactly what this derivation cannot enumerate.
+// Type-only sites are the one silent skip, because they are erased before
+// anything runs.
+const ACCOUNTABLE_KINDS = new Set(["import-named", "export-from"]);
+
 export function packageValuesIn(source, file, problems) {
   const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
   for (const site of moduleSpecifierSites(ts, source)) {
     const names = bySpecifier.get(site.text);
     if (!names) continue;
-    if (!isRuntimeSite(site)) continue;
-    if (site.kind === "import-namespace" || site.kind === "import-default") {
+    if (site.typeOnly) continue;
+    if (!ACCOUNTABLE_KINDS.has(site.kind)) {
       problems?.push(`${file}: ${site.kind} of ${site.text} names no binding this check can account for`);
       continue;
     }
