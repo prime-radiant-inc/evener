@@ -10,6 +10,24 @@ export interface InputAttachment {
 }
 
 /**
+ * Canonicalize skill names: trimmed, empty entries dropped, and duplicates
+ * collapsed preserving first-seen order. Skill names reach the composer from
+ * drafts, recovery records and queue projections, any of which can carry a
+ * stray space, an empty string or a repeat; the wire must never receive an
+ * empty or duplicated canonical name, so every path that assembles a selection
+ * list goes through this one definition.
+ */
+export function canonicalSkillNames(names: readonly string[] | undefined): string[] {
+  const out: string[] = [];
+  for (const raw of names ?? []) {
+    const name = raw.trim();
+    if (name === "" || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out;
+}
+
+/**
  * Preserve editing anchors when assembling durable recovery input. Canonical
  * skill selections append AFTER the ordinary text/attachment conversion, in
  * selection order: a skill item is canonical-only ({type: "skill", name}), so
@@ -28,7 +46,7 @@ export function buildInput(
     if (attachment.name !== undefined) image.name = attachment.name;
     input.push(image);
   }
-  for (const name of skillNames ?? []) {
+  for (const name of canonicalSkillNames(skillNames)) {
     input.push({ type: "skill", name });
   }
   return input;
