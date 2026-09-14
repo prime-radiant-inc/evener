@@ -381,6 +381,15 @@ var (
 	// as endpointFingerprintKeyOwner: the unjudged path is what a non-unix host
 	// runs, and no mode a test writes on this host makes it answer that way.
 	endpointFingerprintKeyMode = fileModePerm
+	// endpointFingerprintKeyLink publishes the finished key: os.Link refuses the
+	// publish while the path is taken, which is what keeps a second hub from
+	// replacing the first hub's key. Filesystems without hard links (FAT/exFAT,
+	// some FUSE/SMB mounts) cannot express that, and a key that cannot be
+	// published is a hub that refuses every credential write - so the publish
+	// falls back to an atomic rename there (see
+	// publishFreshEndpointFingerprintKey). A seam, like the two above, so a test
+	// can stand in for such a filesystem on one that supports links.
+	endpointFingerprintKeyLink = os.Link
 )
 
 // endpointFingerprintKey returns the key the endpoint fingerprints are keyed
@@ -506,7 +515,9 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 // while the path is still absent, so a key another hub wrote first is used
 // as-is - two hubs must not each key their own digests - and a path that is
 // present but unusable is replaced with os.Rename, so the path never stops
-// holding a key. The one thing removed is an empty directory, which a rename
+// holding a key. A filesystem that cannot hard-link at all uses that same
+// atomic replace, because a key that cannot be published would refuse every
+// credential write. The one thing removed is an empty directory, which a rename
 // cannot replace and which can never be a key: a state root a stray `mkdir`
 // planted in stays recoverable (a non-empty one is left as the obstacle it
 // is). A usable key is never replaced.
@@ -576,26 +587,34 @@ func publishFreshEndpointFingerprintKey(path string) ([]byte, error) {
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	if err := os.Link(tmp, path); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
+	if err := endpointFingerprintKeyLink(tmp, path); err != nil && !errors.Is(err, os.ErrExist) {
+		// Hard links are unavailable (FAT/exFAT, some FUSE/SMB mounts), and a key
+		// that cannot be published is a hub that refuses every credential write:
+		// verifyEndpointFingerprint refuses both an empty and a non-empty
+		// assertion while the key state errors. Fall through to the atomic replace
+		// below, which keeps publication complete-or-nothing for readers - the
+		// property the failed-write test pins - and still adopts a key that
+		// appeared meanwhile. Only the no-clobber guarantee os.Link gives is lost,
+		// and a filesystem without hard links has no primitive that keeps it while
+		// publishing a finished file in one step.
+	}
+	// Another hub published first, or an unusable file is in the way: a usable
+	// key is the one to use, anything else is replaced atomically. On a link-less
+	// filesystem this read is also what stops the fallback from replacing a key a
+	// hub published in the meantime.
+	if existing, readErr := readEndpointFingerprintKey(path); readErr == nil {
+		return existing, nil
+	}
+	// An empty directory is not a key and cannot be renamed over, so it is the
+	// one obstacle this removes; a non-empty one cannot be either and stays the
+	// obstacle the diagnostics name.
+	if info, statErr := os.Lstat(path); statErr == nil && info.IsDir() {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return nil, removeErr
 		}
-		// Another hub published first, or an unusable file is in the way: a
-		// usable key is the one to use, anything else is replaced atomically.
-		if existing, readErr := readEndpointFingerprintKey(path); readErr == nil {
-			return existing, nil
-		}
-		// An empty directory is not a key and cannot be renamed over, so it is the
-		// one obstacle this removes; a non-empty one cannot be either and stays the
-		// obstacle the diagnostics name.
-		if info, statErr := os.Lstat(path); statErr == nil && info.IsDir() {
-			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				return nil, removeErr
-			}
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			return nil, err
-		}
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, err
 	}
 	return key, nil
 }

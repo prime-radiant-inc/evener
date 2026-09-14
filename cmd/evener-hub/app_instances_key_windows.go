@@ -10,13 +10,48 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// openEndpointFingerprintKey opens the key file at path for reading. O_NOFOLLOW
-// is not available on this platform, so the open follows a symlink at the path;
-// the checks in readEndpointFingerprintKey judge - and read - what the path
-// resolves to rather than the path again, which is what this platform can say
-// about it.
+// openEndpointFingerprintKey opens the key file at path for reading, refusing a
+// reparse point at the path instead of following it. O_NOFOLLOW does not exist on
+// this platform, but FILE_FLAG_OPEN_REPARSE_POINT gives the same refusal a
+// different way: the handle describes the link at the path rather than what it
+// points at, and the attribute check below refuses what is not a regular file -
+// so a symlink or junction planted at the key path cannot have another file's
+// bytes read as the hub's own key, which is the judgement the unix side gets
+// from O_NOFOLLOW. The checks in readEndpointFingerprintKey judge - and read -
+// the descriptor this returns, so nothing swapped in after the open can slip a
+// different file past the checks.
 func openEndpointFingerprintKey(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY, 0)
+	path16, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, fmt.Errorf("encode endpoint fingerprint key path %s: %w", path, err)
+	}
+	handle, err := windows.CreateFile(
+		path16,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open endpoint fingerprint key %s: %w", path, err)
+	}
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("stat endpoint fingerprint key %s: %w", path, err)
+	}
+	if info.FileAttributes&(windows.FILE_ATTRIBUTE_DIRECTORY|windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	file := os.NewFile(uintptr(handle), path)
+	if file == nil {
+		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("open endpoint fingerprint key %s", path)
+	}
+	return file, nil
 }
 
 // createEndpointFingerprintKey creates the key file at path for writing. No
