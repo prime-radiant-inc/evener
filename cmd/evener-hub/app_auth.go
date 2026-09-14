@@ -191,7 +191,26 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 // instance may still be a curated implicit provider with no credential in
 // this environment; the pane lists those too, so they resolve without one
 // (spec §5.2, §11.3). Anything else is unsupported.
+//
+// The shared side of credMu covers the answer, so a status cannot be generated
+// inside an in-flight credential write's exclusive section: the write and the
+// reload that re-derives the instance set from it are one step, and an answer
+// read between them would pair the credential the write had landed with a
+// registry snapshot that predates it - ActiveSource "none" beside
+// HasStoredFile true. Everything the answer reads (the registry snapshot, the
+// credential store's own mutex, the OAuth state files) is a different lock, so
+// taking credMu here cannot recurse; the listing, which already holds the
+// shared side, calls statusLocked instead.
 func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	return c.statusLocked(params)
+}
+
+// statusLocked is Status's body for a caller that already holds credMu's shared
+// side - the listing, whose one snapshot answers many statuses at once. It must
+// not take credMu itself.
+func (c *hubAuthController) statusLocked(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
 	r := c.registry()
 	if r == nil {
@@ -500,7 +519,7 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 	// that re-derives the instance set from it has committed, so a listing that
 	// ran inside that section would pair the credential the write had landed
 	// with a registry snapshot that predates it - ActiveSource "none" beside
-	// HasStoredFile true. Everything below (Status, instanceStatus, the
+	// HasStoredFile true. Everything below (statusLocked, instanceStatus, the
 	// registry snapshot) reads the credential store's own mutex and files,
 	// never credMu, so taking it here cannot recurse.
 	c.credMu.RLock()
@@ -516,7 +535,7 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 		if !ok || !registry.BoolValue(p.Implicit) {
 			continue
 		}
-		status, err := c.Status(appwire.AuthStatusParams{Provider: id})
+		status, err := c.statusLocked(appwire.AuthStatusParams{Provider: id})
 		if err != nil {
 			return appwire.AuthListResponse{}, err
 		}

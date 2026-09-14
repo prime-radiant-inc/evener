@@ -1360,6 +1360,115 @@ func TestAuth_CredentialWriteHoldsListingsUntilItsReloadLands(t *testing.T) {
 	}
 }
 
+// Status is answered under the credential lock too: a direct
+// evener/auth/status answer generated inside a credential write's exclusive
+// section would pair the credential the write has already landed with a
+// registry snapshot that predates the reload, which is exactly the incoherence
+// the section exists to prevent. The seam holds the section open between the
+// credential landing and that reload; the status must not return while it is
+// held, and afterwards it must agree with the reloaded generation.
+func TestAuth_StatusWaitsForACredentialWritesReload(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	f := newInstancesFixture(t, nil)
+	// The curated openai provider is implicit with no credential yet: the write
+	// below is what makes it an instance, and the reload is what the status
+	// reads that membership from.
+	if row, ok := findInstanceRow(f.ctl.List(), "openai"); ok {
+		t.Fatalf("fixture drift: openai is already listed: %+v", row)
+	}
+	settled, err := f.ctl.auth.Status(appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if settled.ActiveSource != "none" || settled.HasStoredFile || settled.SignedIn {
+		t.Fatalf("fixture drift: settled openai status = %+v, want no credential yet", settled)
+	}
+	// The write carries the endpoint the hub serves, the way a client does: the
+	// credential-write guard refuses an assertion the hub cannot place, and this
+	// test is about the status lock, not about that guard.
+	fresh := f.ctl.auth.endpointFingerprintFor("openai")
+	if fresh == "" {
+		t.Fatal("fixture drift: the hub must be able to key openai's endpoint fingerprint")
+	}
+
+	// Paused inside the write's critical section, after the credential has
+	// landed and before the reload that derives the instance set from it.
+	entered := make(chan struct{})
+	releaseSeam := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseSeam) }) }
+	original := credentialWriteBetween
+	credentialWriteBetween = func() {
+		close(entered)
+		<-releaseSeam
+	}
+	t.Cleanup(func() {
+		credentialWriteBetween = original
+		release()
+	})
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+			Provider:                    "openai",
+			Value:                       "sk-written",
+			ExpectedEndpointFingerprint: fresh,
+		})
+		writeDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ApiKeySet never reached the credential write's reload seam, so its section was not held")
+	}
+
+	// The status is asked while the section is held. It must not return: one
+	// that does reads an instance set the credential write has already changed,
+	// so it reports a credential state the reload has not committed.
+	statusDone := make(chan authStatusResult, 1)
+	go func() {
+		resp, err := f.ctl.auth.Status(appwire.AuthStatusParams{Provider: "openai"})
+		statusDone <- authStatusResult{resp: resp, err: err}
+	}()
+	select {
+	case got := <-statusDone:
+		if got.err != nil {
+			t.Fatalf("Status: %v", got.err)
+		}
+		t.Fatalf("Status returned while the credential write's section was held: signedIn=%v activeSource=%q hasStoredFile=%v; want it to wait for the reload", got.resp.SignedIn, got.resp.ActiveSource, got.resp.HasStoredFile)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("ApiKeySet: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ApiKeySet never finished after its section was released")
+	}
+	select {
+	case got := <-statusDone:
+		if got.err != nil {
+			t.Fatalf("Status: %v", got.err)
+		}
+		if !got.resp.SignedIn || got.resp.ActiveSource != "store" || !got.resp.HasStoredFile {
+			t.Fatalf("Status after the reload = signedIn %v activeSource %q hasStoredFile %v, want the written generation", got.resp.SignedIn, got.resp.ActiveSource, got.resp.HasStoredFile)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Status never finished after the section was released")
+	}
+}
+
+// authStatusResult is one evener/auth/status answer read on a goroutine, so the
+// test goroutine can tell an answer read inside the credential write's section
+// from one that waited for the reload.
+type authStatusResult struct {
+	resp appwire.AuthStatusResponse
+	err  error
+}
+
 // findInstanceRow finds one instance in a list response; unlike entry, a
 // missing row is an answer rather than a test failure.
 func findInstanceRow(resp appwire.InstanceListResponse, name string) (appwire.InstanceEntry, bool) {

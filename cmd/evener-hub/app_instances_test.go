@@ -2208,6 +2208,29 @@ func TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck(t *testing.T) {
 	}
 }
 
+// An empty assertion is accepted while the hub can key a fingerprint, whatever
+// the destination: verifyEndpointFingerprint checks an asserted endpoint, and a
+// client that asserts nothing is refused only when the hub itself cannot key
+// one (TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck). This pins
+// the accepted side for a name with no destination at all: openai-compatible
+// with no base URL is hidden, so endpointHasDestination answers false while the
+// hub can key fingerprints.
+func TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithNoDestination(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if f.ctl.auth.endpointHasDestination("openai-compatible") {
+		t.Fatal("fixture drift: openai-compatible must have no destination with no base URL")
+	}
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider: "openai-compatible",
+		Value:    "sk-no-destination",
+	}); err != nil {
+		t.Fatalf("ApiKeySet refused a write for a name with no destination: %v", err)
+	}
+	if v, _ := f.store.Get("openai-compatible"); v != "sk-no-destination" {
+		t.Fatalf("stored key = %q, want the write to have landed", v)
+	}
+}
+
 // The other side of the same rule: a hub with no state root at all (a bare test
 // controller) has nothing to key an endpoint fingerprint with, so no client
 // could have been shown one and there is no verification to fail closed on. The
