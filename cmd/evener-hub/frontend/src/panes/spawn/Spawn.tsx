@@ -919,8 +919,17 @@ function SpawnForm({
           // its untouched Model substituted: an unmanaged harness carries its
           // own model, so writing a qualified Evener "provider/model" here
           // would overwrite what it actually launches with.
+          //
+          // And only while the top-level chip is what launches: an Advanced-
+          // options model override wins at submit (floor §1.11, schema.ts's
+          // resolveScalars), so with one set the chip does not launch -
+          // substituting it would display a model that does not launch. The
+          // override the user configured stays visible in Advanced options,
+          // and a bad one still surfaces through thread/start's own error,
+          // exactly as a chip the user picked does.
           if (
             usesEvenerModels &&
+            advancedModel === "" &&
             !defaultCredentialed &&
             fallback &&
             !providerChoiceScopes.current.has(`${harness}\0${cwd}`)
@@ -939,7 +948,7 @@ function SpawnForm({
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, draft, advancedOverrides, resolveConfig, loadModels, setModel, harness, usesEvenerModels]);
+  }, [cwd, draft, advancedOverrides, advancedModel, resolveConfig, loadModels, setModel, harness, usesEvenerModels]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, schema.ts's

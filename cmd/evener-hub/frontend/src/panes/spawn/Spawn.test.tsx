@@ -3489,6 +3489,79 @@ test("preselects the first launchable model when the resolved default's provider
   expect(start?.params).toMatchObject({ model: "anthropic/claude-sonnet-4-5" });
 });
 
+// An Advanced-options model override wins over the top-level chip at submit
+// (floor §1.11, schema.ts's resolveScalars), so while one is set the chip is
+// not what launches: rewriting it in the fallback's name would display a
+// model that does not launch. Here the override's provider is launchable
+// while the user configures it and drops out of model/list afterwards - the
+// state a removed credential leaves behind - and the untouched chip must not
+// be rewritten.
+test("an advanced model override stops the uncredentialed-default fallback from rewriting the chip", async () => {
+  const user = userEvent.setup();
+  let openaiLaunchable = true;
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        { field: "model", wireField: "model", label: "Model", group: "general", kind: "modelPicker", perLaunch: true },
+      ],
+    }));
+    f.on("model/list", () => ({
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+        ...(openaiLaunchable ? [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }] : []),
+      ],
+    }));
+    f.on("evener/launch/resolve", (params) => ({
+      // The hub applies the override first (resolveScalars), so the effective
+      // model IS the override whose provider stops being launchable below.
+      effective: {
+        model: params.launchOverrides?.model ?? "anthropic/claude-opus-4",
+        reasoningEffort: openaiLaunchable ? "high" : "low",
+      },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  // A credentialed default lands first: the untouched chip reads its resolved
+  // default and no fallback substitution fires.
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-opus-4 (default)"));
+
+  // The override is configured while openai is still in model/list.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const modelPickers = screen.getAllByRole("button", { name: /change model/i });
+  await user.click(modelPickers[modelPickers.length - 1]!);
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "gpt-5");
+  await user.click(await screen.findByText("openai/gpt-5"));
+
+  // Wait for that pass to land (the override, not the chip, is the resolved
+  // effective model now) before the provider disappears, so the drop below is
+  // the only pending catalog pass.
+  await waitFor(() => expect(modelValue().textContent).toBe("openai/gpt-5 (default)"));
+
+  // openai drops out of model/list while the override stands, and the catalog
+  // scope refreshes so the fallback effect re-reads the listing and the
+  // resolve.
+  openaiLaunchable = false;
+  await act(async () => credentialsStore.getState().fetch());
+
+  // "low (default)" marks the post-drop resolve landing (it replaced the
+  // "high (default)" of the pass above), so the fallback has run its course
+  // by the time the chip is judged.
+  await waitFor(() => expect(effortReadout().textContent).toBe("low (default)"));
+  // The chip still names the model that will launch - the override - and the
+  // Advanced field still shows it.
+  expect(modelValue().textContent).toBe("openai/gpt-5 (default)");
+  expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
+  const advancedPickersAfter = screen.getAllByRole("button", { name: /change model/i });
+  expect(advancedPickersAfter[advancedPickersAfter.length - 1]!.textContent).toContain("openai/gpt-5");
+});
+
 test("entering onboarding for one draft scope does not suppress the fallback for the next", async () => {
   const user = userEvent.setup();
   // The first scope resolves a credentialed default, so no fallback runs and
