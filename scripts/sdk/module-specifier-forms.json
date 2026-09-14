@@ -68,5 +68,10 @@
     "name": "inline import type node",
     "kind": "import-named",
     "source": "export type Alias = import(\"@@SPEC@@\").WireError;\n"
+  },
+  {
+    "name": "TypeScript import-equals require",
+    "kind": "require-equals",
+    "source": "import loaded = require(\"@@SPEC@@\");\nvoid loaded;\n"
   }
 ]

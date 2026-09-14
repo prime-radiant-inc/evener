@@ -40,7 +40,8 @@ function namedBindings(ts, elements) {
 //   node      the string-literal-like node holding the specifier, for edits
 //   text      the specifier itself
 //   kind      import-named | import-namespace | import-default | import-side-effect
-//             | export-from | export-star-from | dynamic-import | require | mock-call
+//             | export-from | export-star-from | dynamic-import | require
+//             | require-equals | mock-call
 //   typeOnly  the statement was `import type` / `export type`, so it is erased
 //   bindings  {imported, local, typeOnly} per named member; empty otherwise
 //
@@ -79,6 +80,19 @@ export function moduleSpecifierSites(ts, source) {
           bindings: named ? namedBindings(ts, node.exportClause.elements) : [],
         });
       }
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      // `import X = require("./x")`: TypeScript's own CommonJS import, binding
+      // the whole module under one name.
+      const specifier = literal(node.moduleReference.expression);
+      if (specifier) {
+        sites.push({
+          node: specifier,
+          text: specifier.text,
+          kind: "require-equals",
+          typeOnly: Boolean(node.isTypeOnly),
+          bindings: [],
+        });
+      }
     } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
       // `import("./x").Name` in a type position: erased, but it still names a
       // module, and a rewrite has to reach it.
@@ -112,8 +126,11 @@ export function moduleSpecifierSites(ts, source) {
   return sites;
 }
 
-// The kinds that bring values in at run time, as opposed to types the compiler
-// erases. A caller asking "what does the tarball have to provide" wants these.
-export function isRuntimeSite(site) {
-  return !site.typeOnly && site.kind !== "export-star-from";
+// Whether a site is loaded when the program runs, as opposed to erased by the
+// compiler. A star re-export is loaded like any other: it names no binding, so
+// a caller asking "which values must the package provide" cannot use it, but a
+// caller walking a module graph has to follow it or it stops one hop short of
+// whatever the chain reaches.
+export function isLoadedAtRuntime(site) {
+  return !site.typeOnly;
 }

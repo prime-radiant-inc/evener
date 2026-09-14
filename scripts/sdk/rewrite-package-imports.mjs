@@ -323,7 +323,7 @@ function main() {
         // is nothing to look up, and `@evener/appwire-client` is a different
         // module from the one the author wrote. Only the published subpath can
         // stand in for a whole module.
-        const wholeModule = ["import-namespace", "import-side-effect", "export-star-from", "dynamic-import", "require", "mock-call"].includes(
+        const wholeModule = ["import-namespace", "import-side-effect", "export-star-from", "dynamic-import", "require", "require-equals", "mock-call"].includes(
           site.kind,
         );
         const named = site.bindings.map((binding) => binding.imported);

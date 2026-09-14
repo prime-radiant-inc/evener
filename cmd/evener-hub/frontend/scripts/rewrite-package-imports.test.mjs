@@ -221,3 +221,16 @@ test("a namespace import of the one published subpath is rewritten", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("an import-equals require of the package is refused like any other whole-module site", () => {
+  const before = 'import errors = require("../../appwire-client/typescript/errors");\nvoid errors;\n';
+  const root = fixture({ "mobile/src/state.ts": before });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 2);
+    assert.match(run.output, /require-equals of "errors"/);
+    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

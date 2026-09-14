@@ -3,10 +3,15 @@
 // tsconfig paths nor the package's exports map. Nothing in CI bundles the app
 // (#1244), so until that gate lands this is what holds the mapping.
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
-// The config is CommonJS and calls expo's getDefaultConfig at load.
-const config = require("../metro.config.js");
+// The config is CommonJS and calls expo's getDefaultConfig at load, so it is
+// required rather than imported. createRequire, not the bare `require` Vitest
+// happens to provide: its runner evaluates this file with the CommonJS trio
+// (require, module, __filename) in scope, which works and says nothing about
+// what the source means -- the file is ESM, and this is how ESM spells it.
+const config = createRequire(import.meta.url)("../metro.config.js");
 
 const FELL_THROUGH = Symbol("fell through to Metro's own resolver");
 

@@ -14,7 +14,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { isRuntimeSite, moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
+import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
 
 const sdkDir = path.resolve(fileURLToPath(import.meta.url), "../../../../../scripts/sdk");
 const forms = JSON.parse(readFileSync(path.join(sdkDir, "module-specifier-forms.json"), "utf8"));
@@ -62,14 +62,18 @@ test("a default import with named members beside it is reported as the default",
 test("a statement-level type-only import is marked erased", () => {
   const [typed] = sitesFor(`import type { WireError } from "${SPECIFIER}";\nexport type A = WireError;\n`);
   assert.equal(typed.typeOnly, true);
-  assert.equal(isRuntimeSite(typed), false);
+  assert.equal(isLoadedAtRuntime(typed), false);
   const [value] = sitesFor(`import { errorText } from "${SPECIFIER}";\nvoid errorText;\n`);
-  assert.equal(isRuntimeSite(value), true);
+  assert.equal(isLoadedAtRuntime(value), true);
 });
 
-test("a star re-export names no value the package has to provide", () => {
+test("a star re-export is loaded at run time even though it names no binding", () => {
+  // A graph walk has to follow it; a "which values must the package provide"
+  // question cannot use it. Those are different questions, and conflating
+  // them stopped the native script walk one hop short of the package.
   const [site] = sitesFor(`export * from "${SPECIFIER}";\n`);
-  assert.equal(isRuntimeSite(site), false);
+  assert.equal(isLoadedAtRuntime(site), true);
+  assert.deepEqual(site.bindings, []);
 });
 
 test("a call that is not an import, a require or a mock is not a specifier site", () => {
