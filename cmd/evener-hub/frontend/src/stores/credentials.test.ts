@@ -2,7 +2,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { threadStartedNotification } from "../protocol/testing/notifications";
-import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
+import type { AuthStatusResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { credentialsStore, resetCredentialsStoreForTests, useCredentialsStore } from "./credentials";
 
@@ -803,6 +803,40 @@ describe("notification-triggered refetch", () => {
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
     await vi.advanceTimersByTimeAsync(250);
     expect(listSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("a slow save's response extends the window for its own late echo", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    let finishSave: ((value: AuthStatusResponse) => void) | undefined;
+    fake.on(
+      "evener/auth/apiKey/set",
+      () =>
+        new Promise<AuthStatusResponse>((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+    const before = credentialsStore.getState().selfRefresh;
+
+    const pending = credentialsStore.getState().setApiKey("work", "draft");
+    // A loaded host (or a slow hub) answers the save later than the fixed
+    // window measured from the issue: the response lands at 2001ms. The hub's
+    // broadcast follows the response it answers, so the echo arrives after
+    // that - still this client's own.
+    await vi.advanceTimersByTimeAsync(2001);
+    finishSave?.({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false });
+    await pending;
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+
+    // The echo coalesces with the store's own post-save refresh into exactly
+    // one read, and that read keeps the self mark: the guided flow must not
+    // read its own successful save as "Connection or configuration changed".
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
   });
 
   test("the echo correlation window is bounded", async () => {

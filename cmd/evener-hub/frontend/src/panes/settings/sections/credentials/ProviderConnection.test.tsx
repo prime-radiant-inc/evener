@@ -670,6 +670,45 @@ test("the store's own post-save refresh does not invalidate the completed check"
   expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
   expect(screen.queryByText("Connection or configuration changed")).toBeNull();
 });
+test("a slow save response extends the echo window so its late own echo keeps Continue", async () => {
+  const { user, client, connected } = setup();
+  const save = deferred<typeof saved>();
+  client.on("evener/auth/apiKey/set", () => save.promise);
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "draft");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(screen.getByRole("button", { name: "Saving…" })).toHaveProperty("disabled", true);
+
+  vi.useFakeTimers();
+  // A loaded host (or a network-mounted state root) answers the save later
+  // than the fixed window measured from the issue: the response lands at
+  // 2001ms, and the hub's broadcast follows the response it answers.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2001);
+    client.on("evener/instance/list", () => savedList("anthropic"));
+    save.resolve(saved);
+    await save.promise;
+  });
+  await act(async () => {
+    client.emitNotification({
+      method: "evener/auth/updated",
+      params: { provider: "anthropic", activeSource: "store" },
+    });
+    await vi.runOnlyPendingTimersAsync();
+  });
+  vi.useRealTimers();
+
+  // The echo is this client's own: the store's coalesced refresh carries the
+  // self mark, so the invalidation watch leaves the completed check alone.
+  // Read as foreign (the fixed window alone), that same read resets the flow
+  // to "Connection or configuration changed" and the user loses a save that
+  // actually succeeded.
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Continue" }));
+  expect(connected).toHaveBeenCalledWith("anthropic");
+});
 test("a superseding pending refresh cannot authorize a check from discarded metadata", async () => {
   const { user, client } = setup();
   await choose(user);

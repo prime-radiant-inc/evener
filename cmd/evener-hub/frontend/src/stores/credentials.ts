@@ -237,10 +237,12 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       });
       // The store owns the post-mutation listing refresh: the caller that
       // issued the save may be canceled, hidden, or unmounted before this
-      // resolves, and its own refresh would die with it. The `self` mark lets
-      // subscriptions (ProviderConnection's invalidation watch) tell this
-      // refresh apart from a foreign listing change.
-      scheduleRefetch(true);
+      // resolves, and its own refresh would die with it. The helper also
+      // re-stamps this mutation's echo window from the response, and the
+      // `self` mark lets subscriptions (ProviderConnection's invalidation
+      // watch) tell the refresh it schedules apart from a foreign listing
+      // change.
+      completeLocalAuthMutation(provider);
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -257,7 +259,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         value,
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      scheduleRefetch(true); // same rationale as setApiKey
+      completeLocalAuthMutation(provider); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -273,7 +275,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         provider,
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      scheduleRefetch(true); // same rationale as setApiKey
+      completeLocalAuthMutation(provider); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -289,7 +291,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         provider,
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      scheduleRefetch(true); // same rationale as setApiKey
+      completeLocalAuthMutation(provider); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -307,7 +309,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     noteLocalAuthMutation(provider);
     try {
       const result = await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
-      scheduleRefetch(true); // same rationale as setApiKey
+      completeLocalAuthMutation(provider); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider); // refused: no echo will follow
@@ -330,7 +332,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       // would silence unrelated same-provider changes tick after tick. An
       // authorized poll also refreshes the listing through the store - the
       // polling dialog may already be closed by the time authorization lands.
-      if (resp.state === "authorized") scheduleRefetch(true);
+      if (resp.state === "authorized") completeLocalAuthMutation(provider);
       else endUnconfirmedAuthMutation(provider);
       return resp;
     } catch (err) {
@@ -384,18 +386,23 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // what keeps the flow from invalidating on the read that follows. It is
 // correlated narrowly:
 //
-// - Marked per provider when the mutation is ISSUED (not when it resolves):
-//   the broadcast can reach this client before the RPC response does, so a
-//   resolve-time marker would miss the echo entirely.
+// - Marked per provider when the mutation is ISSUED, then re-stamped when its
+//   RPC response lands (completeLocalAuthMutation above): the broadcast can
+//   reach this client before the RPC response does, so a resolve-time marker
+//   alone would miss an early echo, and a hub whose mutation + broadcast
+//   outlasts the window would otherwise have its own LATE echo read as
+//   foreign. The echo's window runs from whichever came last - issue or
+//   response.
 // - COUNTED, not a single timestamp: back-to-back same-provider mutations
 //   (two saves in the guided flow, a retry, a poll landing on top of a save)
 //   each broadcast one echo, so a lone per-provider marker would let the
 //   first echo consume the second mutation's marker and leave the second self
 //   echo to be misread as an unrelated client's change - spuriously
 //   invalidating the guided flow. The per-provider entry holds the count of
-//   outstanding mutations plus the latest issue time; each matching
-//   notification consumes exactly one, and only a notification beyond the
-//   outstanding count is foreign and still refetches.
+//   outstanding mutations plus the latest stamp (the issue, or the response
+//   that re-stamped it); each matching notification consumes exactly one, and
+//   only a notification beyond the outstanding count is foreign and still
+//   refetches.
 // - Cleared when the response proves no broadcast will follow: a failed RPC,
 //   or a device poll that comes back pending/expired rather than authorized.
 //   One outstanding marker is retired per such outcome (a floor, not an
@@ -403,20 +410,24 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 //   many echoed mutations remain outstanding. A failed save must not silence
 //   the next unrelated change, and a poll loop must not keep re-arming the
 //   window tick after tick.
-// - Bounded by a short age window, so a marker that is never consumed (the
-//   echo was lost, or the notification arrived pre-response and the client
-//   disconnected) cannot outlive its meaning.
+// - Bounded by a short age window from the marker's latest stamp (issue or
+//   response), so a marker that is never consumed (the echo was lost, or the
+//   notification arrived pre-response and the client disconnected) cannot
+//   outlive its meaning.
 //
 // Anything unmatched still refetches - other providers, unattributed
 // notifications, the same provider with no live marker - so unrelated
 // clients' changes keep arriving.
 const REFETCH_DEBOUNCE_MS = 250;
+// Age budget from the marker's latest stamp - the issue, or the RPC response
+// that re-stamped it (completeLocalAuthMutation below).
 const SELF_ECHO_WINDOW_MS = 2000;
 interface LocalAuthMutationMarker {
   // Outstanding same-provider mutations issued but not yet consumed (by an
   // echo) or retired (by an unconfirmed outcome).
   count: number;
-  // When the most recent one was issued; ages the whole entry out together.
+  // The entry's latest life event: the most recent issue, or the RPC
+  // response that re-stamped it; ages the whole entry out together.
   issuedAt: number;
 }
 const localAuthMutations = new Map<string, LocalAuthMutationMarker>();
@@ -446,26 +457,50 @@ function endUnconfirmedAuthMutation(provider: string): void {
   else localAuthMutations.set(provider, { count: existing.count - 1, issuedAt: existing.issuedAt });
 }
 
+// Confirms a local auth mutation whose RPC response landed: the hub accepted
+// the write, so its broadcast is (or was) on its way. Re-stamping the
+// provider's marker moves the echo window to this moment, which covers the
+// order the issue-time stamp alone misses - a hub whose mutation and broadcast
+// outlast the window (a loaded host, a network-mounted state root) answers
+// later than SELF_ECHO_WINDOW_MS after the issue, and its own echo would then
+// be read as a foreign change: the coalesced post-save refresh loses the self
+// mark and the guided flow answers a successful save with "Connection or
+// configuration changed". A marker an early echo already consumed is gone, so
+// re-stamping it is a no-op; a marker with no echo still ages out, now from
+// the later stamp. Also schedules the store's own refresh, which the echo
+// coalesces with instead of duplicating (see the correlation comment above).
+function completeLocalAuthMutation(provider: string): void {
+  const existing = localAuthMutations.get(provider);
+  if (existing !== undefined) {
+    localAuthMutations.set(provider, { count: existing.count, issuedAt: Date.now() });
+  }
+  scheduleRefetch(true);
+}
+
 // True exactly when this notification is this client's own echo of a
 // just-issued auth mutation; consumes one outstanding marker either way, so a
 // stale entry cannot suppress a later notification. A stale entry (its latest
-// issue older than the window) counts as no marker at all and is dropped
-// whole.
+// stamp - the mutation's issue time, or the RPC response that re-stamped it -
+// older than the window) counts as no marker at all and is dropped whole.
 //
-// The correlation is provider + issue time, and that is as exact as the wire
-// allows: evener/auth/updated carries only {provider, activeSource}
-// (types.gen.ts), with no originator id - the hub's notifyAuthUpdated
-// broadcasts to every client alike (app_rpc.go). A corner remains: another
-// client's same-provider change arriving inside the window is read as this
-// client's own echo. It is deliberately not resolved by treating same-provider
-// notifications as foreign, which would make the originator's own echo look
-// foreign and re-invalidate a successful guided save (the round-8 defect);
-// narrowing the window instead would miss the echo that arrives late. Exact
-// attribution needs an origin id on the auth mutation RPCs, echoed back in the
-// broadcast - a wire change, not a frontend one. The residual is bounded: a
-// matched notification still re-reads the listing (round 20), so only the
-// guided flow's invalidation is skipped, and only for a same-provider change
-// landing within two seconds of this client's own mutation.
+// The correlation is provider + the marker's latest stamp (the issue, then
+// the RPC response once it lands - see completeLocalAuthMutation), and that is
+// as exact as the wire allows: evener/auth/updated carries only {provider,
+// activeSource} (types.gen.ts), with no originator id - the hub's
+// notifyAuthUpdated broadcasts to every client alike (app_rpc.go). A corner
+// remains: another client's same-provider change arriving inside the window is
+// read as this client's own echo. It is deliberately not resolved by treating
+// same-provider notifications as foreign, which would make the originator's
+// own echo look foreign and re-invalidate a successful guided save (the
+// round-8 defect); narrowing the window instead would miss the echo that
+// arrives late. Exact attribution needs an origin id on the auth mutation
+// RPCs, echoed back in the broadcast - a wire change, not a frontend one. The
+// residual is bounded: a matched notification still re-reads the listing
+// (round 20), so only the guided flow's invalidation is skipped, and only for
+// a same-provider change landing within two seconds of this client's own
+// mutation's latest stamp - re-stamping on the response widens that blind spot
+// by the response's own latency, the cost of not misreading a slow hub's late
+// echo as foreign.
 function consumeOwnAuthEcho(provider: string | undefined): boolean {
   if (provider === undefined) return false;
   const marker = localAuthMutations.get(provider);
