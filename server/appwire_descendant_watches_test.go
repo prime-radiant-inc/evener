@@ -18,6 +18,11 @@ import (
 func TestThreadListCarriesDescendantSessionWatches(t *testing.T) {
 	var calls int
 	srv := seedDescendantWatchServer(t, func(threadID string) []agent.WatchStatusInfo {
+		// The root is now sampled too, but this seam has no fresh root answer:
+		// nil leaves the root row's own envelope watches in place.
+		if threadID == "root" {
+			return nil
+		}
 		if threadID != "child" {
 			t.Errorf("accessor consulted for %q, want only the descendant", threadID)
 			return nil
@@ -69,6 +74,81 @@ func TestThreadListCarriesDescendantSessionWatches(t *testing.T) {
 	}
 	if root.Evener.Diagnostics == nil || len(root.Evener.Diagnostics.Watches) != 1 || root.Evener.Diagnostics.Watches[0].ID != "watch-root" {
 		t.Fatalf("read root diagnostics = %+v, want only its own watch", root.Evener.Diagnostics)
+	}
+}
+
+// The root row's watches are refreshed on the LIST path too. A watch armed on
+// the root session after the last diagnostics refresh (no turn boundary) appears
+// in the next thread/list response, merged from the live sample exactly as a
+// descendant's row is. The cached projection is untouched and the single-thread
+// READ path still does not sample.
+func TestThreadListSamplesRootLiveWatchesWithoutTurnBoundary(t *testing.T) {
+	var rootSamples int
+	srv := seedDescendantWatchServer(t, func(threadID string) []agent.WatchStatusInfo {
+		switch threadID {
+		case "root":
+			rootSamples++
+			return []agent.WatchStatusInfo{{ID: "watch-root-new", Source: "self", Events: []string{"output"}}}
+		case "child":
+			return nil
+		default:
+			t.Errorf("accessor consulted for %q, want root or child", threadID)
+			return nil
+		}
+	})
+	// Nothing refreshes the diagnostics facet when a watch is armed, so the
+	// cached root envelope carries no watch: this is the stale projection the
+	// list read has to supersede.
+	srv.mu.Lock()
+	srv.appEnvelope.Detailed = &DetailedStatus{}
+	srv.mu.Unlock()
+
+	response, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	root := response.Data[0]
+	if root.Evener.Diagnostics == nil || len(root.Evener.Diagnostics.Watches) != 1 || root.Evener.Diagnostics.Watches[0].ID != "watch-root-new" {
+		t.Fatalf("root diagnostics = %+v, want the freshly sampled watch", root.Evener.Diagnostics)
+	}
+
+	// Only the returned copy is merged; the cached envelope stays as installed.
+	srv.mu.RLock()
+	cached := srv.appEnvelope.Detailed
+	srv.mu.RUnlock()
+	if cached == nil || len(cached.Watches) != 0 {
+		t.Fatalf("cached root diagnostics = %+v, want the projection unchanged", cached)
+	}
+
+	// thread/read must not sample the root either: appThreadForID answers under
+	// the subscription cut and never reaches the session.
+	afterList := rootSamples
+	if _, ok := srv.appThreadForID("root"); !ok {
+		t.Fatal("appThreadForID(root) = false")
+	}
+	if rootSamples != afterList {
+		t.Fatalf("thread/read sampled the root seam %d extra times, want none", rootSamples-afterList)
+	}
+}
+
+// A root watch removed since the last refresh leaves the row too. The live
+// resolver's non-nil empty answer is what tells "the root has no watches now"
+// apart from "this ID is unknown", which leaves the cached projection alone.
+func TestThreadListClearsClearedRootWatchFromLiveSample(t *testing.T) {
+	srv := seedDescendantWatchServer(t, func(threadID string) []agent.WatchStatusInfo {
+		if threadID == "root" {
+			return []agent.WatchStatusInfo{}
+		}
+		return nil
+	})
+
+	response, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	root := response.Data[0]
+	if root.Evener.Diagnostics != nil && len(root.Evener.Diagnostics.Watches) != 0 {
+		t.Fatalf("root diagnostics = %+v, want the cleared watch gone", root.Evener.Diagnostics)
 	}
 }
 

@@ -1270,7 +1270,13 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 				nextFireAt = step.DerivedNextFireAt
 			}
 			cadence = append(cadence, hubapi.NavigationWatchCadence{
-				Kind:              truncateNavigationRunes(step.Kind, maxNavigationLabelRunes),
+				// kind is an IDENTITY on the wire, not a rendered label: the codec
+				// validates it with identity(value.kind) and the hub schema mirrors
+				// that, both capping it at maxNavigationIdentityBytes BYTES. The
+				// rune-bounded label helper capped it at 512 runes, which is up to
+				// ~2 KiB of multibyte text -- a summary the codec rejects, failing the
+				// whole navigation response. Bound it in bytes for the same limit.
+				Kind:              truncateNavigationBytes(step.Kind, maxNavigationIdentityBytes),
 				Seconds:           step.Seconds,
 				DerivedNextFireAt: nextFireAt,
 				Every:             step.Every,

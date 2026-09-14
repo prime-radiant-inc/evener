@@ -914,14 +914,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return filepath.Join(stateDir, "sessions", threadID+".transcript.jsonl")
 		})
 		// A descendant session's own watches live in that child's job manager and
-		// appear on no row today, because only the root's status is projected.
-		// The appwire thread list/read samples them on read through this seam,
+		// appear on no row today, because only the root's status is projected. The
+		// root's own row also carries watches the diagnostics facet only re-samples
+		// on a few events and a turn boundary, so it can lag a watch armed in
+		// between. The appwire thread LIST samples both on read through this seam,
+		// resolving the root to its own rows and a descendant to that child's,
 		// exactly as the transcript path is resolved on a descendant's first
 		// observation. Wire it beside the transcript resolver: both reach across
 		// the appwire-server/delegate-controller boundary, and both must track the
 		// session that is current after a thread/clear identity swap.
 		srv.SetDescendantLiveWatchesFunc(func(threadID string) []agent.WatchStatusInfo {
-			return s.LiveWatchesForDescendant(threadID)
+			return s.LiveWatchesForSession(threadID)
 		})
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire

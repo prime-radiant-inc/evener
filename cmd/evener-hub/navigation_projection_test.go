@@ -392,6 +392,66 @@ func TestValidNavigationTimestampMatchesCodecFixture(t *testing.T) {
 	}
 }
 
+// A cadence kind is an IDENTITY on the wire: the web codec's watchCadenceValue
+// validates it with identity(value.kind), which caps it at 1024 BYTES, and the
+// hub's navigationSessionValueValid mirrors that. The projector bounded it with
+// truncateNavigationRunes at 512 runes, which is up to ~2 KiB for non-ASCII
+// text, so an over-long multibyte kind produced a summary the codec rejected --
+// and because the codec validates watch rows as part of the session entity, one
+// bad kind failed the entire navigation response. This test mirrors the codec's
+// identity bound the way TestValidNavigationTimestampMatchesCodecFixture mirrors
+// its rfc3339Timestamp grammar.
+func TestNavigationWatchCadenceKindMatchesCodecIdentityBytes(t *testing.T) {
+	// 300 four-byte runes = 1200 bytes: past the 1024-byte identity cap while
+	// still only ~300 runes, so the rune bound alone left it over budget.
+	overLong := strings.Repeat("😀", 300)
+	if len(overLong) <= maxNavigationIdentityBytes {
+		t.Fatalf("fixture kind = %d bytes, want it over the %d-byte identity cap", len(overLong), maxNavigationIdentityBytes)
+	}
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{{
+				ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z",
+				Cadence: []appwire.EvenerWatchCadence{{Kind: overLong, Seconds: 1}},
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	if len(resource.Current.Sessions) != 1 || len(resource.Current.Sessions[0].Watches) != 1 {
+		t.Fatalf("sessions = %+v, want one session with one watch", resource.Current.Sessions)
+	}
+	cadence := resource.Current.Sessions[0].Watches[0].Cadence
+	if len(cadence) != 1 {
+		t.Fatalf("cadence = %+v, want one step", cadence)
+	}
+	kind := cadence[0].Kind
+	// The codec's identity(): non-empty and at most 1024 bytes.
+	if kind == "" {
+		t.Fatal("projected kind is empty; the codec requires a non-empty identity")
+	}
+	if len(kind) > maxNavigationIdentityBytes {
+		t.Fatalf("projected kind = %d bytes, want at most %d; the codec rejects the whole response otherwise", len(kind), maxNavigationIdentityBytes)
+	}
+	if kind == overLong {
+		t.Fatal("projected kind was not cut; the codec would reject it")
+	}
+	// The hub schema mirrors the codec, so the projected summary must pass it --
+	// this is the value that reaches the client.
+	if !navigationSessionValueValid(resource.Current.Sessions[0]) {
+		t.Fatalf("projected summary rejected by the hub schema: %+v", resource.Current.Sessions[0])
+	}
+}
+
 func TestNavigationJobSummaryKeepsFullCommandForTooltip(t *testing.T) {
 	long := strings.Repeat("a", 600)
 	project := hubcore.TreeProject{

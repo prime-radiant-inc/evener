@@ -2592,6 +2592,32 @@ func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
 	return nil
 }
 
+// LiveWatchesForSession resolves a row's thread ID to the live watch rows that
+// belong on it, so a thread LIST read can refresh watches that changed with no
+// per-thread app event. It is the broader sibling of LiveWatchesForDescendant:
+// that one keeps its narrower contract (the root is not its own descendant, so
+// it returns nil for the root), while this one also answers for the root's own
+// row -- the root's manager plus every manager that holds a receiver watch the
+// root owns, exactly the set Detail().Watches carries.
+//
+// An empty answer for the root is non-nil: the caller merges only a nil answer
+// as "no fresh sample, leave the cached projection alone", so a non-nil empty
+// slice is how a watch cleared since the last diagnostics refresh leaves the
+// row. An unknown or empty ID, and a descendant with no watches, stay nil
+// (LiveWatchesForDescendant's own behavior).
+func (s *Session) LiveWatchesForSession(sessionID string) []WatchStatusInfo {
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	if sessionID == s.ID() {
+		if rows := s.liveWatchStatuses(); rows != nil {
+			return rows
+		}
+		return []WatchStatusInfo{}
+	}
+	return s.LiveWatchesForDescendant(sessionID)
+}
+
 // watchStatusInfoFromConfig projects one live config into its structured
 // status row. It reads only config fields and never mutates them.
 func watchStatusInfoFromConfig(cfg *watchConfig) WatchStatusInfo {

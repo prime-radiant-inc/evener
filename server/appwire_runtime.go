@@ -365,12 +365,15 @@ func (s *Server) SetDescendantTranscriptPathFunc(fn func(threadID string) string
 }
 
 // SetDescendantLiveWatchesFunc installs the resolver the thread LIST path
-// consults to sample a descendant session's own live watches. It mirrors
-// SetDescendantTranscriptPathFunc: fn is the appwire server's one reach into the
-// agent tree across the delegate-controller boundary. fn may return nil for a
-// descendant with no live watches; nil disables the projection entirely (the
-// historical behavior, where only the root's watches are shown). The single
-// thread READ path deliberately does not consult this seam: it runs under the
+// consults to sample a thread's own live watches -- the root's row as well as a
+// descendant's. It mirrors SetDescendantTranscriptPathFunc: fn is the appwire
+// server's one reach into the agent tree across the delegate-controller
+// boundary. fn returns nil when it has no fresh answer for the ID, which leaves
+// the cached projection in place; a non-nil empty slice is a real answer (that
+// row has no watches), so a watch cleared since the last diagnostics refresh
+// leaves the row. nil disables the projection entirely (the historical
+// behavior, where only the root's cached envelope is shown). The single thread
+// READ path deliberately does not consult this seam: it runs under the
 // subscription cut and must stay cheap (see appThreadForID).
 func (s *Server) SetDescendantLiveWatchesFunc(fn func(threadID string) []agent.WatchStatusInfo) {
 	s.mu.Lock()
@@ -1253,13 +1256,15 @@ func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) 
 		data = append(data, thread)
 	}
 	s.mu.RUnlock()
-	// Sample descendant watches AFTER releasing s.mu. The resolver reaches into
-	// agent session state (job manager + subagent manager locks), while a
-	// descendant event being projected takes s.mu from the agent side; holding
-	// s.mu across the resolver would invert that order. data[0] is the root,
-	// whose own watches already ride its envelope; only descendants are touched.
-	for i := 1; i < len(data); i++ {
-		data[i] = s.appThreadWithDescendantWatches(data[i], data[i].ID)
+	// Sample every row's own live watches AFTER releasing s.mu. The resolver
+	// reaches into agent session state (job manager + subagent manager locks),
+	// while a descendant event being projected takes s.mu from the agent side;
+	// holding s.mu across the resolver would invert that order. data[0] is the
+	// root: no event refreshes its diagnostics facet when a watch is armed or
+	// cleared, so its own envelope can lag until a turn boundary, and the live
+	// sample is what keeps the root row current.
+	for i := 0; i < len(data); i++ {
+		data[i] = s.appThreadWithLiveWatches(data[i], data[i].ID)
 	}
 	return appwire.ThreadListResponse{Data: data}, nil
 }
@@ -2590,20 +2595,28 @@ func appWatchFromDetailedStatus(watch agent.WatchStatusInfo) appwire.EvenerWatch
 	return out
 }
 
-// appThreadWithDescendantWatches merges the descendant session's own live watch
-// rows into a returned descendant thread.
+// appThreadWithLiveWatches merges a thread's own live watch rows into a returned
+// list row, for the root and for a descendant alike.
 //
-// Descendant threads begin carrying a diagnostics block they never carried
+// A descendant thread begins carrying a diagnostics block it never carried
 // before: the event-shaped projection writes no Evener.Diagnostics, so a child
-// row had no watches even when the child session held some. The block is
-// attached to the returned copy only; the cached projection is never mutated.
+// row had no watches even when the child session held some. The root's row does
+// carry one, but the diagnostics facet is only re-sampled on a few events and a
+// turn boundary, so it can lag a watch armed or cleared in between. The live
+// sample supersedes both. The block is attached to the returned copy only; the
+// cached projection is never mutated.
 //
 // The sample happens on a LIST read, not from a propagation event and not on the
 // single-thread read path (which runs under the subscription cut and must not
 // touch session state; see appThreadForID). Watch state changes without a
-// per-child app event on this daemon, so the hub picks a new watch up on its next
-// roster probe rather than instantly: a child row can lag a new watch by one
-// probe interval.
+// per-thread app event on this daemon, so the hub picks a new watch up on its next
+// roster probe rather than instantly: a row can lag a new watch by one probe
+// interval.
+//
+// A nil sample means the resolver has no fresh answer for this ID, so the cached
+// projection stands. A non-nil empty sample is a real answer -- the row has no
+// watches -- and replaces the cached watches, which is how a cleared root watch
+// leaves the row.
 //
 // The returned rows are rebuilt from the agent rows and never alias them: each
 // EvenerWatchInfo copies its event, cadence, and delivery-time slices, so a
@@ -2611,7 +2624,7 @@ func appWatchFromDetailedStatus(watch agent.WatchStatusInfo) appwire.EvenerWatch
 // diagnostics block is deep-copied through appwire.CloneEvenerDiagnostics, so
 // every other slice of the cached projection is out of reach too, not just
 // Watches.
-func (s *Server) appThreadWithDescendantWatches(thread appwire.Thread, threadID string) appwire.Thread {
+func (s *Server) appThreadWithLiveWatches(thread appwire.Thread, threadID string) appwire.Thread {
 	s.mu.RLock()
 	fn := s.appDescendantLiveWatchesFunc
 	s.mu.RUnlock()
@@ -2619,7 +2632,7 @@ func (s *Server) appThreadWithDescendantWatches(thread appwire.Thread, threadID 
 		return thread
 	}
 	statuses := fn(threadID)
-	if len(statuses) == 0 {
+	if statuses == nil {
 		return thread
 	}
 	watches := make([]appwire.EvenerWatchInfo, 0, len(statuses))

@@ -21,6 +21,13 @@ export function watchDurationLabel(seconds: number | undefined): string {
   // reads "2m") and keeps every remainder below its unit (never "60s", "60m",
   // "24h").
   const total = Math.round(seconds);
+  // A span under half a second rounds to a whole 0. "0s" reads as "no time at
+  // all" -- and in watchNextFireLabel it would read as "firing now" for a fire
+  // that is still a few hundred milliseconds out -- so a rounded 0 renders
+  // nothing, exactly like a non-positive input. Callers that show a duration
+  // beside other wording already handle the empty label (activityRows' armedAge
+  // falls back to the armed state).
+  if (total <= 0) return "";
   if (total < 60) return `${total}s`;
   if (total < 3600) {
     const minutes = Math.floor(total / 60);

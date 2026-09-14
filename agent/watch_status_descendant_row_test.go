@@ -87,6 +87,57 @@ func TestLiveWatchesForDescendantExcludesRootReceiverWatch(t *testing.T) {
 	}
 }
 
+// LiveWatchesForSession is the list path's seam. Unlike the narrower
+// LiveWatchesForDescendant it answers for the root's own row as well as a
+// descendant's, so a watch armed or cleared on the root since the last
+// diagnostics refresh shows up on the next list read. An unknown ID yields nil
+// (leave the cached projection alone); the known root with no watches yields a
+// non-nil empty answer (the root really has none now).
+func TestLiveWatchesForSessionAnswersForRootAndDescendant(t *testing.T) {
+	root := newDescendantWatchSession(t)
+	child := newDescendantWatchSession(t)
+	registerDescendantSession(t, root, child)
+
+	root.jobManager.mu.Lock()
+	root.jobManager.watches[watchKey{Target: "job_root"}] = &watchConfig{
+		id: "watch-root", watchID: "watch-root", sourcePublic: "self", target: "job_root",
+		createdAt: frozenTestTime,
+	}
+	root.jobManager.mu.Unlock()
+	child.jobManager.mu.Lock()
+	child.jobManager.watches[watchKey{Target: "job_child"}] = &watchConfig{
+		id: "watch-child", watchID: "watch-child", sourcePublic: "self", target: "job_child",
+		createdAt: frozenTestTime,
+	}
+	child.jobManager.mu.Unlock()
+
+	rootRows := root.LiveWatchesForSession(root.ID())
+	if len(rootRows) != 1 || rootRows[0].ID != "watch-root" {
+		t.Fatalf("root live watches = %+v, want the root's own watch", rootRows)
+	}
+	childRows := root.LiveWatchesForSession(child.ID())
+	if len(childRows) != 1 || childRows[0].ID != "watch-child" {
+		t.Fatalf("descendant live watches = %+v, want the child's own watch", childRows)
+	}
+	if rows := root.LiveWatchesForSession("nobody"); rows != nil {
+		t.Fatalf("unknown session = %+v, want nil", rows)
+	}
+	if rows := root.LiveWatchesForSession(""); rows != nil {
+		t.Fatalf("empty session = %+v, want nil", rows)
+	}
+}
+
+// The root with no watches answers with a non-nil empty slice, not nil: the list
+// path must be able to tell "the root has no watches now" from "this ID is
+// unknown", or a watch cleared since the last refresh could never leave the row.
+func TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer(t *testing.T) {
+	root := newDescendantWatchSession(t)
+	rows := root.LiveWatchesForSession(root.ID())
+	if rows == nil || len(rows) != 0 {
+		t.Fatalf("empty root live watches = %+v, want a non-nil empty answer", rows)
+	}
+}
+
 func newDescendantWatchSession(t *testing.T) *Session {
 	t.Helper()
 	return newSession(t, withConfig(SessionConfig{
