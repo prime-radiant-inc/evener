@@ -371,6 +371,7 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
 	var jobs []*jobstore.JobRecord
 	var jobsEpoch uint64
+	jobsAbsent := false
 	if _, err := historicalJobsStat(jobsPath); err != nil {
 		if !os.IsNotExist(err) {
 			return activityLoadedBase{}, err
@@ -378,6 +379,10 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		if required {
 			return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
 		}
+		// Recorded rather than inferred from jobsEpoch below, which stays
+		// 0 here and would be indistinguishable from a journal folded for
+		// the first time — see activitySessionSnapshot.JobsJournalAbsent.
+		jobsAbsent = true
 	} else {
 		// This session's COMPLETE job history loads unconditionally here —
 		// historicalJobFoldCache makes that O(events appended since the
@@ -414,6 +419,8 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		Diagnostics:     diagnostics,
 		JobsEpoch:       jobsEpoch,
 		DelegatesEpoch:  delegatesEpoch,
+
+		JobsJournalAbsent: jobsAbsent,
 	}}, nil
 }
 

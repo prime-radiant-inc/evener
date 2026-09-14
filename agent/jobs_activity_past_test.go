@@ -1787,3 +1787,87 @@ func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T)
 		t.Fatalf("diagnostics %q on session %q, want one of them to be %q", deepest.Diagnostics, deepest.SessionID, want)
 	}
 }
+
+// TestLoadSessionJobActivityTree_ContinuationMintedOverAnAbsentJobJournal
+// measures what a page can promise about a journal that was not there. A
+// missing jobs.jsonl is stepped over without touching the fold cache, so the
+// generation minted for it is zero -- and a journal folded for the first time
+// also reports zero, which makes "absent when this page was built" and
+// "present and never rewritten" the same claim. The entries a session renders
+// are its jobs and then its delegates, so a journal appearing between the two
+// requests shifts every position the token counted.
+func TestLoadSessionJobActivityTree_ContinuationMintedOverAnAbsentJobJournal(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "absentjobsroot"
+	started := time.Unix(900, 0).UTC()
+	task := strings.Repeat("t", 250_000)
+	var descriptors []delegatestore.Descriptor
+	for i := range 12 {
+		childID := fmt.Sprintf("absentjobschild%02d", i)
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, task))
+		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+		})
+		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	}
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+
+	// The root has no jobs.jsonl at all when this page is built.
+	rootJobsPath := filepath.Join(jobsDir(stateDir, rootID), "jobs.jsonl")
+	if _, err := os.Stat(rootJobsPath); !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v, want the journal absent", rootJobsPath, err)
+	}
+	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if !first.Root.Branch.Truncated {
+		t.Fatal("the fixture must trim the root's own entries, or there is nothing to mint over")
+	}
+	if first.Root.Branch.Continuation != "" {
+		t.Fatalf("continuation %q minted while the root's job journal was absent: its position counts against entries nobody read, and a journal appearing before the resume moves every one of them", first.Root.Branch.Continuation)
+	}
+	wantDiagnostic := activityAbsentJobJournalDiagnostic(rootID)
+	if !slices.Contains(first.Root.Diagnostics, wantDiagnostic) {
+		t.Fatalf("diagnostics %q, want one of them to be %q", first.Root.Diagnostics, wantDiagnostic)
+	}
+
+	// The journal appears. A page built now can mint, and what it mints
+	// resumes into the jobs it actually read.
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_a", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(time.Second), JobID: "job_root_b", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(2 * time.Second), JobID: "job_root_c", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+	)
+	present, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("page with the journal present: %v", err)
+	}
+	token := present.Root.Branch.Continuation
+	if token == "" {
+		t.Fatalf("no continuation minted with the journal present; diagnostics %q -- the suppression must be specific to an absent journal", present.Root.Diagnostics)
+	}
+	delivered := map[string]bool{}
+	for _, entry := range present.Root.Entries {
+		if entry.Job != nil {
+			delivered[entry.Job.JobID] = true
+		}
+	}
+	for _, id := range []string{"job_root_a", "job_root_b", "job_root_c"} {
+		if !delivered[id] {
+			t.Fatalf("%s was never delivered on the page that read the journal", id)
+		}
+	}
+
+	// The journal goes away again. The token counted against entries that
+	// are gone, and its generation cannot say so: an absent journal reports
+	// the same 0 a first fold does.
+	if err := os.Remove(rootJobsPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+		t.Fatal("resuming a token whose job journal has been deleted was accepted; the position it carries counts against entries that no longer exist")
+	}
+}

@@ -745,7 +745,7 @@ func TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation(t *testing.T)
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}
 	budget := newBoundedActivityBudget("root", time.Unix(1, 0).UTC(), 17)
-	markActivitySessionTruncated(session, budget, "root", nil, 3, 42, 9)
+	markActivitySessionTruncated(session, budget, "root", nil, 3, 42, 9, false)
 	if session.Branch.Continuation == "" {
 		t.Fatal("expected a continuation token")
 	}
@@ -1506,7 +1506,7 @@ func TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed(
 	}
 
 	atLimit := appwire.JobActivitySession{SessionID: "deep"}
-	markActivitySessionTruncated(&atLimit, budget, "deep", longest, 3, 0, 0)
+	markActivitySessionTruncated(&atLimit, budget, "deep", longest, 3, 0, 0, false)
 	if !atLimit.Branch.Truncated || atLimit.Branch.Continuation == "" {
 		t.Fatalf("a path exactly at the limit must still mint: truncated=%t continuation=%q", atLimit.Branch.Truncated, atLimit.Branch.Continuation)
 	}
@@ -1518,7 +1518,7 @@ func TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed(
 	}
 
 	tooLong := appwire.JobActivitySession{SessionID: "deep"}
-	markActivitySessionTruncated(&tooLong, budget, "deep", append(longest, "dlg_one_too_many"), 3, 0, 0)
+	markActivitySessionTruncated(&tooLong, budget, "deep", append(longest, "dlg_one_too_many"), 3, 0, 0, false)
 	if !tooLong.Branch.Truncated {
 		t.Fatal("a session cut off mid-list is truncated whether or not it can name a path back to itself")
 	}
