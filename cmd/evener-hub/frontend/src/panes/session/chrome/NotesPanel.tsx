@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
+import { sessionActionError, WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import type { SessionURL } from "../../../protocol/types.gen";
@@ -132,6 +132,18 @@ function HumanStatus({
   return null;
 }
 
+// isMissingURLEntryError recognizes the daemon's unknown-url-entry rejection: an
+// invalidParams WireError carrying the "no URL entry with id" contract text
+// (agent/session_notes_rpc.go and server/appwire_runtime.go both build it, and
+// the agent test TestRemoveSessionURLUnknownIDRejects pins it). The code alone is
+// too broad, since every bad-parameter rejection shares it, so the message is
+// what separates a stale row from a real error.
+function isMissingURLEntryError(err: unknown): boolean {
+  return (
+    err instanceof WireError && err.evenerErrorInfo === "invalidParams" && /no URL entry with id/.test(err.message)
+  );
+}
+
 export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   const toasts = useToasts();
   const owner = useRef(Symbol("notes editor"));
@@ -169,37 +181,26 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
     return () => unmountHumanNote(sessionRef, id);
   }, [sessionRef, live, model.capabilities.sharedNotes]);
 
-  // The urls/remove response is not the authority for a removal; the
-  // urls/updated push is, and it can land after the response. A row therefore
-  // stays pending until the model stops listing it (roborev found that clearing
-  // on the response left a window where a second click fired another request and
-  // reported the entry as already gone). A failed request releases the guard
-  // below instead, so the retry stays possible.
-  useEffect(() => {
-    if (removingURLsRef.current.size === 0) return;
-    const listed = new Set(model.sessionUrls.map((entry) => entry.id));
-    for (const id of [...removingURLsRef.current]) {
-      if (listed.has(id)) continue;
-      removingURLsRef.current.delete(id);
-      setRemovingURLs((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
-  }, [model.sessionUrls]);
-
+  // The guard covers the request, not the push. It was held until the
+  // authoritative urls/updated push first, which wedged a row whose id another
+  // client re-added before that push landed, and it reset on unmount anyway.
+  // The double-click problem it exists for is solved at the source instead: a
+  // removal of an entry the server no longer has reads as success below, so a
+  // duplicate request is harmless whichever way it slips through.
   async function handleRemoveURL(url: SessionURL) {
     if (removingURLsRef.current.has(url.id)) return;
     removingURLsRef.current.add(url.id);
     setRemovingURLs((prev) => new Set(prev).add(url.id));
     try {
       await threadsStore.getState().removeURL(sessionRef, url.id);
-      // Success keeps the row pending; the effect above releases it once the
-      // model reflects the removal.
     } catch (err) {
-      toasts.push("error", sessionActionError("Couldn't remove link", err));
-      // The failure left the entry in place, so release the guard for a retry.
+      // "No such entry" means this row is stale and the outcome the user asked
+      // for is already true, so it is a success for the UI rather than the
+      // spurious "Couldn't remove link" toast a double-click used to produce.
+      if (!isMissingURLEntryError(err)) {
+        toasts.push("error", sessionActionError("Couldn't remove link", err));
+      }
+    } finally {
       removingURLsRef.current.delete(url.id);
       setRemovingURLs((prev) => {
         const next = new Set(prev);

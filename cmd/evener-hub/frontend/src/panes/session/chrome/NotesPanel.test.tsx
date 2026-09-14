@@ -839,7 +839,7 @@ test("two Remove clicks in the same tick fire one request", async () => {
   expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
 });
 
-test("a Remove click after the response but before the push stays ignored", async () => {
+test("a duplicate Remove after the response reports no error", async () => {
   const { user, fake } = clockClient();
   let calls = 0;
   let release!: () => void;
@@ -848,7 +848,10 @@ test("a Remove click after the response but before the push stays ignored", asyn
   });
   fake.on("urls/remove", () => {
     calls += 1;
-    return answered.then(() => ({}));
+    if (calls === 1) return answered.then(() => ({}));
+    // The entry is already gone server-side: the unknown-id rejection the old
+    // guard existed to suppress.
+    throw new WireError("no URL entry with id u1", -32602, { evenerErrorInfo: "invalidParams" });
   });
 
   const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
@@ -867,11 +870,11 @@ test("a Remove click after the response but before the push stays ignored", asyn
   await act(async () => {
     await answered;
   });
-  // The RPC answer has been consumed, but the authoritative urls/updated push
-  // has not landed: the model still lists the entry, so the row must stay
-  // pending instead of firing again and reporting the entry as already gone.
+  // The guard is released when the request settles, so this click reaches the
+  // wire; the missing-entry answer must read as success, because the user's
+  // intent (this link gone) is already true.
   await user.click(button);
-  expect(calls).toBe(1);
+  await waitFor(() => expect(calls).toBe(2));
   expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
 
   // The push lands and the model drops the entry: the row disappears with it.
@@ -882,6 +885,41 @@ test("a Remove click after the response but before the push stays ignored", asyn
     </>,
   );
   expect(screen.queryByTestId("shared-notes-url-remove-u1")).toBeNull();
+});
+
+test("a re-added URL row is removable again", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return Promise.resolve({});
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  const panel = render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(1));
+  // Another client re-adds the same canonical URL, so the id never leaves the
+  // model: the guard must not outlive the request and wedge the live row.
+  panel.rerender(
+    <>
+      <NotesPanelBody
+        sessionRef={model.ref}
+        model={{ ...model, sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] }}
+      />
+      <Toast />
+    </>,
+  );
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(2));
 });
 
 test("a failed Remove clears the guard so a retry can fire", async () => {
