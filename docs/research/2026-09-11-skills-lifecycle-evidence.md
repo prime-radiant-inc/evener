@@ -1580,3 +1580,10 @@ between 30 and 71.
 
 So the failures follow the load rather than the change. The PR's own CI run on
 clean runners is the authoritative full-suite verdict for this head.
+
+It is green: on `8a4cdf37d` all sixteen checks pass, none failing, including the
+`web` and `native` jobs whose browser work had flaked locally under load. The
+local `make test-web` also passes on that head — typecheck, vitest and biome —
+as do `make generate` (zero diff), `make vet`, `make test-api-package` and
+`make fuzz`. Main was then merged in (clean, zero conflicts) so the branch
+satisfies the repository's up-to-date-head rule.
