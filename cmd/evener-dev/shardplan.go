@@ -134,7 +134,14 @@ func nameRegex(names []string) string {
 // the other; everything here compares the normalised form.
 func goFlag(f string) string {
 	if strings.HasPrefix(f, "--") && len(f) > 2 {
-		return f[1:]
+		f = f[1:]
+	}
+	// `go test` takes the test binary's own spelling too -- `go test
+	// -test.short` is `go test -short` -- so the prefix is dropped here,
+	// before anything classifies the flag. Everything downstream then sees one
+	// spelling, whether the flag arrived on the command line or in GOFLAGS.
+	if strings.HasPrefix(f, "-test.") && len(f) > len("-test.") {
+		f = "-" + f[len("-test."):]
 	}
 	return f
 }
@@ -259,36 +266,65 @@ type parsedFlags struct {
 //
 // -C is refused rather than forwarded: it changes directory before the command
 // runs, and everything here is built and tested from the module's own directory.
-func parseFlags(flags []string) (parsedFlags, error) {
-	var out parsedFlags
+// flagToken is one of a caller's flags after normalisation, with its value
+// already taken from the next argument when that is where it lives.
+type flagToken struct {
+	// whole is the flag as it will be forwarded: normalised, with any inline
+	// value still attached.
+	whole string
+	// name is the flag without its value, and value is the value, from either
+	// spelling.
+	name, value string
+	// inline says the value was written with an =, and hasValue that there is
+	// one at all.
+	inline, hasValue bool
+}
+
+// walkFlags walks a `go test` argument list once, normalising each flag and
+// consuming the value of any flag whose value is the next argument, and hands
+// each result to visit. Consuming the pair here is what keeps `-run -race` and
+// `-ldflags -short` from being read as two flags -- the second word is a
+// value, and only the tables know which flags take one.
+//
+// Both routes into this package use it: the caller's own flags, and the
+// entries in GOFLAGS.
+func walkFlags(flags []string, visit func(flagToken) error) error {
 	for i := 0; i < len(flags); i++ {
-		f := goFlag(flags[i])
-		name := f
-		inline := ""
-		hasInline := false
-		if j := strings.IndexByte(f, '='); j > 0 {
-			name, inline, hasInline = f[:j], f[j+1:], true
+		tok := flagToken{whole: goFlag(flags[i])}
+		tok.name = tok.whole
+		if j := strings.IndexByte(tok.whole, '='); j > 0 {
+			tok.name, tok.value, tok.inline, tok.hasValue = tok.whole[:j], tok.whole[j+1:], true, true
 		}
-		if name == "-C" {
-			return parsedFlags{}, errors.New("-C is not supported here: every module is built and tested from its own directory, and a -C would move both somewhere this runner does not expect")
-		}
-		value := ""
-		hasValue := hasInline
-		if hasInline {
-			value = inline
-		} else if buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name] {
+		if !tok.inline && (buildValueFlags[tok.name] || testForwardValueFlags[tok.name] || testRefusedValueFlags[tok.name]) {
 			if i+1 >= len(flags) {
-				return parsedFlags{}, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
+				return fmt.Errorf("%s was given with nothing after it, and its value decides what runs", tok.name)
 			}
 			i++
-			value = flags[i]
-			hasValue = true
+			tok.value, tok.hasValue = flags[i], true
+		}
+		if err := visit(tok); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseFlags(flags []string) (parsedFlags, error) {
+	var out parsedFlags
+	err := walkFlags(flags, func(tok flagToken) error {
+		f, name, inline, value, hasValue := tok.whole, tok.name, tok.value, tok.value, tok.hasValue
+		if !tok.inline {
+			inline = ""
+		}
+		hasInline := tok.inline
+		if name == "-C" {
+			return errors.New("-C is not supported here: every module is built and tested from its own directory, and a -C would move both somewhere this runner does not expect")
 		}
 		switch {
 		case buildValueFlags[name]:
 			if hasInline {
 				out.build = append(out.build, f)
-				continue
+				return nil
 			}
 			out.build = append(out.build, name, value)
 		case buildBareFlags[name]:
@@ -296,33 +332,37 @@ func parseFlags(flags []string) (parsedFlags, error) {
 		case name == "-short":
 			parsed, err := boolFlagValue(name, inline, hasInline)
 			if err != nil {
-				return parsedFlags{}, err
+				return err
 			}
 			out.short = parsed
 			out.test = append(out.test, testBoolFlag(name, parsed))
 		case testForwardBareFlags[name]:
 			parsed, err := boolFlagValue(name, inline, hasInline)
 			if err != nil {
-				return parsedFlags{}, err
+				return err
 			}
 			out.test = append(out.test, testBoolFlag(name, parsed))
 		case testForwardValueFlags[name]:
 			if hasValue {
 				if err := checkForwardedValue(name, value); err != nil {
-					return parsedFlags{}, err
+					return err
 				}
 				out.test = append(out.test, "-test."+strings.TrimPrefix(name, "-")+"="+value)
 			}
 		case testRefusedValueFlags[name] || testRefusedBareFlags[name]:
 			if reason, ok := refusalReason[name]; ok {
-				return parsedFlags{}, fmt.Errorf("%s is not supported by agent-shards: %s", name, reason)
+				return fmt.Errorf("%s is not supported by agent-shards: %s", name, reason)
 			}
-			return parsedFlags{}, fmt.Errorf("%s is not supported by agent-shards: it builds one binary, runs it as several shards, and writes its own logs, so this flag cannot mean here what it means to `go test`", name)
+			return fmt.Errorf("%s is not supported by agent-shards: it builds one binary, runs it as several shards, and writes its own logs, so this flag cannot mean here what it means to `go test`", name)
 		case !strings.HasPrefix(name, "-"):
-			return parsedFlags{}, fmt.Errorf("%q is not a flag: this runner chooses the packages it builds and runs, and takes only `go test` flags", flags[i])
+			return fmt.Errorf("%q is not a flag: this runner chooses the packages it builds and runs, and takes only `go test` flags", f)
 		default:
-			return parsedFlags{}, fmt.Errorf("%s is not a flag `go help build` or `go help testflag` documents; refusing it rather than dropping it, which would build or run something other than what was asked for", name)
+			return fmt.Errorf("%s is not a flag `go help build` or `go help testflag` documents; refusing it rather than dropping it, which would build or run something other than what was asked for", name)
 		}
+		return nil
+	})
+	if err != nil {
+		return parsedFlags{}, err
 	}
 	return out, nil
 }
@@ -389,24 +429,13 @@ func checkForwardedValue(name, value string) error {
 // Build-side entries are another matter: those do reach the compile, and pass
 // through untouched.
 func checkGoflags(goflags string) error {
-	for entry := range strings.FieldsSeq(goflags) {
-		name := goFlag(entry)
-		if i := strings.IndexByte(name, '='); i > 0 {
-			name = name[:i]
+	return walkFlags(strings.Fields(goflags), func(tok flagToken) error {
+		if testForwardValueFlags[tok.name] || testForwardBareFlags[tok.name] ||
+			testRefusedValueFlags[tok.name] || testRefusedBareFlags[tok.name] {
+			return fmt.Errorf("GOFLAGS carries %s, which is a `go test` flag for the test binary, not for the build: this runner compiles with `go test -c` and launches the shards itself, so a flag there reaches neither. Pass it on the command line instead", tok.name)
 		}
-		// The test binary's own spelling belongs to the binary, and the
-		// toolchain does not hand GOFLAGS to a binary this runner launches, so
-		// it reaches nothing at all. The command line takes it without the
-		// prefix, which is the same answer as for every other test-side flag.
-		if strings.HasPrefix(name, "-test.") {
-			return fmt.Errorf("GOFLAGS carries %s, which is the test binary's own spelling of a flag: this runner launches the shards itself, so nothing in GOFLAGS reaches them. Pass it on the command line without the -test. prefix", name)
-		}
-		if testForwardValueFlags[name] || testForwardBareFlags[name] ||
-			testRefusedValueFlags[name] || testRefusedBareFlags[name] {
-			return fmt.Errorf("GOFLAGS carries %s, which is a `go test` flag for the test binary, not for the build: this runner compiles with `go test -c` and launches the shards itself, so a flag there reaches neither. Pass it on the command line instead", name)
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // testSetKey is the survey cache key: the identity of the sorted test list

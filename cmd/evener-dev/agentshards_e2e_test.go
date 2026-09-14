@@ -236,6 +236,7 @@ func TestShardRunFileExplicitFailuresAndValidSelection(t *testing.T) {
 
 func buildShardFixture(t *testing.T) string {
 	t.Helper()
+	isolateToolchainEnv(t)
 	bin := filepath.Join(t.TempDir(), "shardfixture.test")
 	cmd := exec.Command("go", "test", "-c", "-o", bin, ".")
 	cmd.Dir = fixtureModule(t)
@@ -491,6 +492,7 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 // runs agent-shards) for signal-delivery scenarios.
 func buildEvenerDev(t *testing.T) string {
 	t.Helper()
+	isolateToolchainEnv(t)
 	bin := filepath.Join(t.TempDir(), "evener-dev")
 	cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
 	out, err := cmd.CombinedOutput()

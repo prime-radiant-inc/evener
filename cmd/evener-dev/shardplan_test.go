@@ -360,6 +360,17 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.v"},
 		},
 		{
+			// `go test -test.short` is `go test -short`, and so is this.
+			name:  "the test binary's own spelling on the command line",
+			flags: []string{"-test.short", "-test.count=2", "-test.v=false"},
+			test:  []string{"-test.short", "-test.count=2", "-test.v=false"},
+		},
+		{
+			name:  "and it is still refused when the runner cannot honour it",
+			flags: []string{"-test.run", "TestFoo"},
+			err:   "-run is not supported",
+		},
+		{
 			// The value of a refused flag is still consumed with it, so it
 			// cannot be read as a flag of its own; the refusal names -skip,
 			// not the -race that follows it.
@@ -455,11 +466,16 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 		{name: "a test flag reaches neither half", goflags: "-mod=mod -short", err: "-short"},
 		{name: "and in either spelling", goflags: "--count=2", err: "-count"},
 		{name: "including one this runner refuses outright", goflags: "-run=TestFoo", err: "-run"},
-		// The binary's own spelling reaches the binary even less: the
-		// toolchain never hands GOFLAGS to a process this runner launches.
-		{name: "the test binary's spelling, bare", goflags: "-test.v", err: "-test.v"},
-		{name: "with a value", goflags: "-mod=mod -test.timeout=1s", err: "-test.timeout"},
-		{name: "and one the command line would have taken", goflags: "-test.count=5", err: "-test.count"},
+		// `go test` takes the binary's own spelling too, so it is normalised
+		// away first and refused by the same rule under its own name.
+		{name: "the test binary's spelling, bare", goflags: "-test.v", err: "-v"},
+		{name: "with a value", goflags: "-mod=mod -test.timeout=1s", err: "-timeout"},
+		{name: "and one the command line would have taken", goflags: "-test.count=5", err: "-count"},
+		// A two-token value is a value: the flag before it decides, and
+		// neither of these is a test-side flag.
+		{name: "a build flag whose value looks like one", goflags: "-ldflags -short"},
+		{name: "and the same for tags", goflags: "-tags -short"},
+		{name: "but the flag itself is still refused", goflags: "-short", err: "-short"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := checkGoflags(tc.goflags)
