@@ -328,6 +328,53 @@ func TestFailureFingerprint_EquivalentNumberLiteralsAreEqual(t *testing.T) {
 	}
 }
 
+// An integer literal that overflows int64 falls through to ParseFloat and is
+// rounded, so two distinct integers beyond int64 collapse to the same float and
+// therefore the same fingerprint, sharing one failure run. Integer-shaped
+// literals must keep their exact value instead.
+func TestFailureFingerprint_HugeIntegersStayDistinct(t *testing.T) {
+	pairs := [][2]string{
+		{`{"offset_bytes":9223372036854775808}`, `{"offset_bytes":9223372036854775809}`},
+		{`{"offset_bytes":18446744073709551616}`, `{"offset_bytes":18446744073709551617}`},
+		{`{"offset_bytes":-9223372036854775809}`, `{"offset_bytes":-9223372036854775810}`},
+	}
+	for _, p := range pairs {
+		if fp("read_file", p[0]) == fp("read_file", p[1]) {
+			t.Errorf("distinct integers beyond int64 collapsed to one fingerprint: %s and %s", p[0], p[1])
+		}
+	}
+}
+
+// The fix must leave the int64 and float paths exactly as they were: values that
+// fit int64 stay exact and their equivalent literals keep folding, and genuine
+// floats keep folding to the same value while distinct floats stay distinct.
+func TestFailureFingerprint_Int64AndFloatPathsUnchanged(t *testing.T) {
+	// Values that fit int64 are exact and unaffected: distinct integers stay
+	// distinct, including the pair straddling the float64 integer-precision
+	// boundary at 2^53.
+	if fp("read_file", `{"offset_bytes":9007199254740992}`) == fp("read_file", `{"offset_bytes":9007199254740993}`) {
+		t.Errorf("distinct int64 values collapsed")
+	}
+	if fp("read_file", `{"offset_bytes":42}`) == fp("read_file", `{"offset_bytes":43}`) {
+		t.Errorf("distinct int64 values collapsed")
+	}
+	// Equivalent int64 literals still fold.
+	if fp("read_file", `{"offset_bytes":42}`) != fp("read_file", `{"offset_bytes":42.0}`) {
+		t.Errorf("42 and 42.0 must fingerprint the same")
+	}
+	if fp("read_file", `{"offset_bytes":42}`) != fp("read_file", `{"offset_bytes":4.2e1}`) {
+		t.Errorf("42 and 4.2e1 must fingerprint the same")
+	}
+	// Genuine floats are unaffected: equivalent literals fold, distinct values
+	// stay distinct.
+	if fp("read_file", `{"offset_bytes":1.5}`) != fp("read_file", `{"offset_bytes":1.50}`) {
+		t.Errorf("1.5 and 1.50 must fingerprint the same")
+	}
+	if fp("read_file", `{"offset_bytes":1.5}`) == fp("read_file", `{"offset_bytes":1.6}`) {
+		t.Errorf("distinct floats collapsed")
+	}
+}
+
 func TestFailureFingerprint_MeaningfulChangesAreDistinct(t *testing.T) {
 	cases := [][2]string{
 		{`{"transcript_ref":"job:j1"}`, `{"transcript_ref":"job:j2"}`},
