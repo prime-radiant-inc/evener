@@ -153,8 +153,7 @@ func TestRemoteHubSubscribeThreadWireContract(t *testing.T) {
 		t.Errorf("unexpected method %q", method)
 		return scriptedReply{result: appwire.ThreadReadResponse{}}
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
 	if err != nil {
@@ -201,8 +200,7 @@ func TestRemoteHubSubscribeThreadTranslatesNotifications(t *testing.T) {
 	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
 		return scriptedReply{result: appwire.ThreadReadResponse{}}
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
 	if err != nil {
@@ -262,8 +260,7 @@ func TestRemoteHubSubscribeThreadFanOutIsolation(t *testing.T) {
 	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
 		return scriptedReply{result: appwire.ThreadReadResponse{}}
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	outS, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
 	if err != nil {
@@ -320,8 +317,7 @@ func TestRemoteHubSubscribeThreadDrainPreventsOverflow(t *testing.T) {
 			return scriptedReply{result: appwire.EmptyResponse{}}
 		}
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	if _, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"}); err != nil {
 		t.Fatalf("SubscribeThread: %v", err)
@@ -363,8 +359,7 @@ func TestRemoteHubSubscribeThreadClosesOnCancel(t *testing.T) {
 	}
 
 	// A fresh subscription for the same thread must work after the first ended.
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	defer cancel2()
+	ctx2 := t.Context()
 	out2, err := remote.source.SubscribeThread(ctx2, appwire.ThreadReadParams{Ref: "host:S"})
 	if err != nil {
 		t.Fatalf("re-subscribe: %v", err)
@@ -408,8 +403,7 @@ func TestRemoteHubSubscribeThreadNestedRefDropped(t *testing.T) {
 	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
 		return scriptedReply{result: appwire.ThreadReadResponse{}}
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
 	if err != nil {
