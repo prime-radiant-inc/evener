@@ -1247,3 +1247,81 @@ premise of the review brief rather than the code.
   against `agent/status.go` ~173-181); and identity-less terminal cancellation
   receipts that never coalesce or prune
   (`agent/session_skill_compaction.go` ~292-304).
+
+## Post-rebase provenance: rebase onto main (2026-09-14, PR #1168)
+
+Jesse's ruling for the integration was to rebase and force-push again, after the
+PR had gone conflicting as main advanced. Main was fourteen commits ahead of the
+merge base, including SDK migration row A3
+(`refactor(sdk): move the AppWire TypeScript package to appwire-client/typescript`
+— #1241), which turned the web tree's `cmd/evener-hub/frontend/src/protocol/`
+files into re-export seams over a new package.
+
+The rebase replayed 75 commits. Git's rerere reused a recorded resolution where
+the same conflict recurred, which kept the work to the distinct hunks below.
+
+- `agent/session.go`, `agent/session_state.go`, `agent/session_init.go`: this
+  feature and main had independently extracted the same inline metadata-save
+  body into a helper (`saveMeta` here, `autoSaveMeta`/`autoSaveMetaLocked`
+  there). Main's is kept as the single implementation and this feature's
+  `saveMeta` is now a documented delegate to it, so the locking, meta-FS and
+  flush sequence exists once. The same files union-resolved main's restored
+  notes/agentNote fields with this feature's skill-lifecycle restore, and main's
+  escaped notes history with this feature's stripping of inherited delegate
+  skill state.
+- `server/appwire_runtime.go`: main's `SharedNotes` capability line plus this
+  feature's `SkillInput` capability computation; the placeholder `SkillInput:
+  false` of an intermediate commit is superseded by the real computation, as it
+  was before the rebase.
+- `agent/session_client_mutation_queue.go`, `agent/schema/snapshot.go`,
+  `agent/schema/turn.go`, `agent/session_client_mutation.go`: union resolutions
+  (the steering message's skill names plus main's steering kind; both sides'
+  schema and turn fields).
+- The four `protocol/` files A3 turned into seams (`composerInput.ts`,
+  `slashCompletion.ts`, `submitRouting.ts`, `types.gen.ts`): main's seam is kept
+  for the hub path and this feature's changes are re-applied at the package in
+  two commits — first the two relocated test files, then the content
+  (`canonicalSkillNames` and the skill-selection parameters on
+  `buildInput`/`buildComposerInput`, the selection-only steer route
+  `hasSkills`, and the regenerated `types.gen.ts`) — plus
+  `composerInput.test.ts` and `skillInput.test.ts` moved beside the modules they
+  cover. `slashCompletion.ts`, `slashCompletion.test.ts`,
+  `submitRouting.test.ts`, `reducer.test.ts` and `scripts/qualify-package.mjs`
+  were already carried there by rename detection.
+
+**Preservation audit.** Of the 153 files this feature touched before the rebase,
+exactly ten no longer differ from main: the four seam files and six
+`protocol/` test/script files that A3 moved into the package. Each was confirmed
+present at its new path with a change size identical to the pre-rebase diffstat
+(+22, +43, +58, +4, +61, +95, +28, +12, +15 and +16 lines respectively), so no
+feature change was dropped by the rebase.
+
+### Gates on the rebased head
+
+Run serially, each gate's own exit status read directly.
+
+| Gate | Result |
+| --- | --- |
+| `make generate` (zero-diff) | exit 0 |
+| `make vet` | exit 0 |
+| `make test-web` (typecheck, vitest and biome, including `appwire-client/typescript`) | exit 0, 927s |
+| `make merge-approval-gate` | exit 0, 1529s (first run, see below) |
+| `TMPDIR=/tmp make test-web-browser` | exit 0, 341s |
+| `make fuzz` | exit 0, 498s |
+| `make test-api-package` | exit 0 |
+
+The first `merge-approval-gate` run ended exit 2 with every lint phase PASS and
+every module test wave PASS, failing only at its last phase,
+`make test-api-package`, with `Cannot find package 'ws' imported from
+appwire-client/typescript/scripts/qualify-package.mjs`. A3 introduced that
+package and this worktree had never installed its dependencies (CI runs
+`npm ci --prefix appwire-client/typescript`). That is an environment gap, not a
+product failure: `test-api-package` is the gate's final phase so nothing behind
+it was masked, `make test-api-package` alone exits 0 once the declared dev
+dependencies are installed, and the full gate then exits 0. Both runs are
+recorded because the first one is evidence too.
+
+Direct evidence that the relocated SDK tests execute rather than merely being
+collected: `npx vitest run composerInput.test.ts skillInput.test.ts
+submitRouting.test.ts slashCompletion.test.ts` reports 4 files and 70 tests
+passed.
