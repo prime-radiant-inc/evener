@@ -27,17 +27,34 @@ func main() {
 	os.Exit(dispatch(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
+// aliasedDevSubcommands are the dev subcommands this binary also answers to
+// without the dev prefix. It is data rather than a list of case labels so that
+// a test can ask which names alias without running the subcommands themselves,
+// two of which would lint or shard the repository.
+var aliasedDevSubcommands = map[string]bool{
+	"agent-shards":     true,
+	"bounded-list":     true,
+	"list-build-flags": true,
+	"module-lint":      true,
+}
+
 func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
 	}
 
+	// The dev subcommands that also answer to their bare name. The args go
+	// through whole, name included, so `evener-dev bounded-list x` and
+	// `evener-dev dev bounded-list x` reach the same place with the same
+	// arguments.
+	if aliasedDevSubcommands[args[0]] {
+		return devcmd.Run(args, stdin, stdout, stderr)
+	}
+
 	switch args[0] {
 	case "dev":
 		return devcmd.Run(args[1:], stdin, stdout, stderr)
-	case "module-lint", "agent-shards", "bounded-list", "list-build-flags":
-		return devcmd.Run(args, stdin, stdout, stderr)
 	case "fuzz-harvest":
 		return fuzzharvestcmd.Run(args[1:], stdin, stdout, stderr)
 	case "fuzzcov":

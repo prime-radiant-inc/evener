@@ -100,6 +100,18 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 			result.stuck = true
 			result.exitCode = 124
 		}
+		// Cleanup takes a grace or two, and a signal that arrives during it is
+		// watched for by nobody. Latching it here is what stops the runner
+		// from starting another attempt after the operator said stop -- even
+		// for a command that had already failed on its own.
+		if sig := latch.poll(); sig != 0 && result.interrupted == 0 {
+			result.interrupted = sig
+		}
+		if result.stuck && result.interrupted != 0 {
+			// The same rule as the give-up path: an interrupt is what was
+			// asked for, and 124 would send the caller to their caches.
+			result.exitCode = 128 + int(result.interrupted)
+		}
 		return result
 	}
 	select {

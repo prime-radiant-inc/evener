@@ -5,6 +5,7 @@ package dev
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -318,15 +319,14 @@ func TestBoundedListEscapeeHelper(t *testing.T) {
 	if err := child.Start(); err != nil {
 		t.Fatalf("starting the escapee: %v", err)
 	}
-	// Say nothing until the grandchild is actually running and holding the
-	// pipe: the test waits on this file rather than on a guess about how long
-	// a fork takes.
+	// Wait until the grandchild is actually running and holding the pipe, say
+	// so, and exit. From this moment the attempt's wait cannot finish however
+	// the attempt ends, because the pipe has an owner in another process
+	// group -- which is the state a child stuck in the kernel produces.
 	awaitFile(t, os.Getenv("BOUNDED_LIST_SLEEPER_READY"), "the grandchild never started")
 	if err := os.WriteFile(os.Getenv("BOUNDED_LIST_ESCAPEE_READY"), nil, 0o644); err != nil {
 		t.Fatalf("writing the escapee's ready file: %v", err)
 	}
-	// Held, not waited for: this process is killed where it stands.
-	time.Sleep(2 * time.Second)
 }
 
 // TestBoundedListSleeperHelper is the grandchild: it holds the inherited pipe
@@ -358,16 +358,23 @@ func escapeeCommand(t *testing.T) ([]string, string) {
 
 func TestBoundedAttemptGivesUpOnAChildItCannotReap(t *testing.T) {
 	var stderr bytes.Buffer
+	argv, escapeeReady := escapeeCommand(t)
+	// The middle process exits as soon as its grandchild holds the pipe, so
+	// the unreapable state is entered by the command itself rather than at
+	// some elapsed time. The bound below only has to outlast that fork, which
+	// takes single-digit milliseconds here: a second is a tripwire two orders
+	// of magnitude clear of it, and a machine slower than that fails this test
+	// loudly rather than passing it for the wrong reason.
 	start := time.Now()
-	argv, _ := escapeeCommand(t)
-	result := runBoundedAttempt(argv, 200*time.Millisecond, 300*time.Millisecond, &stderr, nil)
+	result := runBoundedAttempt(argv, time.Second, 300*time.Millisecond, &stderr, nil)
+	awaitFile(t, escapeeReady, "the escapee never reported its grandchild")
 	if !result.stuck {
 		t.Fatalf("stuck = false after %s; the attempt waited for a child it could not reap", time.Since(start))
 	}
 	if result.exitCode != 124 {
 		t.Fatalf("exitCode = %d, want 124", result.exitCode)
 	}
-	if elapsed := time.Since(start); elapsed > 2500*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("the attempt took %s, which is not a bound", elapsed)
 	}
 	if got := stderr.String(); !strings.Contains(got, "stuck in the kernel") {
@@ -405,9 +412,12 @@ func TestBoundedAttemptKeepsTheInterruptWhenItCannotReap(t *testing.T) {
 
 func TestBoundedListDoesNotRetryAChildItCannotReap(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	argv, _ := escapeeCommand(t)
-	args := append([]string{"-timeout", "200ms", "-attempts", "3", "-grace", "300ms", "--"}, argv...)
+	argv, escapeeReady := escapeeCommand(t)
+	// Same shape as the attempt-level case: the command puts itself into the
+	// unreapable state and exits, and the bound is the tripwire that notices.
+	args := append([]string{"-timeout", "1s", "-attempts", "3", "-grace", "300ms", "--"}, argv...)
 	code := boundedListWith(args, &stdout, &stderr, nil)
+	awaitFile(t, escapeeReady, "the escapee never reported its grandchild")
 	if code != 124 {
 		t.Fatalf("exit code = %d, want 124; stderr = %q", code, stderr.String())
 	}
@@ -476,6 +486,77 @@ func TestCompleteWithKeepsTheCommandsAnswerAndTheSignal(t *testing.T) {
 	quiet.completeWith(3, nil, &signalLatch{ch: make(chan os.Signal)})
 	if quiet.exitCode != 3 || quiet.interrupted != 0 {
 		t.Fatalf("completeWith with no signal = %+v, want the command's answer and no interrupt", quiet)
+	}
+}
+
+// failingCommandWithASurvivor is a command that exits 3 and leaves a child in
+// its group that ignores SIGTERM and records having been sent one. The leader
+// waits for the child to say its trap is installed before exiting, because a
+// SIGTERM that arrives first finds the default disposition and the child dies
+// without a word -- the sweep would then have nothing to sweep and the test
+// would prove nothing.
+//
+// The scripts are files rather than -c strings so the quoting is the shell's
+// own rather than three layers of escaping.
+func failingCommandWithASurvivor(t *testing.T) []string {
+	t.Helper()
+	dir := t.TempDir()
+	survivor := filepath.Join(dir, "survivor.sh")
+	if err := os.WriteFile(survivor, []byte(
+		"trap ': > \"${BOUNDED_LIST_TERMED:-/dev/null}\"' TERM\n"+
+			": > \"${BOUNDED_LIST_READY:-/dev/null}\"\n"+
+			"while :; do sleep 0.05; done\n"), 0o644); err != nil {
+		t.Fatalf("writing the survivor script: %v", err)
+	}
+	leader := filepath.Join(dir, "leader.sh")
+	if err := os.WriteFile(leader, fmt.Appendf(nil,
+		"sh %q >/dev/null 2>&1 &\n"+
+			"while [ ! -f \"${BOUNDED_LIST_READY:-/dev/null}\" ]; do sleep 0.01; done\n"+
+			"exit 3\n", survivor), 0o644); err != nil {
+		t.Fatalf("writing the leader script: %v", err)
+	}
+	return []string{"sh", leader}
+}
+
+func TestBoundedListDoesNotRetryAFailedCommandAfterAnInterrupt(t *testing.T) {
+	// The command fails on its own and leaves a child that ignores SIGTERM, so
+	// the attempt spends its grace sweeping the group -- and the interrupt
+	// lands in that window, which nothing is watching. The attempt has to come
+	// back carrying both: what the command decided, and the signal, which is
+	// what stops the runner from starting another attempt.
+	var stderr bytes.Buffer
+	_, termed := readinessFiles(t)
+	signals := make(chan os.Signal, 1)
+	go func() {
+		awaitFile(t, termed, "the child was never sent SIGTERM")
+		signals <- syscall.SIGTERM
+	}()
+	failThenLeaveAChild := failingCommandWithASurvivor(t)
+	latch := &signalLatch{ch: signals}
+	result := runBoundedAttempt(failThenLeaveAChild, 30*time.Second, 5*time.Second, &stderr, latch)
+	if result.exitCode != 3 {
+		t.Fatalf("exitCode = %d, want 3: the command's own answer; stderr = %q", result.exitCode, stderr.String())
+	}
+	if result.interrupted != syscall.SIGTERM {
+		t.Fatalf("interrupted = %v, want the signal that arrived during cleanup, which is what stops the runner", result.interrupted)
+	}
+
+	// And through the runner: three attempts allowed, one taken, the command's
+	// status returned.
+	var stdout, runnerErr bytes.Buffer
+	_, termedAgain := readinessFiles(t)
+	runnerSignals := make(chan os.Signal, 1)
+	go func() {
+		awaitFile(t, termedAgain, "the child was never sent SIGTERM")
+		runnerSignals <- syscall.SIGTERM
+	}()
+	code := boundedListWith(append([]string{"-timeout", "30s", "-attempts", "3", "-grace", "5s", "--"},
+		failingCommandWithASurvivor(t)...), &stdout, &runnerErr, runnerSignals)
+	if code != 3 {
+		t.Fatalf("exit code = %d, want 3; stderr = %q", code, runnerErr.String())
+	}
+	if strings.Contains(runnerErr.String(), "retrying") {
+		t.Fatalf("stderr = %q: the run was told to stop, and announced a retry instead", runnerErr.String())
 	}
 }
 

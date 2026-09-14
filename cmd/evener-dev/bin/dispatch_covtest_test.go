@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	devcmd "primeradiant.com/evener/cmd/evener-dev"
 )
 
 const devHelp = `Usage: evener-dev <subcommand> [flags]
@@ -128,17 +130,24 @@ func TestDispatchAliasesReachTheSameSubcommand(t *testing.T) {
 		})
 	}
 
-	// module-lint and agent-shards are dispatched by the same line. Running
-	// them for real would lint or shard the repo, so what is compared here is
-	// that both spellings reach the same subcommand and agree on its answer.
-	for _, name := range []string{"module-lint", "agent-shards"} {
-		t.Run(name, func(t *testing.T) {
-			prefixed, _ := run("dev", name, "-nonexistent-flag")
-			bare, _ := run(name, "-nonexistent-flag")
-			if prefixed != bare {
-				t.Fatalf("exit codes = %d (dev %s) and %d (%s), want the same subcommand behind both", prefixed, name, bare, name)
-			}
-		})
+	// The other two aliases are not run: module-lint would lint the repository
+	// and agent-shards would shard it, both of which this test would then be
+	// waiting for. What matters is the resolution, and that is data: every
+	// aliased name is a dev subcommand, so both spellings reach the same
+	// handler.
+	dev := map[string]bool{}
+	for _, name := range devcmd.SubcommandNames() {
+		dev[name] = true
+	}
+	for name := range aliasedDevSubcommands {
+		if !dev[name] {
+			t.Errorf("%s aliases nothing: the dev package has no such subcommand, so the bare spelling reaches a different answer from the prefixed one", name)
+		}
+	}
+	for _, name := range []string{"bounded-list", "list-build-flags", "module-lint", "agent-shards"} {
+		if !aliasedDevSubcommands[name] {
+			t.Errorf("%s is documented in the usage text but does not alias", name)
+		}
 	}
 }
 
