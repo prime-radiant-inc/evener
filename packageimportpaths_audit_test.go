@@ -15,9 +15,9 @@ import (
 // a spelling nothing else in the tree would notice -- so it needs fixtures
 // that carry each spelling, or it is a gate that could not fail.
 //
-// The fixtures are trees, not strings: the script sweeps directories and
-// exempts one of them (mobile-native/scripts, the plan's tsx carve-out), so
-// where a line sits decides the verdict as much as what it says.
+// The fixtures are trees, not strings: the script sweeps three directories
+// whole, and the only thing it does not read is a resolver config named by
+// filename, so where a line sits decides the verdict as much as what it says.
 
 // packageImportFixture writes files (repo-relative path -> contents) into a new
 // temporary tree and returns its root.
@@ -64,9 +64,9 @@ func runPackageImportCheck(t *testing.T, root string) (bool, string) {
 	return true, string(output)
 }
 
-// A tree where nothing names the package by path, including the scripts/*.mts
-// tools, which used to be carved out, and the one spelling still allowed: the
-// resolver config that maps the name onto the path in the first place.
+// A tree where nothing names the package by path -- the scripts/*.mts tools
+// included -- alongside the one spelling that is allowed to: the resolver
+// config that maps the name onto the path in the first place.
 func cleanPackageImportTree() map[string]string {
 	return map[string]string{
 		"cmd/evener-hub/frontend/src/app.ts":  "import { WireError } from \"@evener/appwire-client\";\n",
@@ -210,5 +210,20 @@ func TestPackageImportPathsCheckRefusesAnUnusableRoot(t *testing.T) {
 				t.Fatalf("the gate passed with a %s --root:\n%s", name, output)
 			}
 		})
+	}
+}
+
+// The resolver-config exemption is by filename. Matching *.config.* instead
+// would excuse any app module someone happened to call something.config.ts.
+func TestPackageImportPathsCheckExemptsResolverConfigsByName(t *testing.T) {
+	files := cleanPackageImportTree()
+	files["cmd/evener-hub/frontend/src/panes/spawn/launch.config.ts"] =
+		"import { errorText } from \"../../../protocol/errors\";\n"
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if passed {
+		t.Fatalf("the gate excused an app module for being named like a config:\n%s", output)
+	}
+	if !strings.Contains(output, "launch.config.ts") {
+		t.Fatalf("the gate named no offending file; wanted launch.config.ts in:\n%s", output)
 	}
 }

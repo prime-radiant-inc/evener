@@ -217,15 +217,14 @@ lint-fuzz-registry:
 # SDK migration exists to remove.
 ## Fail if a web or native import names the AppWire TypeScript package by
 ## path instead of by its package name.
-## proves: Every import of the package in cmd/evener-hub/frontend/src,
-##   mobile-native and mobile/src spells it @evener/appwire-client (or one of
-##   its two in-repo subpaths), and the six carved-out
-##   mobile-native/scripts/*.mts imports still never name the directory the
-##   package moved out of.
+## proves: Every import specifier under cmd/evener-hub/frontend/src,
+##   mobile-native and mobile/src spells the package @evener/appwire-client
+##   (or one of its two in-repo subpaths), with no file exempt but the
+##   resolver configs, which are named one by one.
 ## trigger: Required CI (via make lint); local pre-merge. Well under a second.
 ## requires: None beyond a POSIX shell and grep.
-## fails-when: Any import specifier in those trees contains protocol/ or
-##   appwire-client/typescript/.
+## fails-when: Any import specifier in those trees names the package directory
+##   or the protocol/ directory it moved out of, or a swept tree is missing.
 lint-package-imports:
 	$(call run_quiet_lint,scripts/sdk/package-import-paths-check.sh)
 

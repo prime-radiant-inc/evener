@@ -9,9 +9,13 @@
 # import line reintroduces -- silently, because a path import typechecks just
 # as well as the package name and nothing else in the tree would notice.
 #
-# There is no carve-out. mobile-native/scripts/*.mts was one while the premise
-# held that tsx reads no tsconfig `paths`; it reads mobile-native/tsconfig.json,
-# which simply had none, so those five tools import the package by name too.
+# Every file in the three trees is swept; nothing is exempt but the resolver
+# configs named below.
+#
+# On --include/--exclude/--exclude-dir being GNU-only: measured 2026-09-14 on
+# macOS 26 against `grep (BSD grep, GNU compatible) 2.6.0-FreeBSD`, the /usr/bin
+# grep this script invokes -- all three are accepted and filter correctly, and
+# CI's ubuntu runners use GNU grep, where they originate.
 #
 # Usage:
 #   scripts/sdk/package-import-paths-check.sh [--root DIR]
@@ -40,10 +44,18 @@ done
 cd "$root" || { printf 'package-import-paths-check.sh: cannot enter %s\n' "$root" >&2; exit 2; }
 
 trees=(cmd/evener-hub/frontend/src mobile-native mobile/src)
-# The resolver configs are excluded, and only they: mapping the package name
-# onto its path is exactly what they are for, so a path there is the fix rather
-# than the defect. Everything else in these trees is app or test code.
-sources=(--include='*.ts' --include='*.tsx' --include='*.mts' --exclude='*.config.*' --exclude-dir=node_modules)
+# The resolver configs are excluded by name, and only they: mapping the package
+# name onto its path is exactly what a resolver config is for, so a path there
+# is the fix rather than the defect. Named rather than matched as *.config.*,
+# which would also excuse any app module someone happened to call
+# something.config.ts. Only mobile-native/vitest.config.mts is inside these
+# trees today; the frontend's vite and browser-guard configs sit beside src/,
+# not in it, and are not swept at all.
+sources=(
+	--include='*.ts' --include='*.tsx' --include='*.mts'
+	--exclude='vite.config.*' --exclude='vitest.config.*' --exclude='metro.config.*'
+	--exclude-dir=node_modules
+)
 
 # A module specifier, not a mention in prose. Three positions carry one:
 # `from "x"`, a bare `import "x"`, and a call taking the path as its first
