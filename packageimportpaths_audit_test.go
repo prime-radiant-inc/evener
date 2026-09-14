@@ -126,6 +126,12 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 			expects: "by path",
 		},
 		{
+			name:    "a specifier on the line after the call that opens it",
+			path:    "cmd/evener-hub/frontend/src/app.test.ts",
+			line:    "vi.mock(\n\t\"../../protocol/reducer\",\n\t() => ({}),\n);\n",
+			expects: "by path",
+		},
+		{
 			name:    "a backtick specifier with nothing to interpolate",
 			path:    "cmd/evener-hub/frontend/src/app.test.ts",
 			line:    "vi.mock(`../../protocol/reducer`, () => ({}));\n",
