@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -104,9 +105,9 @@ func newScriptedRemote(t *testing.T, id string, handle func(method string, param
 // the test when none was recorded.
 func lastMethodCall(t *testing.T, calls []remoteCall, method string) json.RawMessage {
 	t.Helper()
-	for index := len(calls) - 1; index >= 0; index-- {
-		if calls[index].method == method {
-			return calls[index].params
+	for _, call := range slices.Backward(calls) {
+		if call.method == method {
+			return call.params
 		}
 	}
 	t.Fatalf("no %s call recorded; calls = %+v", method, calls)
