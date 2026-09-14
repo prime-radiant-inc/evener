@@ -77,14 +77,14 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// separate wait this attempt can bound on its own terms.
 	feeds, err := openOutputPipes(cmd)
 	if err != nil {
-		_, _ = fmt.Fprintf(guarded, "bounded-list: %v\n", err)
+		sayWithin(guarded, grace, "bounded-list: %v\n", err)
 		return attemptResult{err: err, exitCode: 1}
 	}
 	if err := procgroup.Start(cmd); err != nil {
 		// The gate reads this log and nothing else; a start that failed with
 		// nothing written is a module that failed for no stated reason.
 		feeds.closeAll()
-		_, _ = fmt.Fprintf(guarded, "bounded-list: %v\n", err)
+		sayWithin(guarded, grace, "bounded-list: %v\n", err)
 		return attemptResult{err: err, exitCode: 1}
 	}
 	drained := feeds.copyInto(&out, guarded)
@@ -105,7 +105,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 			copyingEnded = true
 			drainFailure = endCopying(feeds, drained, guarded, grace, latch)
 			for _, line := range pending {
-				_, _ = fmt.Fprint(guarded, line)
+				sayWithin(guarded, grace, "%s", line)
 			}
 			pending = nil
 		}
@@ -144,7 +144,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		if drainErr != nil && exitCode == 0 {
 			// The list this attempt would hand on is not the list the command
 			// wrote, and a caller cannot tell the difference from a short one.
-			_, _ = fmt.Fprintf(guarded, "bounded-list: %s finished, but its output could not be read in full: %v\n", argv[0], drainErr)
+			sayWithin(guarded, grace, "bounded-list: %s finished, but its output could not be read in full: %v\n", argv[0], drainErr)
 			exitCode = 1
 		}
 		result.completeWith(exitCode, err, latch)
@@ -326,13 +326,13 @@ func reapOrGiveUp(reaped <-chan struct{}, grace time.Duration, name string, sign
 		return true
 	case <-time.After(grace):
 		if signalled {
-			_, _ = fmt.Fprintf(stderr,
+			sayWithin(stderr, grace,
 				"bounded-list: %s did not exit after SIGKILL within %s; it is stuck in the kernel, and is left to init.\n",
 				name, grace)
 		} else {
 			// Nothing was sent to it, so there is no signal to say it survived:
 			// it is simply still running, and this attempt is leaving it.
-			_, _ = fmt.Fprintf(stderr,
+			sayWithin(stderr, grace,
 				"bounded-list: %s did not exit within %s, and nothing this helper sent reached it; it is left to init.\n",
 				name, grace)
 		}
@@ -713,7 +713,7 @@ func stopSurvivors(g groupStopper, name string, pgid int, grace time.Duration, s
 	if !g.exists(pgid) {
 		return true
 	}
-	_, _ = fmt.Fprintf(stderr, "bounded-list: %s left processes running in its group; stopping them.\n", name)
+	sayWithin(stderr, grace, "bounded-list: %s left processes running in its group; stopping them.\n", name)
 	g.terminate(pgid)
 	if waitForGroupToGo(g, pgid, grace) {
 		return true
@@ -722,7 +722,7 @@ func stopSurvivors(g groupStopper, name string, pgid int, grace time.Duration, s
 	if waitForGroupToGo(g, pgid, grace) {
 		return true
 	}
-	_, _ = fmt.Fprintf(stderr,
+	sayWithin(stderr, grace,
 		"bounded-list: process group %d is still there after SIGKILL; it is stuck in the kernel, and is left to init.\n", pgid)
 	return false
 }
@@ -773,13 +773,22 @@ func boundedListMain(args []string) int {
 
 // boundedList is the subcommand: run the command under the bound, retry a
 // timed-out attempt up to the attempt count, and write what it produced.
+// stopSignals are the ways an operator or a runner says stop, each of which
+// this helper latches, passes on to the command's group, and reports as
+// 128+the signal. SIGQUIT is one of them: a gate runner that escalates from
+// TERM to QUIT means the same thing by it, and the group it wants stopped is
+// the one this helper is holding. Catching it costs the Go runtime's stack
+// dump, which is a debugging aid for this helper and not for the `go list`
+// the operator is trying to stop.
+var stopSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM}
+
 func boundedList(args []string, stdout, stderr io.Writer) int {
-	// TERM, INT and HUP have to be forwarded by hand. The command runs in its
-	// own process group, so a signal sent to this helper's group -- Ctrl-C in
-	// the terminal, a gate runner stopping its children -- no longer reaches
-	// it the way it did when the shell ran `go list` in the foreground group.
+	// These have to be forwarded by hand. The command runs in its own process
+	// group, so a signal sent to this helper's group -- Ctrl-C in the
+	// terminal, a gate runner stopping its children -- no longer reaches it
+	// the way it did when the shell ran `go list` in the foreground group.
 	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(signals, stopSignals...)
 	defer signal.Stop(signals)
 	return boundedListWith(args, stdout, stderr, signals)
 }
@@ -787,7 +796,7 @@ func boundedList(args []string, stdout, stderr io.Writer) int {
 func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Signal) int {
 	fs := flag.NewFlagSet("bounded-list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() { _, _ = fmt.Fprint(stderr, boundedListUsage) }
+	fs.Usage = func() { sayWithin(stderr, defaultGrace, "%s", boundedListUsage) }
 	timeout := fs.Duration("timeout", defaultTimeout, "how long one attempt may take")
 	attempts := fs.Int("attempts", 3, "how many attempts a timed-out command gets")
 	grace := fs.Duration("grace", defaultGrace, "how long the group has to answer SIGTERM before SIGKILL")
@@ -797,23 +806,23 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Si
 	if !procgroup.Supported {
 		// Everything this subcommand does is stopping a process group: without
 		// them it would run the command and call whatever happened a bound.
-		_, _ = fmt.Fprintln(stderr, "bounded-list needs a platform with process groups (linux, darwin)")
+		sayWithin(stderr, defaultGrace, "%s\n", "bounded-list needs a platform with process groups (linux, darwin)")
 		return 2
 	}
 	argv := fs.Args()
 	if len(argv) == 0 {
-		_, _ = fmt.Fprintln(stderr, "bounded-list: give it a command to run, after --")
+		sayWithin(stderr, defaultGrace, "%s\n", "bounded-list: give it a command to run, after --")
 		fs.Usage()
 		return 2
 	}
 	if *attempts < 1 || *timeout <= 0 || *grace <= 0 {
-		_, _ = fmt.Fprintln(stderr, "bounded-list: -attempts must be at least 1, and -timeout and -grace positive")
+		sayWithin(stderr, defaultGrace, "%s\n", "bounded-list: -attempts must be at least 1, and -timeout and -grace positive")
 		return 2
 	}
 	latch := &signalLatch{ch: signals}
 	for attempt := 1; attempt <= *attempts; attempt++ {
 		if sig := latch.poll(); sig != 0 {
-			_, _ = fmt.Fprintf(stderr, "bounded-list: %v — not starting attempt %d.\n", sig, attempt)
+			sayWithin(stderr, *grace, "bounded-list: %v — not starting attempt %d.\n", sig, attempt)
 			return 128 + int(sig)
 		}
 		result := runBoundedAttempt(argv, *timeout, *grace, stderr, latch)
@@ -832,10 +841,10 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Si
 			// answer.
 			return handOver(stdout, result, result.exitCode, latch, stderr, *grace)
 		case attempt < *attempts:
-			_, _ = fmt.Fprintf(stderr, "bounded-list: attempt %d of %d timed out after %s; retrying.\n",
+			sayWithin(stderr, *grace, "bounded-list: attempt %d of %d timed out after %s; retrying.\n",
 				attempt, *attempts, *timeout)
 		default:
-			_, _ = fmt.Fprintf(stderr, "bounded-list: %s timed out after %s on %s.\n",
+			sayWithin(stderr, *grace, "bounded-list: %s timed out after %s on %s.\n",
 				argv[0], *timeout, attemptCount(*attempts))
 			// Whatever it managed to print before the bound is the evidence a
 			// caller has to work from, so it is passed through here too.
@@ -859,7 +868,10 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Si
 // its own status, and one this helper stopped already carries 128+signal.
 // Only a run that had seen no signal at all can have its answer changed here.
 func handOver(stdout io.Writer, result attemptResult, code int, latch *signalLatch, stderr io.Writer, grace time.Duration) int {
-	if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr, grace) {
+	if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr, grace) && result.interrupted == 0 {
+		// 1 says the answer did not get through, which an interrupted run has
+		// already said with 128+the signal -- and that is the more useful of
+		// the two, because it says why there was an answer to lose.
 		code = 1
 	}
 	if result.interrupted != 0 {

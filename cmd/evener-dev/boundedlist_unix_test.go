@@ -1385,3 +1385,89 @@ func TestBoundedListGivesUpOnADiagnosticItsCallerIsNotTakingEither(t *testing.T)
 		t.Fatalf("the run took %s: both the hand-over and the words about it are bounded", elapsed)
 	}
 }
+
+func TestTheStopSignalsAreTheOnesARunnerSends(t *testing.T) {
+	want := []syscall.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM}
+	if len(stopSignals) != len(want) {
+		t.Fatalf("stopSignals = %v, want %v", stopSignals, want)
+	}
+	for i, sig := range want {
+		if stopSignals[i] != sig {
+			t.Fatalf("stopSignals = %v, want %v", stopSignals, want)
+		}
+	}
+}
+
+func TestBoundedAttemptForwardsAQuitLikeAnyOtherStop(t *testing.T) {
+	// A runner that escalates TERM to QUIT means stop by it, and the group it
+	// wants stopped is the one this helper is holding. The child answers QUIT
+	// and ignores TERM, so its own output says which one reached it.
+	const quitAnswerer = `trap 'echo got-quit; exit 0' QUIT; trap "" TERM; : > "${BOUNDED_LIST_READY:-/dev/null}"; while :; do sleep 0.05; done`
+	var stderr bytes.Buffer
+	ready, _ := readinessFiles(t)
+	signals := make(chan os.Signal, 1)
+	sent := signalWhenReady(ready, "the child never started", signals, syscall.SIGQUIT)
+	result := runBoundedAttempt([]string{"sh", "-c", quitAnswerer}, 30*time.Second, time.Second,
+		&stderr, &signalLatch{ch: signals})
+	sent(t)
+	if result.interrupted != syscall.SIGQUIT {
+		t.Fatalf("interrupted = %v, want SIGQUIT", result.interrupted)
+	}
+	if result.exitCode != 131 {
+		t.Fatalf("exitCode = %d, want 131 (128+SIGQUIT); stderr = %q", result.exitCode, stderr.String())
+	}
+	if got := string(result.stdout); !strings.Contains(got, "got-quit") {
+		t.Fatalf("stdout = %q, want the child's own word that it was sent SIGQUIT", got)
+	}
+	requireGroupGone(t, result.pgid)
+}
+
+func TestBoundedAttemptReturnsWhenEvenItsCleanupCannotBeWritten(t *testing.T) {
+	// The copier is wedged inside a write to a stderr that has stopped, so the
+	// writer is released -- and the released path writes straight to that same
+	// stderr, which is still not taking writes. Every line from there on is
+	// best-effort: the attempt says what it can and returns with the status,
+	// which is what the gate acts on.
+	sink := &stalledWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(sink.release)
+	done := make(chan attemptResult, 1)
+	go func() {
+		done <- runBoundedAttempt([]string{"sh", "-c", "echo held >&2; exit 0"},
+			30*time.Second, 200*time.Millisecond, sink, nil)
+	}()
+	select {
+	case <-sink.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the child's stderr never reached the sink")
+	}
+	select {
+	case result := <-done:
+		if result.exitCode != 1 {
+			t.Fatalf("exitCode = %d, want 1: its output could not be read in full", result.exitCode)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the attempt never returned: a cleanup line it could not write was holding it")
+	}
+}
+
+func TestBoundedListKeepsTheInterruptsStatusWhenTheAnswerCannotBeHandedOver(t *testing.T) {
+	// Two things went wrong at once: the run was interrupted, and what it had
+	// could not be handed over. 128+the signal says why there was an answer to
+	// lose; 1 would only say that there was one.
+	const chatty = `echo listed; trap "" TERM; : > "${BOUNDED_LIST_READY:-/dev/null}"; while :; do sleep 0.05; done`
+	var stderr bytes.Buffer
+	stdout := &shortWriter{}
+	ready, _ := readinessFiles(t)
+	signals := make(chan os.Signal, 1)
+	sent := signalWhenReady(ready, "the child never started", signals, syscall.SIGTERM)
+	code := boundedListWith([]string{"-timeout", "30s", "-attempts", "1", "-grace", "500ms", "--",
+		"sh", "-c", chatty}, stdout, &stderr, signals)
+	sent(t)
+	if code != 143 {
+		t.Fatalf("exit code = %d, want 143: the run was interrupted, and a failed hand-over does not rewrite that; stderr = %q",
+			code, stderr.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, "wrote 1 of") {
+		t.Fatalf("stderr = %q, want the hand-over that did not land named all the same", got)
+	}
+}

@@ -241,9 +241,10 @@ func TestEveryBuildFlagIsAccountedFor(t *testing.T) {
 		"-compiler": true, "-race": true, "-msan": true, "-asan": true,
 	}
 	consumed := func(name string) bool {
-		// The set walkFlags consumes a value for, which is the shard runner's
-		// tables: one answer in this package to "is the next word a value".
-		return valueIsNextArgument(name) || packageSelectionValueFlags[name]
+		// Exactly the predicate walkFlags uses, and nothing beside it: a
+		// second term here would let a flag be "accounted for" in this test
+		// while the walk still read the word after it as a flag of its own.
+		return valueIsNextArgument(name)
 	}
 	forwarded := func(name string) bool {
 		return packageSelectionValueFlags[name] || packageSelectionBareFlags[name]
