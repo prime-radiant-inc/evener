@@ -3,12 +3,13 @@ package skill
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"primeradiant.com/evener/internal/bundled"
@@ -19,11 +20,16 @@ import (
 // publish writes before renaming into place.
 const embeddedSkillsPrefix = "evener-skills-"
 
-// maxEmbeddedSkillBytes bounds a single file the digest will read. The bundled
-// skills are small markdown files; the bound exists because the published name
-// lives in the shared temp dir and an occupant this process did not write could
-// be a device or a file that never ends.
-const maxEmbeddedSkillBytes = 1 << 20
+// Bounds on what the digest will read from a tree. The bundled skills are a
+// dozen small markdown files; these exist because the published name lives in a
+// shared temp directory, so an occupant this process did not write could be a
+// large or hostile tree that would otherwise be read before it is rejected.
+const (
+	maxEmbeddedSkillBytes   = 1 << 20 // one file
+	maxEmbeddedSkillsBytes  = 8 << 20 // every file together
+	maxEmbeddedSkillEntries = 256
+	maxEmbeddedSkillDepth   = 8
+)
 
 // embeddedSkillsCache holds the published bundled-skills directory and its
 // scanned metadata, both process-wide under one mutex.
@@ -33,11 +39,10 @@ var embeddedSkillsCache struct {
 	skills map[string]SkillMeta
 }
 
-// embeddedSkillsBaseDir is where the content-addressed bundled-skills cache
-// lives. It defaults to the temp dir because a session confined to its worktree
-// can still read temp, while the config root is sandbox-denylisted and the
-// cache root is outside a restricted session's readable roots.
-var embeddedSkillsBaseDir = os.TempDir
+// embeddedSkillsBaseDir resolves the private directory the content-addressed
+// cache lives in. It is a seam so tests can point the cache at a temporary
+// directory; the default is defaultEmbeddedSkillsBaseDir.
+var embeddedSkillsBaseDir = defaultEmbeddedSkillsBaseDir
 
 // EmbeddedSkillsDir returns a directory holding the bundled skills, published
 // once per distinct embedded content and shared by every caller and every later
@@ -80,7 +85,11 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			return embeddedSkillsCache.dir, nil
 		}
 	}
-	dir, err := materializeEmbeddedSkills(bundled.Skills(), embeddedSkillsBaseDir())
+	base, err := embeddedSkillsBaseDir()
+	if err != nil {
+		return "", err
+	}
+	dir, err := materializeEmbeddedSkills(bundled.Skills(), base)
 	if err != nil {
 		return "", err
 	}
@@ -91,14 +100,52 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	return dir, nil
 }
 
+// defaultEmbeddedSkillsBaseDir returns the private per-user directory the cache
+// lives in. It sits under the temp dir because a session confined to its
+// worktree can still read temp, while the config root is sandbox-denylisted and
+// the cache root is outside a restricted session's readable roots. It is
+// namespaced by user and verified private, so another user on a shared host
+// cannot occupy the name or read the published copy.
+func defaultEmbeddedSkillsBaseDir() (string, error) {
+	dir := filepath.Join(os.TempDir(), embeddedSkillsPrefix+processOwnerTag())
+	if err := ensurePrivateCacheDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that
+// what is there is a real directory, owned by this user, with no group or other
+// access. A directory that fails any check is refused rather than trusted: a
+// shared temp dir lets another user create this name first.
+func ensurePrivateCacheDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("creating skill cache dir: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("checking skill cache dir: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("skill cache path %s is not a directory", dir)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("skill cache dir %s is accessible to other users", dir)
+	}
+	if !cacheDirOwnedByCurrentUser(info) {
+		return fmt.Errorf("skill cache dir %s is not owned by the current user", dir)
+	}
+	return nil
+}
+
 // materializeEmbeddedSkills publishes skillsFS into base under a directory named
 // for the digest of its contents and returns that directory. A copy already
 // published for the same content is reused; otherwise the tree is staged in a
 // private directory and renamed into place, so a concurrent publisher leaves a
 // complete copy and readers never see a partial tree. An occupant of the
 // published name is adopted only when its content matches the digest; anything
-// else falls back to a private extraction, because a session without its bundled
-// skills is worse than one that did not reuse the cache.
+// else leaves the private staging copy in place, because a session without its
+// bundled skills is worse than one that did not reuse the cache.
 func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, error) {
 	digest, err := digestSkillsFS(skillsFS)
 	if err != nil {
@@ -113,7 +160,12 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("staging embedded skills: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(staging) }() // no-op once the rename succeeds
+	keepStaging := false
+	defer func() {
+		if !keepStaging {
+			_ = os.RemoveAll(staging)
+		}
+	}()
 
 	if err := copyEmbeddedSkills(skillsFS, staging); err != nil {
 		return "", fmt.Errorf("extracting embedded skills: %w", err)
@@ -123,16 +175,20 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, error) {
 		if publishedSkillsDir(dest, digest) {
 			return dest, nil
 		}
-		return fallbackEmbeddedSkills(skillsFS, err)
+		// The published name is unusable. Hand back the private copy already
+		// staged rather than extracting the same tree a second time.
+		keepStaging = true
+		return staging, nil
 	}
 	return dest, nil
 }
 
 // publishedSkillsDir reports whether dest holds a complete copy of the content
-// named by digest. It re-derives the digest rather than trusting the directory
-// name, so a foreign or tampered occupant of the published name is rejected.
+// named by digest. Lstat, not Stat, so a symlink planted in the shared cache
+// name is never followed; the content is then re-digested rather than trusted
+// from the directory name.
 func publishedSkillsDir(dest, digest string) bool {
-	info, err := os.Stat(dest)
+	info, err := os.Lstat(dest)
 	if err != nil || !info.IsDir() {
 		return false
 	}
@@ -140,34 +196,34 @@ func publishedSkillsDir(dest, digest string) bool {
 	return err == nil && actual == digest
 }
 
-// fallbackEmbeddedSkills hands the caller a private copy when the published name
-// cannot be used. cause is the publish failure; it is wrapped so the reason the
-// shared cache was skipped is not lost.
-func fallbackEmbeddedSkills(skillsFS fs.FS, cause error) (string, error) {
-	dir, err := extractEmbeddedSkills(skillsFS, os.MkdirTemp)
-	if err != nil {
-		return "", fmt.Errorf("extracting embedded skills (published copy failed: %w): %w", cause, err)
-	}
-	return dir, nil
-}
-
 // digestSkillsFS returns a stable hex digest over every path and byte in fsys.
 // Paths are fs paths (slash-separated) and WalkDir visits in lexical order, so
 // the digest is identical across platforms and processes.
 func digestSkillsFS(fsys fs.FS) (string, error) {
 	sum := sha256.New()
+	entries := 0
+	var total int64
 	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if path != "." {
+			entries++
+			if entries > maxEmbeddedSkillEntries {
+				return fmt.Errorf("embedded skills: more than %d entries", maxEmbeddedSkillEntries)
+			}
+			if strings.Count(path, "/") > maxEmbeddedSkillDepth {
+				return fmt.Errorf("embedded skills: %s is nested too deeply", path)
+			}
 		}
 		if d.IsDir() {
 			return nil
 		}
 		// Decided from the directory entry, before anything is opened: a
 		// symlink points somewhere that can change, a FIFO blocks its open until
-		// a writer arrives, and a device is not something to read. The published
-		// name lives in the shared temp dir, so an occupant this process did not
-		// write may be any of them.
+		// a writer arrives, and a device is not something to read. The
+		// published name lives in a shared temp dir, so an occupant this process
+		// did not write may be any of them.
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("embedded skills: %s is not a regular file", path)
 		}
@@ -177,6 +233,10 @@ func digestSkillsFS(fsys fs.FS) (string, error) {
 		}
 		if info.Size() > maxEmbeddedSkillBytes {
 			return fmt.Errorf("embedded skills: %s exceeds %d bytes", path, maxEmbeddedSkillBytes)
+		}
+		total += info.Size()
+		if total > maxEmbeddedSkillsBytes {
+			return fmt.Errorf("embedded skills: total size exceeds %d bytes", maxEmbeddedSkillsBytes)
 		}
 		file, err := fsys.Open(path)
 		if err != nil {
@@ -245,8 +305,14 @@ func copyEmbeddedSkills(skillsFS fs.FS, dir string) error {
 	})
 }
 
+// cloneSkillMetaMap copies the map and each entry's AllowedTools slice, so a
+// caller mutating the returned metadata cannot reach into the process-wide
+// cache.
 func cloneSkillMetaMap(in map[string]SkillMeta) map[string]SkillMeta {
 	out := make(map[string]SkillMeta, len(in))
-	maps.Copy(out, in)
+	for name, meta := range in {
+		meta.AllowedTools = append([]string(nil), meta.AllowedTools...)
+		out[name] = meta
+	}
 	return out
 }

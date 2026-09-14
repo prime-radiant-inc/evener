@@ -1,0 +1,22 @@
+//go:build unix
+
+package skill
+
+import (
+	"io/fs"
+	"os"
+	"strconv"
+	"syscall"
+)
+
+// processOwnerTag names the current user for the private cache directory, so
+// two users on a shared host never contend for the same path.
+func processOwnerTag() string { return strconv.Itoa(os.Getuid()) }
+
+// cacheDirOwnedByCurrentUser reports whether info describes a directory owned
+// by this process's user. A directory this process did not create must not be
+// trusted with skill content the agent will read.
+func cacheDirOwnedByCurrentUser(info fs.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Getuid()
+}
