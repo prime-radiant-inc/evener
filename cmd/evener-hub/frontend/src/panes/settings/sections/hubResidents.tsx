@@ -129,14 +129,16 @@ export function HubResidents() {
   }, []);
 
   // Prune per-row retire results and action errors against the latest list.
-  // retireResults are preserved until a newer successful snapshot supersedes the
-  // RPC's own view: a fresh current probe clears a refusal (its blockers are
-  // authoritative and rendered from the snapshot), and a lifecycle phase change
-  // clears an accepted retire. actionErrors for rows absent from the list are
-  // dropped so a departed daemon cannot leave a stale error behind a later
-  // same-ref row. Keyed by the stable identity.ref, not generation, so a
-  // generation rotation neither orphans nor misapplies an entry. Uses the
-  // functional-update form so the maps are not dependencies.
+  // A refusal is NOT superseded by a fresh snapshot: the list's lifecycle
+  // reports only in-flight leases, never the offline obligation behind an
+  // accepted:false retire, so its empty blocker set is not evidence the refusal
+  // resolved. A refusal is dropped when the row leaves the roster or its
+  // lifecycle phase changes; a newly initiated action clears it in the handler
+  // below. A lifecycle phase change clears an accepted retire. actionErrors for
+  // rows absent from the list are dropped so a departed daemon cannot leave a
+  // stale error behind a later same-ref row. Keyed by the stable identity.ref,
+  // not generation, so a generation rotation neither orphans nor misapplies an
+  // entry. Uses the functional-update form so the maps are not dependencies.
   useEffect(() => {
     if (!data) return;
     const daemonByRef = new Map(data.daemons.map((d) => [d.identity.ref, d]));
@@ -152,12 +154,11 @@ export function HubResidents() {
         // while the daemon is exiting.
         const fresh = daemon !== undefined && daemon.probeState === "current";
         const phaseChanged = fresh && daemon.lifecycle?.phase !== result.lifecycle.phase;
-        // A fresh current snapshot supersedes a refusal: whatever blockers it
-        // reports are the authoritative ones and render from the snapshot, so
-        // the stale refusal must not survive (and must not compound with a later
-        // different blocker).
-        const refusalSuperseded = fresh && !result.accepted;
-        if (!daemon || phaseChanged || refusalSuperseded) {
+        // A fresh snapshot does not supersede a refusal: the list's lifecycle
+        // reports only in-flight leases, so an empty blocker set cannot prove
+        // the offline obligation behind an accepted:false retire is gone. The
+        // refusal survives until the phase changes or the row leaves the roster.
+        if (!daemon || phaseChanged) {
           next.delete(ref);
           changed = true;
         }
@@ -179,8 +180,16 @@ export function HubResidents() {
   }, [data]); // retireResults intentionally omitted — read via functional-update prev
 
   const handleRetire = useCallback(async (identity: DaemonIdentity) => {
-    // Clear any previous action error for this row before starting.
+    // Clear any previous action error and stored refusal for this row before
+    // starting: a new action supersedes the older attempt's refusal (a fresh
+    // refusal replaces it when this RPC resolves).
     setActionErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(identity.ref);
+      return next;
+    });
+    setRetireResults((prev) => {
+      if (!prev.has(identity.ref)) return prev;
       const next = new Map(prev);
       next.delete(identity.ref);
       return next;
@@ -207,8 +216,15 @@ export function HubResidents() {
     const identity = confirmForceStop;
     if (!identity) return;
     setConfirmForceStop(null);
-    // Clear any previous action error for this row before starting.
+    // Clear any previous action error and stored retire refusal for this row
+    // before starting: a new action supersedes the older attempt's outcome.
     setActionErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(identity.ref);
+      return next;
+    });
+    setRetireResults((prev) => {
+      if (!prev.has(identity.ref)) return prev;
       const next = new Map(prev);
       next.delete(identity.ref);
       return next;
@@ -354,8 +370,9 @@ export function HubResidents() {
                           </div>
                         )}
                         {/* Retire refusal blockers — shown when the most-recent
-                            retire returned Accepted:false. Cleared by the useEffect
-                            when a newer snapshot changes this row's lifecycle. */}
+                            retire returned Accepted:false. Cleared only when the
+                            row's lifecycle phase changes, the daemon leaves the
+                            roster, or a new action is initiated. */}
                         {retireResult !== undefined && !retireResult.accepted && (
                           <div className={CLASS.blockers}>
                             {"Blocked by: "}

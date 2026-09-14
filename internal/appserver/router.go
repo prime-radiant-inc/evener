@@ -63,7 +63,11 @@ func (r *Router) Dispatch(ctx context.Context, req appwire.Request) (any, error)
 		if err != nil {
 			return nil, err
 		}
-		defer release()
+		// An admission may hold no resource; a nil release means "admitted,
+		// nothing to release" rather than "no admission ran".
+		if release != nil {
+			defer release()
+		}
 	}
 	out, err := fn(ctx, req.Params)
 	if err != nil {

@@ -13,7 +13,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { DaemonIdentity, DaemonListResponse } from "../../../protocol/types.gen";
+import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { HubResidents } from "./hubResidents";
@@ -820,7 +820,7 @@ test("accepted retire phase survives a later stale probe with no lifecycle", asy
 
 // ─── Retire refusal: blockers displayed, row kept ────────────────────────────
 
-test("fresh retire refusal displays returned blockers until a fresh snapshot supersedes them", async () => {
+test("retire refusal persists across an immediately-following fresh current snapshot with no blockers", async () => {
   const fake = connectFakeClient();
   const resident = {
     identity: IDENTITY_FIXTURE,
@@ -834,8 +834,8 @@ test("fresh retire refusal displays returned blockers until a fresh snapshot sup
     canForceStop: true,
   };
   // The first list renders the row. The post-refusal refresh is held so the
-  // refusal's own blockers can be asserted before a fresh snapshot supersedes
-  // them; the release then reports a fresh current snapshot with no blockers.
+  // refusal's own blockers can be asserted before a fresh snapshot arrives; the
+  // release then reports a fresh current snapshot with no blockers.
   let listCalls = 0;
   let releaseRefresh!: () => void;
   fake.on("evener/daemon/list", () => {
@@ -867,18 +867,20 @@ test("fresh retire refusal displays returned blockers until a fresh snapshot sup
   expect(screen.getByText(/turn/)).toBeTruthy();
   expect(screen.getByText(/session-abc/)).toBeTruthy();
 
-  // The held refresh arrives as a fresh current snapshot with no blockers: the
-  // refusal is superseded and its stale blocker must not linger.
+  // The held refresh arrives as a fresh current snapshot with no blockers. The
+  // list's lifecycle reports only in-flight leases, not the offline obligation
+  // behind an accepted:false retire, so its empty blocker set does not prove
+  // the refusal resolved: the refusal must persist.
   await act(async () => {
     releaseRefresh();
     await Promise.resolve();
   });
-  expect(screen.queryByText(/session-abc/)).toBeNull();
+  expect(screen.getByText(/session-abc/)).toBeTruthy();
 });
 
-// ─── M-7: Refusal blockers clear once a fresh current snapshot supersedes them ─
+// ─── M-9: A fresh snapshot alone does not clear a refusal ────────────────────
 
-test("retire refusal blockers clear when a fresh current snapshot no longer reports them", async () => {
+test("retire refusal survives a fresh current snapshot that stops reporting the blocker", async () => {
   const fake = connectFakeClient();
   // The list's own probe tracks the blocker, as the server would report it.
   let blockers: { category: string; sessionId?: string }[] = [{ category: "turn", sessionId: "session-abc" }];
@@ -911,16 +913,18 @@ test("retire refusal blockers clear when a fresh current snapshot no longer repo
 
   const row = await screen.findByRole("row", { name: /Resolving blocker/ });
   await user.click(within(row).getByRole("button", { name: "Retire now" }));
-  await screen.findByText(/session-abc/);
+  await screen.findAllByText(/session-abc/);
 
-  // The blocker resolves: a fresh current snapshot reports the SAME phase with
-  // no blockers.
+  // The snapshot stops reporting the blocker at the SAME phase. That is not
+  // evidence the refusal resolved — the snapshot never enumerated the offline
+  // obligation in the first place — so the refusal's own copy must persist as
+  // the only remaining report.
   blockers = [];
   await act(async () => {
     await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
   });
 
-  expect(screen.queryByText(/session-abc/)).toBeNull();
+  expect(screen.getAllByText(/session-abc/)).toHaveLength(1);
 });
 
 // ─── M-6: Departed-daemon per-row state is pruned ────────────────────────────
@@ -1032,6 +1036,123 @@ test("retire refusal blockers clear when a newer snapshot changes the row lifecy
 
   // Blockers from the old refusal must have been cleared
   expect(screen.queryByText(/session-abc/)).toBeNull();
+});
+
+// ─── M-9: Refusal clears on the two remaining legitimate transitions ─────────
+
+test("retire refusal clears when the daemon leaves the roster", async () => {
+  const fake = connectFakeClient();
+  let present = true;
+  const resident = {
+    identity: IDENTITY_FIXTURE,
+    name: "Departing refused daemon",
+    protocol: "evener-appwire-v5",
+    compatibility: "compatible",
+    archived: false,
+    probeState: "current",
+    lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+    canRetire: true,
+    canForceStop: true,
+  };
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: present ? [resident] : [],
+  }));
+  fake.on("evener/daemon/retire", () => ({
+    accepted: false,
+    lifecycle: {
+      phase: "resident",
+      timeoutMillis: 3600000,
+      blockers: [{ category: "turn", sessionId: "session-abc" }],
+    },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Departing refused daemon/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+  await screen.findByText(/session-abc/);
+
+  // The daemon departs the roster: the refusal must not resurface on a later
+  // row that happens to reuse the same ref.
+  present = false;
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+  expect(screen.queryByText(/session-abc/)).toBeNull();
+
+  present = true;
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+  const returned = await screen.findByRole("row", { name: /Departing refused daemon/ });
+  expect(within(returned).queryByText(/session-abc/)).toBeNull();
+});
+
+test("initiating a new retire clears the previous refusal", async () => {
+  const fake = connectFakeClient();
+  let retireCalls = 0;
+  let releaseSecondRetire!: () => void;
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Retried refused daemon",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+        canRetire: true,
+        canForceStop: true,
+      },
+    ],
+  }));
+  fake.on("evener/daemon/retire", () => {
+    retireCalls += 1;
+    if (retireCalls === 1) {
+      return {
+        accepted: false,
+        lifecycle: {
+          phase: "resident",
+          timeoutMillis: 3600000,
+          blockers: [{ category: "turn", sessionId: "session-abc" }],
+        },
+      };
+    }
+    // Hold the second attempt so the refusal can only disappear through the
+    // new-action transition, not because a fresh response replaced it.
+    return new Promise<DaemonRetireResponse>((resolve) => {
+      releaseSecondRetire = () =>
+        resolve({
+          accepted: false,
+          lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+        });
+    });
+  });
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Retried refused daemon/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+  await screen.findByText(/session-abc/);
+
+  // A new action is initiated: the old refusal must be dropped immediately,
+  // before the second RPC resolves.
+  await user.click(
+    within(screen.getByRole("row", { name: /Retried refused daemon/ })).getByRole("button", { name: "Retire now" }),
+  );
+  await act(async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
+  expect(screen.queryByText(/session-abc/)).toBeNull();
+
+  // Clean up: resolve the held retire so the test does not leak async work.
+  await act(async () => {
+    releaseSecondRetire();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
 });
 
 // ─── M-9: Keyboard focus reachability ────────────────────────────────────────
