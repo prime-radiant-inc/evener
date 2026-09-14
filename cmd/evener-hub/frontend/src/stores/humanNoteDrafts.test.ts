@@ -1,17 +1,19 @@
-import type { ThreadModel } from "@evener/appwire-client";
+import type { NotesHumanSetParams, ThreadCapabilities, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import {
   acknowledgeHumanNote,
+  blurHumanNote,
   canWriteHumanNote,
   editHumanNote,
   syncHumanNote,
   useHumanNoteDraft,
 } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests } from "./threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
 
 let storage: MutationOutboxIndexedDB;
 beforeEach(() => {
@@ -25,6 +27,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetThreadsStoreForTests();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -36,6 +39,102 @@ async function persisted(note = " \tB\n\u00a0e\u0301🙂  ") {
     attachments: [],
     optimisticDisplay: null,
   });
+}
+
+const NOTE_CAPABILITIES: ThreadCapabilities = {
+  send: false,
+  steer: false,
+  interrupt: false,
+  compact: false,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: false,
+  changeModel: false,
+  changeVisionModel: false,
+  queue: false,
+  goal: false,
+  sharedNotes: true,
+  rename: false,
+};
+
+// A tracked model is what threads.ts's own fence reads
+// (instanceId ?? threadId), so these fixtures carry only the fields the
+// human-note path touches.
+function noteModel(ref: string, overrides: Partial<ThreadModel> = {}): ThreadModel {
+  return {
+    ref,
+    threadId: `thr_${ref}`,
+    status: { type: "idle" },
+    capabilities: { ...NOTE_CAPABILITIES },
+    humanNote: "",
+    ...overrides,
+  } as unknown as ThreadModel;
+}
+
+function hydrationResponse(ref: string, instanceId: string): ThreadReadResponse {
+  return {
+    thread: {
+      id: `thr_${ref}`,
+      sessionId: `sess_${ref}`,
+      preview: "test",
+      ephemeral: false,
+      modelProvider: "anthropic/claude-sonnet-4-5",
+      createdAt: 1000,
+      updatedAt: 1000,
+      status: { type: "idle" },
+      cwd: "/tmp/project",
+      cliVersion: "1.0.0",
+      source: "evener",
+      evener: {
+        ref,
+        instanceId,
+        mutationStateAuthoritative: true,
+        capabilities: { ...NOTE_CAPABILITIES },
+        queue: { revision: 0 },
+      },
+    },
+  };
+}
+
+// The blur debounce and the fake-indexeddb dispatch chain are both real async
+// work: fake timers get the save to run, and awaiting the request the fake
+// client actually received proves the dispatch landed.
+function noteHarness() {
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  const seen: NotesHumanSetParams[] = [];
+  let resolveRequest: (params: NotesHumanSetParams) => void = () => {};
+  const request = new Promise<NotesHumanSetParams>((resolve) => {
+    resolveRequest = resolve;
+  });
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    resolveRequest(params);
+    return {
+      note: params.note ?? "",
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        threadId: "thr",
+        disposition: "applied",
+        projectionState: "notProjected",
+      },
+    };
+  });
+  return { fake, request, seen };
+}
+
+async function advance(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+// Waits for the save to settle either way, so a failing assertion reports the
+// refusal itself rather than racing the debounce.
+async function settled(result: { current: { submitted?: unknown; error?: string | null } | undefined }) {
+  await waitFor(() => expect(result.current?.submitted ?? result.current?.error).toBeTruthy());
 }
 
 for (const state of ["submitting", "blockedUnknown", "rejected"] as const) {
@@ -123,4 +222,80 @@ test("the recovery fence closes the shared-notes write gate on a live idle sessi
   } as unknown as ThreadModel;
   expect(canWriteHumanNote(base)).toBe(true);
   expect(canWriteHumanNote({ ...base, resumeRequired: true })).toBe(false);
+});
+
+// --- the instance fence, sampled at save time ---------------------------------
+//
+// The daemon's ExpectedInstanceID check (handleAppNotesHumanSet's
+// lockRetrySafeMutation) is the authority on session-instance staleness. The
+// client-side pre-check in threads.ts reads the same store as the caller, so a
+// drafts-path value captured at blur time can only turn a saveable note into a
+// false "Session instance changed" refusal. The save samples the tracked
+// model's identity after the thread handle resolves instead.
+
+test("a blur before hydration saves with the hydrated instance id", async () => {
+  const { fake, request, seen } = noteHarness();
+  const ref = "ref-hydrate";
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-hydrated"));
+  syncHumanNote(ref, "");
+  editHumanNote(ref, "hydrated draft");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  act(() => blurHumanNote(ref, Symbol("owner")));
+  await advance(10_000);
+  await settled(result);
+  expect(result.current?.error).toBeNull();
+  await act(async () => {
+    await request;
+  });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({
+    ref,
+    note: "hydrated draft",
+    expectedInstanceId: "instance-hydrated",
+  });
+});
+
+test("an instance rotation inside the debounce window saves against the current instance", async () => {
+  const { request, seen } = noteHarness();
+  const ref = "ref-rotate";
+  const model = noteModel(ref, { instanceId: "instance-a" });
+  threadsStore.setState({ threads: new Map([[ref, model]]) });
+  await threadsStore.getState().ensureThread(ref);
+  syncHumanNote(ref, "");
+  editHumanNote(ref, "rotated draft");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  act(() => blurHumanNote(ref, Symbol("owner")));
+  act(() => threadsStore.setState({ threads: new Map([[ref, { ...model, instanceId: "instance-b" }]]) }));
+  await advance(10_000);
+  await settled(result);
+  expect(result.current?.error).toBeNull();
+  await act(async () => {
+    await request;
+  });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({
+    ref,
+    note: "rotated draft",
+    expectedInstanceId: "instance-b",
+  });
+});
+
+test.each([
+  ["shared-notes capability missing", { capabilities: { ...NOTE_CAPABILITIES, sharedNotes: false } }],
+  ["recovery fence closed", { resumeRequired: true }],
+] as const)("a closed write gate still refuses without dispatching (%s)", async (_case, overrides) => {
+  const { seen } = noteHarness();
+  const ref = "ref-gate";
+  const model = noteModel(ref, { instanceId: "instance-a", ...overrides });
+  threadsStore.setState({ threads: new Map([[ref, model]]) });
+  await threadsStore.getState().ensureThread(ref);
+  syncHumanNote(ref, "");
+  editHumanNote(ref, "gated draft");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  act(() => blurHumanNote(ref, Symbol("owner")));
+  await advance(10_000);
+  await settled(result);
+  expect(result.current?.submitted).toBeUndefined();
+  expect(result.current?.error).toContain("Session cannot accept notes");
+  expect(seen).toHaveLength(0);
 });

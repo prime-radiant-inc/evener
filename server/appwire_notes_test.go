@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"unicode"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -157,6 +159,39 @@ func TestServerAppWireUrlsRemoveByID(t *testing.T) {
 	}))
 	if missing.Kind() != appwire.MessageError {
 		t.Fatalf("second remove resp=%v, want error for unknown id", missing.Kind())
+	}
+}
+
+// The unknown-id message echoes the caller's id back to the client, and the TUI
+// renders RPC errors in the transcript, so the echoed id must not hand the
+// terminal a control sequence to execute.
+func TestServerAppWireUrlsRemoveUnknownIDErrorCannotDriveATerminal(t *testing.T) {
+	sess := newNotesTestSession(t)
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", sess.ID())
+	// (false, nil) is the callback contract this branch answers: the session
+	// reports an unknown id by rejecting the mutation, but any urls/remove
+	// implementation that reports "not removed" without an error lands here.
+	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) { return false, nil })
+
+	conn := srv.AppServer().NewConnection("test")
+	resp := notesRPC(conn, 2, appwire.MethodUrlsRemove, appwire.UrlsRemoveParams{
+		Ref:                "local:" + sess.ID(),
+		ClientMutationID:   "outer-rm-control",
+		ExpectedInstanceID: sess.ID(),
+		ID:                 "\x1b]0;owned\x07",
+	})
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v, want the unknown-id error", resp.Kind())
+	}
+	message := resp.Error.Error.Message
+	if !strings.Contains(message, "no URL entry with id") {
+		t.Fatalf("unknown-id error = %q, want the unknown-id message", message)
+	}
+	for _, r := range message {
+		if unicode.IsControl(r) {
+			t.Fatalf("unknown-id error = %q carries control rune %U", message, r)
+		}
 	}
 }
 
