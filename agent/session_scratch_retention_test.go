@@ -1326,3 +1326,143 @@ func TestRetirementRejectsForeignRetainedScratchPin(t *testing.T) {
 		t.Fatal("retirement readiness accepted a foreign ownership pin")
 	}
 }
+
+// --- roborev round 7 Medium: a resumed root's discarded fresh sandbox scratch ---
+
+// TestRetirementResumedRootScratchAdoptionFailureLeavesUsableScratch covers the
+// adoption exit of adoptResumedRootScratch. Disposal of the freshly minted
+// sandbox scratch is inherent to the flow — RestoreSessionScratch refuses to
+// replace an exposed scratch (execenv/scratch_retention.go), so the mint has to
+// go before the retained slot can be restored — which means a FAILED adoption
+// must re-provision one rather than leave the environment with no sandbox
+// scratch at all.
+func TestRetirementResumedRootScratchAdoptionFailureLeavesUsableScratch(t *testing.T) {
+	base := t.TempDir()
+	workDir := t.TempDir()
+	const sessionID = "01RESUMEDROOTADOPTFAIL1"
+	const bindingID = "b-adopt-fail"
+	retained, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(retained.Dir) })
+
+	env := execenv.NewLocalExecutionEnvironment(workDir)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	// A write-blocked off policy eagerly provisions a sandbox-kind scratch with no
+	// kernel wrapper, which is the shape resume gives a host that cannot wrap.
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	minted := env.SessionScratchDir()
+	if minted == "" {
+		t.Fatal("environment minted no fresh sandbox scratch")
+	}
+	if filepath.Clean(minted) == filepath.Clean(retained.Dir) {
+		t.Fatalf("fixture scratch dirs collide at %q", minted)
+	}
+
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	// The consumer already holds this slot's transfer, so adoption is refused by
+	// the pool's own duplicate-transfer guard.
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:   owner,
+		handles: map[string]*sandbox.SessionScratch{filepath.Clean(retained.Dir): retained},
+		bindings: map[string]sandbox.ScratchBinding{bindingID: {
+			BindingID: bindingID,
+			Slots: map[string]sandbox.ScratchSlot{
+				sandbox.ScratchKindSandbox: {Dir: retained.Dir, OwnsLease: true},
+			},
+		}},
+		consumers: map[string]sandbox.ScratchConsumerBinding{
+			sessionID: {SessionID: sessionID, CurrentBindingID: bindingID},
+		},
+		adopted: map[string]string{filepath.Clean(retained.Dir): sessionID},
+	})
+
+	if err := s.adoptResumedRootScratch(env, sessionID); err == nil {
+		t.Fatal("adoption of an already-transferred slot was expected to fail")
+	}
+	got := env.SessionScratchDir()
+	if got == "" {
+		t.Fatal("failed adoption left the environment with no sandbox scratch")
+	}
+	if _, err := os.Stat(got); err != nil {
+		t.Fatalf("failed adoption left the reported sandbox scratch %q unusable: %v", got, err)
+	}
+}
+
+// TestRetirementResumedRootScratchWrapperFailureRefusesBeforeDisposal covers the
+// wrapper-rebuild exit: the replacement kernel wrapper has to be built BEFORE the
+// fresh mint is discarded, so a host that cannot wrap the retained directory
+// refuses the restore while the environment still owns a live scratch. Rebuilding
+// after the disposal would leave the wrapper's TMPDIR pointing at a removed
+// directory.
+func TestRetirementResumedRootScratchWrapperFailureRefusesBeforeDisposal(t *testing.T) {
+	base := t.TempDir()
+	workDir := t.TempDir()
+	root := t.TempDir()
+	const sessionID = "01RESUMEDROOTWRAPFAIL1"
+	const bindingID = "b-wrapper-fail"
+	retained, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(retained.Dir) })
+
+	env := execenv.NewLocalExecutionEnvironment(root)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), root, sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision enforced sandbox: %v", err)
+	}
+	minted := env.SessionScratchDir()
+	if minted == "" {
+		t.Fatal("environment minted no fresh sandbox scratch")
+	}
+	if filepath.Clean(minted) == filepath.Clean(retained.Dir) {
+		t.Fatalf("fixture scratch dirs collide at %q", minted)
+	}
+	// A backend with no kernel wrapper: rebuilding the wrapper around the retained
+	// directory is refused by sandbox.NewWrapper.
+	broken := *policy
+	broken.Backend = sandbox.BackendNone
+	env.Sandbox = &broken
+
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	// A claimable slot: the adoption itself succeeds, so this test isolates the
+	// wrapper rebuild that follows it.
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:   owner,
+		handles: map[string]*sandbox.SessionScratch{filepath.Clean(retained.Dir): retained},
+		bindings: map[string]sandbox.ScratchBinding{bindingID: {
+			BindingID: bindingID,
+			Slots: map[string]sandbox.ScratchSlot{
+				sandbox.ScratchKindSandbox: {Dir: retained.Dir, OwnsLease: true},
+			},
+		}},
+		consumers: map[string]sandbox.ScratchConsumerBinding{
+			sessionID: {SessionID: sessionID, CurrentBindingID: bindingID},
+		},
+		adopted: map[string]string{},
+	})
+
+	if err := s.adoptResumedRootScratch(env, sessionID); err == nil {
+		t.Fatal("rebuilding the wrapper around the retained directory was expected to fail")
+	}
+	got := env.SessionScratchDir()
+	if filepath.Clean(got) != filepath.Clean(minted) {
+		t.Fatalf("refused rebuild moved the environment's sandbox scratch: got %q, want the minted %q", got, minted)
+	}
+	if _, err := os.Stat(got); err != nil {
+		t.Fatalf("refused rebuild left the reported sandbox scratch %q unusable: %v", got, err)
+	}
+}

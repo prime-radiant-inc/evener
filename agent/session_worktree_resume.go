@@ -79,6 +79,16 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// session's environment, so it adopts nothing until an exit swaps onto it.
 	reroot := func(dir string) (*execenv.LocalExecutionEnvironment, error) {
 		next := local.WithWorkingDirectory(dir)
+		// Fail closed on the re-root exactly as a worktree switch does
+		// (enterWorktree): WithWorkingDirectory hands back the child with BOTH
+		// Sandbox and Wrapper nil plus a sticky refusal when the host cannot
+		// re-anchor the policy to dir, so returning that child for publication
+		// would run the restored session with unconfined file and command tools.
+		// A refused re-root returns no environment, which leaves the session on
+		// its prior, still-confined env.
+		if err := next.SandboxReRootError(); err != nil {
+			return nil, fmt.Errorf("sandbox re-root refused for %s: %w", dir, err)
+		}
 		next.AdoptSessionScratch(local)
 		// The scratch (and so the logical environment) follows the session onto
 		// the clone, so its opaque binding identity must follow too: without it
@@ -86,7 +96,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 		// the next swap stages nothing, releasing that lease with no transition
 		// persisted (plan 648/654).
 		if err := s.inheritScratchRetentionBinding(next, local); err != nil {
-			return next, err
+			return next, fmt.Errorf("could not carry scratch binding identity into %s: %w", dir, err)
 		}
 		return next, nil
 	}
@@ -98,11 +108,16 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	notice := func(reason string) {
 		if restoreRoot != "" {
 			next, err := reroot(restoreRoot)
-			s.env = next
-			if err != nil {
-				s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("could not carry scratch binding identity into %s: %v", restoreRoot, err)})
+			// A refused re-root hands back no environment: the session stays on
+			// its prior, confined env rather than landing at the restore root
+			// unconfined, and the notice must not claim it landed there.
+			if next != nil {
+				s.env = next
+				reason += "; resuming at " + restoreRoot
 			}
-			reason += "; resuming at " + restoreRoot
+			if err != nil {
+				s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: err.Error()})
+			}
 		}
 		// Buffered, not emitted directly: this runs before initSessionState
 		// (both via NewSession and RestoreSessionFromMetaWithConfig), strictly
@@ -212,7 +227,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// here — see the doc comment above.
 	reentered, err := reroot(target)
 	if err != nil {
-		return fmt.Errorf("carry scratch binding identity into %s: %w", target, err)
+		return err
 	}
 	s.env = reentered
 	s.worktreeCurrentPath = target

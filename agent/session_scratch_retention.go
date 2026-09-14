@@ -841,20 +841,47 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 // a sandbox allocation at a different directory, drop the freshly minted
 // scratch and rebuild env's kernel wrapper around the retained directory before
 // adopting, so the session resumes in the scratch it originally worked in.
+//
+// Disposal is inherent to that order — RestoreSessionScratch refuses to replace
+// an exposed scratch — so the replacement wrapper is built FIRST: a host that
+// cannot wrap the retained directory refuses the restore while the minted
+// scratch is still intact. A failure after the disposal re-provisions the
+// environment's own scratch rather than leaving it with none.
 func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment, sessionID string) error {
 	if env == nil {
 		return nil
 	}
-	if dir, ok := s.retainedConsumerSandboxDir(sessionID); ok &&
-		filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
-		env.DisposeSandboxScratch()
-		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
-			return err
-		}
-		return s.rebuildSandboxWrapper(env, dir)
+	dir, ok := s.retainedConsumerSandboxDir(sessionID)
+	if !ok || filepath.Clean(dir) == filepath.Clean(env.SessionScratchDir()) {
+		_, err := s.adoptConsumerScratch(env, sessionID)
+		return err
 	}
-	_, err := s.adoptConsumerScratch(env, sessionID)
-	return err
+	if err := s.rebuildSandboxWrapper(env, dir); err != nil {
+		return err
+	}
+	env.DisposeSandboxScratch()
+	if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+		return reprovisionDiscardedSandboxScratch(env, err)
+	}
+	return nil
+}
+
+// reprovisionDiscardedSandboxScratch leaves env with a usable sandbox scratch
+// after a failed retained-scratch adoption discarded the freshly minted one.
+// Adoption has to dispose that mint first (RestoreSessionScratch refuses to
+// replace an exposed scratch), so the failure path re-provisions the
+// environment's own policy instead of returning one whose only scratch is gone.
+// It is a no-op when env already reports a scratch: either the wrapper was
+// repointed at the retained directory before the disposal or a partial adoption
+// installed it, and both leave a live directory in place.
+func reprovisionDiscardedSandboxScratch(env *execenv.LocalExecutionEnvironment, cause error) error {
+	if env == nil || env.SessionScratchDir() != "" || env.Sandbox == nil {
+		return cause
+	}
+	if err := env.EnableSandbox(env.Sandbox); err != nil {
+		return errors.Join(cause, fmt.Errorf("re-provision sandbox scratch after a failed retained-scratch adoption: %w", err))
+	}
+	return cause
 }
 
 // retainedConsumerSandboxDir returns the directory sessionID's current binding
