@@ -206,6 +206,7 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 root_skip="$fuzz_test_skip"
 
 flags="$*"
+gate_args=("$@")
 module_test_flags() {
 	local m="$1" flag selected=""
 	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
@@ -326,13 +327,23 @@ package_list_diagnostic() {
 # a survivor goes on holding the build and module cache locks that every later
 # run on this host needs.
 run_package_list() {
-	local module="$1" package_list="$2" package_list_stderr status=0
+	local module="$1" package_list="$2" package_list_stderr status=0 flag
+	local -a list_flags=()
 	package_list_stderr="${package_list}.stderr"
+	# `go list` and `go test` do not see the same tree: -tags selects files, and
+	# -race, -msan and -asan each set a build tag of their own, so a package
+	# whose files all sit behind one of those exists for the test run and not
+	# for a plain enumeration -- and the gate tests what the enumeration found.
+	# evener-dev decides which of the caller's flags those are, one per line so
+	# a value with a space in it survives.
+	while IFS= read -r flag; do
+		[ -n "$flag" ] && list_flags+=("$flag")
+	done < <("$evener_dev_bin" dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"})
 	# Run where the caller is, which run_wave has already made the module's own
 	# directory; the helper inherits that, so `go list ./...` means this module.
 	"$evener_dev_bin" dev bounded-list \
 		-timeout "${PACKAGE_LIST_TIMEOUT}s" -attempts "$PACKAGE_LIST_ATTEMPTS" \
-		-- go list ./... >"$package_list" 2>"$package_list_stderr" || status=$?
+		-- go list ${list_flags[@]+"${list_flags[@]}"} ./... >"$package_list" 2>"$package_list_stderr" || status=$?
 	if [ "$status" -ne 0 ]; then
 		cat "$package_list_stderr" >&2
 		# 124 is the helper's timeout status, and the only one the cache advice

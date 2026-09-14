@@ -67,6 +67,9 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	cmd.Stdout = &out
 	cmd.Stderr = guarded
 	if err := procgroup.Start(cmd); err != nil {
+		// The gate reads this log and nothing else; a start that failed with
+		// nothing written is a module that failed for no stated reason.
+		_, _ = fmt.Fprintf(guarded, "bounded-list: %v\n", err)
 		return attemptResult{err: err, exitCode: 1}
 	}
 	// The child leads its own group, so the group id is its pid.

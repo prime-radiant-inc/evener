@@ -30,6 +30,9 @@ func Kill(pgid int) {
 func Exists(int) bool { return false }
 
 func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
+	if pgid <= 0 {
+		return
+	}
 	Terminate(pgid)
 	select {
 	case <-reaped:

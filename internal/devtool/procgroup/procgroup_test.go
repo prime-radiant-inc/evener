@@ -252,3 +252,21 @@ func TestExistsAnswersForTheGroupNotTheLeader(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestStopRefusesAPgidThatIsNotAGroup pins the guard: 0 is this process's own
+// group and negatives are not groups, so a stop built from either would signal
+// something the caller never started.
+func TestStopRefusesAPgidThatIsNotAGroup(t *testing.T) {
+	for _, pgid := range []int{0, -1} {
+		done := make(chan struct{}) // never closed: a signalled group would hang here
+		start := time.Now()
+		StopWith(pgid, syscall.SIGTERM, done, 5*time.Second)
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("StopWith(%d) took %s, so it waited on a group it should have refused", pgid, elapsed)
+		}
+		Stop(pgid, done, 5*time.Second)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("Stop(%d) waited on a group it should have refused", pgid)
+		}
+	}
+}

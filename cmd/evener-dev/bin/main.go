@@ -36,7 +36,7 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "dev":
 		return devcmd.Run(args[1:], stdin, stdout, stderr)
-	case "module-lint", "agent-shards":
+	case "module-lint", "agent-shards", "bounded-list":
 		return devcmd.Run(args, stdin, stdout, stderr)
 	case "fuzz-harvest":
 		return fuzzharvestcmd.Run(args[1:], stdin, stdout, stderr)

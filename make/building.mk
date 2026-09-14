@@ -99,16 +99,27 @@ FILE_TARGETS := evener-dev
 # is a real file target so an up-to-date one costs no go command at all --
 # `make -n test` runs no build when nothing it is built from has changed.
 #
-# "What it is built from" is every tracked Go source and every module manifest
-# in the workspace, not just the two trees its subcommands live in: this binary
-# imports agent, llm, envvars and the rest, so a change there changes what it
-# does. The wide list costs one `git ls-files` per make invocation, measured at
-# 10-20ms for ~3,300 paths, which is nothing beside the build it replaces.
+# "What it is built from" is every tracked Go source and module manifest in the
+# workspace -- this binary imports agent, llm, envvars and the rest -- plus the
+# files those packages embed, since a //go:embed input is compiled in as surely
+# as a .go file is. The embed list is the directories named by the //go:embed
+# directives in the tree (`grep -rn go:embed --include='*.go'`), not a guess:
+# llm/registry/data, internal/bundled's agents, skills and plugins,
+# internal/appwiredoc's template, agent/prompts, agent/sandbox's .sbpl profiles
+# and cmd/evener-hub/assets. A new embed directory belongs on this line.
+#
+# Every tracked file would be simpler and was measured instead: 10,536 paths,
+# 7,898 after dropping the trees nothing embeds, and make stats them all at
+# 1.06-2.92s per invocation. The list below is 3,346 paths and 0.41-0.57s, and
+# the `git ls-files` itself is 30ms either way.
 #
 # Tracked is the operative word: a brand-new file that has not been `git add`ed
 # does not retrigger the build, because git does not know about it yet.
 # `make build-dev` forces a build in that case, and in any other.
-EVENER_DEV_SOURCES := $(shell git ls-files '*.go' 'go.mod' 'go.sum' 'go.work' '*/go.mod' '*/go.sum' 2>/dev/null)
+EVENER_DEV_SOURCES := $(shell git ls-files '*.go' 'go.mod' 'go.sum' 'go.work' '*/go.mod' '*/go.sum' \
+	'llm/registry/data/*' 'internal/bundled/agents/*' 'internal/bundled/skills/*' \
+	'internal/bundled/plugins/*' 'internal/appwiredoc/*.tmpl' 'agent/prompts/*' \
+	'agent/sandbox/*.sbpl' 'cmd/evener-hub/assets/*' 2>/dev/null)
 
 ## Build the evener-dev dev/test infrastructure binary when its sources have
 ## changed. The test gate's prerequisite; `make build-dev` forces a build.

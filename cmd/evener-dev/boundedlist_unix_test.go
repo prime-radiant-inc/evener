@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -407,5 +408,21 @@ func TestReapOrGiveUpSaysWhichItWas(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "did not exit after SIGKILL") {
 		t.Fatalf("stderr = %q, want the diagnostic naming the failed reap", got)
+	}
+}
+
+func TestBoundedAttemptSaysWhyACommandNeverStarted(t *testing.T) {
+	var stderr bytes.Buffer
+	// The gate reads this log and nothing else, so a start that failed with an
+	// empty log is a module that failed for no stated reason.
+	result := runBoundedAttempt([]string{filepath.Join(t.TempDir(), "not-a-command")}, time.Second, time.Second, &stderr, nil)
+	if result.err == nil {
+		t.Fatal("err = nil for a command that cannot be started")
+	}
+	if result.exitCode != 1 {
+		t.Fatalf("exitCode = %d, want 1", result.exitCode)
+	}
+	if got := stderr.String(); !strings.Contains(got, "bounded-list:") || !strings.Contains(got, "not-a-command") {
+		t.Fatalf("stderr = %q, want the failure and the command in it", got)
 	}
 }

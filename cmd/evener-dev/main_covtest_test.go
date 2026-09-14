@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const devUsage = "usage: evener dev <subcommand> [args]\nsubcommands: agent-shards bounded-list covstmt module-lint\n"
+const devUsage = "usage: evener dev <subcommand> [args]\nsubcommands: agent-shards bounded-list covstmt list-build-flags module-lint\n"
 
 func TestRunRejectsMissingAndUnknownSubcommands(t *testing.T) {
 	tests := []struct {

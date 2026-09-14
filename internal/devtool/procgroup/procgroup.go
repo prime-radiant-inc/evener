@@ -37,6 +37,12 @@ func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
 // cannot be recycled while it is still a live group's id, so anything but
 // ESRCH means this is still the group the caller started. EPERM is a yes --
 // the group is there, this process just may not signal all of it.
+//
+// A group whose only remaining members are zombies also reads as alive, until
+// init reaps them. The cost of that is one survivor diagnostic and at most one
+// grace wait on a group that was already finished; the alternative is probing
+// process state per platform, which is a lot of machinery for a line of
+// output.
 func Exists(pgid int) bool {
 	if pgid <= 0 {
 		return false
@@ -71,6 +77,11 @@ func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
 // The wait is therefore at most two graces when the forwarded signal is not
 // SIGTERM itself, which is the price of passing on what was sent.
 func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) {
+	if pgid <= 0 {
+		// 0 is this process's own group and negatives are not groups; both
+		// would send the signal somewhere the caller did not start.
+		return
+	}
 	select {
 	case <-reaped:
 		return
