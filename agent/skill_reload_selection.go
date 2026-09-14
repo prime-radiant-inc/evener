@@ -90,7 +90,7 @@ func parseSkillReloadElicitation(text string, inventory map[string]schema.SkillI
 func (s *Session) skillInventorySnapshot() map[string]schema.SkillInventoryEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return maps.Clone(s.skillLifecycle.Inventory)
+	return schema.CloneSkillInventory(s.skillLifecycle.Inventory)
 }
 
 // skillInventorySummaries flattens the inventory into deterministic,

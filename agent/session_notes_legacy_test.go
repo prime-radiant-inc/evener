@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unicode"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -246,5 +247,37 @@ func TestNotesHistoryCopyKeepsOrdinarySteeringVerbatim(t *testing.T) {
 	out := escapeNotesHistoryTurns(history)
 	if got := out[0].Message.Text(); got != steering {
 		t.Fatalf("ordinary steering copy = %q, want it verbatim (%q)", got, steering)
+	}
+}
+
+// A user can type anything, including the words the note path writes. Only a
+// steering entry whose recorded kind is the human-note kind, or a kindless legacy
+// entry carrying the exact shape the write path emits, is note-origin; otherwise
+// a resumed request would deliver different bytes than the live one
+// (roborev's eleventh round).
+func TestNotesHistoryCopyKeepsUserTypedNotePrefixVerbatim(t *testing.T) {
+	cases := map[string]schema.Turn{
+		"user typed, no trailing space": {
+			Kind: schema.TurnSteering, Message: llm.User("human updated their whiteboard:no space\there with\x1b[31mcolour"),
+		},
+		"user typed, explicit other kind": {
+			Kind: schema.TurnSteering, SteeringKind: events.SteeringKindAgentMessage,
+			Message: llm.User("human updated their whiteboard: quoted back\x1b[31m verbatim"),
+		},
+	}
+	for name, turn := range cases {
+		t.Run(name, func(t *testing.T) {
+			want := turn.Message.Text()
+			out := escapeNotesHistoryTurns([]schema.Turn{turn})
+			if got := out[0].Message.Text(); got != want {
+				t.Fatalf("steering copy = %q, want it verbatim (%q)", got, want)
+			}
+		})
+	}
+	// The exact shape a note update writes is still note-origin and still strips.
+	note := schema.Turn{Kind: schema.TurnSteering, Message: llm.User("human updated their whiteboard: note\x1b[31m text")}
+	out := escapeNotesHistoryTurns([]schema.Turn{note})
+	if strings.ContainsRune(out[0].Message.Text(), 0x1b) {
+		t.Fatalf("note-origin steering was not stripped: %q", out[0].Message.Text())
 	}
 }

@@ -58,6 +58,13 @@ type Extend[T any] func(ctx context.Context, path string, fromOffset int64, prio
 type Result[T any] struct {
 	Value  T
 	Offset int64
+	// Absent reports that there was no file at this path when Get looked,
+	// which Epoch cannot say: a path that has never existed and a file
+	// folded for the first time both report generation 0. Value is the
+	// zero fold. Presence is decided by the same stat the fold reads
+	// through, so a caller that asks this instead of stat'ing for itself
+	// cannot see the file appear or vanish between the two looks.
+	Absent bool
 	// Epoch counts how many times this path's cached fold has been
 	// DISCARDED and restarted from byte zero because the file was not a
 	// pure append of what the cache had — shrunk, rewritten at the same
@@ -150,6 +157,11 @@ type epochState struct {
 	offset int64  // where tail ends; mirrors the entry's offset at the time this was captured
 	tail   []byte // last min(tailProbeBytes, offset) bytes ending at offset
 	epoch  uint64
+	// absent marks this state as a tombstone: the path was gone when it was
+	// recorded, and the fields above describe nothing. It is what makes a
+	// deletion something that happened once rather than something that
+	// happens again on every later look at the same missing path.
+	absent bool
 }
 
 type entry[T any] struct {
@@ -161,6 +173,34 @@ type entry[T any] struct {
 
 // Cache incrementally folds append-only files, keyed by path, bounded to a
 // fixed number of entries evicted least-recently-used.
+//
+// What it checks, and what it tolerates. Every mutation of the journals it
+// folds is an append or an in-place truncate on the writer's own handle:
+// jobstore repairs a torn trailing line and rolls a failed append back
+// (agent/internal/jobstore/store.go, recoverTrailingJSONLineLocked and
+// rollbackAppendLocked), and delegatestore does the same for a torn version
+// header, an unterminated trailing batch, and a failed append
+// (agent/internal/delegatestore/store.go, repair and rollbackLocked).
+// Nothing renames a replacement over either path and nothing compacts them,
+// so a rewrite always shrinks the file before it regrows. Per Get this
+// cache compares the recorded length and mtime against the file, re-reads
+// the trailing bytes it recorded, and — wherever it would otherwise return
+// the cached fold without reading anything — takes the length from the same
+// handle that probe read through, never from a stat that may predate a
+// write. A same-size ambiguity is settled by a second stat, and growth
+// reported by that stat is probed again.
+//
+// One shape still slips through: a change landing between two of those
+// reads that leaves the file at the recorded length with the recorded
+// trailing bytes intact — a truncate followed by an append back to the same
+// length whose last tailProbeBytes match, inside the window between a
+// handle's fstat and its ReadAt. No writer above produces that, and no
+// further probing would close it, because every check is itself two reads
+// and so opens a window of its own. Locking is not available either: the
+// writers are separate processes holding nothing a reader could take. The
+// cost is bounded and worth stating plainly — a fold whose generation does
+// not move, so an outstanding continuation is accepted and its position
+// applied to content that changed underneath it.
 type Cache[T any] struct {
 	mu         sync.Mutex
 	entries    map[string]*list.Element
@@ -173,6 +213,13 @@ type Cache[T any] struct {
 
 	flights map[string]struct{}
 	group   singleflight.Group
+
+	// stat is os.Stat, indirected so a test can pin what happens to the
+	// file between the looks this cache takes at it — orderings no fixture
+	// can produce from the outside, because nothing else runs in those
+	// windows. Read it through statFile, never directly: a zero-value
+	// Cache is a usable, caching-disabled cache and leaves this nil.
+	stat func(string) (os.FileInfo, error)
 
 	hits, misses, coalesced, evictions, fullRescans int
 }
@@ -187,6 +234,7 @@ func New[T any](maxEntries int) *Cache[T] {
 		maxEntries:  maxEntries,
 		epochStates: make(map[string]*epochState),
 		flights:     make(map[string]struct{}),
+		stat:        os.Stat,
 	}
 }
 
@@ -210,11 +258,10 @@ func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Resu
 		return c.readUncached(ctx, path, extend)
 	}
 
-	info, statErr := os.Stat(path)
+	info, statErr := c.statFile(path)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
-			c.drop(path)
-			return Result[T]{}, nil
+			return Result[T]{Absent: true, Epoch: c.drop(path)}, nil
 		}
 		var zero Result[T]
 		return zero, statErr
@@ -283,13 +330,19 @@ func (c *Cache[T]) tryFastHit(path string, info os.FileInfo) (Result[T], bool, e
 		return Result[T]{}, false, nil
 	}
 	value, offset, epoch, tail := e.value, e.offset, st.epoch, st.tail
+	size, mod := st.size, st.mod
 	c.mu.Unlock()
 
-	match, err := tailProbeMatches(path, offset, tail)
+	// info above is Get's own stat, taken before this probe opens the file;
+	// it is worth checking first because it costs nothing, but it cannot be
+	// what decides a hit — a rewrite landing between that stat and this
+	// open would leave the length coming from the old file and the bytes
+	// from the new one. Both come from the probe's handle instead.
+	match, probed, err := probeTailFromHandle(path, offset, tail)
 	if err != nil {
 		return Result[T]{}, false, err
 	}
-	if !match {
+	if !match || probed == nil || probed.Size() != size || !mod.Equal(probed.ModTime()) {
 		return Result[T]{}, false, nil
 	}
 
@@ -326,8 +379,17 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 	var prior T
 	fromOffset := int64(0)
 	sameSizeAmbiguous := false
+	sameSizeMtimeAgrees := false
 	growthAmbiguous := false
-	if st != nil {
+	// A tombstone records that the path was gone; its size, mtime and tail
+	// describe nothing, so none of the comparisons below can be asked of
+	// it. An empty file appearing at a tombstoned path is the trap: its
+	// length matches the tombstone's zero and only the mtime disagrees,
+	// which reads as a same-size rewrite and would bump a generation the
+	// deletion already moved. A tombstoned path folds from zero, keeping
+	// the generation the deletion gave it.
+	describesContent := st != nil && !st.absent
+	if describesContent {
 		switch {
 		case info.Size() < st.size:
 			// Shrunk: definitely not a pure append. Discard and bump epoch
@@ -335,17 +397,16 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 			// detectably stale.
 			epoch++
 		case info.Size() == st.size:
-			if st.mod.Equal(info.ModTime()) {
-				// Same length AND same mtime: mtime alone cannot resolve
-				// this (the classic jobstore.Store fileCursor residual) —
-				// needs the tail probe below.
-				sameSizeAmbiguous = true
-			} else {
-				// Same length, different mtime: a rewrite that happens to
-				// match the old size. Discard and bump epoch, same as a
-				// shrink.
-				epoch++
-			}
+			// Same length, whatever the mtime says. A rewrite that happens to
+			// match the old size looks identical here to a stat taken while
+			// something appended: os.Stat reads size and mtime separately, so
+			// it can report the size from before a write with the mtime from
+			// after it. mtime settles neither case (the classic
+			// jobstore.Store fileCursor residual is the same shape) — the
+			// tail probe and, when the tail survives but the mtime moved, a
+			// second stat below do.
+			sameSizeAmbiguous = true
+			sameSizeMtimeAgrees = st.mod.Equal(info.ModTime())
 		default: // info.Size() > st.size
 			if st.mod.Equal(info.ModTime()) {
 				// Grew, but mtime gives no signal either way: could be a
@@ -390,29 +451,74 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 	}
 
 	if sameSizeAmbiguous {
-		match, tailErr := tailProbeMatches(path, st.offset, st.tail)
+		// Probed through the handle, because the branch below can return
+		// the cached value without reading anything: info is Get's stat,
+		// taken before this probe opens the file, so a decision to read
+		// nothing must rest on the length the probe's own handle reports
+		// rather than on a length that may predate an append.
+		match, probed, tailErr := probeTailFromHandle(path, st.offset, st.tail)
 		if tailErr != nil {
 			var zero Result[T]
 			return zero, tailErr
 		}
-		if !match {
+		probeAgreesWithState := probed != nil && probed.Size() == st.size && probed.ModTime().Equal(st.mod)
+		switch {
+		case !match:
 			epoch++
-		} else if element != nil {
-			if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
-				// Confirmed unchanged, and the cached value is still
-				// resident: a true hit reached via refresh instead of
-				// Get's own fast path (e.g. a concurrent evict/replace
-				// raced tryFastHit's own probe). Nothing to extend.
-				c.mu.Lock()
-				c.hits++
-				c.mu.Unlock()
-				return Result[T]{Value: e.value, Offset: e.offset, Epoch: epoch}, nil
+		case sameSizeMtimeAgrees && probeAgreesWithState:
+			if element != nil {
+				if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
+					// Confirmed unchanged, and the cached value is still
+					// resident: a true hit reached via refresh instead of
+					// Get's own fast path (e.g. a concurrent evict/replace
+					// raced tryFastHit's own probe). Nothing to extend.
+					c.mu.Lock()
+					c.hits++
+					c.mu.Unlock()
+					return Result[T]{Value: e.value, Offset: e.offset, Epoch: epoch}, nil
+				}
+			}
+			// The prefix survived and the mtime agrees, so the content is
+			// intact; only the cached value is gone (evicted or replaced).
+			// Reread it from zero without moving the generation.
+		default:
+			// The prefix survived, but either the mtime moved or the
+			// handle reported a file that is not the one the recorded
+			// state describes. Both leave two candidates the first stat
+			// cannot separate: a torn or racing append (the stat's size
+			// predates the write) and a rewrite that landed on the same
+			// length and kept the bytes the probe reads — a journal rewritten with
+			// the same trailing record is exactly that, and accepting it
+			// would let an outstanding continuation resume into content that
+			// changed underneath its index. Stat again: the append that tore
+			// the first stat has completed by now and reports the larger
+			// size, while a rewrite still reports the same one.
+			fresh, statErr := c.statFile(path)
+			if statErr != nil {
+				var zero Result[T]
+				return zero, statErr
+			}
+			if fresh.Size() <= st.size {
+				epoch++
+				break
+			}
+			// Growth, so the first stat was torn rather than a rewrite —
+			// as of that second stat. The window between the two is wide
+			// enough for a rewrite AND an append to land in it, which
+			// leaves the file longer than the recorded size while the
+			// recorded prefix is gone, so ask the probe again before
+			// keeping the generation on the strength of a length.
+			regrown, tailErr := tailProbeMatches(path, st.offset, st.tail)
+			if tailErr != nil {
+				var zero Result[T]
+				return zero, tailErr
+			}
+			if !regrown {
+				epoch++
 			}
 		}
-		// Confirmed unchanged but nothing resident to return (evicted): a
-		// full reread is required regardless (nothing to resume from),
-		// but epoch does not bump, since the content itself is confirmed
-		// the same. fromOffset stays 0 either way this branch exits.
+		// fromOffset stays 0 however this branch exits: whatever the
+		// generation ends up being, the value has to be refolded from zero.
 	} else if growthAmbiguous {
 		match, tailErr := tailProbeMatches(path, st.offset, st.tail)
 		if tailErr != nil {
@@ -431,7 +537,9 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 		// mtime-unresolvable growth.
 	}
 
-	wasCached := st != nil
+	// A tombstone is not a cached fold: reading a path that has just come
+	// back is a first touch, not a rescan of something this cache held.
+	wasCached := describesContent
 	if wasCached && fromOffset == 0 {
 		c.mu.Lock()
 		c.fullRescans++
@@ -448,8 +556,40 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 		return Result[T]{}, tailErr
 	}
 
+	// The recorded state describes the content this fold consumed, which is
+	// why neither number can simply be the stat's. The fold can read past
+	// what the stat reported -- a torn stat gives the size from before an
+	// append, and an append can also land after the stat and before the
+	// read -- and recording that smaller number leaves offset ahead of
+	// size, a state no honest file produces and one the next stat reads as
+	// growth, resuming from an offset the file has already reached and
+	// never seeing a rewrite underneath it.
+	//
+	// So the size is the larger of the two. Keeping the stat's own number
+	// wherever it is the bigger one is what makes a file that grew AFTER
+	// the fold still read as growth on the next look instead of as an
+	// unchanged length.
+	//
+	// The mtime has to move with it. Whatever made the file longer than the
+	// stat said also stamped it, so pairing the consumed size with the
+	// stat's older mtime describes a file that never existed: the next
+	// lookup sees the size it expects with an mtime it does not, reads that
+	// as a same-size rewrite, and discards a fold nothing invalidated. Only
+	// this branch re-stats, because only here is the stat's mtime known to
+	// predate the content.
+	recordedSize := info.Size()
+	recordedMod := info.ModTime()
+	if offset > recordedSize {
+		recordedSize = offset
+		fresh, statErr := c.statFile(path)
+		if statErr != nil {
+			return Result[T]{}, statErr
+		}
+		recordedMod = fresh.ModTime()
+	}
+
 	c.mu.Lock()
-	c.epochStates[path] = &epochState{size: info.Size(), mod: info.ModTime(), offset: offset, tail: tail, epoch: epoch}
+	c.epochStates[path] = &epochState{size: recordedSize, mod: recordedMod, offset: offset, tail: tail, epoch: epoch}
 	c.publishLocked(path, entry[T]{path: path, value: value, offset: offset, valid: true})
 	c.mu.Unlock()
 	return Result[T]{Value: value, Offset: offset, Epoch: epoch}, nil
@@ -471,26 +611,42 @@ func tailProbeMatches(path string, offset int64, want []byte) (bool, error) {
 		// contradict.
 		return true, nil
 	}
+	match, _, err := probeTailFromHandle(path, offset, want)
+	return match, err
+}
+
+// probeTailFromHandle opens path once and answers from that single handle
+// both questions a reader asks of the file: how long it is, and whether the
+// bytes this cache recorded are still where it left them. Taking the length
+// from the handle rather than from an earlier os.Stat is what keeps the two
+// answers describing the same file — a stat taken before the open can
+// describe a length the probed bytes never belonged to. A missing file is a
+// mismatch, not an error, for the same reason tailProbeMatches gives.
+func probeTailFromHandle(path string, offset int64, want []byte) (bool, os.FileInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return false, nil, nil
 		}
-		return false, err
+		return false, nil, err
 	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return false, nil, err
+	}
+	if len(want) == 0 {
+		return true, info, nil
+	}
 	start := offset - int64(len(want))
 	if start < 0 {
-		return false, nil
-	}
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return false, err
+		return false, info, nil
 	}
 	got := make([]byte, len(want))
-	if _, err := io.ReadFull(f, got); err != nil {
-		return false, nil // shorter than expected: file changed underneath
+	if _, err := f.ReadAt(got, start); err != nil {
+		return false, info, nil // shorter than expected: file changed underneath
 	}
-	return bytes.Equal(got, want), nil
+	return bytes.Equal(got, want), info, nil
 }
 
 // captureTailProbe reads the last min(tailProbeBytes, offset) bytes ending
@@ -533,9 +689,9 @@ func captureTailProbe(path string, offset int64) ([]byte, error) {
 // path does not apply here — there is no shared flight for one caller's
 // cancellation to poison in the first place.
 func (c *Cache[T]) readUncached(ctx context.Context, path string, extend Extend[T]) (Result[T], error) {
-	if _, err := os.Stat(path); err != nil {
+	if _, err := c.statFile(path); err != nil {
 		if os.IsNotExist(err) {
-			return Result[T]{}, nil
+			return Result[T]{Absent: true}, nil
 		}
 		var zero Result[T]
 		return zero, err
@@ -547,6 +703,17 @@ func (c *Cache[T]) readUncached(ctx context.Context, path string, extend Extend[
 		return zeroResult, err
 	}
 	return Result[T]{Value: value, Offset: offset}, nil
+}
+
+// statFile is how this cache looks at a file. New fills stat in; a
+// zero-value Cache does not, and that configuration is supported (see
+// New's doc comment on maxEntries <= 0), so fall back rather than
+// depending on a constructor nobody is required to call.
+func (c *Cache[T]) statFile(path string) (os.FileInfo, error) {
+	if c.stat != nil {
+		return c.stat(path)
+	}
+	return os.Stat(path)
 }
 
 func (c *Cache[T]) publishLocked(path string, e entry[T]) {
@@ -583,16 +750,35 @@ func (c *Cache[T]) publishLocked(path string, e entry[T]) {
 // drop leaves epochStates untouched for it rather than fabricating one.
 // Unlike the *Locked methods above, drop manages its own locking: its only
 // caller (Get, on ErrNotExist) does not hold mu.
-func (c *Cache[T]) drop(path string) {
+// drop records that path is gone and returns the generation that absence is
+// judged by, which the caller reports so a page minted over a missing file
+// and the request that resumes it compare the same number.
+//
+// Losing a fold advances the generation exactly once. Every later look at
+// the same missing path is the same absence and returns the same number:
+// advancing again would describe a change nobody made, and since a client
+// must re-read to page, each request would refuse the continuation the
+// previous one just minted and the rest of the tree would be unreachable.
+func (c *Cache[T]) drop(path string) uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element, ok := c.entries[path]; ok {
 		delete(c.entries, path)
 		c.order.Remove(element)
 	}
-	if st, ok := c.epochStates[path]; ok {
-		c.epochStates[path] = &epochState{epoch: st.epoch + 1}
+	st, ok := c.epochStates[path]
+	if !ok {
+		// Never folded: absence is the first thing known about this path,
+		// and generation 0 is what a first fold would report too. No state
+		// is recorded, so a path that never existed costs nothing.
+		return 0
 	}
+	if st.absent {
+		return st.epoch
+	}
+	next := st.epoch + 1
+	c.epochStates[path] = &epochState{epoch: next, absent: true}
+	return next
 }
 
 func (c *Cache[T]) finishFlight(flightKey string) {

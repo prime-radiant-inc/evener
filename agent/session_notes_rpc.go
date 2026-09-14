@@ -882,7 +882,16 @@ const humanNoteSteerPrefix = "human updated their whiteboard:"
 // steering is normalized: ordinary steering keeps the bytes the user typed, which
 // is what the live path and the persisted transcript already show.
 func isHumanNoteSteer(kind, text string) bool {
-	return kind == events.SteeringKindHumanNote || strings.HasPrefix(text, humanNoteSteerPrefix)
+	if kind != "" {
+		// A recorded kind decides. Only the human-note kind is note-origin, so a
+		// user's steering keeps its bytes even when it quotes the words back.
+		return kind == events.SteeringKindHumanNote
+	}
+	// A record persisted before kinds existed has none to read, so the exact shape
+	// the write path emits is the only marker left: the prefix followed by the
+	// space the note text always comes after. A user text imitating that shape
+	// exactly is indistinguishable and stays a documented ambiguity.
+	return strings.HasPrefix(text, humanNoteSteerPrefix+" ")
 }
 
 // rebuiltSteeringText returns a rebuilt steering entry's text: note-origin text is

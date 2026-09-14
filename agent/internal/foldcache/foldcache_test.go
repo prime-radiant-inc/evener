@@ -809,3 +809,523 @@ func TestCache_DeletedFileEpochSurvivesAcrossRecreation(t *testing.T) {
 		t.Fatalf("recreated epoch (%d) did not advance past the pre-deletion epoch (%d) -- a continuation minted before the deletion would wrongly pass its staleness check against this entirely unrelated new content", recreated.Epoch, first.Epoch)
 	}
 }
+
+// tornStatInfo reports a file's size as it was before an append and its mtime
+// as it is after one — the observation os.Stat can return while a writer is
+// appending, since the two fields are not read atomically.
+type tornStatInfo struct {
+	os.FileInfo
+	size int64
+	mod  time.Time
+}
+
+func (i tornStatInfo) Size() int64        { return i.size }
+func (i tornStatInfo) ModTime() time.Time { return i.mod }
+
+// TestCache_TornAppendStatKeepsTheGeneration pins the rule the same-size
+// branch has to follow. os.Stat is not an atomic snapshot: during an append it
+// can report the size from before the write and the mtime from after it, which
+// looks exactly like a same-size rewrite. Bumping on that appearance alone
+// discards a fold nothing invalidated and moves a generation the file's own
+// content does not justify — and a continuation keyed to the old generation is
+// then refused for a journal that was only appended to. The tail probe tells
+// the two apart, so it decides here as it does in every other ambiguous case.
+func TestCache_TornAppendStatKeepsTheGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	if st == nil {
+		t.Fatal("no state recorded for a folded path")
+	}
+
+	appendLines(t, path, []int{3})
+	current, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := tornStatInfo{FileInfo: current, size: st.size, mod: current.ModTime().Add(time.Second)}
+
+	refreshed, err := c.refresh(ctx, path, torn, extend)
+	if err != nil {
+		t.Fatalf("refresh on a torn stat: %v", err)
+	}
+	if refreshed.Epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a torn append stat, want it to stay at %d -- the fold reads the whole append and keeps the old one, so this discards a fold nothing invalidated", refreshed.Epoch, folded.Epoch)
+	}
+	if refreshed.Value.sum != 6 {
+		t.Fatalf("value = %+v, want the appended content read in full (1+2+3)", refreshed.Value)
+	}
+}
+
+// TestCache_SameSizeRewriteKeepingItsTailBumpsTheGeneration pins the other
+// half of the same-size rule. The tail probe alone cannot separate a torn
+// append from a rewrite that happens to land on the same length AND leave the
+// probed trailing bytes intact -- a journal rewritten at the same size with
+// the same last record is exactly that. Keeping the generation there accepts
+// an outstanding continuation whose ResumeIndex now points into content that
+// changed underneath it. A second stat settles it: a torn append has finished
+// by the time it is taken and reports the larger size, while a rewrite still
+// reports the same one.
+func TestCache_SameSizeRewriteKeepingItsTailBumpsTheGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	original := make([]int, 0, 40)
+	for v := 10; v < 50; v++ {
+		original = append(original, v)
+	}
+	writeLines(t, path, original)
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if folded.Value.sum != 1180 {
+		t.Fatalf("first fold summed %d, want 1180", folded.Value.sum)
+	}
+
+	// Same line count and same line width, so the same total size; only the
+	// leading lines change, which leaves the last 66 bytes -- more than the
+	// 64 the probe reads -- byte-identical.
+	rewritten := make([]int, len(original))
+	copy(rewritten, original)
+	for i := range 18 {
+		rewritten[i] = 99
+	}
+	writeLines(t, path, rewritten)
+	stamp := time.Unix(1_000_000, 0)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after a same-size rewrite: %v", err)
+	}
+	if after.Epoch != folded.Epoch+1 {
+		t.Fatalf("generation = %d after a same-size rewrite that kept its trailing bytes, want %d -- the fold this cache held is gone, so a continuation keyed to it must not be accepted", after.Epoch, folded.Epoch+1)
+	}
+	if after.Value.sum != 2629 {
+		t.Fatalf("value = %+v, want the rewritten content read in full (sum 2629)", after.Value)
+	}
+}
+
+// TestCache_TornStatAppendRecordsTheSizeItActuallyFolded pins what a torn
+// stat leaves behind. The fold reads the whole appended file, so the state
+// this cache publishes has to describe the content it consumed -- recording
+// the pre-append size the torn stat reported leaves offset ahead of size,
+// which no honest file can produce. The next stat then reads as growth, the
+// growth path trusts the surviving tail and resumes from an offset the file
+// has already reached, and a same-size rewrite underneath is served from the
+// stale fold with its generation intact.
+func TestCache_TornStatAppendRecordsTheSizeItActuallyFolded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	original := make([]int, 0, 40)
+	for v := 10; v < 50; v++ {
+		original = append(original, v)
+	}
+	writeLines(t, path, original)
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	if st == nil {
+		t.Fatal("no state recorded for a folded path")
+	}
+
+	appended := make([]int, 0, 10)
+	for v := 50; v < 60; v++ {
+		appended = append(appended, v)
+	}
+	appendLines(t, path, appended)
+	current, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := tornStatInfo{FileInfo: current, size: st.size, mod: current.ModTime().Add(time.Second)}
+	tornResult, err := c.refresh(ctx, path, torn, extend)
+	if err != nil {
+		t.Fatalf("refresh on a torn stat: %v", err)
+	}
+	if tornResult.Epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a torn append stat, want it to stay at %d", tornResult.Epoch, folded.Epoch)
+	}
+	if tornResult.Value.sum != 1725 {
+		t.Fatalf("torn-stat fold = %+v, want the whole appended file (sum 1725)", tornResult.Value)
+	}
+
+	// A rewrite at the size the file really has, changing only lines before
+	// the probed window. The recorded state has to see this as a rewrite;
+	// if it still believes the pre-append size, it sees growth instead,
+	// resumes from an offset the file already reached, and reads nothing.
+	rewritten := make([]int, 0, 50)
+	for i := range 50 {
+		if i < 28 {
+			rewritten = append(rewritten, 99)
+			continue
+		}
+		rewritten = append(rewritten, 10+i)
+	}
+	writeLines(t, path, rewritten)
+	stamp := time.Unix(1_000_000, 0)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after the rewrite: %v", err)
+	}
+	if after.Value.sum != 3839 {
+		t.Fatalf("value = %+v, want the rewritten content read in full (sum 3839) -- a fold resumed past the end of the new file reads none of it", after.Value)
+	}
+	if after.Epoch != tornResult.Epoch+1 {
+		t.Fatalf("generation = %d after a same-size rewrite following a torn stat, want %d", after.Epoch, tornResult.Epoch+1)
+	}
+}
+
+// TestCache_RewriteInsideTheSecondStatWindowBumpsTheGeneration closes the
+// window the second stat opens. The probe runs first and the stat after it,
+// so a rewrite that also appends can land in between: the stat then reports a
+// file longer than the recorded size, which reads as the completed append
+// that a torn first stat implies, while the prefix the probe just vouched for
+// is gone. Growth alone is not evidence the fold survived, so the probe is
+// asked again once the length is known.
+func TestCache_RewriteInsideTheSecondStatWindowBumpsTheGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	original := make([]int, 0, 40)
+	for v := 10; v < 50; v++ {
+		original = append(original, v)
+	}
+	writeLines(t, path, original)
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	if st == nil {
+		t.Fatal("no state recorded for a folded path")
+	}
+
+	// Replace the file wholesale, longer than it was, at the one moment
+	// that lies between the probe and the stat.
+	replacement := make([]int, 50)
+	for i := range replacement {
+		replacement[i] = 99
+	}
+	stats := 0
+	c.stat = func(p string) (os.FileInfo, error) {
+		stats++
+		// Only the first: that is the stat settling the same-size
+		// ambiguity, the one whose window this test is about. The second
+		// is the post-fold stat that records the mtime of the content the
+		// fold just read, and rewriting under that one would describe a
+		// file this fold never saw.
+		if stats == 1 {
+			writeLines(t, p, replacement)
+		}
+		return os.Stat(p)
+	}
+
+	current, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torn := tornStatInfo{FileInfo: current, size: st.size, mod: current.ModTime().Add(time.Second)}
+	after, err := c.refresh(ctx, path, torn, extend)
+	if err != nil {
+		t.Fatalf("refresh across a rewrite in the stat window: %v", err)
+	}
+	if stats != 2 {
+		t.Fatalf("refresh stat'd %d times, want 2: the one that settles the same-size ambiguity, then the one that records the mtime of what the fold read", stats)
+	}
+	if after.Epoch != folded.Epoch+1 {
+		t.Fatalf("generation = %d, want %d -- the file grew, but the prefix this cache folded is gone, so the fold was discarded and a continuation keyed to it must not be accepted", after.Epoch, folded.Epoch+1)
+	}
+	if after.Value.sum != 4950 {
+		t.Fatalf("value = %+v, want the replacement read in full (sum 4950)", after.Value)
+	}
+}
+
+// TestCache_AppendDuringTheFoldRecordsAMatchingMtime pins the other half of
+// what the recorded state has to describe. When an append lands between the
+// stat and the fold's read, the fold consumes the larger file and the
+// recorded size follows it -- but the recorded mtime is still the one the
+// stat took before the write. The next lookup then sees the size it expects
+// with an mtime it does not, reads that as a same-size rewrite, and discards
+// a fold nothing invalidated.
+func TestCache_AppendDuringTheFoldRecordsAMatchingMtime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	base := countingLineExtend(t, &calls)
+	stamp := time.Unix(2_000_000, 0)
+	appended := false
+	extend := func(ctx context.Context, p string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+		if !appended {
+			appended = true
+			appendLines(t, p, []int{3})
+			if err := os.Chtimes(p, stamp, stamp); err != nil {
+				return intsFold{}, 0, err
+			}
+		}
+		return base(ctx, p, fromOffset, prior)
+	}
+
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if folded.Value.sum != 6 {
+		t.Fatalf("first fold = %+v, want the appended line read too (1+2+3)", folded.Value)
+	}
+
+	after, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if after.Epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a file nobody touched since the fold, want it to stay at %d -- the fold read the append, so the state it published has to describe the file it read", after.Epoch, folded.Epoch)
+	}
+	if after.Value.sum != 6 {
+		t.Fatalf("value = %+v, want 6", after.Value)
+	}
+}
+
+// TestCache_AppendRacingTheStatIsNotServedFromTheCachedFold pins that a
+// decision to read nothing rests on the length the probe's own handle
+// reports. The stat Get takes can predate an append that lands before the
+// probe opens the file; the recorded tail still matches, because an append
+// leaves it where it was, so a hit decided on that stale length returns a
+// fold that is missing everything the append added.
+func TestCache_AppendRacingTheStatIsNotServedFromTheCachedFold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	original := make([]int, 0, 40)
+	for v := 10; v < 50; v++ {
+		original = append(original, v)
+	}
+	writeLines(t, path, original)
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if folded.Value.sum != 1180 {
+		t.Fatalf("first fold summed %d, want 1180", folded.Value.sum)
+	}
+
+	c.mu.Lock()
+	st := c.epochStates[path]
+	c.mu.Unlock()
+	stale := tornStatInfo{FileInfo: mustStat(t, path), size: st.size, mod: st.mod}
+
+	appended := make([]int, 0, 10)
+	for v := 50; v < 60; v++ {
+		appended = append(appended, v)
+	}
+	appendLines(t, path, appended)
+
+	// The next Get's own stat is the one that predates the append; every
+	// later look at the file sees it.
+	stats := 0
+	c.stat = func(p string) (os.FileInfo, error) {
+		stats++
+		if stats == 1 {
+			return stale, nil
+		}
+		return os.Stat(p)
+	}
+
+	after, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after an append that raced the stat: %v", err)
+	}
+	if after.Value.sum != 1725 {
+		t.Fatalf("value = %+v, want the appended lines read too (sum 1725) -- the probe's handle reports a longer file than the stat did, so nothing here may be served from the cached fold", after.Value)
+	}
+	if after.Epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a pure append, want it to stay at %d", after.Epoch, folded.Epoch)
+	}
+}
+
+func mustStat(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+// TestCache_DeletedPathReportsOneStableGeneration pins both halves of what a
+// deletion means. The deletion itself is a discarded fold, so it advances the
+// generation and the absent read has to report the number it was judged by --
+// reporting 0 there says "nothing has ever happened to this path", which is
+// not what happened. Every later look at the same missing path is the same
+// absence, though, so it must report that same number rather than advancing
+// again: a generation that moves on every request refuses every continuation
+// on the request that carries it.
+func TestCache_DeletedPathReportsOneStableGeneration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after the delete: %v", err)
+	}
+	if !first.Absent {
+		t.Fatal("a deleted path must read as absent")
+	}
+	if first.Epoch <= folded.Epoch {
+		t.Fatalf("generation %d after a delete, want it past %d -- the fold this cache held is gone, and the read that says so has to be judged by the generation that says it", first.Epoch, folded.Epoch)
+	}
+
+	for i := range 4 {
+		again, err := c.Get(ctx, path, extend)
+		if err != nil {
+			t.Fatalf("Get %d after the delete: %v", i+2, err)
+		}
+		if !again.Absent {
+			t.Fatal("a deleted path must keep reading as absent")
+		}
+		if again.Epoch != first.Epoch {
+			t.Fatalf("generation %d on look %d at the same missing path, want it to stay at %d -- nothing happened between these reads, and a generation that moves anyway refuses every continuation on the request that carries it", again.Epoch, i+2, first.Epoch)
+		}
+	}
+
+	// An empty file is the recreate that a tombstone most easily mistakes
+	// for content: its length matches the tombstone's zero, and only the
+	// mtime disagrees, which is exactly the shape the same-size branches
+	// read as a rewrite. A tombstone describes no content, so none of those
+	// comparisons apply to it and none of their consequences should follow.
+	rescansBeforeEmpty := c.Stats().FullRescans
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after the empty recreate: %v", err)
+	}
+	if empty.Absent {
+		t.Fatal("a recreated path must not read as absent")
+	}
+	if empty.Epoch != first.Epoch {
+		t.Fatalf("generation %d after an empty file appeared, want the absence's %d -- the deletion was the discard; a tombstone has no content to compare this against", empty.Epoch, first.Epoch)
+	}
+	if got := c.Stats().FullRescans - rescansBeforeEmpty; got != 0 {
+		t.Fatalf("full rescans counted %d for the first fold after a tombstone, want 0 -- nothing was cached to rescan", got)
+	}
+
+	// The path coming back with content is a new fold, and it must not be
+	// mistaken for the absence that preceded it.
+	rescansBeforeContent := c.Stats().FullRescans
+	writeLines(t, path, []int{5, 6, 7})
+	recreated, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after the recreate: %v", err)
+	}
+	if recreated.Absent {
+		t.Fatal("a recreated path must not read as absent")
+	}
+	if recreated.Value.sum != 18 {
+		t.Fatalf("value = %+v, want the recreated content (5+6+7)", recreated.Value)
+	}
+	if got := c.Stats().FullRescans - rescansBeforeContent; got != 1 {
+		t.Fatalf("full rescans counted %d for a real append onto a cached empty fold, want 1", got)
+	}
+	// The deletion is the discard, and it already moved the generation; the
+	// path coming back does not discard anything further. What separates
+	// "absent at 1" from "present at 1" is Absent, which a continuation
+	// carries and compares. What must NOT happen is a restart at 0, which
+	// would read as a path nothing had ever happened to.
+	if recreated.Epoch != first.Epoch {
+		t.Fatalf("generation %d after the path came back, want the absence's %d -- the deletion was the discard, and a recreate must not restart the count", recreated.Epoch, first.Epoch)
+	}
+	if recreated.Epoch == 0 {
+		t.Fatal("a path that was deleted and recreated must not report the generation of a path nothing has happened to")
+	}
+}
+
+// TestCache_ZeroValueReadsWithoutCaching pins that the caching-disabled path
+// works on a Cache nobody constructed. maxEntries <= 0 is a documented,
+// deliberately inert configuration — every Get reads from byte zero and
+// nothing is retained — and a zero-value Cache is the simplest way to reach
+// it, so it must not depend on a field only New fills in.
+func TestCache_ZeroValueReadsWithoutCaching(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2, 3})
+	var calls []int64
+	var c Cache[intsFold]
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+
+	got, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get on a zero-value cache: %v", err)
+	}
+	if got.Value.sum != 6 {
+		t.Fatalf("value = %+v, want 1+2+3", got.Value)
+	}
+	if got.Absent {
+		t.Fatal("an existing file must not read as absent")
+	}
+
+	missing, err := c.Get(ctx, filepath.Join(dir, "gone.txt"), extend)
+	if err != nil {
+		t.Fatalf("Get on a missing path: %v", err)
+	}
+	if !missing.Absent {
+		t.Fatal("a missing path must read as absent even with caching disabled")
+	}
+}
