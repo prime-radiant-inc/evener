@@ -14,6 +14,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
@@ -506,4 +507,13 @@ func jsonBody(_ ToolArgs, output string, width int) string {
 		return h
 	}
 	return pretty.String()
+}
+
+// notesTextBody is jsonBody with the terminal-boundary control strip applied to
+// the tool's own output text. Shared-notes output is notes text, so a value
+// written before the write-path strip can still carry ESC/OSC/BEL/C1 controls;
+// every other body is deliberately left alone, because ANSI in shell, file, and
+// command output is legitimate.
+func notesTextBody(args ToolArgs, output string, width int) string {
+	return jsonBody(args, tuitext.StripControls(output), width)
 }

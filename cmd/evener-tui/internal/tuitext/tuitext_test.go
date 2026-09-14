@@ -312,3 +312,80 @@ func TestMultilineLines(t *testing.T) {
 		})
 	}
 }
+
+func TestStripControls(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		expected string
+	}{
+		{
+			name:     "empty",
+			text:     "",
+			expected: "",
+		},
+		{
+			// Ordinary text must pass through byte for byte: the helper removes
+			// controls, never reshapes anything else.
+			name:     "ordinary text passes through byte for byte",
+			text:     "hello, 世界 — déjà vu! 100%",
+			expected: "hello, 世界 — déjà vu! 100%",
+		},
+		{
+			name:     "newline and tab are kept",
+			text:     "line one\n\tindented\nline two",
+			expected: "line one\n\tindented\nline two",
+		},
+		{
+			name:     "CSI color sequence",
+			text:     "plain \x1b[31mred\x1b[0m text",
+			expected: "plain [31mred[0m text",
+		},
+		{
+			name:     "bare escape",
+			text:     "before\x1bafter",
+			expected: "beforeafter",
+		},
+		{
+			name:     "OSC title with BEL terminator",
+			text:     "title\x1b]0;pwned\x07rest",
+			expected: "title]0;pwnedrest",
+		},
+		{
+			name:     "BEL",
+			text:     "ding\x07dong",
+			expected: "dingdong",
+		},
+		{
+			name:     "C1 controls",
+			text:     "a\u0085b\u009bc\u009dd",
+			expected: "abcd",
+		},
+		{
+			name:     "DEL",
+			text:     "de\x7fl",
+			expected: "del",
+		},
+		{
+			// CR is dropped rather than kept, so a CRLF pair leaves no stray
+			// carriage return behind; newline survives.
+			name:     "C0 controls apart from newline and tab",
+			text:     "a\x00b\r\nc\x08d\x0be\x0cf",
+			expected: "ab\ncdef",
+		},
+		{
+			name:     "legacy multi-line note",
+			text:     "Human: line one\x1b[2J\n\tAgent: \u009b31mstill here\x07",
+			expected: "Human: line one[2J\n\tAgent: 31mstill here",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tuitext.StripControls(tt.text)
+			if got != tt.expected {
+				t.Errorf("StripControls(%q) = %q; want %q", tt.text, got, tt.expected)
+			}
+		})
+	}
+}
