@@ -1,6 +1,7 @@
 package appprojector
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -133,4 +134,63 @@ func turnShapes(turns []appwire.Turn) []turnShape {
 type turnShape struct {
 	turnKey string
 	items   []string
+}
+
+// A fold runs its layers in one flush: checkpoint, then summarize, sometimes a
+// third. Each publishes its own EventContextCompaction and each is written as
+// its own CONTEXT_COMPACTION record, so reload shows one turn per layer. A
+// live projection that folded the second and third into one turn would show a
+// different conversation before and after a restart — and the later layer's
+// items would land in a turn the earlier one had already completed.
+func TestAppEventProjectorEveryCompactionLayerGetsItsOwnTurn(t *testing.T) {
+	layers := []events.ContextCompactionData{
+		{Layer: "checkpoint", TurnsBefore: 42, TurnsAfter: 20, EstTokensBefore: 120000, EstTokensAfter: 60000},
+		{Layer: "summarize", TurnsBefore: 20, TurnsAfter: 8, EstTokensBefore: 60000, EstTokensAfter: 23000},
+		{Layer: "distill", TurnsBefore: 8, TurnsAfter: 6, EstTokensBefore: 23000, EstTokensAfter: 18000},
+	}
+	for _, count := range []int{2, 3} {
+		t.Run(fmt.Sprintf("%d layers", count), func(t *testing.T) {
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			var live []appwire.Turn
+			for _, layer := range layers[:count] {
+				for _, notification := range projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: layer}) {
+					live = applyLiveNotification(t, live, notification)
+				}
+			}
+
+			var entries []transcript.Entry
+			for _, layer := range layers[:count] {
+				entries = append(entries, transcript.Entry{Turn: compactionRecord(layer)})
+			}
+			cold, err := apptranscript.ItemTurnsFromEntries(transcript.Header{SessionID: "th_1"}, entries, coldCompactionProjector)
+			if err != nil {
+				t.Fatalf("cold projection: %v", err)
+			}
+
+			if got, want := turnShapes(live), turnShapes(cold); !reflect.DeepEqual(got, want) {
+				t.Fatalf("live and reload disagree over %d compaction layers:\nlive: %v\ncold: %v", count, got, want)
+			}
+			if got := len(turnShapes(live)); got != count {
+				t.Fatalf("live turns for %d layers = %d, want one per layer", count, got)
+			}
+		})
+	}
+}
+
+// compactionRecord builds the durable record the fold writes for one layer.
+func compactionRecord(layer events.ContextCompactionData) schema.Turn {
+	payload := schema.ContextCompaction{
+		Layer:           layer.Layer,
+		TurnsBefore:     layer.TurnsBefore,
+		TurnsAfter:      layer.TurnsAfter,
+		EstTokensBefore: layer.EstTokensBefore,
+		EstTokensAfter:  layer.EstTokensAfter,
+	}
+	turn := schema.NewTurn(schema.TurnContextCompaction, llm.System(payload.Announcement()))
+	turn.ContextCompaction = &payload
+	return turn
+}
+
+func coldCompactionProjector(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+	return apptranscript.ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
 }

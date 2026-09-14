@@ -1,7 +1,11 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
@@ -94,5 +98,65 @@ func TestHubModelMidTurnCompactionOpensItsOwnTurn(t *testing.T) {
 	// still working, and the frames say so.
 	if !got.session.processing || got.detail.State != appwire.ThreadStatusActive {
 		t.Fatalf("after a mid-turn compaction: processing=%v state=%q, want the session still active", got.session.processing, got.detail.State)
+	}
+}
+
+// A fold runs several layers in one flush and each is now its own turn on the
+// wire. The session view must show one line per layer, in its own turn, rather
+// than folding the later layers into the first one's.
+func TestHubModelEveryCompactionLayerRendersInItsOwnTurn(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "th_1"}
+
+	var updated tea.Model = m
+	for i, layer := range []string{"checkpoint", "summarize"} {
+		turnID := fmt.Sprintf("turn_%d", i+1)
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+				ThreadID: "th_1", Ref: "local:th_1", Turn: appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
+			}).Notification,
+		})
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+				"threadId": "th_1",
+				"turnId":   turnID,
+				"item": appwire.ThreadItem{
+					Type:        "systemMessage",
+					ID:          fmt.Sprintf("item_context_compaction_%d", i+1),
+					TurnID:      turnID,
+					Description: "Context compaction",
+					Text:        "Layer: " + layer,
+					EventKind:   appwire.ThreadItemEventKindContextCompaction,
+					Status:      appwire.TurnStatusCompleted,
+				},
+			}).Notification,
+		})
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+				"threadId": "th_1",
+				"ref":      "local:th_1",
+				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted},
+			}).Notification,
+		})
+	}
+
+	var system []transcript.ChatMessage
+	for _, msg := range updated.(hubModel).session.messages {
+		if msg.Kind == transcript.MsgSystem {
+			system = append(system, msg)
+		}
+	}
+	if len(system) != 2 {
+		t.Fatalf("system messages = %+v, want one per compaction layer", system)
+	}
+	if system[0].TurnID == system[1].TurnID {
+		t.Fatalf("both layers rendered in turn %q, want a turn each", system[0].TurnID)
+	}
+	if !strings.Contains(system[0].Text, "checkpoint") || !strings.Contains(system[1].Text, "summarize") {
+		t.Fatalf("layers rendered out of order or with the wrong text: %+v", system)
 	}
 }

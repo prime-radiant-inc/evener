@@ -1775,6 +1775,11 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 		contains    []string
 		notContains []string
 		singleLine  bool
+		// ownTurn marks an event whose announcement is a standalone turn of
+		// its own (the shape reload gives its record), so the frames are that
+		// turn's lifecycle with the item inside it rather than one
+		// turn/completed carrying it.
+		ownTurn bool
 	}{
 		{
 			name:        "turn limit max turns",
@@ -1811,6 +1816,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			}},
 			description: "Context compaction",
 			contains:    []string{"Layer: L4", "Turns: 42 -> 8", "Estimated tokens: 120000 -> 23000"},
+			ownTurn:     true,
 		},
 		{
 			name: "plugin loaded",
@@ -1970,14 +1976,22 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			projector := NewAppEventProjector("th_1", "local:th_1")
 			out := projector.Project(tt.event)
 
-			if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
-				t.Fatalf("notifications=%+v", out)
+			var item appwire.ThreadItem
+			if tt.ownTurn {
+				if len(out) != 3 || out[0].Method != appwire.NotifyTurnStarted || out[2].Method != appwire.NotifyTurnCompleted {
+					t.Fatalf("notifications=%+v", out)
+				}
+				item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+			} else {
+				if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+					t.Fatalf("notifications=%+v", out)
+				}
+				turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+				if turn.Status != appwire.TurnStatusCompleted || turn.ItemsView != "full" || len(turn.Items) != 1 {
+					t.Fatalf("turn=%+v", turn)
+				}
+				item = turn.Items[0]
 			}
-			turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
-			if turn.Status != appwire.TurnStatusCompleted || turn.ItemsView != "full" || len(turn.Items) != 1 {
-				t.Fatalf("turn=%+v", turn)
-			}
-			item := turn.Items[0]
 			if item.Type != "systemMessage" || item.Description != tt.description || item.Status != appwire.TurnStatusCompleted {
 				t.Fatalf("item=%+v", item)
 			}
@@ -2243,14 +2257,16 @@ func TestAppEventProjectorContextCompactionCarriesStructuredNumbers(t *testing.T
 		EstTokensAfter:  23000,
 	}})
 
-	if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+	// A compaction is its own standalone turn, so the frames are that turn's
+	// lifecycle with the announcement inside it.
+	if len(out) != 3 || out[0].Method != appwire.NotifyTurnStarted || out[2].Method != appwire.NotifyTurnCompleted {
 		t.Fatalf("notifications=%+v", out)
 	}
-	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
-	if len(turn.Items) != 1 {
-		t.Fatalf("turn=%+v", turn)
+	params, ok := out[1].Params.(appwire.ItemLifecycleParams)
+	if out[1].Method != appwire.NotifyItemCompleted || !ok {
+		t.Fatalf("announcement frame=%+v", out[1])
 	}
-	item := turn.Items[0]
+	item := params.Item
 	if len(item.Raw) == 0 {
 		t.Fatalf("compaction item should carry structured numbers in Raw, got none: %+v", item)
 	}

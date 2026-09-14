@@ -1073,15 +1073,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// reconciling by turn shows them twice. Same shape as EventEnvironment
 		// above, for the same reason.
 		//
-		// With no turn running it already stands alone, in the gap bucket
-		// every no-active-turn announcement shares (preTurnAnnouncementTurnID)
-		// — that bucket is the convention for all of them, and a compaction is
-		// not the place to change it.
-		if p.activeTurnID == "" {
-			return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
-		}
+		// EVERY compaction event does this, including the second and third
+		// layer of one fold: each layer publishes its own event and is
+		// written as its own record, so sharing a turn — the gap bucket every
+		// other no-active-turn announcement folds into — would put two
+		// layers in one live turn that reload shows as two.
 		reserved := p.reservedTurnID
 		wasRealTurnStarted := p.anyTurnStarted
+		interrupted := p.activeTurnID != ""
 		p.reservedTurnID = ""
 		_, out := p.openTurn("", event.Timestamp)
 		// Compaction is session bookkeeping, not a runnable turn: prelude and
@@ -1089,12 +1088,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		p.anyTurnStarted = wasRealTurnStarted
 		out = append(out, p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))...)
 		out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
-		// The round that was running is still running: a compaction happens
-		// mid-turn, at a model call. The turn it interrupted was just
-		// announced complete, and a client that reads "the active turn
-		// completed" as "the session went idle" (the TUI does, kata s8x8)
-		// would offer to send into a session still working. Say what is true.
-		out = append(out, p.threadStatus(appwire.ThreadStatusActive))
+		if interrupted {
+			// The round that was running is still running: a compaction
+			// happens mid-turn, at a model call. The turn it interrupted was
+			// just announced complete, and a client that reads "the active
+			// turn completed" as "the session went idle" (the TUI does, kata
+			// s8x8) would offer to send into a session still working. Say
+			// what is true — and say nothing when no turn was running, which
+			// would claim work that is not happening.
+			out = append(out, p.threadStatus(appwire.ThreadStatusActive))
+		}
 		p.reservedTurnID = reserved
 		return out
 	case events.EventPluginLoaded:
