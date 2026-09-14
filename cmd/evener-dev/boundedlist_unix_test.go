@@ -970,3 +970,40 @@ func TestAwaitDrainDoesNotRestartItsGraceForEverySignal(t *testing.T) {
 		t.Fatal("awaitDrain never returned against a 200ms grace: every signal started it over")
 	}
 }
+
+// signallingWriter delivers a signal while the run is handing over the
+// command's output: the last window in which one can arrive, and the one the
+// select that was watching for signals has already left.
+type signallingWriter struct {
+	buf     bytes.Buffer
+	signals chan<- os.Signal
+	sig     syscall.Signal
+	sent    bool
+}
+
+func (w *signallingWriter) Write(p []byte) (int, error) {
+	if !w.sent {
+		w.sent = true
+		w.signals <- w.sig
+	}
+	return w.buf.Write(p)
+}
+
+func TestBoundedListTakesASignalThatLandsWhileItHandsOverTheOutput(t *testing.T) {
+	// The command succeeded, and the operator interrupted the run while its
+	// output was being written. Reporting the command's own success there
+	// tells the caller the work it asked to stop was finished for it.
+	signals := make(chan os.Signal, 1)
+	stdout := &signallingWriter{signals: signals, sig: syscall.SIGINT}
+	var stderr bytes.Buffer
+	args := []string{"-timeout", "30s", "-attempts", "1", "-grace", "5s", "--", "sh", "-c", "echo listed"}
+	code := boundedListWith(args, stdout, &stderr, signals)
+	if want := 128 + int(syscall.SIGINT); code != want {
+		t.Fatalf("exit code = %d, want %d: the run was interrupted while its output was handed over; stderr = %q", code, want, stderr.String())
+	}
+	// The output is still handed over in full: the signal changes the answer
+	// about the run, not what the command produced.
+	if got := stdout.buf.String(); got != "listed\n" {
+		t.Fatalf("stdout = %q, want the command's output", got)
+	}
+}

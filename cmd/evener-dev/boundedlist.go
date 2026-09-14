@@ -539,7 +539,11 @@ var realGroupStopper = groupStopper{
 // sends nothing, because Exists says so first. The window between that check
 // and the signal is microseconds against a pid space handed out in sequence,
 // and closing it would mean probing process identity, which is a great deal of
-// machinery for a race nothing here has been able to produce.
+// machinery for a race nothing here has been able to produce. Closing it
+// completely would mean holding a sentinel process in the group for as long as
+// the attempt lives, so the id cannot be recycled at all: a process per
+// enumeration, and the gate enumerates every module, bought against that same
+// race.
 //
 // A group still there after the SIGKILL is the same situation as a child that
 // could not be reaped, and gets the same answer: false, and the caller stops
@@ -649,25 +653,16 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 		case result.stuck && result.interrupted == 0:
 			// Retrying stacks another `go list` on the volume that already
 			// has one stuck on it, and the attempt has said why on stderr.
-			if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
-				return 1
-			}
-			return 124
+			return handOver(stdout, result, 124, latch, stderr)
 		case result.interrupted != 0:
 			// An interrupt is an answer about this run, not about the command:
 			// retrying it would be the opposite of what was asked.
-			if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
-				return 1
-			}
-			return result.exitCode
+			return handOver(stdout, result, result.exitCode, latch, stderr)
 		case !result.timedOut:
 			// Whatever it decided, it decided: a command that exits non-zero
 			// has an answer about its input, and repeating it repeats the
 			// answer.
-			if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
-				return 1
-			}
-			return result.exitCode
+			return handOver(stdout, result, result.exitCode, latch, stderr)
 		case attempt < *attempts:
 			_, _ = fmt.Fprintf(stderr, "bounded-list: attempt %d of %d timed out after %s; retrying.\n",
 				attempt, *attempts, *timeout)
@@ -676,13 +671,35 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 				argv[0], *timeout, attemptCount(*attempts))
 			// Whatever it managed to print before the bound is the evidence a
 			// caller has to work from, so it is passed through here too.
-			if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
-				return 1
-			}
-			return 124
+			return handOver(stdout, result, 124, latch, stderr)
 		}
 	}
 	return 124
+}
+
+// handOver writes what the command produced and gives the run its answer.
+//
+// A signal that arrives while the output is being written has nowhere else to
+// be noticed: writing it is the last thing this helper does, and signal.Stop
+// drops whatever arrived as soon as boundedList returns. Without the poll
+// below, a run the operator interrupted there reports the command's own
+// status -- a success, often enough, for work the operator asked to stop.
+//
+// An attempt that latched a signal itself has already accounted for it, and
+// its answer stands: a command that decided before the signal arrived keeps
+// its own status, and one this helper stopped already carries 128+signal.
+// Only a run that had seen no signal at all can have its answer changed here.
+func handOver(stdout io.Writer, result attemptResult, code int, latch *signalLatch, stderr io.Writer) int {
+	if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
+		code = 1
+	}
+	if result.interrupted != 0 {
+		return code
+	}
+	if sig := latch.poll(); sig != 0 {
+		return 128 + int(sig)
+	}
+	return code
 }
 
 // forwardOutput hands the caller an answer in full, and says so when it could
