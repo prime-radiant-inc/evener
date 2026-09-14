@@ -25,6 +25,7 @@ import { mkdtempSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import {
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
@@ -114,7 +115,7 @@ function parseArgs(argv) {
   return out;
 }
 
-class Driver {
+export class Driver {
   constructor({ url, artifactDir, controlPath, milestonePath }) {
     this.url = url;
     this.artifactDir = artifactDir;
@@ -364,10 +365,16 @@ class Driver {
     return evaluate(this.send, this.composerStateExpr(ref));
   }
 
-  railRowsExpr() {
-    return `(() => ({
-      rows: [...document.querySelectorAll("[data-session-ref]")].map((el) => ({ ref: el.dataset.sessionRef, text: el.textContent.slice(0, 80) })),
-    }))()`;
+  // railRowsExpr returns the expression the rail readiness wait evaluates.
+  // minRows turns it into a genuine predicate: the expression yields null until
+  // the rail holds at least that many rows, so waitPage actually blocks instead
+  // of returning an immediate (and always-truthy) { rows: [] }. The default 0
+  // preserves the always-{ rows } shape dumpState's evaluator relies on.
+  railRowsExpr(minRows = 0) {
+    return `(() => {
+      const rows = [...document.querySelectorAll("[data-session-ref]")].map((el) => ({ ref: el.dataset.sessionRef, text: el.textContent.slice(0, 80) }));
+      return rows.length >= ${minRows} ? { rows } : null;
+    })()`;
   }
 
   queueStripExpr() {
@@ -762,7 +769,7 @@ async function runScenarios(driver) {
     timeoutMs: 30000,
     label: "app shell (rail brand)",
   });
-  const rows = await driver.waitPage(driver.railRowsExpr(), { timeoutMs: 30000, label: "rail rows" });
+  const rows = await driver.waitPage(driver.railRowsExpr(2), { timeoutMs: 30000, label: "rail rows" });
   check(rows.rows.length >= 2, `expected two live sessions in the rail, found ${rows.rows.length}`);
   // The control path targets helper alpha's OWN daemon, and rail order is not
   // start order: pin each session to the ref the Go owner derived from the
@@ -1249,7 +1256,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Only run the guard when invoked as the entrypoint: importing this module
+// (the unit test beside it) must not start Chrome.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
