@@ -1107,3 +1107,143 @@ deleted slot's observations now reading the operation that owns the selection,
 plus one diagnostic-only change in the live harness. It also corrected the
 review brief rather than the code: the brief said six new Go tests where five
 were added.
+
+## Ninth round: roborev jobs 10047 and 10100 (2026-09-14)
+
+Two verdicts landed on `f1cbf82c6` — an automatically queued job (10047) and an
+explicitly triggered one (10100) — reporting no critical or high issues, five
+distinct Medium findings and three Lows. Jesse's ruling scoped this round to
+**fix the five Mediums and disclose the three Lows as follow-ups**, so the Lows
+remain in the tree by decision. All five Mediums were fixed red-first, and every
+new test was proved load-bearing by reverting the deciding production hunk in
+place and capturing the failure; the files were then restored byte-identical
+(sha256-verified where the parent performed the revert itself).
+
+### M1 — an explicit user invocation left `UserAuthorized` false
+
+An explicit user invocation of an unchanged, already model-activated skill took
+`planSkillDeliveryCommit`'s `already_present` path, which updated nothing: the
+inventory kept the earlier model-route record, `UserAuthorized` stayed false,
+and once the source set `disable-model-invocation` the reload the user had
+authorized was denied.
+
+`planSkillDeliveryCommit` now builds the activation provenance with
+`deliveryActivationRecordLocked` for an unchanged body when the obligation's
+route is a genuine user route and the prior record lacks that authorization, and
+`commitSkillDelivery`'s `already_present` case writes that record into the
+inventory — still no duplicate body, still no `EventSkillActivated`.
+
+`TestSkillDelivery_UserReinvocationRecordsAuthorization` drives a real model
+activation then a real `/opaque` re-invocation of the identical body and asserts
+the recorded authorization, the single retained envelope, one new-body event,
+and that a `compaction_reload` of the recorded source is allowed after the
+source disables model invocation. Reverting `agent/session_skill_delivery.go` to
+`f1cbf82c6` fails it with "user re-invocation did not record its authorization:
+... Route:model_tool ... UserAuthorized:false".
+
+### M5 — the changed-content outcome omitted its previous provenance
+
+`prepareSkillDelivery`'s delivered outcome for changed disk content recorded
+only the new identity and controls, although
+`schema.SkillActivationOutcome.PreviousIdentity`/`PreviousControls` exist for
+exactly that provenance and the reload path already populates them. The outcome
+now carries the pre-change identity and the prior inventory record's controls;
+the notification text is unchanged.
+
+`TestSkillDelivery_ChangedSourceRecordsPreviousProvenance` changes the source
+and folds the old carrier away between the provisional result and dispatch, then
+pins both fields on the recorded outcome. Under the same revert it fails with
+"outcome previous identity = <nil>, want the pre-change identity ...".
+
+### M2 — a failed admission could leave the selection silently undelivered
+
+`admitSteeringSelectionBatch` only warned on an admission save failure. The
+steering prose was already durable, the obligations were rolled back, and the
+next model request processed the selection without its instructions. The initial
+fix retained the batch in memory and retried it at the head of
+`prepareModelRequestWithError`, so the request either carried the selected
+instructions or failed visibly; a failure whose obligations *did* reach disk is
+deliberately not retained, because the dispatch seam already re-delivers those
+bodies (`TestSkillActivation_LostSteeringAdmissionGatesNextDispatch`).
+
+**The round's independent review then found the fix partial**, and that finding
+is accepted: `reconcilePendingSkillSelections` discarded its own admission error
+and armed nothing, so a *restored* session with an unwritable metadata store
+built requests with the steering prose, no instructions and no error. The
+retain-and-gate behavior is now one shared helper
+(`admitPreparedSkillSelection`) called by both the live steering consumption and
+the restore reconciliation. `TestSkillActivation_RestoredSelectionAdmissionGatesNextDispatch`
+makes the metadata path unwritable before `RestoreSessionFromMeta`; reverting
+the reconcile call site fails it with "the restored session prepared a request
+without the selection's instructions and without an error".
+
+### M3/M3b (one root) — the reload budget ignored staged notifications
+
+`admitCompactedSkillReloads` measured instruction bodies only. The reminder and
+explanation turns appended by preparation and admission therefore did not count
+against the window, so the final rebuilt request could exceed it and fail the
+whole turn after the receipts had been consumed.
+
+`prepareCompactedSkillReloads` now reports the input-token cost of the turns it
+appended; admission folds that into the running total, adds each notification it
+appends itself, and reserves — before admitting any body — one notice per item
+still to be processed, released as each item is handled. The reservation is what
+keeps a body from consuming headroom a later rejection's explanation needs.
+
+Four tests pin it. `TestSkillReload_Budget_PreparedReminderCountsAgainstAdmission`
+(the same body fits when no reminder precedes it, and is rejected with
+`context_budget` when one does) and
+`TestSkillReload_Budget_StagedNotificationsStayWithinWindow` fail when the
+staged-token fold is removed ("reload outcome = status \"pending\" ... want
+failed context_budget", and the running-total assertion);
+`TestSkillReload_Budget_RejectionExplanationCountsAgainstLaterBodies` pins the
+explanation's own tokens. **During parent verification the notification reserve
+turned out to be unpinned** — removing it left all three green — so
+`TestSkillReload_Budget_LaterExplanationReservedBeforeEarlierBody` was added and
+is load-bearing for it ("big reload outcome = status \"pending\" code \"\", want
+failed context_budget: the earlier body must not consume headroom the later
+explanation needs").
+
+### M4 — a prepared selection could be silently retargeted at restore
+
+The durable prepared record stored only the canonical name, so
+`reconcilePendingSkillSelections` re-resolved it against the current catalog: a
+same-name source change during the admission-loss window silently retargeted the
+selection, against the approved never-retarget-a-collision contract.
+`schema.SkillSelectionInvocation` now records the exact
+`SkillContentIdentity` preparation resolved, and the re-drive pins that source.
+
+`TestSkillActivation_PreparedSelectionPinsRecordedSource` deletes the recorded
+source and plants a same-name replacement elsewhere; without the pin the
+reconcile adopts the replacement ("reconciled obligations = [{... Source:
+.../.agents/skills/opaque/SKILL.md ...}], want none: the recorded source is gone
+and a same-name replacement must never be adopted"), and with it the re-drive
+fails visibly on the recorded source.
+
+### Assertion audit
+
+The round adds nine tests (eight fixed-test additions plus the reserve test).
+Exactly **15 pre-existing lines were removed, all in
+`agent/session_skill_reload_test.go` and all mechanical carrier updates for the
+two changed function signatures** — identical inputs, assertions, pairings and
+tolerances; zero removed lines elsewhere in the range. The round's independent
+review verified this count and verified that each of the nine new tests fails
+under its own decisive revert, with none failing to fail. It also falsified one
+premise of the review brief rather than the code.
+
+### Disclosed residuals
+
+- A **preparation** failure during restore reconciliation still only warns. The
+  recorded source is gone, so there is nothing to admit, and gating on it would
+  wedge the session with no in-process recovery path while the durable input
+  record re-drives the preparation at the next restore. The round's reviewer
+  examined this and agreed the residual is honest rather than a remaining silent
+  omission.
+- The three Lows are deliberately unfixed per Jesse's ruling, and were confirmed
+  still present by the round's review: plugin manifest diagnostics discarded in
+  past-thread discovery (`cmd/evener-hub/app_threadread.go` ~363); unreachable
+  `skillChipDetails` diagnostic branches against the daemon's filtered catalog
+  (`cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx` ~1011-1018
+  against `agent/status.go` ~173-181); and identity-less terminal cancellation
+  receipts that never coalesce or prune
+  (`agent/session_skill_compaction.go` ~292-304).
