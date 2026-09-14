@@ -241,7 +241,7 @@ func TestForceStopRevalidationComparesTimestampInstants(t *testing.T) {
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{PID: 4242, SessionID: "current", WorkspaceRef: "local:stable", StartedAt: time.Date(2026, 9, 7, 12, 0, 0, 0, time.FixedZone("offset", 1200))}
 	writeRendezvous(t, runDir, entry)
-	previous, err := forceStopEntry(runDir, "stable", nil, nil, "")
+	previous, err := forceStopEntry(runDir, "stable", nil, nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestForceStopRejectsDiscoveryChangeDuringLockedRevalidation(t *testing.T) {
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{PID: 4242, SessionID: "current", WorkspaceRef: "local:stable"}
 	writeRendezvous(t, runDir, entry)
-	previous, err := forceStopEntry(runDir, "stable", nil, nil, "")
+	previous, err := forceStopEntry(runDir, "stable", nil, nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1811,5 +1811,83 @@ func TestForceStopExpectedDaemonMaliciousArbitraryInput(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("malicious identity opened the victim process: %v", events)
+	}
+}
+
+// TestForceStopResolvesExactIdentityAmongSameRefResidents is the M5 regression:
+// two live residents share the requested ref but are different daemons, so the
+// ref alone cannot choose between them. A request carrying the addressed
+// daemon's full rendered identity must resolve and stop exactly that daemon
+// instead of failing the ref-ambiguity check before the identity is consulted.
+func TestForceStopResolvesExactIdentityAmongSameRefResidents(t *testing.T) {
+	runDir := t.TempDir()
+	const shared = "shared-ref"
+	addressed := rendezvous.Entry{PID: 4311, SessionID: shared, ThreadID: shared, WorkspaceRef: "local:" + shared, StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	other := addressed
+	other.PID = 4312
+	other.StartedAt = addressed.StartedAt.Add(time.Second)
+	other.StateDir = t.TempDir()
+	writeRendezvous(t, runDir, addressed)
+	writeRendezvous(t, runDir, other)
+
+	var opened []int
+	var events []string
+	controller := forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+		opened = append(opened, target.PID)
+		if target.PID != addressed.PID {
+			t.Errorf("force stop opened PID %d, want the addressed %d", target.PID, addressed.PID)
+		}
+		return &forceStopProcess{events: &events}, nil
+	})
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), DaemonProcesses: controller}
+	expected := daemonIdentity(addressed)
+	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + shared, ExpectedDaemon: &expected}, nil); err != nil {
+		t.Fatalf("addressed daemon was not resolved: %v", err)
+	}
+	if !reflect.DeepEqual(opened, []int{addressed.PID}) {
+		t.Fatalf("opened daemons = %v, want only the addressed %d", opened, addressed.PID)
+	}
+	if !reflect.DeepEqual(events, []string{"kill", "wait", "close"}) {
+		t.Fatalf("stop events = %v", events)
+	}
+}
+
+// TestForceStopRefusesStaleIdentityAmongSameRefResidents pins M5's safety
+// constraint: when several live residents share a ref, a rendered identity that
+// matches none of them must never fall back to a same-ref replacement.
+func TestForceStopRefusesStaleIdentityAmongSameRefResidents(t *testing.T) {
+	runDir := t.TempDir()
+	const shared = "shared-ref"
+	rotated := rendezvous.Entry{PID: 4321, SessionID: shared, ThreadID: shared, WorkspaceRef: "local:" + shared, StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	stale := daemonIdentity(rotated)
+	current := rotated
+	current.PID = 4322
+	current.StartedAt = rotated.StartedAt.Add(time.Second)
+	current.StateDir = t.TempDir()
+	twin := current
+	twin.PID = 4323
+	twin.StartedAt = current.StartedAt.Add(time.Second)
+	twin.StateDir = t.TempDir()
+	writeRendezvous(t, runDir, current)
+	writeRendezvous(t, runDir, twin)
+
+	locks := hubcore.NewResumeLocks()
+	var events []string
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		return &forceStopProcess{events: &events}, nil
+	})}
+	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + shared, ExpectedDaemon: &stale}, nil)
+	if err == nil {
+		t.Fatal("stale identity was accepted against same-ref replacements")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("stale refusal is not a typed wire error: %v", err)
+	}
+	if slices.Contains(events, "kill") || slices.Contains(events, "wait") {
+		t.Fatalf("stale identity signaled a same-ref replacement: %v", events)
+	}
+	if state := locks.RecoveryState(shared); state.Stopping != 0 || state.ResumeRequired {
+		t.Fatalf("stale identity fenced recovery: %+v", state)
 	}
 }

@@ -27,7 +27,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		return appwire.Unavailable("local session ownership is not configured")
 	}
 	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
-	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget)
+	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
@@ -129,7 +129,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if currentTarget != recoveryTarget {
 		return appwire.Unavailable("session recovery authority changed; retry force stop")
 	}
-	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget)
+	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget, params.ExpectedDaemon)
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
@@ -198,14 +198,14 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 // forceStopOwnershipUnchanged revalidates discovery after acquiring every
 // alias lock, before signaling the verified process.
 func forceStopOwnershipUnchanged(runDir, sessionID string, previous rendezvous.Entry, controller daemonprocess.Controller, recoveryTarget string) error {
-	_, err := forceStopRereadEntry(runDir, sessionID, previous, controller, recoveryTarget)
+	_, err := forceStopRereadEntry(runDir, sessionID, previous, controller, recoveryTarget, nil)
 	return err
 }
 
 // forceStopRereadEntry revalidates discovery after acquiring every alias
 // lock and returns the current verified entry for the caller's own fences.
-func forceStopRereadEntry(runDir, sessionID string, previous rendezvous.Entry, controller daemonprocess.Controller, recoveryTarget string) (rendezvous.Entry, error) {
-	current, err := forceStopEntry(runDir, sessionID, controller, &previous, recoveryTarget)
+func forceStopRereadEntry(runDir, sessionID string, previous rendezvous.Entry, controller daemonprocess.Controller, recoveryTarget string, expected *appwire.DaemonIdentity) (rendezvous.Entry, error) {
+	current, err := forceStopEntry(runDir, sessionID, controller, &previous, recoveryTarget, expected)
 	if err != nil {
 		return rendezvous.Entry{}, err
 	}
@@ -231,6 +231,14 @@ func expectedDaemonConflict(entry rendezvous.Entry, expected *appwire.DaemonIden
 	return nil
 }
 
+// forceStopIdentityMatches reports whether entry is the exact resident the
+// caller rendered into expected. A nil expectation preserves ref-only
+// resolution. It reuses expectedDaemonConflict so selection and the caller's
+// final conflict check compare through one identity implementation.
+func forceStopIdentityMatches(entry rendezvous.Entry, expected *appwire.DaemonIdentity) bool {
+	return expectedDaemonConflict(entry, expected) == nil
+}
+
 // sameForceStopEntry compares persisted ownership values; timestamp location
 // pointers may differ across reads even when they represent the same instant.
 func sameForceStopEntry(a, b rendezvous.Entry) bool {
@@ -241,10 +249,32 @@ func sameForceStopEntry(a, b rendezvous.Entry) bool {
 	return a == b
 }
 
-func forceStopEntry(runDir, sessionID string, controller daemonprocess.Controller, previous *rendezvous.Entry, recoveryTarget string) (rendezvous.Entry, error) {
+func forceStopEntry(runDir, sessionID string, controller daemonprocess.Controller, previous *rendezvous.Entry, recoveryTarget string, expected *appwire.DaemonIdentity) (rendezvous.Entry, error) {
 	entries, err := rendezvous.ListStrict(runDir)
 	if err != nil {
 		return rendezvous.Entry{}, err
+	}
+	// A caller that names one exact daemon resolves it before the ref-ambiguity
+	// checks: two live residents can share a ref, and the rendered identity says
+	// which one the request means. Candidates must also claim the requested
+	// session, so an identity can never retarget an unrelated resident. An
+	// identity that matches no claim leaves the list untouched, so the caller's
+	// own identity conflict check still refuses a stale or foreign row rather
+	// than a same-ref replacement being selected.
+	if expected != nil {
+		var addressed []rendezvous.Entry
+		for _, entry := range entries {
+			if !forceStopIdentityMatches(entry, expected) {
+				continue
+			}
+			if entry.SessionID != sessionID && entry.ThreadID != sessionID && entry.WorkspaceRef != "local:"+sessionID {
+				continue
+			}
+			addressed = append(addressed, entry)
+		}
+		if len(addressed) != 0 {
+			entries = addressed
+		}
 	}
 	// Retained crash markers are evidence, not competing live ownership. Only
 	// inspect overlapping claims, and retain every unresolved process identity.

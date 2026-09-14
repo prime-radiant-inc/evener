@@ -1415,7 +1415,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// Re-root the retirement controller at the replacement. The lease held
 		// since the top of this func keeps the controller resident, so this
 		// cannot fail; the idle interval restarts against the new root.
-		_ = retirement.AttachRoot(newSess)
+		if err := retirement.AttachRoot(newSess); err != nil {
+			serveLogf(os.Stderr, newSess.ID(), "retirement root re-attach failed: %v", err)
+		}
 		retirementObserve("root_published", newSess.ID())
 		// The commit above zeroed the envelope with the identity it described.
 		// Re-seed from the replacement session here rather than inside the

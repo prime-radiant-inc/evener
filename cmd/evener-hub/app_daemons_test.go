@@ -824,3 +824,56 @@ func TestDaemonActionDiscoveryReadFailure(t *testing.T) {
 		t.Fatalf("failed discovery left a recovery fence: %+v", state)
 	}
 }
+
+// TestDaemonActionRetireResolvesExactIdentityAmongSameRefResidents is the M5
+// retire-path regression: when two live residents share a ref but differ in
+// identity, a retire request carrying the addressed daemon's full rendered
+// identity must reach that daemon instead of being rejected as ref-ambiguous
+// before the identity is consulted.
+func TestDaemonActionRetireResolvesExactIdentityAmongSameRefResidents(t *testing.T) {
+	const shared = "shared-retire"
+	runDir := t.TempDir()
+	retireCalls := 0
+	var forwarded appwire.DaemonIdentity
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonRetire, func(_ context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
+		retireCalls++
+		forwarded = params.Identity
+		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: *residentLifecycleForTest()}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	addressed := rendezvous.Entry{PID: 4411, SessionID: shared, ThreadID: shared, WorkspaceRef: "local:" + shared, StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], StartedAt: time.Now()}
+	other := addressed
+	other.PID = 4412
+	other.StartedAt = addressed.StartedAt.Add(time.Second)
+	other.Endpoint = "ws://127.0.0.1:1/rpc"
+	other.StateDir = t.TempDir()
+	writeRendezvous(t, runDir, addressed)
+	writeRendezvous(t, runDir, other)
+
+	// Both residents must look live to the ambiguity probe: a fake PID that the
+	// real controller reports exited would be collapsed by the pre-existing
+	// exited-claim path before the ambiguity check this test is about.
+	var probeEvents []string
+	controller := forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		return &forceStopProcess{events: &probeEvents}, nil
+	})
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), DaemonProcesses: controller, DaemonIdleTimeout: time.Hour}
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	identity := daemonIdentity(addressed)
+	retired, err := client.DaemonRetire(t.Context(), appwire.DaemonRetireParams{Identity: identity})
+	if err != nil || !retired.Accepted {
+		t.Fatalf("addressed retire=%+v err=%v", retired, err)
+	}
+	if retireCalls != 1 || forwarded != identity {
+		t.Fatalf("retire forwarded identity=%+v calls=%d, want %+v exactly once", forwarded, retireCalls, identity)
+	}
+}

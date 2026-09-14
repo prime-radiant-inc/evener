@@ -72,9 +72,17 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 	if controller == nil {
 		controller = daemonprocess.NewController()
 	}
+	// The rendezvous entry may identify its session only through ThreadID; the
+	// controller rejects an empty session identity, which would report this
+	// owner as retiring instead of awaiting its exit. Fall back the same way the
+	// force-stop path does (app_force_stop.go).
+	sessionID := entry.SessionID
+	if sessionID == "" {
+		sessionID = entry.ThreadID
+	}
 	proc, err := controller.Open(daemonprocess.Target{
 		PID:       entry.PID,
-		SessionID: entry.SessionID,
+		SessionID: sessionID,
 		StateDir:  entry.StateDir,
 		StartedAt: entry.StartedAt,
 	})

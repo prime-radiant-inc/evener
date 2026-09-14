@@ -1065,3 +1065,47 @@ func TestSameDaemonIdentityUsesExactOwnership(t *testing.T) {
 		}
 	}
 }
+
+// TestAwaitRetiredOwnerFallsBackToThreadID is the M7 regression: a rendezvous
+// entry that identifies its session only through ThreadID (SessionID empty)
+// must still be opened and waited on. Without the fallback, controller.Open
+// rejects the empty session identity with a non-ErrExited error and
+// awaitRetiredOwner returns LifecycleUnavailable("retiring") immediately
+// instead of awaiting the process exit.
+func TestAwaitRetiredOwnerFallsBackToThreadID(t *testing.T) {
+	entry := rendezvous.Entry{PID: 4331, ThreadID: "thread-only", StateDir: t.TempDir(), StartedAt: time.Now()}
+	proc := &waitingForceStopProcess{entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(proc.release) }) }
+	defer release()
+
+	var openedSessionID string
+	controller := forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+		openedSessionID = target.SessionID
+		if target.SessionID == "" {
+			// daemonprocess.controller.Open rejects an empty session identity
+			// with a non-ErrExited error; the caller reports that as retiring.
+			return nil, errors.New("missing or invalid daemon session identity")
+		}
+		if target.PID != entry.PID || !target.StartedAt.Equal(entry.StartedAt) {
+			return nil, errors.New("unexpected process target")
+		}
+		return proc, nil
+	})
+	cfg := hubcore.WebConfig{DaemonProcesses: controller}
+	result := make(chan error, 1)
+	go func() { result <- awaitRetiredOwner(t.Context(), cfg, entry) }()
+	select {
+	case <-proc.entered:
+		// It reached Wait: the retired owner's exit is what is awaited.
+	case err := <-result:
+		t.Fatalf("returned before awaiting the retired owner's exit: %v", err)
+	}
+	release()
+	if err := <-result; err != nil {
+		t.Fatalf("confirmed exit not accepted: %v", err)
+	}
+	if openedSessionID != entry.ThreadID {
+		t.Fatalf("opened session identity = %q, want the ThreadID fallback %q", openedSessionID, entry.ThreadID)
+	}
+}

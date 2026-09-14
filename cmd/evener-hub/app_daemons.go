@@ -177,7 +177,7 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable("local session ownership is not configured")
 	}
 	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
-	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget)
+	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, &params.Identity)
 	if err != nil {
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable(err.Error())
 	}
@@ -203,7 +203,7 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if currentTarget != recoveryTarget {
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable("session recovery authority changed; retry daemon retire")
 	}
-	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget)
+	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget, &params.Identity)
 	if err != nil {
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable(err.Error())
 	}
