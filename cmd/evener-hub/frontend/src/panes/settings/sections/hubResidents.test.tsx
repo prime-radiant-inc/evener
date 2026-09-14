@@ -709,23 +709,79 @@ test("accepted retire phase survives a later stale probe with no lifecycle", asy
 
 // ─── Retire refusal: blockers displayed, row kept ────────────────────────────
 
-test("fresh retire refusal displays returned blockers without removing the row", async () => {
+test("fresh retire refusal displays returned blockers until a fresh snapshot supersedes them", async () => {
   const fake = connectFakeClient();
+  const resident = {
+    identity: IDENTITY_FIXTURE,
+    name: "Blocked resident",
+    protocol: "evener-appwire-v5",
+    compatibility: "compatible",
+    archived: false,
+    probeState: "current",
+    lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+    canRetire: true,
+    canForceStop: true,
+  };
+  // The first list renders the row. The post-refusal refresh is held so the
+  // refusal's own blockers can be asserted before a fresh snapshot supersedes
+  // them; the release then reports a fresh current snapshot with no blockers.
+  let listCalls = 0;
+  let releaseRefresh!: () => void;
+  fake.on("evener/daemon/list", () => {
+    listCalls += 1;
+    if (listCalls === 1) {
+      return { defaultTimeoutMillis: 3600000, daemons: [resident] };
+    }
+    return new Promise<DaemonListResponse>((resolve) => {
+      releaseRefresh = () => resolve({ defaultTimeoutMillis: 3600000, daemons: [resident] });
+    });
+  });
+  fake.on("evener/daemon/retire", () => ({
+    accepted: false,
+    lifecycle: {
+      phase: "resident",
+      timeoutMillis: 3600000,
+      blockers: [{ category: "turn", sessionId: "session-abc" }],
+    },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Blocked resident/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+
+  // Row must still be visible after the refusal, and the returned blocker
+  // category and sessionId must both be shown while the fresh snapshot is held.
+  await screen.findByRole("row", { name: /Blocked resident/ });
+  expect(screen.getByText(/turn/)).toBeTruthy();
+  expect(screen.getByText(/session-abc/)).toBeTruthy();
+
+  // The held refresh arrives as a fresh current snapshot with no blockers: the
+  // refusal is superseded and its stale blocker must not linger.
+  await act(async () => {
+    releaseRefresh();
+    await Promise.resolve();
+  });
+  expect(screen.queryByText(/session-abc/)).toBeNull();
+});
+
+// ─── M-7: Refusal blockers clear once a fresh current snapshot supersedes them ─
+
+test("retire refusal blockers clear when a fresh current snapshot no longer reports them", async () => {
+  const fake = connectFakeClient();
+  // The list's own probe tracks the blocker, as the server would report it.
+  let blockers: { category: string; sessionId?: string }[] = [{ category: "turn", sessionId: "session-abc" }];
   fake.on("evener/daemon/list", () => ({
     defaultTimeoutMillis: 3600000,
     daemons: [
       {
         identity: IDENTITY_FIXTURE,
-        name: "Blocked resident",
+        name: "Resolving blocker",
         protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
-        lifecycle: {
-          phase: "resident",
-          timeoutMillis: 3600000,
-          blockers: [],
-        },
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers },
         canRetire: true,
         canForceStop: true,
       },
@@ -742,37 +798,104 @@ test("fresh retire refusal displays returned blockers without removing the row",
   const user = userEvent.setup();
   render(<HubResidents />);
 
-  const row = await screen.findByRole("row", { name: /Blocked resident/ });
+  const row = await screen.findByRole("row", { name: /Resolving blocker/ });
   await user.click(within(row).getByRole("button", { name: "Retire now" }));
+  await screen.findByText(/session-abc/);
 
-  // Row must still be visible after the refusal
-  await screen.findByRole("row", { name: /Blocked resident/ });
-  // Blocker category must be shown
-  expect(screen.getByText(/turn/)).toBeTruthy();
-  // I-2: sessionId must be shown alongside the category (e.g. "turn (session-abc)")
-  expect(screen.getByText(/session-abc/)).toBeTruthy();
+  // The blocker resolves: a fresh current snapshot reports the SAME phase with
+  // no blockers.
+  blockers = [];
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+
+  expect(screen.queryByText(/session-abc/)).toBeNull();
+});
+
+// ─── M-6: Departed-daemon per-row state is pruned ────────────────────────────
+
+test("a departed daemon's action error is pruned and does not resurface on a same-ref row", async () => {
+  const fake = connectFakeClient();
+  let present = true;
+  const resident = {
+    identity: IDENTITY_FIXTURE,
+    name: "Departing daemon",
+    protocol: "evener-appwire-v5",
+    compatibility: "compatible",
+    archived: false,
+    probeState: "current",
+    lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+    canRetire: true,
+    canForceStop: true,
+  };
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: present ? [resident] : [],
+  }));
+  fake.on("evener/thread/forceStop", () => {
+    throw new Error("network error");
+  });
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Departing daemon/ });
+  await user.click(within(row).getByRole("button", { name: "Force stop" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  const erroredRow = await screen.findByRole("row", { name: /Departing daemon/ });
+  expect(erroredRow.querySelector("[role='alert']")).toBeTruthy();
+
+  // The daemon departs the list, then a row with the SAME ref returns.
+  present = false;
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+  present = true;
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+
+  const freshRow = await screen.findByRole("row", { name: /Departing daemon/ });
+  expect(freshRow.querySelector("[role='alert']")).toBeNull();
 });
 
 // ─── M-6: Stale retire-refusal blockers clear on lifecycle change ─────────────
 
 test("retire refusal blockers clear when a newer snapshot changes the row lifecycle", async () => {
   const fake = connectFakeClient();
-  fake.on("evener/daemon/list", () => ({
-    defaultTimeoutMillis: 3600000,
-    daemons: [
-      {
-        identity: IDENTITY_FIXTURE,
-        name: "Lifecycle changing",
-        protocol: "evener-appwire-v5",
-        compatibility: "compatible",
-        archived: false,
-        probeState: "current",
-        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
-        canRetire: true,
-        canForceStop: true,
-      },
-    ],
-  }));
+  const resident = {
+    identity: IDENTITY_FIXTURE,
+    name: "Lifecycle changing",
+    protocol: "evener-appwire-v5",
+    compatibility: "compatible",
+    archived: false,
+    probeState: "current",
+    lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+    canRetire: true,
+    canForceStop: true,
+  };
+  // Hold the post-refusal refresh so the refusal's blockers can be asserted
+  // before the snapshot that supersedes them is released.
+  let listCalls = 0;
+  let releaseRefresh!: () => void;
+  fake.on("evener/daemon/list", () => {
+    listCalls += 1;
+    if (listCalls === 1) {
+      return { defaultTimeoutMillis: 3600000, daemons: [resident] };
+    }
+    return new Promise<DaemonListResponse>((resolve) => {
+      releaseRefresh = () =>
+        resolve({
+          defaultTimeoutMillis: 3600000,
+          daemons: [
+            {
+              ...resident,
+              lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] }, // phase changed
+              canRetire: false,
+            },
+          ],
+        });
+    });
+  });
   fake.on("evener/daemon/retire", () => ({
     accepted: false,
     lifecycle: {
@@ -789,26 +912,11 @@ test("retire refusal blockers clear when a newer snapshot changes the row lifecy
   await user.click(within(row).getByRole("button", { name: "Retire now" }));
   await screen.findByText(/session-abc/);
 
-  // Simulate a new snapshot where the daemon's lifecycle phase has changed
-  // (e.g., an external retire happened between polls).
+  // The held snapshot arrives with a changed lifecycle phase (e.g., an external
+  // retire happened between polls).
   await act(async () => {
-    fake.on("evener/daemon/list", () => ({
-      defaultTimeoutMillis: 3600000,
-      daemons: [
-        {
-          identity: IDENTITY_FIXTURE,
-          name: "Lifecycle changing",
-          protocol: "evener-appwire-v5",
-          compatibility: "compatible",
-          archived: false,
-          probeState: "current",
-          lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] }, // phase changed
-          canRetire: false,
-          canForceStop: true,
-        },
-      ],
-    }));
-    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+    releaseRefresh();
+    await Promise.resolve();
   });
 
   // Blockers from the old refusal must have been cleared

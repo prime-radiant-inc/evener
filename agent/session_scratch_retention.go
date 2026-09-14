@@ -460,6 +460,77 @@ type retainedScratchPool struct {
 	adopted map[string]string
 }
 
+// validateRetainedScratchGraph fails closed on an incomplete or contradictory
+// reference→binding→consumer graph. A manifest that pins references without any
+// binding is the signature of a crash between reference publication and the
+// binding transaction that maps the environment: nothing could reconstruct the
+// environment, so restore must refuse rather than let initialization mint a
+// replacement and silently lose continuity with the original durable artifacts.
+// It also rejects contradictory mappings — a binding without an id, a duplicate
+// binding/reference, a slot that names an unpinned directory or a different
+// kind, or a consumer role that names a binding absent from the manifest.
+//
+// It deliberately does not require every reference to be mapped by a binding:
+// a backswap whose target already owns the incoming kind leaves the incoming
+// allocation a "historical" pinned reference with no owning slot, and restore
+// must preserve it (see TestRetirementSharedChildScratchBindingsRestore).
+func validateRetainedScratchGraph(manifest sandbox.ScratchManifest) error {
+	refKinds := make(map[string]string, len(manifest.References))
+	for _, ref := range manifest.References {
+		dir, err := filepath.Abs(ref.Dir)
+		if err != nil {
+			return err
+		}
+		dir = filepath.Clean(dir)
+		if _, dup := refKinds[dir]; dup {
+			return fmt.Errorf("duplicate retention reference %q", dir)
+		}
+		refKinds[dir] = ref.Kind
+	}
+	if len(manifest.References) > 0 && len(manifest.Bindings) == 0 {
+		return fmt.Errorf("retention manifest holds %d references but no binding", len(manifest.References))
+	}
+	bindingIDs := make(map[string]struct{}, len(manifest.Bindings))
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID == "" {
+			return errors.New("retention manifest holds a binding without an id")
+		}
+		if _, dup := bindingIDs[binding.BindingID]; dup {
+			return fmt.Errorf("duplicate retention binding %q", binding.BindingID)
+		}
+		bindingIDs[binding.BindingID] = struct{}{}
+	}
+	for _, binding := range manifest.Bindings {
+		for kind, slot := range binding.Slots {
+			dir, err := filepath.Abs(slot.Dir)
+			if err != nil {
+				return err
+			}
+			dir = filepath.Clean(dir)
+			pinnedKind, ok := refKinds[dir]
+			if !ok {
+				return fmt.Errorf("retention binding %q slot %q references unpinned directory %q", binding.BindingID, kind, dir)
+			}
+			if pinnedKind != kind {
+				return fmt.Errorf("retention binding %q slot %q kind does not match pinned kind %q", binding.BindingID, kind, pinnedKind)
+			}
+		}
+	}
+	for _, consumer := range manifest.Consumers {
+		roles := []string{consumer.CurrentBindingID, consumer.ParentSharedBindingID, consumer.WorktreeRestoreBindingID}
+		roles = append(roles, consumer.AbandonedBindingIDs...)
+		for _, id := range roles {
+			if id == "" {
+				continue
+			}
+			if _, ok := bindingIDs[id]; !ok {
+				return fmt.Errorf("retention consumer %q references unknown binding %q", consumer.SessionID, id)
+			}
+		}
+	}
+	return nil
+}
+
 // scratchRetentionOwner resolves this session's root retention authority. A
 // delegate reports its root's owner; a root reports itself. ok is false for a
 // session without durable state, which has nothing to prepare.
@@ -491,6 +562,15 @@ func (s *Session) prepareRetainedScratch() error {
 	}
 	if manifest.Released || len(manifest.References) == 0 {
 		return nil
+	}
+	// Fail closed on an incomplete or contradictory reference→binding→consumer
+	// graph before reacquiring a single lease. A crash between publishing a
+	// pin/reference and publishing the binding or consumer that maps it would
+	// otherwise restore with an empty binding map: nothing would adopt the
+	// retained directory and initialization would mint a replacement, silently
+	// losing continuity with the original durable artifacts.
+	if err := validateRetainedScratchGraph(manifest); err != nil {
+		return fmt.Errorf("retained scratch: %w", err)
 	}
 	pool := &retainedScratchPool{
 		owner:     owner,

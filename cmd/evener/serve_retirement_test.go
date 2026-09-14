@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -478,6 +479,52 @@ func TestServeRetirementManualTimerSingleOwner(t *testing.T) {
 			t.Fatalf("released events = %d, want exactly 1", n)
 		}
 	})
+}
+
+// TestServeManualRetirementResponseSurvivesServeCancel proves the accepted
+// manual retire response is delivered over the wire. The manual trigger must
+// not cancel the serve context - which closes the HTTP server and aborts the
+// in-flight connection - before the caller receives Accepted. This drives the
+// RPC over a real WebSocket: dispatchDaemonRPC bypasses the transport where
+// the response is written, so it cannot observe a lost response.
+func TestServeManualRetirementResponseSurvivesServeCancel(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	runDir := serveArgValue(args, "--run-dir")
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelCtx()
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("dial rendezvous endpoint: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	client.Start(context.WithoutCancel(ctx))
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-retire-http", Version: "test"},
+	}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	resp, err := client.DaemonRetire(ctx, appwire.DaemonRetireParams{Identity: daemonIdentityFor(entry)})
+	if err != nil {
+		t.Fatalf("manual retire over HTTP = %v, want the accepted response", err)
+	}
+	if !resp.Accepted {
+		t.Fatalf("manual retire response = %+v, want accepted", resp)
+	}
+	rec.await(t, "released")
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit: %v", err)
+	}
 }
 
 // TestServeRetirementStaleIdentityRefused proves the retire RPC revalidates

@@ -226,3 +226,62 @@ func TestScratchRetentionLiveEnvironmentPinsOnMint(t *testing.T) {
 		t.Fatalf("minted allocation slot = %+v, want owning slot at %q", slot, dir)
 	}
 }
+
+// TestScratchRetentionAdoptionPublishesTheDestinationPin proves the lazy-mint
+// pin race is closed: when AdoptSessionScratch moves a freshly minted
+// unsandboxed allocation to a destination that holds a retention binding, the
+// destination's pin must be persisted even though the source's own post-mint
+// pin runs in the move window and observes no leased handle.
+func TestScratchRetentionAdoptionPublishesTheDestinationPin(t *testing.T) {
+	base, workspace := t.TempDir(), t.TempDir()
+	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "root-adopt"}
+	source := NewLocalExecutionEnvironment(workspace)
+	target := NewLocalExecutionEnvironment(workspace)
+	if err := source.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{BindingID: "E0", OwnerSessionID: "root-adopt", WorkingDir: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{BindingID: "E1", OwnerSessionID: "root-adopt", WorkingDir: workspace}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The source just minted an unsandboxed allocation and is about to pin it.
+	tmp, err := sandbox.NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.scratchMu.Lock()
+	source.unsandboxedScratch = tmp
+	source.scratchMu.Unlock()
+	// The source's own post-mint pin runs in the move window, after its scratch
+	// fields have been taken and before the target installs them, so it finds no
+	// leased handle to publish.
+	restore := source.ObserveScratchMoveWindowForTesting(func() {
+		_ = source.PinOwnedScratch()
+	})
+	defer restore()
+
+	target.AdoptSessionScratch(source)
+	t.Cleanup(func() {
+		target.RetainSessionScratch()
+		source.RetainSessionScratch()
+	})
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refPinned bool
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(tmp.Dir) {
+			refPinned = true
+		}
+	}
+	if !refPinned {
+		t.Fatalf("adopted allocation was never pinned: %+v", manifest.References)
+	}
+	binding := manifestBinding(t, owner, "E1")
+	slot, ok := binding.Slots[sandbox.ScratchKindUnsandboxed]
+	if !ok || !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(tmp.Dir) {
+		t.Fatalf("destination binding slot = %+v ok=%v, want it owning %q", slot, ok, tmp.Dir)
+	}
+}

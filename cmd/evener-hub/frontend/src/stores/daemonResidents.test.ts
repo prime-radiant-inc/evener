@@ -103,6 +103,39 @@ describe("refresh", () => {
     expect(handlerCallCount).toBe(1);
   });
 
+  test("retire forces a fresh fetch after an already in-flight refresh settles", async () => {
+    const fake = connectFakeClient();
+    let listCalls = 0;
+    let resolveFirstList!: (data: DaemonListResponse) => void;
+    fake.on("evener/daemon/list", () => {
+      listCalls += 1;
+      if (listCalls === 1) {
+        return new Promise<DaemonListResponse>((resolve) => {
+          resolveFirstList = resolve;
+        });
+      }
+      return EMPTY_RESPONSE;
+    });
+    fake.on("evener/daemon/retire", () => ({
+      accepted: true,
+      lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] },
+    }));
+
+    // A poll is already in flight before the retire finishes.
+    const inFlight = daemonResidentsStore.getState().refresh();
+    await Promise.resolve();
+    await daemonResidentsStore.getState().retire(IDENTITY_A);
+
+    // The pre-mutation poll settles. A post-mutation refresh must still run
+    // rather than joining the poll that started before the retire.
+    resolveFirstList(EMPTY_RESPONSE);
+    await inFlight;
+    for (let i = 0; i < 20 && listCalls < 2; i++) {
+      await Promise.resolve();
+    }
+    expect(listCalls).toBe(2);
+  });
+
   test("a failed refresh preserves existing data and populates error", async () => {
     const fake = connectFakeClient();
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
@@ -166,7 +199,7 @@ describe("refresh", () => {
 });
 
 describe("retire", () => {
-  test("adds and removes identity.generation from pending, sends correct RPC", async () => {
+  test("adds and removes identity.ref from pending, sends correct RPC", async () => {
     const fake = connectFakeClient();
     const retireResponse: DaemonRetireResponse = {
       accepted: true,
@@ -176,19 +209,19 @@ describe("retire", () => {
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
     fake.on("evener/daemon/retire", (params) => {
       expect(params.identity).toEqual(IDENTITY_A);
-      // While the retire is in flight, pending should contain the generation key
-      expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.generation)).toBe(true);
+      // While the retire is in flight, pending should contain the stable ref key
+      expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.ref)).toBe(true);
       return retireResponse;
     });
 
     const result = await daemonResidentsStore.getState().retire(IDENTITY_A);
 
     expect(result).toEqual(retireResponse);
-    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.generation)).toBe(false);
+    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.ref)).toBe(false);
     expect(fake.calls).toContainEqual({ method: "evener/daemon/retire", params: { identity: IDENTITY_A } });
   });
 
-  test("pending key is identity.generation, not ref or PID", async () => {
+  test("pending key is the stable identity.ref, not generation or PID", async () => {
     const fake = connectFakeClient();
     let capturedPending: Set<string> | null = null;
     const retireResponse: DaemonRetireResponse = {
@@ -203,10 +236,10 @@ describe("retire", () => {
 
     await daemonResidentsStore.getState().retire(IDENTITY_A);
 
-    // Key must be generation, not ref or pid
+    // Key must be the stable ref so a generation rotation cannot orphan it
     expect(capturedPending).not.toBeNull();
-    expect(capturedPending!.has(IDENTITY_A.generation)).toBe(true);
-    expect(capturedPending!.has(IDENTITY_A.ref)).toBe(false);
+    expect(capturedPending!.has(IDENTITY_A.ref)).toBe(true);
+    expect(capturedPending!.has(IDENTITY_A.generation)).toBe(false);
     expect(capturedPending!.has(String(IDENTITY_A.pid))).toBe(false);
   });
 
@@ -219,7 +252,7 @@ describe("retire", () => {
 
     await expect(daemonResidentsStore.getState().retire(IDENTITY_A)).rejects.toThrow("retire rejected");
     // pending should be cleared even on error
-    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.generation)).toBe(false);
+    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.ref)).toBe(false);
   });
 });
 
@@ -242,7 +275,7 @@ describe("forceStop", () => {
     });
   });
 
-  test("adds and removes identity.generation from pending on force-stop", async () => {
+  test("adds and removes identity.ref from pending on force-stop", async () => {
     const fake = connectFakeClient();
     let capturedPending: Set<string> | null = null;
     fake.on("evener/thread/forceStop", () => {
@@ -254,8 +287,8 @@ describe("forceStop", () => {
     await daemonResidentsStore.getState().forceStop(IDENTITY_A);
 
     expect(capturedPending).not.toBeNull();
-    expect(capturedPending!.has(IDENTITY_A.generation)).toBe(true);
-    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.generation)).toBe(false);
+    expect(capturedPending!.has(IDENTITY_A.ref)).toBe(true);
+    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.ref)).toBe(false);
   });
 });
 

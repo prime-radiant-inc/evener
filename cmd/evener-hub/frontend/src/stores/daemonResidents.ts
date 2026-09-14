@@ -4,9 +4,9 @@
 // useEffect owns the polling interval; this store starts no permanent timer).
 //
 // Key design points:
-//   • `pending` tracks in-progress actions keyed by identity.generation so
-//     individual rows can show a disabled state while retire/forceStop is
-//     in flight.
+//   • `pending` tracks in-progress actions keyed by the stable identity.ref so
+//     individual rows can show a disabled state while retire/forceStop is in
+//     flight, and a generation rotation cannot orphan the entry.
 //   • A latestGeneration counter lets the generation-check inside runRefresh
 //     discard out-of-order responses when a newer request has already
 //     published its result (e.g., a background refresh overtakes a slow one).
@@ -81,6 +81,18 @@ function ensureInflight(): Promise<void> {
   return inflight;
 }
 
+// refreshAfterInflight starts a genuinely new list fetch once any in-flight
+// refresh settles. Joining the in-flight promise alone (ensureInflight) can
+// return a poll that started before a mutation, so the row would keep showing
+// the pre-mutation lifecycle until the next interval.
+async function refreshAfterInflight(): Promise<void> {
+  const current = inflight;
+  if (current) {
+    await current.catch(() => undefined);
+  }
+  await ensureInflight();
+}
+
 export const daemonResidentsStore = createStore<DaemonResidentsStoreState>(() => ({
   data: null,
   loading: false,
@@ -93,7 +105,7 @@ export const daemonResidentsStore = createStore<DaemonResidentsStoreState>(() =>
 
   async retire(identity: DaemonIdentity): Promise<DaemonRetireResponse> {
     const client = requireClient();
-    const key = identity.generation;
+    const key = identity.ref;
     daemonResidentsStore.setState((s) => ({ pending: new Set([...s.pending, key]) }));
     try {
       return await client.request("evener/daemon/retire", { identity });
@@ -104,13 +116,13 @@ export const daemonResidentsStore = createStore<DaemonResidentsStoreState>(() =>
         return { pending: next };
       });
       // Refresh after retire so the list reflects the updated lifecycle/phase.
-      void ensureInflight();
+      void refreshAfterInflight();
     }
   },
 
   async forceStop(identity: DaemonIdentity): Promise<void> {
     const client = requireClient();
-    const key = identity.generation;
+    const key = identity.ref;
     daemonResidentsStore.setState((s) => ({ pending: new Set([...s.pending, key]) }));
     try {
       await client.request("evener/thread/forceStop", {
@@ -124,7 +136,7 @@ export const daemonResidentsStore = createStore<DaemonResidentsStoreState>(() =>
         return { pending: next };
       });
       // Refresh after force-stop so the row updates (or disappears).
-      void ensureInflight();
+      void refreshAfterInflight();
     }
   },
 }));

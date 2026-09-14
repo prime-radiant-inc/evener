@@ -46,6 +46,19 @@ func daemonRetirementAccess(method string) (kind string, ok bool) {
 	return kind, ok
 }
 
+// daemonConnectionMethods is the wire-name set of connection-level methods
+// (initialize, ping). They are registered on the router but are part of the
+// connection handshake, not application routing, so admission leaves them
+// lease-free exactly like control methods.
+var daemonConnectionMethods = func() map[string]struct{} {
+	names := appwire.ConnectionMethodNames()
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set
+}()
+
 // SetRetirementAdmission installs process-owned admission before serving. fn
 // receives the access kind (read or mutation), not a method name. Control retains
 // the serve exit-owner path; connection methods do not access runtime resources.
@@ -57,8 +70,18 @@ func (s *Server) SetRetirementAdmission(fn func(context.Context, string) (func()
 	}
 	s.AppServer().Router().SetAdmission(func(ctx context.Context, method string) (func(), error) {
 		kind, ok := daemonRetirementAccess(method)
-		if !ok || kind == "control" {
+		if ok && kind == "control" {
 			return func() {}, nil
+		}
+		if _, connection := daemonConnectionMethods[method]; connection {
+			return func() {}, nil
+		}
+		if !ok {
+			// Fail closed: a routed method the catalog table does not classify is
+			// treated as a mutation, so a new mutation omitted from the table
+			// cannot silently run with no retirement lease during
+			// preparing/retiring (the missing-admission-fence shape).
+			kind = "mutation"
 		}
 		release, err := fn(ctx, kind)
 		if err != nil && errors.Is(err, agent.ErrRetirementUnavailable) {

@@ -24,6 +24,13 @@ import (
 // orphaned onto a fresh inode); elsewhere withOwnershipLock is a no-op and
 // StrongOwnershipAvailable reports false so the daemon refuses ownership
 // claims it cannot uphold.
+//
+// Retention bound: the run directory accumulates one empty <pid>.lock inode
+// per PID this host has ever run a daemon as. They are intentionally not
+// garbage-collected — deleting a lock inode lets a concurrent opener create a
+// fresh inode and take a second, non-mutual lock, silently breaking exclusion
+// (see withOwnershipLock) — so the bound is the host's process-ID space, and
+// the inodes are reclaimed only when the run directory itself is removed.
 
 // ownershipLockPath is the persistent lock inode guarding <pid>.json.
 func ownershipLockPath(dir string, pid int) string {

@@ -518,10 +518,20 @@ func mergeScratchConsumers(existing, updates []ScratchConsumerBinding) []Scratch
 	return append(merged, updates...)
 }
 
+// scratchRetentionOpenBeforeLease, when non-nil, runs after
+// OpenRetainedSessionScratch has validated the manifest and pin and before it
+// acquires the directory lease. It exists only as a test seam for the
+// release/open interleaving; production leaves it nil.
+var scratchRetentionOpenBeforeLease func()
+
 // OpenRetainedSessionScratch reacquires the lease of a pinned allocation at its
 // original path. It refuses a released owner, a missing/conflicting pin, a
 // foreign namespace, or a directory whose inode changed while the lease was
-// being acquired.
+// being acquired. Opening is serialized with a concurrent terminal release
+// under the manifest lock, and the tombstone and pin are revalidated after the
+// directory lease is acquired, so a release that committed between validation
+// and lease acquisition cannot yield a usable handle for an allocation the
+// release already tombstoned.
 func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*SessionScratch, error) {
 	if err := owner.validate(); err != nil {
 		return nil, err
@@ -530,6 +540,14 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 	if err != nil {
 		return nil, err
 	}
+	// ReleaseScratchRetention writes the tombstone and removes pins while
+	// holding this lock, so holding it across the lease acquisition serializes
+	// open against release.
+	lock, err := acquireScratchRetentionLock(owner)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.Release() }()
 	manifest, err := loadScratchRetention(owner)
 	if err != nil {
 		return nil, err
@@ -551,12 +569,8 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 	if !referenced {
 		return nil, fmt.Errorf("sandbox: %q is not a retained reference", dir)
 	}
-	pin, err := readScratchDirectoryPin(dir)
-	if err != nil {
-		return nil, fmt.Errorf("sandbox: read retention pin: %w", err)
-	}
-	if pin.Owner != owner || filepath.Clean(pin.Dir) != dir || pin.Kind != ref.Kind {
-		return nil, fmt.Errorf("sandbox: retention pin identity does not match %q", dir)
+	if err := verifyRetainedScratchPin(owner, dir, ref.Kind); err != nil {
+		return nil, err
 	}
 	base := filepath.Dir(dir)
 	if !strings.HasPrefix(filepath.Base(dir), sessionScratchPrefix) {
@@ -565,6 +579,9 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 	before, err := os.Stat(dir)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: stat retained scratch: %w", err)
+	}
+	if hook := scratchRetentionOpenBeforeLease; hook != nil {
+		hook()
 	}
 	lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
 	if contended {
@@ -578,7 +595,42 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 		_ = lease.Release()
 		return nil, fmt.Errorf("sandbox: retained scratch %q changed while acquiring its lease", dir)
 	}
+	// Revalidate under the held lease: a release that committed between the
+	// initial validation and the lease acquisition must not yield a usable
+	// handle.
+	if err := revalidateRetainedScratchAfterLease(owner, dir, ref.Kind); err != nil {
+		_ = lease.Release()
+		return nil, err
+	}
 	return &SessionScratch{Dir: dir, base: base, lease: lease}, nil
+}
+
+// verifyRetainedScratchPin reads dir's identity pin and confirms it is exactly
+// this owner's pin for dir and kind.
+func verifyRetainedScratchPin(owner ScratchOwner, dir, kind string) error {
+	pin, err := readScratchDirectoryPin(dir)
+	if err != nil {
+		return fmt.Errorf("sandbox: read retention pin: %w", err)
+	}
+	if pin.Owner != owner || filepath.Clean(pin.Dir) != dir || pin.Kind != kind {
+		return fmt.Errorf("sandbox: retention pin identity does not match %q", dir)
+	}
+	return nil
+}
+
+// revalidateRetainedScratchAfterLease re-checks the tombstone and the directory
+// pin after the directory lease has been acquired, closing the window where a
+// concurrent release could tombstone the manifest and remove the pin between
+// the initial validation and the lease acquisition.
+func revalidateRetainedScratchAfterLease(owner ScratchOwner, dir, kind string) error {
+	manifest, err := loadScratchRetention(owner)
+	if err != nil {
+		return err
+	}
+	if manifest.Released {
+		return errors.New("sandbox: scratch retention was released while acquiring the lease")
+	}
+	return verifyRetainedScratchPin(owner, dir, kind)
 }
 
 // ReleaseScratchRetention writes the terminal tombstone that authorizes

@@ -55,6 +55,31 @@ func TestRetirementReasoningRPCPropagatesRefusal(t *testing.T) {
 	}
 }
 
+// TestRetirementAdmissionFailsClosedForUnclassifiedMethod proves a routed method
+// absent from the access table takes a mutation lease instead of bypassing
+// admission: a new mutation omitted from daemonRetirementAccessKinds must still
+// be fenced during preparing/retiring rather than run with no retirement lease.
+func TestRetirementAdmissionFailsClosedForUnclassifiedMethod(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	const method = "evener/unknown-mutation"
+	s.AppServer().Router().Handle(method, func(context.Context, json.RawMessage) (any, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	refused := errors.New("admission refusal")
+	var got string
+	s.SetRetirementAdmission(func(_ context.Context, kind string) (func(), error) {
+		got = kind
+		return nil, refused
+	})
+	_, err := s.AppServer().Router().Dispatch(context.Background(), appwire.Request{Method: method})
+	if got != "mutation" {
+		t.Fatalf("unclassified method classified as %q, want mutation (fail closed)", got)
+	}
+	if !errors.Is(err, refused) {
+		t.Fatalf("unclassified method dispatch = %v, want admission refusal", err)
+	}
+}
+
 func TestRetirementAdmissionCatalogCoverage(t *testing.T) {
 	expected := map[string]string{
 		appwire.MethodThreadList: "read", appwire.MethodThreadRead: "read", appwire.MethodThreadUnsubscribe: "read", appwire.MethodThreadTurnsList: "read", appwire.MethodEvenerTasksList: "read", appwire.MethodEvenerJobsList: "read", appwire.MethodEvenerJobsOutput: "read", appwire.MethodModelList: "read",

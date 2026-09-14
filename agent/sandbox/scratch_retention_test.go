@@ -380,3 +380,87 @@ func TestScratchRetentionMergedMoveKeepsBothCurrentSlots(t *testing.T) {
 		t.Fatalf("E1 did not take A's owning slot: %+v", e1.Slots)
 	}
 }
+
+// TestScratchRetentionOpenRevalidatesAfterConcurrentRelease proves Open
+// revalidates the tombstone and pin after it acquires the directory lease: a
+// release that commits between the initial validation and the lease acquisition
+// must not yield a usable handle for an allocation the release already
+// tombstoned.
+func TestScratchRetentionOpenRevalidatesAfterConcurrentRelease(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a terminal release that interleaved after the initial validation
+	// but before the lease acquisition. It bypasses the manifest lock that the
+	// real ReleaseScratchRetention holds, which is exactly the stale-validation
+	// window the post-lease revalidation must close.
+	scratchRetentionOpenBeforeLease = func() {
+		manifest, err := LoadScratchRetention(owner)
+		if err != nil {
+			t.Errorf("load manifest in hook: %v", err)
+			return
+		}
+		manifest.Released = true
+		manifest.Revision++
+		if err := writeScratchRetention(owner, manifest); err != nil {
+			t.Errorf("write tombstone in hook: %v", err)
+			return
+		}
+		if err := os.Remove(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+			t.Errorf("remove pin in hook: %v", err)
+		}
+	}
+	t.Cleanup(func() { scratchRetentionOpenBeforeLease = nil })
+	if _, err := OpenRetainedSessionScratch(owner, ref); err == nil {
+		t.Fatal("Open returned a handle after a concurrent release tombstoned the manifest and removed the pin")
+	}
+}
+
+// TestScratchRetentionOpenRefusesWhileManifestLocked proves opening is
+// serialized with a terminal release under the manifest lock: while another
+// writer holds that lock (as ReleaseScratchRetention does across its tombstone
+// and pin removal), Open must not acquire the directory lease and return a
+// handle from a stale validation.
+func TestScratchRetentionOpenRefusesWhileManifestLocked(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireScratchRetentionLock(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenRetainedSessionScratch(owner, ref); err == nil {
+		_ = lock.Release()
+		t.Fatal("Open returned a handle while another writer held the manifest lock")
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := OpenRetainedSessionScratch(owner, ref)
+	if err != nil {
+		t.Fatalf("open after the lock was released: %v", err)
+	}
+	if err := restored.Retain(); err != nil {
+		t.Fatal(err)
+	}
+}

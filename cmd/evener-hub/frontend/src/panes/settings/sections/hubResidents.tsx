@@ -119,27 +119,49 @@ export function HubResidents() {
     return () => clearInterval(id);
   }, []);
 
-  // Clear stale retireResults when a newer successful snapshot changes a row's
-  // lifecycle phase (plan line 1244: "preserve until a newer successful snapshot").
-  // Uses the functional-update form so retireResults is not a dependency.
+  // Prune per-row retire results and action errors against the latest list.
+  // retireResults are preserved until a newer successful snapshot supersedes the
+  // RPC's own view: a fresh current probe clears a refusal (its blockers are
+  // authoritative and rendered from the snapshot), and a lifecycle phase change
+  // clears an accepted retire. actionErrors for rows absent from the list are
+  // dropped so a departed daemon cannot leave a stale error behind a later
+  // same-ref row. Keyed by the stable identity.ref, not generation, so a
+  // generation rotation neither orphans nor misapplies an entry. Uses the
+  // functional-update form so the maps are not dependencies.
   useEffect(() => {
     if (!data) return;
-    const daemonMap = new Map(data.daemons.map((d) => [d.identity.generation, d]));
+    const daemonByRef = new Map(data.daemons.map((d) => [d.identity.ref, d]));
     setRetireResults((prev) => {
       if (prev.size === 0) return prev;
       let changed = false;
       const next = new Map(prev);
-      for (const [gen, result] of prev) {
-        const daemon = daemonMap.get(gen);
-        // Clear if the daemon left the list, or a genuinely fresh snapshot
-        // reports a different lifecycle phase. A stale or unknown probe carries
-        // no lifecycle (the server only sets it while the probe is fresh), so
-        // its absent phase must not read as a phase change — that would discard
-        // a retire the Hub already accepted while the daemon is exiting.
-        const phaseChanged =
-          daemon !== undefined && daemon.probeState === "current" && daemon.lifecycle?.phase !== result.lifecycle.phase;
-        if (!daemon || phaseChanged) {
-          next.delete(gen);
+      for (const [ref, result] of prev) {
+        const daemon = daemonByRef.get(ref);
+        // A stale or unknown probe carries no lifecycle (the server only sets it
+        // while the probe is fresh), so its absent phase must not read as a
+        // phase change — that would discard a retire the Hub already accepted
+        // while the daemon is exiting.
+        const fresh = daemon !== undefined && daemon.probeState === "current";
+        const phaseChanged = fresh && daemon.lifecycle?.phase !== result.lifecycle.phase;
+        // A fresh current snapshot supersedes a refusal: whatever blockers it
+        // reports are the authoritative ones and render from the snapshot, so
+        // the stale refusal must not survive (and must not compound with a later
+        // different blocker).
+        const refusalSuperseded = fresh && !result.accepted;
+        if (!daemon || phaseChanged || refusalSuperseded) {
+          next.delete(ref);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setActionErrors((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Map(prev);
+      for (const ref of prev.keys()) {
+        if (!daemonByRef.has(ref)) {
+          next.delete(ref);
           changed = true;
         }
       }
@@ -151,14 +173,14 @@ export function HubResidents() {
     // Clear any previous action error for this row before starting.
     setActionErrors((prev) => {
       const next = new Map(prev);
-      next.delete(identity.generation);
+      next.delete(identity.ref);
       return next;
     });
     try {
       const result = await daemonResidentsStore.getState().retire(identity);
       setRetireResults((prev) => {
         const next = new Map(prev);
-        next.set(identity.generation, result);
+        next.set(identity.ref, result);
         return next;
       });
     } catch (err: unknown) {
@@ -166,7 +188,7 @@ export function HubResidents() {
       // the row. The store's error field tracks only refresh failures.
       setActionErrors((prev) => {
         const next = new Map(prev);
-        next.set(identity.generation, friendlyErrorMessage(err));
+        next.set(identity.ref, friendlyErrorMessage(err));
         return next;
       });
     }
@@ -179,7 +201,7 @@ export function HubResidents() {
     // Clear any previous action error for this row before starting.
     setActionErrors((prev) => {
       const next = new Map(prev);
-      next.delete(identity.generation);
+      next.delete(identity.ref);
       return next;
     });
     try {
@@ -190,7 +212,7 @@ export function HubResidents() {
       // prevents any unsafe action even on a conflict.
       setActionErrors((prev) => {
         const next = new Map(prev);
-        next.set(identity.generation, friendlyErrorMessage(err));
+        next.set(identity.ref, friendlyErrorMessage(err));
         return next;
       });
     }
@@ -251,9 +273,9 @@ export function HubResidents() {
             </thead>
             <tbody>
               {data.daemons.map((daemon) => {
-                const retireResult = retireResults.get(daemon.identity.generation);
-                const isPending = pending.has(daemon.identity.generation);
-                const actionError = actionErrors.get(daemon.identity.generation);
+                const retireResult = retireResults.get(daemon.identity.ref);
+                const isPending = pending.has(daemon.identity.ref);
+                const actionError = actionErrors.get(daemon.identity.ref);
 
                 // Display phase: prefer the retire-response lifecycle when the
                 // Hub accepted it (see displayPhaseFor).
@@ -265,7 +287,7 @@ export function HubResidents() {
                 return (
                   // aria-label includes identity.ref so rows sharing a display
                   // name remain distinguishable by accessible name.
-                  <tr key={daemon.identity.generation} aria-label={`${daemon.name} ${daemon.identity.ref}`}>
+                  <tr key={daemon.identity.ref} aria-label={`${daemon.name} ${daemon.identity.ref}`}>
                     <td>
                       <div>{daemon.name}</div>
                       {/* Root reference — shown under the name per spec. Two
@@ -348,7 +370,7 @@ export function HubResidents() {
         open={confirmForceStop !== null}
         title="Force stop daemon?"
         confirmLabel="Force stop"
-        busy={confirmForceStop !== null && pending.has(confirmForceStop.generation)}
+        busy={confirmForceStop !== null && pending.has(confirmForceStop.ref)}
         onConfirm={() => void handleForceStopConfirm()}
         onCancel={() => setConfirmForceStop(null)}
       >

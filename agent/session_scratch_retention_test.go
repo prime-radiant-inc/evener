@@ -924,3 +924,48 @@ func TestRetirementConsumerRolesRecordEachBinding(t *testing.T) {
 		t.Fatalf("shared role collapsed onto the current binding %q", consumer.CurrentBindingID)
 	}
 }
+
+// TestRetirementRestoreFailsClosedOnReferenceWithoutBinding proves restore
+// preparation refuses an incomplete retention manifest: a crash between
+// publishing a pinned reference and publishing the binding/consumer that maps
+// it leaves references with no binding at all. Restore must fail closed instead
+// of preparing a pool that adopts nothing and lets initialization mint a
+// replacement scratch directory, silently losing the original durable
+// artifacts.
+func TestRetirementRestoreFailsClosedOnReferenceWithoutBinding(t *testing.T) {
+	stateDir := t.TempDir()
+	base := t.TempDir()
+	workDir := t.TempDir()
+	const rootID = "crashed-root"
+	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootID}
+	scratch, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
+	// The directory pin and manifest reference committed; the binding and
+	// consumer publication installScratchRetentionFor performs next never did,
+	// exactly as a daemon crash in that window leaves it.
+	if err := scratch.Pin(owner, sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.References) == 0 || len(manifest.Bindings) != 0 {
+		t.Fatalf("fixture manifest = %+v, want references and no bindings", manifest)
+	}
+
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	root.stateDir = stateDir
+	root.id = rootID
+	root.delegateRootSessionID = ""
+	if err := root.prepareRetainedScratch(); err == nil {
+		t.Fatal("restore prepared a manifest that holds references but no binding")
+	}
+}

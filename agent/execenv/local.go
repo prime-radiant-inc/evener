@@ -908,6 +908,14 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	// works in.
 	from.invalidateSandboxFS()
 	e.retireStaleFileToolLayers()
+	// Persist the destination's pin for whatever this env just adopted. A
+	// source's own post-mint pin can run in the move window above, after its
+	// scratch fields were taken, and observe no leased handle: without this
+	// publication the moved allocation would hold a lease nothing in the
+	// manifest attributes, so a restore would mint a replacement instead of
+	// reacquiring it. PinOwnedScratch no-ops when this env carries no retention
+	// binding and records any failure sticky for preparation to surface.
+	_ = e.PinOwnedScratch()
 }
 
 // retireStaleFileToolLayers retires every cached file-tool layer whose scratch
