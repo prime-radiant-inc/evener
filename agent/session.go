@@ -612,7 +612,21 @@ type Session struct {
 	strategy   contextmgr.Strategy
 
 	// skills discovered at session startup
-	skills map[string]skill.SkillMeta
+	skills skill.Catalog
+
+	// skillLifecycle is activation metadata, separate from the full catalog.
+	// Guarded by mu; ordinary instruction bodies are never stored here.
+	skillLifecycle schema.SkillLifecycleSnapshot
+
+	// pendingSkillAdmissions holds prepared skill selections whose admission
+	// did not reach durable obligations — a metadata save failure while
+	// consuming a skill-bearing steering message, whose prose is already
+	// durable in the transcript. The next model request drains them before
+	// building anything, so the turn either carries the selected instructions
+	// or fails visibly; a restore covers the same window from the durable
+	// input record (reconcilePendingSkillSelections), and this list is the
+	// in-process retry. Guarded by mu.
+	pendingSkillAdmissions []*skillActivationBatch
 
 	// MCP server connections
 	mcpMgr   *mcp.Manager
@@ -744,7 +758,11 @@ type Session struct {
 	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
 	totalRounds       int  // cumulative tool rounds across all inputs
 
-	// self-compaction state (compact tool)
+	// self-compaction state (compact tool). The transient round request is the
+	// per-round trigger only; the durable intent is the generation-owned
+	// operation persisted on the skill lifecycle snapshot
+	// (skillLifecycle.PendingCompaction), which applyPendingForceCompact reads
+	// for instructions and resumeSkillCompaction re-arms after a restart.
 	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
 	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	// shared-notes state (human/agent whiteboards plus URL list)
@@ -760,8 +778,8 @@ type Session struct {
 	// projected. The live fields above remain the staging store for mutators;
 	// this pointer is the readers' view. The value is never mutated in place.
 	notesCommitted      atomic.Pointer[committedNotesState]
-	pendingInstructions string // compaction_instructions awaiting the round-tail force
-	forceRequested      bool   // a compact tool call is pending this round
+	pendingInstructions string // transient compaction_instructions copy for the round-tail trigger; the persisted forced operation is the durable owner
+	forceRequested      bool   // a compaction is requested for this round tail (transient trigger; re-armed from a persisted forced operation at resume)
 	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
 
 	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
@@ -1963,6 +1981,8 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice.
 func (s *Session) recordTurn(live, persisted schema.Turn) {
+	live.SkillState = live.SkillState.Clone()
+	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	s.history = append(s.history, live)

@@ -198,6 +198,14 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 				group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: budgetErr, Duration: time.Since(attemptStart)}, nil)
 				return llm.AttemptReport{Phase: llm.PhaseOpen}, budgetErr
 			}
+			// Final skill-delivery admission: revalidate the exact outgoing
+			// shape against pending obligations and commit before dispatch. A
+			// missing protected body fails visibly here — never a truncated
+			// delivery and never another compact/reload cycle.
+			if deliveryErr := s.finalizeSkillDelivery(ctx, dispatchReq); deliveryErr != nil {
+				group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: deliveryErr, Duration: time.Since(attemptStart)}, nil)
+				return llm.AttemptReport{Phase: llm.PhaseOpen}, deliveryErr
+			}
 			st, err := s.client.Stream(ctx, dispatchReq)
 			if streamUnavailable(err) || (err == nil && st == nil) {
 				// Nothing was attempted against the provider: the call falls
@@ -252,6 +260,10 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
 		if budgetErr != nil {
 			return llm.Response{}, budgetErr
+		}
+		// Same final-admission seam as the streaming path.
+		if deliveryErr := s.finalizeSkillDelivery(ctx, dispatchReq); deliveryErr != nil {
+			return llm.Response{}, deliveryErr
 		}
 		return s.client.Complete(ctx, dispatchReq)
 	})

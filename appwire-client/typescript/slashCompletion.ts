@@ -80,6 +80,12 @@ export interface SlashMenuItem {
   // does, or its plugin provenance").
   hint: string;
   kind: "builtin" | "plugin" | "skill";
+  // The CANONICAL catalog name of a skill row - the exact EvenerSkillInfo.name
+  // the wire's {type: "skill", name} input item carries. Only skill rows set
+  // it; a builtin or plugin row leaves it absent, which is what lets
+  // Composer.tsx distinguish "insert this command's invocation text" from
+  // "add this skill's chip" even when a command and a skill share a name.
+  canonicalName?: string;
 }
 
 // mergeSlashCommands is the composer's own single merge point (2026-08-14,
@@ -109,13 +115,21 @@ export function mergeSlashCommands(
     hint: c.description || c.argumentHint || `plugin: ${c.pluginName ?? c.source ?? "unknown"}`,
     kind: "plugin",
   }));
-  const skillItems: SlashMenuItem[] = skills.map((skill) => ({
-    key: `skill:${skill.name}`,
-    invocation: `/${skill.name}`,
-    label: skill.name,
-    hint: skill.description ?? "",
-    kind: "skill",
-  }));
+  // Completion offers only skills that are both available and user-invocable
+  // (docs/skills.md): an unavailable source or a user-invocable: false flag
+  // removes the row entirely rather than rendering it disabled - same rule as
+  // the unavailable built-ins filtered out above, since this menu has no
+  // disabled-row affordance.
+  const skillItems: SlashMenuItem[] = skills
+    .filter((skill) => skill.available && skill.userInvocable)
+    .map((skill) => ({
+      key: `skill:${skill.name}`,
+      invocation: `/${skill.name}`,
+      label: skill.name,
+      hint: skill.description ?? "",
+      kind: "skill",
+      canonicalName: skill.name,
+    }));
   return [...builtinItems, ...pluginItems, ...skillItems];
 }
 

@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"encoding/json"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -341,12 +340,9 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	return live, nil
 }
 
-// discoverPastThreadSkillCatalog reconstructs the metadata a session had at
-// start without loading any skill bodies. The order mirrors session startup:
-// embedded skills first, automatic user skills next, project and configured
-// extra directories after that, and finally the skills exposed by configured
-// plugins. Later layers overwrite an earlier canonical key, just as they do
-// during session initialization. Plugin directories use the shared
+// discoverPastThreadSkillCatalog discovers the current user advertisement view
+// without activating any skill bodies. It shares session startup's portable
+// discovery and filtering policy. Plugin directories use the shared
 // first-manifest-wins selection policy; a later duplicate is skipped even if
 // the selected plugin fails component loading.
 //
@@ -355,64 +351,69 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 // their tests replace the seam to prove they never invoke cold discovery.
 var discoverPastThreadSkillCatalog = discoverPastThreadSkills
 
-func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo {
-	all := make(map[string]skill.SkillMeta)
-	if embedded, err := skill.EmbeddedSkills(); err == nil {
-		maps.Copy(all, embedded)
-	}
-	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
-		skill.ScanSkillsDir(userSkillsDir, all)
-	}
-
-	workingDir := strings.TrimSpace(entry.Meta.EnvInfo.WorkingDir)
-	if workingDir != "" {
-		env := execenv.NewLocalExecutionEnvironment(workingDir)
-		maps.Copy(all, skill.DiscoverSkills(env, entry.Meta.Config.SkillsDirs...))
-	}
-
-	seenPluginNames := make(map[string]struct{}, len(entry.Meta.Config.PluginDirs))
-	for _, dir := range entry.Meta.Config.PluginDirs {
-		pluginName, ok := pastThreadPluginName(dir)
-		if !ok {
-			continue
-		}
-		if _, seen := seenPluginNames[pluginName]; seen {
-			continue
-		}
-		seenPluginNames[pluginName] = struct{}{}
-		pluginSkills := make(map[string]skill.SkillMeta)
-		skill.ScanSkillsDir(filepath.Join(dir, "skills"), pluginSkills)
-		for name, meta := range pluginSkills {
-			all[pluginName+":"+name] = meta
-		}
-	}
-
-	entries := skill.CatalogEntries(all)
-	result := make([]appwire.EvenerSkillInfo, 0, len(entries))
-	for _, entry := range entries {
-		result = append(result, appwire.EvenerSkillInfo{Name: entry.Name, Description: entry.Description})
-	}
-	return result
+// pastThreadSkillCatalog is the past-thread discovery view: the user
+// advertisement plus the Stage 1 discovery diagnostics (collisions,
+// unreadable sources, invalid metadata or controls) as the explicit
+// source-detail view.
+type pastThreadSkillCatalog struct {
+	Skills      []appwire.EvenerSkillInfo
+	Diagnostics []appwire.EvenerSkillDiagnostic
 }
 
-// pastThreadPluginName reads only the plugin manifest fields needed to locate
-// its skill directory. In particular, this does not load agents, commands,
-// hooks, or MCP configuration: a malformed unrelated component must not hide
-// otherwise valid plugin skills from a cold thread read.
-func pastThreadPluginName(dir string) (string, bool) {
-	name, err := plugin.ManifestName(dir)
-	return name, err == nil
+func discoverPastThreadSkills(entry hubcore.PastEntry) pastThreadSkillCatalog {
+	home, _ := os.UserHomeDir()
+	sources, _ := plugin.SkillSources(entry.Meta.Config.PluginDirs)
+	var env execenv.ExecutionEnvironment
+	if cwd := strings.TrimSpace(entry.Meta.EnvInfo.WorkingDir); cwd != "" {
+		env = execenv.NewLocalExecutionEnvironment(cwd)
+	}
+	catalog := skill.Discover(env, skill.DiscoverOptions{
+		HomeDir:       home,
+		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		ExtraDirs:     entry.Meta.Config.SkillsDirs,
+		Plugins:       sources,
+	})
+	entries := catalog.UserEntries()
+	result := make([]appwire.EvenerSkillInfo, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, appwire.EvenerSkillInfo{
+			Name:        entry.CatalogName,
+			Description: entry.Meta.Description,
+			// Stage 1's discovery view copied verbatim: the invocation
+			// controls and availability verdict are the catalog's own, and
+			// AllowedTools rides as metadata only. The completion identity
+			// stays path-free; discovery-source detail belongs to
+			// EvenerDiagnostics.SkillDiagnostics, not to this catalog.
+			DisableModelInvocation: entry.Controls.DisableModelInvocation,
+			UserInvocable:          entry.Controls.UserInvocable,
+			Available:              !entry.Unavailable,
+			AllowedTools:           append([]string(nil), entry.Meta.AllowedTools...),
+		})
+	}
+	var diagnostics []appwire.EvenerSkillDiagnostic
+	for _, d := range catalog.Diagnostics {
+		diagnostics = append(diagnostics, appwire.EvenerSkillDiagnostic{
+			Category:    d.Category,
+			Name:        d.Name,
+			Source:      d.Source,
+			OtherSource: d.OtherSource,
+			Field:       d.Field,
+			Message:     d.Message,
+		})
+	}
+	return pastThreadSkillCatalog{Skills: result, Diagnostics: diagnostics}
 }
 
 func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
-	skills := discoverPastThreadSkillCatalog(entry)
-	if len(skills) == 0 {
+	catalog := discoverPastThreadSkillCatalog(entry)
+	if len(catalog.Skills) == 0 && len(catalog.Diagnostics) == 0 {
 		return thread
 	}
 	if thread.Evener.Diagnostics == nil {
 		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 	}
-	thread.Evener.Diagnostics.Skills = skills
+	thread.Evener.Diagnostics.Skills = catalog.Skills
+	thread.Evener.Diagnostics.SkillDiagnostics = catalog.Diagnostics
 	return thread
 }
 

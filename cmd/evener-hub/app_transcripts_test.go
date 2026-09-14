@@ -100,9 +100,9 @@ func TestHubTranscriptListPastFallbackDoesNotDiscoverSkills(t *testing.T) {
 	sources.Add(&pastFallbackRelaySource{readErr: appwire.SessionUnavailable("live source unavailable")})
 	var calls int
 	previous := discoverPastThreadSkillCatalog
-	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) pastThreadSkillCatalog {
 		calls++
-		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+		return pastThreadSkillCatalog{Skills: []appwire.EvenerSkillInfo{{Name: "unexpected"}}}
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 

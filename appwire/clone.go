@@ -193,6 +193,9 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.Tools = append([]EvenerToolInfo(nil), d.Tools...)
 	cp.MCP = cloneMCPServers(d.MCP)
 	cp.Skills = append([]EvenerSkillInfo(nil), d.Skills...)
+	for i := range cp.Skills {
+		cp.Skills[i].AllowedTools = append([]string(nil), d.Skills[i].AllowedTools...)
+	}
 	cp.Plugins = append([]EvenerPluginInfo(nil), d.Plugins...)
 	cp.HookEvents = append([]EvenerHookEventStatus(nil), d.HookEvents...)
 	cp.Jobs = CloneEvenerJobs(d.Jobs)
@@ -202,6 +205,7 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 		cp.TurnSlots = &ts
 	}
 	cp.Agents = append([]string(nil), d.Agents...)
+	cp.SkillDiagnostics = append([]EvenerSkillDiagnostic(nil), d.SkillDiagnostics...)
 	return &cp
 }
 
@@ -272,6 +276,16 @@ func cloneQueueState(q QueueState) QueueState {
 	q.IDs = append([]string(nil), q.IDs...)
 	q.ClientMutationIDs = append([]string(nil), q.ClientMutationIDs...)
 	q.Texts = append([]string(nil), q.Texts...)
+	// SkillNames is per-entry, so both the outer slice and each entry's names
+	// must be independent: CloneThread feeds cached thread state, and a caller
+	// editing one entry's selections must never reach the original.
+	if q.SkillNames != nil {
+		names := make([][]string, len(q.SkillNames))
+		for i := range q.SkillNames {
+			names[i] = append([]string(nil), q.SkillNames[i]...)
+		}
+		q.SkillNames = names
+	}
 	return q
 }
 

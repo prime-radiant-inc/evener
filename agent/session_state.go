@@ -150,6 +150,8 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		}
 		jobTreeRevision = s.jobActivityClock.revision.Load()
 	}
+	skills := s.skillLifecycle.Clone()
+	skills.PinnedNoteGen = s.pinnedNoteGen
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -176,6 +178,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		Origin:                   s.origin,
 		Goal:                     s.goalSnapshotForMeta(),
 		PinnedNote:               s.pinnedNote,
+		Skills:                   &skills,
 		HumanNote:                human,
 		AgentNote:                agentNote,
 		SessionURLs:              append([]schema.SessionURL(nil), urls...),
@@ -188,6 +191,16 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 	}
+}
+
+// saveMeta returns persistence failures to this feature's lifecycle-sensitive
+// callers (skill activation, delivery admission, compaction receipts). The
+// write itself is main's autoSaveMeta: this branch and main independently
+// extracted the same inline body into a helper, and the rebase keeps main's one
+// implementation under our call sites' name rather than two copies of the
+// locking, meta-FS and flush sequence.
+func (s *Session) saveMeta() error {
+	return s.autoSaveMeta()
 }
 
 // goalSnapshotForMeta calls PersistSnapshot on the goal store and maps the
