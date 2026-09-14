@@ -168,6 +168,20 @@ type indexedTurn struct {
 	// GoalContinuation distinguishes a top-level goal opener from ordinary
 	// steering without retaining model or display text in the derived index.
 	GoalContinuation bool `json:"goal_continuation,omitempty"`
+	// Replay marks the record of a ContextReplay copy: a second physical
+	// record of a turn this file already holds, written so a compaction
+	// marker cannot discard the model's history. The index keeps its extent
+	// — a scan resumes through it and divergence is measured over it — and
+	// nothing else: it opens no logical turn, joins none, projects no item,
+	// stamps nothing, and is not the record the next one reads its group
+	// boundary from. Every reader of the logical map skips it, which is what
+	// keeps the bounded reader saying exactly what the full read says, since
+	// the full read never hands a copy to the accumulator at all.
+	//
+	// The field is new rather than versioned: ContextReplay itself arrives
+	// with the fold that writes the copies, so no index built before it can
+	// hold a record this flag would have been true for.
+	Replay bool `json:"replay,omitempty"`
 	// StartsGroup is derived once with the owning turn in scope. Readers and
 	// append recovery reuse the same boundary instead of inferring ownership
 	// from a continuation record's per-entry identity.
@@ -262,6 +276,9 @@ func (d turnIndexDisk) logicalTurnCount() int {
 	groupItems := uint64(0)
 	for i := range n {
 		record := d.recordAt(i)
+		if record.Replay {
+			continue
+		}
 		if i > 0 && record.StartsGroup {
 			// The previous group just closed: count it when it projected
 			// items.
@@ -297,6 +314,26 @@ type indexedGroup struct {
 	open bool
 }
 
+// previousLogicalKind reports the turn kind of the newest record that is on
+// the logical map — the records appended by this scan first, then the
+// previously indexed prefix — skipping replay copies, which are not.
+func previousLogicalKind(index *turnIndexDisk, appended []indexedTurn) schema.TurnKind {
+	for i := len(appended) - 1; i >= 0; i-- {
+		if appended[i].Replay {
+			continue
+		}
+		return appended[i].TurnKind
+	}
+	for i := index.recordCount() - 1; i >= 0; i-- {
+		record := index.recordAt(i)
+		if record.Replay {
+			continue
+		}
+		return record.TurnKind
+	}
+	return schema.TurnKind("")
+}
+
 // indexedGroups materializes the whole record list into logical groups in
 // order. It mirrors the accumulator's state machine: openers start groups,
 // continuations join the open group, standalone kinds close it. Records whose
@@ -307,6 +344,12 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	n := d.recordCount()
 	for i := range n {
 		record := d.recordAt(i)
+		if record.Replay {
+			// Not on the logical map: it neither opens a group nor joins one,
+			// so no group's span starts at it and no group ordinal is spent
+			// on it. See indexedTurn.Replay.
+			continue
+		}
 		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
 		join := !record.StartsGroup && role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
 		if join {
@@ -893,13 +936,15 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
 			if entry.Turn.ContextReplay {
-				// A copy consumes a physical record — the index still needs its
-				// extent to resume a scan and to answer divergence — and
-				// nothing else: no item, no usage, no tool state, and above all
-				// no logical boundary, since the turn it copies already drew
-				// one. The full read excludes copies where its own scan hands
-				// entries to the accumulator; this is the same exclusion on the
-				// indexed side, so the two readers agree by construction.
+				// A copy consumes a physical record and nothing more; see
+				// indexedTurn.Replay for the whole rule. It carries the
+				// previous record's turn id so a reader that looks at one
+				// anyway reads the id of the turn it sits inside, never a new
+				// one, and its own turn kind is left off the record entirely:
+				// the kind is the logical-grouping input, and a copy is not on
+				// the logical map.
+				record.Replay = true
+				record.TurnKind = ""
 				if len(appended) > 0 {
 					record.TurnID = appended[len(appended)-1].TurnID
 				} else if n := index.recordCount(); n > 0 {
@@ -929,12 +974,10 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 					openTurnID, openCalls = openGroupState(*index)
 				}
 			}
-			prevKind := schema.TurnKind("")
-			if len(appended) > 0 {
-				prevKind = appended[len(appended)-1].TurnKind
-			} else if n := index.recordCount(); n > 0 {
-				prevKind = index.recordAt(n - 1).TurnKind
-			}
+			// The kind of the last record ON THE LOGICAL MAP: copies are
+			// skipped, so a copy landing between a turn's entries cannot
+			// close the group they belong to.
+			prevKind := previousLogicalKind(index, appended)
 			record.StartsGroup = recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation, owner, openTurnID)
 			if record.StartsGroup {
 				openTurnID = record.TurnID
@@ -1258,6 +1301,11 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 			return nil, projected, err
 		}
 		record := index.recordAt(i)
+		if record.Replay {
+			// Inside the span, off the map: it contributes no item and no
+			// stamp. See indexedTurn.Replay.
+			continue
+		}
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
 			return nil, projected, fmt.Errorf("read transcript entry: %w", err)
@@ -1804,6 +1852,9 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 	turnID := ""
 	for i := n - 1; i >= 0; i-- {
 		record := index.recordAt(i)
+		if record.Replay {
+			continue
+		}
 		for _, id := range record.GroupCalls {
 			calls[id] = true
 		}

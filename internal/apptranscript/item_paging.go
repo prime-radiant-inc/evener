@@ -309,6 +309,11 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				return nil, projectedRecords, err
 			}
 			record := index.recordAt(i)
+			if record.Replay {
+				// Inside the span, off the logical map: no read, no item, no
+				// stamp. See indexedTurn.Replay.
+				continue
+			}
 			raw := make([]byte, record.Length)
 			if _, err := file.ReadAt(raw, record.Offset); err != nil {
 				_ = file.Close()
@@ -318,9 +323,6 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			if err != nil {
 				_ = file.Close()
 				return nil, projectedRecords, fmt.Errorf("parse transcript entry: %w", err)
-			}
-			if entry.Turn.ContextReplay {
-				continue
 			}
 			projectedRecords++
 			entries = append(entries, entry.Turn)

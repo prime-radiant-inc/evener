@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -135,5 +136,140 @@ func TestReplayCopiesAddNoUsageAndNoOrdinals(t *testing.T) {
 	indexed, _ := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 100, boundedTestProjector)
 	if got := keysForTurns(indexed); !reflect.DeepEqual(got, fullKeys) {
 		t.Fatalf("bounded keys=%v, full keys=%v: a copy moved one reader's ordinals and not the other's", got, fullKeys)
+	}
+}
+
+// The index is the bounded reader's map of the file, and a copy is a physical
+// record with no place on it: it opens no logical turn, joins none, projects
+// nothing, stamps nothing, and tells the record after it nothing about where
+// its group began. These are the three ways the map went wrong — a copy inside
+// a group's span, a copy that looks like a standalone kind between two records
+// of one turn, and a copy consuming a group ordinal — and each is checked the
+// only way that matters: the bounded reader must say exactly what the full
+// reader says.
+func TestReplayCopiesAreNotOnTheIndexsLogicalMap(t *testing.T) {
+	usage := llm.Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110}
+	opener := func(stable string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User("ask "+stable))
+		turn.StableTurnID = stable
+		return turn
+	}
+	answer := func(text string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))
+		turn.Usage = usage
+		return turn
+	}
+	environment := func() schema.Turn {
+		turn := schema.NewTurn(schema.TurnEnvironment, llm.User("environment"))
+		turn.StableTurnID = "turn_environment_1"
+		return turn
+	}
+	copyOf := func(turn schema.Turn) schema.Turn {
+		turn.ContextReplay = true
+		turn.CompactionFoldID = "fold_index"
+		return turn
+	}
+	marker := func() schema.Turn {
+		turn := schema.NewTurn(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"))
+		turn.CompactionFoldID = "fold_index"
+		return turn
+	}
+
+	cases := []struct {
+		name    string
+		entries []schema.Turn
+	}{
+		{
+			// The copy sits between an opener and its own continuation, so
+			// the group's span contains it: a reader that projects or stamps
+			// the records of that span reaches it.
+			name:    "copied continuation inside a group's span",
+			entries: []schema.Turn{opener("turn_m1"), answer("first"), copyOf(answer("first")), answer("second")},
+		},
+		{
+			// The copy's turn kind is a standalone one. Read as a real
+			// record it closes the open group, so the continuation after it
+			// starts a new logical turn in one reader and not the other.
+			name:    "standalone-kind copy between a turn's records",
+			entries: []schema.Turn{opener("turn_m1"), answer("first"), copyOf(environment()), answer("second")},
+		},
+		{
+			// The whole fold shape: copies, the marker that claims them, and
+			// a turn after it. A copy that consumes a group ordinal moves
+			// every key that follows.
+			name: "copies and the marker that claims them",
+			entries: []schema.Turn{
+				opener("turn_m1"), answer("first"),
+				copyOf(opener("turn_m1")), copyOf(answer("first")),
+				marker(),
+				opener("turn_m2"), answer("second"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := make([]transcript.Entry, 0, len(tc.entries))
+			for i, turn := range tc.entries {
+				entries = append(entries, transcript.Entry{Kind: "entry", Seq: i + 1, Turn: turn})
+			}
+			path := writeEntries(t, entries...)
+
+			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+			indexed, _ := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 100, boundedTestProjector)
+			if !reflect.DeepEqual(indexed, full) {
+				t.Fatalf("bounded reader and full reader disagree over a replay copy:\nbounded=%#v\nfull=%#v", indexed, full)
+			}
+			// And page by page: the cursor keys are what a client reconciles
+			// by, so one phantom group ordinal is a duplicated item on screen.
+			assertBoundedLatestMatchesFull(t, path, 1)
+		})
+	}
+}
+
+// The copies a fold writes must not move anything a client already holds: the
+// same turns read before and after the compaction have to carry the same keys
+// and the same positions.
+func TestReplayCopiesLeaveEarlierKeysWhereTheyWere(t *testing.T) {
+	before := []transcript.Entry{
+		{Kind: "entry", Seq: 1, Turn: func() schema.Turn {
+			turn := schema.NewTurn(schema.TurnUserInput, llm.User("ask one"))
+			turn.StableTurnID = "turn_m1"
+			return turn
+		}()},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer one"))},
+	}
+	beforePath := writeEntries(t, before...)
+	beforeTurns, _ := requireLatestFromFile(t, NewTurnCache(), beforePath, testMaxLineBytes, 100, boundedTestProjector)
+
+	copies := make([]transcript.Entry, 0, len(before)+3)
+	copies = append(copies, before...)
+	for i, entry := range before {
+		turn := entry.Turn
+		turn.ContextReplay = true
+		turn.CompactionFoldID = "fold_keys"
+		copies = append(copies, transcript.Entry{Kind: "entry", Seq: len(before) + i + 1, Turn: turn})
+	}
+	marker := schema.NewTurn(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"))
+	marker.CompactionFoldID = "fold_keys"
+	copies = append(copies, transcript.Entry{Kind: "entry", Seq: len(copies) + 1, Turn: marker})
+	afterPath := writeEntries(t, copies...)
+	afterTurns, _ := requireLatestFromFile(t, NewTurnCache(), afterPath, testMaxLineBytes, 100, boundedTestProjector)
+
+	positions := func(turns []appwire.Turn) []string {
+		var out []string
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.Position == nil {
+					t.Fatalf("item lacks a position: %+v", item)
+				}
+				out = append(out, fmt.Sprintf("%s@%d:%d", item.TranscriptKey, item.Position.Entry, item.Position.Item))
+			}
+		}
+		return out
+	}
+	want := positions(beforeTurns)
+	got := positions(afterTurns)
+	if len(got) < len(want) || !reflect.DeepEqual(got[:len(want)], want) {
+		t.Fatalf("the compaction moved keys a client already holds:\nbefore=%v\nafter=%v", want, got)
 	}
 }
