@@ -75,7 +75,7 @@ test-api-package:
 ##   fuzz-family tests, even at reduced depth. WEB=0 skips the frontend
 ##   stream.
 ## fails-when: Any module, frontend stream, or setup failure is nonzero.
-test: build-dev
+test: evener-dev
 	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
 
 ## Alias for `make test`.
@@ -123,7 +123,7 @@ RACE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
 ##   explicit root scope plus agent and nonagent on separate runners. The two
 ##   new scopes derive from GO_MODULES; nonroot remains the local aggregate.
 ## fails-when: Any race report, test failure, or setup failure is nonzero.
-test-race: build-dev
+test-race: evener-dev
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
 		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \

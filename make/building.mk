@@ -87,12 +87,34 @@ build-web: web-preflight
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
 
+# FILE_TARGETS names the rules that are real files rather than phony names.
+# make must skip one whose file is newer than its prerequisites -- that is the
+# whole point of it -- so these are deliberately not in .PHONY, and the root
+# Makefile audits read this list to tell the two kinds apart.
+FILE_TARGETS := evener-dev
+
+# The test gate execs ./evener-dev and must never compile it: its subject is a
+# host whose Go caches have stalled, and a compile it starts has no bound and
+# no diagnostic. It takes the binary as a prerequisite instead, and the binary
+# is a real file target so an up-to-date one costs no go command at all --
+# `make -n test` runs no build when nothing under cmd/ or internal/devtool has
+# changed. Those two trees are where every subcommand this binary dispatches
+# lives; a change further down its import graph is not tracked here, and
+# `make build-dev` is the way to force a build regardless.
+EVENER_DEV_SOURCES := $(shell find cmd internal/devtool -name '*.go' -not -name '*_test.go' 2>/dev/null)
+
+## Build the evener-dev dev/test infrastructure binary when its sources have
+## changed. The test gate's prerequisite; `make build-dev` forces a build.
+evener-dev: $(EVENER_DEV_SOURCES) go.mod go.sum
+	go build -o evener-dev ./cmd/evener-dev/bin/
+
 ## Build the evener-dev dev/test infrastructure binary (agent-shards,
 ## module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck,
 ## tomlcheck, transcript-v2-upgrade). Not installed for
-## end users; used by make targets and go run ./cmd/evener-dev/bin.
+## end users; used by make targets and by the test gate, which execs it.
+## Always builds, whether or not the binary is up to date.
 build-dev:
-	go build -o evener-dev ./cmd/evener-dev/bin/
+	@$(MAKE) --no-print-directory --always-make evener-dev
 
 # build-all builds both the runtime binary and the dev binary.
 ## Build every binary: the evener runtime binary and the evener-dev

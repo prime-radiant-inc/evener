@@ -128,6 +128,9 @@ func makefilePhonyAndRuleNames(t *testing.T) (phony, rules []string) {
 				phony = append(phony, strings.Fields(after)...)
 				continue
 			}
+			if _, ok := fileTargetAssignment(line); ok {
+				continue
+			}
 			name, _, ok := ruleLineName(line)
 			if !ok || seen[name] {
 				continue
@@ -137,6 +140,71 @@ func makefilePhonyAndRuleNames(t *testing.T) (phony, rules []string) {
 		}
 	})
 	return phony, rules
+}
+
+// fileTargetAssignment reports whether a line declares FILE_TARGETS, and
+// returns the names it lists. A rule that really does build a file of its own
+// name must not be .PHONY -- make skipping it when it is up to date is the
+// whole point -- so the makefiles name those rules here and the audits below
+// read the list rather than guessing from the rule's shape.
+func fileTargetAssignment(line string) ([]string, bool) {
+	for _, sep := range []string{"FILE_TARGETS :=", "FILE_TARGETS:=", "FILE_TARGETS +=", "FILE_TARGETS+="} {
+		if after, ok := strings.CutPrefix(line, sep); ok {
+			return strings.Fields(after), true
+		}
+	}
+	return nil, false
+}
+
+// makefileFileTargets is every name the makefiles declare in FILE_TARGETS.
+func makefileFileTargets(t *testing.T) map[string]bool {
+	t.Helper()
+	declared := map[string]bool{}
+	readMakefileSources(t, func(_ string, raw []byte) {
+		for line := range strings.Lines(string(raw)) {
+			if names, ok := fileTargetAssignment(strings.TrimRight(line, "\n")); ok {
+				for _, name := range names {
+					declared[name] = true
+				}
+			}
+		}
+	})
+	return declared
+}
+
+// TestEveryFileTargetBuildsItsOwnFile is the other half of the FILE_TARGETS
+// exemption: a name listed there is excused from .PHONY, so it has to earn it.
+// It must have a rule, that rule must have prerequisites (without them make
+// never rebuilds the file once it exists), and it must not also be .PHONY,
+// which would make make rebuild it every time and defeat the listing.
+func TestEveryFileTargetBuildsItsOwnFile(t *testing.T) {
+	t.Parallel()
+	declared := makefileFileTargets(t)
+	if len(declared) == 0 {
+		t.Skip("no FILE_TARGETS declared")
+	}
+	phony, _ := makefilePhonyAndRuleNames(t)
+	isPhony := make(map[string]bool, len(phony))
+	for _, name := range phony {
+		isPhony[name] = true
+	}
+	withPrerequisites := map[string]bool{}
+	readMakefileSources(t, func(_ string, raw []byte) {
+		for line := range strings.Lines(string(raw)) {
+			name, rest, ok := ruleLineName(strings.TrimRight(line, "\n"))
+			if ok && declared[name] && strings.TrimSpace(rest) != "" {
+				withPrerequisites[name] = true
+			}
+		}
+	})
+	for name := range declared {
+		if isPhony[name] {
+			t.Errorf("%s is in FILE_TARGETS and in .PHONY; a phony rule is rebuilt every time, which is what FILE_TARGETS exists to avoid", name)
+		}
+		if !withPrerequisites[name] {
+			t.Errorf("%s is in FILE_TARGETS but has no rule with prerequisites; make would never rebuild the file once it exists", name)
+		}
+	}
 }
 
 // TestEveryPhonyTargetHasARule is the tripwire for a gate that is listed,
@@ -333,16 +401,19 @@ func TestEveryRuleIsPhony(t *testing.T) {
 	for _, name := range phony {
 		isPhony[name] = true
 	}
+	declaredFile := makefileFileTargets(t)
 	var missing []string
 	for _, name := range rules {
-		if !isPhony[name] {
-			missing = append(missing, name)
+		if isPhony[name] || declaredFile[name] {
+			continue
 		}
+		missing = append(missing, name)
 	}
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("these rules are not .PHONY, so a file of the same name at the repo root "+
-			"makes `make <target>` a silent no-op. Add them to a .PHONY line:\n  %s",
+			"makes `make <target>` a silent no-op. Add them to a .PHONY line, or, if the "+
+			"rule really does build that file, to FILE_TARGETS:\n  %s",
 			strings.Join(missing, "\n  "))
 	}
 }
