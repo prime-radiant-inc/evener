@@ -1096,13 +1096,17 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		func() error { return s.appendClientMutationTranscriptLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
-		// The prominent record did not persist. Put the steering back so a
-		// later drain retries the failure instead of silently dropping it.
-		s.mu.Lock()
-		s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
-		s.mu.Unlock()
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist failed steering selection: %v", err)})
-		return
+		if !entryIsRecorded(err) {
+			// The prominent record did not persist. Put the steering back so a
+			// later drain retries the failure instead of silently dropping it.
+			s.mu.Lock()
+			s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
+			s.mu.Unlock()
+			return
+		}
+		// The record is in the transcript: a retry would write the same
+		// failure turn again and re-announce it.
 	}
 	s.emit(events.EventError, errorDataFromError(cause))
 	if msg.ClientMutationID == "" {
