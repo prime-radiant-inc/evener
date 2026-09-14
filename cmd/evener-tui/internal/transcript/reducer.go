@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -222,6 +223,13 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 		text := systemMessageItemText(item)
 		if text == "" {
 			return
+		}
+		if item.EventKind == appwire.ThreadItemEventKindNotesContext {
+			// A reloaded notes-context turn renders as a system message, and a
+			// session written before the write-path strip would otherwise print
+			// its controls in the transcript. Keyed to this event kind alone:
+			// every other system message keeps its bytes.
+			text = tuitext.StripControls(text)
 		}
 		r.messages = append(r.messages, ChatMessage{Kind: MsgSystem, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID})
 	case "userMessage":

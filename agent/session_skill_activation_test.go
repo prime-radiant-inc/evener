@@ -638,7 +638,7 @@ func TestSkillActivation_Routes(t *testing.T) {
 
 	t.Run("tool", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
 		body := strings.Repeat("BODY_7f2a\n", 64)
 		writeSkillMD(t, root, "opaque", fixtureHeader+body)
@@ -689,7 +689,7 @@ func TestSkillActivation_Routes(t *testing.T) {
 
 	t.Run("slash", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
 		body := strings.Repeat("BODY_7f2a\n", 64)
 		writeSkillMD(t, root, "opaque", fixtureHeader+body)
@@ -741,7 +741,7 @@ func TestSkillActivation_Routes(t *testing.T) {
 
 	t.Run("preload", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
 		body := strings.Repeat("BODY_7f2a\n", 64)
 		writeSkillMD(t, root, "opaque", fixtureHeader+body)
@@ -1051,9 +1051,9 @@ func TestSkillActivation_Resolution(t *testing.T) {
 
 	t.Run("unique_suffix_resolves_through_full_catalog", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
-		pluginDir := t.TempDir()
+		pluginDir := skillFixtureRoot(t)
 		writePluginSkill(t, pluginDir, "plug", "probe", "BODY_7f2a\n")
 		source := filepath.Join(pluginDir, "skills", "probe", "SKILL.md")
 		calls := 0
@@ -1084,7 +1084,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 
 	t.Run("ambiguous_suffix_reports_no_choice", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
 		first, second := t.TempDir(), t.TempDir()
 		writePluginSkill(t, first, "alpha", "probe", "BODY_alpha\n")
@@ -1127,12 +1127,12 @@ func TestSkillActivation_Resolution(t *testing.T) {
 
 	t.Run("exact_name_wins_over_plugin_suffix", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
 		body := strings.Repeat("BODY_7f2a\n", 64)
 		writeSkillMD(t, root, "probe", "---\nname: probe\ndescription: fixture\n---\n"+body)
 		source := filepath.Join(root, "skills", "probe", "SKILL.md")
-		pluginDir := t.TempDir()
+		pluginDir := skillFixtureRoot(t)
 		writePluginSkill(t, pluginDir, "plug", "probe", "BODY_other\n")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 			return toolCallResponse(communicateCall("done-1", "ok"))
@@ -1157,7 +1157,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 
 	t.Run("command_name_collision_keeps_command_precedence", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
 		writeSkillMD(t, root, "review", "---\nname: review\ndescription: fixture\n---\nBODY_7f2a\n")
 		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
@@ -1190,7 +1190,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 
 	t.Run("hidden_name_resolvable_by_user_through_full_catalog", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
 		body := strings.Repeat("BODY_7f2a\n", 64)
 		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\ndisable-model-invocation: true\n---\n"+body)
@@ -1222,7 +1222,7 @@ func TestSkillActivation_Resolution(t *testing.T) {
 
 	t.Run("new_arguments_with_duplicate_bodies", func(t *testing.T) {
 		t.Parallel()
-		root := t.TempDir()
+		root := skillFixtureRoot(t)
 		markGitRoot(t, root)
 		body := strings.Repeat("BODY_7f2a\n", 64)
 		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
