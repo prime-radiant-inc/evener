@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -163,7 +164,24 @@ func auxCommunicateExact(t *testing.T) {
 	meta := skill.SkillMeta{Name: "fixture", Dir: root, SkillFile: filepath.Join(root, "SKILL.md")}
 	reg := tool.NewRegistry()
 	_ = reg.Register(tool.RegisteredTool{Tool: llm.Tool{Definition: tool.DefUseSkill()}, Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) { return nil, nil }})
-	deps := &toolDeps{skill: func(name string) (skill.SkillMeta, bool) { return meta, name == "fixture" }, emit: func(events.EventKind, events.EventData) {}}
+	lookup := func(name string) (skill.SkillMeta, bool) { return meta, name == "fixture" }
+	deps := &toolDeps{
+		skill: lookup,
+		emit:  func(events.EventKind, events.EventData) {},
+		// registerSkillTool delegates use_skill executions here; an unset
+		// callback nil-derefs on the first invocation.
+		skillActivate: func(_ context.Context, name, _ string) (any, error) {
+			m, ok := lookup(name)
+			if !ok {
+				return nil, fmt.Errorf("unknown skill %q", name)
+			}
+			loaded, _, err := skill.Load(skill.Descriptor{CatalogName: name, Meta: m})
+			if err != nil {
+				return nil, err
+			}
+			return skill.Render(loaded).Content, nil
+		},
+	}
 	registerSkillTool(reg, deps)
 	h := reg.Get("use_skill").Exec
 	if _, err := h(context.Background(), nil, map[string]any{"skill_name": "missing"}); err == nil {
@@ -179,12 +197,12 @@ func auxCommunicateExact(t *testing.T) {
 		t.Fatalf("skill load = %#v, %v", got, err)
 	} else {
 		s := got.(string)
-		if !strings.Contains(s, "body") {
-			t.Fatalf("skill load missing body: %q", s)
-		}
-		wantNotif := systemNotificationf("Paths referenced in this skill are relative to the skill directory: %q", root)
-		if !strings.HasPrefix(s, wantNotif) {
-			t.Fatalf("skill load prefix = %q, want %q", s, wantNotif)
+		// The activation pipeline returns the complete rendered skill-context
+		// envelope (session_skill_activation.go's skillToolActivate); the old
+		// inline implementation's path-notification prefix no longer exists
+		// anywhere in production.
+		if !strings.HasPrefix(s, "<skill-context>\n") || !strings.Contains(s, `"instructions":"body\n"`) {
+			t.Fatalf("skill load is not the complete rendered envelope: %q", s)
 		}
 	}
 }

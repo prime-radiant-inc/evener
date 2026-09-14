@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/identifier"
 )
@@ -980,6 +981,9 @@ func cloneDelegateStartDescriptor(descriptor delegatestore.Descriptor) delegates
 	clone.ToolNameCeiling = append([]string(nil), descriptor.ToolNameCeiling...)
 	clone.FrozenSkillNames = append([]string(nil), descriptor.FrozenSkillNames...)
 	clone.FrozenSkillBodies = append([]string(nil), descriptor.FrozenSkillBodies...)
+	// FrozenSkillPreload is all immutable string fields, so copying the
+	// slice's backing array deep-copies every element.
+	clone.FrozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), descriptor.FrozenSkillMetadata...)
 	clone.ResultSchema = append(json.RawMessage(nil), descriptor.ResultSchema...)
 	clone.ExplicitToolGrants = append([]string(nil), descriptor.ExplicitToolGrants...)
 	clone.Config = descriptor.Config.Clone()
