@@ -495,9 +495,10 @@ export function entityOpenTarget(view: EntityView): OpenTarget | undefined {
 
 ```ts
 // TranscriptBody calls this hook once and shares its map with every EntityRef
-// in that body through transcript render context. That records the shipped
-// per-body owner without superseding the design's separate shared-index
-// acceptance across surfaces.
+// in that body through transcript render context — the shipped per-body owner.
+// The design spec records this as an explicit dated decision (2026-09-14): the
+// earlier cross-surface "one index per (ref, tree, delegates[])" wording is
+// superseded and no cross-body cache is built.
 //
 // The watch-fold key must not be the turns array: prose deltas replace it.
 // Serialize every fold-relevant job_watch input so same-length payload changes

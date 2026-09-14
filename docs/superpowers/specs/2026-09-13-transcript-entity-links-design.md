@@ -180,8 +180,11 @@ this section asked for "one index per `(ref, retained tree, delegates[])`",
 which would have required a cross-body cache; that cache is deliberately not
 built. It existed to protect three properties, all of which hold per body: no
 `EntityRef` flattens the tree or subscribes to a source store, the derivation
-is memoized so prose-only deltas do not rebuild it, and the watch fold re-runs
-only on its real inputs. Two bodies for one ref therefore derive the same
+is memoized so prose-only deltas do not rebuild it, and the watch-fold key
+covers every input the fold reads, so a raw-only enrichment cannot leave a
+stale summary. The derivation as a whole — and therefore the fold inside it —
+is also recomputed when the retained tree, the delegate projection, or the
+stale/ended state changes. Two bodies for one ref therefore derive the same
 content independently rather than sharing one instance. Revisit if a second
 concurrent body for the same ref ever becomes a real mount.
 
