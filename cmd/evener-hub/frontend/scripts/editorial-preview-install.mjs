@@ -1,8 +1,11 @@
 import { lstatSync } from "node:fs";
 import path from "node:path";
 
-// The editorial preview pins its dev server's fs.allow to exactly [frontend]
-// and lets Vite's dep cache live under node_modules - both only hold when the
+// The editorial preview pins its dev server's fs.allow to exactly the
+// frontend plus the AppWire package at appwire-client/typescript, the one
+// intentional entry outside the checkout (see editorial-preview.vite.config.mjs
+// and its test - the package's modules are served over /@fs/ and 403 without
+// it), and lets Vite's dep cache live under node_modules - both only hold when the
 // install is the checkout's OWN, not a fleet worktree's symlink into the one
 // shared install (a tree every concurrent lane can write). The config refuses
 // to serve on a shared install; the preview's own tests skip on one instead of

@@ -7,7 +7,7 @@ import type {
 	SessionDeleteParams,
 	SessionPinAssignParams,
 	SessionPinUnpinParams,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+} from "../../appwire-client/typescript/types.gen";
 import {
 	decodeSessionDeletionResult,
 	localSessionId,

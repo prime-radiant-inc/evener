@@ -10,13 +10,13 @@ import (
 
 func TestFailureLedger_IdenticalFailureTwice_StreakTwo(t *testing.T) {
 	l := newFailureLedger()
-	if failStreak, _ := l.record("write_file", []byte(`{"path":"a"}`), true, "boom"); failStreak != 1 {
+	if failStreak, _ := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom"); failStreak != 1 {
 		t.Fatalf("first failure: failStreak = %d, want 1", failStreak)
 	}
-	if failStreak, _ := l.record("write_file", []byte(`{"path":"a"}`), true, "boom"); failStreak != 2 {
+	if failStreak, _ := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom"); failStreak != 2 {
 		t.Fatalf("second identical failure: failStreak = %d, want 2", failStreak)
 	}
-	failStreak, _, snippets := l.check("write_file", []byte(`{"path":"a"}`))
+	failStreak, _, snippets := l.check(newDispatchKey("write_file", []byte(`{"path":"a"}`)))
 	if failStreak != 2 {
 		t.Fatalf("check: failStreak = %d, want 2", failStreak)
 	}
@@ -27,31 +27,31 @@ func TestFailureLedger_IdenticalFailureTwice_StreakTwo(t *testing.T) {
 
 func TestFailureLedger_SuccessInBetween_StreakResetsToOne(t *testing.T) {
 	l := newFailureLedger()
-	l.record("write_file", []byte(`{"path":"a"}`), true, "boom")
-	if failStreak, _ := l.record("write_file", []byte(`{"path":"a"}`), false, "ok"); failStreak != 0 {
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom")
+	if failStreak, _ := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), false, "ok"); failStreak != 0 {
 		t.Fatalf("success: failStreak = %d, want 0", failStreak)
 	}
-	failStreak, _, snippets := l.check("write_file", []byte(`{"path":"a"}`))
+	failStreak, _, snippets := l.check(newDispatchKey("write_file", []byte(`{"path":"a"}`)))
 	if failStreak != 0 {
 		t.Fatalf("check after success: failStreak = %d, want 0", failStreak)
 	}
 	if len(snippets) != 0 {
 		t.Fatalf("check after success: snippets = %v, want none", snippets)
 	}
-	if failStreak, _ := l.record("write_file", []byte(`{"path":"a"}`), true, "boom"); failStreak != 1 {
+	if failStreak, _ := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom"); failStreak != 1 {
 		t.Fatalf("failure after success: failStreak = %d, want 1", failStreak)
 	}
 }
 
 func TestFailureLedger_DifferentErrorClass_StreakResetsAndSnippetsReplaced(t *testing.T) {
 	l := newFailureLedger()
-	l.record("write_file", []byte(`{"path":"a"}`), true, "permission denied")
-	l.record("write_file", []byte(`{"path":"a"}`), true, "permission denied")
-	failStreak, _ := l.record("write_file", []byte(`{"path":"a"}`), true, "file not found")
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "permission denied")
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "permission denied")
+	failStreak, _ := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "file not found")
 	if failStreak != 1 {
 		t.Fatalf("new error class: failStreak = %d, want 1", failStreak)
 	}
-	_, _, snippets := l.check("write_file", []byte(`{"path":"a"}`))
+	_, _, snippets := l.check(newDispatchKey("write_file", []byte(`{"path":"a"}`)))
 	if len(snippets) != 1 || snippets[0] != "file not found" {
 		t.Fatalf("snippets not replaced: %v", snippets)
 	}
@@ -59,22 +59,22 @@ func TestFailureLedger_DifferentErrorClass_StreakResetsAndSnippetsReplaced(t *te
 
 func TestFailureLedger_DifferentArgsHash_IndependentStreak(t *testing.T) {
 	l := newFailureLedger()
-	l.record("write_file", []byte(`{"path":"a"}`), true, "boom")
-	l.record("write_file", []byte(`{"path":"a"}`), true, "boom")
-	failStreak, _, _ := l.check("write_file", []byte(`{"path":"b"}`))
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom")
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom")
+	failStreak, _, _ := l.check(newDispatchKey("write_file", []byte(`{"path":"b"}`)))
 	if failStreak != 0 {
 		t.Fatalf("different args: failStreak = %d, want 0 (independent signature)", failStreak)
 	}
-	if failStreak, _ := l.record("write_file", []byte(`{"path":"b"}`), true, "boom"); failStreak != 1 {
+	if failStreak, _ := l.record(newDispatchKey("write_file", []byte(`{"path":"b"}`)), true, "boom"); failStreak != 1 {
 		t.Fatalf("different args first failure: failStreak = %d, want 1", failStreak)
 	}
 }
 
 func TestFailureLedger_InterleavedOtherToolCalls_StreakPreserved(t *testing.T) {
 	l := newFailureLedger()
-	l.record("write_file", []byte(`{"path":"a"}`), true, "boom")
-	l.record("read_file", []byte(`{"path":"z"}`), false, "ok")
-	failStreak, _ := l.record("write_file", []byte(`{"path":"a"}`), true, "boom")
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom")
+	l.record(newDispatchKey("read_file", []byte(`{"path":"z"}`)), false, "ok")
+	failStreak, _ := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom")
 	if failStreak != 2 {
 		t.Fatalf("interleaved other-tool call reset the streak: failStreak = %d, want 2", failStreak)
 	}
@@ -100,18 +100,18 @@ func TestFailureLedger_Eviction_KeepsNewest(t *testing.T) {
 	l := newFailureLedger()
 	for i := range 513 {
 		args := fmt.Appendf(nil, `{"i":%d}`, i)
-		l.record("write_file", args, true, "boom")
+		l.record(newDispatchKey("write_file", args), true, "boom")
 	}
 	if len(l.entries) != 512 {
 		t.Fatalf("entries = %d, want 512 after eviction", len(l.entries))
 	}
 	// The oldest signature (i=0) must have been evicted.
-	failStreak, _, _ := l.check("write_file", []byte(`{"i":0}`))
+	failStreak, _, _ := l.check(newDispatchKey("write_file", []byte(`{"i":0}`)))
 	if failStreak != 0 {
 		t.Fatalf("oldest signature should have been evicted, failStreak = %d", failStreak)
 	}
 	// The newest signature (i=512) must still be present.
-	failStreak, _, _ = l.check("write_file", []byte(`{"i":512}`))
+	failStreak, _, _ = l.check(newDispatchKey("write_file", []byte(`{"i":512}`)))
 	if failStreak != 1 {
 		t.Fatalf("newest signature should survive eviction, failStreak = %d, want 1", failStreak)
 	}
@@ -125,22 +125,22 @@ func TestFailureLedger_SuccessThenRefailUnderEvictionPressure_SurvivesEviction(t
 	// slot in the insertion order must still be exactly one entry — a stale
 	// duplicate slot would push the order slice past capacity and trigger a
 	// bogus eviction that deletes a live entry via key collision.
-	l.record("write_file", argsA, true, "boom")
-	l.record("write_file", argsA, false, "ok")
+	l.record(newDispatchKey("write_file", argsA), true, "boom")
+	l.record(newDispatchKey("write_file", argsA), false, "ok")
 
 	// Fill the ledger to capacity with 511 other distinct failing signatures.
 	for i := range 511 {
 		args := fmt.Appendf(nil, `{"i":%d}`, i)
-		l.record("write_file", args, true, "boom")
+		l.record(newDispatchKey("write_file", args), true, "boom")
 	}
 
 	// A fails again: still the same entry (never deleted), so this must not
 	// trigger any eviction of a live signature.
-	failStreak, _ := l.record("write_file", argsA, true, "boom")
+	failStreak, _ := l.record(newDispatchKey("write_file", argsA), true, "boom")
 	if failStreak != 1 {
 		t.Fatalf("refail after success: record failStreak = %d, want 1", failStreak)
 	}
-	failStreak, _, _ = l.check("write_file", argsA)
+	failStreak, _, _ = l.check(newDispatchKey("write_file", argsA))
 	if failStreak != 1 {
 		t.Fatalf("refail after success: check failStreak = %d, want 1 (entry silently destroyed)", failStreak)
 	}
@@ -157,8 +157,8 @@ func TestFailureLedger_SnippetTruncation_IsUTF8Safe(t *testing.T) {
 	// truncation at 500 bytes splits the multi-byte rune and produces
 	// invalid UTF-8.
 	output := strings.Repeat("x", 499) + "€€€"
-	l.record("write_file", []byte(`{"path":"a"}`), true, output)
-	_, _, snippets := l.check("write_file", []byte(`{"path":"a"}`))
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, output)
+	_, _, snippets := l.check(newDispatchKey("write_file", []byte(`{"path":"a"}`)))
 	if len(snippets) != 1 {
 		t.Fatalf("snippets = %v, want 1 entry", snippets)
 	}
@@ -175,7 +175,7 @@ func TestFailureLedger_ConcurrentRecord_ConsistentTotal(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			args := fmt.Appendf(nil, `{"i":%d}`, i%5)
-			l.record("write_file", args, true, "boom")
+			l.record(newDispatchKey("write_file", args), true, "boom")
 		}(i)
 	}
 	wg.Wait()
@@ -202,12 +202,12 @@ func TestFailureLedger_ConcurrentRecord_ConsistentTotal(t *testing.T) {
 func TestFailureLedger_IdenticalSuccessBodies_RepeatStreakAdvances_FailStreakZero(t *testing.T) {
 	l := newFailureLedger()
 	for i, want := range []int{1, 2, 3} {
-		_, repeatStreak := l.record("read_file", []byte(`{"path":"a"}`), false, "same body")
+		_, repeatStreak := l.record(newDispatchKey("read_file", []byte(`{"path":"a"}`)), false, "same body")
 		if repeatStreak != want {
 			t.Fatalf("call %d: repeatStreak = %d, want %d", i+1, repeatStreak, want)
 		}
 	}
-	failStreak, repeatStreak, _ := l.check("read_file", []byte(`{"path":"a"}`))
+	failStreak, repeatStreak, _ := l.check(newDispatchKey("read_file", []byte(`{"path":"a"}`)))
 	if failStreak != 0 {
 		t.Fatalf("failStreak = %d, want 0", failStreak)
 	}
@@ -218,9 +218,9 @@ func TestFailureLedger_IdenticalSuccessBodies_RepeatStreakAdvances_FailStreakZer
 
 func TestFailureLedger_ChangedBody_RepeatStreakResetsToOne(t *testing.T) {
 	l := newFailureLedger()
-	l.record("read_file", []byte(`{"path":"a"}`), false, "body one")
-	l.record("read_file", []byte(`{"path":"a"}`), false, "body one")
-	_, repeatStreak := l.record("read_file", []byte(`{"path":"a"}`), false, "body two")
+	l.record(newDispatchKey("read_file", []byte(`{"path":"a"}`)), false, "body one")
+	l.record(newDispatchKey("read_file", []byte(`{"path":"a"}`)), false, "body one")
+	_, repeatStreak := l.record(newDispatchKey("read_file", []byte(`{"path":"a"}`)), false, "body two")
 	if repeatStreak != 1 {
 		t.Fatalf("changed body: repeatStreak = %d, want 1", repeatStreak)
 	}
@@ -229,7 +229,7 @@ func TestFailureLedger_ChangedBody_RepeatStreakResetsToOne(t *testing.T) {
 func TestFailureLedger_IdenticalFailureBodies_BothCountersAdvanceTogether(t *testing.T) {
 	l := newFailureLedger()
 	for i, want := range []int{1, 2, 3} {
-		failStreak, repeatStreak := l.record("write_file", []byte(`{"path":"a"}`), true, "boom")
+		failStreak, repeatStreak := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom")
 		if failStreak != want {
 			t.Fatalf("call %d: failStreak = %d, want %d", i+1, failStreak, want)
 		}
@@ -241,9 +241,9 @@ func TestFailureLedger_IdenticalFailureBodies_BothCountersAdvanceTogether(t *tes
 
 func TestFailureLedger_SuccessAfterFailures_ZeroesFailStreak_KeepsEntryAndBodyCount(t *testing.T) {
 	l := newFailureLedger()
-	l.record("write_file", []byte(`{"path":"a"}`), true, "boom")
-	l.record("write_file", []byte(`{"path":"a"}`), true, "boom")
-	failStreak, repeatStreak := l.record("write_file", []byte(`{"path":"a"}`), false, "done")
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom")
+	l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), true, "boom")
+	failStreak, repeatStreak := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), false, "done")
 	if failStreak != 0 {
 		t.Fatalf("success after failures: failStreak = %d, want 0", failStreak)
 	}
@@ -251,7 +251,7 @@ func TestFailureLedger_SuccessAfterFailures_ZeroesFailStreak_KeepsEntryAndBodyCo
 		t.Fatalf("success after failures: repeatStreak = %d, want 1 (new body)", repeatStreak)
 	}
 	// The entry must still be live so the body hash persists across the next call.
-	failStreak2, repeatStreak2 := l.record("write_file", []byte(`{"path":"a"}`), false, "done")
+	failStreak2, repeatStreak2 := l.record(newDispatchKey("write_file", []byte(`{"path":"a"}`)), false, "done")
 	if failStreak2 != 0 {
 		t.Fatalf("second success: failStreak = %d, want 0", failStreak2)
 	}
@@ -262,9 +262,9 @@ func TestFailureLedger_SuccessAfterFailures_ZeroesFailStreak_KeepsEntryAndBodyCo
 
 func TestFailureLedger_DifferentArgsHash_IndependentRepeatCounters(t *testing.T) {
 	l := newFailureLedger()
-	l.record("read_file", []byte(`{"path":"a"}`), false, "same body")
-	l.record("read_file", []byte(`{"path":"a"}`), false, "same body")
-	_, repeatStreak := l.record("read_file", []byte(`{"path":"b"}`), false, "same body")
+	l.record(newDispatchKey("read_file", []byte(`{"path":"a"}`)), false, "same body")
+	l.record(newDispatchKey("read_file", []byte(`{"path":"a"}`)), false, "same body")
+	_, repeatStreak := l.record(newDispatchKey("read_file", []byte(`{"path":"b"}`)), false, "same body")
 	if repeatStreak != 1 {
 		t.Fatalf("different args: repeatStreak = %d, want 1 (independent signature)", repeatStreak)
 	}
@@ -272,9 +272,9 @@ func TestFailureLedger_DifferentArgsHash_IndependentRepeatCounters(t *testing.T)
 
 func TestFailureLedger_InterleavedOtherToolCalls_RepeatStreakPreserved(t *testing.T) {
 	l := newFailureLedger()
-	l.record("read_file", []byte(`{"path":"a"}`), false, "same body")
-	l.record("write_file", []byte(`{"path":"z"}`), false, "other body")
-	_, repeatStreak := l.record("read_file", []byte(`{"path":"a"}`), false, "same body")
+	l.record(newDispatchKey("read_file", []byte(`{"path":"a"}`)), false, "same body")
+	l.record(newDispatchKey("write_file", []byte(`{"path":"z"}`)), false, "other body")
+	_, repeatStreak := l.record(newDispatchKey("read_file", []byte(`{"path":"a"}`)), false, "same body")
 	if repeatStreak != 2 {
 		t.Fatalf("interleaved other-tool call reset repeatStreak: %d, want 2", repeatStreak)
 	}
@@ -286,7 +286,7 @@ func TestFailureLedger_SurvivingSuccessEntries_DoNotCorruptEviction(t *testing.T
 	// deletes, every one of these creates a live entry.
 	for i := range 513 {
 		args := fmt.Appendf(nil, `{"i":%d}`, i)
-		l.record("read_file", args, false, "body")
+		l.record(newDispatchKey("read_file", args), false, "body")
 	}
 	if len(l.entries) != 512 {
 		t.Fatalf("entries = %d, want 512 after eviction", len(l.entries))
@@ -294,11 +294,11 @@ func TestFailureLedger_SurvivingSuccessEntries_DoNotCorruptEviction(t *testing.T
 	if len(l.order) != 512 {
 		t.Fatalf("order = %d, want 512 (no stale/duplicate keys)", len(l.order))
 	}
-	_, repeatStreak, _ := l.check("read_file", []byte(`{"i":0}`))
+	_, repeatStreak, _ := l.check(newDispatchKey("read_file", []byte(`{"i":0}`)))
 	if repeatStreak != 0 {
 		t.Fatalf("oldest signature should have been evicted, repeatStreak = %d", repeatStreak)
 	}
-	_, repeatStreak, _ = l.check("read_file", []byte(`{"i":512}`))
+	_, repeatStreak, _ = l.check(newDispatchKey("read_file", []byte(`{"i":512}`)))
 	if repeatStreak != 1 {
 		t.Fatalf("newest signature should survive eviction, repeatStreak = %d, want 1", repeatStreak)
 	}
@@ -308,7 +308,7 @@ func TestFailureLedger_RecurringSignature_SurvivesUnrelatedChurn(t *testing.T) {
 	l := newFailureLedger()
 	churn := func(from, to int) {
 		for i := from; i < to; i++ {
-			l.record("read_file", fmt.Appendf(nil, `{"i":%d}`, i), false, "body")
+			l.record(newDispatchKey("read_file", fmt.Appendf(nil, `{"i":%d}`, i)), false, "body")
 		}
 	}
 	failing := []byte(`{"path":"broken"}`)
@@ -317,9 +317,9 @@ func TestFailureLedger_RecurringSignature_SurvivesUnrelatedChurn(t *testing.T) {
 	// one-off calls. Eviction must be driven by how recently a signature was
 	// used, not by how long ago it was first seen — otherwise the very calls
 	// the breaker exists to catch are the ones it forgets.
-	l.record("write_file", failing, true, "boom")
+	l.record(newDispatchKey("write_file", failing), true, "boom")
 	churn(0, 511)
-	if streak, _ := l.record("write_file", failing, true, "boom"); streak != 2 {
+	if streak, _ := l.record(newDispatchKey("write_file", failing), true, "boom"); streak != 2 {
 		t.Fatalf("second failure after churn: streak = %d, want 2", streak)
 	}
 	// One short of the cap: an LRU keeps the recently-touched signature, a
@@ -327,7 +327,7 @@ func TestFailureLedger_RecurringSignature_SurvivesUnrelatedChurn(t *testing.T) {
 	// evict everything under either policy and prove nothing.
 	churn(511, 1022)
 
-	streak, _, _ := l.check("write_file", failing)
+	streak, _, _ := l.check(newDispatchKey("write_file", failing))
 	if streak != 2 {
 		t.Fatalf("recurring signature evicted by unrelated churn: streak = %d, want 2", streak)
 	}
@@ -366,7 +366,7 @@ func TestFailureLedger_ConcurrentRecord_BothCountersRaceClean(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			args := fmt.Appendf(nil, `{"i":%d}`, i%5)
-			l.record("read_file", args, false, "same body")
+			l.record(newDispatchKey("read_file", args), false, "same body")
 		}(i)
 	}
 	wg.Wait()

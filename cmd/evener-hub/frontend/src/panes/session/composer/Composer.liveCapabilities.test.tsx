@@ -147,7 +147,7 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={REF} />
+      <Composer ref={REF} focused={false} />
     </ClientProvider>,
   );
   return fake;
@@ -311,7 +311,7 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
       .then(() => {
         render(
           <ClientProvider client={fake}>
-            <Composer ref={REF} />
+            <Composer ref={REF} focused={false} />
           </ClientProvider>,
         );
         act(() => {

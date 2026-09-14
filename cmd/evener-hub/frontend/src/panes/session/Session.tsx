@@ -516,7 +516,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}
             <PendingChips sessionRef={ref} />
-            <Composer ref={ref} />
+            <Composer ref={ref} focused={paneFocused} />
           </div>
         </div>
       }

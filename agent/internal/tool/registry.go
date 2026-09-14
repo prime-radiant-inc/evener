@@ -659,8 +659,12 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// model_list is an exact JSON continuation protocol. Repeating a page is a
 	// valid retry, and appending breaker text would corrupt its bounded envelope.
 	judged := !breakerBypassed(ctx) && name != "model_list"
+	// Compute both ledger keys once for this dispatch. check, clearFailures,
+	// and record all consult the same two keys, so the argument body is
+	// canonicalized at most once per call instead of once per ledger operation.
+	key := newDispatchKey(name, call.Arguments)
 	if judged {
-		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
+		if failStreak, _, snippets := r.breaker.check(key); failStreak >= breakerThreshold {
 			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
 		}
 	} else {
@@ -670,7 +674,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		// per-invocation, so the same call comes back and is denied again, and
 		// a streak that only ever grows would park the next one before
 		// dispatch — with no typed error left to raise another approval card.
-		r.breaker.clearFailures(name, call.Arguments)
+		r.breaker.clearFailures(key)
 	}
 
 	r.mu.RLock()
@@ -756,7 +760,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		if judgedBody == "" {
 			judgedBody = res.Output
 		}
-		failStreak, repeatStreak := r.breaker.record(name, call.Arguments, res.IsError, judgedBody)
+		failStreak, repeatStreak := r.breaker.record(key, res.IsError, judgedBody)
 		switch {
 		case failStreak >= breakerThreshold:
 			appendIntervention(&res, failureNudgeText)

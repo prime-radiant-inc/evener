@@ -208,7 +208,7 @@ When adding a scenario function, add it to the table in the same commit.
 
 `make generate` regenerates the AppWire protocol reference
 (`docs/appwire-protocol.md`) and frontend TypeScript declarations
-(`cmd/evener-hub/frontend/src/protocol/types.gen.ts`) from the catalog in
+(`appwire-client/typescript/types.gen.ts`) from the catalog in
 `appwire/protocol.go`, and `make lint-generated` fails if either committed
 output is stale.
 Change the catalog, run `make generate`, commit both.

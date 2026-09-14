@@ -54,10 +54,10 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: cmd/evener-hub/frontend/src/protocol/package-lock.json
+          cache-dependency-path: appwire-client/typescript/package-lock.json
 
       - name: Install protocol development dependencies
-        run: npm ci --prefix cmd/evener-hub/frontend/src/protocol
+        run: npm ci --prefix appwire-client/typescript
 
       - name: Qualify installed AppWire package
         run: make test-api-package

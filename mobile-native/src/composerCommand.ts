@@ -2,13 +2,13 @@ import {
   findBuiltinArgument,
   matchBuiltinInvocation,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/builtinInvocation";
-import { mergeSlashCommands } from "../../cmd/evener-hub/frontend/src/protocol/slashCompletion";
-import type { ThreadClearResponse } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import { mergeSlashCommands } from "../../appwire-client/typescript/slashCompletion";
+import type { ThreadClearResponse } from "../../appwire-client/typescript/types.gen";
 import {
   effortLabel,
   effortOptionLevels,
 } from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
-import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/protocol/composerInput";
+import { buildComposerInput } from "../../appwire-client/typescript/composerInput";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
   ConversationClearActions,

@@ -51,6 +51,10 @@ func (l envelopeSamplingLock) String() string { return l.owner + "." + l.field }
 // path holds at the blocking send; a sampler taking it for reading is harmless,
 // one taking it for writing wedges exactly like the rest.
 var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
+	{owner: "Session", field: "childCommittedSendMu", hold: func(s *Session) func() {
+		s.childCommittedSendMu.Lock()
+		return s.childCommittedSendMu.Unlock
+	}},
 	{owner: "Session", field: "closeCtxMu", hold: func(s *Session) func() {
 		s.closeCtxMu.Lock()
 		return s.closeCtxMu.Unlock
