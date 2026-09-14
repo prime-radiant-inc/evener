@@ -2956,15 +2956,14 @@ func TestFoldPublication_RetainedRecordsAreStillAnnounced(t *testing.T) {
 			go func() {
 				for event := range s.Events() {
 					eventsMu.Lock()
-					switch {
-					case event.Kind == events.EventWarning:
+					if event.Kind == events.EventWarning {
 						if data, ok := event.Data.(events.WarningData); ok && data.Message == sentinel {
 							close(counted)
 							eventsMu.Unlock()
 							continue
 						}
 						warnings++
-					case event.Kind == tc.want:
+					} else if event.Kind == tc.want {
 						announced++
 					}
 					eventsMu.Unlock()
