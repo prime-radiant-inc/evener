@@ -345,7 +345,6 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	c.mu.Lock()
 	delete(c.flows, flowID)
 	c.mu.Unlock()
-	c.refreshAfterCredentialWrite()
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
@@ -405,7 +404,6 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	}); err != nil {
 		return appwire.AuthLogoutResponse{}, err
 	}
-	c.refreshAfterCredentialWrite()
 	if !codex {
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
 		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
@@ -417,53 +415,79 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 }
 
-// credentialWrite runs one stored-key or OAuth-record write under the read
-// side of credMu, which is what a rename takes exclusively while it checks
-// the destination and moves onto it (see credMu).
+// credentialWriteBetween runs inside a credential write's critical section,
+// after the credential has landed and before the reload that re-derives the
+// instance set from it. A test seam, so the state in between can be held
+// still and a concurrent listing asked what it sees there.
+var credentialWriteBetween = func() {}
+
+// credentialWrite runs one stored-key or OAuth-record write and the registry
+// reload that re-derives the instance set from it as one exclusive critical
+// section of credMu. The two must not be split: a listing that ran between
+// them would pair the credential the write had landed with a registry snapshot
+// that predates it - ActiveSource "none" beside HasStoredFile true - and that
+// incoherence is what credMu exists to prevent. Taking the exclusive side also
+// keeps the section whole against the listings' shared side; writers remain
+// safe against each other through the credentials store's own mutex, they just
+// no longer run in parallel.
+//
+// A reload failure is deliberately not returned, as it never was: the
+// credential is stored either way, so failing the response would report a
+// landed write as lost and have the caller retype one the hub already has. The
+// failure is not lost either: reloadRegistryLocked leaves it on the registry,
+// which is where the pane reads it (Diagnostics) and where instance writes are
+// refused until the file loads (WritesRefused, spec §10).
 func (c *hubAuthController) credentialWrite(write func() error) error {
-	c.credMu.RLock()
-	defer c.credMu.RUnlock()
-	return write()
+	c.credMu.Lock()
+	defer c.credMu.Unlock()
+	if err := write(); err != nil {
+		return err
+	}
+	credentialWriteBetween()
+	_ = c.reloadRegistryLocked()
+	return nil
 }
 
 // credentialWriteExclusive keeps a check-and-remove operation together against
-// other controller credential writers.
+// other controller credential writers, and closes with the same reload
+// credentialWrite performs: its callers rely on the instance set being
+// re-derived from the removal before the section ends, exactly as the shared
+// writers do, and its reload failure is not returned either, for the reason
+// credentialWrite states.
 func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
 	c.credMu.Lock()
 	defer c.credMu.Unlock()
-	return write()
+	if err := write(); err != nil {
+		return err
+	}
+	credentialWriteBetween()
+	_ = c.reloadRegistryLocked() // not returned; see credentialWrite
+	return nil
 }
 
-// reloadRegistry re-derives the instance set after a credential changed: a
-// key that has just been stored can make an implicit instance exist, and
-// clearing one can take it away (spec §5.1).
+// reloadRegistryLocked re-derives the instance set after a credential changed:
+// a key that has just been stored can make an implicit instance exist, and
+// clearing one can take it away (spec §5.1). The caller holds credMu.
 //
-// It takes the shared side of credMu because a reload is not just a read: it
-// commits what it read, and one that read the credentials before a removal
-// deleted them can land after that removal's own reload and resurrect the
-// removed instance as an implicit one (Remove holds credMu exclusively across
-// its cleanup and reload). Sharing the lock keeps the two orders honest - this
-// reload finishes entirely before the removal's section or starts entirely
-// after it, never across it. Callers must not hold credMu themselves.
-func (c *hubAuthController) reloadRegistry() error {
+// It must not take credMu itself. credentialWrite and credentialWriteExclusive
+// call it while holding their exclusive section, which is what makes a write
+// and the reload that derives the instance set from it one step. A reload is
+// not just a read - it commits what it read - so one that ran across another
+// writer's section could publish a view that section had already invalidated.
+func (c *hubAuthController) reloadRegistryLocked() error {
 	if c.reg == nil {
 		return nil
 	}
-	return c.credentialWrite(func() error { return c.reg.Reload() })
+	return c.reg.Reload()
 }
 
-// refreshAfterCredentialWrite re-derives the instance set after a credential
-// changed: a key that has just been stored can make an implicit instance exist,
-// and clearing one can take it away (spec §5.1).
-//
-// A reload failure is deliberately not returned. The credential is stored
-// either way, so failing the response would report a landed write as lost and
-// have the caller retype one the hub already has. The failure is not lost
-// either: reloadRegistry leaves it on the registry, which is where the pane
-// reads it (Diagnostics) and where instance writes are refused until the file
-// loads (WritesRefused, spec §10).
-func (c *hubAuthController) refreshAfterCredentialWrite() {
-	_ = c.reloadRegistry()
+// reloadRegistry is the locked form of reloadRegistryLocked, for callers that
+// changed something outside a credential write. Nobody may call it while
+// holding credMu.
+func (c *hubAuthController) reloadRegistry() error {
+	c.credMu.Lock()
+	defer c.credMu.Unlock()
+	return c.reloadRegistryLocked()
 }
 
 // List is what the credentials pane renders: one row per curated implicit
@@ -471,6 +495,16 @@ func (c *hubAuthController) refreshAfterCredentialWrite() {
 // where a fresh install signs in or enters its first key — followed by every
 // explicit instance not already listed (spec §11.3).
 func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListResponse, error) {
+	// The shared side of credMu covers the whole listing: a credential write
+	// holds it exclusively from the moment the write lands until the reload
+	// that re-derives the instance set from it has committed, so a listing that
+	// ran inside that section would pair the credential the write had landed
+	// with a registry snapshot that predates it - ActiveSource "none" beside
+	// HasStoredFile true. Everything below (Status, instanceStatus, the
+	// registry snapshot) reads the credential store's own mutex and files,
+	// never credMu, so taking it here cannot recurse.
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
 	out := appwire.AuthListResponse{}
 	r := c.registry()
 	if r == nil {
@@ -547,7 +581,6 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	c.refreshAfterCredentialWrite()
 	return c.Status(appwire.AuthStatusParams{Provider: name})
 }
 
@@ -575,7 +608,6 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	c.refreshAfterCredentialWrite()
 	return c.Status(appwire.AuthStatusParams{Provider: name})
 }
 
@@ -725,7 +757,6 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	c.mu.Lock()
 	delete(c.deviceFlows, flowID)
 	c.mu.Unlock()
-	c.refreshAfterCredentialWrite()
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
@@ -996,7 +1027,6 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	c.refreshAfterCredentialWrite()
 	return c.Status(appwire.AuthStatusParams{Provider: name})
 }
 
