@@ -12,24 +12,14 @@ import (
 type windowsSkillsLease struct {
 	handle     windows.Handle
 	overlapped windows.Overlapped
+	path       string
 }
 
 // platformAcquireSkillsLease takes a shared (reader) or exclusive (reaper) lock
-// on the lock file at path.
+// on the lock file at path. A lock file that was replaced underneath the lock is
+// reported as contended: the lease is on a dead file and guards nothing.
 func platformAcquireSkillsLease(path string, exclusive bool) (skillsLease, bool, error) {
-	path16, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode skill lease path: %w", err)
-	}
-	handle, err := windows.CreateFile(
-		path16,
-		windows.GENERIC_READ|windows.GENERIC_WRITE,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil,
-		windows.OPEN_ALWAYS,
-		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
-		0,
-	)
+	handle, err := openSkillLockFile(path, true)
 	if err != nil {
 		return nil, false, fmt.Errorf("open skill lease: %w", err)
 	}
@@ -46,17 +36,38 @@ func platformAcquireSkillsLease(path string, exclusive bool) (skillsLease, bool,
 	if info.FileAttributes&(windows.FILE_ATTRIBUTE_DIRECTORY|windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
 		return nil, false, closeWith(errors.New("skill lease is not a regular file"))
 	}
-	lease := &windowsSkillsLease{handle: handle}
+	lease := &windowsSkillsLease{handle: handle, path: path}
 	flags := uint32(windows.LOCKFILE_FAIL_IMMEDIATELY)
 	if exclusive {
 		flags |= windows.LOCKFILE_EXCLUSIVE_LOCK
 	}
-	err = windows.LockFileEx(handle, flags, 0, ^uint32(0), ^uint32(0), &lease.overlapped)
-	if err != nil {
+	if err := windows.LockFileEx(handle, flags, 0, ^uint32(0), ^uint32(0), &lease.overlapped); err != nil {
 		contended := errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 		return nil, contended, closeWith(fmt.Errorf("lock skill lease: %w", err))
 	}
+	if !lease.Valid() {
+		return nil, true, closeWith(nil)
+	}
 	return lease, false, nil
+}
+
+func (lease *windowsSkillsLease) Valid() bool {
+	var locked windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(lease.handle, &locked); err != nil {
+		return false
+	}
+	handle, err := openSkillLockFile(lease.path, false)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	var current windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &current); err != nil {
+		return false
+	}
+	return locked.VolumeSerialNumber == current.VolumeSerialNumber &&
+		locked.FileIndexHigh == current.FileIndexHigh &&
+		locked.FileIndexLow == current.FileIndexLow
 }
 
 func (lease *windowsSkillsLease) Release() error {
@@ -69,4 +80,25 @@ func (lease *windowsSkillsLease) Release() error {
 		closeErr = fmt.Errorf("close skill lease: %w", closeErr)
 	}
 	return errors.Join(unlockErr, closeErr)
+}
+
+// openSkillLockFile opens the lock file, creating it when create is set.
+func openSkillLockFile(path string, create bool) (windows.Handle, error) {
+	path16, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, fmt.Errorf("encode skill lease path: %w", err)
+	}
+	disposition := uint32(windows.OPEN_EXISTING)
+	if create {
+		disposition = windows.OPEN_ALWAYS
+	}
+	return windows.CreateFile(
+		path16,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		disposition,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
 }

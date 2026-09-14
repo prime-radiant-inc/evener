@@ -1,9 +1,12 @@
 package skill
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // skillsLockDirName holds one lock file per cache directory. Locks live beside
@@ -15,12 +18,18 @@ const skillsLockDirName = ".locks"
 // lease for as long as it may read that copy; the reaper must take an exclusive
 // lease before removing anything, so a copy a live process is using is never
 // removed.
-type skillsLease interface{ Release() error }
+type skillsLease interface {
+	Release() error
+	// Valid reports whether the lease still guards the path it was taken on. A
+	// lock file another process unlinked and recreated leaves the lease on a
+	// dead inode, which must not be trusted.
+	Valid() bool
+}
 
 // acquireSkillsLease opens path (creating it) and takes a shared lock, or an
-// exclusive one when exclusive is true. contended reports that another process
-// already holds a conflicting lock. It is a variable so tests can substitute a
-// lease without a real lock file.
+// exclusive one when exclusive is true. contended reports that the lock could
+// not be taken, or that the lock file was replaced underneath it. It is a
+// variable so tests can substitute a lease without a real lock file.
 var acquireSkillsLease = platformAcquireSkillsLease
 
 // skillsLockPath returns the lock file that guards the cache directory named
@@ -33,4 +42,62 @@ func skillsLockPath(base, name string, create bool) (string, error) {
 		}
 	}
 	return filepath.Join(locks, name+".lock"), nil
+}
+
+// tryExclusiveLease takes the exclusive lease at lockPath, reporting whether it
+// succeeded. A contended, stale, or failed lease means the directory must not be
+// removed.
+func tryExclusiveLease(lockPath string) (skillsLease, bool) {
+	lease, contended, err := acquireSkillsLease(lockPath, true)
+	if contended || err != nil {
+		if lease != nil {
+			_ = lease.Release()
+		}
+		return nil, false
+	}
+	return lease, true
+}
+
+// pruneObsoleteLocks removes lock files whose cache directory no longer exists.
+// It only unlinks a lock file it holds exclusively and that still names the file
+// it locked, and only once the file is old enough that no publish is mid-rename,
+// so it cannot drop a lease that another process is about to take.
+func pruneObsoleteLocks(base string, now time.Time) {
+	locks := filepath.Join(base, skillsLockDirName)
+	entries, err := os.ReadDir(locks)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name, ok := cutLockFileName(entry.Name())
+		if !ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) < staleStagingMaxAge {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(base, name)); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		path := filepath.Join(locks, entry.Name())
+		lease, ok := tryExclusiveLease(path)
+		if !ok {
+			continue
+		}
+		_ = os.Remove(path)
+		_ = lease.Release()
+	}
+}
+
+// cutLockFileName returns the cache directory name a lock file guards.
+func cutLockFileName(lockName string) (string, bool) {
+	const suffix = ".lock"
+	if len(lockName) <= len(suffix) || lockName[len(lockName)-len(suffix):] != suffix {
+		return "", false
+	}
+	return lockName[:len(lockName)-len(suffix)], true
 }

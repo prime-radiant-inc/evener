@@ -12,10 +12,12 @@ import (
 
 type unixSkillsLease struct {
 	file *os.File
+	path string
 }
 
 // platformAcquireSkillsLease takes a shared (reader) or exclusive (reaper) flock
-// on the lock file at path.
+// on the lock file at path. A lock file that was replaced underneath the lock is
+// reported as contended: the lease is on a dead inode and guards nothing.
 func platformAcquireSkillsLease(path string, exclusive bool) (skillsLease, bool, error) {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
@@ -43,7 +45,23 @@ func platformAcquireSkillsLease(path string, exclusive bool) (skillsLease, bool,
 		contended := errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN)
 		return nil, contended, closeWith(fmt.Errorf("lock skill lease: %w", err))
 	}
-	return &unixSkillsLease{file: file}, false, nil
+	lease := &unixSkillsLease{file: file, path: path}
+	if !lease.Valid() {
+		return nil, true, closeWith(nil)
+	}
+	return lease, false, nil
+}
+
+func (lease *unixSkillsLease) Valid() bool {
+	var locked unix.Stat_t
+	if err := unix.Fstat(int(lease.file.Fd()), &locked); err != nil {
+		return false
+	}
+	var current unix.Stat_t
+	if err := unix.Lstat(lease.path, &current); err != nil {
+		return false
+	}
+	return locked.Dev == current.Dev && locked.Ino == current.Ino
 }
 
 func (lease *unixSkillsLease) Release() error {

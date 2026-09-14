@@ -11,3 +11,5 @@ func platformAcquireSkillsLease(string, bool) (skillsLease, bool, error) {
 type noopSkillsLease struct{}
 
 func (noopSkillsLease) Release() error { return nil }
+
+func (noopSkillsLease) Valid() bool { return true }

@@ -270,7 +270,10 @@ func TestMaterializeEmbeddedSkills_HealsOccupiedPublishedName(t *testing.T) {
 	}
 }
 
-func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedCopyIsTampered(t *testing.T) {
+// A directory occupying the published name with the wrong content can never be
+// adopted, so it is removed under the exclusive lease and the name republished
+// into rather than falling back forever.
+func TestMaterializeEmbeddedSkills_HealsTamperedPublishedDirectory(t *testing.T) {
 	base := t.TempDir()
 	fsys := sampleSkillFS()
 	digest, err := digestSkillsFS(fsys)
@@ -289,12 +292,14 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedCopyIsTampered(t *testi
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
-	defer os.RemoveAll(dir)
-	if dir == dest {
-		t.Fatalf("adopted the tampered copy %q", dest)
+	if dir != dest {
+		t.Fatalf("expected the tampered directory to be healed, got %q want %q", dir, dest)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "sample", "SKILL.md")); err != nil {
-		t.Fatalf("fallback copy missing its skill: %v", err)
+		t.Fatalf("published copy missing its skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "evil.md")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("tampered content survived the republish: %v", err)
 	}
 }
 
@@ -466,6 +471,61 @@ func TestEmbeddedSkillsDir_MovesTheLeaseToTheNewCopy(t *testing.T) {
 	reapStaleCopies(firstBase, time.Now(), "", "")
 	if _, err := os.Stat(first); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("old copy is still leased after moving: %v", err)
+	}
+}
+
+// When the shared copy can never be leased because it keeps being reaped, the
+// session must still get its bundled skills rather than an error.
+func TestEmbeddedSkillsDir_FallsBackWhenTheCacheKeepsBeingReaped(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	saved := acquireSkillsLease
+	acquireSkillsLease = func(string, bool) (skillsLease, bool, error) { return nil, true, nil }
+	t.Cleanup(func() { acquireSkillsLease = saved })
+
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if _, err := os.Stat(filepath.Join(dir, "doctoring-evener", "SKILL.md")); err != nil {
+		t.Fatalf("fallback copy missing the bundled skill: %v", err)
+	}
+}
+
+func TestPruneObsoleteLocks_RemovesOnlyOrphans(t *testing.T) {
+	base := t.TempDir()
+	locks := filepath.Join(base, skillsLockDirName)
+	if err := os.MkdirAll(locks, 0o700); err != nil {
+		t.Fatalf("create lock dir: %v", err)
+	}
+	orphan := filepath.Join(locks, "orphan.lock")
+	live := filepath.Join(locks, "live.lock")
+	fresh := filepath.Join(locks, "fresh.lock")
+	for _, path := range []string{orphan, live, fresh} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatalf("create %s: %v", path, err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(base, "live"), 0o700); err != nil {
+		t.Fatalf("create live dir: %v", err)
+	}
+	past := time.Now().Add(-2 * staleStagingMaxAge)
+	for _, path := range []string{orphan, live} {
+		if err := os.Chtimes(path, past, past); err != nil {
+			t.Fatalf("age %s: %v", path, err)
+		}
+	}
+
+	pruneObsoleteLocks(base, time.Now())
+
+	if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("orphan lock not pruned: %v", err)
+	}
+	for _, keep := range []string{live, fresh} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Fatalf("%s was pruned: %v", keep, err)
+		}
 	}
 }
 
