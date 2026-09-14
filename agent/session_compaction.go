@@ -345,6 +345,17 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 		s.mu.Lock()
 		if len(s.history) > 0 && isSessionNameCompactionTurn(s.history[0]) && s.history[0].PairID != adopted.PairID {
 			s.history[0] = *adopted
+			// The caller is holding the slice this publish returned and is
+			// about to expand it into the model request, so it needs the same
+			// head — a request built on a marker the transcript never took
+			// would ask the model about a compaction no reader can see.
+			if len(published) > 0 {
+				published[0] = *adopted
+			}
+			// Replacing an element is not an append, so a fold that
+			// snapshotted before this must lose its revision check rather
+			// than publish over the head this one just corrected.
+			s.bumpHistoryRevisionLocked()
 		}
 		s.mu.Unlock()
 	}

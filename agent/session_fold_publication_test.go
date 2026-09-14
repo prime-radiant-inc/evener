@@ -3283,3 +3283,79 @@ func TestPairsStillInHistory_MatchesTheMintNotTheClock(t *testing.T) {
 		t.Fatalf("a recovered turn matched %d persisted forms, want none", len(kept))
 	}
 }
+
+// The publication hands its caller the slice the in-flight model request is
+// built from, so a head correction has to reach it too: a request carrying a
+// summary the transcript never took asks the model about a compaction no
+// reader can see. And replacing an element is not an append — a fold that
+// snapshotted the published history before the correction must lose its
+// revision check rather than publish the uncorrected head back over it.
+func TestFoldPublication_TheAdoptedAnchorReachesTheInFlightSliceAndTheRevision(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "adopted-anchor-inflight-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failMarkerWriteFS{Fs: afero.NewOsFs(), only: []byte(`"kind":"SUMMARY"`)}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	for i := range 12 {
+		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+
+	// A competitor snapshots the history this publish has already swapped in,
+	// before the head is corrected — the window a stale fold would publish in.
+	var stale []schema.Turn
+	var staleLen, staleRevision int
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldTranscriptCommit = func() {
+			s.mu.Lock()
+			stale = append([]schema.Turn{}, s.history...)
+			staleLen = len(s.history)
+			staleRevision = s.historyRevision
+			s.mu.Unlock()
+		}
+	})
+
+	s.mu.Lock()
+	histCopy := append([]schema.Turn{}, s.history...)
+	snapLen := len(s.history)
+	snapRevision := s.historyRevision
+	s.mu.Unlock()
+	compactionCtx, emitFn, commit, _ := s.stageCompactionEffects(context.Background(), &histCopy)
+	s.contextMgr.ForceCompact(compactionCtx, &histCopy, "", emitFn)
+	published, ok, refusal := s.publishFoldTransaction(snapLen, snapRevision, histCopy, commit, nil)
+	if !ok {
+		t.Fatalf("fold lost the publication race with nothing else publishing (refusal=%v)", refusal)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no summary marker write failed, so nothing was adopted")
+	}
+	if len(published) == 0 || published[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("the slice the in-flight request is built from starts with %v, want the checkpoint the transcript took", published[0].Kind)
+	}
+	if head := currentHistory(t, s)[0]; head.Kind != schema.TurnCheckpoint {
+		t.Fatalf("published head = %v, want the checkpoint", head.Kind)
+	}
+
+	if staleLen == 0 {
+		t.Fatal("test setup: the competitor never snapshotted the published history")
+	}
+	staleCopy := append([]schema.Turn{}, stale...)
+	_, _, staleCommit, _ := s.stageCompactionEffects(context.Background(), &staleCopy)
+	if _, ok, _ := s.publishFoldTransaction(staleLen, staleRevision, staleCopy, staleCommit, nil); ok {
+		t.Fatal("a fold that snapshotted the uncorrected head published over the correction")
+	}
+}
