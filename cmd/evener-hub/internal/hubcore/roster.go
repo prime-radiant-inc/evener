@@ -778,8 +778,14 @@ func (r *Roster) HasConfirmedEntry(entry rendezvous.Entry) bool {
 
 func (r *Roster) hasConfirmedEntry(entry rendezvous.Entry) bool {
 	live, ok := r.byPID[entry.PID]
+	if !ok {
+		// No live daemon holds this PID: there is no session key to route by,
+		// and indexing bySess with the zero-value LiveEntry's empty SessionID
+		// would look up an unrelated key instead of failing fast.
+		return false
+	}
 	routed, found := r.bySess[live.SessionID]
-	return ok && found && !live.Crashed && routed.PID == entry.PID && sameDaemonIdentity(live.Entry, entry)
+	return found && !live.Crashed && routed.PID == entry.PID && sameDaemonIdentity(live.Entry, entry)
 }
 
 // RestartRequiredRootRef resolves metadata-only admission from one roster

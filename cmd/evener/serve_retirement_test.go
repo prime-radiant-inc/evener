@@ -1086,3 +1086,79 @@ func TestServeRetirementAdmissionDrainReadersWaitsForInFlightRead(t *testing.T) 
 		t.Fatal("retirement completed while a routed read was still in flight: DrainReaders did not wait for the borrowed reader")
 	}
 }
+
+// serveRetireResponseDeadline bounds how long the manual-retire caller below
+// waits for its response. It is a deadlock tripwire, not the mechanism: once
+// the accepted response is delivered the call returns in milliseconds, and
+// expiry means the handler started the exit path before answering.
+const serveRetireResponseDeadline = 20 * time.Second
+
+// TestServeManualRetirementResponsePrecedesExitCancellation proves the manual
+// trigger does not start the serve exit path until the accepted response has
+// reached the caller. The serve lifetime cancel IS that path -- the shutdown
+// goroutine waits on ctx.Done(), closes the HTTP server and the process
+// returns from serve -- so the first cancel invocation is gated on the caller
+// having the response. No timing assumption is involved: a handler that
+// cancels the serve context synchronously before returning its response parks
+// that response behind the gate, and the caller below never sees Accepted.
+// This drives the RPC over a real WebSocket: dispatchDaemonRPC bypasses the
+// transport where the response is written, so it cannot observe the ordering.
+func TestServeManualRetirementResponsePrecedesExitCancellation(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+
+	responseDelivered := make(chan struct{})
+	var deliveredOnce sync.Once
+	markDelivered := func() { deliveredOnce.Do(func() { close(responseDelivered) }) }
+	notifyContext := deps.notifyContext
+	deps.notifyContext = func(ctx context.Context, signals ...os.Signal) (context.Context, context.CancelFunc) {
+		next, stop := notifyContext(ctx, signals...)
+		var gateOnce sync.Once
+		return next, func() {
+			gateOnce.Do(func() { <-responseDelivered })
+			stop()
+		}
+	}
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	runDir := serveArgValue(args, "--run-dir")
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	ctx, cancelCtx := context.WithTimeout(context.Background(), serveRetireResponseDeadline)
+	defer cancelCtx()
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("dial rendezvous endpoint: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	client.Start(context.WithoutCancel(ctx))
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-retire-exit-order", Version: "test"},
+	}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	resp, err := client.DaemonRetire(ctx, appwire.DaemonRetireParams{Identity: daemonIdentityFor(entry)})
+	if err != nil {
+		// Unblock the exit path so the failure is the ordering violation, not a
+		// daemon left parked in its own shutdown.
+		markDelivered()
+		t.Fatalf("manual retire over HTTP = %v, want the accepted response before the exit path starts", err)
+	}
+	if !resp.Accepted {
+		markDelivered()
+		t.Fatalf("manual retire response = %+v, want accepted", resp)
+	}
+	markDelivered()
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit after retirement: %v", err)
+	}
+	if n := rec.count("released"); n != 1 {
+		t.Fatalf("released events = %d, want exactly 1 (single exit owner)", n)
+	}
+}

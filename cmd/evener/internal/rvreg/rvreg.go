@@ -2,9 +2,6 @@ package rvreg
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
-	"strconv"
 	"sync"
 
 	"primeradiant.com/evener/rendezvous"
@@ -86,19 +83,18 @@ func (r *Registration) Remove() error {
 	// The ownership guard protects a live replacement's rendezvous entry, and
 	// Write always publishes that entry as a regular file under the same lock.
 	// An artifact at <pid>.json that is not a regular file therefore cannot be
-	// a replacement's entry to protect, so fall back to the plain PID-scoped
-	// removal: a cleanup that failed on a transient filesystem condition must
-	// still finish when a later attempt retries it, which is the contract the
-	// shutdown loop relies on. A regular file that no longer matches this
-	// process's identity is refused by RemoveIfOwned above and left untouched.
-	artifact := filepath.Join(r.runDir, strconv.Itoa(r.entry.PID)+".json")
-	if fi, statErr := os.Stat(artifact); statErr != nil || !fi.Mode().IsRegular() {
-		fallbackErr := rendezvous.Remove(r.runDir, r.entry.PID)
-		if fallbackErr == nil {
-			r.registered = false
-			return nil
-		}
-		err = fallbackErr
+	// a replacement's entry to protect, so reconcile it: RemoveUnlessRegular
+	// re-checks and unlinks under the same per-PID ownership lock, so a
+	// replacement reusing this PID cannot have its live entry deleted by a
+	// check-then-unlink that is not atomic. That keeps the contract the
+	// shutdown loop relies on -- a cleanup that failed on a transient
+	// filesystem condition still finishes when a later attempt retries it. A
+	// regular file that no longer matches this process's identity is refused by
+	// RemoveIfOwned above and left untouched here too.
+	fallbackErr := rendezvous.RemoveUnlessRegular(r.runDir, r.entry.PID)
+	if fallbackErr == nil {
+		r.registered = false
+		return nil
 	}
-	return err
+	return fallbackErr
 }

@@ -97,3 +97,34 @@ func RemoveIfOwned(dir string, expected Entry) error {
 		return removeFS(afero.NewOsFs(), dir, expected.PID)
 	})
 }
+
+// RemoveUnlessRegular deletes <dir>/<pid>.json only while it is not a regular
+// file, and reports a regular file as an error without touching it. A missing
+// artifact is nil: an exit race another cleanup already won is not a failure.
+//
+// It exists for the one reconciliation RemoveIfOwned cannot make. A stale
+// cleanup whose pid-named artifact is not the regular file Write publishes (a
+// directory, a leftover socket) fails the exact ownership read and would
+// otherwise fall back to an unguarded Remove. Write always publishes a live
+// entry as a regular file, so a non-regular artifact cannot be a replacement's
+// entry to protect -- but the decision has to be made under the same per-PID
+// ownership lock Write takes, because a replacement daemon reusing the PID can
+// rename its regular entry over the artifact between an unlocked stat and the
+// unlink, and the stale cleanup would then delete the live replacement's
+// rendezvous: the precise loss RemoveIfOwned exists to prevent.
+func RemoveUnlessRegular(dir string, pid int) error {
+	return withOwnershipLock(dir, pid, func() error {
+		target := filepath.Join(dir, fmt.Sprintf("%d.json", pid))
+		fi, err := os.Lstat(target)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("stat rendezvous file: %w", err)
+		}
+		if fi.Mode().IsRegular() {
+			return fmt.Errorf("rendezvous file for pid %d is a regular file; leaving it in place", pid)
+		}
+		return removeFS(afero.NewOsFs(), dir, pid)
+	})
+}

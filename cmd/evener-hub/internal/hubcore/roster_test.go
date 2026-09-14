@@ -1411,6 +1411,32 @@ type survivingOwnerProber struct {
 	fail    bool
 }
 
+// TestHasConfirmedEntryMissingPIDFailsFast pins the missing-PID branch: a PID
+// absent from byPID must answer false without consulting the entry's
+// SessionID. With the PID absent there is no SessionID to route by, and the
+// lookup would otherwise index bySess at the zero-value key "" -- a key the
+// roster's own scan never populates, but one a test can seed to prove the
+// lookup does not depend on it. The boolean outcome is the same either way
+// (the result is gated by `ok`), so this is a guard on the fail-fast
+// contract, not a behavior change.
+func TestHasConfirmedEntryMissingPIDFailsFast(t *testing.T) {
+	roster := NewRosterWithEntries()
+	// Seed the zero-value session key so a lookup that ignores the missing PID
+	// has something to find there.
+	roster.bySess[""] = LiveEntry{Entry: rendezvous.Entry{PID: 4242}}
+	roster.byPID[4242] = LiveEntry{Entry: rendezvous.Entry{PID: 4242}}
+
+	if roster.HasConfirmedEntry(rendezvous.Entry{PID: 9999}) {
+		t.Fatal("a PID absent from byPID was confirmed through the empty session key")
+	}
+	// The same seeded maps still confirm a PID that IS present, so the guard
+	// above cannot pass vacuously and the fail-fast branch leaves ok == true
+	// untouched.
+	if !roster.HasConfirmedEntry(roster.byPID[4242].Entry) {
+		t.Fatal("a PID present in byPID with a matching route must still confirm")
+	}
+}
+
 func (p *survivingOwnerProber) Probe(e rendezvous.Entry) ProbeResult {
 	if e.PID != p.livePID || p.fail {
 		return ProbeResult{}

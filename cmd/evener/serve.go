@@ -32,6 +32,7 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -889,8 +890,20 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			retirementObserve("released", root.ID())
 		}
 		// Exit is unconditional after Commit: teardown success is not the
-		// precondition for terminating the process.
-		cancel()
+		// precondition for terminating the process. The cancel is what starts
+		// that exit -- the shutdown goroutine below waits on ctx.Done() -- so on
+		// the RPC trigger it must not run until the accepted response has reached
+		// the transport. Cancelling from inside the handler starts the shutdown
+		// pass before the response frame is written, which leaves the caller with
+		// a transport error and the Hub with a failure banner despite a
+		// successful retirement. AfterResponseWritten runs the cancel once that
+		// frame has been written, or at connection teardown if it never could be,
+		// so exit is preserved. The idle-timer trigger runs on the daemon's own
+		// lifetime context, which carries no connection, so it reports false and
+		// cancels immediately.
+		if !appserver.AfterResponseWritten(reqCtx, cancel) {
+			cancel()
+		}
 		if teardownErr != nil {
 			return &retirementTeardownError{err: teardownErr}
 		}
