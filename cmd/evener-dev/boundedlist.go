@@ -199,8 +199,8 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		// -- it just no longer decides the status.
 		return completed(waited.err())
 	}
-	result.timedOut = bounded
 	if !reapOrGiveUp(reaped, grace, argv[0], guarded) {
+		result.timedOut = bounded
 		// Nothing this process can do reaches a child the kernel will not let
 		// go of. The sweep is skipped on purpose: it would spend another grace
 		// signalling a group that cannot answer, and leaving now hands the
@@ -218,6 +218,16 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		}
 		return result
 	}
+	// The leader is reaped, and its own status is what says whether this
+	// attempt has an answer. A group can take the stop's signal on a
+	// descendant's account alone -- the leader having exited in the window
+	// between the check above and the signal -- and then the enumeration did
+	// finish, whatever was left running in its group. Sweeping that is
+	// cleanup, not a reason to run the whole thing again.
+	if endedOnItsOwnTerms(cmd.ProcessState, result.interrupted) {
+		return completed(waited.err())
+	}
+	result.timedOut = bounded
 	if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
 		result.stuck = true
 	}
@@ -232,6 +242,32 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	}
 	result.takeLateSignal(latch)
 	return result
+}
+
+// endedOnItsOwnTerms reports whether the leader produced the command's answer
+// rather than dying of a signal this attempt sent it. An exit status is its
+// own answer by definition, and so is a death by a signal this helper never
+// sent -- a compiler killed by the OOM killer has said something about the
+// run, and it is not a timeout.
+//
+// A leader killed by someone else's TERM or KILL in the same moment is read as
+// this attempt's doing: a wait status does not say who sent the signal, and the
+// other reading would report a stopped enumeration as a finished one.
+func endedOnItsOwnTerms(state *os.ProcessState, forwarded syscall.Signal) bool {
+	if state == nil {
+		// Not reaped, so nothing it did can be read: the caller's own give-up
+		// path owns this, and it is a timeout.
+		return false
+	}
+	sig, killed := procgroup.DiedOfSignal(state)
+	if !killed {
+		return true
+	}
+	switch sig {
+	case syscall.SIGTERM, syscall.SIGKILL:
+		return false
+	}
+	return sig != forwarded
 }
 
 // waitResult is where the wait goroutine publishes the command's own answer.

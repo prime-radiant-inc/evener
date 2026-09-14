@@ -549,16 +549,17 @@ func TestCompleteWithKeepsTheCommandsAnswerAndTheSignal(t *testing.T) {
 	}
 }
 
-// failingCommandWithASurvivor is a command that exits 3 and leaves a child in
-// its group that ignores SIGTERM and records having been sent one. The leader
-// waits for the child to say its trap is installed before exiting, because a
-// SIGTERM that arrives first finds the default disposition and the child dies
-// without a word -- the sweep would then have nothing to sweep and the test
-// would prove nothing.
+// commandWithASurvivor is a command that leaves a child in its group that
+// ignores SIGTERM and records having been sent one, holds for hold seconds
+// once that child is ready, and then exits with the status given. The leader
+// waits for the child to say its trap is installed before doing any of that,
+// because a SIGTERM that arrives first finds the default disposition and the
+// child dies without a word -- the sweep would then have nothing to sweep and
+// the test would prove nothing.
 //
 // The scripts are files rather than -c strings so the quoting is the shell's
 // own rather than three layers of escaping.
-func failingCommandWithASurvivor(t *testing.T) []string {
+func commandWithASurvivor(t *testing.T, exit int, hold string) []string {
 	t.Helper()
 	dir := t.TempDir()
 	survivor := filepath.Join(dir, "survivor.sh")
@@ -572,7 +573,8 @@ func failingCommandWithASurvivor(t *testing.T) []string {
 	if err := os.WriteFile(leader, fmt.Appendf(nil,
 		"sh %q >/dev/null 2>&1 &\n"+
 			"while [ ! -f \"${BOUNDED_LIST_READY:-/dev/null}\" ]; do sleep 0.01; done\n"+
-			"exit 3\n", survivor), 0o644); err != nil {
+			"sleep %s\n"+
+			"exit %d\n", survivor, hold, exit), 0o644); err != nil {
 		t.Fatalf("writing the leader script: %v", err)
 	}
 	return []string{"sh", leader}
@@ -588,7 +590,7 @@ func TestBoundedListDoesNotRetryAFailedCommandAfterAnInterrupt(t *testing.T) {
 	_, termed := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
 	sent := signalWhenReady(termed, "the child was never sent SIGTERM", signals, syscall.SIGTERM)
-	failThenLeaveAChild := failingCommandWithASurvivor(t)
+	failThenLeaveAChild := commandWithASurvivor(t, 3, "0")
 	latch := &signalLatch{ch: signals}
 	result := runBoundedAttempt(failThenLeaveAChild, 30*time.Second, 5*time.Second, &stderr, latch)
 	sent(t)
@@ -606,7 +608,7 @@ func TestBoundedListDoesNotRetryAFailedCommandAfterAnInterrupt(t *testing.T) {
 	runnerSignals := make(chan os.Signal, 1)
 	sentAgain := signalWhenReady(termedAgain, "the child was never sent SIGTERM", runnerSignals, syscall.SIGTERM)
 	code := boundedListWith(append([]string{"-timeout", "30s", "-attempts", "3", "-grace", "5s", "--"},
-		failingCommandWithASurvivor(t)...), &stdout, &runnerErr, runnerSignals)
+		commandWithASurvivor(t, 3, "0")...), &stdout, &runnerErr, runnerSignals)
 	sentAgain(t)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3; stderr = %q", code, runnerErr.String())
@@ -1088,5 +1090,53 @@ func TestEndCopyingJoinsTheCopiersAndReleasesOneItCannotJoin(t *testing.T) {
 	}
 	if stalled.Len() != 0 {
 		t.Fatalf("stderr = %q: a released writer passed bytes to the caller", stalled.String())
+	}
+}
+
+func TestBoundedListTakesTheLeadersAnswerWhenOnlyASurvivorHeldTheGroup(t *testing.T) {
+	// The bound fires while the leader is running, the leader exits 0 in the
+	// window before the stop, and a descendant of its own is still in the
+	// group -- so the signal lands on the group's account and the stop reports
+	// it delivered. The leader produced the enumeration all the same. That
+	// ordering is injected, because the window it needs is microseconds wide.
+	withStopperStub(t, func(_ int, _ syscall.Signal, reaped <-chan struct{}, _ time.Duration) (bool, error) {
+		<-reaped
+		return true, nil
+	})
+	var stderr bytes.Buffer
+	_, _ = readinessFiles(t)
+	// The leader outlives the bound and then exits by itself; nothing this
+	// helper sent could have ended it, since the stub sends nothing.
+	argv := commandWithASurvivor(t, 0, "0.3")
+	result := runBoundedAttempt(argv, 100*time.Millisecond, 10*time.Second, &stderr, nil)
+	if result.exitCode != 0 {
+		t.Fatalf("exitCode = %d, want 0: the leader finished; stderr = %q", result.exitCode, stderr.String())
+	}
+	if result.timedOut {
+		t.Fatalf("timedOut = true for an attempt whose command exited on its own; stderr = %q", stderr.String())
+	}
+	// The survivor is cleanup, and it is still done.
+	if got := stderr.String(); !strings.Contains(got, "left processes running in its group") {
+		t.Fatalf("stderr = %q, want the survivor swept", got)
+	}
+	requireGroupGone(t, result.pgid)
+}
+
+func TestBoundedListDoesNotRetryWhenOnlyASurvivorHeldTheGroup(t *testing.T) {
+	// The same ordering through the runner: three attempts allowed, one taken,
+	// and the leader's own status handed back.
+	withStopperStub(t, func(_ int, _ syscall.Signal, reaped <-chan struct{}, _ time.Duration) (bool, error) {
+		<-reaped
+		return true, nil
+	})
+	var stdout, stderr bytes.Buffer
+	_, _ = readinessFiles(t)
+	args := append([]string{"-timeout", "100ms", "-attempts", "3", "-grace", "10s", "--"},
+		commandWithASurvivor(t, 0, "0.3")...)
+	if code := boundedListWith(args, &stdout, &stderr, nil); code != 0 {
+		t.Fatalf("exit code = %d, want 0: the leader finished; stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr = %q: the enumeration finished, and running it again would repeat work it did", stderr.String())
 	}
 }

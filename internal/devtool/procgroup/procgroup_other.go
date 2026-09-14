@@ -60,6 +60,10 @@ func StopWith(pgid int, _ syscall.Signal, reaped <-chan struct{}, grace time.Dur
 	return Stop(pgid, reaped, grace)
 }
 
+// DiedOfSignal answers no: this platform has no signal deaths to decode, and a
+// child here either has an exit status or nothing this package can read.
+func DiedOfSignal(*os.ProcessState) (syscall.Signal, bool) { return 0, false }
+
 func ExitCode(state *os.ProcessState) int {
 	if state == nil {
 		return 1

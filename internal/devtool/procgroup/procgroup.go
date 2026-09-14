@@ -212,8 +212,23 @@ func ExitCode(state *os.ProcessState) int {
 	if code := state.ExitCode(); code >= 0 {
 		return code
 	}
-	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-		return 128 + int(ws.Signal())
+	if sig, killed := DiedOfSignal(state); killed {
+		return 128 + int(sig)
 	}
 	return 1
+}
+
+// DiedOfSignal is the signal a child was killed by, and whether it was killed
+// at all. A child that chose its own exit status answers false, which is the
+// difference a caller needs between a command that produced a result and one
+// something else ended -- including one this caller ended itself.
+func DiedOfSignal(state *os.ProcessState) (syscall.Signal, bool) {
+	if state == nil {
+		return 0, false
+	}
+	ws, ok := state.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() {
+		return 0, false
+	}
+	return ws.Signal(), true
 }
