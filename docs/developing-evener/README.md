@@ -47,7 +47,7 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
 | Command | Summary |
 | --- | --- |
 | `make tools` | Install the CI-pinned golangci-lint and gitleaks versions from .tool-versions, so a local make lint runs exactly what CI runs. |
-| `make tools-golangci` | Install the CI-pinned golangci-lint version from .tool-versions. |
+| `make tools-golangci` | Install the CI-pinned golangci-lint version from .tool-versions. Needs curl 7.71 or newer, for the --retry-all-errors that makes an HTTP status a failure worth retrying. |
 | `make tools-gitleaks` | Install the CI-pinned gitleaks version from .tool-versions. |
 | `make refresh-model-catalog` | Replace the embedded models.dev snapshot in llm/registry/data/ with the current upstream and run the converter tests and overlay report. |
 | `make generate` | Run the appwire and maketargetsdoc `go generate` directives: the AppWire protocol reference and frontend TypeScript declarations from appwire/protocol.go, and the per-family make-target tables in docs/developing-evener/. |

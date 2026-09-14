@@ -51,11 +51,19 @@
 # attempt's own fetch retries EVENER_GOLANGCI_CURL_RETRIES times (default 3).
 #
 # EVENER_GOLANGCI_INSTALLER_URL is where install.sh is fetched from (default the
-# upstream raw URL). It is here so the failure paths can be tested against a
-# port that refuses connections: real curl, real refusal, no stubbed binaries
-# and no network. The three knobs above exist for the same reason -- a test that
-# waited out the default retries and backoff would be a slow test proving
-# nothing extra -- and a slow link is welcome to raise them.
+# upstream raw URL), and EVENER_GOLANGCI_DEV_BIN is the evener-dev binary this
+# script looks for (default the one at the repo root). Both are here so the
+# paths below can be tested with real curl and real bash against a loopback
+# server, with no network and no stubbed binaries; the tests point
+# EVENER_GOLANGCI_DEV_BIN at a path that does not exist, so which path they
+# exercise does not depend on what happens to be built in the worktree. The
+# three numeric knobs exist for the same reason -- a test that waited out the
+# default retries and backoff would be a slow test proving nothing extra -- and
+# a slow link is welcome to raise them.
+#
+# The bounded path has no test yet, because bounded-list is not on main. When
+# #1263 lands, the test that belongs here builds the real binary and runs the
+# install under it.
 set -euo pipefail
 
 installer_url="${EVENER_GOLANGCI_INSTALLER_URL:-https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh}"
@@ -63,9 +71,14 @@ installer_url="${EVENER_GOLANGCI_INSTALLER_URL:-https://raw.githubusercontent.co
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 
+# The knobs are bounded, and the bound is in the pattern rather than in an
+# arithmetic comparison: a twenty-digit value is not a number bash can compare,
+# so a check written as arithmetic would fail as arithmetic rather than as the
+# diagnostic the caller needs. Twenty is far past any real use -- three
+# attempts is the default and CI's lint lane is one download.
 attempts=${EVENER_GOLANGCI_INSTALL_ATTEMPTS:-3}
-if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
-	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a positive integer (got %q)\n' "$attempts" >&2
+if [[ ! "$attempts" =~ ^([1-9]|1[0-9]|20)$ ]]; then
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a whole number from 1 to 20 (got %q)\n' "$attempts" >&2
 	exit 2
 fi
 
@@ -73,18 +86,21 @@ fi
 # and fails, so a value that passed a looser check would break the backoff
 # itself rather than the validation.
 backoff=${EVENER_GOLANGCI_INSTALL_BACKOFF:-5}
-if [[ ! "$backoff" =~ ^(0|[1-9][0-9]*)$ ]]; then
-	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_BACKOFF must be a non-negative integer of seconds without a leading zero (got %q)\n' "$backoff" >&2
+if [[ ! "$backoff" =~ ^(0|[1-9]|1[0-9]|20)$ ]]; then
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_BACKOFF must be a whole number of seconds from 0 to 20, without a leading zero (got %q)\n' "$backoff" >&2
 	exit 2
 fi
 
 curl_retries=${EVENER_GOLANGCI_CURL_RETRIES:-3}
-if [[ ! "$curl_retries" =~ ^(0|[1-9][0-9]*)$ ]]; then
-	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_CURL_RETRIES must be a non-negative integer without a leading zero (got %q)\n' "$curl_retries" >&2
+if [[ ! "$curl_retries" =~ ^(0|[1-9]|1[0-9]|20)$ ]]; then
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_CURL_RETRIES must be a whole number from 0 to 20, without a leading zero (got %q)\n' "$curl_retries" >&2
 	exit 2
 fi
 
-version="$(awk '$1=="golangci-lint" {print $2}' "$repo_root/.tool-versions")"
+if ! version="$(awk '$1=="golangci-lint" {print $2}' "$repo_root/.tool-versions")"; then
+	printf 'install-golangci-lint.sh: could not read %s\n' "$repo_root/.tool-versions" >&2
+	exit 2
+fi
 if [ -z "$version" ]; then
 	printf 'install-golangci-lint.sh: no golangci-lint row in %s\n' "$repo_root/.tool-versions" >&2
 	exit 1
@@ -96,7 +112,14 @@ fi
 # this script is built around would not be the retry it describes. There is no
 # fallback: a retry reimplemented here would be the shell supervisor this whole
 # change exists to avoid.
-curl_version="$(curl --version 2>/dev/null | awk 'NR==1 {print $2}')"
+if ! command -v curl >/dev/null 2>&1; then
+	printf 'install-golangci-lint.sh: curl is not on PATH, and this script has nothing else to download with\n' >&2
+	exit 2
+fi
+if ! curl_version="$(curl --version 2>/dev/null | awk 'NR==1 {print $2}')"; then
+	printf 'install-golangci-lint.sh: `curl --version` did not run\n' >&2
+	exit 2
+fi
 curl_major="${curl_version%%.*}"
 curl_rest="${curl_version#*.}"
 curl_minor="${curl_rest%%.*}"
@@ -111,7 +134,11 @@ if [ "$curl_major" -lt 7 ] || { [ "$curl_major" -eq 7 ] && [ "$curl_minor" -lt 7
 	exit 2
 fi
 
-bindir="$(go env GOPATH)/bin"
+if ! gopath="$(go env GOPATH)" || [ -z "$gopath" ]; then
+	printf 'install-golangci-lint.sh: `go env GOPATH` did not answer, so there is nowhere to install to\n' >&2
+	exit 2
+fi
+bindir="$gopath/bin"
 
 # pipefail is what makes the fetch of install.sh part of the attempt: without it
 # a failed curl hands `sh` an empty script, which exits 0 and reports a
@@ -122,7 +149,7 @@ bindir="$(go env GOPATH)/bin"
 # fetch of install.sh part of the attempt.
 install_pipeline='set -o pipefail; curl -fsSL --connect-timeout 15 --max-time 300 --retry "$4" --retry-delay 2 --retry-all-errors "$1" | sh -s -- -b "$2" "$3"'
 
-evener_dev_bin="$repo_root/evener-dev"
+evener_dev_bin="${EVENER_GOLANGCI_DEV_BIN:-$repo_root/evener-dev}"
 bounded_list_support=
 announced_unbounded=0
 

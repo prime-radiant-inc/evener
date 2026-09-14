@@ -8,7 +8,9 @@ tools:
 	@$(MAKE) --no-print-directory tools-golangci
 	@$(MAKE) --no-print-directory tools-gitleaks
 
-## Install the CI-pinned golangci-lint version from .tool-versions.
+## Install the CI-pinned golangci-lint version from .tool-versions. Needs curl
+## 7.71 or newer, for the --retry-all-errors that makes an HTTP status a
+## failure worth retrying.
 tools-golangci:
 	@scripts/ops/install-golangci-lint.sh
 

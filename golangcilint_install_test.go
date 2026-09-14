@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -47,6 +49,39 @@ func requireInstallerScriptTools(t *testing.T, tools ...string) {
 			t.Skipf("%s is not on PATH: %v", tool, err)
 		}
 	}
+	// And the floor the script itself enforces: below it every one of these
+	// tests would be asserting the version refusal instead of its own subject.
+	if major, minor, ok := curlVersion(t); !ok || major < 7 || (major == 7 && minor < 71) {
+		t.Skipf("curl %d.%d is below the 7.71 this script requires", major, minor)
+	}
+}
+
+// curlVersion reads the version the way the script reads it: the second field
+// of the first line of `curl --version`.
+func curlVersion(t *testing.T) (major, minor int, ok bool) {
+	t.Helper()
+	out, err := exec.Command("curl", "--version").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	line, _, _ := strings.Cut(string(out), "\n")
+	field := strings.Fields(line)
+	if len(field) < 2 {
+		return 0, 0, false
+	}
+	parts := strings.Split(field[1], ".")
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
 // installerEnv is a minimal environment for the script: enough to find its
@@ -60,6 +95,11 @@ func installerEnv(t *testing.T, extra ...string) []string {
 		"HOME=" + t.TempDir(),
 		"no_proxy=127.0.0.1",
 		"NO_PROXY=127.0.0.1",
+		// Which path the script takes must not depend on whether someone has
+		// run `make build-dev` in this worktree: these tests are about the
+		// unbounded one. The bounded path gets its own test when bounded-list
+		// reaches main (#1263).
+		"EVENER_GOLANGCI_DEV_BIN=" + filepath.Join(t.TempDir(), "no-evener-dev-here"),
 	}
 	return append(env, extra...)
 }
@@ -116,11 +156,28 @@ func TestInstallerRefusesABackoffBashWouldReadAsOctal(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2\n%s", code, out)
 	}
-	if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_BACKOFF must be a non-negative integer") {
+	if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_BACKOFF must be a whole number") {
 		t.Fatalf("output = %q, want the knob and what it takes", out)
 	}
 	if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
 		t.Fatalf("output = %q, want no attempt made before the guard", out)
+	}
+}
+
+// TestInstallerRefusesTheOtherKnobsBadValues covers the same guard for the
+// retry count: a leading zero bash would read as octal, and a value that is
+// not a number at all.
+func TestInstallerRefusesTheOtherKnobsBadValues(t *testing.T) {
+	t.Parallel()
+	requireInstallerScriptTools(t)
+	for _, value := range []string{"08", "abc", "21"} {
+		code, out := runInstaller(t, "EVENER_GOLANGCI_CURL_RETRIES="+value)
+		if code != 2 {
+			t.Fatalf("EVENER_GOLANGCI_CURL_RETRIES=%s: exit code = %d, want 2\n%s", value, code, out)
+		}
+		if !strings.Contains(out, "EVENER_GOLANGCI_CURL_RETRIES must be a whole number") {
+			t.Fatalf("EVENER_GOLANGCI_CURL_RETRIES=%s: output = %q, want the knob and what it takes", value, out)
+		}
 	}
 }
 
@@ -130,11 +187,23 @@ func TestInstallerRefusesABackoffBashWouldReadAsOctal(t *testing.T) {
 func TestInstallerRefusesAnAttemptCountItCannotUse(t *testing.T) {
 	t.Parallel()
 	requireInstallerScriptTools(t)
+	for _, value := range []string{"abc", "0", "21", "99999999999999999999"} {
+		code, out := runInstaller(t, "EVENER_GOLANGCI_INSTALL_ATTEMPTS="+value)
+		if code != 2 {
+			t.Fatalf("EVENER_GOLANGCI_INSTALL_ATTEMPTS=%s: exit code = %d, want 2\n%s", value, code, out)
+		}
+		if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a whole number") {
+			t.Fatalf("EVENER_GOLANGCI_INSTALL_ATTEMPTS=%s: output = %q, want the knob and what it takes", value, out)
+		}
+		if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
+			t.Fatalf("EVENER_GOLANGCI_INSTALL_ATTEMPTS=%s: output = %q, want no attempt made before the guard", value, out)
+		}
+	}
 	code, out := runInstaller(t, "EVENER_GOLANGCI_INSTALL_ATTEMPTS=abc")
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2\n%s", code, out)
 	}
-	if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a positive integer") {
+	if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a whole number") {
 		t.Fatalf("output = %q, want the knob and what it takes", out)
 	}
 	// Nothing was attempted: the script's own attempt diagnostics are the
@@ -171,6 +240,9 @@ func TestInstallerFailsAfterEveryAttemptWhenTheDownloadCannotStart(t *testing.T)
 	}
 }
 
+// firstOf drops the args file for the cases that do not inspect it.
+func firstOf(url, _ string) string { return url }
+
 // pinnedGolangciVersion reads the pin the script will check against, from the
 // same file the script reads it from.
 func pinnedGolangciVersion(t *testing.T) string {
@@ -192,9 +264,11 @@ func pinnedGolangciVersion(t *testing.T) string {
 // executable into the bindir it is given, printing reports as its version
 // line. An empty reports writes nothing, which is the installer that ran and
 // produced no binary.
-func installerServing(t *testing.T, reports string) string {
+func installerServing(t *testing.T, reports string) (url, argsFile string) {
 	t.Helper()
-	script := "#!/bin/sh\nbindir=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in -b) bindir=\"$2\"; shift 2 ;; *) shift ;; esac\ndone\nmkdir -p \"$bindir\"\n"
+	argsFile = filepath.Join(t.TempDir(), "installer-args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + shellQuote(argsFile) +
+		"\nbindir=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in -b) bindir=\"$2\"; shift 2 ;; *) shift ;; esac\ndone\nmkdir -p \"$bindir\"\n"
 	if reports != "" {
 		script += "cat > \"$bindir/golangci-lint\" <<EOF\n#!/bin/sh\necho '" + reports + "'\nEOF\nchmod +x \"$bindir/golangci-lint\"\n"
 	}
@@ -202,20 +276,36 @@ func installerServing(t *testing.T, reports string) string {
 		_, _ = io.WriteString(w, script)
 	}))
 	t.Cleanup(server.Close)
-	return server.URL
+	return server.URL, argsFile
+}
+
+// shellQuote is enough quoting for a temporary directory's path inside the
+// served script.
+func shellQuote(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 }
 
 func TestInstallerAcceptsTheBinaryThatReportsThePin(t *testing.T) {
 	t.Parallel()
 	requireInstallerScriptTools(t, "curl")
 	version := pinnedGolangciVersion(t)
+	url, argsFile := installerServing(t, "golangci-lint has version "+version+" built with go1.27.0")
 	code, out := runInstaller(t,
-		"EVENER_GOLANGCI_INSTALLER_URL="+installerServing(t, "golangci-lint has version "+version+" built with go1.27.0"),
+		"EVENER_GOLANGCI_INSTALLER_URL="+url,
 		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
 		"EVENER_GOLANGCI_CURL_RETRIES=0",
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 for a binary reporting the pin\n%s", code, out)
+	}
+	// The installer was asked for the pinned release, not whatever it felt
+	// like: the tag is the other half of what this script is for.
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("reading what the installer was given: %v", err)
+	}
+	if !strings.Contains(string(args), "v"+version) {
+		t.Fatalf("the installer was given %q, want the pinned v%s", strings.TrimSpace(string(args)), version)
 	}
 }
 
@@ -224,7 +314,7 @@ func TestInstallerRefusesABinaryThatReportsAnotherVersion(t *testing.T) {
 	requireInstallerScriptTools(t, "curl")
 	version := pinnedGolangciVersion(t)
 	code, out := runInstaller(t,
-		"EVENER_GOLANGCI_INSTALLER_URL="+installerServing(t, "golangci-lint has version 0.0.1 built with go1.27.0"),
+		"EVENER_GOLANGCI_INSTALLER_URL="+firstOf(installerServing(t, "golangci-lint has version 0.0.1 built with go1.27.0")),
 		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
 		"EVENER_GOLANGCI_CURL_RETRIES=0",
 	)
@@ -242,7 +332,7 @@ func TestInstallerRefusesAnInstallThatProducedNoBinary(t *testing.T) {
 	code, out := runInstaller(t,
 		// The installer exits 0 and writes nothing, which is the hole pipefail
 		// cannot see: the pipeline succeeded and there is no binary.
-		"EVENER_GOLANGCI_INSTALLER_URL="+installerServing(t, ""),
+		"EVENER_GOLANGCI_INSTALLER_URL="+firstOf(installerServing(t, "")),
 		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
 		"EVENER_GOLANGCI_CURL_RETRIES=0",
 	)
