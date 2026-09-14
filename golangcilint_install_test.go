@@ -178,6 +178,11 @@ func TestInstallerRefusesTheOtherKnobsBadValues(t *testing.T) {
 		if !strings.Contains(out, "EVENER_GOLANGCI_CURL_RETRIES must be a whole number") {
 			t.Fatalf("EVENER_GOLANGCI_CURL_RETRIES=%s: output = %q, want the knob and what it takes", value, out)
 		}
+		// Nothing was attempted: the script's own attempt diagnostics are the
+		// evidence, since they are written per attempt and nothing else is.
+		if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
+			t.Fatalf("EVENER_GOLANGCI_CURL_RETRIES=%s: output = %q, want no attempt made before the guard", value, out)
+		}
 	}
 }
 
@@ -198,18 +203,6 @@ func TestInstallerRefusesAnAttemptCountItCannotUse(t *testing.T) {
 		if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
 			t.Fatalf("EVENER_GOLANGCI_INSTALL_ATTEMPTS=%s: output = %q, want no attempt made before the guard", value, out)
 		}
-	}
-	code, out := runInstaller(t, "EVENER_GOLANGCI_INSTALL_ATTEMPTS=abc")
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2\n%s", code, out)
-	}
-	if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a whole number") {
-		t.Fatalf("output = %q, want the knob and what it takes", out)
-	}
-	// Nothing was attempted: the script's own attempt diagnostics are the
-	// evidence, since they are written per attempt and nothing else is.
-	if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
-		t.Fatalf("output = %q, want no attempt made before the guard", out)
 	}
 }
 
