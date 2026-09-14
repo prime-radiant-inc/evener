@@ -944,7 +944,6 @@ function SpawnForm({
             const picked = `${fallback.provider}/${fallback.model}`;
             autoSelectedModels.current.set(`${harness}\0${cwd}`, picked);
             setModel(picked);
-          } (fix(web,hub): clear an auto-selected model when provider setup opens, correct the flow-endpoint doc)
           }
         },
         () => {
