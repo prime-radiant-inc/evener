@@ -375,6 +375,92 @@ func TestResumeWorktreeReentry_RefusedEntryDoesNotLandOnUnconfinedRestoreRoot(t 
 	}
 }
 
+// TestResumeWorktreeReentry_RefusedParkedRerootOmitsTheRestoreEnv covers the
+// residual of round 7's High that the finding did not name: the environment a
+// successful re-entry PARKS for a later worktree exit is a third
+// WithWorkingDirectory child built in this function, and exitWorktree swaps the
+// session straight onto it with no refusal check of its own. Publishing a parked
+// env whose re-root the host refused would therefore land the session unconfined
+// the moment it left the worktree.
+//
+// The two re-roots are driven apart by the RESOLVE step rather than the policy:
+// a policy produced by Resolve retains its inputs, so it re-anchors to the lane
+// worktree, while a restore root whose .git pointer is unrecognizable makes
+// ClassifyWorkspace refuse — the one cwd-dependent refusal in Resolve. So the
+// re-entry itself succeeds and only the parked re-root is refused.
+func TestResumeWorktreeReentry_RefusedParkedRerootOmitsTheRestoreEnv(t *testing.T) {
+	t.Parallel()
+	sr := newScriptedLaneRepo(t)
+	res, err := sr.wt().create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	sr.unlockLane(t, path)
+
+	local, ok := sr.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("session has no local environment")
+	}
+	// A Resolve-produced policy retains its resolve inputs, so unlike the
+	// hand-built literal the other refusal tests use, this one re-roots
+	// successfully to the lane; the refusal below comes from the restore root.
+	host := sandbox.HostFacts{
+		OS: "linux", Home: t.TempDir(),
+		BwrapPath: "/usr/bin/bwrap", BwrapCapable: true,
+	}
+	resolved, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, sr.mainRoot)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	local.Sandbox = &resolved
+
+	// create above entered the lane, which parks its own restore env. A resume
+	// builds the Session fresh, so clear it to isolate THIS function's parked
+	// re-root decision from that earlier enter's.
+	sr.s.worktreeRestoreEnv = nil
+
+	// A .git FILE that is not a "gitdir:" pointer is the unrecognized shape
+	// ClassifyWorkspace fails closed on, so Resolve refuses at this root.
+	badRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(badRoot, ".git"), []byte("not a gitdir pointer\n"), 0o600); err != nil {
+		t.Fatalf("write .git: %v", err)
+	}
+
+	meta := schema.SessionMeta{
+		ID:                  sr.s.id,
+		WorktreePath:        path,
+		WorktreeManaged:     true,
+		WorktreeRestoreRoot: badRoot,
+	}
+	if err := sr.s.resumeWorktreeReentry(meta); err != nil {
+		t.Fatalf("re-entry returned %v, want a successful re-entry with the parked env omitted", err)
+	}
+
+	sr.s.mu.Lock()
+	parked := sr.s.worktreeRestoreEnv
+	sr.s.mu.Unlock()
+	if parked != nil {
+		if err := parked.SandboxReRootError(); err != nil {
+			t.Fatalf("published a parked env whose re-root was refused (%v): a later worktree exit would land the session unconfined", err)
+		}
+		if parked.Sandbox == nil {
+			t.Fatalf("published an unconfined parked env (Sandbox=nil, Wrapper=%v)", parked.Wrapper)
+		}
+	}
+
+	// The omission has to be visible, not silent.
+	found := false
+	for _, msg := range pendingTranscriptWarningMessages(sr.s) {
+		if strings.Contains(msg, badRoot) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("omitted the restore environment for %s without buffering a warning", badRoot)
+	}
+}
+
 func TestResumeWorktreeReentry_ManagedRegisteredOutsideProject_RestoresRootAndNotices(t *testing.T) {
 	t.Parallel()
 	sr := newScriptedLaneRepo(t)

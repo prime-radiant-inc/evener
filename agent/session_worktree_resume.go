@@ -233,11 +233,23 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	s.worktreeCurrentPath = target
 	s.worktreeCurrentManaged = meta.WorktreeManaged
 	if restoreRoot != "" {
+		// This parked environment is the third WithWorkingDirectory child built
+		// here, and exitWorktree swaps the session straight onto it without a
+		// refusal check of its own. Publishing one whose re-root the host refused
+		// would therefore leave the session unconfined the moment it left the
+		// worktree, so the refusal omits it: exit and remove both require a
+		// restore env and refuse safely without one.
 		parked := local.WithWorkingDirectory(restoreRoot)
-		if err := s.assignRetainedScratchBinding(parked, parkedBindingID); err != nil {
-			return fmt.Errorf("restore scratch binding identity for %s: %w", restoreRoot, err)
+		if err := parked.SandboxReRootError(); err != nil {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf(
+				"could not prepare a confined restore environment at %s (%v); leaving the worktree stays unavailable rather than running unconfined",
+				restoreRoot, err)})
+		} else {
+			if err := s.assignRetainedScratchBinding(parked, parkedBindingID); err != nil {
+				return fmt.Errorf("restore scratch binding identity for %s: %w", restoreRoot, err)
+			}
+			s.worktreeRestoreEnv = parked
 		}
-		s.worktreeRestoreEnv = parked
 	}
 	return nil
 }
