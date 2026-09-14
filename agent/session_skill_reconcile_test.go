@@ -4,8 +4,13 @@
 package agent
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -221,4 +226,153 @@ func TestSkillActivation_FailedPreparationIsNotReDeliveredAtRestore(t *testing.T
 	if carriers != 0 {
 		t.Fatalf("restored carrier obligations = %d, want none", carriers)
 	}
+}
+
+// TestSkillActivation_PreparedSelectionPinsRecordedSource pins the
+// no-retargeting contract on the reconcile path: a durable prepared selection
+// records the exact source its preparation resolved, and the restore-time
+// re-drive adopts THAT source. When it is gone and a same-name replacement
+// exists elsewhere, the re-drive fails visibly and the replacement is never
+// activated.
+func TestSkillActivation_PreparedSelectionPinsRecordedSource(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_pinned_source")
+	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+
+	repair := breakSessionMetaPath(t, s)
+	if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+		t.Fatal("steering message was not durably consumed")
+	}
+	if got := lifecycleObligations(s); len(got) != 0 {
+		t.Fatalf("failed admission left live obligations: %+v", got)
+	}
+	repair()
+	// The recorded source is gone while a same-name replacement appears at a
+	// different location: reconciliation must fail on the recorded source and
+	// never adopt the replacement.
+	writeSkillMDRel(t, root, filepath.Join(".agents", "skills"), "opaque",
+		"---\nname: opaque\ndescription: replacement\n---\nBODY_replacement_retarget")
+	if err := os.Remove(source); err != nil {
+		t.Fatalf("remove source: %v", err)
+	}
+	if err := s.saveMeta(); err != nil {
+		t.Fatalf("save after repair: %v", err)
+	}
+	s.Close()
+
+	meta, err := schema.LoadSessionMeta(stateDir, s.Meta().ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), meta, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+
+	if got := lifecycleObligations(restored); len(got) != 0 {
+		t.Fatalf("reconciled obligations = %+v, want none: the recorded source is gone and a same-name replacement must never be adopted", got)
+	}
+	for _, state := range skillTurnStates(restored) {
+		for _, carried := range state.Obligations {
+			t.Fatalf("reconciled carrier obligation %+v, want none", carried)
+		}
+	}
+	for _, state := range skillTurnStates(restored) {
+		for _, outcome := range state.Outcomes {
+			if outcome.Identity.Name == "opaque" && outcome.Status != "failed" {
+				t.Fatalf("reconciled outcome = %+v, want no successful activation of the replacement", outcome)
+			}
+		}
+	}
+	if entry := lifecycleInventory(restored)["opaque"]; entry.Ordinary != nil {
+		t.Fatalf("inventory recorded a retargeted activation: %+v", entry.Ordinary)
+	}
+}
+
+// TestSkillActivation_LostSteeringAdmissionGatesNextDispatch pins the
+// steering-admission gate: when a skill-bearing steering message's admission
+// never reaches durable obligations, the selection is retained and the NEXT
+// model request either carries its complete instructions or fails visibly. It
+// is never dispatched without them.
+func TestSkillActivation_LostSteeringAdmissionGatesNextDispatch(t *testing.T) {
+	t.Run("a repaired metadata path admits the selection before the next request", func(t *testing.T) {
+		root := t.TempDir()
+		stateDir := t.TempDir()
+		body := "BODY_staged_gate"
+		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
+		s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+
+		repair := breakSessionMetaPath(t, s)
+		if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+			t.Fatal("steering message was not durably consumed")
+		}
+		if got := lifecycleObligations(s); len(got) != 0 {
+			t.Fatalf("failed admission left live obligations: %+v", got)
+		}
+		repair()
+
+		var rt events.RoundTimings
+		_, _, _, req, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &rt)
+		if err != nil {
+			t.Fatalf("prepareModelRequestWithError after repair: %v", err)
+		}
+		if got := lifecycleObligations(s); len(got) != 1 {
+			t.Fatalf("obligations after the next request prepared = %+v, want the retained steering selection admitted", got)
+		}
+		found := false
+		for _, env := range requestSkillEnvelopes(t, req) {
+			if env.Doc.Name == "opaque" && strings.Contains(env.Doc.Instructions, body) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("the dispatching request does not carry the steering selection's complete instructions")
+		}
+	})
+
+	t.Run("a still-broken metadata path fails the request instead of omitting the selection", func(t *testing.T) {
+		root := t.TempDir()
+		stateDir := t.TempDir()
+		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_retryable_gate")
+		s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+
+		repair := breakSessionMetaPath(t, s)
+		if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+			t.Fatal("steering message was not durably consumed")
+		}
+		// The selection is still unadmitted. Preparing the next request must
+		// either fail (the gate) or carry the instructions — dispatching
+		// without them is exactly the silent omission this pins out.
+		var rt events.RoundTimings
+		_, _, _, req, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &rt)
+		if err == nil && len(requestSkillEnvelopes(t, req)) == 0 {
+			t.Fatal("the request was prepared without the steering selection's instructions and without an error")
+		}
+		// The selection stays retryable: with the metadata path repaired, the
+		// next request admits it and carries the complete instructions.
+		repair()
+		var rt2 events.RoundTimings
+		_, _, _, req2, _, _, err2 := s.prepareModelRequestWithError(context.Background(), 0, &rt2)
+		if err2 != nil {
+			t.Fatalf("prepareModelRequestWithError after repair: %v", err2)
+		}
+		found := false
+		for _, env := range requestSkillEnvelopes(t, req2) {
+			if env.Doc.Name == "opaque" && strings.Contains(env.Doc.Instructions, "BODY_retryable_gate") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("the retried selection was not admitted into the next request")
+		}
+		if got := lifecycleObligations(s); len(got) != 1 {
+			t.Fatalf("obligations after the retried admission = %+v, want exactly one (no duplicate)", got)
+		}
+	})
 }

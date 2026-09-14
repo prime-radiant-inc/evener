@@ -618,6 +618,16 @@ type Session struct {
 	// Guarded by mu; ordinary instruction bodies are never stored here.
 	skillLifecycle schema.SkillLifecycleSnapshot
 
+	// pendingSkillAdmissions holds prepared skill selections whose admission
+	// did not reach durable obligations — a metadata save failure while
+	// consuming a skill-bearing steering message, whose prose is already
+	// durable in the transcript. The next model request drains them before
+	// building anything, so the turn either carries the selected instructions
+	// or fails visibly; a restore covers the same window from the durable
+	// input record (reconcilePendingSkillSelections), and this list is the
+	// in-process retry. Guarded by mu.
+	pendingSkillAdmissions []*skillActivationBatch
+
 	// MCP server connections
 	mcpMgr   *mcp.Manager
 	mcpTools []llm.ToolDefinition

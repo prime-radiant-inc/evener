@@ -187,11 +187,16 @@ type SkillInputRecord struct {
 
 // SkillSelectionInvocation is one typed invocation a successful preparation
 // produced for an input's selection: the canonical name it resolved to, the
-// identity it admits under, and the route it was prepared for.
+// identity it admits under, and the route it was prepared for. Identity pins
+// the EXACT source the preparation resolved, so a re-drive after a lost
+// admission reopens that source instead of resolving the name again — a
+// same-name source change during the window must surface as a visible failure,
+// never a silent retarget to a different collision winner.
 type SkillSelectionInvocation struct {
-	Name         string `json:"name"`
-	InvocationID string `json:"invocation_id"`
-	Route        string `json:"route"`
+	Name         string               `json:"name"`
+	InvocationID string               `json:"invocation_id"`
+	Route        string               `json:"route"`
+	Identity     SkillContentIdentity `json:"identity"`
 }
 
 // SkillActivationOutcome records operation metadata, not instruction bodies.

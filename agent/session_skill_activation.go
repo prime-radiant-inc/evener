@@ -95,6 +95,7 @@ func recordPreparedSelection(record *schema.SkillInputRecord, batch *skillActiva
 			Name:         item.Invocation.Name,
 			InvocationID: item.Invocation.InvocationID,
 			Route:        item.Invocation.Route,
+			Identity:     skillContentIdentity(item),
 		})
 	}
 	record.Prepared = prepared
@@ -163,17 +164,78 @@ func (s *Session) contextWithSelectedSkills(ctx context.Context, queued queuedIn
 }
 
 // admitSteeringSelectionBatch admits a prepared selection a consumed steering
-// message carried. Failure warns — the steering turn is already durably
-// delivered — but the selection is not lost: the steering turn's typed input
-// record keeps the prepared invocations, and reconcilePendingSkillSelections
-// re-drives the admission at restore.
+// message carried. The steering turn is already durably delivered, so a
+// failure cannot unwrite its prose; the selection must therefore not be lost,
+// in this process or the next. A failure that left no durable obligation keeps
+// the batch in pendingSkillAdmissions, where the next model request retries it
+// before building anything (admitPendingSkillSelections) — the request either
+// carries the instructions or fails visibly, and is never dispatched without
+// them. A failure whose obligations DID reach disk is already recoverable at
+// the next dispatch seam, so it is not retained. Either way the steering
+// turn's typed input record keeps the prepared invocations, and
+// reconcilePendingSkillSelections re-drives the admission at restore.
 func (s *Session) admitSteeringSelectionBatch(batch *skillActivationBatch) {
 	if batch == nil {
 		return
 	}
 	if err := s.admitSkillActivationBatch(batch); err != nil {
+		s.mu.Lock()
+		if !s.skillBatchObligationsDurableLocked(batch) {
+			s.pendingSkillAdmissions = append(s.pendingSkillAdmissions, batch)
+		}
+		s.mu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("admitting steering skill selection failed", err))
 	}
+}
+
+// skillBatchObligationsDurableLocked reports whether any invocation in the
+// batch already owns a durable delivery obligation — the discriminator between
+// a failed save (nothing half-admits, so the batch must be retried from
+// scratch) and a failed carrier write after a successful save (the obligations
+// are durable and the dispatch seam re-delivers the bodies from them).
+// Caller holds s.mu.
+func (s *Session) skillBatchObligationsDurableLocked(batch *skillActivationBatch) bool {
+	invocationIDs := make(map[string]bool, len(batch.Items))
+	for _, item := range batch.Items {
+		invocationIDs[item.Invocation.InvocationID] = true
+	}
+	for _, obligation := range s.skillLifecycle.Obligations {
+		if invocationIDs[obligation.InvocationID] {
+			return true
+		}
+	}
+	return false
+}
+
+// admitPendingSkillSelections retries every prepared selection whose admission
+// never reached durable obligations, before the caller builds its request. A
+// persistent failure is returned so the whole request fails visibly instead of
+// being dispatched without the instructions the selection asked for, and the
+// batch stays pending for the next attempt.
+func (s *Session) admitPendingSkillSelections() error {
+	s.mu.Lock()
+	pending := s.pendingSkillAdmissions
+	s.pendingSkillAdmissions = nil
+	s.mu.Unlock()
+	if len(pending) == 0 {
+		return nil
+	}
+	var failed []*skillActivationBatch
+	var firstErr error
+	for _, batch := range pending {
+		if err := s.admitSkillActivationBatch(batch); err != nil {
+			failed = append(failed, batch)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if len(failed) > 0 {
+		s.mu.Lock()
+		s.pendingSkillAdmissions = append(s.pendingSkillAdmissions, failed...)
+		s.mu.Unlock()
+	}
+	return firstErr
 }
 
 // reconcilePendingSkillSelections re-drives user selections whose durable
@@ -231,14 +293,19 @@ func (s *Session) reconcilePendingSkillSelections(ctx context.Context, entries [
 				continue
 			}
 			// One re-drive per invocation identity, even if a duplicated
-			// record repeats it.
+			// record repeats it. The recorded identity pins the exact source
+			// the preparation resolved: a name that now resolves elsewhere
+			// (a same-name source change during the admission-loss window)
+			// fails visibly here rather than silently retargeting.
 			covered[prepared.InvocationID] = true
+			source := prepared.Identity
 			invocations = append(invocations, skillInvocation{
 				Name:             prepared.Name,
 				Route:            prepared.Route,
 				InvocationID:     prepared.InvocationID,
 				ClientMutationID: turn.ClientMutationID,
 				AtomicGroupID:    input.AtomicGroupID,
+				Source:           &source,
 			})
 		}
 		if len(invocations) == 0 {
