@@ -86,3 +86,23 @@ test("every site points at the literal node, so a caller can rewrite it in place
   const [site] = sitesFor(source);
   assert.equal(source.slice(site.node.getStart(site.node.getSourceFile()), site.node.getEnd()), `"${SPECIFIER}"`);
 });
+
+test("an import whose every member is inline-type is erased, mixed is not", () => {
+  // The statement carries no type-only flag; only the members say so.
+  const [allType] = sitesFor(`import { type WireError } from "${SPECIFIER}";\nexport type A = WireError;\n`);
+  assert.equal(allType.typeOnly, false);
+  assert.equal(isLoadedAtRuntime(allType), false);
+
+  const [mixed] = sitesFor(`import { errorText, type WireError } from "${SPECIFIER}";\nvoid errorText;\nexport type A = WireError;\n`);
+  assert.equal(isLoadedAtRuntime(mixed), true);
+
+  const [reexport] = sitesFor(`export { type WireError } from "${SPECIFIER}";\n`);
+  assert.equal(isLoadedAtRuntime(reexport), false);
+});
+
+test("a site that names no binding is loaded whatever it does with what it finds", () => {
+  for (const source of [`export * from "${SPECIFIER}";\n`, `import "${SPECIFIER}";\n`, `require("${SPECIFIER}");\n`]) {
+    const [site] = sitesFor(source);
+    assert.equal(isLoadedAtRuntime(site), true, source);
+  }
+});

@@ -65,6 +65,31 @@ describe("walkScriptImports", () => {
     }
   });
 
+  it("does not follow an import whose every member is inline-type", () => {
+    // Erased just as surely as `import type`, and only the members say so.
+    const root = tree({
+      "scripts/tool.mts": 'import { type Gone } from "@evener/not-installed";\nexport type Alias = Gone;\n',
+    });
+    try {
+      expect(walkScriptImports([path.join(root, "scripts/tool.mts")], root, resolve).failures).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still follows an import that mixes a value member with a type one", () => {
+    const root = tree({
+      "scripts/tool.mts": 'import { alive, type Gone } from "@evener/not-installed";\nvoid alive;\nexport type Alias = Gone;\n',
+    });
+    try {
+      expect(
+        walkScriptImports([path.join(root, "scripts/tool.mts")], root, resolve).failures.map((f) => f.specifier),
+      ).toEqual(["@evener/not-installed"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not follow a type-only import, which is erased before anything runs", () => {
     const root = tree({
       "scripts/tool.mts": 'import type { Gone } from "@evener/not-installed";\nexport type Alias = Gone;\n',

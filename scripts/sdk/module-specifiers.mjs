@@ -131,6 +131,14 @@ export function moduleSpecifierSites(ts, source) {
 // a caller asking "which values must the package provide" cannot use it, but a
 // caller walking a module graph has to follow it or it stops one hop short of
 // whatever the chain reaches.
+//
+// `import { type Foo } from "x"` is erased just as surely as `import type
+// { Foo }`, and only the binding shapes say so: the statement carries no
+// type-only flag. A site that names NO binding -- a star re-export, a
+// side-effect import, a bare require -- is loaded whatever it does with what
+// it finds, so the emptiness has to be checked before the every().
 export function isLoadedAtRuntime(site) {
-  return !site.typeOnly;
+  if (site.typeOnly) return false;
+  if (site.bindings.length === 0) return true;
+  return site.bindings.some((binding) => !binding.typeOnly);
 }
