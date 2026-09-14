@@ -431,6 +431,13 @@ func TestCompactionReplay_ForkContextSnapshotCarriesTheFoldsRun(t *testing.T) {
 // carrying a restored turn past a marker needs a durable per-entry identity
 // the records do not have, which is issue #1200. When #1200 lands, this test
 // is the one that changes.
+//
+// It is not a regression this branch introduced. The same walk measured on
+// main (f7816dd8d, which has no replay copies at all) ends the same way: the
+// fold writes its two markers, the live history keeps the preserved suffix,
+// and the resumed history is the summary alone. What this branch added is the
+// copies for turns it DOES have a persisted form of; the restored ones were
+// already beyond reach.
 func TestCompactionReplay_RestoredTurnsHaveNoPersistedFormToCopy(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
