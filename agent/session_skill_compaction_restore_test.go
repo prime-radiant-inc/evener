@@ -249,3 +249,97 @@ func TestSkillCompactionRestore_ReloadSelectionRoundTrip(t *testing.T) {
 		t.Fatalf("pending selection = %+v, want valid [scope:probe] across restart", sel)
 	}
 }
+
+// TestSkillCompactionRestore_PublishedSlotWithoutReceiptStillDelivers pins the
+// crash window between a winning fold's claim and its transcript receipt write:
+// the claim mutates the in-memory slot and handoff under one s.mu critical
+// section, a routine metadata save inside that window persists BOTH, and a
+// crash before commitTranscriptsLocked means no receipt ever reached the
+// transcript.
+//
+// The claim is atomic with its handoff, so this state is not a selection with
+// no surviving record: the coalesced handoff still carries the operation and
+// its selected names, and the delivery path processes a handoff by selection
+// state, not by phase. This pins that the selection survives and is actually
+// delivered (its complete body admitted), and that the cycle reopens rather
+// than wedging — a naive "retain the published slot" rule would leave the slot
+// occupied, and requestSkillCompaction refuses every new intent while a
+// published operation owns it.
+func TestSkillCompactionRestore_PublishedSlotWithoutReceiptStillDelivers(t *testing.T) {
+	root := t.TempDir()
+	stateDir := t.TempDir()
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_window_retry")
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	seedNumberedSessionHistory(t, s, 12)
+	plantOrdinaryRecord(t, s, root, "opaque", true)
+
+	// The window artifact exactly as the live claim plus a routine metadata save
+	// would persist it: the claimed slot and its coalesced handoff, and no
+	// receipt anywhere in the transcript.
+	selection := schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}}
+	s.mu.Lock()
+	revision := s.skillLifecycle.Revision
+	s.skillLifecycle.PendingCompaction = &schema.SkillCompactionOperation{
+		Generation:    1,
+		Origin:        skillCompactionOriginForced,
+		Phase:         skillCompactionPhasePublished,
+		PublicationID: "pub-window-no-receipt",
+		Selection:     selection,
+	}
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Revision:  revision + 1,
+		SessionID: s.id,
+		Phase:     skillCompactionReceiptPublished,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Origin:        skillCompactionOriginForced,
+			Phase:         skillCompactionPhasePublished,
+			PublicationID: "pub-window-no-receipt",
+			Selection:     selection,
+		},
+	}}
+	s.mu.Unlock()
+	if err := s.saveMeta(); err != nil {
+		t.Fatalf("save the window artifact: %v", err)
+	}
+	id := s.Meta().ID
+	s.Close()
+
+	restored := restoreSkillCompactionSession(t, stateDir, id)
+	op := restored.pendingSkillCompactionSnapshot()
+	handoffs := pendingHandoffsSnapshot(restored)
+	defer restored.Close()
+	if len(handoffs) != 1 || !reflect.DeepEqual(handoffs[0].Operation.Selection.Names, []string{"opaque"}) {
+		t.Fatalf("the window artifact's handoff must survive restore with its selection, got slot=%+v handoffs=%+v", op, handoffs)
+	}
+	batch, outcomes, staged, err := restored.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	deliverable := batch != nil && len(batch.Items) == 1 && skillContentIdentity(batch.Items[0]).Name == "opaque"
+	if !deliverable {
+		t.Fatalf("restore silently discarded the window artifact's selected reload: slot=%+v handoffs=%+v batch=%+v outcomes=%+v", op, handoffs, batch, outcomes)
+	}
+	// The reload is not merely preparable: admitting it publishes the complete
+	// body's carrier, so the model actually receives the selection.
+	if err := restored.admitCompactedSkillReloads(context.Background(), restored.profile, &llm.TokenBudget{}, staged, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads: %v", err)
+	}
+	carriers := 0
+	for _, state := range skillTurnStates(restored) {
+		for _, obligation := range state.Obligations {
+			if obligation.Identity.Name == "opaque" {
+				carriers++
+			}
+		}
+	}
+	if carriers != 1 {
+		t.Fatalf("admitted %d carriers for the window artifact's reload, want exactly one", carriers)
+	}
+	// The cycle must reopen: the slot is free for a fresh intent, so recovery
+	// never wedges compaction the way retaining a published slot would.
+	if _, err := restored.requestSkillCompaction(context.Background(), "after-window", "",
+		schema.SkillReloadSelection{State: "absent"}); err != nil {
+		t.Fatalf("the cycle must reopen after the window recovery: %v", err)
+	}
+}

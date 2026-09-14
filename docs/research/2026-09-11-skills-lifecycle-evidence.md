@@ -1325,3 +1325,62 @@ Direct evidence that the relocated SDK tests execute rather than merely being
 collected: `npx vitest run composerInput.test.ts skillInput.test.ts
 submitRouting.test.ts slashCompletion.test.ts` reports 4 files and 70 tests
 passed.
+
+## Tenth round: roborev job 10305 on the rebased head (2026-09-14)
+
+The verdict on the pushed head (`3c44fe1c8`) was "Mostly clean implementation;
+one medium-severity durability gap and two minor consistency/defensive-copying
+issues", with two of the four reviewers reporting no issues at all.
+
+### Medium — refuted, not fixed (with the finding's requested coverage added)
+
+The finding: "Compaction reload can be silently lost on crash before receipt
+commit" — restore unconditionally marks a persisted `published` compaction
+operation as delivered, while metadata autosaves are not synchronized with the
+transcript receipt write, so a crash between the claim and
+`commitTranscriptsLocked` can "silently discard the selected skill reload". Its
+fix suggestion: synchronize the two, or require a matching durable receipt
+before completing a published operation.
+
+The described harm does not materialize, and the suggested rule would introduce
+a worse one:
+
+- **The claim is atomic with its handoff.** `claimCompactionLocked`
+  (`agent/session_compaction.go`, the closure at ~712-747) mutates the slot to
+  `published` and appends the coalesced handoff — carrying the operation and its
+  selected names — inside ONE `s.mu` critical section. A metadata save takes
+  `metaSaveMu` and then `Meta()`, which needs `s.mu`, so no save can observe a
+  published slot without its handoff. The crash window the finding describes
+  persists BOTH.
+- **Delivery reads the handoff, not the phase.** `prepareCompactedSkillReloads`
+  walks pending handoffs by selection state and skips only cancelled ones, so a
+  handoff whose phase was advanced to delivered by the restore's completion
+  block is still prepared and admitted.
+- **Evidence.** `TestSkillCompactionRestore_PublishedSlotWithoutReceiptStillDelivers`
+  constructs exactly that artifact — the published slot and its handoff, with no
+  receipt anywhere in the transcript — restores it through the real
+  `RestoreSessionFromMeta` path, and pins that the selection survives on the
+  handoff, the complete body's carrier is admitted for the model, and the cycle
+  reopens.
+- **The suggested rule would wedge.** Retaining the published slot leaves it
+  occupied, and `requestSkillCompaction` refuses every new intent while a
+  published operation owns the slot
+  (`agent/session_skill_compaction.go:169-174`). The new test pins that recovery
+  does not wedge, which a "retain the published slot" rule would have broken.
+
+This is recorded as a refutation on the evidence, in the same form as round
+five's M2, rather than a silent dismissal. The finding's own coverage request —
+coverage for a save occurring between the claim and the transcript commit — is
+the new test, which passes because the behavior it asks about is already
+correct.
+
+### Two new Lows (disclosed, not fixed)
+
+- `PendingChips` renders no skill marker for a skill-only submission while
+  `QueueStrip` does (`cmd/evener-hub/frontend/src/panes/session/pending/PendingChips.tsx` ~57):
+  the body is blank while a skill-only send is in flight. No data is lost.
+- `skillInventorySnapshot` returns a shallow map clone whose values share the
+  live `*OrdinarySkillActivation`/`*FrozenSkillPreload` pointers
+  (`agent/skill_reload_selection.go:90`). Every current caller only reads, so
+  there is no live bug; a future mutating caller would corrupt the live
+  snapshot.
