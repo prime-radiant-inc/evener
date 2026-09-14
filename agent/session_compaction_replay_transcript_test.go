@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -416,5 +418,78 @@ func TestCompactionReplay_ForkContextSnapshotCarriesTheFoldsRun(t *testing.T) {
 	}
 	if calls != 1 || results != 1 {
 		t.Fatalf("the child's inherited history carries %d tool calls and %d results, want the round exactly once", calls, results)
+	}
+}
+
+// The copies a fold writes come from the session's in-memory pair log, and a
+// session restored from a transcript has none for the turns it restored: their
+// append/write pairs happened in another process. So a compaction in the
+// restored session anchors on a marker that discards those turns with nothing
+// standing in for them, and the next restart comes back without them.
+//
+// This test PINS that as today's behaviour rather than asserting it is right:
+// carrying a restored turn past a marker needs a durable per-entry identity
+// the records do not have, which is issue #1200. When #1200 lands, this test
+// is the one that changes.
+func TestCompactionReplay_RestoredTurnsHaveNoPersistedFormToCopy(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	workdir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	s := newSession(t,
+		withClient(client),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}),
+		withoutGitSnapshot(),
+	)
+	const preserved = "recorded before the restart 11"
+	for i := range 12 {
+		text := fmt.Sprintf("recorded before the restart %d", i)
+		msg := llm.User(text)
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+	sessionID := s.id
+	meta := loadMetaForTest(t, s)
+	s.Close()
+
+	restoreClient := llm.NewClient()
+	restoreClient.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMetaWithConfig(restoreClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workdir), meta, RestoreSessionConfig{
+		StateDir: stateDir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+	if indexOfTurnText(currentHistory(t, restored), preserved) < 0 {
+		t.Fatal("test setup: the restart did not bring the recorded turns back")
+	}
+
+	if err := restored.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	live := currentHistory(t, restored)
+	if indexOfTurnText(live, preserved) < 0 {
+		t.Fatal("test setup: the fold preserved none of the restored turns, so there is nothing to lose")
+	}
+
+	data, err := readTranscriptFull(transcriptPath(stateDir, sessionID))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	copies := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.ContextReplay {
+			copies++
+		}
+	}
+	if copies != 0 {
+		t.Fatalf("the fold wrote %d replay copies for turns it has no persisted form of; if that is now possible, #1200 landed and this test describes the old behaviour", copies)
+	}
+	if indexOfTurnText(ResumeHistory(data.Entries), preserved) >= 0 {
+		t.Fatal("a restored turn survived the marker: #1200 landed, so this test — which pins its absence — is the one to change")
 	}
 }
