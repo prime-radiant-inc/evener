@@ -88,9 +88,21 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		return attemptResult{err: err, exitCode: 1}
 	}
 	drained := feeds.copyInto(&out, guarded)
-	// Whatever ends this attempt, its copying ends with it: a copier left
-	// running writes into the stderr the next attempt is reporting through.
-	defer endCopying(feeds, drained, guarded, grace)
+	// finishCopying ends the attempt's copying, once, and hands back what the
+	// drain came to. Every path that is about to write a word of cleanup calls
+	// it first: a copier wedged inside a write to a stalled stderr holds the
+	// lock those diagnostics need, and only the release inside here gets them
+	// out. The deferred call is the backstop for a path that forgets -- it
+	// runs once, so the two cannot fight.
+	copyingEnded, drainFailure := false, error(nil)
+	finishCopying := func() error {
+		if !copyingEnded {
+			copyingEnded = true
+			drainFailure = endCopying(feeds, drained, guarded, grace, latch)
+		}
+		return drainFailure
+	}
+	defer func() { _ = finishCopying() }()
 	// The child leads its own group, so the group id is its pid.
 	result := attemptResult{pgid: cmd.Process.Pid}
 	// The wait publishes its answer before it says the child is gone, so
@@ -111,7 +123,7 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		// The process is gone; its last bytes may not be. Wait for them, and
 		// no longer than the grace: a pipe still held open by something that
 		// escaped the group would otherwise hold this attempt as well.
-		drainErr := awaitDrain(drained, grace, latch)
+		drainErr := finishCopying()
 		result.stdout = out.Bytes()
 		exitCode := procgroup.ExitCode(cmd.ProcessState)
 		if drainErr == nil {
@@ -197,15 +209,26 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		// 128+signal would name a death this helper did not cause. A latched
 		// interrupt still ends the run -- the runner starts no further attempt
 		// -- it just no longer decides the status.
-		return completed(waited.err())
+		//
+		// The answer lives in cmd.ProcessState, which Wait writes until it
+		// closes `reaped`, so it is read only once that is seen closed. A stop
+		// that sent nothing does not mean the wait has returned: the group can
+		// have been empty of everything but a child nobody has waited for yet.
+		// When the reap is not in, this falls through to the cleanup below,
+		// which waits for it once more and gives up in the one way that reads
+		// no status at all.
+		if finished, err := finishedFirst(reaped, waited); finished {
+			return completed(err)
+		}
 	}
+	// Everything from here writes diagnostics, so the copying ends first.
+	_ = finishCopying()
 	if !reapOrGiveUp(reaped, grace, argv[0], guarded) {
 		result.timedOut = bounded
 		// Nothing this process can do reaches a child the kernel will not let
 		// go of. The sweep is skipped on purpose: it would spend another grace
 		// signalling a group that cannot answer, and leaving now hands the
 		// child to init, which is the one thing that can still clean it up.
-		_ = awaitDrain(drained, grace, latch)
 		result.stdout = out.Bytes()
 		result.stuck = true
 		result.exitCode = 124
@@ -237,7 +260,6 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
 		result.stuck = true
 	}
-	_ = awaitDrain(drained, grace, latch)
 	result.stdout = out.Bytes()
 	result.exitCode = 1
 	if result.stuck {
@@ -561,23 +583,30 @@ func awaitDrain(drained <-chan struct{}, grace time.Duration, latch *signalLatch
 	}
 }
 
-// endCopying ends the attempt's hold on the writers it was given. The read
-// ends go first, which ends a copier waiting for bytes from a process that
-// escaped the attempt's group. Then the copiers are joined, bounded by the
-// grace like every other wait here.
+// endCopying waits out the command's last bytes and then ends the attempt's
+// copying, however far it got. It answers with what the drain came to, which
+// is what says whether the output this attempt hands on is the whole of it.
 //
-// A copier that is inside a write to a stalled stderr cannot be ended at all:
-// closing the read end does not touch a write in flight, and the bytes in that
-// write are already the caller's. So the writer is detached instead, and
-// nothing the copier writes after this attempt reaches the next attempt's
-// diagnostics.
-func endCopying(feeds *outputPipes, drained <-chan struct{}, guarded *serialWriter, grace time.Duration) {
+// The order is the point. First the wait, bounded by the grace, because the
+// bytes still arriving are the command's answer. Then the read ends, which end
+// a copier waiting for bytes from a process that escaped the group. Then the
+// copiers are joined, and one that cannot be joined -- a copier inside a write
+// to a stalled stderr, which closing a read end does not touch -- has its
+// writer released.
+//
+// That release is why this runs before an attempt writes a word of cleanup: a
+// wedged copier holds the lock every diagnostic needs, and an attempt that
+// waits for it never writes its diagnostics, never returns, and never releases
+// anything.
+func endCopying(feeds *outputPipes, drained <-chan struct{}, guarded *serialWriter, grace time.Duration, latch *signalLatch) error {
+	err := awaitDrain(drained, grace, latch)
 	feeds.closeReads()
 	select {
 	case <-drained:
 	case <-time.After(grace):
 		guarded.release()
 	}
+	return err
 }
 
 // serialWriter is one writer two goroutines can use: this helper's own
@@ -596,22 +625,23 @@ type serialWriter struct {
 
 func (s *serialWriter) Write(p []byte) (int, error) {
 	if s.released.Load() {
-		// The attempt this writer belonged to is over, and the caller's stderr
-		// belongs to the next one. Reporting the bytes as written is what ends
-		// the copier rather than sending it round the loop again.
-		return len(p), nil
+		// Released, so this write goes round the lock rather than waiting for
+		// it. What holds that lock is a copier inside a write that has not
+		// returned, and waiting for it is the wait that never ends: the
+		// diagnostics this helper is trying to write are the ones that say so.
+		//
+		// Two writers on one stderr can interleave. In the only case this
+		// happens the host has stopped taking writes, and a line cut in half
+		// is a better failure than a helper that stops without a word.
+		return s.w.Write(p)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.released.Load() {
-		return len(p), nil
-	}
 	return s.w.Write(p)
 }
 
-// release detaches this writer from the caller's stderr. It takes no lock: the
-// copier it is releasing from may be holding one inside a write that has not
-// returned, which is the whole reason for releasing.
+// release lets every later write past the lock. It takes none itself: the
+// copier it is releasing from is holding one, which is the whole reason.
 func (s *serialWriter) release() { s.released.Store(true) }
 
 // groupStopper is the process-group half of an attempt, injected so the case

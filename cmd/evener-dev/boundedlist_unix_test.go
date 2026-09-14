@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1060,39 +1061,60 @@ func TestSignalLatchSettleTakesASignalThatLandedAfterTheLastLook(t *testing.T) {
 }
 
 func TestEndCopyingJoinsTheCopiersAndReleasesOneItCannotJoin(t *testing.T) {
-	// Joined: the copying is done, so the writer it was given stays attached
-	// and the attempt's own last words still reach the caller.
+	// Joined: the copying finished inside the grace, so the writer is left as
+	// it was and the attempt's own last words go through it in order.
 	var joined bytes.Buffer
 	attached := &serialWriter{w: &joined}
 	finished := make(chan struct{})
 	close(finished)
-	endCopying(&outputPipes{}, finished, attached, 10*time.Second)
+	if err := endCopying(&outputPipes{}, finished, attached, 10*time.Second, nil); err != nil {
+		t.Fatalf("endCopying with the copying already done: %v", err)
+	}
+	if attached.released.Load() {
+		t.Fatal("the writer was released although the copiers were joined")
+	}
 	if _, err := attached.Write([]byte("still attached\n")); err != nil {
 		t.Fatalf("writing through a joined attempt's writer: %v", err)
 	}
 	if joined.String() != "still attached\n" {
-		t.Fatalf("stderr = %q, want the writer left attached when the copiers finished", joined.String())
+		t.Fatalf("stderr = %q, want the attempt's own words", joined.String())
 	}
 
 	// Stuck: a copier inside a write that has not returned cannot be joined,
-	// so after the grace the writer is detached and the next attempt's
-	// diagnostics are the only ones the caller sees.
+	// and it is holding the lock. After the grace the writer is released, so
+	// the diagnostics that say all this go round that lock instead of waiting
+	// for it -- which is the wait that never ends.
 	var stalled bytes.Buffer
 	detached := &serialWriter{w: &stalled}
 	grace := 200 * time.Millisecond
 	start := time.Now()
-	endCopying(&outputPipes{}, make(chan struct{}), detached, grace)
+	err := endCopying(&outputPipes{}, make(chan struct{}), detached, grace, nil)
+	if err == nil {
+		t.Fatal("endCopying reported a whole drain for output that never arrived")
+	}
 	if elapsed := time.Since(start); elapsed < grace {
-		t.Fatalf("endCopying returned in %s, without waiting out the join", elapsed)
+		t.Fatalf("endCopying returned in %s, without waiting out the drain", elapsed)
 	}
-	n, err := detached.Write([]byte("from a copier the next attempt does not own\n"))
-	if err != nil || n == 0 {
-		// Reported as written on purpose: a copier told its write failed goes
-		// round the loop again rather than ending.
-		t.Fatalf("a released writer answered %d, %v; want the bytes reported as taken", n, err)
+	if !detached.released.Load() {
+		t.Fatal("the writer was not released although the copiers could not be joined")
 	}
-	if stalled.Len() != 0 {
-		t.Fatalf("stderr = %q: a released writer passed bytes to the caller", stalled.String())
+	detached.mu.Lock() // stand in for the wedged copier that holds it
+	done := make(chan error, 1)
+	go func() {
+		_, err := detached.Write([]byte("the cleanup still has something to say\n"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("writing through a released writer: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a released writer waited for the lock a wedged copier holds")
+	}
+	detached.mu.Unlock()
+	if stalled.String() != "the cleanup still has something to say\n" {
+		t.Fatalf("stderr = %q, want the cleanup's words to have reached the caller", stalled.String())
 	}
 }
 
@@ -1141,5 +1163,87 @@ func TestBoundedListDoesNotRetryWhenOnlyASurvivorHeldTheGroup(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "retrying") {
 		t.Fatalf("stderr = %q: the enumeration finished, and running it again would repeat work it did", stderr.String())
+	}
+}
+
+// gatedWriter holds the one write whose text it is given and takes every
+// other. It stands in for a stderr that has stopped taking writes: the host's
+// doing, not the command's.
+type gatedWriter struct {
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	hold string
+	gate chan struct{}
+	held chan struct{}
+	once sync.Once
+}
+
+func (w *gatedWriter) Write(p []byte) (int, error) {
+	if w.hold != "" && strings.Contains(string(p), w.hold) {
+		w.once.Do(func() { close(w.held) })
+		<-w.gate
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *gatedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func TestBoundedAttemptStillReportsWhenTheStderrItWritesToHasStopped(t *testing.T) {
+	// The copier carries the command's stderr into the caller's, and the
+	// caller's does not return. It is holding the lock every diagnostic this
+	// attempt has left to write, so an attempt that waits for that lock writes
+	// nothing, returns nothing, and never releases anything -- the hang the
+	// bound exists to replace, produced by the helper itself.
+	sink := &gatedWriter{hold: "held-by-the-host", gate: make(chan struct{}), held: make(chan struct{})}
+	defer close(sink.gate)
+	done := make(chan attemptResult, 1)
+	go func() {
+		done <- runBoundedAttempt([]string{"sh", "-c", "echo held-by-the-host >&2; exit 0"},
+			30*time.Second, 200*time.Millisecond, sink, nil)
+	}()
+	select {
+	case <-sink.held:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the command's stderr never reached the sink")
+	}
+	var result attemptResult
+	select {
+	case result = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the attempt never returned: it waited for a copier wedged inside the caller's stderr")
+	}
+	// The command exited 0 and its output did not all arrive, which is the
+	// one thing the caller must not be told is a whole list.
+	if result.exitCode != 1 {
+		t.Fatalf("exitCode = %d, want 1: the output could not be read in full; stderr = %q", result.exitCode, sink.String())
+	}
+	if got := sink.String(); !strings.Contains(got, "could not be read in full") {
+		t.Fatalf("stderr = %q, want the attempt's cleanup diagnostics to have landed", got)
+	}
+}
+
+func TestBoundedAttemptReadsTheStatusOnlyAfterTheWaitHasIt(t *testing.T) {
+	// A stop that sent nothing, with the command still running: the answer it
+	// points the attempt at lives in cmd.ProcessState, and Wait writes that
+	// until it closes `reaped`. Reading it any earlier races the wait, and for
+	// a command that has not exited there is no status there to read.
+	withStopperStub(t, func(_ int, _ syscall.Signal, _ <-chan struct{}, _ time.Duration) (bool, error) {
+		return false, nil
+	})
+	var stderr bytes.Buffer
+	result := runBoundedAttempt([]string{"sh", "-c", "sleep 0.3; exit 7"},
+		100*time.Millisecond, 5*time.Second, &stderr, nil)
+	if result.exitCode != 7 {
+		t.Fatalf("exitCode = %d, want 7: the command's own status, read once the wait had it; stderr = %q",
+			result.exitCode, stderr.String())
+	}
+	if result.timedOut || result.stuck {
+		t.Fatalf("timedOut = %v, stuck = %v for a command that exited on its own", result.timedOut, result.stuck)
 	}
 }
