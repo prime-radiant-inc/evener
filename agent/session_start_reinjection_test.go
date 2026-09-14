@@ -203,3 +203,64 @@ func TestSessionStartDispatchAfterEmptyRestoreIsNotFlaggedAsReinjection(t *testi
 		t.Fatalf("summary = %q, want historyTurns=0 followed by a delimiter", entry.Summary)
 	}
 }
+
+// A restored session carrying shared notes projects them as a NOTES_CONTEXT
+// turn at the start of its first user turn — before the deferred resume hook
+// runs. That snapshot is harness context, not something the user or the model
+// said, so it must not make the hook's dispatch look like a reinjection into a
+// session with prior history.
+func TestSessionStartDispatchOnNotesContextOnlyHistoryIsNotFlaggedAsReinjection(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("done") },
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	meta := schema.SessionMeta{
+		ID:        "01KREINJECTIONNOTESONLY00",
+		ProfileID: "test",
+		Model:     "gpt-5.2",
+		// A restored note makes the first user turn project a NOTES_CONTEXT
+		// turn before the deferred resume hook is drained.
+		AgentNote: "restored shared note",
+		Config:    schema.ConfigSnapshot{PluginDirs: []string{newResumeHookPluginDir(t)}},
+	}
+	sess, err := RestoreSessionFromMetaWithConfig(
+		client,
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{StateDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	// Resume SessionStart hooks are deferred until the first user turn.
+	if _, err := sess.ProcessInput(t.Context(), "first user task", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	entry := sessionStartHookDispatchEntry(t, stateDir, sess.ID())
+	// Guard against a vacuous pass: a dispatch that delivered nothing could
+	// never trip the detector, so the silence would prove nothing.
+	if strings.Contains(entry.Summary, "delivered=0 ") {
+		t.Fatalf("summary = %q — the resume hook delivered nothing, so this dispatch could not trip the detector", entry.Summary)
+	}
+	if !strings.Contains(entry.Summary, "historyTurns=0 ") {
+		t.Fatalf("summary = %q, want historyTurns=0 followed by a delimiter — the projected notes snapshot is not prior conversation", entry.Summary)
+	}
+	if entry.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success — a projected NOTES_CONTEXT turn is not prior conversation; summary = %q; failures = %v", entry.Outcome, entry.Summary, entry.Failures)
+	}
+	if len(entry.Failures) != 0 {
+		t.Fatalf("failures = %v, want none for a notes-context-only session", entry.Failures)
+	}
+}

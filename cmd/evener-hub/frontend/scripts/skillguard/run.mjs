@@ -228,13 +228,27 @@ class Driver {
     }
   }
 
+  // selectAll selects the whole draft in the composer textarea through the
+  // DOM, which is what the Backspace and typing key events that follow act
+  // on. A Ctrl+A key event is not a select-all keystroke on macOS Chrome, and
+  // a bare key event through the protocol is not guaranteed to run the
+  // editing command on Linux either; the selection itself is the contract.
+  async selectAll(ref) {
+    const selected = await evaluate(
+      this.send,
+      `(() => { const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
+        const ta = root && root.querySelector("textarea"); if (!ta) return null;
+        ta.focus(); ta.select(); return ta.selectionEnd - ta.selectionStart === ta.value.length; })()`,
+    );
+    if (selected !== true) throw new Error(`selectAll: composer textarea for ${ref} did not select its draft`);
+  }
+
   async press(key, modifiers = 0) {
     const codes = {
       Enter: { code: "Enter", keyCode: 13 },
       Tab: { code: "Tab", keyCode: 9 },
       Escape: { code: "Escape", keyCode: 27 },
       Backspace: { code: "Backspace", keyCode: 8 },
-      a: { code: "KeyA", keyCode: 65 },
     }[key];
     await this.send("Input.dispatchKeyEvent", {
       type: "keyDown",
@@ -820,7 +834,7 @@ async function runScenarios(driver) {
   driver.milestone("draft-remounted", { ...state, storage: await evaluate(driver.send, driver.draftStorageExpr()) });
   // Clear the draft for the next scenario: select all + remove the chip.
   await driver.focusComposer(driver.sessionA);
-  await driver.press("a", 2); // Ctrl+A
+  await driver.selectAll(driver.sessionA);
   await driver.press("Backspace");
   await driver.removeSkillChip(driver.sessionA);
   state = await driver.composerState(driver.sessionA);
@@ -870,7 +884,7 @@ async function runScenarios(driver) {
     label: "Edit message",
   });
   driver.milestone("queue-returned", await driver.composerState(driver.sessionA));
-  await driver.press("a", 2);
+  await driver.selectAll(driver.sessionA);
   await driver.typeText(PROSE.queue2);
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA);
@@ -1008,7 +1022,7 @@ async function runScenariosPart2(driver) {
   driver.milestone("caploss-refused", { ...refused, toast, durable: durableB });
   // Clean the staged draft so later IndexedDB reads stay unambiguous.
   await driver.focusComposer(driver.sessionB);
-  await driver.press("a", 2);
+  await driver.selectAll(driver.sessionB);
   await driver.press("Backspace");
   await driver.removeSkillChip(driver.sessionB);
   // The refusal toast renders OVER the composer card and swallows clicks
@@ -1098,7 +1112,7 @@ async function runScenariosPart2(driver) {
   check(keptState.chips.length === 0, `delayed commit restored the removed chip: ${JSON.stringify(keptState)}`);
   driver.milestone("delay-commit-kept", keptState);
   await driver.focusComposer(driver.sessionA);
-  await driver.press("a", 2);
+  await driver.selectAll(driver.sessionA);
   await driver.press("Backspace");
 
   // ---- scenario: transport loss + recovery ----

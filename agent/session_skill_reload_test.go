@@ -263,7 +263,7 @@ func availabilityByName(entries []schema.SkillInventorySummary) map[string]schem
 // flag values recorded in the typed outcome.
 func TestSkillReload_CurrentSource_ReloadsNewBytes(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	oldBody := strings.Repeat("BODY_7f2a old source line\n", 64)
 	newBody := strings.Repeat("BODY_9c1e new source line\n", 64)
@@ -671,7 +671,7 @@ func TestSkillReload_Reminder_ExplicitEmptySelection(t *testing.T) {
 // outcome — and no second compaction/model-repair round runs.
 func TestSkillReload_Budget_OrderedPriority(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	newactBody := strings.Repeat("NEWACT_5c31 explicit activation line\n", 50)
 	reloadABody := strings.Repeat("RELOAD_A_5c31 fits line\n", 120)
@@ -1226,7 +1226,7 @@ func TestSkillReload_Preload_DualProvenanceReloadsOrdinary(t *testing.T) {
 // or new activation event appears.
 func TestSkillReload_Repeated_RetainedContentNotDuplicated(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a repeated source\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)

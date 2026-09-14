@@ -686,8 +686,11 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	// whole roster. Every sibling per-entry read in this function degrades
 	// instead (pastEntryCost returns nil, ownership errors are swallowed,
 	// mergePastMetadataForList tolerates non-ctx errors), so a corrupt journal
-	// reads as "no canonical note" here too.
-	if note, _, err := agent.ReadCanonicalHumanNote(entry.StateDir, entry.Meta.ID); err == nil {
+	// reads as "no canonical note" here too. The read itself is the lightweight
+	// top-level projection, not the strict authority decode: this function runs
+	// once per past entry, only displays the note, and must not decode and
+	// validate a journal-sized snapshot for it.
+	if note, _, err := agent.ReadPersistedHumanNote(entry.StateDir, entry.Meta.ID); err == nil {
 		entry.Meta.HumanNote = note
 	} else {
 		entry.Meta.HumanNote = ""
@@ -762,7 +765,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 			Profile:      entry.Meta.ProfileID,
 			Goal:         persistedGoalState(entry.Meta.Goal),
 			HumanNote:    entry.Meta.HumanNote,
-			AgentNote:    entry.Meta.AgentNote,
+			AgentNote:    agent.SanitizeNoteTextForDisplay(entry.Meta.AgentNote),
 			SessionURLs:  persistedSessionURLs(entry.Meta.SessionURLs),
 			Capabilities: pastThreadCapabilities(),
 			WorkMillis:   entry.Meta.WorkMillis,
@@ -944,7 +947,15 @@ func persistedSessionURLs(urls []schema.SessionURL) []appwire.SessionURL {
 	}
 	out := make([]appwire.SessionURL, 0, len(urls))
 	for _, u := range urls {
-		out = append(out, appwire.SessionURL{ID: u.ID, URL: u.URL, Label: u.Label, AddedBy: u.AddedBy, AddedAt: u.AddedAt})
+		// The hub's metadata can predate the write-path strip, and this payload
+		// is printed by the TUI, so the projected values are sanitized here.
+		out = append(out, appwire.SessionURL{
+			ID:      agent.SanitizeURLValueForDisplay(u.ID),
+			URL:     agent.SanitizeURLValueForDisplay(u.URL),
+			Label:   agent.SanitizeNoteTextForDisplay(u.Label),
+			AddedBy: u.AddedBy,
+			AddedAt: u.AddedAt,
+		})
 	}
 	return out
 }

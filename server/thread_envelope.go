@@ -64,20 +64,27 @@ type threadEnvelope struct {
 	taskCarrierGeneration uint64
 	goalCarrierGeneration uint64
 	// notesCarrierGeneration is goalCarrierGeneration's sibling for the
-	// shared-notes carriers: NotesUpdatedParams and UrlsUpdatedParams bump it
-	// the way GoalUpdatedParams bumps goalCarrierGeneration, and a sampled
-	// facetGoal assign that started before the bump drops its stale notes
-	// fields instead of overwriting the carrier.
+	// shared-notes whiteboards: NotesUpdatedParams bumps it the way
+	// GoalUpdatedParams bumps goalCarrierGeneration, and a sampled facetGoal
+	// assign that started before the bump drops its stale note fields instead
+	// of overwriting the carrier.
 	notesCarrierGeneration uint64
-	Usage                  *appwire.EvenerUsage
-	WorkMillis             int64
-	ActiveTurnStartedAt    int64
-	FailedToolCalls        *int
-	AskPending             bool
-	PendingEscalations     []appwire.SandboxEscalationRequested
-	ReasoningEffort        string
-	ReasoningEffortLevels  []string
-	SupportsReasoning      bool
+	// urlsCarrierGeneration is the URL list's own fence beside the notes pair.
+	// UrlsUpdatedParams bumps it, and a sampled facetGoal assign that started
+	// before the bump drops only its stale SessionURLs. The two generations are
+	// separate because the carriers are separate pushes: a notes commit landing
+	// mid-sample must not discard a newer sampled URL list, and a URLs commit
+	// must not discard newer sampled notes.
+	urlsCarrierGeneration uint64
+	Usage                 *appwire.EvenerUsage
+	WorkMillis            int64
+	ActiveTurnStartedAt   int64
+	FailedToolCalls       *int
+	AskPending            bool
+	PendingEscalations    []appwire.SandboxEscalationRequested
+	ReasoningEffort       string
+	ReasoningEffortLevels []string
+	SupportsReasoning     bool
 	// VisionModel is the session's vision side-channel setting ("", "off", or
 	// a model ref), sampled under its own facet beside reasoning's trio.
 	VisionModel string
@@ -322,6 +329,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
 	goalCarrierGeneration := s.appEnvelope.goalCarrierGeneration
 	notesCarrierGeneration := s.appEnvelope.notesCarrierGeneration
+	urlsCarrierGeneration := s.appEnvelope.urlsCarrierGeneration
 	ref := s.appRef
 	s.mu.RUnlock()
 	if src == nil {
@@ -430,30 +438,36 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		if assignFacets&facetGoal != 0 && s.appEnvelope.goalCarrierGeneration != goalCarrierGeneration {
 			assignFacets &^= facetGoal
 		}
-		// The notes carriers ride the goal facet's sample (SessionMeta holds
-		// Goal, HumanNote, AgentNote, and SessionURLs together), so the guard
-		// cannot clear the whole facet the way the task/goal guards do —
-		// that would drop the sampled Goal alongside the stale notes. The
-		// stale-notes case is handled inside assign: it keeps the carrier's
-		// notes fields and takes only the sampled Goal.
+		// The notes and URLs carriers ride the goal facet's sample (SessionMeta
+		// holds Goal, HumanNote, AgentNote, and SessionURLs together), so the
+		// guard cannot clear the whole facet the way the task/goal guards do —
+		// that would drop the sampled Goal alongside the stale fields. The
+		// overlapping-carrier cases are handled inside assign: each group keeps
+		// the carrier's fields and the sample supplies the rest, including Goal.
+		// The notes pair and the URL list are compared independently, mirroring
+		// their independent carriers.
 		notesStale := s.appEnvelope.notesCarrierGeneration != notesCarrierGeneration
-		s.appEnvelope.assign(assignFacets, next, notesStale)
+		urlsStale := s.appEnvelope.urlsCarrierGeneration != urlsCarrierGeneration
+		s.appEnvelope.assign(assignFacets, next, notesStale, urlsStale)
 	}
 	s.mu.Unlock()
 }
 
-// assign copies exactly the named facets out of next. notesStale names the
-// overlapping-carrier case: a notes/urls carrier committed after this sample
-// was taken, so the sampled notes fields (HumanNote, AgentNote, SessionURLs)
-// are older than the installed carrier and must not overwrite it. The sampled
-// Goal still applies — Goal and notes have independent carriers — so the
-// facet splits: Goal from the sample, notes from the carrier.
+// assign copies exactly the named facets out of next. notesStale and urlsStale
+// name the overlapping-carrier cases: a notes carrier or a URLs carrier
+// committed after this sample was taken, so the sampled fields that carrier
+// owns are older than the installed carrier and must not overwrite it. The two
+// groups are independent, mirroring the carriers: a notes commit fences
+// HumanNote/AgentNote but not SessionURLs, and a URLs commit fences SessionURLs
+// but not the notes pair. The sampled Goal still applies — Goal has its own
+// carrier — so the facet splits: Goal from the sample, and from the sample
+// whichever groups no newer carrier has overwritten.
 //
 // Writing through one method keeps the facet-to-field mapping in a single
 // place: a field added to the struct without a line here is a field that is
 // sampled and then dropped, which is far easier to see in six lines of
 // assignment than spread across the sampler.
-func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notesStale bool) {
+func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notesStale, urlsStale bool) {
 	if facets&facetContext != 0 {
 		e.ContextPressure = next.ContextPressure
 		e.ContextMetrics = next.ContextMetrics
@@ -474,6 +488,8 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 		if !notesStale {
 			e.HumanNote = next.HumanNote
 			e.AgentNote = next.AgentNote
+		}
+		if !urlsStale {
 			e.SessionURLs = next.SessionURLs
 		}
 	}

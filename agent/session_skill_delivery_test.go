@@ -32,7 +32,7 @@ import (
 // The fixture exceeds the removed 32,000-character default tail policy.
 func TestSkillDelivery_CompleteBody(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a complete delivery line\n", 2000)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -232,7 +232,7 @@ func TestSkillDelivery_FailedReinvocationPreservesInventory(t *testing.T) {
 // open once the source disables model invocation.
 func TestSkillDelivery_UserReinvocationRecordsAuthorization(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -289,7 +289,7 @@ func TestSkillDelivery_UserReinvocationRecordsAuthorization(t *testing.T) {
 // the dispatch still carries exactly one complete current body.
 func TestSkillDelivery_PreDispatchCompaction(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -341,7 +341,7 @@ func TestSkillDelivery_PreDispatchCompaction(t *testing.T) {
 // provisional outcome is corrected without a second new-body event.
 func TestSkillDelivery_RevalidateAfterFold(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -440,7 +440,7 @@ func TestSkillDelivery_RevalidateAfterFold(t *testing.T) {
 // notice, never a false already-present delivery of stale bytes.
 func TestSkillDelivery_ChangedSourceBeforeDispatch(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	oldBody := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+oldBody)
@@ -518,7 +518,7 @@ func TestSkillDelivery_ChangedSourceBeforeDispatch(t *testing.T) {
 // outcome alone.
 func TestSkillDelivery_ChangedSourceRecordsPreviousProvenance(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	oldBody := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+oldBody)
@@ -753,7 +753,7 @@ func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
 // complete body and no duplicate success event fires.
 func TestSkillDelivery_TransportRetry(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -817,9 +817,9 @@ func TestSkillDelivery_TransportRetry(t *testing.T) {
 // success.
 func TestSkillDelivery_SaveRestore(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
-	stateDir := t.TempDir()
+	stateDir := skillFixtureRoot(t)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
 	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
@@ -875,7 +875,7 @@ func TestSkillDelivery_SaveRestore(t *testing.T) {
 // activation.
 func TestSkillDelivery_FrozenPlusOrdinary(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -942,7 +942,7 @@ func TestSkillDelivery_FrozenPlusOrdinary(t *testing.T) {
 // the switched request's actual shape before committing.
 func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -1097,7 +1097,7 @@ func newContinuationSession(t *testing.T, adapter *skillContinuationAdapter, dir
 // the typed causal notification and the rebuilt request commits through the
 // same seam.
 func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -1189,7 +1189,7 @@ func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
 // session rebuilds the request from full history; the seam revalidates and
 // commits against that rebuilt shape.
 func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -1256,7 +1256,7 @@ func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
 // revalidated and committed through the same seam.
 func TestSkillDelivery_FallbackSmallerWindow(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
