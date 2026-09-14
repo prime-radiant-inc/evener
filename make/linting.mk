@@ -231,11 +231,12 @@ lint-package-imports:
 
 LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports secret-scan
 
-## Go lint, formatting, tagged floors, generated outputs, and secrets.
+## Go lint, formatting, tagged floors, generated outputs, imports, and secrets.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
 ##   eval compile floors; the internal-type check; golangci-lint across every
 ##   workspace module; generated-output freshness; the fuzz registry check;
-##   and the repo secret scan.
+##   that no web or native import names the AppWire TypeScript package by
+##   path; and the repo secret scan.
 ## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.

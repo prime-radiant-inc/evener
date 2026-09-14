@@ -20,10 +20,11 @@ config.resolver.resolveRequest = (context, name, platform) => {
 			path.join(root, "cmd", "evener-hub", "frontend", "src"),
 		) ||
 		context.originModulePath.startsWith(appwirePackage);
-	// Every native import of the package comes through here. Only
-	// `make test-native-bundle` exercises it: vitest resolves the name through
-	// this app's vitest config and `tsc` through tsconfig.check.json's paths, so
-	// a break in this branch passes both and surfaces first on a device.
+	// Every native import of the package comes through here, and nothing in CI
+	// reads it: vitest resolves the name through this app's vitest config and
+	// `tsc` through tsconfig.check.json's paths, so a break in this branch
+	// passes both and surfaces first on a device. #1244 is the bundling gate
+	// that will exercise it.
 	if (name === appwireName || name.startsWith(`${appwireName}/`)) {
 		const subpath = name.slice(appwireName.length).replace(/^\//, "");
 		return {
