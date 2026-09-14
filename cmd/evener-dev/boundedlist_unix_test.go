@@ -638,18 +638,29 @@ func TestReapOrGiveUpSaysWhichItWas(t *testing.T) {
 	var stderr bytes.Buffer
 	reaped := make(chan struct{})
 	close(reaped)
-	if !reapOrGiveUp(reaped, time.Second, "sh", &stderr) {
+	if !reapOrGiveUp(reaped, time.Second, "sh", true, &stderr) {
 		t.Fatal("reapOrGiveUp = false for a child that was reaped")
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want nothing said about a reap that happened", stderr.String())
 	}
 	never := make(chan struct{})
-	if reapOrGiveUp(never, 20*time.Millisecond, "sh", &stderr) {
+	if reapOrGiveUp(never, 20*time.Millisecond, "sh", true, &stderr) {
 		t.Fatal("reapOrGiveUp = true for a child that never reaped")
 	}
 	if got := stderr.String(); !strings.Contains(got, "did not exit after SIGKILL") {
 		t.Fatalf("stderr = %q, want the diagnostic naming the failed reap", got)
+	}
+	// A child nothing was sent to did not survive a SIGKILL; it is still
+	// running, and saying otherwise sends the reader after a kernel problem
+	// that is not there.
+	var unsignalled bytes.Buffer
+	if reapOrGiveUp(never, 20*time.Millisecond, "sh", false, &unsignalled) {
+		t.Fatal("reapOrGiveUp = true for a child that never reaped")
+	}
+	if got := unsignalled.String(); strings.Contains(got, "SIGKILL") ||
+		!strings.Contains(got, "nothing this helper sent reached it") {
+		t.Fatalf("stderr = %q, want it to say no signal reached the child", got)
 	}
 }
 
@@ -1018,8 +1029,10 @@ func TestBoundedAttemptSaysWhenTheGroupRefusedTheStop(t *testing.T) {
 	// worth a line: the stop went out, and the group may still be there. It
 	// cannot be produced from a test without signalling a group nobody here
 	// owns, so it is injected.
+	// What the real stop answers when every signal it made was refused: it
+	// delivered nothing, and it says what the kernel refused it with.
 	withStopperStub(t, func(_ int, _ syscall.Signal, _ <-chan struct{}, _ time.Duration) (bool, error) {
-		return true, syscall.EPERM
+		return false, syscall.EPERM
 	})
 	var stderr bytes.Buffer
 	// The bound fires while the command runs, and the command then exits on
@@ -1118,52 +1131,27 @@ func TestEndCopyingJoinsTheCopiersAndReleasesOneItCannotJoin(t *testing.T) {
 	}
 }
 
-func TestBoundedListTakesTheLeadersAnswerWhenOnlyASurvivorHeldTheGroup(t *testing.T) {
-	// The bound fires while the leader is running, the leader exits 0 in the
-	// window before the stop, and a descendant of its own is still in the
-	// group -- so the signal lands on the group's account and the stop reports
-	// it delivered. The leader produced the enumeration all the same. That
-	// ordering is injected, because the window it needs is microseconds wide.
+func TestBoundedListCallsItATimeoutWhenTheStopWasDelivered(t *testing.T) {
+	// The leader exits 0 with a descendant still in its group, so the stop's
+	// signal is delivered on that descendant's account. Nothing in a wait
+	// status says whether the leader ever received it, and the reading that
+	// cannot go wrong is the one that does not hand a caller a partial list as
+	// a whole one: a delivered stop is a timeout. The sweep still happens.
 	withStopperStub(t, func(_ int, _ syscall.Signal, reaped <-chan struct{}, _ time.Duration) (bool, error) {
 		<-reaped
 		return true, nil
 	})
 	var stderr bytes.Buffer
 	_, _ = readinessFiles(t)
-	// The leader outlives the bound and then exits by itself; nothing this
-	// helper sent could have ended it, since the stub sends nothing.
 	argv := commandWithASurvivor(t, 0, "0.3")
 	result := runBoundedAttempt(argv, 100*time.Millisecond, 10*time.Second, &stderr, nil)
-	if result.exitCode != 0 {
-		t.Fatalf("exitCode = %d, want 0: the leader finished; stderr = %q", result.exitCode, stderr.String())
+	if !result.timedOut {
+		t.Fatalf("timedOut = false although the stop was delivered; stderr = %q", stderr.String())
 	}
-	if result.timedOut {
-		t.Fatalf("timedOut = true for an attempt whose command exited on its own; stderr = %q", stderr.String())
-	}
-	// The survivor is cleanup, and it is still done.
 	if got := stderr.String(); !strings.Contains(got, "left processes running in its group") {
 		t.Fatalf("stderr = %q, want the survivor swept", got)
 	}
 	requireGroupGone(t, result.pgid)
-}
-
-func TestBoundedListDoesNotRetryWhenOnlyASurvivorHeldTheGroup(t *testing.T) {
-	// The same ordering through the runner: three attempts allowed, one taken,
-	// and the leader's own status handed back.
-	withStopperStub(t, func(_ int, _ syscall.Signal, reaped <-chan struct{}, _ time.Duration) (bool, error) {
-		<-reaped
-		return true, nil
-	})
-	var stdout, stderr bytes.Buffer
-	_, _ = readinessFiles(t)
-	args := append([]string{"-timeout", "100ms", "-attempts", "3", "-grace", "10s", "--"},
-		commandWithASurvivor(t, 0, "0.3")...)
-	if code := boundedListWith(args, &stdout, &stderr, nil); code != 0 {
-		t.Fatalf("exit code = %d, want 0: the leader finished; stderr = %q", code, stderr.String())
-	}
-	if strings.Contains(stderr.String(), "retrying") {
-		t.Fatalf("stderr = %q: the enumeration finished, and running it again would repeat work it did", stderr.String())
-	}
 }
 
 // gatedWriter holds the one write whose text it is given and takes every
@@ -1314,5 +1302,86 @@ func TestBoundedAttemptSaysWhenTheCommandWroteMoreThanItWillHold(t *testing.T) {
 	if got := stderr.String(); !strings.Contains(got, "could not be read in full") ||
 		!strings.Contains(got, "a package list is not that long") {
 		t.Fatalf("stderr = %q, want it to say what it could not hold", got)
+	}
+}
+
+// termTrappingChild answers SIGTERM by exiting 0, which is a command that was
+// stopped and not a command that finished.
+const termTrappingChild = `trap ': > "${BOUNDED_LIST_TERMED:-/dev/null}"; exit 0' TERM; : > "${BOUNDED_LIST_READY:-/dev/null}"; while :; do sleep 0.05; done`
+
+func TestBoundedListRetriesACommandThatTrappedTheBoundAndExitedCleanly(t *testing.T) {
+	// Its list stops wherever the signal found it, and its 0 says nothing
+	// about how far it got. Reading that as a finished enumeration hands the
+	// gate a partial package list and calls it whole, which is the one failure
+	// this helper must never produce quietly.
+	var stdout, stderr bytes.Buffer
+	_, termed := readinessFiles(t)
+	code := boundedListWith([]string{"-timeout", "200ms", "-attempts", "2", "-grace", "5s", "--",
+		"sh", "-c", termTrappingChild}, &stdout, &stderr, nil)
+	if code != 124 {
+		t.Fatalf("exit code = %d, want 124: it was stopped, not finished; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr = %q, want the attempt retried like any other timeout", stderr.String())
+	}
+	// And the stop really was delivered, which is the fact the answer rests on.
+	awaitFile(t, termed, "the child was never sent SIGTERM")
+}
+
+func TestBoundedAttemptStopsTheGroupWhenTheStderrItWritesToHasStopped(t *testing.T) {
+	// The copier is wedged inside a write to a caller's stderr that has
+	// stopped, so it holds the lock every diagnostic needs, and an interrupt
+	// arrives. The stop has to be made and the attempt has to return: an
+	// operator who asks for a stop and gets neither has a wedged helper on top
+	// of whatever they were stopping.
+	sink := &gatedWriter{hold: "held-by-the-host", gate: make(chan struct{}), held: make(chan struct{})}
+	defer close(sink.gate)
+	ready, _ := readinessFiles(t)
+	signals := make(chan os.Signal, 1)
+	const child = `echo held-by-the-host >&2; : > "${BOUNDED_LIST_READY:-/dev/null}"; while :; do sleep 0.05; done`
+	done := make(chan attemptResult, 1)
+	go func() {
+		done <- runBoundedAttempt([]string{"sh", "-c", child}, 30*time.Second, 300*time.Millisecond,
+			sink, &signalLatch{ch: signals})
+	}()
+	awaitFile(t, ready, "the child never started")
+	select {
+	case <-sink.held:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the child's stderr never reached the sink")
+	}
+	signals <- syscall.SIGTERM
+	var result attemptResult
+	select {
+	case result = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the attempt never returned: a line it had to write was waiting for a wedged copier's lock")
+	}
+	if result.interrupted != syscall.SIGTERM || result.exitCode != 143 {
+		t.Fatalf("interrupted = %v, exitCode = %d, want the signal forwarded and 143; stderr = %q",
+			result.interrupted, result.exitCode, sink.String())
+	}
+	if got := sink.String(); !strings.Contains(got, "stopping sh") {
+		t.Fatalf("stderr = %q, want the stop announced once the copying had ended", got)
+	}
+	requireGroupGone(t, result.pgid)
+}
+
+func TestBoundedListGivesUpOnADiagnosticItsCallerIsNotTakingEither(t *testing.T) {
+	// A gate's answer and its log are often the same file, so a caller that
+	// has stopped taking the one has stopped taking the other. A run that
+	// waits for that diagnostic ends in silence instead of in a report; it
+	// gives up on the words and keeps the exit status, which is what the gate
+	// acts on.
+	sink := &stalledWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(sink.release)
+	start := time.Now()
+	code := boundedListWith([]string{"-timeout", "30s", "-attempts", "1", "-grace", "300ms", "--",
+		"sh", "-c", "echo listed"}, sink, sink, nil)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1: the answer could not be handed over", code)
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("the run took %s: both the hand-over and the words about it are bounded", elapsed)
 	}
 }

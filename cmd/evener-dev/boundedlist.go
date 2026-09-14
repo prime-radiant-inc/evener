@@ -95,10 +95,19 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// out. The deferred call is the backstop for a path that forgets -- it
 	// runs once, so the two cannot fight.
 	copyingEnded, drainFailure := false, error(nil)
+	// pending holds what this attempt has decided to say but cannot say yet.
+	// Every write through `guarded` waits on the lock a wedged copier holds,
+	// so a line written before the copying has ended is a line that can stop
+	// the attempt for good; these go out the moment it has.
+	var pending []string
 	finishCopying := func() error {
 		if !copyingEnded {
 			copyingEnded = true
 			drainFailure = endCopying(feeds, drained, guarded, grace, latch)
+			for _, line := range pending {
+				_, _ = fmt.Fprint(guarded, line)
+			}
+			pending = nil
 		}
 		return drainFailure
 	}
@@ -180,7 +189,11 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		// terminal's SIGINT from reaching it, since it is no longer in the
 		// shell's foreground group. So this helper passes on what it is sent.
 		result.interrupted = latch.receive(received)
-		_, _ = fmt.Fprintf(guarded, "bounded-list: %v — stopping %s.\n", received, argv[0])
+		// Said once the copying has ended, which is after the stop it
+		// announces: an operator hears what was done rather than what is
+		// about to be, and the alternative is a line that waits on a lock a
+		// wedged copier is holding.
+		pending = append(pending, fmt.Sprintf("bounded-list: %v — stopping %s.\n", received, argv[0]))
 	case <-time.After(timeout):
 		// The timer and the exit can be ready at the same moment, and select
 		// picks between ready cases at random: a command that exited as the
@@ -198,35 +211,28 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// grace, and SIGKILL -- and nothing at all if the child was reaped first,
 	// whose pid may already belong to someone else. The stop is the last place
 	// that window can be closed, and it says which side of it the reap landed
-	// on.
+	// on: whether a signal of this attempt's was delivered at all.
+	//
+	// That is the whole question, and the command's exit status is no part of
+	// the answer. A `go list` that traps the bound's TERM and exits 0 wrote a
+	// list that stops wherever the signal found it, and taking its 0 would
+	// tell the gate that partial list was whole -- the same rule an interrupt
+	// has: a command that ended because this helper signalled it has not
+	// produced an answer to prefer over the signal. The cost is the other
+	// ordering, where the leader had already exited and the signal reached a
+	// descendant it left behind: that attempt is retried although its work was
+	// done. Nothing in a wait status tells the two apart, and this is the side
+	// that cannot report a partial list as a whole one.
 	stopped, stopErr := realGroupStopper.stop(result.pgid, result.interrupted, reaped, grace)
 	if stopErr != nil {
 		// A signal the kernel refused -- EPERM on a group this process does
-		// not own all of -- is why the group below may still be there.
-		_, _ = fmt.Fprintf(guarded, "bounded-list: stopping %s's process group: %v\n", argv[0], stopErr)
-	}
-	if !stopped {
-		// Nothing was sent to the group: the command exited between the check
-		// above and the stop, or its group was gone by the time the signal
-		// went out. Either way this is the command's own answer, and 124 or
-		// 128+signal would name a death this helper did not cause. A latched
-		// interrupt still ends the run -- the runner starts no further attempt
-		// -- it just no longer decides the status.
-		//
-		// The answer lives in cmd.ProcessState, which Wait writes until it
-		// closes `reaped`, so it is read only once that is seen closed. A stop
-		// that sent nothing does not mean the wait has returned: the group can
-		// have been empty of everything but a child nobody has waited for yet.
-		// When the reap is not in, this falls through to the cleanup below,
-		// which waits for it once more and gives up in the one way that reads
-		// no status at all.
-		if finished, err := finishedFirst(reaped, waited); finished {
-			return completed(err)
-		}
+		// not own all of -- is why the group below may still be there. Said
+		// with the rest of them, once the copying has ended.
+		pending = append(pending, fmt.Sprintf("bounded-list: stopping %s's process group: %v\n", argv[0], stopErr))
 	}
 	// Everything from here writes diagnostics, so the copying ends first.
 	_ = finishCopying()
-	if !reapOrGiveUp(reaped, grace, argv[0], guarded) {
+	if !reapOrGiveUp(reaped, grace, argv[0], stopped, guarded) {
 		result.timedOut = bounded
 		// Nothing this process can do reaches a child the kernel will not let
 		// go of. The sweep is skipped on purpose: it would spend another grace
@@ -244,19 +250,17 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		}
 		return result
 	}
-	// The leader is reaped, and its own status is what says whether this
-	// attempt has an answer. A group can take the stop's signal on a
-	// descendant's account alone -- the leader having exited in the window
-	// between the check above and the signal -- and then the enumeration did
-	// finish, whatever was left running in its group. Sweeping that is
-	// cleanup, not a reason to run the whole thing again.
-	//
-	// On the bound's path only. An interrupt is an answer about the run rather
-	// than about the command, and a command that exited because this helper
-	// passed the operator's signal on to it has not produced one to prefer:
-	// a `go list` that trapped the signal and exited 0 wrote a list that stops
-	// wherever the signal found it, and 0 would tell the gate it was whole.
-	if result.interrupted == 0 && endedOnItsOwnTerms(cmd.ProcessState) {
+	if !stopped {
+		// Nothing this attempt sent reached the command, so whatever it did it
+		// did on its own: the exit it has is its own answer, whether it came
+		// before the stop or while the wait above was still going. The bound
+		// expired and the enumeration finished anyway, which is the case the
+		// retry exists to avoid repeating.
+		//
+		// The status lives in cmd.ProcessState, which Wait writes until it
+		// closes `reaped`, and the wait above is what says that has happened.
+		// A command that never reaps takes the give-up path instead, which
+		// reads no status at all.
 		return completed(waited.err())
 	}
 	result.timedOut = bounded
@@ -273,29 +277,6 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	}
 	result.takeLateSignal(latch)
 	return result
-}
-
-// endedOnItsOwnTerms reports whether the leader produced the command's answer
-// rather than dying of the stop this attempt made. It is asked on the bound's
-// path, where the only signals this attempt sends are TERM and KILL: an exit
-// status is the command's own answer, and so is a death by any other signal --
-// a compiler killed by the OOM killer has said something about the run, and it
-// is not a timeout to retry.
-//
-// A leader killed by someone else's TERM or KILL in the same moment is read as
-// this attempt's doing: a wait status does not say who sent the signal, and the
-// other reading would report a stopped enumeration as a finished one.
-func endedOnItsOwnTerms(state *os.ProcessState) bool {
-	if state == nil {
-		// Not reaped, so nothing it did can be read: the caller's own give-up
-		// path owns this, and it is a timeout.
-		return false
-	}
-	sig, killed := procgroup.DiedOfSignal(state)
-	if !killed {
-		return true
-	}
-	return sig != syscall.SIGTERM && sig != syscall.SIGKILL
 }
 
 // waitResult is where the wait goroutine publishes the command's own answer.
@@ -339,14 +320,22 @@ func finishedFirst(reaped <-chan struct{}, waited *waitResult) (bool, error) {
 // -- a stalled volume is exactly how one gets there, and a stalled volume is
 // this helper's whole subject -- does not die of SIGKILL, and waiting on it
 // forever is the unbounded hang the bound exists to replace.
-func reapOrGiveUp(reaped <-chan struct{}, grace time.Duration, name string, stderr io.Writer) bool {
+func reapOrGiveUp(reaped <-chan struct{}, grace time.Duration, name string, signalled bool, stderr io.Writer) bool {
 	select {
 	case <-reaped:
 		return true
 	case <-time.After(grace):
-		_, _ = fmt.Fprintf(stderr,
-			"bounded-list: %s did not exit after SIGKILL within %s; it is stuck in the kernel, and is left to init.\n",
-			name, grace)
+		if signalled {
+			_, _ = fmt.Fprintf(stderr,
+				"bounded-list: %s did not exit after SIGKILL within %s; it is stuck in the kernel, and is left to init.\n",
+				name, grace)
+		} else {
+			// Nothing was sent to it, so there is no signal to say it survived:
+			// it is simply still running, and this attempt is leaving it.
+			_, _ = fmt.Fprintf(stderr,
+				"bounded-list: %s did not exit within %s, and nothing this helper sent reached it; it is left to init.\n",
+				name, grace)
+		}
 		return false
 	}
 }
@@ -910,20 +899,39 @@ func forwardOutput(stdout io.Writer, data []byte, what string, stderr io.Writer,
 	select {
 	case wrote = <-done:
 	case <-time.After(grace):
-		_, _ = fmt.Fprintf(stderr, "%s: it was still being written %s after the run ended; whoever was reading it is not reading it any more\n", what, grace)
+		sayWithin(stderr, grace, "%s: it was still being written %s after the run ended; whoever was reading it is not reading it any more\n", what, grace)
 		return false
 	}
 	if wrote.err != nil {
-		_, _ = fmt.Fprintf(stderr, "%s: wrote %d of %d bytes: %v\n", what, wrote.n, len(data), wrote.err)
+		sayWithin(stderr, grace, "%s: wrote %d of %d bytes: %v\n", what, wrote.n, len(data), wrote.err)
 		return false
 	}
 	if wrote.n != len(data) {
 		// io.Writer may return a short count with no error at all, and a
 		// caller reading the short answer cannot tell.
-		_, _ = fmt.Fprintf(stderr, "%s: wrote %d of %d bytes\n", what, wrote.n, len(data))
+		sayWithin(stderr, grace, "%s: wrote %d of %d bytes\n", what, wrote.n, len(data))
 		return false
 	}
 	return true
+}
+
+// sayWithin writes a diagnostic and gives up on it after the grace. It is for
+// the end of a run, where the destination may be the one that has just stopped
+// taking the answer -- a gate whose log and whose output are the same file,
+// most of the time. A diagnostic about a write that never returned, written
+// with a write that never returns, is how a helper ends in silence rather than
+// in a report; the answer is to say nothing rather than to wait forever, and
+// the exit status still carries the failure.
+func sayWithin(w io.Writer, grace time.Duration, format string, args ...any) {
+	done := make(chan struct{})
+	go func() {
+		_, _ = fmt.Fprintf(w, format, args...)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(grace):
+	}
 }
 
 // attemptCount reads the way the sentence around it needs it to.

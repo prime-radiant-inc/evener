@@ -310,10 +310,14 @@ func TestTheGroupSignalsRefuseAPgidThatIsNotAGroup(t *testing.T) {
 	for _, call := range []string{"Terminate", "Kill", "Stop", "StopWith"} {
 		for _, pgid := range []string{"0", "1", "-1"} {
 			t.Run(call+"("+pgid+")", func(t *testing.T) {
-				var log bytes.Buffer
+				// One buffer each: os/exec hands a child one descriptor when
+				// Stdout and Stderr are the same writer, so sharing one is
+				// not in fact a race -- but two say so without the reader
+				// having to go and check.
+				var out, errs bytes.Buffer
 				helper := exec.Command(os.Args[0], "-test.run=TestProcessGroupGuardHelper$") //nolint:noctx // its own process group, stopped by that group id below
 				helper.Env = append(os.Environ(), "PROCGROUP_GUARD_CALL="+call, "PROCGROUP_GUARD_PGID="+pgid)
-				helper.Stdout, helper.Stderr = &log, &log
+				helper.Stdout, helper.Stderr = &out, &errs
 				if err := Start(helper); err != nil {
 					t.Fatalf("starting the helper: %v", err)
 				}
@@ -328,10 +332,10 @@ func TestTheGroupSignalsRefuseAPgidThatIsNotAGroup(t *testing.T) {
 					// Cleaned up by that group id alone.
 					Kill(group)
 					<-child.done
-					t.Fatalf("the helper never finished; its output was %q", log.String())
+					t.Fatalf("the helper never finished; its output was %q and %q", out.String(), errs.String())
 				}
 				if child.err != nil {
-					t.Fatalf("%s(%s) in a child of its own: %v; its output was %q", call, pgid, child.err, log.String())
+					t.Fatalf("%s(%s) in a child of its own: %v; its output was %q and %q", call, pgid, child.err, out.String(), errs.String())
 				}
 			})
 		}
@@ -488,8 +492,8 @@ func TestExistsAnswersNoOnceAZombieOnlyGroupIsAdopted(t *testing.T) {
 	gone := filepath.Join(dir, "grandchild-gone")
 	leader := exec.Command(os.Args[0], "-test.run=TestProcessGroupOrphanHelper$") //nolint:noctx // its own process group, cleaned by that id below
 	leader.Env = append(os.Environ(), "PROCGROUP_ORPHAN_GONE="+gone)
-	var log bytes.Buffer
-	leader.Stdout, leader.Stderr = &log, &log
+	var out, errs bytes.Buffer
+	leader.Stdout, leader.Stderr = &out, &errs
 	if err := Start(leader); err != nil {
 		t.Fatalf("starting the leader: %v", err)
 	}
@@ -503,10 +507,10 @@ func TestExistsAnswersNoOnceAZombieOnlyGroupIsAdopted(t *testing.T) {
 	case <-time.After(childReadyTripwire):
 		Kill(pgid)
 		<-child.done
-		t.Fatalf("the leader never exited; its output was %q", log.String())
+		t.Fatalf("the leader never exited; its output was %q and %q", out.String(), errs.String())
 	}
 	if child.err != nil {
-		t.Fatalf("the leader exited with %v; its output was %q", child.err, log.String())
+		t.Fatalf("the leader exited with %v; its output was %q and %q", child.err, out.String(), errs.String())
 	}
 	// From here the leader is reaped and only the orphan can be answering.
 	const grace = 5 * time.Second
