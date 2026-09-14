@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -318,11 +319,11 @@ type indexedGroup struct {
 // the logical map — the records appended by this scan first, then the
 // previously indexed prefix — skipping replay copies, which are not.
 func previousLogicalKind(index *turnIndexDisk, appended []indexedTurn) schema.TurnKind {
-	for i := len(appended) - 1; i >= 0; i-- {
-		if appended[i].Replay {
+	for _, record := range slices.Backward(appended) {
+		if record.Replay {
 			continue
 		}
-		return appended[i].TurnKind
+		return record.TurnKind
 	}
 	for i := index.recordCount() - 1; i >= 0; i-- {
 		record := index.recordAt(i)
