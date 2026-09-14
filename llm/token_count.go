@@ -317,13 +317,25 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 type targetInfo struct {
 	provider, model  string
 	protocol         string
+	surface          string
 	unsignedThinking bool
 }
 
-// mediaFamily is the image-token family for the target: the resolved protocol
-// decides it exactly, and a caller that passed only names falls back to the
-// name rule.
+// mediaFamily is the image-token family for the target. The model's own family
+// decides it first — the surface records that — because a tokenizer family is a
+// property of the model, not of the wire protocol: OpenRouter serves
+// anthropic/claude-* and google/gemini-* rows over openai-chat. A row with no
+// surface falls back to the protocol, then to the name rule for callers that
+// passed names only.
 func (t targetInfo) mediaFamily() string {
+	switch t.surface {
+	case registry.SurfaceAnthropic:
+		return "anthropic"
+	case registry.SurfaceOpenAI:
+		return "openai"
+	case registry.SurfaceGoogle:
+		return "google"
+	}
 	switch t.protocol {
 	case registry.ProtocolAnthropic:
 		return "anthropic"
@@ -351,7 +363,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 	if strings.TrimSpace(model) == "" {
 		model = res.ModelID
 	}
-	return targetInfo{provider: provider, model: model, protocol: res.Protocol, unsignedThinking: unsignedThinkingReplayed(res)}
+	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, unsignedThinking: unsignedThinkingReplayed(res)}
 }
 
 // unsignedThinkingReplayed reports whether the adapter the resolved target

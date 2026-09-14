@@ -551,6 +551,37 @@ func TestEstimateMessagesInputTokensForResolved_UsesTheResolvedMediaFamily(t *te
 	}
 }
 
+// A model family is a property of the model, not of the wire protocol:
+// OpenRouter serves anthropic/claude-* over openai-chat, and a Claude or Gemini
+// image must keep its own tokenizer family. The surface decides before the
+// protocol; without a surface the protocol still does.
+func TestEstimateMessagesInputTokensForResolved_SurfaceBeatsTheWireProtocol(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+
+	openrouterClaude := registry.Resolved{
+		Instance: "openrouter", ModelID: "anthropic/claude-opus-5",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceAnthropic,
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(openrouterClaude, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+		t.Fatalf("openrouter claude image history = %d, want %d: the surface keeps the model's own family", got, want)
+	}
+	openrouterGemini := registry.Resolved{
+		Instance: "openrouter", ModelID: "google/gemini-3-pro",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGoogle,
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(openrouterGemini, messages).Tokens, estimateGoogleImageTokens(1024, 1024); got != want {
+		t.Fatalf("openrouter gemini image history = %d, want %d", got, want)
+	}
+	// No surface: the protocol is the next-best axis.
+	openaiChatRow := registry.Resolved{Instance: "custom", Protocol: registry.ProtocolOpenAIChat}
+	if got, want := EstimateMessagesInputTokensForResolved(openaiChatRow, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+		t.Fatalf("openai-chat image history = %d, want %d", got, want)
+	}
+}
+
 // The history entry point the context manager uses decides by the row too, so
 // compaction pressure sees replayable thinking text and does not see text the
 // adapter drops.
