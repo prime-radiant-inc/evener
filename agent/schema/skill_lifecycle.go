@@ -237,18 +237,7 @@ type SkillTurnState struct {
 // Clone detaches every mutable record and always initializes the inventory.
 func (s SkillLifecycleSnapshot) Clone() SkillLifecycleSnapshot {
 	out := s
-	out.Inventory = make(map[string]SkillInventoryEntry, len(s.Inventory))
-	for name, entry := range s.Inventory {
-		if entry.Ordinary != nil {
-			ordinary := *entry.Ordinary
-			entry.Ordinary = &ordinary
-		}
-		if entry.Preload != nil {
-			preload := *entry.Preload
-			entry.Preload = &preload
-		}
-		out.Inventory[name] = entry
-	}
+	out.Inventory = CloneSkillInventory(s.Inventory)
 	out.Obligations = slices.Clone(s.Obligations)
 	if s.PendingCompaction != nil {
 		operation := *s.PendingCompaction
@@ -259,6 +248,27 @@ func (s SkillLifecycleSnapshot) Clone() SkillLifecycleSnapshot {
 	for i, handoff := range s.PendingHandoffs {
 		handoff.Operation.Selection.Names = slices.Clone(handoff.Operation.Selection.Names)
 		out.PendingHandoffs[i] = handoff
+	}
+	return out
+}
+
+// CloneSkillInventory detaches a skill inventory from its source: the returned
+// map is always non-nil and every entry carries its own Ordinary and Preload
+// records, so a caller mutating a returned entry can never reach the live
+// lifecycle snapshot. It is the single deep-copy used by
+// SkillLifecycleSnapshot.Clone and by the non-lifecycle inventory accessor.
+func CloneSkillInventory(inventory map[string]SkillInventoryEntry) map[string]SkillInventoryEntry {
+	out := make(map[string]SkillInventoryEntry, len(inventory))
+	for name, entry := range inventory {
+		if entry.Ordinary != nil {
+			ordinary := *entry.Ordinary
+			entry.Ordinary = &ordinary
+		}
+		if entry.Preload != nil {
+			preload := *entry.Preload
+			entry.Preload = &preload
+		}
+		out[name] = entry
 	}
 	return out
 }

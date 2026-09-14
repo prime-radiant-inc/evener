@@ -23,6 +23,9 @@ func TestApplyAndFoldCloneCreatedDescriptor(t *testing.T) {
 		{name: "tool name ceiling", mutate: func(descriptor *Descriptor) { descriptor.ToolNameCeiling[0] = "mutated" }},
 		{name: "frozen skill names", mutate: func(descriptor *Descriptor) { descriptor.FrozenSkillNames[0] = "mutated" }},
 		{name: "frozen skill bodies", mutate: func(descriptor *Descriptor) { descriptor.FrozenSkillBodies[0] = "mutated" }},
+		{name: "frozen skill metadata", mutate: func(descriptor *Descriptor) {
+			descriptor.FrozenSkillMetadata[0].Description = "mutated"
+		}},
 		{name: "result schema", mutate: func(descriptor *Descriptor) { descriptor.ResultSchema[9] = 'b' }},
 		{name: "explicit tool grants", mutate: func(descriptor *Descriptor) { descriptor.ExplicitToolGrants[0] = "mutated" }},
 		{name: "sandbox", mutate: func(descriptor *Descriptor) { descriptor.Sandbox.Mode = "mutated" }},
@@ -644,6 +647,7 @@ func createdEventWithReferenceDescriptor(id string) Event {
 	descriptor.ToolNameCeiling = []string{"communicate", "shell"}
 	descriptor.FrozenSkillNames = []string{"review"}
 	descriptor.FrozenSkillBodies = []string{"review instructions"}
+	descriptor.FrozenSkillMetadata = []schema.FrozenSkillPreload{{Name: "review", Description: "review provenance"}}
 	descriptor.ResultSchema = json.RawMessage(`{"type":"alpha"}`)
 	descriptor.ExplicitToolGrants = []string{"shell"}
 	descriptor.Sandbox = &SandboxSnapshot{

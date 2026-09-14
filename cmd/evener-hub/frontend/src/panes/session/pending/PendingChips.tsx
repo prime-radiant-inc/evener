@@ -17,7 +17,7 @@ import { useMemo } from "react";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { PendingMethod, PendingTurnEntry } from "../composer/queue/pendingReconcile";
 import { usePendingTurnEntries } from "../composer/queue/pendingTurnsStore";
-import { queueEntryPreviewText } from "../composer/queue/queueDisplay";
+import { queueEntryPreviewText, skillMarkers } from "../composer/queue/queueDisplay";
 import styles from "./pendingchips.module.css";
 
 type OptimisticMethod = Exclude<PendingMethod, "queue">;
@@ -57,7 +57,14 @@ export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Elemen
       {optimistic.map((entry) => (
         <li key={entry.id} className={CLASS.chip}>
           <span className={CLASS.method}>{METHOD_LABEL[entry.method]}</span>
-          <span className={CLASS.text}>{queueEntryPreviewText(entry.text, entry.imageCount)}</span>
+          {/* Same text-plus-markers preview every queue row renders: a
+              slash-completed skill submission carries no prose, so the marker
+              is the chip's whole body. */}
+          <span className={CLASS.text}>
+            {[queueEntryPreviewText(entry.text, entry.imageCount), skillMarkers(entry.skillNames)]
+              .filter((part) => part !== "")
+              .join(" ")}
+          </span>
         </li>
       ))}
     </ul>
