@@ -1151,12 +1151,15 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 			continue
 		}
 		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
+		record := snapshot.Journal[id]
 		client = append(client, steeringMessage{
 			// A journal written before the write-path strip can carry controls in
 			// a note-origin pending text: the rebuilt entry reaches the model and
 			// the transcript, so that text is stripped like every other load path,
-			// while ordinary steering keeps the bytes the user typed.
-			Text:       rebuiltSteeringText(snapshot.Journal[id].SteeringKind, queued.Text),
+			// while ordinary steering keeps the bytes the user typed. The record's
+			// method decides a kindless record, so a normal steer whose text
+			// imitates the note prefix is not mistaken for a note update.
+			Text:       rebuiltSteeringText(steeringOrigin{kind: record.SteeringKind, method: record.Method}, queued.Text),
 			Images:     queued.Images,
 			SkillNames: queued.SkillNames,
 			Source:     events.SteeringSourceUser,
@@ -1164,7 +1167,7 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 			// journal record (see SteeringKind on clientMutationRecord),
 			// not the reflected in-memory entry. Plain user steering
 			// carries no stamp and keeps its empty kind.
-			Kind:             snapshot.Journal[id].SteeringKind,
+			Kind:             record.SteeringKind,
 			ClientMutationID: id,
 			StableTurnID:     pending.TurnID,
 		})
