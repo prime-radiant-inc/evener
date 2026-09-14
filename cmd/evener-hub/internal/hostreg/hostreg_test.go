@@ -179,18 +179,18 @@ func TestRegistryConcurrentGetAll(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 200; j++ {
+			for range 200 {
 				r.Get("m4")
 				r.All()
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 200; j++ {
+			for range 200 {
 				_ = r.Add(host("dynamic"))
 			}
 		}()
