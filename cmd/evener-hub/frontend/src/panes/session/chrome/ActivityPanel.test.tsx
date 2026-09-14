@@ -642,6 +642,24 @@ describe("ActivityPanel", () => {
     expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
   });
 
+  // The root has no row, so what the daemon could not read of its journals
+  // (#1269's session-level diagnostics) is the panel's to say, beside the
+  // coverage strip; a delegate's child sentences are the row's detail strip's.
+  test("shows the root session's diagnostics beside the coverage strip", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const torn = "delegate_journal_torn_tail: ignored unterminated trailing batch";
+    const degraded = activityTree() as { root: Record<string, unknown> };
+    degraded.root.diagnostics = [torn];
+    fake.on("evener/jobs/list", () => ({ data: degraded }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+
+    expect(screen.getByText(torn)).toBeTruthy();
+  });
+
   test("keeps the badge bare when the root counts are incomplete", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

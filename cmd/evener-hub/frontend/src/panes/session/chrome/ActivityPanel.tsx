@@ -243,6 +243,11 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
         {currentTree && !currentTree.root.counts.complete && (
           <p className={CLASS.state}>Activity coverage is incomplete.</p>
         )}
+        {currentTree?.root.diagnostics?.map((diagnostic) => (
+          <p className={CLASS.state} key={diagnostic}>
+            {diagnostic}
+          </p>
+        ))}
         {currentTree && currentTree.root.entries.length === 0 ? (
           emptyPageIsPartial(currentTree) ? (
             // A page can come back with no rows and still have more behind it:

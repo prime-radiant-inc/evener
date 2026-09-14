@@ -16,11 +16,15 @@ function cloneEntry(entry: ActivityEntry): ActivityEntry {
     : { kind: "delegate", delegate: cloneDelegate(entry.delegate) };
 }
 
+function cloneDiagnostics(diagnostics: string[] | undefined): string[] | undefined {
+  return diagnostics ? [...diagnostics] : undefined;
+}
+
 function cloneSession(session: ActivitySessionNode): ActivitySessionNode {
   return {
     ...session,
     counts: { ...session.counts },
-    diagnostics: session.diagnostics ? [...session.diagnostics] : undefined,
+    diagnostics: cloneDiagnostics(session.diagnostics),
     branch: { ...session.branch },
     entries: session.entries.map(cloneEntry),
   };
@@ -30,7 +34,7 @@ function cloneDelegate(delegate: ActivityDelegate): ActivityDelegate {
   return {
     ...delegate,
     warnings: delegate.warnings ? [...delegate.warnings] : undefined,
-    diagnostics: delegate.diagnostics ? [...delegate.diagnostics] : undefined,
+    diagnostics: cloneDiagnostics(delegate.diagnostics),
     usage: delegate.usage ? { ...delegate.usage } : undefined,
     turns: delegate.turns?.map((turn) => ({ ...turn })),
     worktree: delegate.worktree ? { ...delegate.worktree } : undefined,
@@ -179,6 +183,7 @@ function fenceSession(
   const session = {
     ...incoming,
     counts: { ...incoming.counts },
+    diagnostics: cloneDiagnostics(incoming.diagnostics),
     branch: { ...incoming.branch },
     entries: [...entries, ...kept],
   };
@@ -258,6 +263,7 @@ function mergeSession(
     ref: patch.ref,
     label: patch.label,
     branch: withinTarget ? { ...patch.branch } : { ...current.branch },
+    diagnostics: cloneDiagnostics(withinTarget ? patch.diagnostics : current.diagnostics),
     entries: mergedEntries,
   });
 }
