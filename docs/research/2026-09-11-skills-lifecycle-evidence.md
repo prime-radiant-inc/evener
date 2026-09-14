@@ -1530,3 +1530,42 @@ This is declined on evidence rather than convenience:
 
 The lane that hit this refused to re-pin the assertion and reported the exact
 conflict instead, which is why the original files remain byte-identical.
+
+### Gate evidence on the follow-up head, and two environment-caused failures
+
+Run serially on `be059475b`, each gate's own exit status read directly:
+
+| Gate | Result |
+| --- | --- |
+| `make generate` (zero-diff) | exit 0 |
+| `make vet` | exit 0 |
+| `make test-api-package` | exit 0 |
+| `make test-web` | exit 0 (1528s) |
+| `make merge-approval-gate` | exit 2 on the first run — see below |
+| `TMPDIR=/tmp make test-web-browser` | exit 0 on the retry's final attempt (all six guards) |
+| `make fuzz` | exit 0 |
+
+Two failures had to be classified before this PR could be called done, and both
+are recorded here rather than replaced by the green retry:
+
+- `merge-approval-gate` stopped inside its `ROOT_FULL=1 make test` wave, in the
+  web module, on `src/dev/editorial-preview/fixture.test.tsx` ("Unable to find
+  an element with the text: Editorial fixture parent"). That test passes in
+  isolation on this same head, and `make test-web` — the canonical frontend
+  gate, run twice on this tree — passed both times.
+- The six-guard browser gate failed on `web-skillguard` (twice at its first
+  milestone, "expected two live sessions in the rail, found 0", with a
+  zero-byte milestones file) and once on `web-overflowguard` ("timeout calling
+  navigateTo after 30000ms"). The failure dump from a failing run shows the rail
+  DID hold both live sessions at the moment the driver counted zero, so the
+  driver's own wait raced the render.
+
+The decisive control: the same guard, same command, run in the same session on
+the feature head `2b9831bfe` — where all six guards had passed earlier the same
+day — FAILED, while the follow-up head PASSED. A later load-gated retry on the
+follow-up head then passed all six guards including skillguard. Three other
+sessions on this machine were running these same gates throughout, with load
+between 30 and 71.
+
+So the failures follow the load rather than the change. The PR's own CI run on
+clean runners is the authoritative full-suite verdict for this head.
