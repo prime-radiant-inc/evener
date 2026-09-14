@@ -27,19 +27,31 @@ import (
 func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	registry := appsource.NewRegistry()
 	roster := cfg.Roster
-	if roster == nil {
-		return registry
+	if roster != nil {
+		local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+			return localDaemonEntriesFromRoster(roster.List())
+		}, http.DefaultClient)
+		// A daemon that leaves for good is announced by the roster, the one place
+		// that sees its process or its file go; the relay tells that daemon's
+		// subscribers to re-read.
+		// The roster's resolved session id is passed along: a legacy entry names
+		// no session of its own, and its relay session is keyed by the resolved one.
+		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
+		registry.Add(local)
 	}
-	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return localDaemonEntriesFromRoster(roster.List())
-	}, http.DefaultClient)
-	// A daemon that leaves for good is announced by the roster, the one place
-	// that sees its process or its file go; the relay tells that daemon's
-	// subscribers to re-read.
-	// The roster's resolved session id is passed along: a legacy entry names
-	// no session of its own, and its relay session is keyed by the resolved one.
-	roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
-	registry.Add(local)
+	if len(cfg.RemoteHosts) > 0 {
+		if cfg.RemoteHostClient == nil {
+			names := make([]string, 0, len(cfg.RemoteHosts))
+			for _, host := range cfg.RemoteHosts {
+				names = append(names, host.Name)
+			}
+			_, _ = fmt.Fprintf(os.Stderr, "[hub] remote hosts skipped (no SSH client wired): %s\n", strings.Join(names, ", "))
+		} else {
+			for _, host := range cfg.RemoteHosts {
+				registry.Add(appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient))
+			}
+		}
+	}
 	return registry
 }
 
