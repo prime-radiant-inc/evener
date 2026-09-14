@@ -389,10 +389,11 @@ commit and go stale immediately** — merge SHAs are the stable reference.
 A3 **merged as `57509ffd5`** after 8 review rounds: the package now lives at
 `appwire-client/typescript/`, 32 re-export stubs remain at the old path pending
 A4 — 28 directly under `src/protocol/` and 4 under `testing/` — the package's 27 test files are
-self-contained, and `shippedModules` is derived from `tsconfig.build.json`,
-closing #1224. #1242 and #1243 closed with it; #1244 is outstanding and is
-A4's dependency. A4 is **open as #1272** (head at the time of this commit `08cb33369`), off that
-commit, and not yet merged. What they block is
+self-contained, and `shippedModules` is derived from `tsconfig.build.json`'s
+`files` list, closing #1224. #1242 and #1243 closed with it; #1244 is outstanding and is
+A4's dependency. A4 is **open as #1272** (head at the time of this commit `d68f6af4c`), off that
+commit, and not yet merged; it carries the non-shipped `testing/reducerHooks.ts`
+that an earlier draft of the plan assigned to A3. What they block is
 narrower than an earlier draft of this document claimed: the package-name import rewrite and the directory
 move. Relocations into `protocol/` land without them, with consumers still on
 deep relative paths — C10 (#1222, `ba4164649`), C13 (#1223, `e2c77cc72`),
