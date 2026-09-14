@@ -166,6 +166,13 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emit(events.EventWarning, w)
 	}
 	s.pendingTranscriptWarnings = nil
+	// Hook completions whose entry was queued before the writer existed: the
+	// flush made them durable, and this is the first point at which announcing
+	// one does not put it ahead of the session it belongs to.
+	for _, end := range s.pendingHookEnds {
+		s.emit(events.EventHookEnd, end)
+	}
+	s.pendingHookEnds = nil
 	for _, data := range s.pendingPluginEvents {
 		s.emit(events.EventPluginLoaded, data)
 	}
@@ -341,12 +348,22 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	//
 	// This is THIS producer's discipline. Nothing yet requires every producer
 	// to write before announcing; issue #1150 carries that rule.
+	held := false
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
-		func() error { return s.writeTranscriptLocked(turn) },
+		func() error {
+			var writeErr error
+			held, writeErr = s.writeTranscriptLockedAnnouncing(turn, &data)
+			return writeErr
+		},
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return
+	}
+	if held {
+		// Queued, not written: the entry is not durable yet, so the event that
+		// announces it waits for the flush that makes it so.
 		return
 	}
 	s.emit(events.EventHookEnd, data)

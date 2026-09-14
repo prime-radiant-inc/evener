@@ -570,3 +570,55 @@ func TestHookEndAnnouncedByANonPersistentSession(t *testing.T) {
 		t.Fatalf("history turns = %d, want the completion kept in live history when there is nowhere durable to put it", got)
 	}
 }
+
+// A SessionStart hook completes before the transcript writer exists, so its
+// entry is QUEUED rather than written. Announcing it there would put the event
+// ahead of the entry — the very ordering this producer keeps everywhere else —
+// and a queued entry whose flush later fails would leave a client holding a
+// hook exit no reader can find.
+func TestHookEndWaitsForTheFlushThatMakesItDurable(t *testing.T) {
+	t.Parallel()
+	s := &Session{id: "hook-held", events: make(chan events.SessionEvent, 8)}
+	s.emitHookCompleted(events.HookEndData{Event: "SessionStart", HookType: "command", PluginName: "hook-turn-plugin"})
+	if got := len(s.events); got != 0 {
+		t.Fatalf("events published while the entry was still queued = %d, want 0", got)
+	}
+	if got := len(s.pendingTranscriptTurns); got != 1 {
+		t.Fatalf("queued entries = %d, want the hook completion held for the writer", got)
+	}
+
+	path := filepath.Join(t.TempDir(), "held.jsonl")
+	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("NewWriterNoSync: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	s.attachTranscript(writer)
+	if got := len(s.events); got != 0 {
+		t.Fatalf("events published by the flush itself = %d, want 0: the announcement rides the session-start envelope", got)
+	}
+	if got := len(s.pendingHookEnds); got != 1 {
+		t.Fatalf("announcements waiting for the envelope = %d, want 1", got)
+	}
+	if hooks := transcriptHookTurns(t, path); len(hooks) != 1 {
+		t.Fatalf("HOOK_COMPLETED entries after the flush = %d, want 1", len(hooks))
+	}
+
+	// A flush that fails announces nothing, then or later.
+	failing := &Session{id: "hook-held-failing", events: make(chan events.SessionEvent, 8)}
+	failing.emitHookCompleted(events.HookEndData{Event: "SessionStart", HookType: "command", PluginName: "hook-turn-plugin"})
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	failingWriter, err := transcript.NewWriterWithFS(fs, "/held.jsonl", transcript.Header{SessionID: failing.id})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = failingWriter.Close() })
+	fs.fail = true
+	failing.attachTranscript(failingWriter)
+	if got := len(failing.pendingHookEnds); got != 0 {
+		t.Fatalf("announcements after a failed flush = %d, want 0: the entry is not in the transcript", got)
+	}
+	if got := len(failing.pendingTranscriptWarnings); got != 1 {
+		t.Fatalf("warnings after a failed flush = %d, want the failure reported", got)
+	}
+}

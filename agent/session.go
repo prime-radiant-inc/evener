@@ -833,6 +833,17 @@ type Session struct {
 	// and its turns are dropped rather than accumulated. Guarded by s.mu.
 	transcriptReady        bool
 	pendingTranscriptTurns []schema.Turn
+	// pendingTranscriptAnnouncements pairs, index for index, with
+	// pendingTranscriptTurns: the live announcement each held turn owes once it
+	// reaches the writer, or nil for a turn that announces nothing. A hook
+	// completing before the writer exists has its entry queued rather than
+	// written, so announcing it there would put the event ahead of the entry —
+	// the one ordering emitHookCompleted exists to keep. Guarded by mu.
+	pendingTranscriptAnnouncements []*events.HookEndData
+	// pendingHookEnds holds those announcements between the flush that made
+	// them durable and the SESSION_START envelope that releases them, so a
+	// hook exit never reaches the stream before the session does.
+	pendingHookEnds []events.HookEndData
 
 	// restoredTranscript holds the decoded transcript a RESUME read while
 	// validating the session it was asked to restore: the header (with its
@@ -2006,10 +2017,20 @@ func (s *Session) writeTranscript(t schema.Turn) error {
 // other writer's entry can interleave between the publish and the fold's
 // compaction markers.
 func (s *Session) writeTranscriptLocked(t schema.Turn) error {
-	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
+	_, err := s.writeTranscriptLockedAnnouncing(t, nil)
+	return err
+}
+
+// writeTranscriptLockedAnnouncing is writeTranscriptLocked for a caller that
+// publishes a live event of its own once the entry is durable. It reports
+// whether the turn was HELD for a writer that does not exist yet: such a
+// caller must not announce now, and the flush at attachTranscript announces
+// for it — or, if that flush fails, nobody does.
+func (s *Session) writeTranscriptLockedAnnouncing(t schema.Turn, announce *events.HookEndData) (held bool, err error) {
+	if s.holdTurnUntilTranscriptReadyAnnouncing(t, announce) {
+		return true, nil
 	}
-	return s.attachedTranscript().Append(t)
+	return false, s.attachedTranscript().Append(t)
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
@@ -2045,12 +2066,21 @@ func (s *Session) closeAttachedTranscript() error {
 // not yet reached attachTranscript. The caller snapshots the attached writer
 // under the same session lock after this readiness check.
 func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
+	return s.holdTurnUntilTranscriptReadyAnnouncing(t, nil)
+}
+
+// holdTurnUntilTranscriptReadyAnnouncing is holdTurnUntilTranscriptReady for a
+// turn that owes a live announcement: the two are queued together, so the flush
+// that makes the entry durable is what releases the announcement, and a turn
+// whose flush fails releases none.
+func (s *Session) holdTurnUntilTranscriptReadyAnnouncing(t schema.Turn, announce *events.HookEndData) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.transcriptReady {
 		return false
 	}
 	s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, t)
+	s.pendingTranscriptAnnouncements = append(s.pendingTranscriptAnnouncements, announce)
 	return true
 }
 
@@ -2065,15 +2095,24 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.transcript = w
 	s.transcriptReady = true
 	held := s.pendingTranscriptTurns
+	announcements := s.pendingTranscriptAnnouncements
 	s.pendingTranscriptTurns = nil
+	s.pendingTranscriptAnnouncements = nil
 	s.mu.Unlock()
-	for _, t := range held {
+	for i, t := range held {
 		if err := w.Append(t); err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
 			// create-failed warning above it in the buffer's doc comment.
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			continue
+		}
+		// The entry is durable now, so what it owes can be said. Buffered like
+		// the warnings above rather than emitted here: SESSION_START has not
+		// fired yet, and a hook exit must not precede it.
+		if i < len(announcements) && announcements[i] != nil {
+			s.pendingHookEnds = append(s.pendingHookEnds, *announcements[i])
 		}
 	}
 }
