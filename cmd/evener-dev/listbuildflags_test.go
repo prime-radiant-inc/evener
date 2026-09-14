@@ -240,12 +240,10 @@ func TestEveryBuildFlagIsAccountedFor(t *testing.T) {
 		"-tags": true, "-overlay": true, "-mod": true, "-modfile": true,
 		"-compiler": true, "-race": true, "-msan": true, "-asan": true,
 	}
-	consumed := func(name string) bool {
-		// Exactly the predicate walkFlags uses, and nothing beside it: a
-		// second term here would let a flag be "accounted for" in this test
-		// while the walk still read the word after it as a flag of its own.
-		return valueIsNextArgument(name)
-	}
+	// Exactly the predicate walkFlags uses, and nothing beside it: a second
+	// term here would let a flag count as accounted for in this test while the
+	// walk still read the word after it as a flag of its own.
+	consumed := valueIsNextArgument
 	forwarded := func(name string) bool {
 		return packageSelectionValueFlags[name] || packageSelectionBareFlags[name]
 	}
