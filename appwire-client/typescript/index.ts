@@ -16,6 +16,7 @@ export type {
 } from "./activityData";
 export {
   activityDelegateBranch,
+  activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
   delegateHasActiveWork,

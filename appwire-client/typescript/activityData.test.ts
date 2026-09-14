@@ -2,7 +2,10 @@
 import { describe, expect, it } from "vitest";
 import {
   type ActivityBranchState,
+  type ActivityDelegate,
+  type ActivitySessionNode,
   type ActivityTree,
+  activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
   delegateHasActiveWork,
@@ -75,6 +78,7 @@ const VALID_TREE_WIRE = {
     label: "Root session",
     aggregate: "running",
     counts: { active: 2, failed: 1, completed: 3, complete: false },
+    diagnostics: ["delegate_journal_torn_tail: ignored unterminated trailing batch"],
     entries: [
       {
         kind: "shell",
@@ -122,6 +126,7 @@ const VALID_TREE_WIRE = {
             label: "Child session",
             aggregate: "running",
             counts: { active: 1, failed: 0, completed: 1, complete: false },
+            diagnostics: ['continuation path limit reached; request session "sess_child" directly'],
             entries: [
               {
                 kind: "shell",
@@ -486,7 +491,11 @@ describe("parseActivityTree", () => {
     const truncated = getDelegateEntry(tree, 1, 3);
 
     expect(tree?.revision).toBe(7);
+    expect(tree?.root.diagnostics).toEqual(["delegate_journal_torn_tail: ignored unterminated trailing batch"]);
     expect(rootDelegate?.delegate.delegateId).toBe("dlg_1");
+    expect(rootDelegate?.delegate.child?.diagnostics).toEqual([
+      'continuation path limit reached; request session "sess_child" directly',
+    ]);
     expect(rootDelegate?.delegate.status).toBe("queuedForRetry");
     expect(rootDelegate?.delegate.projectionRevision).toBe(2);
     expect(getDelegateEntry(tree, 1, 1)?.kind).toBe("delegate");
@@ -612,6 +621,49 @@ describe("activityNodeID", () => {
     expect(activityNodeID({ kind: "session", sessionId: "root" })).toBe("session:root");
     expect(activityNodeID({ kind: "delegate", delegateId: "dlg_1" })).toBe("delegate:dlg_1");
     expect(activityNodeID({ kind: "shell", jobId: "job_1" })).toBe("job:job_1");
+  });
+});
+
+describe("activityDelegateDiagnostics", () => {
+  const childSession = (diagnostics?: string[]): ActivitySessionNode => ({
+    kind: "session",
+    sessionId: "sess_child",
+    ref: "ref_child",
+    label: "Child",
+    aggregate: "running",
+    counts: { active: 0, failed: 0, completed: 0, complete: false },
+    entries: [],
+    branch: { truncated: true },
+    ...(diagnostics ? { diagnostics } : {}),
+  });
+  const delegateWith = (own?: string[], child?: ActivitySessionNode): ActivityDelegate => ({
+    delegateId: "dlg_1",
+    childSessionId: "sess_child",
+    childRef: "ref_child",
+    branch: {},
+    ...(own ? { diagnostics: own } : {}),
+    ...(child ? { child } : {}),
+  });
+  const pathLimit = 'continuation path limit reached; request session "sess_child" directly';
+
+  it("reads the delegate's own diagnostics first, then its rendered child session's", () => {
+    expect(
+      activityDelegateDiagnostics(delegateWith(["delegate terminal metadata is invalid"], childSession([pathLimit]))),
+    ).toEqual(["delegate terminal metadata is invalid", pathLimit]);
+  });
+
+  it("surfaces a child session's diagnostics when the delegate itself has none", () => {
+    expect(activityDelegateDiagnostics(delegateWith(undefined, childSession([pathLimit])))).toEqual([pathLimit]);
+  });
+
+  it("keeps a delegate's own diagnostics when no child was rendered", () => {
+    const depthLimit = 'depth limit reached; request session "sess_child" directly';
+    expect(activityDelegateDiagnostics(delegateWith([depthLimit]))).toEqual([depthLimit]);
+  });
+
+  it("says a repeated sentence once and reads as empty when neither side has one", () => {
+    expect(activityDelegateDiagnostics(delegateWith([pathLimit], childSession([pathLimit])))).toEqual([pathLimit]);
+    expect(activityDelegateDiagnostics(delegateWith(undefined, childSession()))).toEqual([]);
   });
 });
 

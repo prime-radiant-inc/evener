@@ -248,10 +248,14 @@ describe("ActivityTree", () => {
   // loaded at all. The continuation-path bound and a size trim inside the
   // child land on the child's branch instead, with the child rendered above
   // it — the same row, a different branch state.
-  function renderedChildTree(childBranch: Record<string, unknown>): ActivityTreeData {
+  function renderedChildTree(
+    childBranch: Record<string, unknown>,
+    childFields: Record<string, unknown> = {},
+  ): ActivityTreeData {
     const tree = depthTruncatedTree();
     const delegate = (tree.root.entries[0] as unknown as { delegate: Record<string, unknown> }).delegate;
     delegate.branch = {};
+    delegate.diagnostics = undefined;
     delegate.child = {
       kind: "session",
       sessionId: "sess_deep_child",
@@ -261,9 +265,29 @@ describe("ActivityTree", () => {
       counts: { active: 0, failed: 0, completed: 0, complete: false },
       entries: [],
       branch: childBranch,
+      ...childFields,
     };
     return tree;
   }
+
+  // The path bound and the journal conditions are the child session's to
+  // report (agent/jobs_activity.go stamps them on the session, not the
+  // delegate), and the delegate row is the only row that session has, so its
+  // detail strip is where the sentence has to appear.
+  test("a rendered child's session-level diagnostics show in the delegate's detail strip", () => {
+    const pathLimit = 'continuation path limit reached; request session "sess_deep_child" directly';
+    render(
+      <ActivityTree
+        tree={renderedChildTree({ truncated: true }, { diagnostics: [pathLimit] })}
+        expandedFoldIDs={[]}
+        onToggleFold={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(pathLimit)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open session" })).toBeTruthy();
+  });
 
   test("a rendered child truncated with no continuation offers to open that session", async () => {
     const user = userEvent.setup();

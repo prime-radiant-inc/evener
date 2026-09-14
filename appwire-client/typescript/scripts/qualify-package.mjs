@@ -82,6 +82,7 @@ async function qualify() {
     "parseActivityTree",
     "activityNodeID",
     "activityDelegateBranch",
+    "activityDelegateDiagnostics",
     "delegateHasActiveWork",
     "defaultExpandedIDs",
     "reconcileActivityState",
