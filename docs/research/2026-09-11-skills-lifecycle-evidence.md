@@ -1384,3 +1384,126 @@ correct.
   (`agent/skill_reload_selection.go:90`). Every current caller only reads, so
   there is no live bug; a future mutating caller would corrupt the live
   snapshot.
+
+## Follow-up PR: the post-merge findings (2026-09-14)
+
+Jesse's ruling at merge time was "squash merge it now, then follow up all the
+followups in a new PR right now". This section records that PR: every item from
+roborev jobs 10305 and 10460 that was still open, plus one declined item, on a
+branch cut from the merged main (`c09997369`).
+
+### Medium — delivery notification and obligation could diverge after a failed save
+
+`prepareSkillDelivery` records its typed notification turn through the durable
+transcript door before it finalizes or identity-corrects the matching obligation
+in the snapshot. A failed metadata save therefore left a snapshot staler than
+the transcript, and a restart re-processed the same missing or changed skill and
+appended the same notification again.
+
+`reconcileSkillDeliveryNotifications` (in `agent/transcript_read.go`, called from
+the existing receipt reconciliation at restore) now applies the durable
+outcomes to the snapshot's pending obligations: a `failed` outcome finalizes its
+obligation — the recorded explanation turn IS that delivery — and a `delivered`
+outcome adopts the corrected identity the turn carries. Outcomes from another
+session are ignored, and the last outcome per invocation identity wins, because
+the transcript is chronological.
+
+`TestSkillDelivery_SaveFailureNotificationReconciledAtRestore` covers both
+halves; reverting the reconciliation call fails it with "reconciled obligations
+= [...] want none: the durable failure notification already finalized it" and,
+on its second subtest, "changed identity corrected".
+
+### Medium — authoritative queue rows dropped skill visibility
+
+The daemon's own queue row rendered `queuedEntryPreviewLine` verbatim — text
+alone when present, a generic `[skill]`/`[N skills]` otherwise — while pending
+and durable rows named the selection from the entry's own canonical names. A
+text-plus-skills entry therefore lost its skill indication the moment the
+authoritative row replaced the pending one, and a skill-only entry flickered
+from named to generic.
+
+`QueueStrip`'s daemon-row branch now appends `skillMarkers(queue.skillNames[index])`
+after the truncated preview, and `skillMarkers` moved to the shared
+`queue/queueDisplay.ts` so the queue rows, the durable rows and `PendingChips`
+render a selection through ONE definition. `PendingChips` uses it too, so an
+in-flight skill-only submission finally shows `[skill: name]` instead of a bare
+"Sending"/"Steering"/"Draining".
+
+The pins are `QueueStrip.test.tsx`'s "an authoritative row appends its skill
+markers to the daemon's preview text" and "a skill-only authoritative row shows
+its named marker rather than staying generic" (2 failures under the reverted row
+composition) and `PendingChips.test.tsx`'s two marker tests (2 failures under
+the reverted chip body).
+
+### The four remaining Lows
+
+- **Cancellation receipts accumulated without bound.** Every
+  `cancelSkillCompaction` appended an identity-less `cancelled` receipt that
+  `removeSkillCompactionHandoffsLocked` (publication-ID-keyed) could never
+  remove, so `PendingHandoffs` — persisted and cloned on every autosave — and
+  the per-request scan grew by one per cancellation for the session's life.
+  `retireSkillCompactionCancellationsLocked` now retires them, called from the
+  per-request reload scan; a failed retirement save only warns and leaves them
+  for the next request. Reverting the call fails
+  `TestSkillCompaction_CancellationReceiptsAreRetired` with three accumulated
+  records where none may remain.
+- **A transient admission-save failure duplicated reload notifications.**
+  Retrying after such a failure re-derived the same deterministic
+  `publication:name` invocation and appended the same notice again.
+  `skillReloadOutcomeRecorded` now reports whether live history already carries
+  an outcome for that invocation, and all three notice sites (reload failure,
+  reuse, `context_budget`) record only when it does not.
+  `TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure` and
+  `…ReuseNoticeNotReappendedAfterSaveFailure` both fail with "notices after the
+  retry = 2, want 1" when the guard is forced to false. This **removes a
+  residual disclosed in round six/seven** ("a retried batch can re-append an
+  outcome-only notice"), which roborev is the independent evidence for fixing;
+  no existing assertion was weakened, and the disclosure above is superseded by
+  this note.
+- **Plugin manifest diagnostics were discarded in past-thread discovery.**
+  `discoverPastThreadSkills` dropped `plugin.SkillSources`' diagnostics while
+  converting the catalog's. Both now convert through one
+  `pastThreadSkillDiagnostic` helper, plugin diagnostics first, matching session
+  startup's ordering. Reverting the loop fails
+  `TestDiscoverPastThreadSkillsCarriesPluginDiagnostics` with "plugin collision
+  diagnostic dropped: []".
+- **`skillInventorySnapshot` returned a shallow clone sharing live pointers.**
+  The deep copy moved into `schema.CloneSkillInventory`, now the single
+  implementation used by `SkillLifecycleSnapshot.Clone` and by the non-lifecycle
+  accessor, so a mutating caller can never reach the live snapshot. Reverting
+  the accessor to `maps.Clone` fails
+  `TestSkillInventorySnapshotDeepCopiesEntries` with "snapshot aliases the live
+  lifecycle inventory".
+- **`cloneDescriptor` did not clone `FrozenSkillMetadata`**, leaving the clone's
+  slice header aliased to the store's. Fixed alongside the other slices.
+  Reverting it fails `TestApplyAndFoldCloneCreatedDescriptor/frozen_skill_metadata`
+  with the mutated description visible in the accepted state.
+
+### Declined: `InputItem.UnmarshalJSON` strictness (not fixed, deliberately)
+
+Roborev's remaining item asked that a skill item's struct-field validation
+accept structurally-empty extra keys, since `NormalizeMutationInput` accepts
+Go-constructed items whose `Text`/`URL`/`Data`/`Path`/`Metadata` are empty while
+`UnmarshalJSON` rejects the corresponding raw keys.
+
+This is declined on evidence rather than convenience:
+
+- The wire contract is documented and pinned:
+  `docs/skills.md` lists `{"type":"skill","name":"plugin:release-notes","text":""}`
+  among the REJECTED forms, and `TestSkillInputRejectsRawPathAndBody` pins the
+  same three structurally-empty bodies (`path`, `text`, and a non-empty `body`).
+  Implementing the finding would mean weakening a documented, tested security
+  contract — exactly the re-pin the rules require independent evidence for, and
+  the independent evidence points the other way.
+- The strictness is the point: `UnmarshalJSON` cannot see fields the `InputItem`
+  struct never names, so `{"type":"skill","name":"x","path":"/etc/passwd"}` would
+  otherwise decode as canonical and silently drop the smuggled path. A
+  zero-value check would have to enumerate the raw keys anyway to reject unknown
+  ones; the canonical-only rule is simpler and is what the docs promise.
+- The asymmetry is deliberate and already documented on both sides: the wire is
+  untrusted, Go callers are not. No client emits extra keys —
+  `appwire-client/typescript/composerInput.ts` builds exactly
+  `{type: "skill", name}`.
+
+The lane that hit this refused to re-pin the assertion and reported the exact
+conflict instead, which is why the original files remain byte-identical.
