@@ -23,6 +23,8 @@ type State string
 const (
 	StateDisconnected State = "disconnected"
 	StatePreflighting State = "preflighting"
+	StateDeploying    State = "deploying"
+	StateRestarting   State = "restarting"
 	StateAttaching    State = "attaching"
 	StateAttached     State = "attached"
 	StateReconnecting State = "reconnecting"
@@ -80,10 +82,21 @@ type Options struct {
 	// OnEvent, when set, is called synchronously for every lifecycle event.
 	OnEvent func(Event)
 
+	// BuildBinary cross-compiles the controller's own tree for goos/goarch into
+	// the absolute path out, stamping the same buildinfo ldflags this process
+	// carries. nil uses the production localBuild (a real `go build`); tests
+	// inject a fake so no build runs.
+	BuildBinary func(ctx context.Context, goos, goarch, out string) error
+
+	// HubAddr is the host hub's loopback listen address, used by the restart
+	// path to find the old pid and probe /api/health. Default 127.0.0.1:9180.
+	HubAddr string
+
 	// Test seams.
-	sleep             func(context.Context, time.Duration) error
-	jitter            func(time.Duration) time.Duration
-	initializeTimeout time.Duration
+	sleep                     func(context.Context, time.Duration) error
+	jitter                    func(time.Duration) time.Duration
+	initializeTimeout         time.Duration
+	controllerVersionOverride string
 }
 
 func (o Options) runner() Runner {
@@ -110,6 +123,16 @@ func (o Options) clientName() string {
 func (o Options) clientVersion() string {
 	if o.ClientVersion != "" {
 		return o.ClientVersion
+	}
+	return buildinfo.Version()
+}
+
+// controllerVersion is the build the controller expects the host to run: the
+// in-process buildinfo.Version() unless a test overrides it. Version auto-match
+// compares this with the host's launch-check version.
+func (o Options) controllerVersion() string {
+	if o.controllerVersionOverride != "" {
+		return o.controllerVersionOverride
 	}
 	return buildinfo.Version()
 }
@@ -243,12 +266,24 @@ func (m *Manager) Close() error {
 }
 
 // ensureOnce runs one full preflight-then-attach sequence with the state
-// transitions around it.
+// transitions around it. When the host's evener build differs from the
+// controller's it deploys the matching build and restarts the host hub before
+// attaching.
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, error) {
 	m.stateEvent(host.Name, StatePreflighting)
 	facts, err := m.preflight(ctx, host)
 	if err != nil {
 		return nil, err
+	}
+	if facts.Version != m.opts.controllerVersion() {
+		m.stateEvent(host.Name, StateDeploying)
+		if err := m.deploy(ctx, host, facts); err != nil {
+			return nil, err
+		}
+		m.stateEvent(host.Name, StateRestarting)
+		if err := m.restartHub(ctx, host, facts); err != nil {
+			return nil, err
+		}
 	}
 	m.stateEvent(host.Name, StateAttaching)
 	return m.attach(ctx, host, facts)

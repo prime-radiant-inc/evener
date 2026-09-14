@@ -37,4 +37,14 @@ var (
 	// environment probe) that could not be parsed. Treated as an incompatible
 	// host: terminal.
 	ErrPreflightDecode = errors.New("sshconn: preflight output unparseable")
+
+	// ErrDeploy marks a failed cross-compile, push, or deploy-target
+	// resolution. The existing host binary is left untouched: the push writes a
+	// temp name and mv's it into place, so an interrupted deploy never leaves a
+	// truncated evener.
+	ErrDeploy = errors.New("sshconn: deploy failed")
+
+	// ErrRestart marks a failed hub restart. The manager stays disconnected and
+	// the next Ensure retries; a hub that fails to start leaves hub.lock free.
+	ErrRestart = errors.New("sshconn: hub restart failed")
 )
