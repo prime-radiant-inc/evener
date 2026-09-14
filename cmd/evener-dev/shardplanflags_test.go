@@ -3,6 +3,7 @@ package dev
 import (
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -77,4 +78,37 @@ func documentedFlags(t *testing.T, page string) []string {
 		t.Fatalf("go help %s listed no flags; the parser is broken, not the toolchain", page)
 	}
 	return names
+}
+
+// TestEveryFlagIsInExactlyOneTable closes the other half of the
+// classification: a name in two tables is read by whichever branch runs first,
+// which is a decision nobody made. -vet was in the build table and the refused
+// table at once, and the reorder that put the test side first turned a build
+// flag into a refusal.
+func TestEveryFlagIsInExactlyOneTable(t *testing.T) {
+	t.Parallel()
+	tables := []struct {
+		name  string
+		flags map[string]bool
+	}{
+		{"buildValueFlags", buildValueFlags},
+		{"buildBareFlags", buildBareFlags},
+		{"testForwardValueFlags", testForwardValueFlags},
+		{"testForwardBareFlags", testForwardBareFlags},
+		{"testRefusedValueFlags", testRefusedValueFlags},
+		{"testRefusedBareFlags", testRefusedBareFlags},
+	}
+	where := map[string][]string{}
+	for _, table := range tables {
+		for name := range table.flags {
+			where[name] = append(where[name], table.name)
+		}
+	}
+	for name, tableNames := range where {
+		if len(tableNames) > 1 {
+			sort.Strings(tableNames)
+			t.Errorf("%s is in %s: one of them decides what happens to it, and which one is an accident of the order the branches are written in",
+				name, strings.Join(tableNames, " and "))
+		}
+	}
 }

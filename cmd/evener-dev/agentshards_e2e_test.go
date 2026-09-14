@@ -451,12 +451,11 @@ func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestAgentShardsSkipOnlyReachesTheSurvey pins how far AGENT_SHARD_SKIP
-// actually reaches. The script only ever appended -test.skip to the survey
-// pass, and this port keeps that: skipping works by leaving a test out of the
-// cost table, so a run that does not survey does not skip. Fixing the wart —
-// threading the regex into the shard invocations and into the cache key —
-// means changing this pin with it.
+// TestAgentShardsSkipReachesTheShardsToo pins AGENT_SHARD_SKIP's contract:
+// the regex reaches the survey and every shard, so the test it names does not
+// run on either path. The survey alone was not enough -- a cached survey means
+// no survey runs, and the shards were then given the very test the operator
+// had asked to skip.
 func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
 

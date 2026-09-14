@@ -223,7 +223,9 @@ var testForwardValueFlags = map[string]bool{
 
 // testForwardBareFlags are the same, without a value of their own.
 var testForwardBareFlags = map[string]bool{
-	"-failfast": true, "-short": true, "-v": true,
+	// -fullpath changes how the binary prints file names in failures, which
+	// is the same thing in one shard as in all of them.
+	"-failfast": true, "-fullpath": true, "-short": true, "-v": true,
 }
 
 // testRefusedValueFlags take a value and are refused: consuming the pair first
@@ -242,7 +244,7 @@ var testRefusedValueFlags = map[string]bool{
 // testRefusedBareFlags stand alone and are refused for the same reasons.
 var testRefusedBareFlags = map[string]bool{
 	"-artifacts": true, "-benchmem": true, "-c": true, "-cover": true,
-	"-fullpath": true, "-json": true,
+	"-json": true,
 	// -n prints the commands instead of running them, so the build it
 	// describes never produces the binary the shards are handed.
 	"-n": true,
@@ -551,8 +553,10 @@ func checkGoflags(goflags string) error {
 // rename, or remove a test and the key changes; otherwise every run reuses the
 // cached survey and pays nothing.
 //
-// The key holds the test list, the classified build flags, short mode and
-// GOFLAGS: the things that decide what was measured. -timeout and the other
+// The key holds the test list, the classified build flags, short mode,
+// GOFLAGS and the skip: the things that decide what was measured. The skip is
+// there because a survey taken without it measured the skipped test too, and
+// its cost then lands in a shard that will not run it. -timeout and the other
 // forwarded test flags are not in it, because they bound or order a run
 // without changing what it costs -- a survey is as valid under a 20m timeout
 // as under 10m, and keying on one would throw away a measurement that still
@@ -566,13 +570,14 @@ func checkGoflags(goflags string) error {
 // step further out: it reaches the build without appearing in anyone's
 // argument list, so `GOFLAGS=-race make test` would otherwise read a survey
 // measured without it.
-func testSetKey(listOutput string, parsed parsedFlags, goflags string) string {
+func testSetKey(listOutput string, parsed parsedFlags, goflags, skip string) string {
 	lines := strings.Split(strings.TrimRight(listOutput, "\n"), "\n")
 	sort.Strings(lines)
 	payload := strings.Join(lines, "\n") + "\n" +
 		"build\x00" + strings.Join(parsed.build, "\x00") + "\n" +
 		"short\x00" + strconv.FormatBool(parsed.short) + "\n" +
-		"goflags\x00" + goflags + "\n"
+		"goflags\x00" + goflags + "\n" +
+		"skip\x00" + skip + "\n"
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])[:16]
 }

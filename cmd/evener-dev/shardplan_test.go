@@ -238,10 +238,10 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.short", "-test.count=2", "-test.v", "-test.timeout=30s"},
 		},
 		{
-			name:  "the three the shards can honour that used to be dropped",
-			flags: []string{"-timeout", "5m", "-shuffle", "on", "-failfast"},
+			name:  "the ones the shards can honour that used to be dropped",
+			flags: []string{"-timeout", "5m", "-shuffle", "on", "-failfast", "-fullpath"},
 			build: nil,
-			test:  []string{"-test.timeout=5m", "-test.shuffle=on", "-test.failfast"},
+			test:  []string{"-test.timeout=5m", "-test.shuffle=on", "-test.failfast", "-test.fullpath"},
 		},
 		{
 			// The value is consumed as a value, and then read: a caller who
@@ -458,27 +458,33 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 }
 
 func TestTestSetKeyIsOrderInsensitiveAndStable(t *testing.T) {
-	a := testSetKey("TestB\nTestA\n", parsedFlags{}, "")
-	b := testSetKey("TestA\nTestB\n", parsedFlags{}, "")
+	a := testSetKey("TestB\nTestA\n", parsedFlags{}, "", "")
+	b := testSetKey("TestA\nTestB\n", parsedFlags{}, "", "")
 	if a != b {
 		t.Fatalf("testSetKey is order sensitive: %q vs %q", a, b)
 	}
-	if c := testSetKey("TestA\nTestC\n", parsedFlags{}, ""); c == a {
+	if c := testSetKey("TestA\nTestC\n", parsedFlags{}, "", ""); c == a {
 		t.Fatalf("testSetKey did not change with the test set: %q", c)
 	}
 	// The survey measures costs, and the build is what the costs are of.
-	race := testSetKey("TestA\nTestB\n", parsedFlags{build: []string{"-race"}}, "")
+	race := testSetKey("TestA\nTestB\n", parsedFlags{build: []string{"-race"}}, "", "")
 	if race == a {
 		t.Fatalf("a -race survey shares the plain build's key: %q", race)
 	}
-	short := testSetKey("TestA\nTestB\n", parsedFlags{short: true}, "")
+	short := testSetKey("TestA\nTestB\n", parsedFlags{short: true}, "", "")
 	if short == a || short == race {
 		t.Fatalf("a short-mode survey shares another key: %q", short)
 	}
 	// GOFLAGS reaches the build without passing through any argument list.
-	goflags := testSetKey("TestA\nTestB\n", parsedFlags{}, "-race")
+	goflags := testSetKey("TestA\nTestB\n", parsedFlags{}, "-race", "")
 	if goflags == a || goflags == race || goflags == short {
 		t.Fatalf("a survey under GOFLAGS shares another key: %q", goflags)
+	}
+	// A survey taken without the skip measured the skipped test as well, and
+	// its cost would land in a shard that will not run it.
+	skipped := testSetKey("TestA\nTestB\n", parsedFlags{}, "", "^TestA$")
+	if skipped == a || skipped == goflags {
+		t.Fatalf("a survey under a skip shares another key: %q", skipped)
 	}
 }
 
