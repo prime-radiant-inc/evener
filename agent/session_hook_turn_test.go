@@ -855,3 +855,37 @@ func TestHookCompletionRetainedByAFailedWriteIsStillAnnounced(t *testing.T) {
 		t.Fatalf("history turns = %d, want the completion the transcript holds", got)
 	}
 }
+
+// The same rule, reached by the other door. A completion queued before the
+// writer existed is written by attachTranscript's flush, and a flush whose
+// entry is RETAINED by a failed write leaves that entry in the file just as
+// the direct path's does — so the turn is owed its place in history and its
+// announcement there too. Deciding that twice is how the two paths came to
+// disagree in the first place.
+func TestHeldHookCompletionRetainedByAFailedFlushIsStillAnnounced(t *testing.T) {
+	t.Parallel()
+	s := &Session{id: "retained-held", events: make(chan events.SessionEvent, 8)}
+	s.emitHookCompleted(events.HookEndData{Event: "SessionStart", HookType: "command", PluginName: "hook-turn-plugin"})
+	if got := len(s.pendingTranscriptTurns); got != 1 {
+		t.Fatalf("queued entries = %d, want the hook completion held for the writer", got)
+	}
+
+	fs := &retainEntryFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/retained-held.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	fs.armed.Store(true)
+	s.attachTranscript(writer)
+
+	if got := len(s.pendingHookEnds); got != 1 {
+		t.Fatalf("announcements waiting for the envelope = %d, want 1: the transcript holds the retained entry", got)
+	}
+	if got := len(s.history); got != 1 {
+		t.Fatalf("history turns after the retained flush = %d, want the completion the transcript holds", got)
+	}
+	if got := len(s.pendingTranscriptWarnings); got != 1 {
+		t.Fatalf("warnings after the retained flush = %d, want the failure reported once", got)
+	}
+}

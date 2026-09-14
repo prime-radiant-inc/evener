@@ -2025,33 +2025,47 @@ func (s *Session) writeTranscriptLocked(t schema.Turn) error {
 // The entry is fsynced rather than buffered: its event goes out the moment the
 // write returns, so a crash inside the sync interval would leave a client
 // holding an announcement the transcript never kept.
-func (s *Session) recordHookCompletion(turn schema.Turn, data events.HookEndData) (held bool, err error) {
+func (s *Session) recordHookCompletion(turn schema.Turn, data events.HookEndData) (held, recorded bool, err error) {
 	commit := func() {
 		s.mu.Lock()
 		s.history = append(s.history, turn)
 		s.logPairPersistedLocked(turn)
 		s.mu.Unlock()
 	}
+	pending := heldTranscriptTurn{turn: turn, announce: &data, durable: true, commit: commit}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if s.holdTurnUntilTranscriptReadyHeld(heldTranscriptTurn{turn: turn, announce: &data, durable: true, commit: commit}) {
-		return true, nil
+	if s.holdTurnUntilTranscriptReadyHeld(pending) {
+		return true, false, nil
 	}
-	if err := s.attachedTranscript().AppendDurable(turn); err != nil {
-		if !errors.Is(err, transcript.ErrEntryRetained) {
-			return false, err
-		}
-		// The write failed, but its entry is a record in the file — the whole
-		// line landed and the rollback could not take it back out. A returning
-		// reader will find this completion, so it is owed everything a clean
-		// write owes: its place in history, and the event that says it
-		// happened. The failure is still reported; it just no longer decides
-		// that the turn does not exist.
-		commit()
+	recorded, err = writeHeldTranscriptTurn(s.attachedTranscript(), pending)
+	return false, recorded, err
+}
+
+// writeHeldTranscriptTurn writes one turn that owes more than its entry and
+// answers the only question both writing paths — this one and
+// attachTranscript's flush of the turns queued before the writer existed —
+// have to ask: is the entry a record in the file. A clean write and a RETAINED
+// one are the same answer. A retained entry is one whose whole line landed and
+// whose rollback could not take it back out, so a returning reader will find
+// it, and it is owed everything a clean write owes: the in-memory half of its
+// pair, and the event that says it happened. Any other error leaves the turn
+// nowhere at all, which is the honest outcome for an entry no reader can get
+// back. The failure is still returned either way; it just no longer decides
+// whether the turn exists.
+func writeHeldTranscriptTurn(w *transcript.Writer, pending heldTranscriptTurn) (recorded bool, err error) {
+	write := w.Append
+	if pending.durable {
+		write = w.AppendDurable
+	}
+	err = write(pending.turn)
+	if err != nil && !errors.Is(err, transcript.ErrEntryRetained) {
 		return false, err
 	}
-	commit()
-	return false, nil
+	if pending.commit != nil {
+		pending.commit()
+	}
+	return true, err
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
@@ -2137,26 +2151,25 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
 	for _, pending := range held {
-		write := w.Append
-		if pending.durable {
-			write = w.AppendDurable
-		}
-		if err := write(pending.turn); err != nil {
+		// One rule for both writing paths: the entry decides, and a retained
+		// entry counts (writeHeldTranscriptTurn), which is also what commits
+		// the in-memory half of the turn's pair.
+		recorded, err := writeHeldTranscriptTurn(w, pending)
+		if err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
 			// create-failed warning above it in the buffer's doc comment.
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		}
+		if !recorded {
 			continue
 		}
 		// The entry is in the transcript now, so the rest of what this turn
-		// owes follows it: its place in model history, and then its
-		// announcement. The announcement is buffered like the warnings above
-		// rather than emitted here — SESSION_START has not fired yet, and a
-		// hook exit must not precede it.
-		if pending.commit != nil {
-			pending.commit()
-		}
+		// owes follows it: its place in model history (committed above), and
+		// then its announcement. The announcement is buffered like the
+		// warnings rather than emitted here — SESSION_START has not fired
+		// yet, and a hook exit must not precede it.
 		if pending.announce != nil {
 			s.pendingHookEnds = append(s.pendingHookEnds, *pending.announce)
 		}

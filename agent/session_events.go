@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -12,7 +11,6 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -350,20 +348,22 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	//
 	// This is THIS producer's discipline. Nothing yet requires every producer
 	// to write before announcing; issue #1150 carries that rule.
-	held, err := s.recordHookCompletion(turn, data)
+	held, recorded, err := s.recordHookCompletion(turn, data)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		if !errors.Is(err, transcript.ErrEntryRetained) {
-			return
-		}
-		// The entry is in the transcript despite the failure, so the
-		// announcement is owed: a reader that finds the record and was never
-		// told about it is the divergence this ordering exists to prevent,
-		// arrived at from the other side.
 	}
 	if held {
 		// Queued, not written: the entry is not durable yet, so the event that
 		// announces it waits for the flush that makes it so.
+		return
+	}
+	if !recorded {
+		// Nothing of the completion reached the transcript, so nothing
+		// announces it. A write that failed with its entry RETAINED is not
+		// that case: the record is there, and a reader that finds it and was
+		// never told about it is the divergence this ordering exists to
+		// prevent, arrived at from the other side. writeHeldTranscriptTurn
+		// draws that line once, for both writing paths.
 		return
 	}
 	s.emit(events.EventHookEnd, data)
