@@ -192,6 +192,39 @@ describe("mutations returning the updated instance list", () => {
     },
   );
 
+  test("concurrent refreshes for different instances merge instead of discarding", async () => {
+    const fake = connectFakeClient();
+    const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
+    const both = (instances: InstanceEntry[]): InstanceListResponse => ({
+      instances,
+      availableProviders: [],
+    });
+    const gates = new Map<string, (v: InstanceListResponse) => void>();
+    fake.on("evener/instance/refreshModels", (params: { name: string }) => {
+      return new Promise<InstanceListResponse>((resolve) => {
+        gates.set(params.name, resolve);
+      });
+    });
+    fake.on("evener/instance/list", () => both([ONE_INSTANCE, OTHER]));
+    await credentialsStore.getState().fetch();
+    const workRefresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+    const personalRefresh = credentialsStore.getState().refreshModels("personal");
+    await Promise.resolve();
+    // Personal's answer carries only personal's new row; work's answer
+    // carries only work's. Both must land — neither response may wipe
+    // the other's instance.
+    gates.get("personal")?.(both([{ ...OTHER, isDefault: true }]));
+    await personalRefresh;
+    gates.get("work")?.(both([{ ...ONE_INSTANCE, isDefault: true }]));
+    await workRefresh;
+    const names = credentialsStore
+      .getState()
+      .instances.map((i) => i.name)
+      .sort();
+    expect(names).toEqual(["personal", "work"]);
+  });
+
   test("a newer mutation wins when mutation responses arrive out of order", async () => {
     const fake = connectFakeClient();
     let finishOld!: (value: InstanceListResponse) => void;

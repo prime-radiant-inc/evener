@@ -111,6 +111,25 @@ function listState(resp: InstanceListResponse): ListState {
   };
 }
 
+// fallbackInstanceRow synthesizes the row a refresh answer names that the
+// store has never seen (a create racing the fetch, say): the name the caller
+// asked for, with the response's own provider descriptors. Only the models
+// come from the response row; identity fields default empty rather than
+// inventing a provider.
+function fallbackInstanceRow(name: string): InstanceEntry {
+  return {
+    name,
+    providerId: "",
+    protocol: "",
+    auth: "",
+    implicit: false,
+    isDefault: false,
+    activeSource: "",
+    hasStoredOAuth: false,
+    credentialRequired: false,
+  };
+}
+
 // emptyListState is the listing state before anything has been fetched, and
 // the state resetCredentialsStoreForTests returns to. A function, not a
 // shared literal: each caller gets its own arrays.
@@ -185,7 +204,27 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async refreshModels(name) {
     const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/refreshModels", { name }));
+    const version = ++requestVersion;
+    try {
+      const response = await client.request("evener/instance/refreshModels", { name });
+      // Per-instance merge, not the global last-writer-wins applyMutation
+      // above: two sheets may refresh different instances concurrently, and
+      // the earlier answer must not wipe the later one's rows. Only rows
+      // for THIS instance come from the response; every other row stays as
+      // the store holds it. A newer global listing (fetch, mutation) still
+      // wins outright by bumping requestVersion past this read.
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
+      const rows = new Map(response.instances.map((entry) => [entry.name, entry]));
+      rows.set(name, rows.get(name) ?? { ...fallbackInstanceRow(name), models: [] });
+      const current = credentialsStore.getState().instances;
+      const merged = current.map((entry) => rows.get(entry.name) ?? entry);
+      for (const entry of rows.values()) {
+        if (!current.some((existing) => existing.name === entry.name)) merged.push(entry);
+      }
+      credentialsStore.setState({ ...listState({ ...response, instances: merged }), loading: false, error: null });
+    } finally {
+      if (version === requestVersion) credentialsStore.setState({ loading: false });
+    }
   },
 
   async setApiKey(provider, value) {

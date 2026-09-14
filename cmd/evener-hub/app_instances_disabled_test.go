@@ -20,12 +20,8 @@ func TestInstances_SetModelDisabledShadowsImplicitInstance(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 	before, ok := f.ctl.reg.Get().Instance("anthropic")
-	if !ok || before.Implicit {
-		// Explicitness of the check matters: the test is vacuous if
-		// the fixture ever authors this instance.
-		if !ok {
-			t.Fatal("no implicit anthropic instance in fixture registry")
-		}
+	if !ok || !before.Implicit {
+		t.Fatalf("want an implicit anthropic instance, got ok=%v implicit=%v", ok, before.Implicit)
 	}
 	if err := f.ctl.SetModelDisabled(appwire.InstanceSetModelDisabledParams{Name: "anthropic", Model: "claude-opus-4-6", Disabled: true}); err != nil {
 		t.Fatalf("SetModelDisabled: %v", err)

@@ -1,11 +1,14 @@
 package hubcore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -164,9 +167,10 @@ func carryLive(old, r *registry.Registry) {
 // an instance changes its identity, and rows fetched from the old
 // transport must not publish into the new one. Display fields
 // (default, warnings, vars) do not affect where rows come from and
-// are not part of it. The credential length covers rotation without
-// secret bytes entering the identity string; same-length rotation is
-// the residual gap, accepted deliberately.
+// are not part of it. The fingerprint hashes the secret bytes
+// themselves (SHA-256, in-memory only), so even a same-length rotation
+// changes the identity; only the digest enters the identity string,
+// never the secrets.
 func instanceIdentity(r *registry.Registry, name string) string {
 	inst, ok := r.Instance(name)
 	if !ok {
@@ -177,27 +181,63 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	if res, err := r.ResolveInstance(name); err == nil {
 		endpoint = res.Transport.ModelsEndpoint
 		authprint = authFingerprint(res)
+		if res.Transport.Auth == registry.AuthOAuthOpenAICodex {
+			authprint += "\x00" + oauthAccountFingerprint(r.StateRoot(), name)
+		}
 	}
 	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
 }
 
 // authFingerprint hashes the resolved authentication material
-// non-reversibly (FNV-64a over shapes and lengths, never secret
-// bytes): a same-length key rotation, an OAuth account swap, or a
-// header change alters the fingerprint, so rows fetched under the old
-// credential never publish into the newly-credentialed instance.
+// non-reversibly (SHA-256 over the actual secret bytes and the stable
+// account-identity fields, never the lengths alone): a same-length key
+// rotation, an OAuth account swap, or a header change alters the
+// fingerprint, so rows fetched under the old credential never publish
+// into the newly-credentialed instance. The digest never leaves the
+// process — it lives only in identity strings compared in-memory — so a
+// strong hash of the value is safe where a length was not sufficient.
 func authFingerprint(res registry.Resolved) string {
-	h := fnv.New64a()
+	sum := sha256.New()
 	cred := res.Credential
-	_, _ = fmt.Fprintf(h, "%s\x01%d\x01", cred.Source, len(cred.Value))
-	_, _ = fmt.Fprintf(h, "%s\x01%s\x01", res.Transport.Auth, res.Transport.AuthHeader)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", cred.Source, cred.Value)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", res.Transport.Auth, res.Transport.AuthHeader)
 	for _, k := range slices.Sorted(maps.Keys(res.CredentialHeaders)) {
-		_, _ = fmt.Fprintf(h, "%s\x01%d\x01", k, len(res.CredentialHeaders[k]))
+		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", k, res.CredentialHeaders[k])
 	}
 	for _, k := range slices.Sorted(maps.Keys(res.Headers)) {
-		_, _ = fmt.Fprintf(h, "%s\x01%d\x01", k, len(res.Headers[k]))
+		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", k, res.Headers[k])
 	}
-	return strconv.FormatUint(h.Sum64(), 16)
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+// oauthAccountFingerprint folds the Codex OAuth record's stable
+// account-identity claims (email, account and workspace ids) into the
+// fingerprint: swapping the signed-in account behind an unchanged record
+// filename must change the identity even though the credential source
+// label ("oauth") and the transport stay the same. Tokens are
+// deliberately excluded — a refresh rotates them without changing whose
+// account the listing belongs to, and the secret bytes are already
+// covered by authFingerprint's value hash. A missing or unreadable
+// record contributes nothing: the source label in the identity already
+// distinguishes "no record" from "record".
+func oauthAccountFingerprint(stateRoot, instance string) string {
+	raw, err := os.ReadFile(filepath.Join(stateRoot, "auth", filepath.Base(instance)+".json"))
+	if err != nil {
+		return ""
+	}
+	var rec struct {
+		Email       string `json:"email"`
+		AccountID   string `json:"account_id"`
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return ""
+	}
+	if rec.Email == "" && rec.AccountID == "" && rec.WorkspaceID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{rec.Email, rec.AccountID, rec.WorkspaceID}, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 // Get returns the registry currently held; nil before the first successful load.

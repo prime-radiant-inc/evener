@@ -101,6 +101,89 @@ func TestInstanceIdentityChangesOnCredentialRotation(t *testing.T) {
 	}
 }
 
+func TestInstanceIdentityChangesOnSameLengthRotation(t *testing.T) {
+	// A same-length rotation changes no shape or length the old
+	// fingerprint hashed: only the secret bytes differ. The identity
+	// must still change, or rows fetched under the old secret publish
+	// into the newly-credentialed instance.
+	mkRegistry := func(t *testing.T, key string) *registry.Registry {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "providers.toml")
+		cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key_env = [\"ROT_KEY\"]\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := registry.Load(
+			registry.WithConfigPath(path),
+			registry.WithEnv(func(k string) (string, bool) {
+				if k == "ROT_KEY" {
+					return key, true
+				}
+				return "", false
+			}),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	r1 := mkRegistry(t, "sk-aaaa")
+	r2 := mkRegistry(t, "sk-bbbb")
+	if instanceIdentity(r1, "gw") == instanceIdentity(r2, "gw") {
+		t.Fatal("identity unchanged across same-length credential rotation")
+	}
+}
+
+func TestInstanceIdentityChangesOnOAuthAccountSwap(t *testing.T) {
+	// Swapping the signed-in account behind the same record filename
+	// changes no source label or transport: only the record's account
+	// claims differ. The identity must still change, or rows fetched
+	// for account A publish onto the instance now signed in as B.
+	// (A token refresh alone — same claims, new tokens — must NOT
+	// change it: the fingerprint reads only the stable claims.)
+	mkRegistry := func(t *testing.T, account, token string) *registry.Registry {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "providers.toml")
+		cfg := "[providers.codex]\nbase = \"openai-codex\"\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		state := t.TempDir()
+		rec := `{"version":1,"provider":"openai-codex","source":"oauth","obtained_at":"2026-01-01T00:00:00Z","token_type":"Bearer","access_token":"` + token + `","refresh_token":"ref","expiry":"2027-01-01T00:00:00Z","email":"a@example.com","account_id":"` + account + `"}`
+		if err := os.MkdirAll(filepath.Join(state, "auth"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(state, "auth", "codex.json"), []byte(rec), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := registry.Load(
+			registry.WithConfigPath(path),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithStateRoot(state),
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	r1 := mkRegistry(t, "acct_A", "tok-1")
+	r2 := mkRegistry(t, "acct_B", "tok-2")
+	if instanceIdentity(r1, "codex") == instanceIdentity(r2, "codex") {
+		t.Fatal("identity unchanged across OAuth account swap")
+	}
+	r3 := mkRegistry(t, "acct_A", "tok-rotated")
+	if instanceIdentity(r1, "codex") != instanceIdentity(r3, "codex") {
+		t.Fatal("identity changed on token refresh alone; only stable account claims may feed it")
+	}
+}
+
 func TestReloadPrunesLastGoodLiveForRemovedInstances(t *testing.T) {
 	// A removed instance's snapshot must not linger: if the name
 	// returns later with a matching identity, the old rows must not

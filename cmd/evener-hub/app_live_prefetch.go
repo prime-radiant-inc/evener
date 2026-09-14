@@ -2,7 +2,7 @@ package hub
 
 import (
 	"context"
-	"slices"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -95,15 +95,26 @@ func fetchInstanceLiveWith(ctx context.Context, client *llm.Client, name string)
 	return client.ListLive(fetchCtx, name)
 }
 
-// visibleModelIDs snapshots an instance's currently visible model ids: the
-// same ids the sheet renders, so a before/after compare says whether the
-// pass changed what any client shows.
-func visibleModelIDs(reg *registry.Registry, name string) []string {
-	ids, err := reg.ModelIDs(name)
+// visibleModelFacts snapshots the full observable facts behind the
+// visible ids — id, disabled flag, and every advertised live fact —
+// so a capability-only change (same ids, new tools/context/cost)
+// still counts as a change. encoding/json on the structs the sheet
+// and picker read keeps the compare honest without hand-rolling
+// field lists that rot.
+func visibleModelFacts(reg *registry.Registry, name string) string {
+	models, err := reg.InstanceModels(name)
 	if err != nil {
-		return nil
+		return ""
 	}
-	return ids
+	live := reg.LiveModels(name)
+	raw, err := json.Marshal(struct {
+		Models []registry.InstanceModel `json:"models"`
+		Live   []registry.Model         `json:"live"`
+	}{Models: models, Live: live})
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // prefetchAllLiveModels fetches every visible instance's live listing into
@@ -121,10 +132,10 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 			}
 		}
 	}
-	before := map[string][]string{}
+	before := map[string]string{}
 	if reg := holder.Get(); reg != nil {
 		for _, name := range names {
-			before[name] = visibleModelIDs(reg, name)
+			before[name] = visibleModelFacts(reg, name)
 		}
 	}
 	var wg sync.WaitGroup
@@ -144,7 +155,7 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 				return
 			}
 			holder.ReapplyLive(tok, name, id, rows)
-			if !slices.Equal(before[name], visibleModelIDs(holder.Get(), name)) {
+			if before[name] != visibleModelFacts(holder.Get(), name) {
 				mu.Lock()
 				anyChanged = true
 				mu.Unlock()
