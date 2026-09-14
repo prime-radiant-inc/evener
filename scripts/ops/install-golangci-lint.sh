@@ -78,7 +78,7 @@ repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 # attempts is the default and CI's lint lane is one download.
 attempts=${EVENER_GOLANGCI_INSTALL_ATTEMPTS:-3}
 if [[ ! "$attempts" =~ ^([1-9]|1[0-9]|20)$ ]]; then
-	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a whole number from 1 to 20 (got %q)\n' "$attempts" >&2
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a whole number from 1 to 20, without a leading zero (got %q)\n' "$attempts" >&2
 	exit 2
 fi
 

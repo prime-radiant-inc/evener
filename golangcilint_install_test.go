@@ -88,11 +88,18 @@ func curlVersion(t *testing.T) (major, minor int, ok bool) {
 // tools, a HOME of its own so no ~/.curlrc or ~/.netrc joins in, and no proxy
 // for the loopback address the offline case points at -- a proxied CI runner
 // would otherwise hand the request to a proxy that is very much listening.
-func installerEnv(t *testing.T, extra ...string) []string {
+func installerEnv(t *testing.T, gopath string, extra ...string) []string {
 	t.Helper()
+	// GOPATH is set rather than left to follow HOME: the isolation the tests
+	// depend on -- the installed binary landing somewhere temporary and not in
+	// the developer's ~/go/bin -- should be stated here rather than derived
+	// two steps away. GOENV=off keeps a `go env -w` file from redirecting it
+	// back.
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
+		"GOPATH=" + gopath,
+		"GOENV=off",
 		"no_proxy=127.0.0.1",
 		"NO_PROXY=127.0.0.1",
 		// Which path the script takes must not depend on whether someone has
@@ -108,8 +115,17 @@ func installerEnv(t *testing.T, extra ...string) []string {
 // and combined output.
 func runInstaller(t *testing.T, env ...string) (int, string) {
 	t.Helper()
+	code, out, _ := runInstallerIn(t, env...)
+	return code, out
+}
+
+// runInstallerIn is runInstaller for a case that wants to look at what was
+// installed: it returns the GOPATH the run was given.
+func runInstallerIn(t *testing.T, env ...string) (int, string, string) {
+	t.Helper()
+	gopath := t.TempDir()
 	cmd := exec.Command("bash", repoScriptPath(t, "scripts/ops/install-golangci-lint.sh"))
-	cmd.Env = installerEnv(t, env...)
+	cmd.Env = installerEnv(t, gopath, env...)
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if err != nil {
@@ -119,7 +135,7 @@ func runInstaller(t *testing.T, env ...string) (int, string) {
 		}
 		code = exit.ExitCode()
 	}
-	return code, string(out)
+	return code, string(out), gopath
 }
 
 // emptyReplyURL starts a listener that accepts connections and closes them
@@ -283,7 +299,7 @@ func TestInstallerAcceptsTheBinaryThatReportsThePin(t *testing.T) {
 	requireInstallerScriptTools(t, "curl")
 	version := pinnedGolangciVersion(t)
 	url, argsFile := installerServing(t, "golangci-lint has version "+version+" built with go1.27.0")
-	code, out := runInstaller(t,
+	code, out, gopath := runInstallerIn(t,
 		"EVENER_GOLANGCI_INSTALLER_URL="+url,
 		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
 		"EVENER_GOLANGCI_CURL_RETRIES=0",
@@ -299,6 +315,11 @@ func TestInstallerAcceptsTheBinaryThatReportsThePin(t *testing.T) {
 	}
 	if !strings.Contains(string(args), "v"+version) {
 		t.Fatalf("the installer was given %q, want the pinned v%s", strings.TrimSpace(string(args)), version)
+	}
+	// And it landed in the GOPATH this run was given, which is the isolation
+	// the whole test depends on: nothing here writes to the developer's.
+	if _, err := os.Stat(filepath.Join(gopath, "bin", "golangci-lint")); err != nil {
+		t.Fatalf("the binary is not under the run's own GOPATH: %v", err)
 	}
 }
 
