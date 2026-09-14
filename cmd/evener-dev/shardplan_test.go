@@ -360,6 +360,19 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.v"},
 		},
 		{
+			// -v is documented by `go help build` as well, and belongs to the
+			// shards: they are what run the tests.
+			name:  "-v goes to the shards, never to the build",
+			flags: []string{"-v", "-race"},
+			build: []string{"-race"},
+			test:  []string{"-test.v"},
+		},
+		{
+			name:  "-v=test2json is a real value this runner cannot use",
+			flags: []string{"-v=test2json"},
+			err:   "cannot read JSON",
+		},
+		{
 			// `go test -test.short` is `go test -short`, and so is this.
 			name:  "the test binary's own spelling on the command line",
 			flags: []string{"-test.short", "-test.count=2", "-test.v=false"},
@@ -482,7 +495,7 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 		{name: "build flags flow to the compile", goflags: "-mod=mod -trimpath -tags=integration"},
 		{name: "a test flag reaches neither half", goflags: "-mod=mod -short", err: "-short"},
 		{name: "and in either spelling", goflags: "--count=2", err: "-count"},
-		{name: "including one this runner refuses outright", goflags: "-run=TestFoo", err: "-run"},
+		{name: "including one this runner refuses outright", goflags: "-run=TestFoo", err: "-run", advice: "selects each shard's tests"},
 		// `go test` takes the binary's own spelling too, so it is normalised
 		// away first and refused by the same rule under its own name.
 		{name: "the test binary's spelling, bare", goflags: "-test.v", err: "-v"},
@@ -500,6 +513,11 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 		// the build and has to reach these tables too.
 		{name: "a quoted test flag is still a test flag", goflags: `-mod=mod "-short"`, err: "-short"},
 		{name: "single quotes likewise", goflags: `'-count=2'`, err: "-count"},
+		// A quote that does not open the field does not quote: go itself
+		// answers `non-flag "b\""` for this one, and what matters here is
+		// that -tags is still seen as the build flag it is.
+		{name: "a quote inside a field is part of it", goflags: `-tags="a b"`},
+		{name: "an unterminated quote still classifies", goflags: `"-short`, err: "-short"},
 		// -C moves the build out from under a runner already standing in the
 		// module's directory, whichever route it arrives by.
 		{name: "-C through GOFLAGS", goflags: "-C /tmp", err: "-C is not supported here", advice: "built and tested from its own directory"},

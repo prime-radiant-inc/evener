@@ -345,15 +345,13 @@ func parseFlags(flags []string) (parsedFlags, error) {
 		if name == "-C" {
 			return errUnsupportedC()
 		}
+		// The test side is classified first, and that order is the rule: a
+		// name `go help testflag` documents is this runner's test flag even
+		// when `go help build` documents it too. -v is the case today -- both
+		// pages list it, and it belongs to the shards, which are what run the
+		// tests. A build-first order would send it to `go test -c` and the
+		// shards would never be verbose.
 		switch {
-		case buildValueFlags[name]:
-			if hasInline {
-				out.build = append(out.build, f)
-				return nil
-			}
-			out.build = append(out.build, name, value)
-		case buildBareFlags[name]:
-			out.build = append(out.build, f)
 		case name == "-short":
 			parsed, err := boolFlagValue(name, inline, hasInline)
 			if err != nil {
@@ -375,10 +373,15 @@ func parseFlags(flags []string) (parsedFlags, error) {
 				out.test = append(out.test, "-test."+strings.TrimPrefix(name, "-")+"="+value)
 			}
 		case testRefusedValueFlags[name] || testRefusedBareFlags[name]:
-			if reason, ok := refusalReason[name]; ok {
-				return fmt.Errorf("%s is not supported by agent-shards: %s", name, reason)
+			return refusalFor(name)
+		case buildValueFlags[name]:
+			if hasInline {
+				out.build = append(out.build, f)
+				return nil
 			}
-			return fmt.Errorf("%s is not supported by agent-shards: it builds one binary, runs it as several shards, and writes its own logs, so this flag cannot mean here what it means to `go test`", name)
+			out.build = append(out.build, name, value)
+		case buildBareFlags[name]:
+			out.build = append(out.build, f)
 		case !strings.HasPrefix(name, "-"):
 			return fmt.Errorf("%q is not a flag: this runner chooses the packages it builds and runs, and takes only `go test` flags", f)
 		default:
@@ -400,6 +403,16 @@ func errUnsupportedC() error {
 	return errors.New("-C is not supported here: every module is built and tested from its own directory, and a -C would move both somewhere this runner does not expect")
 }
 
+// refusalFor is the one refusal a flag this runner cannot honour gets, on
+// whichever route it arrived by: its own reason where there is one to give,
+// and otherwise the shape of the runner that makes it meaningless here.
+func refusalFor(name string) error {
+	if reason, ok := refusalReason[name]; ok {
+		return fmt.Errorf("%s is not supported by agent-shards: %s", name, reason)
+	}
+	return fmt.Errorf("%s is not supported by agent-shards: it builds one binary, runs it as several shards, and writes its own logs, so this flag cannot mean here what it means to `go test`", name)
+}
+
 // boolFlagValue reads a boolean flag's inline value the way go's flag package
 // does, and refuses at parse time what `go test` would refuse at the door: a
 // value read as true here would survey the whole suite and build the binary
@@ -407,6 +420,13 @@ func errUnsupportedC() error {
 func boolFlagValue(name, inline string, hasInline bool) (bool, error) {
 	if !hasInline {
 		return true, nil
+	}
+	if name == "-v" && inline == "test2json" {
+		// A real value of -test.v, and one this runner cannot take: the survey
+		// reads "--- PASS:" lines to weigh each test, and test2json turns them
+		// into JSON objects, so the costs it packs shards from would all be
+		// zero.
+		return false, errors.New("-v=test2json is not supported by agent-shards: the survey reads the test binary's plain output to weigh each test, and cannot read JSON")
 	}
 	parsed, err := strconv.ParseBool(inline)
 	if err != nil {
@@ -455,21 +475,47 @@ func checkForwardedValue(name, value string) error {
 	return nil
 }
 
-// goflagsEntries splits GOFLAGS the way the toolchain does: on spaces, with a
-// surrounding pair of matching quotes removed, since cmd/internal/quoted.Split
-// is what reads this variable and `GOFLAGS='"-short"'` reaches the build as
-// -short. Without the stripping the quotes would hide a flag from every table
-// here while changing what `go test -c` does.
+// goflagsEntries splits GOFLAGS the way the toolchain does, which is
+// cmd/internal/quoted.Split: fields separated by whitespace, and a quote only
+// quotes when it opens the field. `GOFLAGS='"-short"'` is one entry, -short;
+// `GOFLAGS='-tags="a b"'` is not one entry, and go itself rejects it --
+// measured on go1.27.0, which answers `parsing $GOFLAGS: non-flag "b\""`.
+// There is no escaping inside a quoted element, and an unterminated quote is
+// an error there; here it is left as written, because refusing GOFLAGS this
+// runner cannot parse is go's job and it will do it a moment later.
 func goflagsEntries(goflags string) []string {
-	entries := strings.Fields(goflags)
-	for i, entry := range entries {
-		if len(entry) >= 2 {
-			if quote := entry[0]; (quote == '\'' || quote == '"') && entry[len(entry)-1] == quote {
-				entries[i] = entry[1 : len(entry)-1]
-			}
+	var entries []string
+	for len(goflags) > 0 {
+		for len(goflags) > 0 && isGoflagsSpace(goflags[0]) {
+			goflags = goflags[1:]
 		}
+		if len(goflags) == 0 {
+			break
+		}
+		if quote := goflags[0]; quote == '\'' || quote == '"' {
+			rest := goflags[1:]
+			if end := strings.IndexByte(rest, quote); end >= 0 {
+				entries = append(entries, rest[:end])
+				goflags = rest[end+1:]
+				continue
+			}
+			// Unterminated: go will refuse this GOFLAGS itself. Take what is
+			// there so the flag is still classified rather than hidden.
+			entries = append(entries, rest)
+			break
+		}
+		end := 0
+		for end < len(goflags) && !isGoflagsSpace(goflags[end]) {
+			end++
+		}
+		entries = append(entries, goflags[:end])
+		goflags = goflags[end:]
 	}
 	return entries
+}
+
+func isGoflagsSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // checkGoflags refuses a test-side flag that arrives through GOFLAGS. The
@@ -488,9 +534,13 @@ func checkGoflags(goflags string) error {
 		if strings.HasPrefix(tok.name, "-test.") {
 			return fmt.Errorf("GOFLAGS carries %s, which is not a flag the test binary has; `go test` would hand it over and every shard would refuse it", tok.name)
 		}
-		if testForwardValueFlags[tok.name] || testForwardBareFlags[tok.name] ||
-			testRefusedValueFlags[tok.name] || testRefusedBareFlags[tok.name] {
-			return fmt.Errorf("GOFLAGS carries %s, which is a `go test` flag for the test binary, not for the build: this runner compiles with `go test -c` and launches the shards itself, so a flag there reaches neither. Pass it on the command line instead", tok.name)
+		if testForwardValueFlags[tok.name] || testForwardBareFlags[tok.name] || tok.name == "-short" {
+			return fmt.Errorf("GOFLAGS carries %s, which is a flag for the test binary, not for the build: this runner compiles with `go test -c` and launches the shards itself, so a flag there reaches neither. Pass it on the command line instead, where this runner does forward it", tok.name)
+		}
+		if testRefusedValueFlags[tok.name] || testRefusedBareFlags[tok.name] {
+			// The same answer it gets on the command line: this runner cannot
+			// honour it at all, so where it was written changes nothing.
+			return fmt.Errorf("GOFLAGS carries %w", refusalFor(tok.name))
 		}
 		return nil
 	})
