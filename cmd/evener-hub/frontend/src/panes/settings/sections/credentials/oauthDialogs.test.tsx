@@ -11,6 +11,7 @@ import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
+import { getToasts } from "../../../../widgets/toast/store";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 
 function connectFakeClient(): FakeClient {
@@ -246,6 +247,48 @@ describe("DeviceCodeDialog", () => {
     expect(sendButton.disabled).toBe(false);
     await user.click(sendButton);
     expect(openedNewTab(anchors)).toEqual({ url: "https://verify", target: "_blank", rel: NEW_TAB_POLICY });
+  });
+
+  // A verification URL the opener refuses (a non-http(s) scheme, or one the URL
+  // parser rejects) must still reach the user. openInNewTab throws loudly by
+  // design, but an event-handler throw never reaches an error boundary, so
+  // without the dialog's own catch the click would silently do nothing.
+  test("a refused verification URL reports an error toast instead of throwing", async () => {
+    connectFakeClient();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    });
+    const anchors = captureNewTabs();
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="javascript:alert(1)"
+        intervalSeconds={5}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+        onRestart={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /copy code/i }));
+    const sendButton = await screen.findByRole("button", { name: /send me to openai/i });
+    expect((sendButton as HTMLButtonElement).disabled).toBe(false);
+    // React 19 routes an event-handler throw to reportGlobalError instead of
+    // rethrowing it out of dispatch, so "does not throw" here describes this
+    // handler's own contract: the refusal has to become a toast, not an
+    // uncaught error, and nothing may be opened.
+    expect(() => fireEvent.click(sendButton)).not.toThrow();
+    expect(anchors).toHaveLength(0);
+    expect(
+      getToasts().some(
+        (toast) =>
+          toast.kind === "error" &&
+          toast.text === "Couldn't open the verification page: refusing to open a URL with the javascript: scheme",
+      ),
+    ).toBe(true);
   });
 
   test("a dismissed device editor ignores success after its refresh completes", async () => {

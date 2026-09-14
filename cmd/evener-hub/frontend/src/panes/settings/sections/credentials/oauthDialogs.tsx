@@ -189,6 +189,20 @@ export function DeviceCodeDialog({
     setCopyFailed(!ok);
   }
 
+  function handleOpenVerificationUrl(): void {
+    try {
+      openInNewTab(verificationUrl);
+    } catch (err) {
+      // openInNewTab refuses a verification URL that does not parse or is not
+      // http(s) by throwing - the loud refusal is what keeps a hostile
+      // `javascript:` URL from running in this origin (shell/openInNewTab.ts).
+      // React never hands an event-handler throw to an error boundary, so
+      // without this catch the refusal would leave a button that silently
+      // does nothing; the toast is what makes it visible to the user.
+      toast.push("error", `Couldn't open the verification page: ${errorText(err)}`);
+    }
+  }
+
   const done = expired || error !== null;
   const statusText =
     error ??
@@ -214,7 +228,7 @@ export function DeviceCodeDialog({
               <Button type="button" variant="quiet" onClick={() => void handleCopy()}>
                 {copied ? "Copied ✓" : "Copy code"}
               </Button>
-              <Button type="button" disabled={!copied} onClick={() => openInNewTab(verificationUrl)}>
+              <Button type="button" disabled={!copied} onClick={handleOpenVerificationUrl}>
                 Send me to OpenAI
               </Button>
             </>
