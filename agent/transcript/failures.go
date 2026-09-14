@@ -108,13 +108,19 @@ func NewFailureCounter(fromEntryOrdinal int) *FailureCounter {
 }
 
 // Observe records one transcript entry's turn: it learns the tool names the
-// turn announces and counts the failures the turn settles.
+// turn announces and counts the failures the turn settles. A ContextReplay
+// copy settles none — it repeats what its original already did.
 func (c *FailureCounter) Observe(turn schema.Turn) {
 	if c == nil {
 		return
 	}
 	c.ordinal++
-	counting := c.ordinal >= c.from
+	// A fold's replay copy is a second record of a turn this file already
+	// holds, so the failure inside it is one the original already settled:
+	// counting it charges the session twice for one failure. Its calls are
+	// still learned — a copy can carry the call a later result answers by id —
+	// which is the same split the item readers make (countsTowardTotals).
+	counting := c.ordinal >= c.from && !turn.ContextReplay
 	for _, part := range turn.Message.Content {
 		switch {
 		case part.Kind == llm.ContentToolCall && part.ToolCall != nil:

@@ -203,3 +203,42 @@ func TestBufferedAppendReportsAnEntryItCouldNotTakeBack(t *testing.T) {
 		t.Fatalf("test setup: the line is not in the file, so nothing was retained: %q", data)
 	}
 }
+
+// A fold's replay copy is a second record of a turn this file already holds,
+// so the failing tool result inside it is the same failure the original
+// already settled. Counting it charges the session twice for one failure — the
+// same double count the item readers already refuse (countsTowardTotals). The
+// names a copy announces are still learned: a call the copy carries can be the
+// one a later result answers by id.
+func TestWriterDoesNotCountAFailureTwiceBecauseAFoldCopiedIt(t *testing.T) {
+	counter := NewFailureCounter(0)
+	call := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind:     llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{ID: "call_copy", Name: "read_file"},
+	}}})
+	result := toolResultTurn(llm.ToolResultData{ToolCallID: "call_copy", IsError: true})
+	counter.Observe(call)
+	counter.Observe(result)
+	if got := counter.Count(); got != 1 {
+		t.Fatalf("failures after the original round = %d, want 1", got)
+	}
+
+	copyOf := func(turn schema.Turn) schema.Turn {
+		turn.ContextReplay = true
+		turn.CompactionFoldID = "fold_failures"
+		return turn
+	}
+	counter.Observe(copyOf(call))
+	counter.Observe(copyOf(result))
+	if got := counter.Count(); got != 1 {
+		t.Fatalf("failures after the fold copied the round = %d, want the same 1: a copy is the same failure written down again", got)
+	}
+
+	// The copy's call is still a name the counter knows, so a result that
+	// arrives later and names only the call id is still judged by tool.
+	late := toolResultTurn(llm.ToolResultData{ToolCallID: "call_copy", IsError: true})
+	counter.Observe(late)
+	if got := counter.Count(); got != 2 {
+		t.Fatalf("failures after a genuinely new result = %d, want 2", got)
+	}
+}
