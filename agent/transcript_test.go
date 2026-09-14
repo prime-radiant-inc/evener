@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -3793,5 +3794,60 @@ func TestResumeHistoryFromTranscript_AnchorDropsALaterFoldsUnanchoredCopies(t *t
 	}
 	if len(history) != 4 {
 		t.Fatalf("resume history = %d turns, want the summary, its own copy and the two originals", len(history))
+	}
+}
+
+// ResumeHistory answers with a session's HISTORY, not with durable records: a
+// turn it hands back has left the file, so the roles the record carried — the
+// copy marks and the id of the fold that wrote it — are not part of it. Two
+// things turn on that. A history written down again (a fork child's inherited
+// prefix is exactly this) must replay to itself rather than to a different
+// conversation, and a reader that resumes a resume must not find a fold run
+// that no longer exists.
+func TestResumeHistoryFromTranscript_IsIdempotentAndReturnsNoRecordRoles(t *testing.T) {
+	t.Parallel()
+	entry := func(kind schema.TurnKind, message llm.Message, seq int, foldID string, replay, mergedTail bool) transcript.Entry {
+		turn := schema.NewTurn(kind, message)
+		turn.CompactionFoldID = foldID
+		turn.ContextReplay = replay
+		turn.ContextReplayMergedTail = mergedTail
+		return transcript.Entry{Kind: "entry", Seq: seq, Turn: turn}
+	}
+	const foldID = "fold_idempotent"
+	entries := []transcript.Entry{
+		entry(schema.TurnUserInput, llm.User("before the fold"), 0, "", false, false),
+		entry(schema.TurnAssistant, llm.Assistant("preserved by the fold"), 1, "", false, false),
+		entry(schema.TurnUserInput, llm.User("recorded during the fold"), 2, "", false, false),
+		// The fold's run: the preserved suffix's copy, the merge-back's copy,
+		// the compaction record, the marker, then the steering it injected.
+		entry(schema.TurnAssistant, llm.Assistant("preserved by the fold"), 3, foldID, true, false),
+		entry(schema.TurnUserInput, llm.User("recorded during the fold"), 4, foldID, true, true),
+		entry(schema.TurnContextCompaction, llm.System("context compaction"), 5, foldID, false, false),
+		entry(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"), 6, foldID, false, false),
+		entry(schema.TurnSteering, llm.User("goal objective"), 7, foldID, false, false),
+		entry(schema.TurnUserInput, llm.User("after the fold"), 8, "", false, false),
+	}
+
+	first := ResumeHistory(entries)
+	for _, turn := range first {
+		if turn.ContextReplay || turn.ContextReplayMergedTail || turn.CompactionFoldID != "" {
+			t.Fatalf("a resumed turn still carries its record's roles: %#v", turn)
+		}
+	}
+
+	written := make([]transcript.Entry, 0, len(first))
+	for i, turn := range first {
+		written = append(written, transcript.Entry{Kind: "entry", Seq: i, Turn: turn})
+	}
+	second := ResumeHistory(written)
+	outline := func(turns []schema.Turn) []string {
+		out := make([]string, 0, len(turns))
+		for _, turn := range turns {
+			out = append(out, string(turn.Kind)+":"+turn.Message.Text())
+		}
+		return out
+	}
+	if !reflect.DeepEqual(outline(second), outline(first)) {
+		t.Fatalf("resuming a resumed history changed it:\nfirst:  %v\nsecond: %v", outline(first), outline(second))
 	}
 }

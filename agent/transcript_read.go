@@ -170,6 +170,19 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 // the copies of the turns recorded while the fold ran — which the publication
 // merges in after everything the fold itself produced, though the transaction
 // writes every copy first and the steering last.
+// resumedTurn strips the roles a record carries in the FILE from the turn a
+// session gets back. ContextReplay and its merge-back mark say which half of a
+// fold's run an entry was; CompactionFoldID says which fold wrote it. Neither
+// is true of a turn in a running session's history, and leaving them on makes
+// a history written down again — a fork child's inherited prefix — replay as
+// a fold run that is not there.
+func resumedTurn(turn schema.Turn) schema.Turn {
+	turn.ContextReplay = false
+	turn.ContextReplayMergedTail = false
+	turn.CompactionFoldID = ""
+	return turn
+}
+
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// Scan backward for the last compaction turn.
 	compactionIdx := -1
@@ -189,7 +202,7 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 			if e.Turn.ContextReplay {
 				continue
 			}
-			turns = append(turns, e.Turn)
+			turns = append(turns, resumedTurn(e.Turn))
 		}
 		repaired, _ := repairOrphanedToolResults(turns)
 		return repaired
@@ -214,17 +227,14 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 		if entries[i].Turn.ContextReplay || entries[i].Turn.Kind == schema.TurnSteering {
 			continue
 		}
-		result = append(result, entries[i].Turn)
+		result = append(result, resumedTurn(entries[i].Turn))
 	}
 	appendCopies := func(mergedTail bool) {
 		for i := foldStart; i < foldEnd; i++ {
 			if !entries[i].Turn.ContextReplay || entries[i].Turn.ContextReplayMergedTail != mergedTail {
 				continue
 			}
-			turn := entries[i].Turn
-			turn.ContextReplay = false
-			turn.ContextReplayMergedTail = false
-			result = append(result, turn)
+			result = append(result, resumedTurn(entries[i].Turn))
 		}
 	}
 	// The published history is the fold's own result — its marker, the suffix
@@ -238,7 +248,7 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 		if entries[i].Turn.ContextReplay || entries[i].Turn.Kind != schema.TurnSteering {
 			continue
 		}
-		result = append(result, entries[i].Turn)
+		result = append(result, resumedTurn(entries[i].Turn))
 	}
 	appendCopies(true)
 	anchorFold := entries[compactionIdx].Turn.CompactionFoldID
@@ -252,9 +262,7 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 		if entries[i].Turn.ContextReplay && entries[i].Turn.CompactionFoldID != "" && entries[i].Turn.CompactionFoldID != anchorFold {
 			continue
 		}
-		turn := entries[i].Turn
-		turn.ContextReplay = false
-		result = append(result, turn)
+		result = append(result, resumedTurn(entries[i].Turn))
 	}
 	repaired, _ := repairOrphanedToolResults(result)
 	return repaired
