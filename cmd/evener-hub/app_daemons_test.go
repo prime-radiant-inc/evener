@@ -50,6 +50,68 @@ func residentLifecycleForTest() *appwire.DaemonLifecycle {
 	return &appwire.DaemonLifecycle{Phase: "resident", TimeoutMillis: 0, Blockers: []appwire.DaemonBlocker{}}
 }
 
+// TestListDaemonsRetireRequiresStrongOwnership pins round 7's Low finding: the
+// hub must not offer "retire now" on a platform where the daemon refuses
+// retirement outright because rendezvous strong ownership is unavailable
+// (cmd/evener/serve.go refuses every retirement there). The capability is
+// platform-constant, so retireOwnershipCapability — nil in production — is the
+// seam that exercises both branches, plus the real platform default.
+func TestListDaemonsRetireRequiresStrongOwnership(t *testing.T) {
+	runDir := t.TempDir()
+	entry := residentEntryForTest(t, 6101)
+	writeRendezvous(t, runDir, entry)
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{
+			OK: true, SessionID: e.SessionID, Status: "idle",
+			Lifecycle: residentLifecycleForTest(), LifecycleFresh: true,
+		}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster}
+
+	previous := retireOwnershipCapability
+	t.Cleanup(func() { retireOwnershipCapability = previous })
+
+	for _, tc := range []struct {
+		name      string
+		available bool
+		want      bool
+	}{
+		{name: "strong ownership unavailable", available: false, want: false},
+		{name: "strong ownership available", available: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			retireOwnershipCapability = func() bool { return tc.available }
+			list, err := listDaemons(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list.Daemons) != 1 {
+				t.Fatalf("rows=%d, want 1", len(list.Daemons))
+			}
+			if got := list.Daemons[0].CanRetire; got != tc.want {
+				t.Fatalf("CanRetire=%v with strong ownership available=%v, want %v", got, tc.available, tc.want)
+			}
+		})
+	}
+
+	// The unseamed production path must agree with the platform capability.
+	t.Run("platform default", func(t *testing.T) {
+		retireOwnershipCapability = nil
+		list, err := listDaemons(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Daemons) != 1 {
+			t.Fatalf("rows=%d, want 1", len(list.Daemons))
+		}
+		if got, want := list.Daemons[0].CanRetire, rendezvous.StrongOwnershipAvailable(); got != want {
+			t.Fatalf("CanRetire=%v on the production path, want the platform capability %v", got, want)
+		}
+	})
+}
+
 func TestDaemonIdentityChangesWithReplacement(t *testing.T) {
 	first := residentEntryForTest(t, 101)
 	second := first

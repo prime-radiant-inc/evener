@@ -1109,3 +1109,111 @@ func TestAwaitRetiredOwnerFallsBackToThreadID(t *testing.T) {
 		t.Fatalf("opened session identity = %q, want the ThreadID fallback %q", openedSessionID, entry.ThreadID)
 	}
 }
+
+// TestResumeAfterConfirmedRetirementFreshReplacementIsNotAwaited is the round-7
+// regression for the replacement-daemon hang. A concurrent resume can replace
+// the retiring daemon before this retry samples the entry-time owner at
+// app_retirement_resume.go:139, so ownerBefore and owner both resolve to the
+// SAME healthy replacement. sameDaemonIdentity then matches, sameAsRefused is
+// true, and the pre-fix code fell through to awaitRetiredOwner: it opened the
+// live replacement's process, waited on it for the caller's whole context
+// deadline, and held the session's alias locks for that entire wait. A fresh
+// lifecycle probe reporting a NON-retiring phase proves the current owner is an
+// active replacement already serving the session, so the retry must resolve
+// against it and return without ever opening its process.
+//
+// The same fixture pins the branches the fix must preserve: a fresh "retiring"
+// owner is still the daemon that refused the mutation and must still be awaited,
+// and an unfresh lifecycle reports the capability as unknown (never as a
+// replacement), so it must still be awaited.
+func TestResumeAfterConfirmedRetirementFreshReplacementIsNotAwaited(t *testing.T) {
+	const sessionID = "session-retirement-replacement"
+	entry := rendezvous.Entry{
+		PID:          7201,
+		Address:      "127.0.0.1:7201",
+		Endpoint:     "ws://127.0.0.1:7201/rpc",
+		Protocol:     appwire.ProtocolVersion,
+		SourceID:     "local",
+		ThreadID:     sessionID,
+		SessionID:    sessionID,
+		WorkspaceRef: "local:" + sessionID,
+		InstanceID:   "replacement-instance",
+		WorkingDir:   "/work/" + sessionID,
+		StateDir:     "/state/" + sessionID,
+		StartedAt:    time.Unix(1700001000, 0).UTC(),
+	}
+	// The roster snapshot is the current owner: no rendezvous scan is needed, and
+	// the same entry answers both the entry-time sample and the post-lock sample,
+	// exactly as it does when a concurrent resume already replaced the refuser.
+	prevRefresh := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error { return nil }
+	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
+
+	cases := []struct {
+		name      string
+		lifecycle *appwire.DaemonLifecycle
+		fresh     bool
+		wantWait  bool
+	}{
+		{
+			name:      "fresh resident replacement resolves the retry",
+			lifecycle: &appwire.DaemonLifecycle{Phase: "resident", Blockers: []appwire.DaemonBlocker{}},
+			fresh:     true,
+		},
+		{
+			name:      "fresh retiring owner is still awaited",
+			lifecycle: &appwire.DaemonLifecycle{Phase: "retiring", Blockers: []appwire.DaemonBlocker{}},
+			fresh:     true,
+			wantWait:  true,
+		},
+		{
+			name:      "unfresh lifecycle is not read as a replacement",
+			lifecycle: &appwire.DaemonLifecycle{Phase: "resident", Blockers: []appwire.DaemonBlocker{}},
+			fresh:     false,
+			wantWait:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+				Entry:          entry,
+				SessionID:      sessionID,
+				Status:         appwire.ThreadStatusIdle,
+				Lifecycle:      tc.lifecycle,
+				LifecycleFresh: tc.fresh,
+			})
+			var events []string
+			controller := forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				events = append(events, "open")
+				return &forceStopProcess{events: &events, waitErr: errors.New("live owner must not be awaited")}, nil
+			})
+			cfg := hubcore.WebConfig{
+				RunDir:          t.TempDir(),
+				Roster:          roster,
+				ResumeLocks:     hubcore.NewResumeLocks(),
+				DaemonProcesses: controller,
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			err := resumeAfterConfirmedRetirement(ctx, cfg, nil, appwire.TurnStartParams{Ref: "local:" + sessionID})
+			if tc.wantWait {
+				if len(events) == 0 {
+					t.Fatalf("owner was not awaited (err=%v); a refusing owner must still be awaited", err)
+				}
+				if !isLifecycleRetiringError(err) {
+					t.Fatalf("awaiting owner returned %v, want the retryable retiring lifecycle error", err)
+				}
+				return
+			}
+			if len(events) != 0 {
+				t.Fatalf("opened the live replacement's process (%v); a fresh non-retiring owner must resolve the retry immediately", events)
+			}
+			if err != nil {
+				t.Fatalf("resumeAfterConfirmedRetirement with a healthy replacement owner: %v", err)
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("recovery did not return promptly: %v", ctx.Err())
+			}
+		})
+	}
+}

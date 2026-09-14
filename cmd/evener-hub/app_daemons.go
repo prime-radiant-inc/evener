@@ -39,6 +39,23 @@ func daemonIdentity(entry rendezvous.Entry) appwire.DaemonIdentity {
 	}
 }
 
+// retireOwnershipCapability is a test-only seam: nil in production, where the
+// platform capability is read directly. Safe retire requires the daemon's
+// kernel-serialized ownership contract, and a single platform build cannot
+// exercise both branches of CanRetire, so tests override this to prove the hub
+// agrees with the daemon's own retirement refusal.
+var retireOwnershipCapability func() bool
+
+// strongOwnershipAvailable reports whether the local daemon can uphold the
+// strong rendezvous ownership contract retirement requires
+// (cmd/evener/serve.go refuses retirement outright where it cannot).
+func strongOwnershipAvailable() bool {
+	if retireOwnershipCapability != nil {
+		return retireOwnershipCapability()
+	}
+	return rendezvous.StrongOwnershipAvailable()
+}
+
 // registerDaemonHandlers registers the hub-owned resident inventory and the
 // identity-fenced safe-retire action. The catalog scopes these Hub/Both; the
 // handlers here are the real implementations, not stubs.
@@ -57,7 +74,8 @@ func registerDaemonHandlers(server *appserver.Server, cfg hubcore.WebConfig, sou
 // activity. Confirmed and unconfirmed claims merge by exact ownership
 // fingerprint, never by alias; archive/name decoration comes from the saved
 // metadata index independently of sidebar filtering; unknown and stale probe
-// states stay explicit; only a fresh compatible lifecycle enables Retire.
+// states stay explicit; only a fresh compatible lifecycle on a platform that
+// can uphold strong rendezvous ownership enables Retire.
 // Force-stop availability means the configured verified path exists — never
 // proof that a future action will pass verification.
 func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListResponse, error) {
@@ -76,6 +94,11 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 	// recovery locks exist. Protocol compatibility does not gate it: force
 	// stop verifies the process locally and supports older-protocol daemons.
 	canForceStop := cfg.RunDir != "" && cfg.ResumeLocks != nil
+	// Safe retire additionally needs the daemon's kernel-serialized ownership
+	// contract: where it is unavailable the daemon refuses retirement outright
+	// (cmd/evener/serve.go), so the inventory must not offer an action the
+	// server always rejects.
+	canRetire := strongOwnershipAvailable()
 	response := appwire.DaemonListResponse{
 		DefaultTimeoutMillis: cfg.DaemonIdleTimeout.Milliseconds(),
 		Daemons:              []appwire.DaemonResident{},
@@ -132,7 +155,7 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 		// Archived rows stay visible with retirement disabled: archive is a
 		// separate axis from probe freshness, and retiring an archived session's
 		// daemon is not offered.
-		row.CanRetire = row.Compatibility == "compatible" && row.ProbeState == "current" &&
+		row.CanRetire = canRetire && row.Compatibility == "compatible" && row.ProbeState == "current" &&
 			row.Lifecycle != nil && row.Lifecycle.Phase == "resident" && !row.Archived
 		if cfg.Past != nil && sessionID != "" {
 			if pastEntry, ok := cfg.Past.Find(sessionID); ok {

@@ -180,6 +180,21 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 			return appwire.Unavailable("session is retained by " + localAppRef(owner.SessionID) + "; open the owning session or refresh after it stops")
 		}
 		retiring := owner.LifecycleFresh && owner.Lifecycle != nil && owner.Lifecycle.Phase == "retiring"
+		// A fresh lifecycle probe reporting a NON-retiring phase proves the
+		// current owner is an active replacement already serving the session:
+		// the entry-time owner was replaced before this retry (a concurrent
+		// resume holds the alias locks only until it finishes, and the entry-time
+		// sample at the top of this function is taken before this function takes
+		// them). sameAsRefused infers "the refuser still owns the session" from
+		// identity alone, so it cannot distinguish that replacement from the
+		// refuser; the fresh probe can. Treat the replacement as ready instead of
+		// waiting on a live PID for the caller's whole context deadline while
+		// holding the session's alias locks. An unfresh lifecycle reports the
+		// capability as unknown — never as a replacement — and a fresh
+		// "retiring" owner is still the refuser and is still awaited below.
+		if owner.LifecycleFresh && owner.Lifecycle != nil && !retiring {
+			return nil
+		}
 		sameAsRefused := hadOwnerBefore && sameDaemonIdentity(ownerBefore.Entry, owner.Entry)
 		if !retiring && !sameAsRefused {
 			// A current replacement already owns the session; the retry resolves it.
