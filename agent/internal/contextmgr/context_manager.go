@@ -363,22 +363,29 @@ func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 
 // estimatePressure calculates what fraction of the context window is in use.
 // Uses actual API-reported token counts when available, falling back to char/4.
-// One profile snapshot covers both the window and the estimate, so a model
-// switch (SetProfile) cannot pair one model's window with another's tokens.
+// One profile snapshot covers the window, the measurement, and the estimate, so
+// a model switch (SetProfile) cannot pair one model's window with another's
+// tokens.
 func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
-	prof := cm.currentProfile()
+	prof, lastTokens, measuredLen := cm.profileSnapshot()
 	cw := prof.ContextWindowSize()
 	if cw <= 0 {
 		return 0
 	}
 
-	cm.mu.Lock()
-	lastTokens := cm.lastInputTokens
-	measuredLen := cm.historyLenAtMeasure
-	cm.mu.Unlock()
-
 	totalTokens := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
 	return float64(totalTokens) / float64(cw)
+}
+
+// profileSnapshot reads the active profile together with the API measurement
+// that belongs to it, in one critical section. SetProfile swaps the profile and
+// clears the measurement in one section of the same lock, so reading them in
+// separate sections could pair one model's window with another model's cleared
+// measurement.
+func (cm *Manager) profileSnapshot() (*provider.Profile, int, int) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.profile, cm.lastInputTokens, cm.historyLenAtMeasure
 }
 
 // estimateUsedTokens is the pure token-accounting core shared by estimatePressure
@@ -411,19 +418,14 @@ func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) f
 }
 
 // EstimateUsage returns the estimated used, total, and remaining context tokens.
-// Like estimatePressure, one profile snapshot covers both the window and the
-// estimate.
+// Like estimatePressure, one profile snapshot covers the window, the
+// measurement, and the estimate.
 func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) schema.ContextMetrics {
-	prof := cm.currentProfile()
+	prof, lastTokens, measuredLen := cm.profileSnapshot()
 	cw := prof.ContextWindowSize()
 	if cw <= 0 {
 		return schema.ContextMetrics{}
 	}
-
-	cm.mu.Lock()
-	lastTokens := cm.lastInputTokens
-	measuredLen := cm.historyLenAtMeasure
-	cm.mu.Unlock()
 
 	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
 	remaining := max(cw-used, 0)

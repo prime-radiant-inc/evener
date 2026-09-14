@@ -2809,3 +2809,80 @@ func TestElicitNote_NoLoadedSkillsOmitsSelectionProtocol(t *testing.T) {
 		t.Fatalf("ElicitNote: %v", err)
 	}
 }
+
+// The API measurement belongs to the profile that produced it, and SetProfile
+// swaps the profile and clears the measurement in one critical section. A
+// pressure or usage reading must take that pair in one section too: reading the
+// profile and the measurement separately can pair one model's window with
+// another model's cleared measurement. The invariant under a concurrent swap is
+// that every result is one of the three states a single critical section can
+// produce — the starting profile with its measurement, or either profile with
+// the measurement already cleared. The torn pair itself is not reproducible in
+// a bounded run (the reads sit nanoseconds apart and Go's mutex barging keeps
+// them together), so this pins the invariant the single-section snapshot
+// guarantees rather than reproducing the blend.
+func TestContextManager_UsageEstimateKeepsProfileAndMeasurementTogether(t *testing.T) {
+	openai := testProfile("openai", "gpt-5.2", 1_000_000)
+	anthropic := testProfile("anthropic", "claude-opus-4-6", 200_000)
+
+	history := make([]schema.Turn, 0, 3000)
+	for range 3000 {
+		history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "reasoning the anthropic adapter replays and the responses adapter does not"}},
+			},
+		}})
+	}
+
+	measured := func(prof *provider.Profile) schema.ContextMetrics {
+		cm := NewManager(prof, nil, cheapmodel.New(nil))
+		cm.RecordInputTokens(500, 3)
+		return cm.EstimateUsage(history, 0)
+	}
+	cleared := func(prof *provider.Profile) schema.ContextMetrics {
+		return NewManager(prof, nil, cheapmodel.New(nil)).EstimateUsage(history, 0)
+	}
+	wantMeasured := measured(openai)
+	wantClearedOpenAI := cleared(openai)
+	wantClearedAnthropic := cleared(anthropic)
+	if wantMeasured == wantClearedOpenAI || wantMeasured == wantClearedAnthropic || wantClearedOpenAI == wantClearedAnthropic {
+		t.Fatalf("degenerate fixture: outcomes collide: %+v %+v %+v", wantMeasured, wantClearedOpenAI, wantClearedAnthropic)
+	}
+	allowed := map[schema.ContextMetrics]bool{
+		wantMeasured:         true,
+		wantClearedOpenAI:    true,
+		wantClearedAnthropic: true,
+	}
+
+	cm := NewManager(openai, nil, cheapmodel.New(nil))
+	cm.RecordInputTokens(500, 3)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				cm.SetProfile(anthropic)
+			} else {
+				cm.SetProfile(openai)
+			}
+		}
+	})
+
+	for range 200 {
+		got := cm.EstimateUsage(history, 0)
+		if !allowed[got] {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("EstimateUsage = %+v, want %+v, %+v or %+v: the profile and its measurement must come from one snapshot", got, wantMeasured, wantClearedOpenAI, wantClearedAnthropic)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
