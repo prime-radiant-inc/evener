@@ -160,3 +160,21 @@ test("two exports behind one local alias are refused, not merged", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a backtick specifier is rewritten like a quoted one", () => {
+  // A specifier with nothing to interpolate is a different node kind carrying
+  // the same string, and a reader that only knows string literals skips it in
+  // silence -- leaving a path import behind the rewrite it was meant to make.
+  const root = fixture({
+    "mobile/src/state.ts": "const doc = await import(`../../appwire-client/typescript/docContent`);\nvoid doc;\n",
+  });
+  try {
+    assert.equal(rewrite(root).status, 0);
+    assert.match(
+      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
+      /import\("@evener\/appwire-client\/docContent"\)/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

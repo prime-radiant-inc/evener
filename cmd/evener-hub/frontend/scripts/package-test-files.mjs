@@ -146,7 +146,7 @@ function moduleSpecifiersIn(file, text) {
     } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       literal = node.arguments[0] ?? null;
     }
-    if (literal && ts.isStringLiteral(literal)) found.push(literal.text);
+    if (literal && ts.isStringLiteralLike(literal)) found.push(literal.text);
     ts.forEachChild(node, visit);
   };
   visit(source);

@@ -158,10 +158,14 @@ function exportedNames(file, seen = new Set()) {
 // Every module-specifier node in a file that could name the package, with the
 // bindings it brings in. `kind` drives the error messages and the namespace
 // rule: a namespace object cannot come from a root re-export.
+// isStringLiteralLike, not isStringLiteral: a specifier may be written as a
+// no-substitution template literal (import(`./x`), require(`./x`),
+// vi.mock(`./x`)), which is the same string and a different node kind. Both
+// carry .text, and the rewrite replaces the whole node with a quoted string.
 function specifierSites(source) {
   const sites = [];
   const visit = (node) => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const clause = node.importClause;
       const bindings = [];
       let kind = "side-effect";
@@ -182,7 +186,7 @@ function specifierSites(source) {
         }
       }
       sites.push({ node: node.moduleSpecifier, kind, bindings });
-    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const bindings = [];
       let kind = "namespace";
       if (node.exportClause && ts.isNamedExports(node.exportClause)) {
@@ -190,7 +194,7 @@ function specifierSites(source) {
         for (const element of node.exportClause.elements) bindings.push((element.propertyName ?? element.name).text);
       }
       sites.push({ node: node.moduleSpecifier, kind, bindings });
-    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteralLike(node.argument.literal)) {
       // `import("../protocol/types.gen").LaunchConfigLayer`
       const bindings = [];
       let qualifier = node.qualifier;
@@ -202,7 +206,7 @@ function specifierSites(source) {
     } else if (ts.isCallExpression(node)) {
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
       const isMock = ts.isPropertyAccessExpression(node.expression) && ["mock", "doMock", "importActual", "importMock", "unmock"].includes(node.expression.name.text);
-      if ((isDynamicImport || isMock) && node.arguments.length > 0 && ts.isStringLiteral(node.arguments[0])) {
+      if ((isDynamicImport || isMock) && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])) {
         sites.push({ node: node.arguments[0], kind: "namespace", bindings: [] });
       }
     }
@@ -284,7 +288,7 @@ function mergeDuplicateImports(file, text, conflicts) {
   );
   const groups = new Map();
   for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
     const specifier = statement.moduleSpecifier.text;
     if (!specifier.startsWith(PACKAGE_NAME)) continue;
     const clause = statement.importClause;

@@ -41,7 +41,7 @@ export function packageValuesIn(source) {
     const isExport = ts.isExportDeclaration(statement);
     if (!isImport && !isExport) continue;
     const moduleSpecifier = statement.moduleSpecifier;
-    if (!moduleSpecifier || !ts.isStringLiteral(moduleSpecifier)) continue;
+    if (!moduleSpecifier || !ts.isStringLiteralLike(moduleSpecifier)) continue;
     const names = bySpecifier.get(moduleSpecifier.text);
     if (!names) continue;
     let elements;

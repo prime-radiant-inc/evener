@@ -61,7 +61,8 @@ sources=(
 # `from "x"`, a bare `import "x"`, and a call taking the path as its first
 # argument -- `import("x")`, `require("x")`, `vi.mock("x")`, and the rest of
 # vitest's mocking family, which is why the call form is an identifier chain
-# rather than a fixed list of names. Either quote style.
+# rather than a fixed list of names. Any of the three quotes: a specifier with
+# nothing to interpolate is as spellable in backticks as in quotes.
 opener='(from[[:space:]]+|import[[:space:]]+|[A-Za-z_$][A-Za-z0-9_$.]*[[:space:]]*\([[:space:]]*)'
 # `/protocol/` rather than `protocol`: the seam is only ever reached through a
 # relative path, and a bare `protocol` substring matches @modelcontextprotocol
@@ -69,7 +70,7 @@ opener='(from[[:space:]]+|import[[:space:]]+|[A-Za-z_$][A-Za-z0-9_$.]*[[:space:]
 # closing quote is an alternative to the slash so that a specifier naming the
 # directory itself -- `"../../protocol"` -- is caught too, and for the same
 # reason the package directory needs no trailing slash.
-seam='/protocol(/|["'"'"'])'
+seam='/protocol(/|["'"'"'`])'
 package='appwire-client/typescript'
 
 status=0
@@ -105,7 +106,7 @@ done
 # same pattern -- but it earns its own message, because the fix is not "import
 # it by name" so much as "that directory is gone".
 old_seam=cmd/evener-hub/frontend/src/protocol/
-if found="$(grep "${sources[@]}" -rnE "${opener}[\"'][^\"']*(${seam}|${package})" "${trees[@]}")"; then
+if found="$(grep "${sources[@]}" -rnE "${opener}[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
 	old_path="$(printf '%s\n' "$found" | grep -F "$old_seam" || true)"
 	if [ -n "$old_path" ]; then
 		report "$old_path" "these imports name the protocol directory the package moved out of; it no longer exists:"
