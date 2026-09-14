@@ -478,8 +478,11 @@ func TestProcessGroupOrphanHelper(t *testing.T) {
 // zombie, and kill(-pgid, 0) answers for a zombie: the attempt's "the group is
 // still there, so this host has a survivor" decision is built on that window
 // being short, which holds only while something adopts and reaps the orphan.
-// On darwin it was measured at 3-12ms; this test is what says what it is on
-// the platform CI runs.
+// On darwin, 20 runs of this test all found the group already empty at the
+// first poll (1.4-2.9us). It runs on the ubuntu runner too, where it is the
+// only thing that answers this for Linux: a kernel that left the zombie
+// unadopted would hold the group past the grace and fail here, rather than
+// leaving the comment above to speak for a platform it was never measured on.
 func TestExistsAnswersNoOnceAZombieOnlyGroupIsAdopted(t *testing.T) {
 	dir := t.TempDir()
 	gone := filepath.Join(dir, "grandchild-gone")
