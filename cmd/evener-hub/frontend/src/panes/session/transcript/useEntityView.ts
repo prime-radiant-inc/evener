@@ -1,5 +1,5 @@
+import { buildEntityView, type EntityView, watchFoldKey } from "@evener/appwire-client";
 import { useMemo } from "react";
-import { buildEntityView, type EntityView, watchFoldKey } from "../../../protocol/entityView";
 import type { ThreadModel } from "../../../protocol/model";
 import { retainedActivityTree, useActivityPanelStore } from "../../../stores/activityPanel";
 

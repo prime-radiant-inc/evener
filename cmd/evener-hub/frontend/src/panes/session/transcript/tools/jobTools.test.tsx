@@ -1,7 +1,7 @@
+import { buildEntityView } from "@evener/appwire-client";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ActivityTree } from "../../../../protocol/activityData";
-import { buildEntityView } from "../../../../protocol/entityView";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";

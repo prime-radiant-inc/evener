@@ -877,7 +877,7 @@ test("the real live Composer mount discovers initial activity without a test-sup
 
   render(
     <ClientProvider client={fake}>
-      <Composer ref={ref} />
+      <Composer ref={ref} focused={false} />
     </ClientProvider>,
   );
 

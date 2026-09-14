@@ -9,10 +9,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildEntityView } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { buildEntityView } from "../../../../protocol/entityView";
 import type { ItemModel } from "../../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";

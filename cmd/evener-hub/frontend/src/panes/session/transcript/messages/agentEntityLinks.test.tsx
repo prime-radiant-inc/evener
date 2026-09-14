@@ -1,8 +1,8 @@
+import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useRef } from "react";
 import { afterEach, expect, test } from "vitest";
 import type { ActivityJob, ActivityTree } from "../../../../protocol/activityData";
-import { buildEntityView, type EntityView } from "../../../../protocol/entityView";
 import type { ThreadModel } from "../../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
@@ -45,8 +45,12 @@ const thread: ThreadModel = {
     queue: false,
     goal: false,
     rename: false,
+    sharedNotes: false,
   },
   goal: null,
+  humanNote: "",
+  agentNote: "",
+  sessionUrls: [],
   contextUsed: 0,
   contextWindow: 0,
   contextPressure: 0,

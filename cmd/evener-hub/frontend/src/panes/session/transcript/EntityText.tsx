@@ -1,6 +1,6 @@
+import { findEntityIds } from "@evener/appwire-client";
 import { type ReactNode, type ReactPortal, type RefObject, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { findEntityIds } from "../../../protocol/entityIds";
 import { EntityRef } from "./EntityRef";
 
 const ENTITY_SKIP_SELECTOR = "code, pre, script, style, a, [data-entity-host]";

@@ -13,10 +13,6 @@
 // watching vs ended varies per row; clear and terminal catch-up are quiet
 // one-liners — the summary line IS the rendering, expanded body empty.
 
-import type { ReactNode } from "react";
-import { useState } from "react";
-import type { ItemModel } from "../../../../protocol/model";
-import { clip, clipJobID, parseArgs, str } from "../../../../protocol/toolCallText";
 import {
   asJsonObject,
   boolField,
@@ -33,7 +29,11 @@ import {
   strField,
   type WatchRow,
   watchDisplayState,
-} from "../../../../protocol/watchRows";
+} from "@evener/appwire-client";
+import type { ReactNode } from "react";
+import { useState } from "react";
+import type { ItemModel } from "../../../../protocol/model";
+import { clip, clipJobID, parseArgs, str } from "../../../../protocol/toolCallText";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";

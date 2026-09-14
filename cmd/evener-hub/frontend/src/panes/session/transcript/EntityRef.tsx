@@ -1,11 +1,17 @@
+import {
+  activityDelegateState,
+  type EntityView,
+  entityOpenTarget,
+  humanizeInterval,
+  humanizeSeconds,
+  parseConditionText,
+  sourceLabel,
+} from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { isActivityFailure } from "../../../protocol/activityData";
-import { activityDelegateState } from "../../../protocol/activityRows";
 import { formatClockTime, formatElapsed, plainQuoteLine } from "../../../protocol/displayFormat";
-import { type EntityView, entityOpenTarget } from "../../../protocol/entityView";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import { formatByteCount } from "../../../protocol/toolCallText";
-import { humanizeInterval, humanizeSeconds, parseConditionText, sourceLabel } from "../../../protocol/watchRows";
 import { useTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
 import { HoverCard } from "../../../widgets/hovercard";
 import { requireClass } from "../../../widgets/internal/requireClass";
