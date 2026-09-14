@@ -1756,16 +1756,13 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// its length cannot name a durable transcript turn.
 	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
-	err := s.appendTurnAfterTranscriptWriteLocked(
+	err := s.appendTurnAfterCleanTranscriptWriteLocked(
 		turn,
 		func() error { return s.writeTranscriptDurableLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	)
-	// A retained entry is already committed by the append above, so only a
-	// write that left no record — or one whose outcome is unknown — reaches
-	// the reconciliation below.
-	committed := entryIsRecorded(err)
-	if err != nil && !committed {
+	committed := err == nil
+	if err != nil {
 		// RenderDiff advances the tracker before the transcript write so it can
 		// render the diff. What becomes of that advance depends on what the
 		// transcript can be shown to hold. attentionMu keeps compaction from
@@ -1963,22 +1960,38 @@ func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write fu
 }
 
 func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
-	holdPairMinted(persisted)
 	// The entry decides, here as everywhere else (entryOutcome): a write that
 	// failed with its whole line in the file leaves a record every returning
 	// reader finds, so the in-memory half of the pair is owed. Dropping it
 	// would leave the turn readable on disk and absent from the history a fold
 	// copies from — the next marker then discards it with nothing standing in
 	// for it, and the session that kept running never had it either.
-	recorded, report := entryOutcome(write())
-	if !recorded {
-		return report
+	return s.appendTurnAfterTranscriptWriteCommitting(persisted, write, appendLocked, entryIsRecorded)
+}
+
+// appendTurnAfterCleanTranscriptWriteLocked is appendTurnAfterTranscriptWrite
+// for the one producer that reconciles a failed write itself: the environment
+// append re-reads the transcript behind a durability barrier and rewinds its
+// tracker when the outcome is anything but certain. Its tracker claims the
+// MODEL SAW the turn, so a line that is in the file but not yet proven durable
+// is exactly the case it re-renders rather than claims — which means the
+// generic rule must not have committed the turn before that reconciliation
+// runs.
+func (s *Session) appendTurnAfterCleanTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
+	return s.appendTurnAfterTranscriptWriteCommitting(persisted, write, appendLocked, func(err error) bool { return err == nil })
+}
+
+func (s *Session) appendTurnAfterTranscriptWriteCommitting(persisted schema.Turn, write func() error, appendLocked func(), commits func(error) bool) error {
+	holdPairMinted(persisted)
+	err := write()
+	if !commits(err) {
+		return err
 	}
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
-	return report
+	return err
 }
 
 // logPairPersistedLocked records the persisted transcript form of one
