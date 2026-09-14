@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -131,6 +132,53 @@ func TestDigestSkillsFS_RejectsOversizedTree(t *testing.T) {
 	}
 	if _, err := digestSkillsFS(skillFSFixture(files)); err == nil {
 		t.Fatal("digest accepted a tree over the total-size bound")
+	}
+}
+
+// growingFS reports a file whose declared size is smaller than the bytes its
+// Open yields, so the digest's growth detection can be exercised.
+type growingFS struct{ inner fs.FS }
+
+func (g growingFS) Open(name string) (fs.File, error) {
+	f, err := g.inner.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := f.Stat(); err == nil && !info.IsDir() {
+		return &growingFile{File: f}, nil
+	}
+	return f, nil
+}
+
+func (g growingFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	return fs.ReadDir(g.inner, name)
+}
+
+// growingFile yields one byte past the underlying file's declared size.
+type growingFile struct {
+	fs.File
+	extra bool
+}
+
+func (f *growingFile) Read(p []byte) (int, error) {
+	n, err := f.File.Read(p)
+	if n > 0 || !errors.Is(err, io.EOF) || f.extra {
+		return n, err
+	}
+	f.extra = true
+	if len(p) == 0 {
+		return 0, io.EOF
+	}
+	p[0] = 'x'
+	return 1, nil
+}
+
+// A file that grows after its size is read must not have its original prefix
+// hashed and compare equal.
+func TestDigestSkillsFS_RejectsFileThatGrewAfterStat(t *testing.T) {
+	fsys := growingFS{inner: skillFSFixture(map[string]string{"SKILL.md": "body"})}
+	if _, err := digestSkillsFS(fsys); err == nil {
+		t.Fatal("digest accepted a file that grew after its size was read")
 	}
 }
 
@@ -427,6 +475,15 @@ func TestCloneSkillMetaMap_DeepCopiesAllowedTools(t *testing.T) {
 	clone["a"].AllowedTools[0] = "write_file"
 	if original["a"].AllowedTools[0] != "read_file" {
 		t.Fatal("clone aliased AllowedTools")
+	}
+}
+
+func TestCloneSkillMetaMap_DeepCopiesMetadata(t *testing.T) {
+	original := map[string]SkillMeta{"a": {Name: "a", Metadata: map[string]any{"k": []any{"v"}}}}
+	clone := cloneSkillMetaMap(original)
+	clone["a"].Metadata["k"].([]any)[0] = "mutated"
+	if original["a"].Metadata["k"].([]any)[0] != "v" {
+		t.Fatal("clone aliased Metadata")
 	}
 }
 

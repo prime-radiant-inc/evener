@@ -393,12 +393,7 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 // name is never followed; the content is then re-digested rather than trusted
 // from the directory name.
 func publishedSkillsDir(dest, digest string) bool {
-	info, err := os.Lstat(dest)
-	if err != nil || !info.IsDir() {
-		return false
-	}
-	actual, err := digestSkillsFS(os.DirFS(dest))
-	return err == nil && actual == digest
+	return cacheDirUsable(dest, digest)
 }
 
 // digestSkillsFS returns a stable hex digest over every path and byte in fsys.
@@ -520,13 +515,14 @@ func copyEmbeddedSkills(skillsFS fs.FS, dir string) error {
 	})
 }
 
-// cloneSkillMetaMap copies the map and each entry's AllowedTools slice, so a
-// caller mutating the returned metadata cannot reach into the process-wide
-// cache.
+// cloneSkillMetaMap copies the map, each entry's AllowedTools slice, and each
+// entry's Metadata, so a caller mutating the returned metadata cannot reach into
+// the process-wide cache.
 func cloneSkillMetaMap(in map[string]SkillMeta) map[string]SkillMeta {
 	out := make(map[string]SkillMeta, len(in))
 	for name, meta := range in {
 		meta.AllowedTools = append([]string(nil), meta.AllowedTools...)
+		meta.Metadata = cloneMetadata(meta.Metadata)
 		out[name] = meta
 	}
 	return out
