@@ -248,7 +248,12 @@ class Driver {
         ta.dispatchEvent(new Event("input", { bubbles: true }));
         return { value: ta.value, expected: next }; })()`,
     );
-    if (inserted?.error) throw new Error(`typeText: ${inserted.error}`);
+    // A null comes back when the evaluate itself could not run -- a navigation
+    // between the send and the reply, or a CDP error -- and reading .value off
+    // it would report a TypeError from this line instead of that.
+    if (!inserted || inserted.error) {
+      throw new Error(`typeText: ${inserted ? inserted.error : "no result from the page (navigated or disconnected?)"}`);
+    }
     if (inserted.value !== inserted.expected) {
       throw new Error(
         `typeText: composer holds ${JSON.stringify(inserted.value)} after the edit, expected ${JSON.stringify(inserted.expected)}`,
@@ -599,26 +604,36 @@ class Driver {
     return labels[0].label;
   }
 
-  // Every submit states the draft it means to send, and the composer is held
-  // to it first. A draft that arrived corrupted used to be discovered much
-  // later, as a wait timing out on a transcript line that could not appear;
-  // named here, the failure says which characters are wrong and stops.
-  async clickSubmit(ref, expectText) {
+  // Every action that SENDS the composer's draft states the draft it means to
+  // send, and the composer is held to it first. A draft that arrived
+  // corrupted used to be discovered much later, as a wait timing out on a
+  // transcript line that could not appear; named here, the failure says which
+  // characters are wrong and stops at the action that would have carried it.
+  //
+  // Two actions send a typed draft: submit and steer. The queue strip's
+  // controls do not -- "Steer queue now" drains rows that were queued through
+  // submit, each already held to its own text, and "Edit message" returns a
+  // row to the composer without sending anything.
+  async sendComposerDraft(ref, testId, action, expectText) {
     if (typeof expectText !== "string") {
-      throw new Error(`clickSubmit(${ref}): pass the draft this submit means to send`);
+      throw new Error(`${action}(${ref}): pass the draft this action means to send`);
     }
     const state = await this.composerState(ref);
-    if (!state) throw new Error(`clickSubmit(${ref}): no composer to submit`);
+    if (!state) throw new Error(`${action}(${ref}): no composer to send from`);
     if (state.text !== expectText) {
       throw new Error(
-        `clickSubmit(${ref}): composer holds ${JSON.stringify(state.text)}, expected ${JSON.stringify(expectText)}`,
+        `${action}(${ref}): composer holds ${JSON.stringify(state.text)}, expected ${JSON.stringify(expectText)}`,
       );
     }
-    await this.clickComposerAction(ref, "composer-submit");
+    await this.clickComposerAction(ref, testId);
   }
 
-  async clickSteer(ref) {
-    await this.clickComposerAction(ref, "composer-steer");
+  async clickSubmit(ref, expectText) {
+    await this.sendComposerDraft(ref, "composer-submit", "clickSubmit", expectText);
+  }
+
+  async clickSteer(ref, expectText) {
+    await this.sendComposerDraft(ref, "composer-steer", "clickSteer", expectText);
   }
 
   // A composer action click is lost when a re-render lands between the mouse
@@ -991,7 +1006,7 @@ async function runScenariosPart2(driver) {
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.steer);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSteer(driver.sessionA);
+  await driver.clickSteer(driver.sessionA, PROSE.steer);
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("steered", { prose: PROSE.steer });
   const steerBaseline = await driver.replyBaseline();
