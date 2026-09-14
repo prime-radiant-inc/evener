@@ -1440,13 +1440,24 @@ placeholder is untouched). The exact-text assertion in
 `QueueStrip.test.tsx` — "a skill-only authoritative row drops the daemon's
 generic placeholder instead of doubling it" — fails without that rule.
 
+That first rule was too broad, and the round's reviewer proved it with two
+probes: it dropped the preview for ANY no-prose entry, so an image-plus-skill
+row lost its `[image]` placeholder, and a row whose prose arrived only in the
+daemon's preview (no `texts` entry) lost its prose. The rule now drops the
+preview only when it is NOTHING BUT the generic skill placeholder
+(`/^\[\d*\s*skills?\]$/i`); every other preview survives with the markers
+appended. Both holes are pinned by exact-text tests — "a no-prose row with an
+image and a skill keeps both the image placeholder and the named marker" and "a
+row whose prose arrives only in the preview keeps that prose alongside its named
+marker" — and both fail under the broader rule.
+
 The pins are `QueueStrip.test.tsx`'s "an authoritative row appends its skill
 markers to the daemon's preview text" and "a skill-only authoritative row shows
 its named marker rather than staying generic" (2 failures under the reverted row
 composition) and `PendingChips.test.tsx`'s two marker tests (2 failures under
 the reverted chip body).
 
-### The four remaining Lows
+### The remaining Lows
 
 - **Cancellation receipts accumulated without bound.** Every
   `cancelSkillCompaction` appended an identity-less `cancelled` receipt that

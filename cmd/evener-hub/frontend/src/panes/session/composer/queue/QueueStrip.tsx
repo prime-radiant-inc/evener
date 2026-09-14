@@ -378,17 +378,18 @@ export function QueueStrip({
           // The daemon's preview names skills only generically ("[skill]" /
           // "[N skills]"), while the pending and durable rows for the SAME
           // submission name them from the entry's own canonical selections.
-          // Those named markers are the better label for exactly that content,
-          // so for a skill-only entry they REPLACE the generic placeholder
-          // rather than doubling it ("[skill] [skill: pkg:probe]"). A preview
-          // with prose keeps its text, with the markers appended after it, and
-          // a preview that is not about skills at all - an image placeholder,
-          // say - is untouched. The preview text is truncated first so a
+          // When the preview is NOTHING BUT that generic placeholder - the
+          // skill-only case, where it carries no information the named markers
+          // do not - the placeholder is redundant and is dropped rather than
+          // doubled ("[skill] [skill: pkg:probe]"). Every other preview keeps
+          // whatever it holds: prose (even when only the daemon supplies it),
+          // an image placeholder, or a mix of them, with the named markers
+          // appended after it. The preview text is truncated first so a
           // full-length line can never push the markers past the display cap.
           const namedMarkers = skillMarkers(entrySkillNames ?? []);
-          const hasProse = (fullText ?? "").trim() !== "";
-          const previewText =
-            hasProse || namedMarkers === "" ? truncateForDisplay(preview?.[index] ?? fullText ?? "") : "";
+          const entryPreview = truncateForDisplay(preview?.[index] ?? fullText ?? "");
+          const genericSkillPlaceholder = /^\[\d*\s*skills?\]$/i.test(entryPreview.trim());
+          const previewText = genericSkillPlaceholder ? "" : entryPreview;
           const displayText = [previewText, namedMarkers].filter((part) => part !== "").join(" ");
           const busy = entryId !== undefined && busyEntryIds.has(entryId);
           const actionsAvailable = hasIds && entryId !== undefined;

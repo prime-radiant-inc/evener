@@ -631,6 +631,57 @@ describe("row rendering", () => {
     expect(row.textContent).not.toMatch(/\[skill\](\s|$)/);
   });
 
+  // Only the generic skill placeholder is redundant with the named markers.
+  // An entry that also holds an image must keep its image placeholder: dropping
+  // every preview for a no-prose entry would silently hide the attachment.
+  test("a no-prose row with an image and a skill keeps both the image placeholder and the named marker", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: ["[image]"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("[image] [skill: pkg:probe]")).toBeTruthy();
+  });
+
+  // The prose can come from the daemon's preview alone (no texts entry), which
+  // is exactly the case a "does the entry have text?" check gets wrong: the
+  // preview is not a skill placeholder, so it must survive with the markers
+  // appended after it.
+  test("a row whose prose arrives only in the preview keeps that prose alongside its named marker", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [],
+          preview: ["audit the tests"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("audit the tests [skill: pkg:probe]")).toBeTruthy();
+  });
+
   test("each row exposes steer-now, edit, and remove actions", async () => {
     const fake = connectFakeClient();
     await hydrateWithTwoRows(fake);
