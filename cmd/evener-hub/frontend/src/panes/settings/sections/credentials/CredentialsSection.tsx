@@ -285,6 +285,12 @@ export function CredentialsSection({
         const stillSupplied = credentialsStore
           .getState()
           .instances.some((instance) => instance.name === name && instance.implicit);
+        // The name can survive the removal as an environment-supplied implicit
+        // row, and a sheet left open on it would keep the removed instance's
+        // dirty draft attached to a row the user never edited - a save from it
+        // would author a new override out of that draft. Close the selection:
+        // the replacement row (if any) opens fresh.
+        setSelectedInstance(null);
         toast.push(
           "success",
           stillSupplied

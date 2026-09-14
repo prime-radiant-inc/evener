@@ -137,7 +137,11 @@ function fieldValue(entry: InstanceEntry, field: string): string {
 // fields no edit through this sheet changes. providerId/base/auth pick the
 // provider and scheme; endpointFingerprint identifies the complete resolved
 // endpoint even when the displayed baseUrl is byte-identical (a query-only
-// change is invisible in baseUrl). The fields a draft edits - baseUrl,
+// change is invisible in baseUrl). Provenance (implicit) is deliberately not
+// here: the guided flow legitimately re-anchors a draft from a curated setup row
+// to the authored row created from it, and the removal path that could hand a
+// name to an environment-supplied row closes its sheet instead (see
+// CredentialsSection's confirmed removal). The fields a draft edits - baseUrl,
 // protocol, surface, vars, apiKeyEnv, credentialHeader - are deliberately not
 // here: a change to one of them is this instance edited, not a different
 // instance under the same name.

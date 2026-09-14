@@ -1678,7 +1678,7 @@ func TestInstances_ListingRowFingerprintsTheSnapshotItCameFrom(t *testing.T) {
 		t.Fatal("the fixture registry has no work instance after the edit")
 	}
 
-	got := f.ctl.entryFor(stale, staleInst, nil)
+	got := f.ctl.entryFor(stale, staleInst, nil, endpointFingerprintKey(f.ctl.authStateDir()))
 	if got.BaseURL != served.BaseURL || got.EndpointFingerprint != served.EndpointFingerprint {
 		t.Fatalf("a row built from the snapshot = %q/%q, want the %q/%q that snapshot served",
 			got.BaseURL, got.EndpointFingerprint, served.BaseURL, served.EndpointFingerprint)
@@ -2779,7 +2779,7 @@ func TestInstances_ListReportsTheFirstAuthoredAPIKeyEnv(t *testing.T) {
 	if !ok {
 		t.Fatal("the fixture registry has no groq instance")
 	}
-	got := f.ctl.entryFor(f.ctl.reg.Get(), inst, &registry.Provider{APIKeyEnv: []string{"FIRST", "SECOND"}})
+	got := f.ctl.entryFor(f.ctl.reg.Get(), inst, &registry.Provider{APIKeyEnv: []string{"FIRST", "SECOND"}}, endpointFingerprintKey(f.ctl.authStateDir()))
 	if got.APIKeyEnv != "FIRST" {
 		t.Fatalf("APIKeyEnv = %q, want FIRST", got.APIKeyEnv)
 	}

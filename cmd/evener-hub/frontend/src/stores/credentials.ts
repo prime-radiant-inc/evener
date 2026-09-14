@@ -86,7 +86,7 @@ export interface CredentialsStoreState {
   create(params: InstanceCreateParams): Promise<boolean>;
   edit(params: InstanceEditParams): Promise<boolean>;
   remove(name: string, expectedEndpointFingerprint?: string): Promise<boolean>;
-  setDefault(name: string): Promise<void>;
+  setDefault(name: string): Promise<boolean>;
   // Auth mutations return the raw wire response and never touch
   // instances/availableProviders synchronously - on success the store
   // schedules its own listing refresh (see the wrappers below), which
@@ -223,7 +223,14 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
 
   async setDefault(name) {
     const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/setDefault", { name }));
+    const applied = await applyMutation(() => client.request("evener/instance/setDefault", { name }));
+    // A superseded response lost the store's ordering race: the read that won it
+    // may have started before the hub applied the new default, so the listing
+    // would keep the old flag until something else refreshed. The store's own
+    // read lands the post-mutation view - foreign-marked, because a default
+    // change is not the guided flow's own edit.
+    if (!applied) scheduleRefetch();
+    return applied;
   },
 
   async setApiKey(provider, value, expectedEndpointFingerprint) {

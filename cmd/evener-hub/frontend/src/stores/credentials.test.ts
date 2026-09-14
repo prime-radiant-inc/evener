@@ -1136,4 +1136,39 @@ describe("notification-triggered refetch", () => {
     // background attempt left the prior successful load untouched.
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
+
+  test("a superseded set-default schedules the store's own listing read", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch(); // initial load; also wires notification handling
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    // Hold the set-default response so a newer listing read can overtake it.
+    let finishSetDefault!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setDefault",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishSetDefault = resolve;
+        }),
+    );
+    const pending = credentialsStore.getState().setDefault("work");
+    await Promise.resolve();
+
+    // A listing read issued after the set-default wins the store race, so the
+    // set-default response lands superseded and applyMutation discards it.
+    await credentialsStore.getState().fetch();
+    const readsBefore = listSpy.mock.calls.length;
+
+    finishSetDefault(LIST_RESPONSE);
+    expect(await pending).toBe(false); // the superseded verdict
+
+    // The discarded response carried the new default flag, and the read that
+    // won may have started before the hub applied it. A superseded verdict must
+    // therefore schedule the store's own post-mutation read, or the listing
+    // keeps the old flag until something else refreshes it.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy.mock.calls.length).toBe(readsBefore + 1);
+  });
 });

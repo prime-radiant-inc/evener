@@ -1157,6 +1157,53 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     expect(screen.queryByText(/could not be confirmed/)).toBeNull();
   });
 
+  // The authored entry's name can survive the removal as an environment-
+  // supplied implicit row. A sheet left open on that name keeps the removed
+  // instance's dirty draft and offers a Save that would author a new override
+  // out of it, so a confirmed removal clears the selection: the replacement
+  // row opens fresh.
+  test("a confirmed removal closes the sheet even when the name survives as an environment-supplied row", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return {
+        instances: [
+          instance({
+            name: "work",
+            providerId: "anthropic",
+            implicit: true,
+            activeSource: "env:ANTHROPIC_API_KEY",
+          }),
+        ],
+        availableProviders: [],
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    // A dirty draft in the sheet's own editor lights its Save button - exactly
+    // the control that must not survive onto the replacement implicit row.
+    await user.type(within(inspector).getByLabelText("Base URL"), "https://edited.example");
+    expect((within(inspector).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/Removed instance work; environment access for it is still active/);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "work" })).toBeNull());
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(
+      fake.calls.filter((call) => call.method === "evener/instance/edit" || call.method === "evener/instance/create"),
+    ).toEqual([]);
+  });
+
   test("cancelling a confirm dialog makes no RPC call and keeps the sheet open", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);

@@ -53,6 +53,13 @@ func (c *hubInstancesController) write(l *registry.Layer) error {
 // credential status, plus the providers an add form can build on and the
 // diagnostics the pane shows above them.
 func (c *hubInstancesController) List() appwire.InstanceListResponse {
+	// The fingerprint key is resolved once, before either lock is taken:
+	// resolving it can repair the file (an inter-process lock and a write), and
+	// holding the credential lock across that would let a listing stall every
+	// credential writer behind a contended state root. One key for the whole
+	// listing also keeps every row keyed the same way if a repair lands beside
+	// it.
+	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
 	// The registry snapshot, the reread of providers.toml and every row built
 	// from both are one view (entryFor): a mutation's write lands the authored
 	// fields before its reload commits the resolved endpoint, so a listing that
@@ -90,7 +97,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 					authored = &p
 				}
 			}
-			entries = append(entries, c.entryFor(r, inst, authored))
+			entries = append(entries, c.entryFor(r, inst, authored, key))
 		}
 		for _, id := range r.ProviderIDs() {
 			p, ok := r.Provider(id)
@@ -113,7 +120,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 						authored = &p
 					}
 				}
-				entry := c.entryFor(r, inst, authored)
+				entry := c.entryFor(r, inst, authored, key)
 				setup = &entry
 			}
 			providers = append(providers, appwire.ProviderDescriptor{
@@ -135,7 +142,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 	// The pane has to be able to say why every fingerprint is missing: a state
 	// root whose key cannot be read or written is what omits them, and the
 	// writes that would otherwise assert one are refused (verifyEndpointFingerprint).
-	if keyDiagnostic := endpointFingerprintKeyDiagnostic(c.authStateDir()); keyDiagnostic != "" {
+	if keyDiagnostic := fingerprintKeyDiagnostic(keyErr); keyDiagnostic != "" {
 		diagnostics = append(diagnostics, keyDiagnostic)
 	}
 	return appwire.InstanceListResponse{
@@ -180,7 +187,9 @@ func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry
 // entryFor is the wire view of one instance: the registry's own description,
 // plus the credential status the auth controller derives for it, and the
 // credential fields from its authored entry — nil for an implicit instance,
-// which has no entry in providers.toml and so prefills neither.
+// which has no entry in providers.toml and so prefills neither. key is the
+// fingerprint key the caller resolved for the listing this entry belongs to
+// (List resolves one for all rows; see fingerprintWithKey).
 //
 // r is the snapshot inst was read from, and it is what the endpoint
 // fingerprint is derived from. Asking the holder for the current registry
@@ -188,8 +197,15 @@ func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry
 // displayed URL from one state of providers.toml and a fingerprint from
 // another, and a credential write asserting that pair would describe a
 // destination that never existed.
-func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.Instance, authored *registry.Provider) appwire.InstanceEntry {
-	status := c.auth.instanceStatus(inst)
+func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.Instance, authored *registry.Provider, key []byte) appwire.InstanceEntry {
+	// A bare controller (a construction with no auth controller wired) still
+	// describes the registry it holds: there is no credential layer to derive a
+	// status from, so the row carries an empty one rather than dereferencing a
+	// nil controller.
+	var status appwire.AuthStatusResponse
+	if c.auth != nil {
+		status = c.auth.instanceStatus(inst)
+	}
 	entry := appwire.InstanceEntry{
 		Name:                inst.Name,
 		Base:                inst.Base,
@@ -198,7 +214,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		Surface:             inst.Surface,
 		Auth:                inst.Auth,
 		BaseURL:             sanitizeEndpointURL(inst.BaseURL),
-		EndpointFingerprint: destinationFingerprint(c.authStateDir(), r, inst),
+		EndpointFingerprint: destinationFingerprintKeyed(key, r, inst),
 		Vars:                inst.Vars,
 		Implicit:            inst.Implicit,
 		Hidden:              inst.Hidden,
@@ -298,11 +314,16 @@ func sanitizeEndpointURL(raw string) string {
 // exactly what the sanitized copy exists to prevent. A state root the hub
 // cannot key under omits the fingerprint rather than serving that digest.
 func endpointFingerprint(stateDir, identity string) string {
-	if strings.TrimSpace(identity) == "" {
-		return ""
-	}
-	key := endpointFingerprintKey(stateDir)
-	if len(key) == 0 {
+	return fingerprintWithKey(endpointFingerprintKey(stateDir), identity)
+}
+
+// fingerprintWithKey digests one destination identity with an already-resolved
+// key. An empty key (this hub could not resolve one) or an empty identity has
+// no digest: the caller omits the fingerprint rather than serving an unkeyed
+// one. List resolves one key for its whole listing and passes it here, so every
+// row of that listing is keyed the same way even if a repair lands beside it.
+func fingerprintWithKey(key []byte, identity string) string {
+	if len(key) == 0 || strings.TrimSpace(identity) == "" {
 		return ""
 	}
 	mac := hmac.New(sha256.New, key)
@@ -354,11 +375,18 @@ func destinationInstance(r *registry.Registry, inst registry.Instance) (registry
 // of the listing, and an unresolvable one has nothing to describe - or when the
 // hub has no key to digest with.
 func destinationFingerprint(stateDir string, r *registry.Registry, inst registry.Instance) string {
+	return destinationFingerprintKeyed(endpointFingerprintKey(stateDir), r, inst)
+}
+
+// destinationFingerprintKeyed is destinationFingerprint with the key already
+// resolved (see fingerprintWithKey): List resolves one key for all its rows,
+// and every other caller resolves one per call.
+func destinationFingerprintKeyed(key []byte, r *registry.Registry, inst registry.Instance) string {
 	resolved, ok := destinationInstance(r, inst)
 	if !ok {
 		return ""
 	}
-	return endpointFingerprint(stateDir, destinationIdentity(resolved))
+	return fingerprintWithKey(key, destinationIdentity(resolved))
 }
 
 // endpointFingerprintKeyFile is the key's name under the auth state root, the
@@ -390,6 +418,11 @@ var (
 	// publishFreshEndpointFingerprintKey). A seam, like the two above, so a test
 	// can stand in for such a filesystem on one that supports links.
 	endpointFingerprintKeyLink = os.Link
+	// resolveEndpointFingerprintKey is the seam List resolves the listing's key
+	// through: production reads (and, when the file is unusable, repairs) the key
+	// here, and a test can count the resolutions and observe that they happen
+	// before the credential lock is taken.
+	resolveEndpointFingerprintKey = endpointFingerprintKeyState
 )
 
 // endpointFingerprintKey returns the key the endpoint fingerprints are keyed
@@ -439,18 +472,18 @@ func endpointFingerprintKeyState(stateDir string) ([]byte, error) {
 	return key, nil
 }
 
-// endpointFingerprintKeyDiagnostic is what the listing says when a state root
-// exists but cannot yield its key: every fingerprint is omitted (see
-// endpointFingerprint) and every credential write that asserts nothing is
-// refused (see hubAuthController.verifyEndpointFingerprint), so the pane has to
-// say why rather than show a silently unkeyed hub. The reason is the read or
-// repair error - it names the file and what is wrong with it, never key
+// fingerprintKeyDiagnostic is what the listing says when a state root exists but
+// cannot yield its key: every fingerprint is omitted (see endpointFingerprint)
+// and every credential write that asserts nothing is refused (see
+// hubAuthController.verifyEndpointFingerprint), so the pane has to say why
+// rather than show a silently unkeyed hub. keyErr is the listing's own
+// resolution error - it names the file and what is wrong with it, never key
 // material - and a bare controller with no state root has nothing to report.
-func endpointFingerprintKeyDiagnostic(stateDir string) string {
-	if _, err := endpointFingerprintKeyState(stateDir); err != nil {
-		return fmt.Sprintf("%s: %v (endpoint fingerprints are unavailable until it can be read or written)", endpointFingerprintKeyFile, err)
+func fingerprintKeyDiagnostic(keyErr error) string {
+	if keyErr == nil {
+		return ""
 	}
-	return ""
+	return fmt.Sprintf("%s: %v (endpoint fingerprints are unavailable until it can be read or written)", endpointFingerprintKeyFile, keyErr)
 }
 
 // readEndpointFingerprintKey returns the key at path, refusing a file this hub
@@ -721,6 +754,18 @@ func credentialHeaderFrom(field string) (map[string]string, error) {
 	return map[string]string{name: value}, nil
 }
 
+// requireAuth refuses an instance change when this controller has no auth
+// controller to check or move credentials with (a bare construction, which the
+// tests use). List still describes the registry it holds; a change that reads or
+// writes credentials cannot, and must refuse rather than dereference a nil
+// controller.
+func (c *hubInstancesController) requireAuth() error {
+	if c.auth == nil {
+		return appwire.InternalError("this hub has no credential controller: instance changes are unavailable")
+	}
+	return nil
+}
+
 // refuseWhenBroken stops every write while there is no registry to write
 // against: a providers.toml that does not load (the hub has no way to rewrite
 // a file it could not read without destroying what the user wrote — spec §10,
@@ -749,6 +794,9 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // fix.
 func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
+		return err
+	}
+	if err := c.requireAuth(); err != nil {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
@@ -850,6 +898,9 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 // read, write, or restore failure) stay plain errors.
 func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
+		return err
+	}
+	if err := c.requireAuth(); err != nil {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
@@ -1137,6 +1188,9 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
+	if err := c.requireAuth(); err != nil {
+		return err
+	}
 	// The name is forwarded to authopenai.DeleteAuth, which joins it into
 	// stateDir/auth/<name>.json; validating it here is what keeps a name
 	// containing path separators from deleting an arbitrary file.
@@ -1390,6 +1444,9 @@ func describeImplicit(inst registry.Instance) string {
 // (#717/#748): the caller sent it, so it comes back as appwire.InvalidParams.
 func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
+		return err
+	}
+	if err := c.requireAuth(); err != nil {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
