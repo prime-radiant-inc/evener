@@ -389,16 +389,21 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 // single-session deletion (sessionDelete) so both apply the exact
 // same per-target contract instead of two copies of it.
 func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID string) (deleted bool, skip *projectDeleteSkip, decisionErrors []string) {
-	// Under this verified deletion ownership, release the exact target root's
-	// scratch-retention manifest before its state is purged. A manifest owned by
-	// a surviving root is never touched, so a child-only deletion cannot release
-	// its parent's retained scratch. A release failure is recorded, not silently
-	// dropped, so deletion still proceeds conservatively.
-	if err := releaseProjectDeletionScratchRetention(stateDir, threadID); err != nil {
-		decisionErrors = append(decisionErrors, "scratch retention release error: "+err.Error())
-	}
+	// Remove the artifacts first: the release below is authorized by that
+	// deletion succeeding, not by the attempt. Releasing before a removal that
+	// can still fail would tombstone a session whose metadata and transcript
+	// survive (and stay resumable), so a later resume would mint replacement
+	// scratch and let the originally retained directories be collected.
 	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
 		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, decisionErrors
+	}
+	// Under this verified deletion ownership, release the exact target root's
+	// scratch-retention manifest now that its state is purged. A manifest owned
+	// by a surviving root is never touched, so a child-only deletion cannot
+	// release its parent's retained scratch. A release failure is recorded, not
+	// silently dropped, so deletion still proceeds conservatively.
+	if err := releaseProjectDeletionScratchRetention(stateDir, threadID); err != nil {
+		decisionErrors = append(decisionErrors, "scratch retention release error: "+err.Error())
 	}
 	return true, nil, append(decisionErrors, s.scrubSessionDecisions(threadID)...)
 }

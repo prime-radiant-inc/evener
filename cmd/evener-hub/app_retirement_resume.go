@@ -51,11 +51,14 @@ func retirementAdmissionRecoveryError(cfg hubcore.WebConfig, id string, epoch ui
 	return nil
 }
 
-// sameDaemonIdentity compares the process identity of two rendezvous entries:
-// the same daemon re-published or re-probed keeps every field, while a
-// replacement differs in at least one.
+// sameDaemonIdentity compares the process identity of two rendezvous entries
+// through the single exact-ownership fingerprint (rendezvous.OwnershipFingerprint):
+// the same daemon re-published or re-probed keeps every owned field, while a
+// replacement differs in at least one. Using the fingerprint rather than a
+// hand-picked subset keeps this decision identical to the ownership authority
+// the daemon and hub already enforce for exact ownership.
 func sameDaemonIdentity(a, b rendezvous.Entry) bool {
-	return a.PID == b.PID && a.StartedAt.Equal(b.StartedAt) && a.InstanceID == b.InstanceID && a.Endpoint == b.Endpoint
+	return rendezvous.OwnershipFingerprint(a) == rendezvous.OwnershipFingerprint(b)
 }
 
 // awaitRetiredOwner waits for the exact retired owner to exit and verifies the

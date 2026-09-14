@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,5 +82,49 @@ func TestScratchRetentionDeleteReleasesOnlyTargetRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(survivorScratch, hubScratchPinName)); err != nil {
 		t.Fatalf("surviving root pin was removed: %v", err)
+	}
+}
+
+// TestScratchRetentionReleaseWaitsForArtifactRemoval proves the retention
+// manifest is released only after the deletion it authorizes actually removed
+// the session's artifacts. A failed removal reports skip and must leave the
+// manifest and its directory pin intact, so the session stays resumable at its
+// originally retained scratch instead of silently minting replacement scratch.
+func TestScratchRetentionReleaseWaitsForArtifactRemoval(t *testing.T) {
+	stateDir := t.TempDir()
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, targetID, "/tmp/del-project")
+
+	owner := sandboxpkg.ScratchOwner{StateDir: stateDir, RootSessionID: targetID}
+	targetScratch := pinHubScratch(t, owner)
+
+	runDir := filepath.Join(stateDir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == targetID+".future-artifact" {
+			return errors.New("flat-file removal failed")
+		}
+		return oldRemove(path)
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+
+	deleted, skip, _ := web.cleanupProjectDeletionTargetAndDecisions(stateDir, targetID)
+	if deleted || skip == nil {
+		t.Fatalf("failed artifact removal must skip: deleted=%v skip=%+v", deleted, skip)
+	}
+	manifest, err := sandboxpkg.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Released {
+		t.Fatal("retention manifest was released before the deletion it authorizes succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(targetScratch, hubScratchPinName)); err != nil {
+		t.Fatalf("retained directory pin was removed by a failed deletion: %v", err)
 	}
 }

@@ -63,10 +63,14 @@ function effectiveTimeout(daemon: DaemonResident): string {
   return formatTimeout(daemon.lifecycle.timeoutMillis);
 }
 
-// formatBlocker formats a DaemonBlocker for display. sessionId or delegateId
-// is included alongside the category so the operator can identify the blocking
-// entity (e.g. "turn (session-abc)" or "delegate (dlg-xyz)").
+// formatBlocker formats a DaemonBlocker for display. Its sessionId and/or
+// delegateId is included alongside the category so the operator can identify
+// the blocking entity (e.g. "turn (session-abc)" or "delegate (dlg-xyz)").
+// A delegate blocker carries both its root session id and its delegate id, so
+// both are rendered as "(session/delegate)"; dropping either would leave the
+// operator unable to tell which delegate blocks retirement.
 function formatBlocker(b: DaemonBlocker): string {
+  if (b.sessionId && b.delegateId) return `${b.category} (${b.sessionId}/${b.delegateId})`;
   const id = b.sessionId ?? b.delegateId;
   return id ? `${b.category} (${id})` : b.category;
 }

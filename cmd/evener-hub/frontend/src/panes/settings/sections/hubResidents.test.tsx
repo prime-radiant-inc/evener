@@ -138,6 +138,36 @@ test("list-snapshot lifecycle blockers are shown in the row before any retire at
   expect(within(row).getByText(/session-xyz/)).toBeTruthy();
 });
 
+test("delegate blocker with both ids renders the root session id and the delegate id", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Delegate-blocked daemon",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: {
+          phase: "resident",
+          timeoutMillis: 3600000,
+          blockers: [{ category: "delegate", sessionId: "session-root", delegateId: "dlg-xyz" }],
+        },
+        canRetire: false,
+        canForceStop: true,
+      },
+    ],
+  }));
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Delegate-blocked daemon/ });
+  // Both the root session id and the delegate id must be visible: dropping
+  // either leaves the operator unable to tell which delegate blocks retirement.
+  expect(within(row).getByText(/delegate \(session-root\/dlg-xyz\)/)).toBeTruthy();
+});
+
 // ─── Polling: no further calls after unmount ──────────────────────────────────
 
 test("polling stops after unmount: no further calls after unmount", async () => {

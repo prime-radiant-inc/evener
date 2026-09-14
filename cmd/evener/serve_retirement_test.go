@@ -527,6 +527,117 @@ func TestServeManualRetirementResponseSurvivesServeCancel(t *testing.T) {
 	}
 }
 
+// TestServeRetirementRequestCancelAfterCommitStillExits proves a client
+// disconnect during the post-commit teardown cannot wedge a committed
+// retirement. Commit closes admission permanently, so once it returns the
+// daemon must release and exit regardless of the retiring RPC's own request
+// context: the consumer is parked immediately after Commit, its request context
+// is canceled, and the process must still reach "released" and exit.
+func TestServeRetirementRequestCancelAfterCommitStillExits(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	args = append(args, "--daemon-idle-timeout", "1h")
+	runDir := serveArgValue(args, "--run-dir")
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	clk.awaitArm(t)
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	release := rec.gateAt("committed")
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+	retireErr := make(chan error, 1)
+	go func() {
+		raw, err := json.Marshal(appwire.DaemonRetireParams{Identity: daemonIdentityFor(entry)})
+		if err != nil {
+			retireErr <- err
+			return
+		}
+		_, err = state.srv.AppServer().Router().Dispatch(reqCtx, appwire.Request{Method: appwire.MethodEvenerDaemonRetire, Params: raw})
+		retireErr <- err
+	}()
+	rec.await(t, "committed") // consumer parked after Commit, before teardown
+	cancelReq()               // the client disconnects mid-teardown
+	release()
+
+	rec.await(t, "released")
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit after committed retirement: %v", err)
+	}
+	<-retireErr
+}
+
+// TestServeRetirementPreparingRefusalTypesAsPreparing pins the phase vocabulary
+// the Hub's retirement gate depends on: a mutation refused while a claim is
+// still preparing carries LifecycleReason "preparing", never "retiring". Only a
+// committed (terminal) retirement reports "retiring" and therefore routes into
+// cmd/evener-hub's resumeAfterConfirmedRetirement; a preparing claim that later
+// aborts settles back to "resident" and can never be reached through that gate.
+func TestServeRetirementPreparingRefusalTypesAsPreparing(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	args = append(args, "--daemon-idle-timeout", "1h")
+	runDir := serveArgValue(args, "--run-dir")
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	clk.awaitArm(t)
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	// Park the manual claim BEFORE Prepare: the phase is "preparing" and the
+	// claim is uncommitted, the only window in which a preparing -> resident
+	// rollback is possible.
+	releaseGate := rec.gateAt("claim_consumed")
+	defer releaseGate()
+	retireErr := make(chan error, 1)
+	go func() {
+		_, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonRetire,
+			appwire.DaemonRetireParams{Identity: daemonIdentityFor(entry)})
+		retireErr <- err
+	}()
+	rec.await(t, "claim_consumed")
+
+	sessionID := state.session(0).ID()
+	_, err := dispatchDaemonRPC(state.srv, appwire.MethodTurnStart, appwire.TurnStartParams{
+		ClientMutationID:   "mutation-during-preparing",
+		ExpectedInstanceID: sessionID,
+		Ref:                "local:" + sessionID,
+		Input:              []appwire.InputItem{{Type: "text", Text: "refused while preparing"}},
+	})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("mutation during preparing = %v, want CodeUnavailable", err)
+	}
+	data, ok := wire.Data.(appwire.LifecycleErrorData)
+	if !ok {
+		raw, _ := json.Marshal(wire.Data)
+		if json.Unmarshal(raw, &data) != nil {
+			t.Fatalf("lifecycle error data = %#v, want appwire.LifecycleErrorData", wire.Data)
+		}
+	}
+	if data.LifecycleReason != "preparing" {
+		t.Fatalf("lifecycleReason = %q, want %q (an uncommitted claim is not retiring)", data.LifecycleReason, "preparing")
+	}
+
+	releaseGate()
+	if err := <-retireErr; err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	rec.await(t, "released")
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit: %v", err)
+	}
+}
+
 // TestServeRetirementStaleIdentityRefused proves the retire RPC revalidates
 // exact ownership before touching the admission fence: a stale generation —
 // same PID and ref, drifted start instant, state dir or address — is refused

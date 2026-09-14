@@ -940,3 +940,79 @@ func TestRetirementResumeUnreadableDiscoveryFails(t *testing.T) {
 		t.Fatalf("launches = %d, want 0", launches)
 	}
 }
+
+// TestLifecycleRetiringGateExcludesPreparing pins the gate that admits the
+// retirement-resume path: only the terminal "retiring" reason routes into
+// resumeAfterConfirmedRetirement. A refusal typed "preparing" (or "resident")
+// is an ordinary retryable race, so sameAsRefused is never evaluated for a
+// daemon that has settled back to resident — a committed retirement cannot
+// return to resident (agent/retirement.go: Commit is terminal, Abort is
+// preparing-only).
+func TestLifecycleRetiringGateExcludesPreparing(t *testing.T) {
+	if !isLifecycleRetiringError(appwire.LifecycleUnavailable("retiring")) {
+		t.Fatal(`isLifecycleRetiringError("retiring") = false, want true`)
+	}
+	for _, reason := range []string{"preparing", "resident"} {
+		if isLifecycleRetiringError(appwire.LifecycleUnavailable(reason)) {
+			t.Fatalf("isLifecycleRetiringError(%q) = true, want false: a non-terminal phase must not route into the retirement wait", reason)
+		}
+	}
+}
+
+// TestSameDaemonIdentityUsesExactOwnership proves sameDaemonIdentity treats any
+// change to a hashed ownership field as a different daemon. A narrower subset
+// (PID/StartedAt/InstanceID/Endpoint) misclassified a replacement differing only
+// in Address/Protocol/SourceID/ThreadID/SessionID/WorkspaceRef/StateDir/WorkingDir
+// as the refused owner, so resumeAfterConfirmedRetirement waited on the wrong
+// process instead of treating it as a replacement.
+func TestSameDaemonIdentityUsesExactOwnership(t *testing.T) {
+	base := rendezvous.Entry{
+		PID:          4242,
+		Address:      "127.0.0.1:5000",
+		Endpoint:     "ws://127.0.0.1:5000/rpc",
+		Protocol:     appwire.ProtocolVersion,
+		SourceID:     "local",
+		ThreadID:     "thread-a",
+		SessionID:    "session-a",
+		WorkspaceRef: "local:session-a",
+		InstanceID:   "instance-a",
+		WorkingDir:   "/work/a",
+		StateDir:     "/state/a",
+		StartedAt:    time.Unix(1700000000, 0).UTC(),
+	}
+	if !sameDaemonIdentity(base, base) {
+		t.Fatal("identical entries must be the same daemon")
+	}
+	// Probe-irrelevant settings never enter the ownership fingerprint, so a
+	// re-published copy that differs only in them stays the same owner.
+	nonOwned := base
+	nonOwned.Agent = "other"
+	nonOwned.Model = "other"
+	nonOwned.Provider = "other"
+	nonOwned.HubToken = "secret"
+	nonOwned.SpawnedBy = "someone-else"
+	if !sameDaemonIdentity(base, nonOwned) {
+		t.Fatal("non-ownership fields must not change the daemon identity")
+	}
+	drift := map[string]func(*rendezvous.Entry){
+		"pid":           func(e *rendezvous.Entry) { e.PID = 4243 },
+		"address":       func(e *rendezvous.Entry) { e.Address = "127.0.0.1:5001" },
+		"endpoint":      func(e *rendezvous.Entry) { e.Endpoint = "ws://127.0.0.1:5001/rpc" },
+		"protocol":      func(e *rendezvous.Entry) { e.Protocol = "evener-appwire-v1" },
+		"source id":     func(e *rendezvous.Entry) { e.SourceID = "remote" },
+		"thread id":     func(e *rendezvous.Entry) { e.ThreadID = "thread-b" },
+		"session id":    func(e *rendezvous.Entry) { e.SessionID = "session-b" },
+		"workspace ref": func(e *rendezvous.Entry) { e.WorkspaceRef = "local:session-b" },
+		"instance id":   func(e *rendezvous.Entry) { e.InstanceID = "instance-b" },
+		"working dir":   func(e *rendezvous.Entry) { e.WorkingDir = "/work/b" },
+		"state dir":     func(e *rendezvous.Entry) { e.StateDir = "/state/b" },
+		"started at":    func(e *rendezvous.Entry) { e.StartedAt = e.StartedAt.Add(time.Second) },
+	}
+	for name, mutate := range drift {
+		mutated := base
+		mutate(&mutated)
+		if sameDaemonIdentity(base, mutated) {
+			t.Errorf("a replacement differing in %s was classified as the refused owner", name)
+		}
+	}
+}

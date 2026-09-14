@@ -825,10 +825,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return true
 	}
 	// consumeRetirementClaim is the single pipeline both triggers share. Any
-	// failure before Commit aborts the claim and leaves the daemon resident;
-	// a failure after Commit keeps the process retiring — admission is closed
-	// and never reopens, so lingering beats forcing a kill.
-	consumeRetirementClaim := func(ctx context.Context, claim *agent.RetirementClaim) error {
+	// failure before Commit aborts the claim and leaves the daemon resident.
+	// Past Commit admission is closed permanently, so teardown runs under the
+	// daemon's own lifetime context rather than the caller's request context: a
+	// client that disconnects mid-teardown must not be able to wedge the process
+	// in "retiring". Exit is unconditional once Commit returns — a teardown
+	// failure is reported, never fatal to terminating the process.
+	consumeRetirementClaim := func(reqCtx context.Context, claim *agent.RetirementClaim) error {
 		root := getSession()
 		retirementObserve("claim_consumed", root.ID())
 		// Every failure before Commit must abort the claim, or it wedges in
@@ -842,7 +845,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if !rendezvous.StrongOwnershipAvailable() {
 			return failBeforeCommit(errors.New("retirement requires strong rendezvous ownership, unavailable on this platform"))
 		}
-		prepared, err := retirement.Prepare(ctx, claim)
+		prepared, err := retirement.Prepare(reqCtx, claim)
 		if err != nil {
 			return failBeforeCommit(fmt.Errorf("retirement preparation: %w", err))
 		}
@@ -854,20 +857,28 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("retirement commit: %w", err)
 		}
 		retirementObserve("committed", root.ID())
+		// Post-commit teardown is daemon-owned, not request-owned. The ctx used
+		// here is the daemon's lifetime context (the incoming request context is
+		// reqCtx): a committed retirement already closed admission forever, so
+		// request cancellation must never strand the process. The drain stays
+		// bounded by retirementReaderDrainBudget.
 		drainCtx, drainCancel := context.WithTimeout(ctx, retirementReaderDrainBudget)
 		drainErr := retirement.DrainReaders(drainCtx)
 		drainCancel()
+		var teardownErr error
 		if drainErr != nil {
 			serveLogf(os.Stderr, root.ID(), "retirement reader drain failed: %v", drainErr)
-			return fmt.Errorf("retirement reader drain: %w", drainErr)
-		}
-		if err := agent.ReleaseForRetirement(ctx, prepared); err != nil {
+			teardownErr = fmt.Errorf("retirement reader drain: %w", drainErr)
+		} else if err := agent.ReleaseForRetirement(ctx, prepared); err != nil {
 			serveLogf(os.Stderr, root.ID(), "retirement release failed: %v", err)
-			return fmt.Errorf("retirement release: %w", err)
+			teardownErr = fmt.Errorf("retirement release: %w", err)
+		} else {
+			retirementObserve("released", root.ID())
 		}
-		retirementObserve("released", root.ID())
+		// Exit is unconditional after Commit: teardown success is not the
+		// precondition for terminating the process.
 		cancel()
-		return nil
+		return teardownErr
 	}
 	// requestRetirement serves evener/daemon/retire. Exact-ownership
 	// revalidation runs BEFORE the admission fence is touched: a caller
