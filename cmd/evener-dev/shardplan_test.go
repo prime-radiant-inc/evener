@@ -371,6 +371,20 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			err:   "-run is not supported",
 		},
 		{
+			// -test.race is not -race: the binary has no such flag, and
+			// walking the prefix off would hand the build a sanitiser nobody
+			// asked for.
+			name:  "a -test. name the binary does not have is not a build flag",
+			flags: []string{"-test.race"},
+			err:   "-test.race",
+		},
+		{
+			name:  "-vet configures the vet that runs during the build",
+			flags: []string{"-vet=off", "-short"},
+			build: []string{"-vet=off"},
+			test:  []string{"-test.short"},
+		},
+		{
 			// The value of a refused flag is still consumed with it, so it
 			// cannot be read as a flag of its own; the refusal names -skip,
 			// not the -race that follows it.
@@ -460,6 +474,9 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 		name    string
 		goflags string
 		err     string
+		// advice is the sentence the refusal has to carry: where the flag does
+		// work, or -- for a name no binary has -- what is wrong with it.
+		advice string
 	}{
 		{name: "nothing set", goflags: ""},
 		{name: "build flags flow to the compile", goflags: "-mod=mod -trimpath -tags=integration"},
@@ -476,6 +493,9 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 		{name: "a build flag whose value looks like one", goflags: "-ldflags -short"},
 		{name: "and the same for tags", goflags: "-tags -short"},
 		{name: "but the flag itself is still refused", goflags: "-short", err: "-short"},
+		// Through GOFLAGS the same two names get the same two answers.
+		{name: "the binary's spelling of a flag it has", goflags: "-test.short", err: "-short"},
+		{name: "and of one it does not", goflags: "-test.race", err: "-test.race", advice: "not a flag the test binary has"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := checkGoflags(tc.goflags)
@@ -488,8 +508,12 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Fatalf("checkGoflags(%q) = %v, want a refusal naming %s", tc.goflags, err, tc.err)
 			}
-			if !strings.Contains(err.Error(), "command line") {
-				t.Fatalf("checkGoflags(%q) = %v, want it to say where the flag does work", tc.goflags, err)
+			advice := tc.advice
+			if advice == "" {
+				advice = "command line"
+			}
+			if !strings.Contains(err.Error(), advice) {
+				t.Fatalf("checkGoflags(%q) = %v, want it to say %q", tc.goflags, err, advice)
 			}
 		})
 	}

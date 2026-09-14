@@ -138,12 +138,31 @@ func goFlag(f string) string {
 	}
 	// `go test` takes the test binary's own spelling too -- `go test
 	// -test.short` is `go test -short` -- so the prefix is dropped here,
-	// before anything classifies the flag. Everything downstream then sees one
-	// spelling, whether the flag arrived on the command line or in GOFLAGS.
-	if strings.HasPrefix(f, "-test.") && len(f) > len("-test.") {
-		f = "-" + f[len("-test."):]
+	// before anything classifies the flag, and everything downstream sees one
+	// spelling whether the flag came from the command line or from GOFLAGS.
+	//
+	// Only for names the test binary actually has, though: `-test.race` is not
+	// `-race`. Stripping the prefix from anything would walk a test-side
+	// spelling into the build tables, which is how a caller would get a
+	// sanitiser it never asked for. An unknown `-test.something` keeps its
+	// name and is refused as the unknown flag it is.
+	if after, ok := strings.CutPrefix(f, "-test."); ok && after != "" {
+		if stripped := "-" + after; isTestSideFlag(stripped) {
+			f = stripped
+		}
 	}
 	return f
+}
+
+// isTestSideFlag reports whether a name is one the test binary takes, in
+// either direction: forwarded to the shards, or refused because this runner
+// sets it itself.
+func isTestSideFlag(name string) bool {
+	if j := strings.IndexByte(name, '='); j > 0 {
+		name = name[:j]
+	}
+	return testForwardValueFlags[name] || testForwardBareFlags[name] ||
+		testRefusedValueFlags[name] || testRefusedBareFlags[name]
 }
 
 // The tables below are the flags `go help build` and `go help testflag`
@@ -176,6 +195,9 @@ var buildValueFlags = map[string]bool{
 	"-gccgoflags": true, "-gcflags": true, "-installsuffix": true,
 	"-ldflags": true, "-mod": true, "-modfile": true, "-overlay": true,
 	"-pgo": true, "-pkgdir": true, "-tags": true, "-toolexec": true,
+	// -vet chooses the vet checks `go test -c` runs over the package before it
+	// compiles it, so it belongs to the build and not to the shards.
+	"-vet": true,
 }
 
 // buildBareFlags stand alone. The booleans among them (-race=false,
@@ -212,7 +234,6 @@ var testRefusedValueFlags = map[string]bool{
 	"-memprofilerate": true, "-mutexprofile": true,
 	"-mutexprofilefraction": true, "-o": true, "-outputdir": true,
 	"-parallel": true, "-run": true, "-skip": true, "-trace": true,
-	"-vet": true,
 }
 
 // testRefusedBareFlags stand alone and are refused for the same reasons.
@@ -266,6 +287,7 @@ type parsedFlags struct {
 //
 // -C is refused rather than forwarded: it changes directory before the command
 // runs, and everything here is built and tested from the module's own directory.
+
 // flagToken is one of a caller's flags after normalisation, with its value
 // already taken from the next argument when that is where it lives.
 type flagToken struct {
@@ -430,6 +452,11 @@ func checkForwardedValue(name, value string) error {
 // through untouched.
 func checkGoflags(goflags string) error {
 	return walkFlags(strings.Fields(goflags), func(tok flagToken) error {
+		// A -test. name that survived normalisation is not one the binary has,
+		// so `go test` would hand it over and the binary would refuse it.
+		if strings.HasPrefix(tok.name, "-test.") {
+			return fmt.Errorf("GOFLAGS carries %s, which is not a flag the test binary has; `go test` would hand it over and every shard would refuse it", tok.name)
+		}
 		if testForwardValueFlags[tok.name] || testForwardBareFlags[tok.name] ||
 			testRefusedValueFlags[tok.name] || testRefusedBareFlags[tok.name] {
 			return fmt.Errorf("GOFLAGS carries %s, which is a `go test` flag for the test binary, not for the build: this runner compiles with `go test -c` and launches the shards itself, so a flag there reaches neither. Pass it on the command line instead", tok.name)
