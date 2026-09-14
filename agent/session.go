@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -1974,6 +1975,11 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 // Callers hold s.mu inside their pair's attentionMu hold; the transaction
 // prunes the log at every successful publication.
 func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
+	// A form that reached the log without a mint cannot be matched to the live
+	// turn it belongs to, so the fold writes no copy and a marker discards the
+	// turn for good. That is a producer that built its two forms separately
+	// (newTurnPair is the one that does not), not a condition to tolerate.
+	invariant.Hold(persisted.PairID != 0, "pair log entry has no PairID: kind=%s", persisted.Kind)
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
 }
 
@@ -2277,7 +2283,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
-	t := schema.Turn{
+	t := schema.MintTurn(schema.Turn{
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
 		Timestamp:                       s.sclock().Now().UTC(),
@@ -2294,7 +2300,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
-	}
+	})
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },

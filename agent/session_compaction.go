@@ -247,9 +247,9 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 	// publication merges them in after everything the fold produced, so a
 	// resume has to put them back on the far side of the fold's own steering.
 	// Nothing in a copy says which half it is, so the fold says it here.
-	mergedTail := make(map[turnPairIdentity]int)
+	mergedTail := make(map[uint64]int)
 	for _, turn := range published[min(len(folded), len(published)):] {
-		mergedTail[pairIdentity(turn)]++
+		mergedTail[turn.PairID]++
 	}
 	// Pruned to that same set, here inside the publish: every entry dropped
 	// belongs to a turn the history no longer has, which no later fold can
@@ -326,9 +326,9 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 	if commit.writesCompactionMarker() {
 		for _, turn := range rewriteTail {
 			turn.ContextReplay = true
-			turn.ContextReplayMergedTail = mergedTail[pairIdentity(turn)] > 0
+			turn.ContextReplayMergedTail = mergedTail[turn.PairID] > 0
 			if turn.ContextReplayMergedTail {
-				mergedTail[pairIdentity(turn)]--
+				mergedTail[turn.PairID]--
 			}
 			turn.CompactionFoldID = commit.foldID
 			if err := s.writeTranscriptDurableLocked(turn); err != nil {
@@ -560,49 +560,34 @@ func foldPublicationID(lifecycleRevision uint64) string {
 // the given history still has, in append order — which is history order, so
 // the copies go down in the order a resume must read them back.
 //
-// The two forms of one turn are matched by the identity the persisted form
-// inherits from its live turn when the session builds it (see
-// turnPairIdentity). Records carry no durable per-entry id, which is why a
-// turn restored from a transcript can never be matched here — issue #1200.
-// Counting occurrences rather than testing membership keeps two turns that
-// somehow share one identity from pulling in each other's entries.
+// The two forms of one turn are matched by schema.Turn.PairID: minted where
+// the turn is created and carried onto the persisted form, because every
+// producer derives that form from the live turn (newTurnPair). Nothing else
+// identifies them — a timestamp is incidental and an injected clock can hand
+// two turns the same instant — so a turn with no mint matches nothing, which
+// is the honest answer for one recovered from a file (issue #1200) and a bug
+// anywhere else (logPairPersistedLocked holds that invariant). Counting
+// occurrences rather than testing membership keeps a repeated id, if one ever
+// happened, from pulling in another turn's entry.
 func pairsStillInHistory(log, history []schema.Turn) []schema.Turn {
-	live := make(map[turnPairIdentity]int, len(history))
+	live := make(map[uint64]int, len(history))
 	for _, turn := range history {
-		live[pairIdentity(turn)]++
+		if turn.PairID == 0 {
+			// Recovered, not created here: a restored or inherited turn has
+			// no pair in this process's log to be matched to (issue #1200).
+			continue
+		}
+		live[turn.PairID]++
 	}
 	kept := make([]schema.Turn, 0, len(log))
 	for _, persisted := range log {
-		identity := pairIdentity(persisted)
-		if live[identity] == 0 {
+		if live[persisted.PairID] == 0 {
 			continue
 		}
-		live[identity]--
+		live[persisted.PairID]--
 		kept = append(kept, persisted)
 	}
 	return kept
-}
-
-// turnPairIdentity names one turn across the two forms the session keeps of
-// it: the live turn in history and the persisted form in the pair log.
-type turnPairIdentity struct {
-	// pair is schema.Turn.PairID, minted once per turn and carried onto the
-	// persisted form because producers build that form FROM the live turn
-	// (newTurnPair). It is the whole identity when it is there.
-	pair uint64
-	// kind and at are the fallback for a turn that reached the log without a
-	// mint — one built as a literal rather than through schema.NewTurn. A
-	// persisted form is its live turn with the message swapped, so the two
-	// still agree on both.
-	kind schema.TurnKind
-	at   int64
-}
-
-func pairIdentity(turn schema.Turn) turnPairIdentity {
-	if turn.PairID != 0 {
-		return turnPairIdentity{pair: turn.PairID}
-	}
-	return turnPairIdentity{kind: turn.Kind, at: turn.Timestamp.UnixNano()}
 }
 
 func environmentTurnIDs(history []schema.Turn) map[string]int {

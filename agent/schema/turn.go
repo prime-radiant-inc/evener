@@ -274,12 +274,13 @@ type Turn struct {
 	OwningTurnID string `json:"owning_turn_id,omitempty"`
 	// PairID identifies the two forms a session keeps of ONE turn: the live
 	// turn in its history and the persisted form in the pair log a fold copies
-	// from ahead of its markers. Minted once, here, and never serialized — it
-	// names a turn in this process, not a record in the file, so a turn read
-	// back from a transcript has none (issue #1200). Producers build the
-	// persisted form FROM the live turn, which is what carries this across the
-	// two; minting the second form separately makes two turns the fold cannot
-	// match, and the copy it owes is never written.
+	// from ahead of its markers. Minted once where the turn is CREATED
+	// (NewTurn, or MintTurn for a literal) and never serialized — it names a
+	// turn in this process, not a record in the file, so a turn read back from
+	// a transcript has none (issue #1200). Producers build the persisted form
+	// FROM the live turn, which is what carries this across the two; minting
+	// the second form separately makes two turns the fold cannot match, and
+	// the copy it owes is never written.
 	PairID uint64 `json:"-"`
 	// ContextReplay marks a copy appended around compaction solely to restore
 	// model context. Its original transcript entry already owns the UI item.
@@ -330,7 +331,17 @@ type Turn struct {
 
 // NewTurn creates a Turn with the current UTC time.
 func NewTurn(kind TurnKind, msg llm.Message) Turn {
-	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC(), PairID: nextPairID.Add(1)}
+	return MintTurn(Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC()})
+}
+
+// MintTurn gives a turn built as a literal the identity NewTurn gives every
+// other turn. A turn this process CREATES is minted exactly once — here or in
+// NewTurn — and its persisted form is derived from it, so the two forms share
+// the id. A turn read back from a transcript is not created, it is recovered,
+// and carries none (issue #1200).
+func MintTurn(turn Turn) Turn {
+	turn.PairID = nextPairID.Add(1)
+	return turn
 }
 
 // nextPairID mints PairID. It is process-local and never serialized, so it

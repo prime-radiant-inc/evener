@@ -3244,3 +3244,42 @@ func TestFoldPublication_AMarkerThatDidNotLandIsNotThePublishedAnchor(t *testing
 		t.Fatalf("live and reload describe different compactions:\nresumed: %v\nlive:    %v", providerMessageOutline(got), providerMessageOutline(want))
 	}
 }
+
+// The identity two forms of one turn share is minted, not inferred. A clock
+// the session was handed can be coarse or frozen, so two turns of the same
+// kind can carry the same instant; matching on that pairs a live turn with
+// another turn's persisted form, and the fold then copies the wrong record
+// past its marker. The mint says which turn is which, and a form with no mint
+// — a turn recovered from a file rather than created here — matches nothing.
+func TestPairsStillInHistory_MatchesTheMintNotTheClock(t *testing.T) {
+	t.Parallel()
+	frozen := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	mint := func(text string) (live, persisted schema.Turn) {
+		live = schema.NewTurn(schema.TurnToolResults, llm.User("live "+text))
+		live.Timestamp = frozen
+		persisted = live
+		persisted.Message = llm.User("persisted " + text)
+		return live, persisted
+	}
+	liveA, persistedA := mint("A")
+	liveB, persistedB := mint("B")
+	if liveA.Timestamp != liveB.Timestamp || liveA.Kind != liveB.Kind {
+		t.Fatal("test setup: the two turns must be indistinguishable by kind and instant")
+	}
+	recovered := schema.NewTurn(schema.TurnToolResults, llm.User("read back from a transcript"))
+	recovered.Timestamp = frozen
+	recovered.PairID = 0
+
+	// Only B is still in the published history: A was summarized away.
+	kept := pairsStillInHistory([]schema.Turn{persistedA, persistedB}, []schema.Turn{liveB, recovered})
+	if len(kept) != 1 {
+		t.Fatalf("kept %d persisted forms, want the one whose turn is still in history: %#v", len(kept), kept)
+	}
+	if got := kept[0].Message.Text(); got != "persisted B" {
+		t.Fatalf("kept %q, want %q: the match followed the clock, not the mint", got, "persisted B")
+	}
+	// And a turn with no mint pulls nothing in on its own.
+	if kept := pairsStillInHistory([]schema.Turn{persistedA}, []schema.Turn{recovered}); len(kept) != 0 {
+		t.Fatalf("a recovered turn matched %d persisted forms, want none", len(kept))
+	}
+}

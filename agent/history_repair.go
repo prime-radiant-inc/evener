@@ -132,11 +132,11 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 			},
 		})
 	}
-	return schema.Turn{
+	return schema.MintTurn(schema.Turn{
 		Kind:      schema.TurnToolResults,
 		Message:   llm.Message{Role: llm.RoleTool, Content: parts},
 		Timestamp: time.Now().UTC(),
-	}
+	})
 }
 
 // repairOrphanedToolResults captures, repairs, and publishes s.history under
