@@ -1065,7 +1065,38 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventContextCompaction:
 		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
-		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
+		// A compaction is a standalone saved turn — the CONTEXT_COMPACTION
+		// record closes the group it lands in on reload — so it opens and
+		// closes its own turn here rather than joining whichever turn is
+		// running. Folded into the open turn, the announcement (and the items
+		// recorded after it) would change turns after a restart, and a client
+		// reconciling by turn shows them twice. Same shape as EventEnvironment
+		// above, for the same reason.
+		//
+		// With no turn running it already stands alone, in the gap bucket
+		// every no-active-turn announcement shares (preTurnAnnouncementTurnID)
+		// — that bucket is the convention for all of them, and a compaction is
+		// not the place to change it.
+		if p.activeTurnID == "" {
+			return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
+		}
+		reserved := p.reservedTurnID
+		wasRealTurnStarted := p.anyTurnStarted
+		p.reservedTurnID = ""
+		_, out := p.openTurn("", event.Timestamp)
+		// Compaction is session bookkeeping, not a runnable turn: prelude and
+		// reserved-turn state stay based on real work.
+		p.anyTurnStarted = wasRealTurnStarted
+		out = append(out, p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))...)
+		out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
+		// The round that was running is still running: a compaction happens
+		// mid-turn, at a model call. The turn it interrupted was just
+		// announced complete, and a client that reads "the active turn
+		// completed" as "the session went idle" (the TUI does, kata s8x8)
+		// would offer to send into a session still working. Say what is true.
+		out = append(out, p.threadStatus(appwire.ThreadStatusActive))
+		p.reservedTurnID = reserved
+		return out
 	case events.EventPluginLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PluginLoadedData](event.Data)
