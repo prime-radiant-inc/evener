@@ -1017,18 +1017,16 @@ export function Composer({ ref, focused }: ComposerProps) {
     if (activeRecoveryIdRef.current === null) persistDraftSelections();
   }
 
-  // A chip's details: the skill's own description plus a diagnostic when the
-  // live catalog report no longer backs the selection (the skill vanished, or
-  // its current flags block selection). Command rows never render here, so
-  // these details are skill-only by construction.
+  // A chip's details: the skill's own description, or - when the live catalog
+  // report no longer backs the selection - the name plus why it cannot be
+  // found. Command rows never render here, so these details are skill-only by
+  // construction. The daemon publishes only available, user-invocable skills
+  // (agent/status.go), so a present entry is always usable and there is no
+  // unavailable/not-invocable diagnostic to report.
   function skillChipDetails(name: string): string {
     const info = model?.skills?.find((skill) => skill.name === name);
     if (!info) return `${name} — no longer in this session's skill catalog`;
-    const diagnostics: string[] = [];
-    if (!info.available) diagnostics.push("currently unavailable");
-    if (!info.userInvocable) diagnostics.push("not user-invocable right now");
-    const description = info.description ?? name;
-    return diagnostics.length > 0 ? `${description} (${diagnostics.join("; ")})` : description;
+    return info.description ?? name;
   }
 
   // restoreTextToComposer implements the shared "put text back into the

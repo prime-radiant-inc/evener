@@ -6,6 +6,7 @@ import {
   type ActivityRow,
   type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
+  activityDelegateBranch,
   activityDelegateState,
   activityNodeID,
   buildActivityRows,
@@ -27,6 +28,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { openSessionByRef } from "../../../shell/sessionPlacement";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
@@ -196,6 +198,9 @@ interface ContinuationStrip {
   afterRowID: string;
   token?: string;
   branchError?: string;
+  // openSessionRef is activityDelegateBranch's — the ref that reaches a
+  // child the page stopped short of with nothing to page.
+  openSessionRef?: string;
 }
 
 // subtreeLastRowID finds the last visible row belonging to a delegate's
@@ -242,15 +247,18 @@ function collectContinuations(
       if (entry.kind !== "delegate") continue;
       const delegate = entry.delegate;
       const targetID = activityNodeID(entry);
-      const token = delegate.child?.branch.continuation ?? delegate.branch.continuation;
-      if (token || continuationFailures[targetID] !== undefined) {
+      // Both of a delegate's branch states, read the one way the package
+      // defines — see activityDelegateBranch.
+      const branch = activityDelegateBranch(delegate);
+      if (branch.continuation || branch.openSessionRef || continuationFailures[targetID] !== undefined) {
         const afterRowID = subtreeLastRowID(rows, targetID);
         if (afterRowID) {
           strips.push({
             targetID,
             afterRowID,
-            token,
-            branchError: delegate.child?.branch.error ?? delegate.branch.error,
+            token: branch.continuation,
+            branchError: branch.error,
+            openSessionRef: branch.openSessionRef,
           });
         }
       }
@@ -484,8 +492,23 @@ const ContinuationStripView = memo(function ContinuationStripView({
   return (
     <div className={CLASS.rowActions}>
       <span className={CLASS.rowContinuation}>
-        {failure ?? strip.branchError ?? "This branch is partially retained."}
+        {failure ??
+          strip.branchError ??
+          (strip.openSessionRef ? "This branch continues in its own session." : "This branch is partially retained.")}
       </span>
+      {strip.openSessionRef && (
+        <Button
+          variant="quiet"
+          size="xs"
+          tabIndex={-1}
+          onClick={(event) => {
+            event.stopPropagation();
+            openSessionByRef(strip.openSessionRef ?? "");
+          }}
+        >
+          Open session
+        </Button>
+      )}
       {strip.token && (
         <Button
           variant="quiet"

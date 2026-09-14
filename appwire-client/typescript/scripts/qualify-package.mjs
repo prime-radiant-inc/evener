@@ -83,6 +83,7 @@ async function qualify() {
     "isTurnContainer",
     "parseActivityTree",
     "activityNodeID",
+    "activityDelegateBranch",
     "delegateHasActiveWork",
     "defaultExpandedIDs",
     "reconcileActivityState",

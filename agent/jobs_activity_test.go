@@ -204,15 +204,15 @@ func TestProjectActivitySession_TruncatesStableRowsWithScopedContinuation(t *tes
 
 func TestDecodeActivityContinuation_Validation(t *testing.T) {
 	t.Parallel()
-	valid := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}})
+	valid := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}})
 	if got, err := decodeActivityContinuation(valid, "root"); err != nil || got.SessionID != "root" || !reflect.DeepEqual(got.Path, []string{"dlg_1"}) {
 		t.Fatalf("decode valid=(%+v,%v)", got, err)
 	}
 	for _, token := range []string{
 		strings.Repeat("a", 16*1024+1),
 		"%%%",
-		base64.RawURLEncoding.EncodeToString([]byte(`{"v":2,"root":"root","session":"root"}`)),
-		base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"root":"root","session":"root","path":["dlg_1","dlg_1"]}`)),
+		base64.RawURLEncoding.EncodeToString([]byte(`{"v":99,"root":"root","session":"root"}`)),
+		base64.RawURLEncoding.EncodeToString([]byte(`{"v":3,"root":"root","session":"root","path":["dlg_1","dlg_1"]}`)),
 	} {
 		if _, err := decodeActivityContinuation(token, "root"); err == nil {
 			t.Fatalf("invalid continuation accepted: %q", token)

@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import {
   ActivityList,
   AppwireClient,
+  activityDelegateBranch,
   activityDelegateState,
   activityNodeID,
   answeredAskUserSuffix,
@@ -120,6 +121,7 @@ const arrived = {
   ConnectionClosedError,
   SYSTEM_PRELUDE_TURN_ID,
   WireError,
+  activityDelegateBranch,
   activityDelegateState,
   activityNodeID,
   answeredAskUserSuffix,

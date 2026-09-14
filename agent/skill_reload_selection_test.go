@@ -400,3 +400,29 @@ func TestSkillReloadSelection_NudgeListsLoadedSkills(t *testing.T) {
 		t.Fatal("no-tool nudge must not request a structured selection the model cannot submit")
 	}
 }
+
+// TestSkillInventorySnapshotDeepCopiesEntries pins that the detached inventory
+// handed to non-lifecycle callers owns its entries: mutating a returned
+// Ordinary/Preload record must never reach the live lifecycle snapshot.
+func TestSkillInventorySnapshotDeepCopiesEntries(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.mu.Lock()
+	s.skillLifecycle.Inventory["scope:probe"] = schema.SkillInventoryEntry{
+		Ordinary: &schema.OrdinarySkillActivation{Description: "live-ordinary"},
+		Preload:  &schema.FrozenSkillPreload{Description: "live-preload"},
+	}
+	s.mu.Unlock()
+
+	snapshot := s.skillInventorySnapshot()
+	mutated := snapshot["scope:probe"]
+	mutated.Ordinary.Description = "mutated-ordinary"
+	mutated.Preload.Description = "mutated-preload"
+
+	s.mu.Lock()
+	live := s.skillLifecycle.Inventory["scope:probe"]
+	s.mu.Unlock()
+	if live.Ordinary.Description != "live-ordinary" || live.Preload.Description != "live-preload" {
+		t.Fatalf("snapshot aliases the live lifecycle inventory: %+v", live)
+	}
+}

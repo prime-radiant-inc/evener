@@ -351,6 +351,16 @@ export function ActivitySheet({
                           Load more activity
                         </Action>
                       ) : null}
+                      {branch.openSessionRef ? (
+                        <Action
+                          onPress={() => {
+                            if (branch.openSessionRef)
+                              openSession(branch.openSessionRef, branch.label);
+                          }}
+                        >
+                          Open session
+                        </Action>
+                      ) : null}
                     </View>
                   ))}
                 </View>

@@ -55,7 +55,8 @@ import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
-import { navigate, paneToURL } from "../routing";
+import { navigate } from "../routing";
+import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import {
@@ -1057,8 +1058,7 @@ function NavigationRail({
     }
   }
   function openSession(session: RailSession) {
-    const url = paneToURL("session", { ref: session.ref });
-    if (url) navigate(url);
+    openSessionByRef(session.ref);
   }
   function handleActivate(node: RailNode) {
     if (isPassiveRailNode(node)) return;
