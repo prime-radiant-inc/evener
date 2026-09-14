@@ -61,6 +61,9 @@ type RemoteHubSource struct {
 	// replay a stale boundary under a newer incarnation. The key is the
 	// controller-side ref, the same key the paging cache uses.
 	itemPagingLocks keyedMutexRegistry
+	subMu           sync.Mutex
+	subs            map[string]*remoteHubSubscription // key: remote thread ID
+	drains          map[*appwire.Client]struct{}      // clients whose notification stream is being drained
 }
 
 var (
@@ -70,7 +73,13 @@ var (
 )
 
 func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *RemoteHubSource {
-	return &RemoteHubSource{id: id, roots: roots, client: client}
+	return &RemoteHubSource{
+		id:     id,
+		roots:  roots,
+		client: client,
+		subs:   map[string]*remoteHubSubscription{},
+		drains: map[*appwire.Client]struct{}{},
+	}
 }
 
 func (s *RemoteHubSource) ID() string { return s.id }
@@ -1350,8 +1359,4 @@ func (s *RemoteHubSource) ListJobs(context.Context, appwire.JobsListParams) (app
 
 func (s *RemoteHubSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 	return appwire.JobsOutputResponse{}, s.notImplemented("JobOutput")
-}
-
-func (s *RemoteHubSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
-	return nil, s.notImplemented("SubscribeThread")
 }
