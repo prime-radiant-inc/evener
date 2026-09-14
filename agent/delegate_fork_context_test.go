@@ -393,3 +393,62 @@ func TestDelegateForkContext_InheritsTheTurnsAParentsCompactionCopied(t *testing
 		})
 	}
 }
+
+// The fork cuts before an unfinished assistant round: a call with no result is
+// an action the child can neither resume nor repair. A fold's copies repeat
+// rounds the originals already settled, so reading them as rounds of their own
+// moves that cut — it lands on the copy, and the original unfinished call ends
+// up inherited. What is unfinished is decided by the logical turns.
+func TestDelegateForkContext_TruncationFollowsTheOriginalsNotTheCopies(t *testing.T) {
+	t.Parallel()
+	entry := func(kind schema.TurnKind, message llm.Message, replay bool) transcript.Entry {
+		turn := schema.NewTurn(kind, message)
+		turn.ContextReplay = replay
+		if replay {
+			turn.CompactionFoldID = "fold_truncation"
+		}
+		return transcript.Entry{Kind: "entry", Turn: turn}
+	}
+	call := func(id string) llm.Message {
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: id, Name: "read_file"},
+		}}}
+	}
+	result := func(id string) llm.Message {
+		return llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: id, Name: "read_file", Content: "ok"},
+		}}}
+	}
+
+	// The shape a crash between the copies and the markers leaves behind: the
+	// fold's copies are the tail of the file, with no marker after them.
+	settled := []transcript.Entry{
+		entry(schema.TurnUserInput, llm.User("ask"), false),
+		entry(schema.TurnAssistant, call("done"), false),
+		entry(schema.TurnToolResults, result("done"), false),
+		entry(schema.TurnAssistant, call("done"), true),
+		entry(schema.TurnToolResults, result("done"), true),
+	}
+	if got := completedDelegateContext(settled); len(got) != len(settled) {
+		t.Fatalf("a settled round was cut: kept %d of %d entries", len(got), len(settled))
+	}
+
+	// The same shape with the round's result still missing: the fold copied
+	// the call, because the published history holds it.
+	unfinished := []transcript.Entry{
+		entry(schema.TurnUserInput, llm.User("ask"), false),
+		entry(schema.TurnAssistant, call("pending"), false),
+		entry(schema.TurnAssistant, call("pending"), true),
+	}
+	got := completedDelegateContext(unfinished)
+	if len(got) != 1 {
+		t.Fatalf("kept %d entries, want the cut before the unfinished round (its user input alone)", len(got))
+	}
+	for _, e := range got {
+		for _, part := range e.Turn.Message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == "pending" {
+				t.Fatal("the unfinished call was inherited: the cut followed the copy, not the turn it copies")
+			}
+		}
+	}
+}

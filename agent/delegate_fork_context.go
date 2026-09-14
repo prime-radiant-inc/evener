@@ -67,6 +67,15 @@ func completedDelegateContext(entries []transcript.Entry) []transcript.Entry {
 	roundStart := 0
 	for i, entry := range entries {
 		t := entry.Turn
+		if t.ContextReplay {
+			// A fold's copy repeats a round this scan has already read from
+			// the originals. Read as a round of its own it re-opens calls the
+			// originals settled and moves the cut to the copy's position, so
+			// an unfinished round is cut in the wrong place — or not at all.
+			// The copies still travel with the prefix; only the reading of
+			// what is unfinished is decided by the logical turns.
+			continue
+		}
 		switch t.Kind {
 		case schema.TurnAssistant:
 			clear(pending)
