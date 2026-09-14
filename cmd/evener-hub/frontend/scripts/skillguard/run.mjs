@@ -610,11 +610,14 @@ class Driver {
   // transcript line that could not appear; named here, the failure says which
   // characters are wrong and stops at the action that would have carried it.
   //
-  // Two actions send a typed draft: submit and steer. The queue strip's
-  // controls do not -- "Steer queue now" drains rows that were queued through
-  // submit, each already held to its own text, and "Edit message" returns a
-  // row to the composer without sending anything.
-  async sendComposerDraft(ref, testId, action, expectText) {
+  // THREE actions send it, not two. Submit and steer are the obvious pair.
+  // The queue strip's "Steer queue now" is the third: turn/drainAsSteer
+  // "atomically appends the composer's current text/attachments (if any) to
+  // the input queue, then drains the whole queue into the active turn as one
+  // steering message" (stores/threads.ts:157), so a stray draft rides along
+  // with rows the scenario meant to send alone. Only "Edit message" sends
+  // nothing -- it returns a row TO the composer.
+  async assertComposerDraft(ref, action, expectText) {
     if (typeof expectText !== "string") {
       throw new Error(`${action}(${ref}): pass the draft this action means to send`);
     }
@@ -625,6 +628,10 @@ class Driver {
         `${action}(${ref}): composer holds ${JSON.stringify(state.text)}, expected ${JSON.stringify(expectText)}`,
       );
     }
+  }
+
+  async sendComposerDraft(ref, testId, action, expectText) {
+    await this.assertComposerDraft(ref, action, expectText);
     await this.clickComposerAction(ref, testId);
   }
 
@@ -961,6 +968,12 @@ async function runScenarios(driver) {
   // finish; the queue strip empties once the daemon has folded the queue into
   // the running turn. The click is effect-verified and retried — a lost
   // click here strands the whole choreography behind a held turn.
+  //
+  // It also sends whatever the composer holds, appended to the queue, so this
+  // scenario's "the queue drained" assertions are only about the queue while
+  // the composer is empty. Held to that here rather than discovered as an
+  // extra steering message in the provider requests.
+  await driver.assertComposerDraft(driver.sessionA, "drainAsSteer", "");
   await driver.clickQueueStripControl({
     locate: () => driver.clickByText("Steer queue now"),
     effectExpr: `(() => { const strip = ${driver.queueStripExpr()}; return strip === null || strip.rows.length === 0 ? true : null; })()`,
