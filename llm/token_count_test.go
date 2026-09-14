@@ -582,6 +582,44 @@ func TestEstimateMessagesInputTokensForResolved_SurfaceBeatsTheWireProtocol(t *t
 	}
 }
 
+// The row's recorded model family is the last word on the image-token family:
+// a gateway can serve a vendor model behind a protocol that is not that
+// vendor's own, and with a generic surface the protocol alone would pick the
+// wrong tokenizer. An unrecognized family still falls through to the protocol.
+func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsTheWireProtocol(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+
+	// A generic surface over openai-chat: only the recorded family knows the
+	// row is a Claude.
+	gatewayClaude := registry.Resolved{
+		Instance: "gateway", ModelID: "anthropic/claude-opus-5",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+		Model: registry.Model{Family: "claude-opus"},
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(gatewayClaude, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+		t.Fatalf("generic-surface claude image history = %d, want %d: the recorded family decides", got, want)
+	}
+	// The family outranks the protocol when they disagree.
+	anthropicProtocolGPT := registry.Resolved{
+		Instance: "gateway", ModelID: "gpt-5.2", Protocol: registry.ProtocolAnthropic,
+		Model: registry.Model{Family: "gpt"},
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(anthropicProtocolGPT, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+		t.Fatalf("anthropic-protocol gpt image history = %d, want %d: the family outranks the protocol", got, want)
+	}
+	// A family with no image-token rules of its own leaves the protocol in charge.
+	unknownFamily := registry.Resolved{
+		Instance: "gateway", ModelID: "llama-4", Protocol: registry.ProtocolAnthropic,
+		Model: registry.Model{Family: "llama"},
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(unknownFamily, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+		t.Fatalf("unknown-family image history = %d, want %d: the protocol remains the fallback", got, want)
+	}
+}
+
 // The history entry point the context manager uses decides by the row too, so
 // compaction pressure sees replayable thinking text and does not see text the
 // adapter drops.

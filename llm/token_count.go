@@ -318,15 +318,18 @@ type targetInfo struct {
 	provider, model  string
 	protocol         string
 	surface          string
+	family           string
 	unsignedThinking bool
 }
 
 // mediaFamily is the image-token family for the target. The model's own family
 // decides it first — the surface records that — because a tokenizer family is a
 // property of the model, not of the wire protocol: OpenRouter serves
-// anthropic/claude-* and google/gemini-* rows over openai-chat. A row with no
-// surface falls back to the protocol, then to the name rule for callers that
-// passed names only.
+// anthropic/claude-* and google/gemini-* rows over openai-chat. The row's
+// recorded model family is the next axis, for a gateway whose surface stays
+// generic while the model it fronts is a vendor's. A row with neither falls
+// back to the protocol, then to the name rule for callers that passed names
+// only.
 func (t targetInfo) mediaFamily() string {
 	switch t.surface {
 	case registry.SurfaceAnthropic:
@@ -335,6 +338,9 @@ func (t targetInfo) mediaFamily() string {
 		return "openai"
 	case registry.SurfaceGoogle:
 		return "google"
+	}
+	if f := mediaFamilyFromModelFamily(t.family); f != "" {
+		return f
 	}
 	switch t.protocol {
 	case registry.ProtocolAnthropic:
@@ -345,6 +351,24 @@ func (t targetInfo) mediaFamily() string {
 		return "google"
 	}
 	return providerTokenFamily(t.provider, t.model)
+}
+
+// mediaFamilyFromModelFamily maps the registry's model family ("claude-opus",
+// "gemini-flash", "gpt") to the image-token family it bills as. A family with
+// no image-token rules of its own — llama, minimax, kimi, deepseek — returns
+// "" so its caller keeps falling back.
+func mediaFamilyFromModelFamily(family string) string {
+	f := strings.ToLower(strings.TrimSpace(family))
+	switch {
+	case strings.HasPrefix(f, "claude"):
+		return "anthropic"
+	case strings.HasPrefix(f, "gemini"):
+		return "google"
+	case f == "gpt" || strings.HasPrefix(f, "gpt-"):
+		return "openai"
+	default:
+		return ""
+	}
 }
 
 // targetFromNames builds the name-based view used by the exported entry points
@@ -363,7 +387,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 	if strings.TrimSpace(model) == "" {
 		model = res.ModelID
 	}
-	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, unsignedThinking: unsignedThinkingReplayed(res)}
+	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, family: res.Model.Family, unsignedThinking: unsignedThinkingReplayed(res)}
 }
 
 // unsignedThinkingReplayed reports whether the adapter the resolved target
