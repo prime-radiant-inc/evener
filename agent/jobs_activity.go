@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1236,7 +1237,7 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 	}
 	session.Branch.Truncated = true
 	if !activityContinuationPathFits(path) {
-		session.Diagnostics = append(session.Diagnostics, activityUnreachableByPathDiagnostic(sessionID))
+		appendActivityDiagnosticOnce(&session.Diagnostics, activityUnreachableByPathDiagnostic(sessionID))
 		return
 	}
 	if budget != nil && budget.rootID != "" {
@@ -1262,6 +1263,18 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 // claims to lead to. Reporting the session to request instead leaves the
 // reader somewhere to go — that session is its own root, where the path
 // starts over at zero.
+// appendActivityDiagnosticOnce adds message to diagnostics unless it is
+// already there. A trim drops one entry per pass and can strike the same
+// session many times over a single page, and a session cut off mid-list can
+// be marked by more than one of those passes, so an unguarded append reports
+// the same sentence once per dropped entry.
+func appendActivityDiagnosticOnce(diagnostics *[]string, message string) {
+	if diagnostics == nil || slices.Contains(*diagnostics, message) {
+		return
+	}
+	*diagnostics = append(*diagnostics, message)
+}
+
 func activityContinuationPathFits(path []string) bool {
 	return len(path) <= activityMaxContinuationPathLength
 }
@@ -1535,7 +1548,7 @@ func explainActivitySkippedEntry(tree *appwire.JobActivityTree, dropped activity
 
 func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, resumeIndex int, epochs map[string]activitySessionEpochs, revision uint64) {
 	if !activityContinuationPathFits(dropped.path) {
-		dropped.session.Diagnostics = append(dropped.session.Diagnostics, activityUnreachableByPathDiagnostic(dropped.session.SessionID))
+		appendActivityDiagnosticOnce(&dropped.session.Diagnostics, activityUnreachableByPathDiagnostic(dropped.session.SessionID))
 		return
 	}
 	own := epochs[dropped.session.SessionID]

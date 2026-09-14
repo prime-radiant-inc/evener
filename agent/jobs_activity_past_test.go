@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -1784,8 +1783,17 @@ func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T)
 		t.Fatalf("session %q minted a continuation whose path (%d hops) exceeds %d; it must report itself instead", deepest.SessionID, hops, activityMaxContinuationPathLength)
 	}
 	want := activityUnreachableByPathDiagnostic(deepest.SessionID)
-	if !slices.Contains(deepest.Diagnostics, want) {
-		t.Fatalf("diagnostics %q on session %q, want one of them to be %q", deepest.Diagnostics, deepest.SessionID, want)
+	copies := 0
+	for _, diagnostic := range deepest.Diagnostics {
+		if diagnostic == want {
+			copies++
+		}
+	}
+	// The trim drops one entry per pass and strikes this session on every
+	// one of them, so an unguarded append reports the same sentence once
+	// per dropped entry.
+	if copies != 1 {
+		t.Fatalf("diagnostics %q on session %q carry %d copies of %q, want exactly 1", deepest.Diagnostics, deepest.SessionID, copies, want)
 	}
 }
 
