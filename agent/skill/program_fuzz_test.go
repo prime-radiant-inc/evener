@@ -207,15 +207,23 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 		// The restore is registered as cleanup so a t.Fatal above cannot leave
 		// the globals pointing at this case's temporary directory.
 		savedBase := embeddedSkillsBaseDir
+		saved := saveEmbeddedSkillsCache()
 		embeddedSkillsCache.mu.Lock()
-		savedDir, savedDigest, savedSkills, savedVerified := embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills, embeddedSkillsCache.verified
-		embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills, embeddedSkillsCache.verified = "", "", nil, false
+		if embeddedSkillsCache.lease != nil {
+			_ = embeddedSkillsCache.lease.Release()
+		}
+		embeddedSkillsCache.dir = ""
+		embeddedSkillsCache.digest = ""
+		embeddedSkillsCache.skills = nil
+		embeddedSkillsCache.verified = false
+		embeddedSkillsCache.fallback = false
+		embeddedSkillsCache.fallbackBase = ""
+		embeddedSkillsCache.lease = nil
+		embeddedSkillsCache.leasedDir = ""
 		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = func() (string, error) { return filepath.Join(root, "missing-base"), nil }
 		t.Cleanup(func() {
-			embeddedSkillsCache.mu.Lock()
-			embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills, embeddedSkillsCache.verified = savedDir, savedDigest, savedSkills, savedVerified
-			embeddedSkillsCache.mu.Unlock()
+			restoreEmbeddedSkillsCache(saved)
 			embeddedSkillsBaseDir = savedBase
 		})
 		if _, err := EmbeddedSkills(); err == nil {

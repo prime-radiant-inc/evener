@@ -32,10 +32,42 @@ func sampleSkillFS() fstest.MapFS {
 	})
 }
 
-func embeddedSkillsCacheState() (string, string, map[string]SkillMeta, bool) {
+type embeddedSkillsCacheSnapshot struct {
+	dir, digest, leasedDir, fallbackBase string
+	skills                               map[string]SkillMeta
+	verified, fallback                   bool
+	lease                                skillsLease
+}
+
+func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
 	embeddedSkillsCache.mu.Lock()
 	defer embeddedSkillsCache.mu.Unlock()
-	return embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills, embeddedSkillsCache.verified
+	return embeddedSkillsCacheSnapshot{
+		dir:          embeddedSkillsCache.dir,
+		digest:       embeddedSkillsCache.digest,
+		leasedDir:    embeddedSkillsCache.leasedDir,
+		fallbackBase: embeddedSkillsCache.fallbackBase,
+		skills:       embeddedSkillsCache.skills,
+		verified:     embeddedSkillsCache.verified,
+		fallback:     embeddedSkillsCache.fallback,
+		lease:        embeddedSkillsCache.lease,
+	}
+}
+
+func restoreEmbeddedSkillsCache(s embeddedSkillsCacheSnapshot) {
+	embeddedSkillsCache.mu.Lock()
+	defer embeddedSkillsCache.mu.Unlock()
+	if embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease != s.lease {
+		_ = embeddedSkillsCache.lease.Release()
+	}
+	embeddedSkillsCache.dir = s.dir
+	embeddedSkillsCache.digest = s.digest
+	embeddedSkillsCache.skills = s.skills
+	embeddedSkillsCache.verified = s.verified
+	embeddedSkillsCache.fallback = s.fallback
+	embeddedSkillsCache.fallbackBase = s.fallbackBase
+	embeddedSkillsCache.lease = s.lease
+	embeddedSkillsCache.leasedDir = s.leasedDir
 }
 
 // pointEmbeddedSkillsAtBase sends the bundled-skills cache to base, clears the
@@ -44,21 +76,23 @@ func embeddedSkillsCacheState() (string, string, map[string]SkillMeta, bool) {
 func pointEmbeddedSkillsAtBase(t *testing.T, base string) {
 	t.Helper()
 	savedBase := embeddedSkillsBaseDir
-	savedDir, savedDigest, savedSkills, savedVerified := embeddedSkillsCacheState()
+	saved := saveEmbeddedSkillsCache()
 	embeddedSkillsCache.mu.Lock()
+	if embeddedSkillsCache.lease != nil {
+		_ = embeddedSkillsCache.lease.Release()
+	}
 	embeddedSkillsCache.dir = ""
 	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
 	embeddedSkillsCache.verified = false
+	embeddedSkillsCache.fallback = false
+	embeddedSkillsCache.fallbackBase = ""
+	embeddedSkillsCache.lease = nil
+	embeddedSkillsCache.leasedDir = ""
 	embeddedSkillsCache.mu.Unlock()
 	embeddedSkillsBaseDir = func() (string, error) { return base, nil }
 	t.Cleanup(func() {
-		embeddedSkillsCache.mu.Lock()
-		embeddedSkillsCache.dir = savedDir
-		embeddedSkillsCache.digest = savedDigest
-		embeddedSkillsCache.skills = savedSkills
-		embeddedSkillsCache.verified = savedVerified
-		embeddedSkillsCache.mu.Unlock()
+		restoreEmbeddedSkillsCache(saved)
 		embeddedSkillsBaseDir = savedBase
 	})
 }
@@ -215,16 +249,20 @@ func TestMaterializeEmbeddedSkills_PublishesOnceAndReuses(t *testing.T) {
 		t.Fatalf("expected the published copy to be reused, got %q then %q", first, second)
 	}
 
+	// The lease machinery keeps a sibling .locks directory, so count only the
+	// published copies rather than every entry in the base.
+	published := 0
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		t.Fatalf("read base: %v", err)
 	}
-	if len(entries) != 1 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), embeddedSkillsPrefix) {
+			published++
 		}
-		t.Fatalf("expected exactly one published copy, got %d: %v", len(entries), names)
+	}
+	if published != 1 {
+		t.Fatalf("expected exactly one published copy, got %d in %v", published, entries)
 	}
 }
 
@@ -487,14 +525,18 @@ func TestEmbeddedSkillsDir_FallsBackWhenTheCacheKeepsBeingReaped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	fallbackBase := filepath.Dir(dir)
+	t.Cleanup(func() { _ = os.RemoveAll(fallbackBase) })
 	if _, err := os.Stat(filepath.Join(dir, "doctoring-evener", "SKILL.md")); err != nil {
 		t.Fatalf("fallback copy missing the bundled skill: %v", err)
 	}
-	// The fallback must live under the prefix the fallback-base reaper scans,
-	// otherwise it leaks unbounded on every call.
-	if !strings.HasPrefix(filepath.Base(dir), embeddedSkillsPrefix+processOwnerTag()+"-") {
-		t.Fatalf("fallback %q is not under the reaped prefix", dir)
+	// The fallback must live in a base under the prefix the fallback-base reaper
+	// scans, otherwise it leaks unbounded on every call.
+	if !strings.HasPrefix(filepath.Base(fallbackBase), embeddedSkillsPrefix+processOwnerTag()+"-") {
+		t.Fatalf("fallback base %q is not under the reaped prefix", fallbackBase)
+	}
+	if _, err := os.Stat(filepath.Join(fallbackBase, skillsLockDirName)); err != nil {
+		t.Fatalf("fallback base has no lease directory: %v", err)
 	}
 }
 
@@ -627,10 +669,6 @@ func TestReapStaleFallbackBases_SkipsBaseWithLeasedCopy(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("create fallback base: %v", err)
 	}
-	past := time.Now().Add(-2 * staleRetainedMaxAge)
-	if err := os.Chtimes(base, past, past); err != nil {
-		t.Fatalf("age fallback base: %v", err)
-	}
 	lockPath, err := skillsLockPath(base, name, true)
 	if err != nil {
 		t.Fatalf("skillsLockPath: %v", err)
@@ -639,12 +677,25 @@ func TestReapStaleFallbackBases_SkipsBaseWithLeasedCopy(t *testing.T) {
 	if err != nil || contended {
 		t.Fatalf("acquire shared lease: %v (contended=%v)", err, contended)
 	}
-	defer func() { _ = lease.Release() }()
+	// Age the base only after the lock directory exists: creating .locks
+	// refreshes its mtime, and the age check would otherwise skip the base
+	// before the lease is ever consulted.
+	past := time.Now().Add(-2 * staleRetainedMaxAge)
+	if err := os.Chtimes(base, past, past); err != nil {
+		t.Fatalf("age fallback base: %v", err)
+	}
 
 	reapStaleFallbackBases(tmp, time.Now())
-
 	if _, err := os.Stat(base); err != nil {
 		t.Fatalf("in-use fallback base was reaped: %v", err)
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release lease: %v", err)
+	}
+	reapStaleFallbackBases(tmp, time.Now())
+	if _, err := os.Stat(base); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("unleased fallback base was not reaped: %v", err)
 	}
 }
 
@@ -743,19 +794,14 @@ func TestEmbeddedSkillsDir_ReusesPublishedCopyAfterCacheReset(t *testing.T) {
 func TestEmbeddedSkillsDir_RepublishesWhenCachedDirDisappears(t *testing.T) {
 	base := t.TempDir()
 	savedBase := embeddedSkillsBaseDir
-	savedDir, savedDigest, savedSkills, savedVerified := embeddedSkillsCacheState()
+	saved := saveEmbeddedSkillsCache()
 	embeddedSkillsBaseDir = func() (string, error) { return base, nil }
 	embeddedSkillsCache.mu.Lock()
 	embeddedSkillsCache.dir = filepath.Join(t.TempDir(), "gone")
 	embeddedSkillsCache.verified = false
 	embeddedSkillsCache.mu.Unlock()
 	t.Cleanup(func() {
-		embeddedSkillsCache.mu.Lock()
-		embeddedSkillsCache.dir = savedDir
-		embeddedSkillsCache.digest = savedDigest
-		embeddedSkillsCache.skills = savedSkills
-		embeddedSkillsCache.verified = savedVerified
-		embeddedSkillsCache.mu.Unlock()
+		restoreEmbeddedSkillsCache(saved)
 		embeddedSkillsBaseDir = savedBase
 	})
 
