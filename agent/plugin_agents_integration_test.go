@@ -753,12 +753,12 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: test-skill\ndescription: A test skill\n---\nThis is the test skill body content for injection.\n"), 0644)
 
 	// Register the skill in the session's skills map
-	sess.skills["test-skill"] = skill.SkillMeta{
+	sess.skills.Entries["test-skill"] = skill.Descriptor{CatalogName: "test-skill", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{
 		Name:        "test-skill",
 		Description: "A test skill",
 		Dir:         skillDir,
 		SkillFile:   filepath.Join(skillDir, "SKILL.md"),
-	}
+	}}
 
 	// Register a plugin agent that references this skill
 	sess.pluginAgents = map[string]plugin.Agent{

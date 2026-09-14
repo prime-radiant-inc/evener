@@ -22,7 +22,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 )
@@ -866,6 +865,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	if frozen != nil {
 		subCfg.spawn.rolePromptOverride = ""
 		subCfg.spawn.activatedSkillBodies = nil
+		subCfg.spawn.frozenSkillMetadata = nil
 		subCfg.spawn.allowedToolNames = nil
 		subCfg.spawn.deniedToolNames = nil
 		subCfg.spawn.communicateOutputSchema = nil
@@ -974,25 +974,45 @@ func (s *Session) prepareSubagentRunFromSelection(
 	var activatedSkillBodies []string
 	if frozen != nil {
 		var err error
+		// Frozen restoration uses the saved names/bodies exactly — never a
+		// disk reload of legacy frozen bytes. The typed metadata is optional:
+		// a legacy descriptor without it keeps unknown provenance.
 		activatedSkillBodies, err = restoreFrozenSkillBodies(frozen.FrozenSkillNames, frozen.FrozenSkillBodies)
 		if err != nil {
 			return nil, err
 		}
 		activatedSkillNames = append([]string(nil), frozen.FrozenSkillNames...)
 		subCfg.spawn.activatedSkillBodies = append([]string(nil), activatedSkillBodies...)
+		subCfg.spawn.frozenSkillMetadata = append([]schema.FrozenSkillPreload(nil), frozen.FrozenSkillMetadata...)
 	} else if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
-			body, err := skill.ResolveSkillContent(s.skills, skillName)
+			// Fresh role preloads use the shared loader/renderer: the
+			// permanent prompt carries the complete rendered document, and
+			// the typed preload metadata freezes its provenance for the
+			// delegate's lifetime.
+			invocationID, err := s.mintSkillOperationID()
+			if err != nil {
+				// Persisting the operation identity is not a skill-resolution
+				// failure: continuing here starts the delegate WITHOUT the
+				// configured role preloads, silently, so the parent must see it.
+				return nil, fmt.Errorf("persisting the skill operation identity for role preload %q: %w", skillName, err)
+			}
+			batch, err := s.prepareSkillActivations(ctx, []skillInvocation{{
+				Name: skillName, Route: "role_preload",
+				InvocationID: invocationID, AtomicGroupID: invocationID,
+			}})
 			if fault := s.subagentPrepareFault("skill_resolve"); fault != nil {
 				err = fault
 			}
-			if err != nil {
+			if err != nil || len(batch.Items) == 0 {
 				continue
 			}
-			if strings.TrimSpace(body) != "" {
-				subCfg.spawn.activatedSkillBodies = append(subCfg.spawn.activatedSkillBodies, body)
-				activatedSkillNames = append(activatedSkillNames, skillName)
-				activatedSkillBodies = append(activatedSkillBodies, body)
+			item := batch.Items[0]
+			if strings.TrimSpace(item.Rendered.Content) != "" {
+				subCfg.spawn.activatedSkillBodies = append(subCfg.spawn.activatedSkillBodies, item.Rendered.Content)
+				activatedSkillNames = append(activatedSkillNames, item.Loaded.Descriptor.CatalogName)
+				activatedSkillBodies = append(activatedSkillBodies, item.Rendered.Content)
+				subCfg.spawn.frozenSkillMetadata = append(subCfg.spawn.frozenSkillMetadata, frozenPreloadRecord(item))
 			}
 		}
 	}

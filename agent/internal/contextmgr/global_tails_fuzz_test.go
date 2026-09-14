@@ -111,7 +111,7 @@ func gctManagerTails(t *testing.T, token string) {
 		FaultResponder: func(llm.Request) error { return errors.New("scripted failure") },
 	})
 	cm := NewManager(profile, failing, cheapmodel.New(failing))
-	if _, err := cm.ElicitNote(ctx, []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(token))}); err == nil {
+	if _, err := cm.ElicitNote(ctx, []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(token))}, nil); err == nil {
 		t.Fatal("elicitation failure was swallowed")
 	}
 
@@ -119,7 +119,7 @@ func gctManagerTails(t *testing.T, token string) {
 	nonFallback.Register(&agenttest.ScriptedAdapter{Provider: profile.ID(), FaultResponder: func(llm.Request) error {
 		return errors.New("non-fallback")
 	}})
-	if _, err := NewManager(profile, nonFallback, cheapmodel.New(nonFallback)).ElicitNote(ctx, nil); err == nil {
+	if _, err := NewManager(profile, nonFallback, cheapmodel.New(nonFallback)).ElicitNote(ctx, nil, nil); err == nil {
 		t.Fatal("non-fallback elicitation failure was swallowed")
 	}
 
