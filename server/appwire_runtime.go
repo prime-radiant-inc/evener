@@ -513,6 +513,8 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				// generation bump fences a sampled facetGoal assign taken
 				// before this carrier against overwriting it (threadEnvelope's
 				// notesCarrierGeneration, mirroring goalCarrierGeneration).
+				// It fences the note fields only: the URL list has its own
+				// generation, so this commit cannot drop a newer sampled list.
 				s.appEnvelope.HumanNote = params.HumanNote
 				s.appEnvelope.AgentNote = params.AgentNote
 				s.appEnvelope.notesCarrierGeneration++
@@ -522,7 +524,10 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				// once written (threadEnvelope's rule), so the push's
 				// backing array must not alias the installed state.
 				s.appEnvelope.SessionURLs = append([]appwire.SessionURL(nil), params.URLs...)
-				s.appEnvelope.notesCarrierGeneration++
+				// This carrier fences SessionURLs alone (threadEnvelope's
+				// urlsCarrierGeneration, the URL list's own counter): a URLs
+				// commit must not drop newer sampled notes.
+				s.appEnvelope.urlsCarrierGeneration++
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})
@@ -657,6 +662,9 @@ func isAppTurnCarrier(event events.SessionEvent) bool {
 // This deliberately does not sample or stamp the root session envelope;
 // descendant mutations remain owned by the agent tree, while this path supplies
 // the independently addressed read/notification view.
+// Its notes/URL carriers therefore bump no generation: the fields land on the
+// descendant's own appwire.Thread, and refreshFacets samples and installs only
+// the root envelope, so no sampled install can race these carriers.
 func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.SessionEvent) {
 	threadID := strings.TrimSpace(event.SessionID)
 	ownerThreadID = strings.TrimSpace(ownerThreadID)
@@ -1868,7 +1876,9 @@ func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemov
 		return appwire.UrlsRemoveResponse{}, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 	}
 	if !removed {
-		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("no URL entry with id " + id)
+		// Caller-supplied and printed by terminals; %q escapes a control
+		// sequence instead of letting the terminal execute it.
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams(fmt.Sprintf("no URL entry with id %q", id))
 	}
 	return appwire.UrlsRemoveResponse{}, nil
 }

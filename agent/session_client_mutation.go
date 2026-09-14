@@ -1280,6 +1280,20 @@ func (s *clientMutationStore) snapshot() clientMutationSnapshot {
 	return cloneClientMutationSnapshot(s.state)
 }
 
+// committedHumanNote reads the committed canonical human note under stateMu
+// without cloning the journal. The notes cut carries it for lock-free readers;
+// the metadata write reads it here so the persisted projection always names the
+// store's authority rather than a caller-remembered copy. Absence and a saved
+// clear both read as "" — no caller of this accessor distinguishes them.
+func (s *clientMutationStore) committedHumanNote() string {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	if s.state.HumanNote == nil {
+		return ""
+	}
+	return *s.state.HumanNote
+}
+
 // queueHeld reads the parked-queue flag without cloning the snapshot.
 // sessionWorkPending calls this on every WireState sample, and snapshot()
 // deep-copies the whole journal.
