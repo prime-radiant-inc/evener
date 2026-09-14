@@ -458,15 +458,15 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 		PluginName:   "task6-test",
 	}
 	frozenSkillFile := filepath.Join(t.TempDir(), "SKILL.md")
-	if err := os.WriteFile(frozenSkillFile, []byte(frozenSkillBody), 0o600); err != nil {
+	if err := os.WriteFile(frozenSkillFile, []byte("---\nname: task6-frozen-skill\ndescription: frozen fixture\n---\n"+frozenSkillBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	mutatedSkillFile := filepath.Join(t.TempDir(), "SKILL.md")
-	if err := os.WriteFile(mutatedSkillFile, []byte(mutatedSkill), 0o600); err != nil {
+	if err := os.WriteFile(mutatedSkillFile, []byte("---\nname: task6-mutated-skill\ndescription: mutated fixture\n---\n"+mutatedSkill), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	root.skills["task6-frozen-skill"] = skill.SkillMeta{Name: "task6-frozen-skill", SkillFile: frozenSkillFile}
-	root.skills["task6-mutated-skill"] = skill.SkillMeta{Name: "task6-mutated-skill", SkillFile: mutatedSkillFile}
+	root.skills.Entries["task6-frozen-skill"] = skill.Descriptor{CatalogName: "task6-frozen-skill", Meta: skill.SkillMeta{Name: "task6-frozen-skill", SkillFile: frozenSkillFile}}
+	root.skills.Entries["task6-mutated-skill"] = skill.Descriptor{CatalogName: "task6-mutated-skill", Meta: skill.SkillMeta{Name: "task6-mutated-skill", SkillFile: mutatedSkillFile}}
 	wantConfig.MaxTurns = 500
 	wantConfig.AgentName = "frozen-reviewer"
 	wantConfig.ReasoningEffort = "low"
@@ -497,7 +497,7 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 			mutated.Skills[0] = "task6-mutated-skill"
 			mutated.Tasks[0].Prompt = mutatedTask
 			root.pluginAgents[agentType] = mutated
-			root.skills["task6-frozen-skill"] = skill.SkillMeta{Name: "task6-frozen-skill", SkillFile: mutatedSkillFile}
+			root.skills.Entries["task6-frozen-skill"] = skill.Descriptor{CatalogName: "task6-frozen-skill", Meta: skill.SkillMeta{Name: "task6-frozen-skill", SkillFile: mutatedSkillFile}}
 			resultSchema["properties"] = map[string]any{"mutated": map[string]any{"type": "boolean"}}
 			root.mu.Lock()
 			root.cfg.ReasoningEffort = "high"

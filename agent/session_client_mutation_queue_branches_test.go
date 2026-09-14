@@ -382,7 +382,7 @@ func TestQueuedInputFromClientMutation(t *testing.T) {
 
 func TestClientMutationInput(t *testing.T) {
 	t.Run("text only", func(t *testing.T) {
-		input := clientMutationInput("hello", nil)
+		input := clientMutationInput("hello", nil, nil)
 		if len(input) != 1 {
 			t.Fatalf("expected 1 item, got %d", len(input))
 		}
@@ -395,7 +395,7 @@ func TestClientMutationInput(t *testing.T) {
 			{MediaType: "image/png", Data: []byte("data1"), Name: "a.png"},
 			{MediaType: "image/jpeg", Data: []byte("data2"), Name: "b.jpg"},
 		}
-		input := clientMutationInput("", images)
+		input := clientMutationInput("", images, nil)
 		if len(input) != 2 {
 			t.Fatalf("expected 2 items, got %d", len(input))
 		}
@@ -409,14 +409,14 @@ func TestClientMutationInput(t *testing.T) {
 		}
 	})
 	t.Run("empty", func(t *testing.T) {
-		input := clientMutationInput("", nil)
+		input := clientMutationInput("", nil, nil)
 		if len(input) != 0 {
 			t.Fatalf("expected 0 items, got %d", len(input))
 		}
 	})
 	t.Run("text and images", func(t *testing.T) {
 		images := []ImageAttachment{{MediaType: "image/png", Data: []byte("img"), Name: "x.png"}}
-		input := clientMutationInput("hello", images)
+		input := clientMutationInput("hello", images, nil)
 		if len(input) != 2 {
 			t.Fatalf("expected 2 items, got %d", len(input))
 		}
