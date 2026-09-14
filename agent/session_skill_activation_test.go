@@ -382,7 +382,9 @@ func TestSkillActivation_RecordTurnCopiesTypedState(t *testing.T) {
 		Outcomes:    []schema.SkillActivationOutcome{{Revision: 7, SessionID: s.id, InvocationID: "inv-1", Status: "already_present", Identity: schema.SkillContentIdentity{Name: "scope:alpha"}, Activation: &schema.OrdinarySkillActivation{InvocationID: "inv-1"}, PreviousIdentity: &schema.SkillContentIdentity{Source: "previous-source"}, PreviousControls: &schema.SkillInvocationControls{UserInvocable: true}}},
 		Obligations: []schema.SkillDeliveryObligation{{InvocationID: "inv-1", AtomicGroupID: "group-1"}},
 	}
-	live := schema.Turn{Kind: schema.TurnUserInput, SkillState: state}
+	// Minted like any turn a session records: the pair log matches the two
+	// forms by schema.Turn.PairID.
+	live := schema.MintTurn(schema.Turn{Kind: schema.TurnUserInput, SkillState: state})
 	s.recordTurn(live, live)
 	state.Input.Names[0] = "mutated"
 	state.Outcomes[0].Status = "delivered"

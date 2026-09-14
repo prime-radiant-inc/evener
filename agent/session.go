@@ -1960,6 +1960,7 @@ func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write fu
 }
 
 func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
+	holdPairMinted(persisted)
 	if err := write(); err != nil {
 		return err
 	}
@@ -1975,12 +1976,18 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 // Callers hold s.mu inside their pair's attentionMu hold; the transaction
 // prunes the log at every successful publication.
 func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
-	// A form that reached the log without a mint cannot be matched to the live
-	// turn it belongs to, so the fold writes no copy and a marker discards the
-	// turn for good. That is a producer that built its two forms separately
-	// (newTurnPair is the one that does not), not a condition to tolerate.
-	invariant.Hold(persisted.PairID != 0, "pair log entry has no PairID: kind=%s", persisted.Kind)
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
+}
+
+// holdPairMinted refuses a pair whose persisted form carries no mint: it
+// cannot be matched to the live turn it belongs to, so the fold writes no copy
+// for that turn and the next marker discards it for good. Every turn a session
+// records is created through schema.NewTurn or schema.MintTurn — a form
+// without one is a producer that built its two forms separately, not a
+// condition to tolerate. Held BEFORE the pair takes any lock, so a violation
+// fails where it is made instead of unwinding through a held mutex.
+func holdPairMinted(persisted schema.Turn) {
+	invariant.Hold(persisted.PairID != 0, "append/write pair has no PairID: kind=%s", persisted.Kind)
 }
 
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
@@ -2003,6 +2010,7 @@ func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, l
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice.
 func (s *Session) recordTurn(live, persisted schema.Turn) {
+	holdPairMinted(persisted)
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()

@@ -252,11 +252,16 @@ func fc1LaterResultCount(rest []schema.Turn, callID string) int {
 	return count
 }
 
+// fc1ZeroTimestamps drops what a repair mints fresh on every run — the
+// synthetic result turn's instant and its pair identity (schema.Turn.PairID,
+// minted per created turn) — so two runs are compared on the content the
+// repair is supposed to produce deterministically.
 func fc1ZeroTimestamps(history []schema.Turn) []schema.Turn {
 	out := make([]schema.Turn, len(history))
 	copy(out, history)
 	for i := range out {
 		out[i].Timestamp = time.Time{}
+		out[i].PairID = 0
 	}
 	return out
 }
