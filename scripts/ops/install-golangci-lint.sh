@@ -69,15 +69,18 @@ if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
 	exit 2
 fi
 
+# The leading-zero refusal is not pedantry: bash arithmetic reads 08 as octal
+# and fails, so a value that passed a looser check would break the backoff
+# itself rather than the validation.
 backoff=${EVENER_GOLANGCI_INSTALL_BACKOFF:-5}
-if [[ ! "$backoff" =~ ^[0-9]+$ ]]; then
-	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_BACKOFF must be a non-negative integer of seconds (got %q)\n' "$backoff" >&2
+if [[ ! "$backoff" =~ ^(0|[1-9][0-9]*)$ ]]; then
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_BACKOFF must be a non-negative integer of seconds without a leading zero (got %q)\n' "$backoff" >&2
 	exit 2
 fi
 
 curl_retries=${EVENER_GOLANGCI_CURL_RETRIES:-3}
-if [[ ! "$curl_retries" =~ ^[0-9]+$ ]]; then
-	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_CURL_RETRIES must be a non-negative integer (got %q)\n' "$curl_retries" >&2
+if [[ ! "$curl_retries" =~ ^(0|[1-9][0-9]*)$ ]]; then
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_CURL_RETRIES must be a non-negative integer without a leading zero (got %q)\n' "$curl_retries" >&2
 	exit 2
 fi
 

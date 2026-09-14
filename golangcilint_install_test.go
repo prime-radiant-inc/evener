@@ -2,7 +2,6 @@ package evener_test
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -27,7 +26,10 @@ func requireInstallerScriptTools(t *testing.T, tools ...string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("scripts/ops/install-golangci-lint.sh requires a Unix shell")
 	}
-	for _, tool := range append([]string{"bash"}, tools...) {
+	// bash runs it, awk reads the pin out of .tool-versions, and go answers
+	// where the bindir is -- the script reaches all three before it decides
+	// anything, so a missing one is a skip and not a failure.
+	for _, tool := range append([]string{"bash", "awk", "go"}, tools...) {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not on PATH: %v", tool, err)
 		}
@@ -67,20 +69,46 @@ func runInstaller(t *testing.T, env ...string) (int, string) {
 	return code, string(out)
 }
 
-// closedPortURL reserves a loopback port, releases it, and returns a URL for
-// it. Between the release and the fetch nothing else will have taken it, and a
-// connection there is refused rather than routed.
-func closedPortURL(t *testing.T) string {
+// emptyReplyURL starts a listener that accepts connections and closes them
+// without answering, and returns its URL. The listener stays up for the test,
+// so the port cannot be taken by anything else between the reservation and the
+// fetch, and every attempt gets the same real transport failure: a connection
+// that is accepted and then hangs up, which curl reports as an empty reply.
+func emptyReplyURL(t *testing.T) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("reserving a loopback port: %v", err)
+		t.Fatalf("listening on loopback: %v", err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatalf("releasing the reserved port: %v", err)
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return // the listener was closed at the end of the test
+			}
+			_ = conn.Close()
+		}
+	}()
+	return "http://" + listener.Addr().String()
+}
+
+// TestInstallerRefusesABackoffBashWouldReadAsOctal covers the other guard: 08
+// passes a naive digits-only check and then fails inside the arithmetic that
+// uses it, which is a failure in the retry rather than in the validation.
+func TestInstallerRefusesABackoffBashWouldReadAsOctal(t *testing.T) {
+	t.Parallel()
+	requireInstallerScriptTools(t)
+	code, out := runInstaller(t, "EVENER_GOLANGCI_INSTALL_BACKOFF=08")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2\n%s", code, out)
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d", port)
+	if !strings.Contains(out, "EVENER_GOLANGCI_INSTALL_BACKOFF must be a non-negative integer") {
+		t.Fatalf("output = %q, want the knob and what it takes", out)
+	}
+	if strings.Contains(out, "install attempt") || strings.Contains(out, "did not install in") {
+		t.Fatalf("output = %q, want no attempt made before the guard", out)
+	}
 }
 
 // TestInstallerRefusesAnAttemptCountItCannotUse covers the guard that runs
@@ -110,7 +138,7 @@ func TestInstallerFailsAfterEveryAttemptWhenTheDownloadCannotStart(t *testing.T)
 	t.Parallel()
 	requireInstallerScriptTools(t, "curl")
 	code, out := runInstaller(t,
-		"EVENER_GOLANGCI_INSTALLER_URL="+closedPortURL(t),
+		"EVENER_GOLANGCI_INSTALLER_URL="+emptyReplyURL(t),
 		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=2",
 		// Without these the test would wait out the default retries and
 		// backoff to prove exactly the same thing.
