@@ -178,7 +178,7 @@ func (s *Session) bumpHistoryRevisionLocked() {
 // reports the loss must not call it a race the operator can win.
 // The returned published slice is a defensive copy taken under s.mu, never
 // s.history's own backing array — callers may read it without locks.
-func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool, refusal error) {
+func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool, refusal error) {
 	s.attentionMu.Lock()
 	// Fail closed on a transcript that has stopped accepting records, before
 	// anything is published rather than after the markers fail to land. This
@@ -207,38 +207,46 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		s.attentionMu.Unlock()
 		return nil, false, nil
 	}
-	// The merge-back rewrite set: the PERSISTED transcript forms of every
-	// append/write pair since this fold's snapshot (snapAppends), taken from
-	// the pair log — never the live history turns, whose tool results
-	// deliberately retain private API-log evidence that the persisted
-	// projection replaces with a re-read placeholder, and whose delegate
-	// delivery commits live only on the persisted form. The pairs' original
-	// entries sit BEFORE the compaction markers this transaction is about to
-	// write — where ResumeHistory's last-marker anchor would silently drop
-	// them on restart — so this transaction re-appends these forms just ahead
-	// of the markers, tagged with the fold id the markers carry, which is how
-	// the anchored branch knows the anchor is entitled to keep them.
-	// Attention-retained turns and repair synthetics
-	// never enter the log (they have no session-transcript pair: the
-	// attention re-fold and ResumeHistory's own repair own their restart
-	// stories), so the rewrite cannot manufacture entries for attention-owned
-	// turns — and a turn the attention machinery deletes between publish and
-	// rewrite cannot be resurrected. The log is pruned wholesale: a competing
-	// fold still in flight must re-snapshot to publish after this
-	// one (its revision check fails otherwise), so no older snapshot can
-	// need the pruned entries — and snapAppends >= persistedAppendLogBase
-	// for the same reason, since only publications advance the base.
-	// Where this fold's rewrite starts. Ordinarily its own snapshot: the turns
-	// recorded while it ran are the ones its marker would discard. But a
-	// PREVIOUS fold that could not anchor left its own turns covered by
-	// nothing — they stand only because no marker discarded them — and this
-	// fold's marker is about to. So the rewrite reaches back to the earliest
-	// such turn and copies those too.
-	tailStart := snapAppends
-	if s.unanchoredAppendLog && s.unanchoredAppendFrom < tailStart {
-		tailStart = s.unanchoredAppendFrom
-	}
-	rewriteTail := append([]schema.Turn(nil), s.persistedAppendLog[tailStart-s.persistedAppendLogBase:]...)
+	// The rewrite set: the PERSISTED transcript forms of every turn the
+	// published history still holds, taken from the pair log — never the live
+	// history turns, whose tool results deliberately retain private API-log
+	// evidence that the persisted projection replaces with a re-read
+	// placeholder, and whose delegate delivery commits live only on the
+	// persisted form. Their original entries sit BEFORE the compaction markers
+	// this transaction is about to write — where ResumeHistory's last-marker
+	// anchor would silently drop them on restart — so this transaction
+	// re-appends these forms just ahead of the markers, tagged with the fold
+	// id the markers carry, which is how the anchored branch knows the anchor
+	// is entitled to keep them.
+	//
+	// "Still in the published history" is the whole rule, and it is wider than
+	// the turns recorded while this fold ran. The preserved suffix — the turns
+	// a compaction deliberately keeps verbatim — is just as much on the wrong
+	// side of the new marker, and so are the turns an earlier fold that could
+	// not anchor left standing only because no marker had discarded them yet.
+	// One question covers all three, and it is the same question the log
+	// itself is pruned by, so what this fold copies is exactly what the next
+	// fold's marker will have to copy again.
+	//
+	// A turn the published history no longer holds — summarized away, or an
+	// environment record a later one superseded — is left behind with it: a
+	// copy would restore, on the next restart, context the fold removed on
+	// purpose. Attention-retained turns and repair synthetics never enter the
+	// log at all (they have no session-transcript pair: the attention re-fold
+	// and ResumeHistory's own repair own their restart stories), so the
+	// rewrite cannot manufacture entries for attention-owned turns — and a
+	// turn the attention machinery deletes between publish and rewrite cannot
+	// be resurrected. A turn restored from an earlier process has no pair
+	// entry either, so its persisted form is not the session's to re-append;
+	// carrying those past a marker needs the durable per-entry identity the
+	// records do not have yet (issue #1200).
+	rewriteTail := pairsStillInHistory(s.persistedAppendLog, published)
+	// Pruned to that same set, here inside the publish: every entry dropped
+	// belongs to a turn the history no longer has, which no later fold can
+	// need. A competing fold still in flight must re-snapshot to publish after
+	// this one (its revision check fails otherwise), so none of them is
+	// looking at the entries either.
+	s.persistedAppendLog = slices.Clone(rewriteTail)
 	if onPublishLocked != nil {
 		onPublishLocked(published)
 	}
@@ -308,24 +316,6 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		}
 	}
 	commit.commitTranscriptsLocked(tailComplete)
-	// The log is pruned HERE, not at publish: until the records are written
-	// there is nothing to say the copies landed, and a log pruned early is a
-	// set of turns the next fold's marker discards with no copy of them
-	// anywhere. A competing fold cannot publish in between — this transaction
-	// holds the transcript door across both — so pruning late keeps the
-	// wholesale rule the snapshot arithmetic relies on.
-	anchored := commit.anchoredNow == nil || commit.anchoredNow()
-	s.mu.Lock()
-	if anchored {
-		s.persistedAppendLogBase += len(s.persistedAppendLog)
-		s.persistedAppendLog = nil
-		s.unanchoredAppendLog = false
-		s.unanchoredAppendFrom = 0
-	} else if !s.unanchoredAppendLog {
-		s.unanchoredAppendLog = true
-		s.unanchoredAppendFrom = tailStart
-	}
-	s.mu.Unlock()
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v; this compaction was not anchored on disk, so a restart replays the transcript from before it", err)})
@@ -362,7 +352,6 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string)
 		histCopy := append([]schema.Turn{}, s.history...)
 		snapLen := len(s.history)
 		snapRevision := s.historyRevision
-		snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 		s.mu.Unlock()
 
 		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy)
@@ -370,7 +359,7 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string)
 		postLen := len(histCopy)
 		injected := foldInjectedCount()
 
-		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func([]schema.Turn) {
+		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, histCopy, commit, func([]schema.Turn) {
 			s.shrinkTurnHistoryBaseline(snapLen, postLen, injected)
 		})
 		if published {
@@ -466,13 +455,45 @@ type foldCommit struct {
 	flush                        func()
 	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
-	// anchoredNow reports what commitTranscriptsLocked found: this fold's
-	// marker is in the transcript, or the fold wrote no marker at all. Either
-	// way nothing of this fold's is missing, which is what lets the
-	// publication forget the turns it copied. Nil for a commit nobody staged —
-	// the probes that drive the transaction directly — which has no marker to
-	// be missing.
-	anchoredNow func() bool
+}
+
+// pairsStillInHistory picks the persisted forms the pair log holds for turns
+// the given history still has, in append order — which is history order, so
+// the copies go down in the order a resume must read them back.
+//
+// The two forms of one turn are matched by the identity the persisted form
+// inherits from its live turn when the session builds it: the kind and the
+// timestamp the turn was minted with. Records carry no durable per-entry id
+// yet (issue #1200); this is the identity they do have, and turns are minted
+// one at a time off a nanosecond clock. Counting occurrences rather than
+// testing membership keeps two turns that somehow share one identity from
+// pulling in each other's entries.
+func pairsStillInHistory(log, history []schema.Turn) []schema.Turn {
+	live := make(map[turnPairIdentity]int, len(history))
+	for _, turn := range history {
+		live[pairIdentity(turn)]++
+	}
+	kept := make([]schema.Turn, 0, len(log))
+	for _, persisted := range log {
+		identity := pairIdentity(persisted)
+		if live[identity] == 0 {
+			continue
+		}
+		live[identity]--
+		kept = append(kept, persisted)
+	}
+	return kept
+}
+
+// turnPairIdentity names one turn across the two forms the session keeps of
+// it: the live turn in history and the persisted form in the pair log.
+type turnPairIdentity struct {
+	kind schema.TurnKind
+	at   int64
+}
+
+func pairIdentity(turn schema.Turn) turnPairIdentity {
+	return turnPairIdentity{kind: turn.Kind, at: turn.Timestamp.UnixNano()}
 }
 
 func environmentTurnIDs(history []schema.Turn) map[string]int {
@@ -724,7 +745,6 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		}
 	}
 	commit := &foldCommit{foldID: foldID}
-	commit.anchoredNow = func() bool { return foldAnchored }
 	// Asked BEFORE anything is written, because the tail now goes down first:
 	// what matters is whether this fold HAS a replacement marker to write, not
 	// whether one landed. A marker whose write then fails leaves tagged copies

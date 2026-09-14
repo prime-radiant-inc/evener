@@ -2558,3 +2558,143 @@ func TestFoldPublication_TurnsAnUnanchoredFoldLeftBehindSurviveTheNextFold(t *te
 		t.Fatalf("the turn recorded during the un-anchored fold appears %d times in the resumed history, want exactly once", seen)
 	}
 }
+
+// The fold keeps a suffix of the history verbatim — those turns are the live
+// context a compaction is careful NOT to summarize away. Their entries are
+// already in the transcript, BEFORE the marker this fold is about to write,
+// which is precisely what ResumeHistory discards. So the copies the fold
+// writes ahead of its marker have to carry the preserved suffix too, not only
+// the turns recorded while the fold ran: otherwise a restart comes back to a
+// summary and nothing else, having silently dropped the conversation the
+// compaction deliberately kept.
+func TestFoldPublication_PreservedSuffixSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "preserved-suffix-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	// Recorded pairs, not seeded turns: the preserved suffix this test is
+	// about is turns the transcript already holds.
+	const recorded = 12 // > PreserveRecentTurns(6): forces an actual fold
+	for i := range recorded {
+		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	var preserved []string
+	for _, turn := range currentHistory(t, s) {
+		if text := turn.Message.Text(); strings.HasPrefix(text, "recorded turn ") {
+			preserved = append(preserved, text)
+		}
+	}
+	if len(preserved) == 0 || len(preserved) == recorded {
+		t.Fatalf("test setup: the fold preserved %d of %d recorded turns, want some but not all", len(preserved), recorded)
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	counts := map[string]int{}
+	for _, turn := range resumed {
+		counts[turn.Message.Text()]++
+	}
+	for _, text := range preserved {
+		if counts[text] != 1 {
+			t.Fatalf("%q is in the live history the fold published but appears %d times in the resumed history, want exactly once: the marker discarded the preserved suffix and nothing copied it past", text, counts[text])
+		}
+	}
+	// And no more than that: a copy set that reaches back further than the
+	// suffix restores context the compaction deliberately dropped.
+	if dropped := "recorded turn 0"; counts[dropped] != 0 {
+		t.Fatalf("%q was summarized away by the fold but appears %d times in the resumed history, want 0", dropped, counts[dropped])
+	}
+}
+
+// A fold publishes on every model request, and one whose layers produced no
+// marker discards nothing — so it cannot be the write that made an EARLIER
+// un-anchored fold's turns safe. Counting it as anchored prunes the pair log
+// and clears the debt, and the next fold that really does anchor then has
+// nothing to copy: the turns the un-anchored fold left behind go with it.
+func TestFoldPublication_MarkerlessFoldKeepsAnUnanchoredFoldsDebt(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "markerless-keeps-debt-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failReplayCopyWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	compactErr := make(chan error, 1)
+	go func() { compactErr <- s.Compact(context.Background()) }()
+	<-entered
+	const recordedText = "turn recorded while the un-anchored fold was running"
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(recordedText))
+	s.recordTurn(turn, turn)
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact (unanchored): %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no replay copy write was attempted, so the first fold anchored")
+	}
+
+	// A marker-less publication in between: staged and published without
+	// running a layer, exactly as a below-threshold model request does.
+	s.mu.Lock()
+	histCopy := append([]schema.Turn{}, s.history...)
+	snapLen := len(s.history)
+	snapRevision := s.historyRevision
+	s.mu.Unlock()
+	_, _, markerless, _ := s.stageCompactionEffects(context.Background(), &histCopy)
+	if _, ok, refusal := s.publishFoldTransaction(snapLen, snapRevision, histCopy, markerless, nil); !ok {
+		t.Fatalf("marker-less fold lost the publication race with nothing else publishing (refusal=%v)", refusal)
+	}
+
+	// Now a fold that can write its copies, whose marker is what discards
+	// everything before it.
+	faultFS.disarmed.Store(true)
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact (anchored): %v", err)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	seen := 0
+	for _, rt := range ResumeHistory(data.Entries) {
+		if rt.Message.Text() == recordedText {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("the turn the un-anchored fold left behind appears %d times in the resumed history, want exactly once: the marker-less publication in between took the debt with it", seen)
+	}
+}

@@ -257,7 +257,6 @@ func TestCompactionReplay_NoMarkerFoldWritesNoReplayTail(t *testing.T) {
 	histCopy := append([]schema.Turn{}, s.history...)
 	snapLen := len(s.history)
 	snapRevision := s.historyRevision
-	snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 	s.mu.Unlock()
 
 	// The pair lands after the fold's snapshot, so it is exactly what the tail
@@ -269,7 +268,7 @@ func TestCompactionReplay_NoMarkerFoldWritesNoReplayTail(t *testing.T) {
 
 	// Stage and publish without running any layer: no checkpoint, no summary.
 	_, _, commit, _ := s.stageCompactionEffects(context.Background(), &histCopy)
-	if _, ok, refusal := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, nil); !ok {
+	if _, ok, refusal := s.publishFoldTransaction(snapLen, snapRevision, histCopy, commit, nil); !ok {
 		t.Fatalf("fold lost the publication race with nothing else publishing (refusal=%v)", refusal)
 	}
 
