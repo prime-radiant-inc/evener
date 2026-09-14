@@ -2041,6 +2041,16 @@ func (s *Session) recordHookCompletion(turn schema.Turn, data events.HookEndData
 		return true, nil
 	}
 	if err := s.attachedTranscript().AppendDurable(turn); err != nil {
+		if !errors.Is(err, transcript.ErrEntryRetained) {
+			return false, err
+		}
+		// The write failed, but its entry is a record in the file — the whole
+		// line landed and the rollback could not take it back out. A returning
+		// reader will find this completion, so it is owed everything a clean
+		// write owes: its place in history, and the event that says it
+		// happened. The failure is still reported; it just no longer decides
+		// that the turn does not exist.
+		commit()
 		return false, err
 	}
 	commit()

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -351,7 +353,13 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	held, err := s.recordHookCompletion(turn, data)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return
+		if !errors.Is(err, transcript.ErrEntryRetained) {
+			return
+		}
+		// The entry is in the transcript despite the failure, so the
+		// announcement is owed: a reader that finds the record and was never
+		// told about it is the divergence this ordering exists to prevent,
+		// arrived at from the other side.
 	}
 	if held {
 		// Queued, not written: the entry is not durable yet, so the event that

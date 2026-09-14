@@ -51,6 +51,16 @@ var ErrLineTooLong = errors.New("transcript line too long")
 // deciding whether to write it again.
 var ErrRollbackFailed = errors.New("rollback failed")
 
+// ErrEntryRetained marks a failed append whose entry is nonetheless A RECORD IN
+// THE FILE: the whole line landed and could not be taken back out. It is the
+// difference a caller needs to decide what to do about the turn it just tried
+// to write. An append that failed with this in its chain has a reader-visible
+// entry, so anything that turn owes — a live announcement, its place in model
+// history — is owed still: dropping it would leave a returning reader holding
+// a record nobody was ever told about. Every other append failure leaves no
+// record, and the turn is dropped with it.
+var ErrEntryRetained = errors.New("transcript entry landed and could not be removed")
+
 // ErrWriterPoisoned marks a writer that refuses further appends. An append
 // that failed partway and could not be rolled back leaves bytes at the tail
 // that are not a record: appending after them would run the next entry onto
@@ -517,7 +527,10 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 			if forceSync {
 				if removed, rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
 					if !removed {
+						// The line is whole and still in the file: a reader
+						// will find this entry, so say so.
 						w.countAppendedEntryLocked(turn)
+						return fmt.Errorf("sync transcript entry: %w; %w: %w; %w", err, ErrRollbackFailed, rollbackErr, ErrEntryRetained)
 					}
 					return fmt.Errorf("sync transcript entry: %w; %w: %w", err, ErrRollbackFailed, rollbackErr)
 				}
@@ -528,7 +541,7 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 			// the file and every reader of this transcript sees it. Spend its
 			// sequence number here or the next append takes that number again.
 			w.countAppendedEntryLocked(turn)
-			return fmt.Errorf("sync transcript entry: %w", err)
+			return fmt.Errorf("sync transcript entry: %w; %w", err, ErrEntryRetained)
 		}
 		w.lastSync = time.Now()
 		w.dirty = false
@@ -545,9 +558,9 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 // retry still lands. A whole line that landed is a record a reader will see, so
 // it spends its sequence number and counts the failures it settles before the
 // writer stops.
-func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int) {
+func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int) (retained bool) {
 	if written == 0 {
-		return
+		return false
 	}
 	// Nothing synced what landed, and Close flushes only what it is told is
 	// dirty. An entry counted here but left out of that flush is one the writer
@@ -555,8 +568,10 @@ func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int)
 	w.dirty = true
 	if written == lineLen {
 		w.countAppendedEntryLocked(turn)
+		retained = true
 	}
 	w.poisoned = true
+	return retained
 }
 
 // countAppendedEntryLocked spends the entry's sequence number and counts the
@@ -610,7 +625,9 @@ func (w *Writer) appendFailureLocked(operation string, err error, startOffset in
 		return fmt.Errorf("%s: %w", operation, err)
 	}
 	if !removed {
-		w.poisonLandedBytesLocked(turn, written, lineLen)
+		if w.poisonLandedBytesLocked(turn, written, lineLen) {
+			return fmt.Errorf("%s: %w; %w: %w; %w", operation, err, ErrRollbackFailed, rollbackErr, ErrEntryRetained)
+		}
 	}
 	return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
 }

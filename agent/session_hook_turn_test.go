@@ -772,3 +772,86 @@ func (file *failTextWriteFile) Write(p []byte) (int, error) {
 	}
 	return file.File.Write(p)
 }
+
+// retainEntryFS lets the line land and then refuses both the sync and the
+// truncate that would take it back out — the one failure shape that leaves a
+// record in the file the writer could not remove.
+type retainEntryFS struct {
+	afero.Fs
+	armed atomic.Bool
+}
+
+func (fs *retainEntryFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &retainEntryFile{File: file, fs: fs}, nil
+}
+
+func (fs *retainEntryFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &retainEntryFile{File: file, fs: fs}, nil
+}
+
+type retainEntryFile struct {
+	afero.File
+	fs *retainEntryFS
+}
+
+func (file *retainEntryFile) Sync() error {
+	if file.fs.armed.Load() {
+		return errors.New("injected sync failure")
+	}
+	return file.File.Sync()
+}
+
+func (file *retainEntryFile) Truncate(size int64) error {
+	if file.fs.armed.Load() {
+		return errors.New("injected truncate failure")
+	}
+	return file.File.Truncate(size)
+}
+
+// A durable append can fail with its entry still in the file: the line landed,
+// the sync failed, and the truncate that would have removed it failed too. A
+// returning reader finds that completion, so dropping its event would leave a
+// record nobody was ever told about — the same divergence as announcing one
+// that is not there, reached from the other side.
+func TestHookCompletionRetainedByAFailedWriteIsStillAnnounced(t *testing.T) {
+	t.Parallel()
+	fs := &retainEntryFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/retained.jsonl", transcript.Header{SessionID: "retained"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	s := &Session{id: "retained", events: make(chan events.SessionEvent, 8)}
+	s.attachTranscript(writer)
+	fs.armed.Store(true)
+
+	s.emitHookCompleted(events.HookEndData{Event: "PreCompact", HookType: "command", PluginName: "hook-turn-plugin"})
+
+	close(s.events)
+	ends, warnings := 0, 0
+	for event := range s.events {
+		switch event.Kind {
+		case events.EventHookEnd:
+			ends++
+		case events.EventWarning:
+			warnings++
+		}
+	}
+	if ends != 1 {
+		t.Fatalf("announcements for a retained entry = %d, want 1: the transcript holds it", ends)
+	}
+	if warnings != 1 {
+		t.Fatalf("warnings = %d, want the failure reported once", warnings)
+	}
+	if got := len(s.history); got != 1 {
+		t.Fatalf("history turns = %d, want the completion the transcript holds", got)
+	}
+}
