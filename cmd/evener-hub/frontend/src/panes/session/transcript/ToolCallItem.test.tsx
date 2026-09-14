@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import {
   createTranscriptRenderContext,
@@ -128,13 +128,27 @@ function expandRow(): void {
 // collapsed-by-default row (e.g. to test the collapsed→expanded transition)
 // use a tools-level config where expandByDefault is false.
 const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+const intentConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
 
-function renderTools(node: ReactElement) {
+// One provider wrapper for the verbosity-level renders below; the two named
+// renderers keep each test reading in the level it is about.
+function renderAtLevel(config: TranscriptDisplayConfigV1, disclosureScope: string, node: ReactElement) {
   return render(
-    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="test:tools">
+    <TranscriptRenderProvider config={config} surface="readOnly" disclosureScope={disclosureScope}>
       {node}
     </TranscriptRenderProvider>,
   );
+}
+
+function renderTools(node: ReactElement) {
+  return renderAtLevel(toolsConfig, "test:tools", node);
+}
+
+// Intent level (toolCalls=false) collapses every intent-bearing row's summary
+// line, leaving only the stated rationale - the view in which an open
+// affordance must NOT appear, because there is no tool-call line to ride.
+function renderIntentLevel(node: ReactElement) {
+  return renderAtLevel(intentConfig, "test:intent", node);
 }
 
 // The disclosure trigger is a real button[aria-expanded] (see ToolRow.tsx),
@@ -1067,6 +1081,81 @@ test("a read_file card's Open beside control rides inline between the file name 
   // is head+tail together - and the control sits right after it.
   expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe("Read /home/proj/src/widgets/sheet/sheet.test.tsx");
   expect(tail.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+// The open affordance belongs to the tool-call summary line. When the row
+// shows only its intent (summary line collapsed) there is no such line to
+// carry it, so it is withheld - the control must never trail the rationale.
+// One intent-bearing read_file row, rendered at both levels below.
+const intentReadFileRow = item({
+  toolName: "read_file",
+  description: "Reading writeAndReload restore path",
+  argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/a.ts" }),
+  output: "x",
+});
+
+test("an intent-bearing read_file row at intent level withholds Open beside", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  renderIntentLevel(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
+  // Only the intent line survives at this level: no summary, no affordance.
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Reading writeAndReload restore path");
+  expect(screen.queryByTestId("tool-row-summary")).toBe(null);
+  expect(screen.queryByTestId("tool-row-intent-trailing")).toBe(null);
+  expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
+});
+
+// The contrast that makes the rule precise: the same row at tools level shows
+// its summary line, so the affordance rides it as before.
+test("the same read_file row at tools level still shows Open beside on its summary line", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  renderTools(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain("Read /home/proj/src/a.ts");
+  const trailing = screen.getByTestId("tool-row-trailing");
+  expect(trailing.contains(screen.getByRole("button", { name: /open beside/i }))).toBe(true);
+});
+
+// A delegate card is intent-only by design - its descriptor deliberately puts
+// the Open transcript control on the intent line ("visible folded or not"), so
+// the intent-level gate must not swallow it (the phone editorial gate needs it).
+test("a delegate card at intent level keeps its Open transcript control", () => {
+  resetThreadsStoreForTests();
+  const card = item({
+    toolName: "delegate",
+    description: "Inspect the independent child",
+    output: JSON.stringify({ delegate_id: "dlg_abc123", status: "running", transcript_ref: "local:child1" }),
+  });
+  renderIntentLevel(<ToolCallItem item={card} turn={turn} live={false} sessionRef="ref_a" />);
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the independent child");
+  expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  // Collapsing the card's body leaves the intent line alone - the control is
+  // there whether the card is folded or not, so it must survive.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(screen.queryByTestId("tool-call-body")).toBe(null);
+  expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+});
+
+// An image read auto-expands its body, so the tool (its picture) is visible
+// even with the summary line collapsed: the Open beside control stays.
+test("an auto-expanded image read at intent level keeps Open beside", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  renderIntentLevel(
+    <ToolCallItem
+      item={item({
+        toolName: "read_file",
+        description: "Opening the captured logo",
+        argumentsJSON: JSON.stringify({ file_path: "/home/proj/assets/logo.png" }),
+        output: "[image: image/png, base64 data follows]\nabc",
+      })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_a"
+    />,
+  );
+  expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /open beside/i })).toBeTruthy();
 });
 
 // A delegate_send row's Open transcript control rides INLINE between the
