@@ -70,7 +70,12 @@ const (
 	TurnAttentionResolution TurnKind = "ATTENTION_RESOLUTION"
 	// TurnRoundTimings records the completed round's presentational timing
 	// breakdown. It is retained in semantic history for transcript parity but
-	// excluded from provider history.
+	// excluded from provider history. Nothing writes one yet: a round's
+	// timings are published as the turn ends, so the record can only sit
+	// inside its turn once the turn has a durable name, and the producer
+	// lands with that naming work. The readers here are ahead of it on
+	// purpose — the kind is the same durable form as the compaction record
+	// beside it.
 	TurnRoundTimings TurnKind = "ROUND_TIMINGS"
 	// TurnContextCompaction records one context-management layer for replay.
 	// It is presentational and excluded from provider history.

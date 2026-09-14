@@ -594,7 +594,13 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				preCompactRan = true
 				var records []steeringTurnRecord
 				records, noteCommit = s.runPreCompactHook(ctx, history)
+				// The steering the hook injected is this fold's work, in the
+				// history the fold publishes as much as in the records it
+				// writes. Tagging only the written form would leave a live
+				// reader and a returning one disagreeing about which fold
+				// produced the same turn.
 				for i := len(*history) - len(records); i < len(*history); i++ {
+					(*history)[i].CompactionFoldID = foldID
 				}
 				for i := range records {
 					records[i].turn.CompactionFoldID = foldID

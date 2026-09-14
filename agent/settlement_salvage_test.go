@@ -65,13 +65,14 @@ func settledKinds(turns []schema.Turn) []schema.TurnKind {
 	return kinds
 }
 
-// settledConversationKinds excludes durable presentational compaction
-// markers from the settlement shape. They are transcript/replay metadata and
-// must not change the salvage contract's model-facing turn sequence.
+// settledConversationKinds excludes the durable presentational records — a
+// compaction layer's measurements, a round's timings — from the settlement
+// shape. They are transcript metadata and must not change the salvage
+// contract's model-facing turn sequence.
 func settledConversationKinds(turns []schema.Turn) []schema.TurnKind {
 	var kinds []schema.TurnKind
 	for _, kind := range settledKinds(turns) {
-		if kind != schema.TurnContextCompaction {
+		if kind != schema.TurnContextCompaction && kind != schema.TurnRoundTimings {
 			kinds = append(kinds, kind)
 		}
 	}

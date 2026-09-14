@@ -88,3 +88,51 @@ func TestCompactSuppressesContextEventWhenTranscriptAppendFails(t *testing.T) {
 		t.Fatal("filesystem failure did not receive a decodable CONTEXT_COMPACTION transcript record")
 	}
 }
+
+// The steering a fold injects is one of the fold's records in both places it
+// exists: the entry it writes and the turn it leaves in live history. A tag on
+// only one of them leaves a live reader and a returning one disagreeing about
+// which fold produced the same turn.
+func TestFoldPublication_InjectedSteeringCarriesTheFoldIDInHistoryToo(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "fold-id-history-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12)
+	s.setPinnedNote("REMEMBER: the API signature")
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	durable := map[string]string{}
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnSteering {
+			durable[entry.Turn.Message.Text()] = entry.Turn.CompactionFoldID
+		}
+	}
+	if len(durable) == 0 {
+		t.Fatal("test setup: the fold injected no steering to compare")
+	}
+	seen := 0
+	for _, turn := range currentHistory(t, s) {
+		if turn.Kind != schema.TurnSteering {
+			continue
+		}
+		fold, ok := durable[turn.Message.Text()]
+		if !ok {
+			continue
+		}
+		seen++
+		if turn.CompactionFoldID != fold {
+			t.Fatalf("live history has the fold's steering under fold %q, the transcript under %q", turn.CompactionFoldID, fold)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("test setup: the fold's steering is in the transcript but not in live history")
+	}
+}
