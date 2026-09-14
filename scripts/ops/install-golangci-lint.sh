@@ -140,14 +140,25 @@ if ! gopath="$(go env GOPATH)" || [ -z "$gopath" ]; then
 fi
 bindir="$gopath/bin"
 
-# pipefail is what makes the fetch of install.sh part of the attempt: without it
-# a failed curl hands `sh` an empty script, which exits 0 and reports a
-# successful install of nothing. --retry-all-errors is what makes --retry cover
-# a 4xx/5xx rather than only a connection that broke.
-# One pipeline, run either under the bound or directly, so the two paths cannot
-# drift apart. It runs under bash for pipefail, which is what makes a failed
-# fetch of install.sh part of the attempt.
-install_pipeline='set -o pipefail; curl -fsSL --connect-timeout 15 --max-time 300 --retry "$4" --retry-delay 2 --retry-all-errors "$1" | sh -s -- -b "$2" "$3"'
+# --retry-all-errors is what makes --retry cover a failure that is not a
+# connection breaking: an HTTP status, or a reply that ended early.
+#
+# The installer is downloaded to a file and only then run, and the same command
+# serves both paths so they cannot drift apart. Piping curl into sh hands the
+# shell whatever arrived: a response cut off halfway is a script the shell has
+# already started executing, and curl's retry then appends the second response
+# to the first, so the shell runs the truncated half and then the whole thing.
+# A file has no halfway state -- curl either exits 0 with the body or it does
+# not, and sh sees the file only in the first case. That also retires the
+# pipefail form, which was there to notice the download failing on the left of
+# a pipe.
+install_script="$(mktemp "${TMPDIR:-/tmp}/install-golangci-lint.XXXXXX")" || {
+	printf 'install-golangci-lint.sh: could not make a temporary file for the installer\n' >&2
+	exit 2
+}
+trap 'rm -f "$install_script"' EXIT
+
+fetch_and_run='curl -fsSL --connect-timeout 15 --max-time 300 --retry "$4" --retry-delay 2 --retry-all-errors -o "$5" "$1" && sh "$5" -b "$2" "$3"'
 
 evener_dev_bin="${EVENER_GOLANGCI_DEV_BIN:-$repo_root/evener-dev}"
 bounded_list_support=
@@ -172,7 +183,7 @@ bounded_list_available() {
 run_installer() {
 	if bounded_list_available; then
 		"$evener_dev_bin" dev bounded-list -timeout 300s -attempts 1 -grace 5s -- \
-			bash -c "$install_pipeline" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries"
+			sh -c "$fetch_and_run" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries" "$install_script"
 		return
 	fi
 	if [ "$announced_unbounded" -eq 0 ]; then
@@ -180,7 +191,7 @@ run_installer() {
 			"$evener_dev_bin" >&2
 		announced_unbounded=1
 	fi
-	bash -c "$install_pipeline" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries"
+	sh -c "$fetch_and_run" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries" "$install_script"
 }
 
 attempt=1

@@ -28,8 +28,8 @@ import (
 //
 // The version-check cases serve a real install script over that loopback,
 // which writes a small executable printing a version line the test chooses.
-// The script under test then does what it does with any installer: runs the
-// binary and compares what it reports against the pin.
+// The script under test then does what it does with any installer: downloads
+// it, runs it, and compares what the installed binary reports against the pin.
 //
 // #1205 declined the class these replace -- a PATH full of fake binaries,
 // which proves what the fakes were written to prove and nothing about the
@@ -273,6 +273,10 @@ func installerScript(t *testing.T, reports string, argsFile ...string) string {
 	return script
 }
 
+// installerServing starts a loopback server whose install.sh writes an
+// executable into the bindir it is given, printing reports as its version
+// line. An empty reports writes nothing, which is the installer that ran and
+// produced no binary.
 func installerServing(t *testing.T, reports string) (url, argsFile string) {
 	t.Helper()
 	argsFile = filepath.Join(t.TempDir(), "installer-args")
@@ -399,6 +403,62 @@ func TestInstallerRetriesADownloadThatDiedInTransit(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0: curl retries a download that died in transit\n%s", code, out)
 	}
+	if strings.Contains(out, "install attempt") {
+		t.Fatalf("output = %q, want the script's own loop not to have been used", out)
+	}
+}
+
+// installerServingTruncatedThenWhole answers the first request with a partial
+// script body and closes the connection, then serves the whole thing. curl
+// treats the short read as a failure worth retrying, and the retry writes the
+// file from the start -- where a pipe would have handed the shell the half it
+// had already started running, followed by the whole script.
+func installerServingTruncatedThenWhole(t *testing.T, reports string) string {
+	t.Helper()
+	script := installerScript(t, reports)
+	var mu sync.Mutex
+	served := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		served++
+		first := served == 1
+		mu.Unlock()
+		if first {
+			// A length the body never reaches, so the reply ends early.
+			w.Header().Set("Content-Length", strconv.Itoa(len(script)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, script[:len(script)/2])
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijacking the truncated response: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, script)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func TestInstallerRunsOnlyAWholeInstaller(t *testing.T) {
+	t.Parallel()
+	requireInstallerScriptTools(t, "curl")
+	version := pinnedGolangciVersion(t)
+	code, out := runInstaller(t,
+		"EVENER_GOLANGCI_INSTALLER_URL="+installerServingTruncatedThenWhole(t, "golangci-lint has version "+version+" built with go1.27.0"),
+		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
+		"EVENER_GOLANGCI_CURL_RETRIES=1",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0: the retry fetches the whole installer\n%s", code, out)
+	}
+	// One install: the truncated half was never run, so nothing installed
+	// twice and nothing ran a fragment.
 	if strings.Contains(out, "install attempt") {
 		t.Fatalf("output = %q, want the script's own loop not to have been used", out)
 	}
