@@ -363,8 +363,11 @@ func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 
 // estimatePressure calculates what fraction of the context window is in use.
 // Uses actual API-reported token counts when available, falling back to char/4.
+// One profile snapshot covers both the window and the estimate, so a model
+// switch (SetProfile) cannot pair one model's window with another's tokens.
 func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
-	cw := cm.currentProfile().ContextWindowSize()
+	prof := cm.currentProfile()
+	cw := prof.ContextWindowSize()
 	if cw <= 0 {
 		return 0
 	}
@@ -374,7 +377,7 @@ func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) f
 	measuredLen := cm.historyLenAtMeasure
 	cm.mu.Unlock()
 
-	totalTokens := cm.estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
+	totalTokens := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
 	return float64(totalTokens) / float64(cw)
 }
 
@@ -384,14 +387,22 @@ func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) f
 // When a measurement is available and still applies (lastTokens > 0 and the
 // measured length is within the current history), it uses the measurement as a
 // baseline and estimates only the turns appended since; otherwise it falls back to
-// the char/4 heuristic over the whole history plus the system prompt.
+// the char/4 heuristic over the whole history plus the system prompt. It takes a
+// fresh profile snapshot for callers that hold none.
 func (cm *Manager) estimateUsedTokens(lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
+	return cm.estimateUsedTokensFor(cm.currentProfile(), lastTokens, measuredLen, history, sysPromptChars)
+}
+
+// estimateUsedTokensFor is the snapshot-taking core: the caller passes the same
+// profile it read the window from, so a model switch mid-computation cannot
+// combine one model's window with another model's accounting.
+func (cm *Manager) estimateUsedTokensFor(prof *provider.Profile, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
 	if lastTokens > 0 && measuredLen <= len(history) {
 		// Use the known token count as baseline, then estimate only new turns.
-		return lastTokens + cm.estimateTokens(history[measuredLen:])
+		return lastTokens + cm.estimateTokensFor(prof, history[measuredLen:])
 	}
 	// Fall back to char/4 for everything.
-	return cm.estimateTokens(history) + sysPromptChars/4
+	return cm.estimateTokensFor(prof, history) + sysPromptChars/4
 }
 
 // EstimatePressure returns the estimated fraction of context window in use.
@@ -400,8 +411,11 @@ func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) f
 }
 
 // EstimateUsage returns the estimated used, total, and remaining context tokens.
+// Like estimatePressure, one profile snapshot covers both the window and the
+// estimate.
 func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) schema.ContextMetrics {
-	cw := cm.currentProfile().ContextWindowSize()
+	prof := cm.currentProfile()
+	cw := prof.ContextWindowSize()
 	if cw <= 0 {
 		return schema.ContextMetrics{}
 	}
@@ -411,7 +425,7 @@ func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) sche
 	measuredLen := cm.historyLenAtMeasure
 	cm.mu.Unlock()
 
-	used := cm.estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
+	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
 	remaining := max(cw-used, 0)
 	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining}
 }
@@ -441,8 +455,15 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 // The manager's profile knows the target's protocol and reasoning capabilities,
 // so thinking text is billed exactly for the adapters that replay it: history
 // accounting that kept it at zero let compaction defer past the window an
-// oversized request would cross.
+// oversized request would cross. It takes a fresh profile snapshot for callers
+// that hold none.
 func (cm *Manager) estimateTokens(turns []schema.Turn) int {
+	return cm.estimateTokensFor(cm.currentProfile(), turns)
+}
+
+// estimateTokensFor is the snapshot-taking estimator: the caller passes the
+// same profile whose window its reading used.
+func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn) int {
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
 		if t.Kind == schema.TurnAttentionResolution {
@@ -450,7 +471,7 @@ func (cm *Manager) estimateTokens(turns []schema.Turn) int {
 		}
 		messages = append(messages, t.Message)
 	}
-	return llm.EstimateMessagesInputTokensForResolved(cm.currentProfile().Resolved(), messages).Tokens
+	return llm.EstimateMessagesInputTokensForResolved(prof.Resolved(), messages).Tokens
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {

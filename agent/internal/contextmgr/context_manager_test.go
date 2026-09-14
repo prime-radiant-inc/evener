@@ -1689,6 +1689,74 @@ func TestContextManager_EstimateUsageReportsRemainingWindow(t *testing.T) {
 	}
 }
 
+// A usage or pressure reading pairs one profile's window with the same
+// profile's token accounting. SetProfile runs on a model switch; a swap landing
+// between the window read and the token estimate would otherwise blend one
+// model's window with another model's rules. The invariant under a concurrent
+// swap is that every result equals one of the two single-profile outcomes and
+// never a blend of both.
+func TestContextManager_UsageEstimatePairsOneProfilesWindow(t *testing.T) {
+	openai := testProfile("openai", "gpt-5.2", 1_000_000)
+	anthropic := testProfile("anthropic", "claude-opus-4-6", 200_000)
+
+	// A long history widens the window between the estimator's profile reads,
+	// and replayable thinking text makes the two profiles' accounting differ.
+	history := make([]schema.Turn, 0, 3000)
+	for range 3000 {
+		history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "reasoning the anthropic adapter replays and the responses adapter does not"}},
+			},
+		}})
+	}
+
+	cm := NewManager(openai, nil, cheapmodel.New(nil))
+	wantOpenAI := NewManager(openai, nil, cheapmodel.New(nil)).EstimateUsage(history, 0)
+	wantAnthropic := NewManager(anthropic, nil, cheapmodel.New(nil)).EstimateUsage(history, 0)
+	if wantOpenAI == wantAnthropic {
+		t.Fatalf("degenerate fixture: both profiles estimate %+v", wantOpenAI)
+	}
+	wantOpenAIPressure := float64(wantOpenAI.Used) / float64(wantOpenAI.Window)
+	wantAnthropicPressure := float64(wantAnthropic.Used) / float64(wantAnthropic.Window)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				cm.SetProfile(anthropic)
+			} else {
+				cm.SetProfile(openai)
+			}
+		}
+	}()
+
+	for range 200 {
+		got := cm.EstimateUsage(history, 0)
+		if got != wantOpenAI && got != wantAnthropic {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("EstimateUsage = %+v, want %+v or %+v: the window and the estimate must come from one profile snapshot", got, wantOpenAI, wantAnthropic)
+		}
+		gotPressure := cm.Pressure(history, 0)
+		if gotPressure != wantOpenAIPressure && gotPressure != wantAnthropicPressure {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("Pressure = %v, want %v or %v: the window and the estimate must come from one profile snapshot", gotPressure, wantOpenAIPressure, wantAnthropicPressure)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
 func TestContextManager_FallsBackToCharHeuristicWithoutMeasurement(t *testing.T) {
 	profile := testProfile("openai", "test", 1000)
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
