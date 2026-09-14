@@ -2279,10 +2279,17 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			func() error { return s.appendClientMutationTranscriptLocked(turn) },
 			func() { s.history = append(s.history, turn) },
 		); err != nil {
-			if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
-				return errors.Join(err, returnErr)
+			if !entryIsRecorded(err) {
+				// No record: the input never reached the transcript, so the
+				// accepted turn goes back. A RETAINED entry is in the file and
+				// in history, and returning it would accept the same input
+				// twice.
+				if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
+					return errors.Join(err, returnErr)
+				}
+				return fmt.Errorf("append claimed user input: %w", err)
 			}
-			return fmt.Errorf("append claimed user input: %w", err)
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)

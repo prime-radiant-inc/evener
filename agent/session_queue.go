@@ -1040,10 +1040,16 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			func() error { return s.appendClientMutationTranscriptLocked(t) },
 			func() { s.history = append(s.history, t) },
 		); err != nil {
-			_ = s.returnClaimedSteering(msg.ClientMutationID)
-			s.reflectDurableClientSteering()
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-			return false
+			if !entryIsRecorded(err) {
+				// No record: the steering never happened, so it goes back to
+				// the queue to be delivered again. A RETAINED entry did
+				// happen — a returning reader finds it — and returning that
+				// one would deliver the same steering twice.
+				_ = s.returnClaimedSteering(msg.ClientMutationID)
+				s.reflectDurableClientSteering()
+				return false
+			}
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})

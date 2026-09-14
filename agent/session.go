@@ -1761,8 +1761,11 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		func() error { return s.writeTranscriptDurableLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	)
-	committed := err == nil
-	if err != nil {
+	// A retained entry is already committed by the append above, so only a
+	// write that left no record — or one whose outcome is unknown — reaches
+	// the reconciliation below.
+	committed := entryIsRecorded(err)
+	if err != nil && !committed {
 		// RenderDiff advances the tracker before the transcript write so it can
 		// render the diff. What becomes of that advance depends on what the
 		// transcript can be shown to hold. attentionMu keeps compaction from
@@ -1961,14 +1964,21 @@ func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write fu
 
 func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
 	holdPairMinted(persisted)
-	if err := write(); err != nil {
-		return err
+	// The entry decides, here as everywhere else (entryOutcome): a write that
+	// failed with its whole line in the file leaves a record every returning
+	// reader finds, so the in-memory half of the pair is owed. Dropping it
+	// would leave the turn readable on disk and absent from the history a fold
+	// copies from — the next marker then discards it with nothing standing in
+	// for it, and the session that kept running never had it either.
+	recorded, report := entryOutcome(write())
+	if !recorded {
+		return report
 	}
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
-	return nil
+	return report
 }
 
 // logPairPersistedLocked records the persisted transcript form of one
