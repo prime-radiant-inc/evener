@@ -347,21 +347,28 @@ func TestReapStaleCopies_RemovesAbandonedAndSuperseded(t *testing.T) {
 	current := filepath.Join(base, embeddedSkillsPrefix+strings.Repeat("a", sha256.Size*2))
 	superseded := filepath.Join(base, embeddedSkillsPrefix+strings.Repeat("b", sha256.Size*2))
 	fresh := filepath.Join(base, embeddedSkillsPrefix+"stage-fresh")
+	// A file squatting a cache name is healed, not skipped forever.
+	squatter := filepath.Join(base, embeddedSkillsPrefix+strings.Repeat("c", sha256.Size*2))
 	for _, dir := range []string{oldStage, oldCopy, current, superseded, fresh} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatalf("create %s: %v", dir, err)
 		}
 	}
+	if err := os.WriteFile(squatter, []byte("squatting"), 0o600); err != nil {
+		t.Fatalf("create squatter: %v", err)
+	}
 	past := time.Now().Add(-2 * staleRetainedMaxAge)
-	for _, dir := range []string{oldStage, oldCopy, superseded} {
-		if err := os.Chtimes(dir, past, past); err != nil {
-			t.Fatalf("age %s: %v", dir, err)
+	for _, path := range []string{oldStage, oldCopy, superseded, squatter} {
+		if err := os.Chtimes(path, past, past); err != nil {
+			t.Fatalf("age %s: %v", path, err)
 		}
 	}
 
-	reapStaleCopies(base, time.Now(), strings.Repeat("a", sha256.Size*2))
+	// current is this process's own copy and must survive even when it is also
+	// the digest about to be published.
+	reapStaleCopies(base, time.Now(), strings.Repeat("a", sha256.Size*2), current)
 
-	for _, gone := range []string{oldStage, oldCopy, superseded} {
+	for _, gone := range []string{oldStage, oldCopy, superseded, squatter} {
 		if _, err := os.Stat(gone); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("%s not reaped: %v", gone, err)
 		}
@@ -495,5 +502,27 @@ func TestEmbeddedSkillsDir_TrustsVerifiedCopyWithinProcess(t *testing.T) {
 	}
 	if second != first {
 		t.Fatalf("verified copy was not trusted within the process: %q then %q", first, second)
+	}
+}
+
+// A verified copy that a temp cleaner removes mid-process must be republished,
+// not returned as a dangling path.
+func TestEmbeddedSkillsDir_RepublishesWhenVerifiedCopyDisappears(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	if err := os.RemoveAll(first); err != nil {
+		t.Fatalf("remove verified copy: %v", err)
+	}
+	second, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (after removal): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(second, "doctoring-evener", "SKILL.md")); err != nil {
+		t.Fatalf("republished copy missing the bundled skill: %v", err)
 	}
 }

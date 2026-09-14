@@ -101,13 +101,21 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 // is gone and refreshes the cached metadata. The caller holds the cache mutex.
 func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
-		if embeddedSkillsCache.verified {
+		if embeddedSkillsCache.verified && cacheDirExists(embeddedSkillsCache.dir) {
+			touchDir(embeddedSkillsCache.dir)
 			return embeddedSkillsCache.dir, nil
 		}
-		if cacheDirUsable(embeddedSkillsCache.dir, embeddedSkillsCache.digest) {
+		if !embeddedSkillsCache.verified && cacheDirUsable(embeddedSkillsCache.dir, embeddedSkillsCache.digest) {
 			embeddedSkillsCache.verified = true
+			touchDir(embeddedSkillsCache.dir)
 			return embeddedSkillsCache.dir, nil
 		}
+		// The copy is gone, replaced, or unverified and unusable: forget it and
+		// republish rather than hand back a dangling path.
+		embeddedSkillsCache.dir = ""
+		embeddedSkillsCache.digest = ""
+		embeddedSkillsCache.skills = nil
+		embeddedSkillsCache.verified = false
 	}
 	base, err := embeddedSkillsBaseDir()
 	if err != nil {
@@ -124,6 +132,21 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	embeddedSkillsCache.skills = skills
 	embeddedSkillsCache.verified = true
 	return dir, nil
+}
+
+// cacheDirExists reports whether dir is still a real directory. It never
+// follows a symlink, so a replaced cache path is not mistaken for the copy.
+func cacheDirExists(dir string) bool {
+	info, err := os.Lstat(dir)
+	return err == nil && info.IsDir()
+}
+
+// touchDir refreshes a cache directory's modification time, so the reaper can
+// tell a directory a live process keeps resolving from one nobody uses. The
+// mtime does not otherwise change when skills are read.
+func touchDir(dir string) {
+	now := time.Now()
+	_ = os.Chtimes(dir, now, now)
 }
 
 // defaultEmbeddedSkillsBaseDir returns the private per-user directory the cache
@@ -213,9 +236,10 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, err
 	if err != nil {
 		return "", "", fmt.Errorf("digesting embedded skills: %w", err)
 	}
-	reapStaleCopies(base, time.Now(), digest)
+	reapStaleCopies(base, time.Now(), digest, embeddedSkillsCache.dir)
 	dest := filepath.Join(base, embeddedSkillsPrefix+digest)
 	if publishedSkillsDir(dest, digest) {
+		touchDir(dest)
 		return dest, digest, nil
 	}
 
@@ -236,6 +260,7 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, err
 	// A concurrent publisher for the same content may have finished while this
 	// copy was made.
 	if publishedSkillsDir(dest, digest) {
+		touchDir(dest)
 		return dest, digest, nil
 	}
 	// Never rename onto an existing entry: on some platforms that replaces a
@@ -243,6 +268,7 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, err
 	// concurrent publisher can publish between the check above and this one.
 	if _, err := os.Lstat(dest); err == nil {
 		if publishedSkillsDir(dest, digest) {
+			touchDir(dest)
 			return dest, digest, nil
 		}
 		dir, keptDigest := retainStagedCopy(staging, base, digest, &keepStaging)
@@ -250,6 +276,7 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, err
 	}
 	if err := os.Rename(staging, dest); err != nil {
 		if publishedSkillsDir(dest, digest) {
+			touchDir(dest)
 			return dest, digest, nil
 		}
 		dir, keptDigest := retainStagedCopy(staging, base, digest, &keepStaging)
@@ -296,19 +323,21 @@ func cacheDirUsable(dir, expected string) bool {
 	return err == nil && actual == expected
 }
 
-// reapStaleCopies removes cache directories an earlier publish abandoned, so a
+// reapStaleCopies removes cache entries an earlier publish abandoned, so a
 // machine does not accumulate a copy of the embedded tree per run or per binary.
 // Only this package's prefixes are matched: staging directories are transient,
 // while retained fallback copies and superseded published directories are kept
 // until they are old enough that no live process is plausibly still reading
-// them. keepDigest is the digest about to be published and is never reaped.
-func reapStaleCopies(base string, now time.Time, keepDigest string) {
+// them. keepDigest is the digest about to be published and skipDir is this
+// process's own resolved copy; neither is reaped.
+func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		path := filepath.Join(base, entry.Name())
+		if path == skipDir {
 			continue
 		}
 		rest, ok := strings.CutPrefix(entry.Name(), embeddedSkillsPrefix)
@@ -333,7 +362,14 @@ func reapStaleCopies(base string, now time.Time, keepDigest string) {
 		if err != nil || now.Sub(info.ModTime()) < maxAge {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(base, entry.Name()))
+		if entry.IsDir() {
+			_ = os.RemoveAll(path)
+			continue
+		}
+		// A file or symlink squatting a cache name is removed with Remove, which
+		// deletes the link itself rather than anything it points at, so a later
+		// publish can heal the name instead of falling back forever.
+		_ = os.Remove(path)
 	}
 }
 
