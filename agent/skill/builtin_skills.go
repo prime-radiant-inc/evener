@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -18,20 +19,25 @@ import (
 // publish writes before renaming into place.
 const embeddedSkillsPrefix = "evener-skills-"
 
-var (
-	embeddedSkillsMu  sync.Mutex
-	embeddedSkillsDir string
+// maxEmbeddedSkillBytes bounds a single file the digest will read. The bundled
+// skills are small markdown files; the bound exists because the published name
+// lives in the shared temp dir and an occupant this process did not write could
+// be a device or a file that never ends.
+const maxEmbeddedSkillBytes = 1 << 20
 
-	// embeddedSkillsBaseDir is where the content-addressed bundled-skills cache
-	// lives. It defaults to the temp dir because a session confined to its
-	// worktree can still read temp, while the config root is sandbox-denylisted
-	// and the cache root is outside a restricted session's readable roots.
-	embeddedSkillsBaseDir = os.TempDir
+// embeddedSkillsCache holds the published bundled-skills directory and its
+// scanned metadata, both process-wide under one mutex.
+var embeddedSkillsCache struct {
+	mu     sync.Mutex
+	dir    string
+	skills map[string]SkillMeta
+}
 
-	// embeddedSkillsMaterialize is the publish seam, so tests can exercise
-	// failures without a real filesystem fault.
-	embeddedSkillsMaterialize = materializeEmbeddedSkills
-)
+// embeddedSkillsBaseDir is where the content-addressed bundled-skills cache
+// lives. It defaults to the temp dir because a session confined to its worktree
+// can still read temp, while the config root is sandbox-denylisted and the
+// cache root is outside a restricted session's readable roots.
+var embeddedSkillsBaseDir = os.TempDir
 
 // EmbeddedSkillsDir returns a directory holding the bundled skills, published
 // once per distinct embedded content and shared by every caller and every later
@@ -40,19 +46,9 @@ var (
 // already reading the old directory keeps a stable path. Callers MUST treat the
 // directory as read-only and MUST NOT remove it.
 func EmbeddedSkillsDir() (string, error) {
-	embeddedSkillsMu.Lock()
-	defer embeddedSkillsMu.Unlock()
-	if embeddedSkillsDir != "" {
-		if _, err := os.Stat(embeddedSkillsDir); err == nil {
-			return embeddedSkillsDir, nil
-		}
-	}
-	dir, err := embeddedSkillsMaterialize(bundled.Skills(), embeddedSkillsBaseDir())
-	if err != nil {
-		return "", err
-	}
-	embeddedSkillsDir = dir
-	return dir, nil
+	embeddedSkillsCache.mu.Lock()
+	defer embeddedSkillsCache.mu.Unlock()
+	return ensureEmbeddedSkillsLocked()
 }
 
 // ExtractEmbeddedSkills writes the embedded skills to a fresh temporary
@@ -63,6 +59,36 @@ func EmbeddedSkillsDir() (string, error) {
 // shared, content-addressed copy.
 func ExtractEmbeddedSkills() (string, error) {
 	return extractEmbeddedSkills(bundled.Skills(), os.MkdirTemp)
+}
+
+// EmbeddedSkills returns the bundled skills as filesystem-backed metadata, from
+// the same shared content-addressed copy EmbeddedSkillsDir returns.
+func EmbeddedSkills() (map[string]SkillMeta, error) {
+	embeddedSkillsCache.mu.Lock()
+	defer embeddedSkillsCache.mu.Unlock()
+	if _, err := ensureEmbeddedSkillsLocked(); err != nil {
+		return nil, err
+	}
+	return cloneSkillMetaMap(embeddedSkillsCache.skills), nil
+}
+
+// ensureEmbeddedSkillsLocked publishes the bundled skills when the cached copy
+// is gone and refreshes the cached metadata. The caller holds the cache mutex.
+func ensureEmbeddedSkillsLocked() (string, error) {
+	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
+		if _, err := os.Stat(embeddedSkillsCache.dir); err == nil {
+			return embeddedSkillsCache.dir, nil
+		}
+	}
+	dir, err := materializeEmbeddedSkills(bundled.Skills(), embeddedSkillsBaseDir())
+	if err != nil {
+		return "", err
+	}
+	skills := make(map[string]SkillMeta)
+	ScanSkillsDir(dir, skills)
+	embeddedSkillsCache.dir = dir
+	embeddedSkillsCache.skills = skills
+	return dir, nil
 }
 
 // materializeEmbeddedSkills publishes skillsFS into base under a directory named
@@ -137,12 +163,37 @@ func digestSkillsFS(fsys fs.FS) (string, error) {
 		if d.IsDir() {
 			return nil
 		}
-		data, err := fs.ReadFile(fsys, path)
+		// Decided from the directory entry, before anything is opened: a
+		// symlink points somewhere that can change, a FIFO blocks its open until
+		// a writer arrives, and a device is not something to read. The published
+		// name lives in the shared temp dir, so an occupant this process did not
+		// write may be any of them.
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("embedded skills: %s is not a regular file", path)
+		}
+		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(sum, "%s\x00%d\x00", path, len(data))
-		_, _ = sum.Write(data)
+		if info.Size() > maxEmbeddedSkillBytes {
+			return fmt.Errorf("embedded skills: %s exceeds %d bytes", path, maxEmbeddedSkillBytes)
+		}
+		file, err := fsys.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = file.Close() }()
+		_, _ = fmt.Fprintf(sum, "%s\x00%d\x00", path, info.Size())
+		// Streamed and never read past the size the entry declared, so a file
+		// growing under the walk cannot read unbounded and one that no longer
+		// matches its own size is not the copy this is trying to recognize.
+		read, err := io.Copy(sum, io.LimitReader(file, maxEmbeddedSkillBytes))
+		if err != nil {
+			return err
+		}
+		if read != info.Size() {
+			return fmt.Errorf("embedded skills: %s changed while reading", path)
+		}
 		return nil
 	})
 	if err != nil {
@@ -192,35 +243,6 @@ func copyEmbeddedSkills(skillsFS fs.FS, dir string) error {
 		}
 		return os.WriteFile(outPath, data, 0o644)
 	})
-}
-
-var embeddedSkillsCache struct {
-	mu     sync.Mutex
-	dir    string
-	skills map[string]SkillMeta
-}
-
-// EmbeddedSkills returns the bundled skills as filesystem-backed metadata. The
-// materialized tree is the shared content-addressed copy, and its metadata is
-// cached within the process so session creation does not rescan the same files.
-func EmbeddedSkills() (map[string]SkillMeta, error) {
-	dir, err := EmbeddedSkillsDir()
-	if err != nil {
-		return nil, err
-	}
-
-	embeddedSkillsCache.mu.Lock()
-	defer embeddedSkillsCache.mu.Unlock()
-
-	if embeddedSkillsCache.dir == dir && embeddedSkillsCache.skills != nil {
-		return cloneSkillMetaMap(embeddedSkillsCache.skills), nil
-	}
-
-	skills := make(map[string]SkillMeta)
-	ScanSkillsDir(dir, skills)
-	embeddedSkillsCache.dir = dir
-	embeddedSkillsCache.skills = skills
-	return cloneSkillMetaMap(skills), nil
 }
 
 func cloneSkillMetaMap(in map[string]SkillMeta) map[string]SkillMeta {

@@ -27,6 +27,31 @@ func sampleSkillFS() fstest.MapFS {
 	})
 }
 
+func embeddedSkillsCacheDir() string {
+	embeddedSkillsCache.mu.Lock()
+	defer embeddedSkillsCache.mu.Unlock()
+	return embeddedSkillsCache.dir
+}
+
+// pointEmbeddedSkillsAtBase sends the bundled-skills cache to base, clears the
+// cached directory so the next call republishes, and restores both globals when
+// the test ends.
+func pointEmbeddedSkillsAtBase(t *testing.T, base string) {
+	t.Helper()
+	savedBase := embeddedSkillsBaseDir
+	savedDir := embeddedSkillsCacheDir()
+	embeddedSkillsCache.mu.Lock()
+	embeddedSkillsCache.dir = ""
+	embeddedSkillsCache.mu.Unlock()
+	embeddedSkillsBaseDir = func() string { return base }
+	t.Cleanup(func() {
+		embeddedSkillsCache.mu.Lock()
+		embeddedSkillsCache.dir = savedDir
+		embeddedSkillsCache.mu.Unlock()
+		embeddedSkillsBaseDir = savedBase
+	})
+}
+
 func TestDigestSkillsFS_TracksContent(t *testing.T) {
 	first, err := digestSkillsFS(sampleSkillFS())
 	if err != nil {
@@ -48,6 +73,27 @@ func TestDigestSkillsFS_TracksContent(t *testing.T) {
 	}
 	if changed == first {
 		t.Fatal("digest ignored changed content")
+	}
+}
+
+// The published name lives in the shared temp dir, so an occupant this process
+// did not write must be rejected before it is opened.
+func TestDigestSkillsFS_RejectsIrregularEntry(t *testing.T) {
+	fsys := fstest.MapFS{
+		"sample/SKILL.md": &fstest.MapFile{Data: []byte(sampleSkillDocument)},
+		"sample/link":     &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("/etc/passwd")},
+	}
+	if _, err := digestSkillsFS(fsys); err == nil {
+		t.Fatal("digest accepted a non-regular entry")
+	}
+}
+
+func TestDigestSkillsFS_RejectsOversizedEntry(t *testing.T) {
+	fsys := fstest.MapFS{
+		"sample/SKILL.md": &fstest.MapFile{Data: make([]byte, maxEmbeddedSkillBytes+1)},
+	}
+	if _, err := digestSkillsFS(fsys); err == nil {
+		t.Fatal("digest accepted an oversized file")
 	}
 }
 
@@ -175,31 +221,31 @@ func TestMaterializeEmbeddedSkills_StagingFailureErrors(t *testing.T) {
 	}
 }
 
+type unreadableFS struct{}
+
+func (unreadableFS) Open(string) (fs.File, error) { return nil, errors.New("unreadable") }
+
+func TestMaterializeEmbeddedSkills_DigestFailureIsReported(t *testing.T) {
+	if _, err := materializeEmbeddedSkills(unreadableFS{}, t.TempDir()); err == nil {
+		t.Fatal("expected a digest failure to propagate")
+	}
+}
+
 // A later process starts with no in-process cache but finds the copy published
 // by an earlier run under the same content digest.
 func TestEmbeddedSkillsDir_ReusesPublishedCopyAfterCacheReset(t *testing.T) {
-	embeddedSkillsMu.Lock()
-	savedDir := embeddedSkillsDir
-	embeddedSkillsDir = ""
-	embeddedSkillsMu.Unlock()
-	savedBase := embeddedSkillsBaseDir
 	base := t.TempDir()
-	embeddedSkillsBaseDir = func() string { return base }
-	t.Cleanup(func() {
-		embeddedSkillsMu.Lock()
-		embeddedSkillsDir = savedDir
-		embeddedSkillsMu.Unlock()
-		embeddedSkillsBaseDir = savedBase
-	})
+	pointEmbeddedSkillsAtBase(t, base)
 
 	first, err := EmbeddedSkillsDir()
 	if err != nil {
 		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
 
-	embeddedSkillsMu.Lock()
-	embeddedSkillsDir = ""
-	embeddedSkillsMu.Unlock()
+	// Simulate a later process: drop the cached directory, keep the published copy.
+	embeddedSkillsCache.mu.Lock()
+	embeddedSkillsCache.dir = ""
+	embeddedSkillsCache.mu.Unlock()
 
 	second, err := EmbeddedSkillsDir()
 	if err != nil {
@@ -220,30 +266,20 @@ func TestEmbeddedSkillsDir_ReusesPublishedCopyAfterCacheReset(t *testing.T) {
 	}
 }
 
-type unreadableFS struct{}
-
-func (unreadableFS) Open(string) (fs.File, error) { return nil, errors.New("unreadable") }
-
-func TestMaterializeEmbeddedSkills_DigestFailureIsReported(t *testing.T) {
-	if _, err := materializeEmbeddedSkills(unreadableFS{}, t.TempDir()); err == nil {
-		t.Fatal("expected a digest failure to propagate")
-	}
-}
-
 // A cached directory that has been removed (temp cleaners, a reboot) is
 // republished rather than left dangling.
 func TestEmbeddedSkillsDir_RepublishesWhenCachedDirDisappears(t *testing.T) {
-	embeddedSkillsMu.Lock()
-	savedDir := embeddedSkillsDir
-	embeddedSkillsDir = filepath.Join(t.TempDir(), "gone")
-	embeddedSkillsMu.Unlock()
-	savedBase := embeddedSkillsBaseDir
 	base := t.TempDir()
+	savedBase := embeddedSkillsBaseDir
+	savedDir := embeddedSkillsCacheDir()
 	embeddedSkillsBaseDir = func() string { return base }
+	embeddedSkillsCache.mu.Lock()
+	embeddedSkillsCache.dir = filepath.Join(t.TempDir(), "gone")
+	embeddedSkillsCache.mu.Unlock()
 	t.Cleanup(func() {
-		embeddedSkillsMu.Lock()
-		embeddedSkillsDir = savedDir
-		embeddedSkillsMu.Unlock()
+		embeddedSkillsCache.mu.Lock()
+		embeddedSkillsCache.dir = savedDir
+		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = savedBase
 	})
 

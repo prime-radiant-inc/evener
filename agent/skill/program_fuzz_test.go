@@ -204,17 +204,18 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 
 		// A publish failure must propagate rather than hand back a stale or
 		// empty cache: point the materializer at a base that cannot be used.
-		savedDir, savedBase := embeddedSkillsDir, embeddedSkillsBaseDir
-		embeddedSkillsMu.Lock()
-		embeddedSkillsDir = ""
-		embeddedSkillsMu.Unlock()
+		savedBase := embeddedSkillsBaseDir
+		embeddedSkillsCache.mu.Lock()
+		savedDir := embeddedSkillsCache.dir
+		embeddedSkillsCache.dir = ""
+		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = func() string { return filepath.Join(root, "missing-base") }
 		if _, err := EmbeddedSkills(); err == nil {
 			t.Fatal("EmbeddedSkills publish failure did not propagate")
 		}
-		embeddedSkillsMu.Lock()
-		embeddedSkillsDir = savedDir
-		embeddedSkillsMu.Unlock()
+		embeddedSkillsCache.mu.Lock()
+		embeddedSkillsCache.dir = savedDir
+		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = savedBase
 
 		skillProgramAssertExtractionFailures(t)
