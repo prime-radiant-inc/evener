@@ -15,7 +15,13 @@ import path from "node:path";
 // Relative specifiers only; a bare one belongs to Node's own resolver.
 export function resolveSourceFile(fromFile, specifier, extensions) {
   const base = path.resolve(path.dirname(fromFile), specifier);
-  const candidates = [base, ...extensions.map((extension) => `${base}${extension}`), path.join(base, "index.ts")];
+  const candidates = [
+    base,
+    ...extensions.map((extension) => `${base}${extension}`),
+    // The directory fallback probes the same extensions: a caller that asks
+    // about .mjs means it for ./dir/index.mjs too.
+    ...extensions.map((extension) => path.join(base, `index${extension}`)),
+  ];
   for (const candidate of candidates) {
     if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
   }

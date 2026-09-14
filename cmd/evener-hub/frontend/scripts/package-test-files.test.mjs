@@ -381,3 +381,22 @@ test("resolvePackageImport answers a directory import with its index, not the di
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("resolvePackageImport probes index for every extension it was asked about", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "evener-package-index-"));
+  try {
+    mkdirSync(path.join(root, "tools"));
+    writeFileSync(path.join(root, "tools", "index.mjs"), "export const x = 1;\n");
+    assert.equal(resolvePackageImport(path.join(root, "a.test.ts"), "./tools"), path.join(root, "tools", "index.mjs"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a subpath alias satisfies its own specifier without the root being aliased too", () => {
+  // Reading only the first two segments looked for "@evener/appwire-client",
+  // so a tree aliasing just the testing subpath reported a false offender.
+  const bare = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
+  assert.equal(describeUnaliasedImports(bare, new Set(["@evener/appwire-client/testing"])), "");
+  assert.match(describeUnaliasedImports(bare, new Set(["@evener/appwire-client/other"])), /does not alias/);
+});

@@ -186,6 +186,17 @@ export function reachableBareImports(testFiles, read, resolveRelative, dir) {
   return bare;
 }
 
+// The alias Vite would use for a specifier: the longest key that is the
+// specifier itself or a path prefix of it. Null when nothing covers it.
+export function longestAliasPrefix(specifier, aliasKeys) {
+  let longest = null;
+  for (const key of aliasKeys) {
+    if (specifier !== key && !specifier.startsWith(`${key}/`)) continue;
+    if (longest === null || key.length > longest.length) longest = key;
+  }
+  return longest;
+}
+
 // A bare specifier with no alias resolves from the importer, which is inside
 // the package. That works on any machine where `npm ci --prefix
 // appwire-client/typescript` has run for make test-api-package, and fails in
@@ -195,8 +206,11 @@ export function describeUnaliasedImports(bare, aliasKeys) {
   const offenders = [];
   for (const [specifier, files] of [...bare].sort()) {
     if (SELF_RESOLVING.has(specifier)) continue;
-    const root = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
-    if (aliasKeys.has(specifier) || aliasKeys.has(root)) continue;
+    // Longest matching prefix, the way Vite picks an alias: a package root
+    // entry does not stand in for the subpath entry beside it, and reading
+    // only the first two segments called the testing specifier satisfied by
+    // the root alias, which maps at index.ts and cannot serve it.
+    if (longestAliasPrefix(specifier, aliasKeys) !== null) continue;
     offenders.push(`${specifier}, imported by ${files.join(", ")}`);
   }
   if (offenders.length === 0) return "";
