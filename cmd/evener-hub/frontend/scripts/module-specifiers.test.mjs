@@ -53,9 +53,27 @@ test("named members carry their imported name, local name and type-only flag", (
 test("a default import with named members beside it is reported as the default", () => {
   const [site] = sitesFor(`import theDefault, { errorText } from "${SPECIFIER}";\nvoid theDefault;\nvoid errorText;\n`);
   assert.equal(site.kind, "import-default");
+  assert.deepEqual(site.bindings, [
+    { imported: "default", local: "theDefault", typeOnly: false },
+    { imported: "errorText", local: "errorText", typeOnly: false },
+  ]);
+});
+
+test("a default binding keeps an import loaded even when every named member is a type", () => {
+  const [mixed] = sitesFor(`import theDefault, { type WireError } from "${SPECIFIER}";\nvoid theDefault;\nexport type A = WireError;\n`);
+  assert.equal(isLoadedAtRuntime(mixed), true);
+
+  const [erased] = sitesFor(`import type theDefault from "${SPECIFIER}";\nexport type A = theDefault;\n`);
+  assert.equal(isLoadedAtRuntime(erased), false);
+});
+
+test("an import-equals yields one site, not a nested require as well", () => {
+  // `import X = require("./x")` parses its reference as an
+  // ExternalModuleReference, not a call, so the require branch never sees it.
+  const sites = sitesFor(`import loaded = require("${SPECIFIER}");\nvoid loaded;\n`);
   assert.deepEqual(
-    site.bindings.map((binding) => binding.imported),
-    ["errorText"],
+    sites.map((site) => site.kind),
+    ["require-equals"],
   );
 });
 

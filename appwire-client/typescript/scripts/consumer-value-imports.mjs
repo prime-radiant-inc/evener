@@ -13,6 +13,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import ts from "typescript";
 import { moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
+import { isTestFile } from "../../../scripts/sdk/source-files.mjs";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
 
@@ -58,7 +59,7 @@ export function packageValuesIn(source, file, problems) {
 
 const CONSUMER_TREES = ["mobile-native", join("mobile", "src"), join("cmd", "evener-hub", "frontend", "src")];
 // Tests are not shipped and are not consumers of the tarball, which the
-// `.test.` filter below handles. Directory names are not the place to say so:
+// isTestFile filter below handles. Directory names are not the place to say so:
 // skipping every directory called `testing` also skipped the app's own
 // src/stores/testing and src/panes/session/testing, which are ordinary source
 // that happens to serve tests -- and the package's own testing/ tree is not
@@ -70,7 +71,7 @@ function sources(dir, found = []) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!SKIPPED.has(entry.name)) sources(full, found);
-    } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(extname(entry.name)) && !entry.name.includes(".test.")) {
+    } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(extname(entry.name)) && !isTestFile(entry.name)) {
       found.push(full);
     }
   }

@@ -45,9 +45,10 @@ function namedBindings(ts, elements) {
 //   typeOnly  the statement was `import type` / `export type`, so it is erased
 //   bindings  {imported, local, typeOnly} per named member; empty otherwise
 //
-// A default import that also has named members is reported as import-default
-// with those members in `bindings`: the default is the part nothing here can
-// map, and a caller that refuses it never reaches the rest.
+// A default import that also has named members is reported as import-default,
+// with the default itself first in `bindings` under the name `default`: it is
+// the part nothing here can map, and a caller that refuses the kind never
+// reaches the rest.
 export function moduleSpecifierSites(ts, source) {
   const sites = [];
   const literal = (node) => (node && ts.isStringLiteralLike(node) ? node : null);
@@ -64,7 +65,17 @@ export function moduleSpecifierSites(ts, source) {
             kind = "import-named";
             bindings = namedBindings(ts, clause.namedBindings.elements);
           }
-          if (clause.name) kind = "import-default";
+          if (clause.name) {
+            kind = "import-default";
+            // The default is a binding like any other, recorded rather than
+            // implied by the kind: `import def, { type T } from "x"` binds a
+            // runtime value, and a rule reading only the named members would
+            // call the whole statement erased.
+            bindings = [
+              { imported: "default", local: clause.name.text, typeOnly: Boolean(clause.isTypeOnly) },
+              ...bindings,
+            ];
+          }
         }
         sites.push({ node: specifier, text: specifier.text, kind, typeOnly: Boolean(clause?.isTypeOnly), bindings });
       }

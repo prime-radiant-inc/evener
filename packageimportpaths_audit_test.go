@@ -44,7 +44,7 @@ func runPackageImportCheck(t *testing.T, root string) (bool, string) {
 	if runtime.GOOS == "windows" {
 		t.Skip("scripts/sdk/package-import-paths-check.sh requires a Unix shell")
 	}
-	for _, tool := range []string{"bash", "grep", "xargs"} {
+	for _, tool := range []string{"bash", "grep"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not on PATH: %v", tool, err)
 		}

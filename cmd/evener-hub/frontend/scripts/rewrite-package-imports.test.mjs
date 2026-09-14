@@ -265,3 +265,16 @@ test("a whole-module site naming a module the package does not publish is still 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("an empty named import binds nothing, so it is refused", () => {
+  const before = 'import {} from "../../appwire-client/typescript/errors";\n';
+  const root = fixture({ "mobile/src/state.ts": before });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 2);
+    assert.match(run.output, /empty named import of "errors"/);
+    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

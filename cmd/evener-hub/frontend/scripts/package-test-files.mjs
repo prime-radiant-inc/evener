@@ -19,12 +19,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
 import { resolveSourceFile } from "../../../../scripts/sdk/resolve-source.mjs";
+import { isTestFile } from "../../../../scripts/sdk/source-files.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const packageDir = path.resolve(frontend, "../../../appwire-client/typescript");
 
-// Same shape as Vitest's default test glob, applied to the package tree.
-const isTestFile = (name) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(name);
+// Shared with the package's own value-import derivation, which needs the same
+// answer: see scripts/sdk/source-files.mjs.
 
 // Vitest resolves this one itself; it is the only bare specifier a package
 // file may name without an alias.

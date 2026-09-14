@@ -346,6 +346,11 @@ function main() {
           if (moduleID === "index") target = PACKAGE_NAME;
           else if (moduleID === "docContent") target = DOC_CONTENT_SUBPATH;
           else problems.push(`${where}: ${site.kind} of "${moduleID}", which the package does not publish as a subpath`);
+        } else if (named.length === 0) {
+          // `import {} from "./errors"` binds nothing: it has the semantics of
+          // a side-effect import, and every() over no members would have said
+          // the root satisfies it.
+          problems.push(`${where}: empty named import of "${moduleID}" binds nothing, so there is nothing to map onto ${PACKAGE_NAME}`);
         } else if (named.every((binding) => rootExports.has(binding))) {
           target = PACKAGE_NAME;
         } else if (moduleID === "docContent" && named.every((binding) => docContentExports.has(binding))) {
