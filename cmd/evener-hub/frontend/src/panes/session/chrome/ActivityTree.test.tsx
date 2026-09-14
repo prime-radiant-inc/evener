@@ -244,6 +244,57 @@ describe("ActivityTree", () => {
     expect(openSessionByRef).toHaveBeenCalledWith("local:sess_deep_child");
   });
 
+  // The depth bound truncates the delegate's own branch, before the child is
+  // loaded at all. The continuation-path bound and a size trim inside the
+  // child land on the child's branch instead, with the child rendered above
+  // it — the same row, a different branch state.
+  function renderedChildTree(childBranch: Record<string, unknown>): ActivityTreeData {
+    const tree = depthTruncatedTree();
+    const delegate = (tree.root.entries[0] as unknown as { delegate: Record<string, unknown> }).delegate;
+    delegate.branch = {};
+    delegate.child = {
+      kind: "session",
+      sessionId: "sess_deep_child",
+      ref: "local:sess_deep_child",
+      label: "Deep child",
+      aggregate: "running",
+      counts: { active: 0, failed: 0, completed: 0, complete: false },
+      entries: [],
+      branch: childBranch,
+    };
+    return tree;
+  }
+
+  test("a rendered child truncated with no continuation offers to open that session", async () => {
+    const user = userEvent.setup();
+    render(
+      <ActivityTree
+        tree={renderedChildTree({ truncated: true })}
+        expandedFoldIDs={[]}
+        onToggleFold={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open session" }));
+    expect(openSessionByRef).toHaveBeenCalledWith("local:sess_deep_child");
+  });
+
+  test("a rendered child that can still be paged offers Load more, not an open-session link", () => {
+    render(
+      <ActivityTree
+        tree={renderedChildTree({ truncated: true, continuation: "token_child" })}
+        expandedFoldIDs={[]}
+        onToggleFold={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Load more" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
+  });
+
   test("a delegate that can still be paged offers Load more, not an open-session link", () => {
     const tree = depthTruncatedTree();
     const delegate = (tree.root.entries[0] as { delegate: { branch: { truncated?: boolean; continuation?: string } } })

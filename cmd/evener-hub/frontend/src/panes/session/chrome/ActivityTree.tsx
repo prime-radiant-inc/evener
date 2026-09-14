@@ -18,6 +18,7 @@ import {
   type ActivityDelegate,
   type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
+  activityDelegateBranch,
   activityNodeID,
 } from "../../../protocol/activityData";
 import {
@@ -199,12 +200,8 @@ interface ContinuationStrip {
   afterRowID: string;
   token?: string;
   branchError?: string;
-  // openSessionRef is set for a branch the page stopped at with nothing to
-  // page: the depth or continuation-path bound was reached, so the daemon
-  // truncated the branch and deliberately minted no token (a token there
-  // would name this child as a fresh root at position 0, which is the page a
-  // direct request already returns -- see #1269). The child is still
-  // addressable as its own session, and this is the ref that opens it.
+  // openSessionRef is activityDelegateBranch's — the ref that reaches a
+  // child the page stopped short of with nothing to page.
   openSessionRef?: string;
 }
 
@@ -252,21 +249,18 @@ function collectContinuations(
       if (entry.kind !== "delegate") continue;
       const delegate = entry.delegate;
       const targetID = activityNodeID(entry);
-      const token = delegate.child?.branch.continuation ?? delegate.branch.continuation;
-      const truncated = delegate.child?.branch.truncated || delegate.branch.truncated;
-      const childRef = delegate.childRef.trim();
-      // A truncated branch with no token has one way forward and it is not a
-      // page: ask for the child as its own session.
-      const openSessionRef = !token && truncated && childRef ? childRef : undefined;
-      if (token || openSessionRef || continuationFailures[targetID] !== undefined) {
+      // Both of a delegate's branch states, read the one way the package
+      // defines — see activityDelegateBranch.
+      const branch = activityDelegateBranch(delegate);
+      if (branch.continuation || branch.openSessionRef || continuationFailures[targetID] !== undefined) {
         const afterRowID = subtreeLastRowID(rows, targetID);
         if (afterRowID) {
           strips.push({
             targetID,
             afterRowID,
-            token,
-            branchError: delegate.child?.branch.error ?? delegate.branch.error,
-            openSessionRef,
+            token: branch.continuation,
+            branchError: branch.error,
+            openSessionRef: branch.openSessionRef,
           });
         }
       }

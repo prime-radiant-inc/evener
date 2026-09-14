@@ -206,7 +206,10 @@ it("keeps a failed continuation retryable and supersedes it with live root updat
   expect(list.getSnapshot().tree?.root.entries).toHaveLength(1);
 });
 
-function delegateTree(branch: Record<string, unknown>) {
+function delegateTree(
+  branch: Record<string, unknown>,
+  childBranch?: Record<string, unknown>,
+) {
   return {
     revision: 1,
     root: {
@@ -235,6 +238,25 @@ function delegateTree(branch: Record<string, unknown>) {
             resumable: true,
             description: "Deep work",
             branch,
+            ...(childBranch
+              ? {
+                  child: {
+                    kind: "session",
+                    sessionId: "sess_deep_child",
+                    ref: "local:sess_deep_child",
+                    label: "Deep child",
+                    aggregate: "running",
+                    counts: {
+                      active: 0,
+                      completed: 0,
+                      failed: 0,
+                      complete: false,
+                    },
+                    branch: childBranch,
+                    entries: [],
+                  },
+                }
+              : {}),
           },
         },
       ],
@@ -266,4 +288,31 @@ it("a delegate branch that can still be paged names no session to open", async (
   const branch = list.branches()[0];
   expect(branch?.continuation).toBe("cursor");
   expect(branch?.openSessionRef).toBeUndefined();
+});
+
+// A delegate whose child session WAS rendered carries two branch states: its
+// own, which the depth bound truncates, and the child's, which the
+// continuation-path bound and a size trim inside the child land on. Reading
+// only the delegate's own misses every case that stopped below it.
+it("a rendered child truncated with no continuation names the session to open", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({
+    data: delegateTree({}, { truncated: true }),
+  });
+  await list.refresh();
+  const branch = list.branches().find((candidate) => candidate.openSessionRef);
+  expect(branch?.openSessionRef).toBe("local:sess_deep_child");
+});
+
+it("a rendered child that can still be paged names no session to open", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({
+    data: delegateTree({}, { truncated: true, continuation: "cursor" }),
+  });
+  await list.refresh();
+  for (const branch of list.branches())
+    expect(branch.openSessionRef).toBeUndefined();
+  expect(
+    list.branches().some((branch) => branch.continuation === "cursor"),
+  ).toBe(true);
 });
