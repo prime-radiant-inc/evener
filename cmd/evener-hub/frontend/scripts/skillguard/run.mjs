@@ -258,62 +258,88 @@ class Driver {
   //
   // The composer's textarea is React-controlled, so a store update that
   // re-renders it -- a drain committing, a turn clearing the draft -- will
-  // overwrite an edit that lands in the same tick. Three things answer that,
-  // and each covers a window the others do not:
+  // overwrite an edit that lands in the same tick. Three things answer that:
   //
   //   - the edit waits for the composer to settle, which removes the common
-  //     case of typing into a composer that is still re-rendering;
+  //     case of typing into one that is still re-rendering;
   //   - the edit is a compare-and-swap against the value it settled on, so a
-  //     legitimate change arriving in the window after the settle declines the
-  //     write instead of overwriting it with content computed from a value the
+  //     change arriving in the window after the settle declines the write
+  //     instead of overwriting it with content computed from a value the
   //     composer no longer holds;
   //   - the result is read back from a SETTLED read rather than from the same
   //     evaluate that wrote it, so a render landing just after the write is
   //     seen rather than missed.
   //
-  // Any of the three failing takes the retry path, which re-settles and
-  // recomputes from whatever the composer now holds. Assigning the whole
-  // intended value (rather than inserting relative to the live selection) is
-  // what makes a retry safe: re-applying cannot double-type. Each retry is
-  // logged, so an artifact shows the app fighting the driver rather than
-  // hiding it.
+  // The retry budget covers the last two. A settle that never settles, or a
+  // composer that loses focus, fails outright: retrying a textarea that will
+  // not stop changing only delays the same verdict, and with a worse message.
+  //
+  // What the retry does depends on what it finds, and the difference matters:
+  // once the text is in, the repair is the CARET alone. Recomputing an
+  // insertion from a base that already contains the text would type it twice,
+  // which is the bug that made this distinction necessary.
   async typeText(text, { attempts = 4 } = {}) {
+    let target = null;
     for (let attempt = 1; ; attempt++) {
       const base = await this.settleComposer();
-      const next = base.value.slice(0, base.start) + text + base.value.slice(base.end);
-      const caretWant = base.start + text.length;
-      // The swap compares the VALUE only. A render that resets the selection
-      // without touching the text is the exact failure this guard hit, and
-      // recomputing the insertion point from a caret that render moved would
-      // type in the wrong place; the settled selection is the one the scenario
-      // meant.
-      const applied = await evaluate(
-        this.send,
-        `(() => { const ta = document.activeElement;
-          if (!ta || ta.tagName !== "TEXTAREA") return { error: "no focused textarea to type into" };
-          if (ta.value !== ${JSON.stringify(base.value)}) return { swapped: false, value: ta.value };
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-          setter.call(ta, ${JSON.stringify(next)});
-          ta.selectionStart = ta.selectionEnd = ${caretWant};
-          ta.dispatchEvent(new Event("input", { bubbles: true }));
-          return { swapped: true }; })()`,
-      );
-      // A null comes back when the evaluate itself could not run -- a
-      // navigation between the send and the reply, or a CDP error -- and
-      // reading .swapped off it would report a TypeError from this line
-      // instead of that.
-      if (!applied || applied.error) {
-        throw new Error(`typeText: ${applied ? applied.error : "no result from the page (navigated or disconnected?)"}`);
-      }
       let reason;
-      if (!applied.swapped) {
-        reason = `the composer changed under the edit (holds ${JSON.stringify(applied.value)}, expected ${JSON.stringify(base.value)})`;
+      if (target && base.value === target.next) {
+        if (base.start === target.caretWant && base.end === target.caretWant) return;
+        const moved = await evaluate(
+          this.send,
+          `(() => { const ta = document.activeElement;
+            if (!ta || ta.tagName !== "TEXTAREA") return { error: "no focused textarea to place the caret in" };
+            ta.selectionStart = ta.selectionEnd = ${target.caretWant};
+            return { placed: true }; })()`,
+        );
+        if (!moved || moved.error) {
+          throw new Error(`typeText: ${moved ? moved.error : "no result from the page (navigated or disconnected?)"}`);
+        }
+        const after = await this.settleComposer();
+        if (after.value === target.next && after.start === target.caretWant && after.end === target.caretWant) return;
+        reason = `the caret would not stay at ${target.caretWant} (composer holds ${JSON.stringify(after.value)}, caret ${after.start}-${after.end})`;
       } else {
-        const settled = await this.settleComposer();
-        // The caret decides where the NEXT insert lands, so it is as much part
-        // of the edit as the text is.
-        if (settled.value === next && settled.start === caretWant && settled.end === caretWant) return;
-        reason = `a render landed on the edit (holds ${JSON.stringify(settled.value)}, caret ${settled.start}-${settled.end}, expected ${JSON.stringify(next)} with the caret at ${caretWant})`;
+        // The swap compares the VALUE only. A render that resets the selection
+        // without touching the text is the exact failure this guard hit, and
+        // recomputing the insertion point from a caret that render moved would
+        // type in the wrong place; the settled selection is the one the
+        // scenario meant.
+        const next = base.value.slice(0, base.start) + text + base.value.slice(base.end);
+        const caretWant = base.start + text.length;
+        target = { next, caretWant };
+        const applied = await evaluate(
+          this.send,
+          `(() => { const ta = document.activeElement;
+            if (!ta || ta.tagName !== "TEXTAREA") return { error: "no focused textarea to type into" };
+            if (ta.value !== ${JSON.stringify(base.value)}) return { swapped: false, value: ta.value };
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+            setter.call(ta, ${JSON.stringify(next)});
+            ta.selectionStart = ta.selectionEnd = ${caretWant};
+            ta.dispatchEvent(new Event("input", { bubbles: true }));
+            return { swapped: true }; })()`,
+        );
+        // A null comes back when the evaluate itself could not run -- a
+        // navigation between the send and the reply, or a CDP error -- and
+        // reading .swapped off it would report a TypeError from this line
+        // instead of that.
+        if (!applied || applied.error) {
+          throw new Error(`typeText: ${applied ? applied.error : "no result from the page (navigated or disconnected?)"}`);
+        }
+        if (!applied.swapped) {
+          // Nothing was written, so the next attempt must recompute from
+          // whatever the composer now holds.
+          target = null;
+          reason = `the composer changed under the edit (holds ${JSON.stringify(applied.value)}, expected ${JSON.stringify(base.value)})`;
+        } else {
+          const settled = await this.settleComposer();
+          // The caret decides where the NEXT insert lands, so it is as much
+          // part of the edit as the text is.
+          if (settled.value === next && settled.start === caretWant && settled.end === caretWant) return;
+          reason =
+            settled.value === next
+              ? `a render moved the caret to ${settled.start}-${settled.end}, expected ${caretWant}`
+              : `a render landed on the edit (holds ${JSON.stringify(settled.value)}, expected ${JSON.stringify(next)})`;
+        }
       }
       if (attempt >= attempts) {
         throw new Error(`typeText: ${reason} after ${attempts} attempts`);
