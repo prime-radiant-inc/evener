@@ -240,13 +240,55 @@ function renderImport(members, specifier, typeOnly, indent) {
   return `${keyword} {\n${members.map((member) => `${indent}${member},`).join("\n")}\n} from "${specifier}";`;
 }
 
+function renderMember(member) {
+  const base = member.imported === member.local ? member.local : `${member.imported} as ${member.local}`;
+  return member.typeOnly ? `type ${base}` : base;
+}
+
+// What a file's merged import of one specifier should name, keyed by the LOCAL
+// binding each member introduces. Keying by rendered text instead produced
+// duplicate identifiers two ways: `{ type Thing }` and `{ Thing }` render
+// differently but bind one name, and `{ A as X }` and `{ B as X }` bind the
+// same name from different exports.
+//
+// Same export, one side inline-`type`: the value form wins, since it satisfies
+// both uses. Different exports behind one local name is a real conflict — a
+// name cannot mean two things — so it is reported and nothing is merged.
+function mergedMembers(entries, where, conflicts) {
+  const byLocal = new Map();
+  for (const member of entries.flatMap((entry) => entry.members)) {
+    const seen = byLocal.get(member.local);
+    if (!seen) {
+      byLocal.set(member.local, { ...member });
+      continue;
+    }
+    if (seen.imported !== member.imported) {
+      conflicts.push(
+        `${where}: ${seen.imported} and ${member.imported} are both imported as ${member.local}; rename one before merging`,
+      );
+      continue;
+    }
+    seen.typeOnly = seen.typeOnly && member.typeOnly;
+  }
+  return [...byLocal.values()].map(renderMember).sort(compareMembers);
+}
+
 // Collapse the duplicate statements the rewrite creates: several deep paths
 // that all resolved to one specifier become several imports of that specifier.
 // Only plain named-binding imports are merged — a namespace or default import
 // keeps its own statement, and nothing is merged across the type-only line.
-function mergeDuplicateImports(file) {
-  const text = readFileSync(file, "utf8");
-  const source = parse(file);
+//
+// Pure: it takes the file's text and returns the merged text, so a conflict
+// found in the last file leaves the first one unwritten, the same way a
+// refused import does.
+function mergeDuplicateImports(file, text, conflicts) {
+  const source = ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
   const groups = new Map();
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
@@ -255,10 +297,11 @@ function mergeDuplicateImports(file) {
     const clause = statement.importClause;
     if (!clause || clause.name || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) continue;
     const key = `${specifier}\t${clause.isTypeOnly ? "type" : "value"}`;
-    const members = clause.namedBindings.elements.map((element) => {
-      const name = element.propertyName ? `${element.propertyName.text} as ${element.name.text}` : element.name.text;
-      return element.isTypeOnly ? `type ${name}` : name;
-    });
+    const members = clause.namedBindings.elements.map((element) => ({
+      local: element.name.text,
+      imported: (element.propertyName ?? element.name).text,
+      typeOnly: Boolean(element.isTypeOnly),
+    }));
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push({ statement, members, typeOnly: Boolean(clause.isTypeOnly), specifier });
   }
@@ -267,8 +310,11 @@ function mergeDuplicateImports(file) {
   const edits = [];
   for (const group of groups.values()) {
     if (group.length < 2) continue;
-    const members = [...new Set(group.flatMap((entry) => entry.members))].sort(compareMembers);
     const [first, ...rest] = group;
+    const where = `${file}:${source.getLineAndCharacterOfPosition(first.statement.getStart(source)).line + 1}`;
+    const before = conflicts.length;
+    const members = mergedMembers(group, where, conflicts);
+    if (conflicts.length > before) continue;
     edits.push({
       start: first.statement.getStart(source),
       end: first.statement.getEnd(),
@@ -281,13 +327,12 @@ function mergeDuplicateImports(file) {
       edits.push({ start: entry.statement.getStart(source), end, text: "" });
     }
   }
-  if (edits.length === 0) return 0;
+  if (edits.length === 0) return null;
   let updated = text;
   for (const edit of edits.sort((a, b) => b.start - a.start)) {
     updated = updated.slice(0, edit.start) + edit.text + updated.slice(edit.end);
   }
-  writeFileSync(file, updated);
-  return edits.length;
+  return updated;
 }
 
 function main() {
@@ -379,13 +424,22 @@ function main() {
   }
 
   if (!checkOnly) {
-    for (const [file, contents] of pending) writeFileSync(file, contents);
+    const conflicts = [];
     let mergedFiles = 0;
     for (const tree of layout.trees) {
       for (const file of walk(tree.dir, layout, [])) {
-        if (mergeDuplicateImports(file) > 0) mergedFiles += 1;
+        const merged = mergeDuplicateImports(file, pending.get(file) ?? readFileSync(file, "utf8"), conflicts);
+        if (merged === null) continue;
+        pending.set(file, merged);
+        mergedFiles += 1;
       }
     }
+    if (conflicts.length > 0) {
+      console.error(`${conflicts.length} import(s) cannot be merged; nothing was written:`);
+      for (const conflict of conflicts) console.error(`  ${conflict}`);
+      return 2;
+    }
+    for (const [file, contents] of pending) writeFileSync(file, contents);
     if (mergedFiles > 0) console.log(`merged duplicate package imports in ${mergedFiles} file(s)`);
   }
 

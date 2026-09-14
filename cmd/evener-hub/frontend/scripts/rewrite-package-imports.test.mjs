@@ -21,8 +21,12 @@ const script = path.resolve(fileURLToPath(import.meta.url), "../../../../../scri
 function fixture(files) {
   const root = mkdtempSync(path.join(os.tmpdir(), "evener-rewrite-imports-"));
   const written = {
-    "appwire-client/typescript/index.ts": 'export { errorText } from "./errors";\n',
+    "appwire-client/typescript/index.ts":
+      'export { errorText } from "./errors";\nexport { alpha, beta, Thing } from "./model";\n',
     "appwire-client/typescript/errors.ts": "export function errorText() {\n  return '';\n}\nexport function internalOnly() {}\n",
+    // Thing is a class so one import can take it as a type and another as a
+    // value, which is how the same local name arrives spelled two ways.
+    "appwire-client/typescript/model.ts": "export class Thing {}\nexport function alpha() {}\nexport function beta() {}\n",
     "appwire-client/typescript/docContent.ts": "export function docImageURL() {\n  return '';\n}\n",
     ...files,
   };
@@ -103,6 +107,48 @@ test("--check reports what is left and writes nothing", () => {
     }
     assert.equal(status, 1);
     assert.match(output, /still name a path/);
+    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an inline type member and a value member of the same export merge to the value form", () => {
+  // Two statements that both land on the package root, naming one export two
+  // ways. Keyed by rendered text these survived as `{ type Thing, Thing }` --
+  // a duplicate identifier the tool itself introduced.
+  const root = fixture({
+    "mobile/src/state.ts": [
+      'import { type Thing } from "../../appwire-client/typescript/model";',
+      'import { Thing } from "../../appwire-client/typescript/model";',
+      "export const made: Thing = new Thing();",
+      "",
+    ].join("\n"),
+  });
+  try {
+    assert.equal(rewrite(root).status, 0);
+    const merged = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
+    assert.match(merged, /^import \{ Thing \} from "@evener\/appwire-client";$/m);
+    assert.doesNotMatch(merged, /type Thing/);
+    assert.equal(merged.match(/@evener\/appwire-client/g).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("two exports behind one local alias are refused, not merged", () => {
+  const before = [
+    'import { alpha as shared } from "../../appwire-client/typescript/model";',
+    'import { beta as shared } from "../../appwire-client/typescript/model";',
+    "shared();",
+    "",
+  ].join("\n");
+  const root = fixture({ "mobile/src/state.ts": before });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 2);
+    assert.match(run.output, /both imported as shared/);
+    assert.match(run.output, /nothing was written/);
     assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
   } finally {
     rmSync(root, { recursive: true, force: true });
