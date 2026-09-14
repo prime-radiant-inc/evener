@@ -1047,7 +1047,14 @@ func TestCache_RewriteInsideTheSecondStatWindowBumpsTheGeneration(t *testing.T) 
 	stats := 0
 	c.stat = func(p string) (os.FileInfo, error) {
 		stats++
-		writeLines(t, p, replacement)
+		// Only the first: that is the stat settling the same-size
+		// ambiguity, the one whose window this test is about. The second
+		// is the post-fold stat that records the mtime of the content the
+		// fold just read, and rewriting under that one would describe a
+		// file this fold never saw.
+		if stats == 1 {
+			writeLines(t, p, replacement)
+		}
 		return os.Stat(p)
 	}
 
@@ -1060,13 +1067,61 @@ func TestCache_RewriteInsideTheSecondStatWindowBumpsTheGeneration(t *testing.T) 
 	if err != nil {
 		t.Fatalf("refresh across a rewrite in the stat window: %v", err)
 	}
-	if stats != 1 {
-		t.Fatalf("the second stat ran %d times, want exactly 1", stats)
+	if stats != 2 {
+		t.Fatalf("refresh stat'd %d times, want 2: the one that settles the same-size ambiguity, then the one that records the mtime of what the fold read", stats)
 	}
 	if after.Epoch != folded.Epoch+1 {
 		t.Fatalf("generation = %d, want %d -- the file grew, but the prefix this cache folded is gone, so the fold was discarded and a continuation keyed to it must not be accepted", after.Epoch, folded.Epoch+1)
 	}
 	if after.Value.sum != 4950 {
 		t.Fatalf("value = %+v, want the replacement read in full (sum 4950)", after.Value)
+	}
+}
+
+// TestCache_AppendDuringTheFoldRecordsAMatchingMtime pins the other half of
+// what the recorded state has to describe. When an append lands between the
+// stat and the fold's read, the fold consumes the larger file and the
+// recorded size follows it -- but the recorded mtime is still the one the
+// stat took before the write. The next lookup then sees the size it expects
+// with an mtime it does not, reads that as a same-size rewrite, and discards
+// a fold nothing invalidated.
+func TestCache_AppendDuringTheFoldRecordsAMatchingMtime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	base := countingLineExtend(t, &calls)
+	stamp := time.Unix(2_000_000, 0)
+	appended := false
+	extend := func(ctx context.Context, p string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+		if !appended {
+			appended = true
+			appendLines(t, p, []int{3})
+			if err := os.Chtimes(p, stamp, stamp); err != nil {
+				return intsFold{}, 0, err
+			}
+		}
+		return base(ctx, p, fromOffset, prior)
+	}
+
+	folded, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if folded.Value.sum != 6 {
+		t.Fatalf("first fold = %+v, want the appended line read too (1+2+3)", folded.Value)
+	}
+
+	after, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if after.Epoch != folded.Epoch {
+		t.Fatalf("generation moved to %d on a file nobody touched since the fold, want it to stay at %d -- the fold read the append, so the state it published has to describe the file it read", after.Epoch, folded.Epoch)
+	}
+	if after.Value.sum != 6 {
+		t.Fatalf("value = %+v, want 6", after.Value)
 	}
 }

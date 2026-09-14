@@ -175,9 +175,9 @@ type Cache[T any] struct {
 	group   singleflight.Group
 
 	// stat is os.Stat, indirected so a test can pin what happens to the
-	// file between the tail probe and the second stat refresh takes to
-	// settle a same-size ambiguity — an ordering no fixture can produce
-	// from the outside, because nothing else runs between them.
+	// file between the reads refresh makes of it — orderings no fixture
+	// can produce from the outside, because nothing else runs in those
+	// windows.
 	stat func(string) (os.FileInfo, error)
 
 	hits, misses, coalesced, evictions, fullRescans int
@@ -217,7 +217,7 @@ func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Resu
 		return c.readUncached(ctx, path, extend)
 	}
 
-	info, statErr := os.Stat(path)
+	info, statErr := c.stat(path)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			c.drop(path)
@@ -492,20 +492,40 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 		return Result[T]{}, tailErr
 	}
 
-	// The recorded size describes the content this fold consumed, which is
-	// why it cannot simply be the stat's. A torn stat reports the size from
-	// before an append while extend goes on to read the whole larger file,
-	// and recording that smaller number leaves offset ahead of size -- a
-	// state no honest file produces, and one the next stat reads as growth,
-	// resuming from an offset the file has already reached and never seeing
-	// a rewrite underneath it. Taking the larger of the two keeps the
-	// stat's own number wherever it is the bigger one, which is what makes
-	// a file that grew after the stat (rather than during it) still read as
-	// growth on the next look instead of as an unchanged length.
-	recordedSize := max(info.Size(), offset)
+	// The recorded state describes the content this fold consumed, which is
+	// why neither number can simply be the stat's. The fold can read past
+	// what the stat reported -- a torn stat gives the size from before an
+	// append, and an append can also land after the stat and before the
+	// read -- and recording that smaller number leaves offset ahead of
+	// size, a state no honest file produces and one the next stat reads as
+	// growth, resuming from an offset the file has already reached and
+	// never seeing a rewrite underneath it.
+	//
+	// So the size is the larger of the two. Keeping the stat's own number
+	// wherever it is the bigger one is what makes a file that grew AFTER
+	// the fold still read as growth on the next look instead of as an
+	// unchanged length.
+	//
+	// The mtime has to move with it. Whatever made the file longer than the
+	// stat said also stamped it, so pairing the consumed size with the
+	// stat's older mtime describes a file that never existed: the next
+	// lookup sees the size it expects with an mtime it does not, reads that
+	// as a same-size rewrite, and discards a fold nothing invalidated. Only
+	// this branch re-stats, because only here is the stat's mtime known to
+	// predate the content.
+	recordedSize := info.Size()
+	recordedMod := info.ModTime()
+	if offset > recordedSize {
+		recordedSize = offset
+		fresh, statErr := c.stat(path)
+		if statErr != nil {
+			return Result[T]{}, statErr
+		}
+		recordedMod = fresh.ModTime()
+	}
 
 	c.mu.Lock()
-	c.epochStates[path] = &epochState{size: recordedSize, mod: info.ModTime(), offset: offset, tail: tail, epoch: epoch}
+	c.epochStates[path] = &epochState{size: recordedSize, mod: recordedMod, offset: offset, tail: tail, epoch: epoch}
 	c.publishLocked(path, entry[T]{path: path, value: value, offset: offset, valid: true})
 	c.mu.Unlock()
 	return Result[T]{Value: value, Offset: offset, Epoch: epoch}, nil
