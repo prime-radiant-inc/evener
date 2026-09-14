@@ -9,16 +9,23 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import { buildEntityView } from "../../../../protocol/entityView";
 import type { ItemModel } from "../../../../protocol/model";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { toolRendererFor } from "../toolRenderers";
 import "../tools";
 import "./jobWatch";
 
 afterEach(() => {
   cleanup();
+});
+
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
 });
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -175,6 +182,35 @@ test("list body renders one row per watch with a status chip and the watch id", 
   expect(text).toContain("watch_09QmWzRtNvxK");
   expect(text).toContain("watching");
   expect(text).toContain("ended");
+});
+
+test("list watch IDs are clipped entity triggers with no open control or navigation", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  const id = "watch_034KEfjYFbfoUaPeHJcLXY";
+  const listed = watchItem(
+    { operation: "list" },
+    { recent_watches: [{ watch_id: id, watching: false, end_reason: "cleared" }], count: 0 },
+  );
+  listed.position = { entry: 1, item: 1 };
+  const entities = buildEntityView({
+    sessionRef: "local:s",
+    turns: [{ id: "turn_1", status: "completed", items: [listed] }],
+    stale: false,
+    ended: false,
+  });
+  render(
+    <TranscriptRenderProvider entities={entities}>
+      <Body item={listed} live={false} />
+    </TranscriptRenderProvider>,
+  );
+
+  const row = screen.getByTestId("job-watch-row");
+  const trigger = within(row).getByTestId("entity-trigger");
+  expect(trigger.textContent).toBe("watch_034KEfj…foUaPeHJcLXY");
+  expect(within(row).queryByRole("button")).toBeNull();
+  fireEvent.click(trigger);
+  expect(workspaceStore.getState().panes).toEqual([]);
 });
 
 test("list rows are buttons that expand the row's detail sentence (RoboRev PR #954)", async () => {

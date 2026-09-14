@@ -36,6 +36,7 @@ import {
 } from "../../../../protocol/watchRows";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
@@ -663,7 +664,7 @@ function WatchListRow({ row }: { row: WatchRow }) {
       <div className={CLASS.rowStatic} data-testid="job-watch-row">
         <Chip>{chip}</Chip>
         <span className={CLASS.rowId} title={row.id}>
-          {clipJobID(row.id)}
+          <EntityRef id={row.id} display={clipJobID(row.id)} />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
       </div>
@@ -682,7 +683,7 @@ function WatchListRow({ row }: { row: WatchRow }) {
       >
         <Chip>{chip}</Chip>
         <span className={CLASS.rowId} title={row.id}>
-          {clipJobID(row.id)}
+          <EntityRef id={row.id} display={clipJobID(row.id)} />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
       </button>

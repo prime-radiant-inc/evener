@@ -19,6 +19,7 @@ export interface EntityRefProps {
   view?: EntityView;
   id: string;
   display?: string;
+  triggerOnly?: boolean;
 }
 
 const CLASS = {
@@ -224,7 +225,7 @@ function EntityCard({ view }: { view: EntityView }) {
   return <WatchCard view={view} />;
 }
 
-export function EntityRef({ view, id, display }: EntityRefProps) {
+export function EntityRef({ view, id, display, triggerOnly }: EntityRefProps) {
   const context = useTranscriptRenderContext();
   const resolved = view ?? context.entities?.get(id);
   const text = display ?? id;
@@ -239,7 +240,7 @@ export function EntityRef({ view, id, display }: EntityRefProps) {
           {text}
         </span>
       </HoverCard>
-      {target ? (
+      {target && !triggerOnly ? (
         <OpenButton
           label={resolved.kind === "job" ? "Open job log" : "Open delegate transcript"}
           onClick={() => openTranscript(target.ref, target.parentRef)}

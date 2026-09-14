@@ -178,6 +178,15 @@ test("delegate renders exactly one OpenButton for its open target", () => {
   expect(screen.getAllByRole("button", { name: "Open delegate transcript" })).toHaveLength(1);
 });
 
+test("triggerOnly keeps the resolved hover-card trigger and omits its OpenButton", () => {
+  vi.useFakeTimers();
+  render(<EntityRef view={delegateView()} id="dlg_x" triggerOnly />);
+
+  expect(screen.getByTestId("entity-trigger").tabIndex).toBe(0);
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(focusCard().textContent).toContain("Delegate");
+});
+
 test("the id trigger does not navigate", () => {
   render(<EntityRef view={jobView()} id="job_x" />);
 
