@@ -173,7 +173,7 @@ func TestCloneEvenerDiagnosticsOwnsWatches(t *testing.T) {
 		DeliveryTimes: []string{"1970-01-01T00:16:40Z", "1970-01-01T00:16:41Z"},
 		Active:        true,
 	}}}
-	clone := cloneEvenerDiagnostics(source)
+	clone := CloneEvenerDiagnostics(source)
 	if !reflect.DeepEqual(clone, source) {
 		t.Fatalf("clone = %+v, want a copy of %+v", clone, source)
 	}

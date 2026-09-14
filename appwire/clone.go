@@ -102,7 +102,7 @@ func cloneTurnError(e *TurnError) *TurnError {
 }
 
 func cloneEvenerThread(e EvenerThread) EvenerThread {
-	e.Diagnostics = cloneEvenerDiagnostics(e.Diagnostics)
+	e.Diagnostics = CloneEvenerDiagnostics(e.Diagnostics)
 	e.Queue = cloneQueueState(e.Queue)
 	e.PendingMutations = clonePendingMutations(e.PendingMutations)
 	e.PendingEscalations = append([]SandboxEscalationRequested(nil), e.PendingEscalations...)
@@ -185,7 +185,12 @@ func cloneCodexErrorInfo(value any) any {
 	}
 }
 
-func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
+// CloneEvenerDiagnostics returns a defensive copy of d in which every nested
+// mutable slice and pointer is independent of the original. It is the
+// diagnostics-level counterpart of CloneThread and lets a caller that needs to
+// attach one extra slice (e.g. sampled watches) do so without aliasing any other
+// slice of the source block.
+func CloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	if d == nil {
 		return nil
 	}

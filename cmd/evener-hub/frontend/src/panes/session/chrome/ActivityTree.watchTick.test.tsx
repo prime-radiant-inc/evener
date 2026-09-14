@@ -86,10 +86,12 @@ describe("ActivityTree watch row ticks", () => {
         vi.advanceTimersByTime(1000);
       });
 
-      // The open detail follows the clock...
+      // The open row's countdown meta and detail follow the clock...
       expect(detailRender.mock.calls.length).toBeGreaterThan(detailsAtRest);
-      // ...while no watch ROW re-renders, collapsed or open.
-      expect(rowRender.mock.calls.length).toBe(rowsAtRest);
+      // ...while the collapsed row stays asleep: its formatter is never called
+      // again, and only the open row's meta re-renders through the tree clock.
+      const rerendered = rowRender.mock.calls.slice(rowsAtRest).map((call) => call[0].id);
+      expect(rerendered).toEqual(["watch_open"]);
     } finally {
       vi.useRealTimers();
     }

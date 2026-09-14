@@ -70,8 +70,11 @@ type LocalDaemonEntry struct {
 	CompletedJobs []appwire.EvenerJobInfo
 	// Watches carries the roster's live watches into the same typed thread
 	// diagnostics the hub navigation path already projects, so local AppWire
-	// clients see watch state too. It stays on the owning root entry only;
-	// read-only descendants never receive it (see threadFromEntry).
+	// clients see watch state too. A root entry holds the root session's own
+	// watches; a read-only descendant alias holds the child's own watches,
+	// copied from LiveEntry.ChildWatches by the hub entry builder. threadFromEntry
+	// emits a watch-only diagnostics block for such an alias even though its
+	// other diagnostics (jobs) stay suppressed.
 	Watches []appwire.EvenerWatchInfo
 }
 
@@ -1089,7 +1092,17 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		// branch running after it.
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: !item.ReadOnlyAlias}
 	}
-	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0 || len(item.Watches) > 0) {
+	if item.ReadOnlyAlias {
+		// A read-only descendant alias still carries its own live watches: they
+		// are read-only row state, not a mutation surface, so the alias guard
+		// that suppresses the jobs block does not apply to them. A child with no
+		// watches gets no diagnostics block at all.
+		if len(item.Watches) > 0 {
+			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{
+				Watches: cloneLocalDaemonWatches(item.Watches),
+			}
+		}
+	} else if len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0 || len(item.Watches) > 0 {
 		jobs := make([]appwire.EvenerJobInfo, 0, len(item.RunningJobs)+len(item.CompletedJobs))
 		jobs = append(jobs, item.RunningJobs...)
 		jobs = append(jobs, item.CompletedJobs...)

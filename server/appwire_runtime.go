@@ -364,12 +364,14 @@ func (s *Server) SetDescendantTranscriptPathFunc(fn func(threadID string) string
 	s.mu.Unlock()
 }
 
-// SetDescendantLiveWatchesFunc installs the resolver the thread list/read path
+// SetDescendantLiveWatchesFunc installs the resolver the thread LIST path
 // consults to sample a descendant session's own live watches. It mirrors
 // SetDescendantTranscriptPathFunc: fn is the appwire server's one reach into the
 // agent tree across the delegate-controller boundary. fn may return nil for a
 // descendant with no live watches; nil disables the projection entirely (the
-// historical behavior, where only the root's watches are shown).
+// historical behavior, where only the root's watches are shown). The single
+// thread READ path deliberately does not consult this seam: it runs under the
+// subscription cut and must stay cheap (see appThreadForID).
 func (s *Server) SetDescendantLiveWatchesFunc(fn func(threadID string) []agent.WatchStatusInfo) {
 	s.mu.Lock()
 	s.appDescendantLiveWatchesFunc = fn
@@ -1431,6 +1433,15 @@ func (s *Server) appReadTargetLocked(params appwire.ThreadReadParams) (string, s
 	return threadID, target
 }
 
+// appThreadForID returns the already-projected thread for threadID. It is the
+// single-thread READ path (appThreadReadSnapshotForTarget), which runs under the
+// subscription cut, so it must never reach into agent session state:
+// appThreadReadSnapshot's contract is that anything called from here is cheap
+// and does not block on a lock another component holds across disk I/O. It
+// therefore returns the projection as installed, without the descendant watch
+// sample. The list path (handleAppThreadList) is where descendant watches are
+// sampled -- after releasing s.mu, outside the cut -- because that is what feeds
+// the hub prober and hence the child rows in navigation.
 func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
 	if threadID == s.appProjectionThreadID() {
 		return s.appThread(), true
@@ -1444,7 +1455,7 @@ func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
 	thread := projection.thread
 	thread.Evener.ActiveTurnID = projection.activeTurnID
 	s.mu.RUnlock()
-	return s.appThreadWithDescendantWatches(thread, threadID), true
+	return thread, true
 }
 
 func (s *Server) appProjectionThreadID() string {
@@ -2587,15 +2598,19 @@ func appWatchFromDetailedStatus(watch agent.WatchStatusInfo) appwire.EvenerWatch
 // row had no watches even when the child session held some. The block is
 // attached to the returned copy only; the cached projection is never mutated.
 //
-// The sample happens on read, not from a propagation event. Watch state changes
-// without a per-child app event on this daemon, so the hub picks a new watch up
-// on its next roster probe rather than instantly: a child row can lag a new
-// watch by one probe interval.
+// The sample happens on a LIST read, not from a propagation event and not on the
+// single-thread read path (which runs under the subscription cut and must not
+// touch session state; see appThreadForID). Watch state changes without a
+// per-child app event on this daemon, so the hub picks a new watch up on its next
+// roster probe rather than instantly: a child row can lag a new watch by one
+// probe interval.
 //
 // The returned rows are rebuilt from the agent rows and never alias them: each
 // EvenerWatchInfo copies its event, cadence, and delivery-time slices, so a
-// caller mutating the response cannot reach the agent state. The diagnostics
-// block itself is a copy too, so the cached projection is out of reach as well.
+// caller mutating the response cannot reach the agent state. The whole
+// diagnostics block is deep-copied through appwire.CloneEvenerDiagnostics, so
+// every other slice of the cached projection is out of reach too, not just
+// Watches.
 func (s *Server) appThreadWithDescendantWatches(thread appwire.Thread, threadID string) appwire.Thread {
 	s.mu.RLock()
 	fn := s.appDescendantLiveWatchesFunc
@@ -2611,10 +2626,9 @@ func (s *Server) appThreadWithDescendantWatches(thread appwire.Thread, threadID 
 	for _, status := range statuses {
 		watches = append(watches, appWatchFromDetailedStatus(status))
 	}
-	diagnostics := &appwire.EvenerDiagnostics{}
-	if thread.Evener.Diagnostics != nil {
-		copied := *thread.Evener.Diagnostics
-		diagnostics = &copied
+	diagnostics := appwire.CloneEvenerDiagnostics(thread.Evener.Diagnostics)
+	if diagnostics == nil {
+		diagnostics = &appwire.EvenerDiagnostics{}
 	}
 	diagnostics.Watches = watches
 	thread.Evener.Diagnostics = diagnostics

@@ -2569,7 +2569,11 @@ func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
 	if s == nil || sessionID == "" || sessionID == s.ID() {
 		return nil
 	}
-	for _, child := range s.liveSubagentSessions() {
+	// One snapshot serves both the direct-match loop and the recursion: taking it
+	// twice would walk the subagent manager a second time per lookup and could
+	// recurse on a different membership set under a concurrent change.
+	children := s.liveSubagentSessions()
+	for _, child := range children {
 		if child != nil && child.ID() == sessionID {
 			return child.liveWatchStatuses()
 		}
@@ -2577,7 +2581,7 @@ func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
 	// A nested descendant is reached through its own parent, so the lookup
 	// recurses rather than building the whole descendant set for every thread on
 	// a list read.
-	for _, child := range s.liveSubagentSessions() {
+	for _, child := range children {
 		if child == nil {
 			continue
 		}

@@ -43,7 +43,7 @@ import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
 import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
-import { TreeNowContext } from "./treeNow";
+import { TreeNowContext, useTreeNow } from "./treeNow";
 
 export interface ActivityTreeProps {
   tree: ActivityTreeData;
@@ -561,12 +561,31 @@ const WatchRowView = memo(function WatchRowView({
         <WatchGlyph className={CLASS.watchGlyph} testId="watch-glyph" />
         <span className={CLASS.srOnly}>Watch:</span>
         <span className={CLASS.denseName}>{watchName(row.watch)}</span>
-        <span className={CLASS.denseMeta}>{watchMeta(row.watch, detailOpen ? now : undefined)}</span>
+        {detailOpen ? (
+          <OpenWatchMeta watch={row.watch} now={now} />
+        ) : (
+          // A collapsed row is all snapshot data: no clock, no countdown. It
+          // renders the static meta directly so it never subscribes to the tree
+          // ticker (see OpenWatchMeta).
+          <span className={CLASS.denseMeta}>{watchMeta(row.watch, undefined)}</span>
+        )}
       </div>
       {detailOpen && <ActivityWatchDetail row={row} now={now} />}
     </Fragment>
   );
 }, watchRowViewPropsEqual);
+
+// OpenWatchMeta is the open watch row's right-hand meta, and the only place the
+// row's own countdown renders. It is mounted only while the row is open, so a
+// collapsed row never subscribes to the tree clock and never re-renders per
+// tick. A caller with its own ticking clock (the pane chrome) passes `now`; the
+// standalone Activity pane passes nothing and falls back to the tree's live
+// context, which ActivityTree enables for any session carrying watch rows -
+// exactly as ActivityWatchDetail does for the detail strip.
+function OpenWatchMeta({ watch, now }: { watch: NavigationWatchSummary; now?: number }): ReactNode {
+  const contextNow = useTreeNow();
+  return <span className={CLASS.denseMeta}>{watchMeta(watch, now ?? contextNow)}</span>;
+}
 
 // memo's default shallow compare would wake every collapsed watch row whenever
 // the pane chrome's ticking `now` changes. A collapsed row's output does not

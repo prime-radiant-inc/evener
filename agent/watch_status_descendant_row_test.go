@@ -38,6 +38,29 @@ func TestLiveWatchesForDescendantReturnsChildsOwnWatch(t *testing.T) {
 	}
 }
 
+// A nested descendant is reached by recursing through its own parent. The lookup
+// snapshots the live child set once and reuses it for both the direct-match and
+// recursion loops; this pins the recursion still finds a grandchild's watch.
+func TestLiveWatchesForDescendantFindsNestedDescendant(t *testing.T) {
+	root := newDescendantWatchSession(t)
+	child := newDescendantWatchSession(t)
+	grandchild := newDescendantWatchSession(t)
+	registerDescendantSession(t, root, child)
+	registerDescendantSession(t, child, grandchild)
+
+	grandchild.jobManager.mu.Lock()
+	grandchild.jobManager.watches[watchKey{Target: "job_grandchild"}] = &watchConfig{
+		id: "watch-grandchild", watchID: "watch-grandchild", sourcePublic: "self", target: "job_grandchild",
+		createdAt: frozenTestTime,
+	}
+	grandchild.jobManager.mu.Unlock()
+
+	got := root.LiveWatchesForDescendant(grandchild.ID())
+	if len(got) != 1 || got[0].ID != "watch-grandchild" {
+		t.Fatalf("nested descendant watches = %+v, want the grandchild's own watch", got)
+	}
+}
+
 // A receiver watch targeting a descendant's job lives in that descendant's
 // manager with the root recorded as the receiver. It belongs on the root's row,
 // so the descendant accessor must not surface it on the child's row.
