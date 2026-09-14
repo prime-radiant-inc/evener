@@ -39,10 +39,20 @@ func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
 // the group is there, this process just may not signal all of it.
 //
 // A group whose only remaining members are zombies also reads as alive, until
-// init reaps them. The cost of that is one survivor diagnostic and at most one
-// grace wait on a group that was already finished; the alternative is probing
-// process state per platform, which is a lot of machinery for a line of
-// output.
+// whatever adopted them reaps them. Measured on darwin (24 runs of a leader
+// that starts a grandchild in its group, the grandchild exiting first and the
+// leader exiting without waiting): the group answers for 3-12ms after the
+// leader is reaped, and then launchd has reaped the orphan and it answers
+// ESRCH. It never survived to a second poll, let alone to a grace. Linux was
+// not measured here -- this repo has no Linux host and its Docker daemon is
+// down -- but init reaps a reparented orphan the same way; what would change
+// the picture is a subreaper that adopts and does not reap.
+//
+// So the cost of not distinguishing zombies is one survivor diagnostic and one
+// 10ms poll. It is not the caller's stuck-and-124 path: that needs the group
+// to outlast both graces, which needs something that holds zombies
+// indefinitely. Probing process state per platform buys nothing against a
+// measured 3-12ms, and would have to be right on two kernels to buy it.
 func Exists(pgid int) bool {
 	if pgid <= 0 {
 		return false

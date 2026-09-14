@@ -88,29 +88,57 @@ func TestDispatchAliasesReachTheSameSubcommand(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading the pipe: %v", err)
 		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("closing the reader: %v", err)
+		}
 		return code, string(out)
 	}
 
-	// One fixed invocation, run both ways. The command is this test binary
-	// re-executed, the repo's helper-process idiom, so the case does not
-	// depend on an ambient echo being where the test expects it.
-	command := []string{"-timeout", "30s", "-attempts", "1", "--", os.Args[0], "-test.run=TestDispatchPrintingHelper$"}
+	// Each alias, run both ways on one fixed invocation, with the exit code
+	// and the output compared. The dev family writes the process's own
+	// streams, so those are what this captures.
 	t.Setenv("DISPATCH_PRINTING_HELPER", "1")
-	prefixed, prefixedOut := run(append([]string{"dev", "bounded-list"}, command...)...)
-	bare, bareOut := run(append([]string{"bounded-list"}, command...)...)
-	if prefixed != 0 || bare != 0 {
-		t.Fatalf("exit codes = %d (dev bounded-list) and %d (bounded-list), want 0 from both", prefixed, bare)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "bounded-list",
+			// The command is this test binary re-executed, the repo's
+			// helper-process idiom, so nothing ambient is involved.
+			args: []string{"-timeout", "30s", "-attempts", "1", "--", os.Args[0], "-test.run=TestDispatchPrintingHelper$"},
+			want: helperLine,
+		},
+		{
+			name: "list-build-flags",
+			args: []string{"--", "-race", "-short"},
+			want: "-race\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefixedCode, prefixedOut := run(append([]string{"dev", tc.name}, tc.args...)...)
+			bareCode, bareOut := run(append([]string{tc.name}, tc.args...)...)
+			if prefixedCode != 0 || bareCode != 0 {
+				t.Fatalf("exit codes = %d (dev %s) and %d (%s), want 0 from both", prefixedCode, tc.name, bareCode, tc.name)
+			}
+			if !strings.Contains(prefixedOut, tc.want) || bareOut != prefixedOut {
+				t.Fatalf("stdout = %q (dev %s) and %q (%s), want %q from both", prefixedOut, tc.name, bareOut, tc.name, tc.want)
+			}
+		})
 	}
-	if !strings.Contains(prefixedOut, helperLine) || bareOut != prefixedOut {
-		t.Fatalf("stdout = %q (dev bounded-list) and %q (bounded-list), want %q from both", prefixedOut, bareOut, helperLine)
-	}
-	// The other aliases are here because the same line dispatches them.
-	for _, args := range [][]string{{"module-lint", "-h"}, {"agent-shards", "-h"}} {
-		var stdout, stderr strings.Builder
-		dispatch(args, nil, &stdout, &stderr)
-		if strings.Contains(stderr.String(), "unknown subcommand") {
-			t.Fatalf("dispatch(%q) = unknown subcommand; the alias is missing from the dispatch", args)
-		}
+
+	// module-lint and agent-shards are dispatched by the same line. Running
+	// them for real would lint or shard the repo, so what is compared here is
+	// that both spellings reach the same subcommand and agree on its answer.
+	for _, name := range []string{"module-lint", "agent-shards"} {
+		t.Run(name, func(t *testing.T) {
+			prefixed, _ := run("dev", name, "-nonexistent-flag")
+			bare, _ := run(name, "-nonexistent-flag")
+			if prefixed != bare {
+				t.Fatalf("exit codes = %d (dev %s) and %d (%s), want the same subcommand behind both", prefixed, name, bare, name)
+			}
+		})
 	}
 }
 

@@ -456,6 +456,29 @@ func (w *shortWriter) Write(p []byte) (int, error) {
 	return 1, nil
 }
 
+func TestCompleteWithKeepsTheCommandsAnswerAndTheSignal(t *testing.T) {
+	// The two orderings, injected: a signal waiting when the command finished,
+	// and no signal at all. A command that finished is not an interrupted one,
+	// so its status stands -- and the latched signal still stops the run,
+	// because the runner starts no further attempt once it is set.
+	signals := make(chan os.Signal, 1)
+	signals <- syscall.SIGTERM
+	interrupted := &attemptResult{}
+	interrupted.completeWith(3, nil, &signalLatch{ch: signals})
+	if interrupted.exitCode != 3 {
+		t.Fatalf("exitCode = %d, want 3: what the command decided", interrupted.exitCode)
+	}
+	if interrupted.interrupted != syscall.SIGTERM {
+		t.Fatalf("interrupted = %v, want the signal latched so the run stops", interrupted.interrupted)
+	}
+
+	quiet := &attemptResult{}
+	quiet.completeWith(3, nil, &signalLatch{ch: make(chan os.Signal)})
+	if quiet.exitCode != 3 || quiet.interrupted != 0 {
+		t.Fatalf("completeWith with no signal = %+v, want the command's answer and no interrupt", quiet)
+	}
+}
+
 func TestBoundedListFailsWhenTheListCannotBeHandedOver(t *testing.T) {
 	var stderr bytes.Buffer
 	stdout := &shortWriter{}

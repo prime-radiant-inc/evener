@@ -61,15 +61,16 @@ var packageSelectionValueFlags = map[string]bool{
 // by setting a build tag of its own name.
 var packageSelectionBareFlags = map[string]bool{"-race": true, "-msan": true, "-asan": true}
 
-// goTestValueFlags are the `go test` flags whose value is the next argument.
-// They are here to be skipped over with their values, not to be forwarded: the
-// only reason this list exists is that a value must not be read as a flag.
-//
-// cmd/evener-dev/shardplan.go on #1266 grows the full `go test` flag parser for
-// the shard runner; when both land these two tables describe one rule in one
-// place. Tracked as its own issue rather than resolved across two open PRs.
+// goTestValueFlags are the flags whose value is the next argument. Nothing
+// here is forwarded: the list exists so that a value is never read as a flag.
+// `-run -race` is a regex whose text is `-race`, and enumerating under a
+// sanitiser the caller did not ask for would build a different tree from the
+// one the tests run in. Every flag that takes a separate value belongs here,
+// whether or not the enumeration would want the flag itself.
 var goTestValueFlags = map[string]bool{
-	"-bench": true, "-benchtime": true, "-blockprofile": true,
+	// -C takes a directory, and is not forwarded: the enumeration already runs
+	// in the module's own directory.
+	"-C": true, "-bench": true, "-benchtime": true, "-blockprofile": true,
 	"-blockprofilerate": true, "-count": true, "-coverprofile": true,
 	"-covermode": true, "-coverpkg": true, "-cpu": true, "-cpuprofile": true,
 	"-exec": true, "-fuzz": true, "-fuzzminimizetime": true, "-fuzztime": true,

@@ -93,21 +93,26 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// expired.
 	completed := func(err error) attemptResult {
 		result.stdout = out.Bytes()
-		result.err = err
-		result.exitCode = procgroup.ExitCode(cmd.ProcessState)
+		result.completeWith(procgroup.ExitCode(cmd.ProcessState), err, latch)
 		if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
 			// The command answered, but its group is still there holding the
 			// caches; another attempt would add a second one.
 			result.stuck = true
 			result.exitCode = 124
 		}
-		result.takeLateSignal(latch)
 		return result
 	}
 	select {
 	case <-reaped:
 		return completed(waited.err())
 	case received := <-latch.waiting():
+		// A signal and the command's own finish can be ready together, and
+		// select picks between ready cases at random: a command that finished
+		// is not an interrupted one, whatever arrived at the same moment.
+		if finished, err := finishedFirst(reaped, waited); finished {
+			latch.receive(received)
+			return completed(err)
+		}
 		// The command runs in a process group of its own, which is what keeps
 		// a wedged compiler off this host -- and also what stops the
 		// terminal's SIGINT from reaching it, since it is no longer in the
@@ -260,6 +265,19 @@ func (l *signalLatch) poll() syscall.Signal {
 		return l.receive(s)
 	default:
 		return 0
+	}
+}
+
+// completeWith records what the command itself decided, and latches any signal
+// that arrived while it was deciding. The signal still stops the run -- the
+// runner starts no further attempt once it is set -- but it does not overwrite
+// the command's answer: a `go list` that finished is not an interrupted one,
+// whatever arrived at the same moment.
+func (r *attemptResult) completeWith(exitCode int, err error, latch *signalLatch) {
+	r.err = err
+	r.exitCode = exitCode
+	if r.interrupted == 0 {
+		r.interrupted = latch.poll()
 	}
 }
 

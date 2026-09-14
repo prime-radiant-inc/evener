@@ -47,6 +47,9 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		{name: "nor does coverage", args: []string{"-cover", "-covermode", "atomic", "-coverpkg", "./..."}},
 		// Everything after -args is the test binary's own argument list.
 		{name: "-args ends the flags", args: []string{"-args", "foo", "-race"}},
+		// -C takes a directory: the word after it is that directory, whatever
+		// it is spelled like.
+		{name: "-C takes the next word", args: []string{"-C", "-race", "./..."}},
 		{name: "and what came before it still counts", args: []string{"-race", "-args", "-tags", "x"}, want: []string{"-race"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
