@@ -202,7 +202,7 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			chars += thinkingReplayChars(p)
+			chars += thinkingReplayChars(provider, model, p)
 		case ContentWebSearch:
 			if p.WebSearch != nil {
 				chars += len(p.WebSearch.Query)
@@ -217,9 +217,7 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 }
 
 // thinkingReplayChars counts the characters a thinking part contributes to the
-// outgoing request. The estimator is provider-blind, because the compaction path
-// calls EstimateMessagesInputTokens, which carries no provider or model, so one
-// rule stands in for every adapter: bill the payload each adapter may replay.
+// outgoing request. The estimator bills the payload each adapter may replay.
 //
 //   - redacted thinking replays its text payload only (anthropic/request.go
 //     emits "data": Text and never a signature);
@@ -230,17 +228,20 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 //     OpenAI-compatible wire field name in Signature means the text is replayed
 //     in that field, with the name itself not payload.
 //
-// Raw reasoning text that carries no replay metadata is not billed: the
-// Responses adapter keeps it for display only (gateway-fronted GLM), which is
-// the over-count this rule fixes.
+// Text that carries no replay metadata is billed only for the adapters that
+// replay it unsigned (see providerReplaysUnsignedThinking): the Anthropic
+// Messages adapter emits {"type":"thinking","thinking":text}, and the
+// OpenAI-compatible chat adapter replays the text on the reasoning field or
+// merges it into assistant content on a ThinkingAsText row. Every other
+// adapter keeps the pre-existing zero: the OpenAI Responses adapter re-sends a
+// reasoning item only when it carries encrypted_content and keeps raw
+// reasoning_text for display only (gateway-fronted GLM), and Google drops the
+// part.
 //
-// Known limitation: replay is a property of the adapter, not of the part, so a
-// part with text and no replay metadata is under-counted for adapters that do
-// replay it unsigned: Anthropic's unsigned thinking block, and the
-// ThinkingAsText merge path in the OpenAI-compatible chat adapter. Deciding per
-// adapter needs the provider threaded into the compaction estimate, which it
-// currently is not.
-func thinkingReplayChars(p ContentPart) int {
+// The adapter is chosen by the request's resolved registry row, which the
+// estimator never sees, so the classification is by provider and model name.
+// EstimateMessagesInputTokens carries neither and cannot bill unsigned text.
+func thinkingReplayChars(provider, model string, p ContentPart) int {
 	if p.Thinking == nil {
 		return 0
 	}
@@ -270,7 +271,39 @@ func thinkingReplayChars(p ContentPart) int {
 		}
 		return len(t.Text) + len(t.Signature)
 	}
+	if providerReplaysUnsignedThinking(provider, model) {
+		return len(t.Text)
+	}
 	return 0
+}
+
+// providerReplaysUnsignedThinking reports whether the adapter selected for a
+// provider replays a ContentThinking part that carries text and no replay
+// metadata. The estimator has no resolved registry row, so the match is on the
+// provider and model names:
+//
+//   - an Anthropic-named provider (anthropic, anthropic-compatible,
+//     google-vertex-anthropic) or a Claude model, which the Anthropic protocol
+//     also serves through aliases, selects the Anthropic Messages adapter;
+//   - an OpenAI-compatible chat name (openai-compatible, openaicompat, an
+//     openai-chat name) selects the OpenAI-compatible chat adapter.
+//
+// The OpenAI Responses and Google adapters, which drop unsigned text, do not
+// match, nor does a provider whose alias hides its base (an instance named
+// "work" over an OpenAI-compatible row); that alias stays unbilled until a
+// caller can supply the resolved protocol.
+func providerReplaysUnsignedThinking(provider, model string) bool {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(p, "anthropic") || strings.Contains(m, "claude"):
+		return true
+	case strings.Contains(p, "compat") || strings.Contains(p, "openai-chat"):
+		// google-compatible names the Google protocol, which drops the part.
+		return !strings.Contains(p, "google")
+	default:
+		return false
+	}
 }
 
 func estimateImageTokens(provider, model string, img *ImageData) int {

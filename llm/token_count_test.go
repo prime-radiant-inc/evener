@@ -119,6 +119,128 @@ func TestEstimateMessagesInputTokens_RedactedThinkingBillsTextOnly(t *testing.T)
 	}
 }
 
+// The Anthropic adapter replays a thinking part with no signature as an
+// unsigned "thinking" block (anthropic/request.go emits {"type":"thinking",
+// "thinking": text, "signature": ""}), so its text must be billed even though
+// no replay metadata marks it. Before the provider-aware rule this was zero.
+func TestEstimateInputTokens_AnthropicReplaysUnsignedThinkingText(t *testing.T) {
+	rawText := strings.Repeat("t", 400)
+	req := Request{
+		Provider: "anthropic",
+		Model:    "claude-test",
+		Messages: []Message{{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText}},
+		}}},
+	}
+
+	if got, want := EstimateInputTokens(req).Tokens, len(rawText)/4; got != want {
+		t.Fatalf("Tokens = %d, want %d: the Anthropic adapter replays unsigned thinking text", got, want)
+	}
+
+	// The same part on the provider-blind history path stays unbilled: that
+	// entry point carries no adapter to speak for.
+	if blind := EstimateMessagesInputTokens(req.Messages).Tokens; blind != 0 {
+		t.Fatalf("EstimateMessagesInputTokens = %d, want 0 without a provider", blind)
+	}
+}
+
+// The OpenAI-compatible chat adapter replays a thinking part's text on the
+// reasoning field, and merges it into assistant content on a ThinkingAsText
+// row (chatcompletions/messages.go), so a text-only part must be billed here
+// too. Before the provider-aware rule this was zero.
+func TestEstimateInputTokens_OpenAICompatChatReplaysUnsignedThinkingText(t *testing.T) {
+	rawText := strings.Repeat("t", 400)
+	req := Request{
+		Provider: "openai-compatible",
+		Model:    "glm-4.6",
+		Messages: []Message{{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText}},
+		}}},
+	}
+
+	if got, want := EstimateInputTokens(req).Tokens, len(rawText)/4; got != want {
+		t.Fatalf("Tokens = %d, want %d: the OpenAI-compatible chat adapter replays unsigned thinking text", got, want)
+	}
+}
+
+// The fix must not over-count everywhere: the OpenAI Responses adapter keeps
+// raw reasoning text for display only (responses/input.go replays an encrypted
+// blob alone), Google drops thinking parts, and a provider alias the estimator
+// cannot resolve to either replaying adapter is not billed.
+func TestEstimateInputTokens_NonReplayingProvidersDoNotBillUnsignedThinking(t *testing.T) {
+	rawText := strings.Repeat("t", 400)
+	messages := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText}},
+	}}}
+	for _, tc := range []struct{ name, provider, model string }{
+		{name: "openai responses", provider: "openai", model: "gpt-5.2"},
+		{name: "google", provider: "google", model: "gemini-2.5-pro"},
+		{name: "unresolvable provider alias", provider: "work", model: "mystery-model"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := Request{Provider: tc.provider, Model: tc.model, Messages: messages}
+			if got := EstimateInputTokens(req).Tokens; got != 0 {
+				t.Fatalf("Tokens = %d, want 0: %s does not replay unsigned thinking text", got, tc.name)
+			}
+		})
+	}
+}
+
+// Threading the provider must not disturb the arms that already had a count:
+// redacted thinking, signed parts, and encrypted blobs keep the same
+// characters whether the adapter replays unsigned text or not.
+func TestEstimateInputTokens_ProviderAwareRuleLeavesOtherThinkingShapesUnchanged(t *testing.T) {
+	shapes := map[string]ContentPart{
+		"anthropic signature":              {Kind: ContentThinking, Thinking: &ThinkingData{Text: "reasoning", Signature: strings.Repeat("s", 64)}},
+		"compat field name":                {Kind: ContentThinking, Thinking: &ThinkingData{Text: "reasoning", Signature: "reasoning_content"}},
+		"opaque encrypted blob":            {Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: strings.Repeat("b", 64)}},
+		"compat encrypted array with text": {Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: `[{"type":"reasoning.text","text":"","signature":"sig"}]`, Text: strings.Repeat("t", 64)}},
+		"redacted with signature":          {Kind: ContentRedThinking, Thinking: &ThinkingData{Text: strings.Repeat("r", 64), Signature: strings.Repeat("s", 64)}},
+	}
+	for name, part := range shapes {
+		t.Run(name, func(t *testing.T) {
+			messages := []Message{{Role: RoleAssistant, Content: []ContentPart{part}}}
+			replaying := EstimateInputTokens(Request{Provider: "anthropic", Model: "claude-test", Messages: messages}).Tokens
+			nonReplaying := EstimateInputTokens(Request{Provider: "google", Model: "gemini-2.5-pro", Messages: messages}).Tokens
+			if replaying != nonReplaying {
+				t.Fatalf("provider-aware rule changed a metadata-bearing shape: anthropic=%d google=%d", replaying, nonReplaying)
+			}
+			if replaying == 0 {
+				t.Fatalf("metadata-bearing shape estimated 0 tokens, want its replay payload billed")
+			}
+		})
+	}
+}
+
+// The finding behind this rule is oversized-request accounting: an estimate
+// that fits before the thinking text is billed must cross the window once the
+// replayed text is counted.
+func TestEstimateInputTokens_ReplayedThinkingCrossesAnOversizedRequestThreshold(t *testing.T) {
+	const window = 1_000
+	req := Request{
+		Provider: "anthropic",
+		Model:    "claude-test",
+		Messages: []Message{
+			// 3,000 text characters → 750 estimated tokens.
+			{Role: RoleUser, Content: []ContentPart{{Kind: ContentText, Text: strings.Repeat("f", 3_000)}}},
+			// 1,200 replayed thinking characters → 300 more estimated tokens.
+			{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("t", 1_200)}}}},
+		},
+	}
+
+	if got := EstimateInputTokens(req).Tokens; got <= window {
+		t.Fatalf("oversized-request estimate = %d, want > %d once replayed thinking text is billed", got, window)
+	}
+
+	// The same history on an adapter that does not replay unsigned text stays
+	// under the window, so the crossing comes from the replayed text alone.
+	nonReplaying := req
+	nonReplaying.Provider, nonReplaying.Model = "google", "gemini-2.5-pro"
+	if below := EstimateInputTokens(nonReplaying).Tokens; below > window {
+		t.Fatalf("non-replaying estimate = %d, want <= %d", below, window)
+	}
+}
+
 type countAdapter struct {
 	name string
 	got  Request
