@@ -23,6 +23,7 @@ import { createRequire } from "node:module";
 import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { moduleSpecifierSites, parseSource } from "./module-specifiers.mjs";
 import { resolveSourceFile } from "./resolve-source.mjs";
 
 const checkoutRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -119,7 +120,7 @@ function packageModuleOf(resolved, layout) {
 }
 
 function parse(file) {
-  return ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  return parseSource(ts, file, readFileSync(file, "utf8"));
 }
 
 // Names a module exports, by parsing it. Handles the two forms index.ts uses:
@@ -158,64 +159,6 @@ function exportedNames(file, seen = new Set()) {
 // Every module-specifier node in a file that could name the package, with the
 // bindings it brings in. `kind` drives the error messages and the namespace
 // rule: a namespace object cannot come from a root re-export.
-// isStringLiteralLike, not isStringLiteral: a specifier may be written as a
-// no-substitution template literal (import(`./x`), require(`./x`),
-// vi.mock(`./x`)), which is the same string and a different node kind. Both
-// carry .text, and the rewrite replaces the whole node with a quoted string.
-function specifierSites(source) {
-  const sites = [];
-  const visit = (node) => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
-      const clause = node.importClause;
-      const bindings = [];
-      let kind = "side-effect";
-      if (clause) {
-        if (clause.name) {
-          bindings.push("default");
-          kind = "default";
-        }
-        if (clause.namedBindings) {
-          if (ts.isNamespaceImport(clause.namedBindings)) {
-            kind = "namespace";
-          } else {
-            kind = kind === "default" ? "default" : "named";
-            for (const element of clause.namedBindings.elements) {
-              bindings.push((element.propertyName ?? element.name).text);
-            }
-          }
-        }
-      }
-      sites.push({ node: node.moduleSpecifier, kind, bindings });
-    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
-      const bindings = [];
-      let kind = "namespace";
-      if (node.exportClause && ts.isNamedExports(node.exportClause)) {
-        kind = "named";
-        for (const element of node.exportClause.elements) bindings.push((element.propertyName ?? element.name).text);
-      }
-      sites.push({ node: node.moduleSpecifier, kind, bindings });
-    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteralLike(node.argument.literal)) {
-      // `import("../protocol/types.gen").LaunchConfigLayer`
-      const bindings = [];
-      let qualifier = node.qualifier;
-      if (qualifier) {
-        while (ts.isQualifiedName(qualifier)) qualifier = qualifier.left;
-        bindings.push(qualifier.text);
-      }
-      sites.push({ node: node.argument.literal, kind: qualifier ? "named" : "namespace", bindings });
-    } else if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-      const isMock = ts.isPropertyAccessExpression(node.expression) && ["mock", "doMock", "importActual", "importMock", "unmock"].includes(node.expression.name.text);
-      if ((isDynamicImport || isMock) && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])) {
-        sites.push({ node: node.arguments[0], kind: "namespace", bindings: [] });
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return sites;
-}
-
 // Biome sorts named members case-insensitively; match it so the native trees,
 // which no formatter gate reaches, come out looking like the web tree.
 function compareMembers(a, b) {
@@ -279,13 +222,7 @@ function mergedMembers(entries, where, conflicts) {
 // found in the last file leaves the first one unwritten, the same way a
 // refused import does.
 function mergeDuplicateImports(file, text, conflicts) {
-  const source = ts.createSourceFile(
-    file,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
+  const source = parseSource(ts, file, text);
   const groups = new Map();
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
@@ -373,8 +310,8 @@ function main() {
       const original = readFileSync(file, "utf8");
       const source = parse(file);
       const edits = [];
-      for (const site of specifierSites(source)) {
-        const specifier = site.node.text;
+      for (const site of moduleSpecifierSites(ts, source)) {
+        const specifier = site.text;
         if (!specifier.startsWith(".")) continue;
         const resolved = resolveSpecifier(file, specifier);
         if (!resolved) continue;
@@ -382,22 +319,35 @@ function main() {
         if (moduleID === null) continue;
 
         const where = `${path.relative(root, file)}:${source.getLineAndCharacterOfPosition(site.node.getStart(source)).line + 1}`;
+        // A site that names no binding cannot be mapped onto the root: there
+        // is nothing to look up, and `@evener/appwire-client` is a different
+        // module from the one the author wrote. Only the published subpath can
+        // stand in for a whole module.
+        const wholeModule = ["import-namespace", "import-side-effect", "export-star-from", "dynamic-import", "require", "mock-call"].includes(
+          site.kind,
+        );
+        const named = site.bindings.map((binding) => binding.imported);
         let target = null;
         if (moduleID.startsWith("testing/")) {
           target = TESTING_PREFIX + moduleID.slice("testing/".length);
-        } else if (site.kind === "namespace") {
-          // A namespace object has to come from the module itself, and the
-          // package publishes exactly one module besides the root.
-          if (moduleID === "docContent") target = DOC_CONTENT_SUBPATH;
-          else problems.push(`${where}: namespace import of "${moduleID}", which the package does not publish as a subpath`);
-        } else if (site.kind === "default") {
+        } else if (site.kind === "import-default") {
           problems.push(`${where}: default import of "${moduleID}"; the package publishes no default export`);
-        } else if (site.bindings.every((binding) => rootExports.has(binding))) {
+        } else if (site.kind === "import-side-effect") {
+          problems.push(
+            `${where}: side-effect import of "${moduleID}" names no binding, so there is nothing to map onto ${PACKAGE_NAME}`,
+          );
+        } else if (wholeModule) {
+          // A namespace object, a re-export of everything, or a runtime load of
+          // one module: all of them need the module itself, and the package
+          // publishes exactly one besides the root.
+          if (moduleID === "docContent") target = DOC_CONTENT_SUBPATH;
+          else problems.push(`${where}: ${site.kind} of "${moduleID}", which the package does not publish as a subpath`);
+        } else if (named.every((binding) => rootExports.has(binding))) {
           target = PACKAGE_NAME;
-        } else if (moduleID === "docContent" && site.bindings.every((binding) => docContentExports.has(binding))) {
+        } else if (moduleID === "docContent" && named.every((binding) => docContentExports.has(binding))) {
           target = DOC_CONTENT_SUBPATH;
         } else {
-          const missing = site.bindings.filter((binding) => !rootExports.has(binding));
+          const missing = named.filter((binding) => !rootExports.has(binding));
           problems.push(`${where}: "${moduleID}" exports ${missing.join(", ")}, which ${PACKAGE_NAME} does not publish`);
         }
         if (target === null) continue;

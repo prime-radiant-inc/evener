@@ -22,34 +22,16 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { isRuntimeSite, moduleSpecifierSites, parseSource } from "../../scripts/sdk/module-specifiers.mjs";
 
 const self = fileURLToPath(import.meta.url);
 const scriptsDir = path.dirname(self);
 const repoRoot = path.resolve(scriptsDir, "..", "..");
 
 function runtimeSpecifiers(file: string): string[] {
-	const source = ts.createSourceFile(
-		file,
-		readFileSync(file, "utf8"),
-		ts.ScriptTarget.Latest,
-		true,
-		file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-	);
-	const found: string[] = [];
-	for (const statement of source.statements) {
-		if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
-			if (statement.importClause?.isTypeOnly) continue;
-			found.push(statement.moduleSpecifier.text);
-		} else if (
-			ts.isExportDeclaration(statement) &&
-			statement.moduleSpecifier &&
-			ts.isStringLiteral(statement.moduleSpecifier)
-		) {
-			if (statement.isTypeOnly) continue;
-			found.push(statement.moduleSpecifier.text);
-		}
-	}
-	return found;
+	return moduleSpecifierSites(ts, parseSource(ts, file, readFileSync(file, "utf8")))
+		.filter(isRuntimeSite)
+		.map((site) => site.text);
 }
 
 const walked = new Set<string>();

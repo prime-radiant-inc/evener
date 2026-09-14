@@ -178,3 +178,46 @@ test("a backtick specifier is rewritten like a quoted one", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a side-effect import of the package is refused, not mapped onto the root", () => {
+  // There is no binding to look up, and @evener/appwire-client is a different
+  // module from the one the author wrote.
+  const before = 'import "../../appwire-client/typescript/errors";\n';
+  const root = fixture({ "mobile/src/state.ts": before });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 2);
+    assert.match(run.output, /side-effect import of "errors"/);
+    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a namespace import of a module the package does not publish is refused", () => {
+  const before = 'import * as errors from "../../appwire-client/typescript/errors";\nvoid errors;\n';
+  const root = fixture({ "mobile/src/state.ts": before });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 2);
+    assert.match(run.output, /import-namespace of "errors"/);
+    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a namespace import of the one published subpath is rewritten", () => {
+  const root = fixture({
+    "mobile/src/state.ts": 'import * as doc from "../../appwire-client/typescript/docContent";\nvoid doc;\n',
+  });
+  try {
+    assert.equal(rewrite(root).status, 0);
+    assert.match(
+      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
+      /from "@evener\/appwire-client\/docContent"/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

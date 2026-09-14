@@ -44,16 +44,17 @@ done
 cd "$root" || { printf 'package-import-paths-check.sh: cannot enter %s\n' "$root" >&2; exit 2; }
 
 trees=(cmd/evener-hub/frontend/src mobile-native mobile/src)
-# The resolver configs are excluded by name, and only they: mapping the package
-# name onto its path is exactly what a resolver config is for, so a path there
-# is the fix rather than the defect. Named rather than matched as *.config.*,
-# which would also excuse any app module someone happened to call
-# something.config.ts. Only mobile-native/vitest.config.mts is inside these
-# trees today; the frontend's vite and browser-guard configs sit beside src/,
-# not in it, and are not swept at all.
+# The resolver configs are excluded by exact filename, and only they: mapping
+# the package name onto its path is what a resolver config is for, so a path
+# there is the fix rather than the defect. Exact names rather than a glob --
+# `vitest.config.*` also excused a vitest.config.extra.ts that is not a
+# resolver config at all. These are the files as they exist; a new resolver
+# config has to be added here, which is the point.
+# Only mobile-native/vitest.config.mts is inside the swept trees today; the
+# frontend's vite and browser-guard configs sit beside src/, not in it.
 sources=(
 	--include='*.ts' --include='*.tsx' --include='*.mts'
-	--exclude='vite.config.*' --exclude='vitest.config.*' --exclude='metro.config.*'
+	--exclude='vite.config.ts' --exclude='vitest.config.mts' --exclude='metro.config.js'
 	--exclude-dir=node_modules
 )
 

@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -237,5 +238,71 @@ func TestPackageImportPathsCheckExemptsResolverConfigsByName(t *testing.T) {
 	}
 	if !strings.Contains(output, "launch.config.ts") {
 		t.Fatalf("the gate named no offending file; wanted launch.config.ts in:\n%s", output)
+	}
+}
+
+// specifierForm is one way a source file can name a module, as
+// scripts/sdk/module-specifier-forms.json spells it. The AST reader's own
+// tests walk the same file.
+type specifierForm struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Source string `json:"source"`
+}
+
+func loadSpecifierForms(t *testing.T) []specifierForm {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(wd, "scripts", "sdk", "module-specifier-forms.json"))
+	if err != nil {
+		t.Fatalf("reading the shared form list: %v", err)
+	}
+	var forms []specifierForm
+	if err := json.Unmarshal(raw, &forms); err != nil {
+		t.Fatalf("parsing the shared form list: %v", err)
+	}
+	if len(forms) == 0 {
+		t.Fatal("the shared form list is empty; this audit would be measuring nothing")
+	}
+	return forms
+}
+
+// The gate is a grep and the rewriter is a TypeScript AST reader, so they
+// answer the same question in two languages and drifted apart form by form --
+// a backtick specifier, a vi.mock, a specifier on the line after its call.
+// They read one list of forms now, and this is the half that holds the grep to
+// it: every form the AST reader recognizes must also be a form the gate
+// catches, or a path import can be rewritten-but-unguarded again.
+func TestPackageImportPathsCheckCatchesEveryFormTheReaderKnows(t *testing.T) {
+	for _, form := range loadSpecifierForms(t) {
+		t.Run(form.Name, func(t *testing.T) {
+			files := cleanPackageImportTree()
+			files["mobile/src/probe.ts"] = strings.ReplaceAll(form.Source, "@@SPEC@@", "../../appwire-client/typescript/errors")
+			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+			if passed {
+				t.Fatalf("the gate passed a %s naming the package by path:\n%s", form.Name, form.Source)
+			}
+			if !strings.Contains(output, "mobile/src/probe.ts") {
+				t.Fatalf("the gate named no offending file:\n%s", output)
+			}
+		})
+	}
+}
+
+// The resolver-config exemption is by exact filename: a glob over
+// vitest.config.* also excused a vitest.config.extra.ts, which is not one.
+func TestPackageImportPathsCheckExemptsOnlyTheResolverConfigsThatExist(t *testing.T) {
+	files := cleanPackageImportTree()
+	files["mobile-native/vitest.config.extra.ts"] =
+		"const shared = new URL(\"../appwire-client/typescript/index.ts\", import.meta.url);\n"
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if passed {
+		t.Fatalf("the gate excused a file for being named like a resolver config:\n%s", output)
+	}
+	if !strings.Contains(output, "vitest.config.extra.ts") {
+		t.Fatalf("the gate named no offending file:\n%s", output)
 	}
 }

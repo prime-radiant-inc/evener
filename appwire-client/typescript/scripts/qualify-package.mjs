@@ -609,7 +609,7 @@ function runConsumerResolveCheck() {
   // statements, in either quote style, with the type-only members split off,
   // and a regex that reads only the first clause would quietly check half a
   // list. packageValuesIn is the same reader the consumer scan uses.
-  const declared = packageValuesIn(parse(fixturePath, readFileSync(fixturePath, "utf8")));
+  const declared = packageValuesIn(parse(fixturePath, readFileSync(fixturePath, "utf8")), fixture, []);
   const imported = consumerValueImports(resolve(packageDir, "..", ".."));
   for (const specifier of PACKAGE_SPECIFIERS) {
     const names = [...declared.get(specifier)].sort();

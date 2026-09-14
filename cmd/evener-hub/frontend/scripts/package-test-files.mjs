@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
+import { moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
 import { resolveSourceFile } from "../../../../scripts/sdk/resolve-source.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
@@ -128,29 +129,11 @@ export function aliasKeysFrom(configText) {
   return keys;
 }
 
+// Every module this file names, by any form: a vi.mock or a require reaches a
+// dependency exactly as an import does, and an alias it needs is needed just
+// as much.
 function moduleSpecifiersIn(file, text) {
-  const source = ts.createSourceFile(
-    file,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-  const found = [];
-  const visit = (node) => {
-    let literal = null;
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
-      literal = node.moduleSpecifier;
-    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
-      literal = node.argument.literal;
-    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      literal = node.arguments[0] ?? null;
-    }
-    if (literal && ts.isStringLiteralLike(literal)) found.push(literal.text);
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return found;
+  return moduleSpecifierSites(ts, parseSource(ts, file, text)).map((site) => site.text);
 }
 
 // The package's own files are TypeScript, plus the .mjs tooling its tests

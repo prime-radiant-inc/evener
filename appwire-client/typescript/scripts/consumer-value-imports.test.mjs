@@ -9,7 +9,13 @@ const ROOT = "@evener/appwire-client";
 const DOC_CONTENT = "@evener/appwire-client/docContent";
 
 function valuesIn(source) {
-  return packageValuesIn(parse("fixture.ts", source));
+  return packageValuesIn(parse("fixture.ts", source), "fixture.ts", []);
+}
+
+function problemsFor(source) {
+  const problems = [];
+  packageValuesIn(parse("fixture.ts", source), "fixture.ts", problems);
+  return problems;
 }
 
 test("collects every statement naming one specifier, not just the first", () => {
@@ -66,4 +72,17 @@ test("specifiers this package does not publish are not collected", () => {
   );
   expect([...found.get(ROOT)]).toEqual([]);
   expect([...found.get(DOC_CONTENT)]).toEqual([]);
+});
+
+test("a namespace or default import of the package is reported, not skipped", () => {
+  // This derivation says what the tarball must provide. It cannot answer that
+  // for a module taken whole, and answering nothing looked identical to a file
+  // that imports nothing.
+  expect(problemsFor(`import * as everything from "${ROOT}";\nvoid everything;\n`)).toEqual([
+    "fixture.ts: import-namespace of @evener/appwire-client names no binding this check can account for",
+  ]);
+  expect(problemsFor(`import theDefault from "${ROOT}";\nvoid theDefault;\n`)).toEqual([
+    "fixture.ts: import-default of @evener/appwire-client names no binding this check can account for",
+  ]);
+  expect(problemsFor(`import { errorText } from "${ROOT}";\nvoid errorText;\n`)).toEqual([]);
 });

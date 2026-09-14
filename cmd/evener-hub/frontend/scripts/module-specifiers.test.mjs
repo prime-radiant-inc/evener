@@ -1,0 +1,84 @@
+// The shared module-specifier reader, one case per form it claims to read.
+//
+// The form list is a checked-in file, not a literal here, because the grep
+// gate's audit test builds its fixtures from the same list: the two readers
+// answer the same question in different languages, and this is what stops them
+// drifting apart form by form, which is how they drifted in the first place.
+//
+// It lives under the frontend's scripts/ for the reason the rewriter's test
+// does: this is the only runner in the repo with the node_modules these tools
+// parse with.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
+import { isRuntimeSite, moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
+
+const sdkDir = path.resolve(fileURLToPath(import.meta.url), "../../../../../scripts/sdk");
+const forms = JSON.parse(readFileSync(path.join(sdkDir, "module-specifier-forms.json"), "utf8"));
+
+const SPECIFIER = "../../appwire-client/typescript/errors";
+
+function sitesFor(source) {
+  return moduleSpecifierSites(ts, parseSource(ts, "fixture.ts", source));
+}
+
+test("the form list is not empty and every entry is complete", () => {
+  assert.ok(forms.length > 0);
+  for (const form of forms) {
+    assert.ok(form.name && form.kind && form.source.includes("@@SPEC@@"), `incomplete form: ${form.name}`);
+  }
+});
+
+for (const form of forms) {
+  test(`reads ${form.name} as ${form.kind}`, () => {
+    const sites = sitesFor(form.source.replaceAll("@@SPEC@@", SPECIFIER));
+    assert.equal(sites.length, 1, `expected exactly one site, got ${sites.map((site) => site.kind).join(", ")}`);
+    assert.equal(sites[0].kind, form.kind);
+    assert.equal(sites[0].text, SPECIFIER);
+  });
+}
+
+test("named members carry their imported name, local name and type-only flag", () => {
+  const [site] = sitesFor(`import { a, b as c, type d } from "${SPECIFIER}";\nvoid a;\nvoid c;\n`);
+  assert.deepEqual(site.bindings, [
+    { imported: "a", local: "a", typeOnly: false },
+    { imported: "b", local: "c", typeOnly: false },
+    { imported: "d", local: "d", typeOnly: true },
+  ]);
+});
+
+test("a default import with named members beside it is reported as the default", () => {
+  const [site] = sitesFor(`import theDefault, { errorText } from "${SPECIFIER}";\nvoid theDefault;\nvoid errorText;\n`);
+  assert.equal(site.kind, "import-default");
+  assert.deepEqual(
+    site.bindings.map((binding) => binding.imported),
+    ["errorText"],
+  );
+});
+
+test("a statement-level type-only import is marked erased", () => {
+  const [typed] = sitesFor(`import type { WireError } from "${SPECIFIER}";\nexport type A = WireError;\n`);
+  assert.equal(typed.typeOnly, true);
+  assert.equal(isRuntimeSite(typed), false);
+  const [value] = sitesFor(`import { errorText } from "${SPECIFIER}";\nvoid errorText;\n`);
+  assert.equal(isRuntimeSite(value), true);
+});
+
+test("a star re-export names no value the package has to provide", () => {
+  const [site] = sitesFor(`export * from "${SPECIFIER}";\n`);
+  assert.equal(isRuntimeSite(site), false);
+});
+
+test("a call that is not an import, a require or a mock is not a specifier site", () => {
+  assert.deepEqual(sitesFor(`describe("${SPECIFIER}", () => {});\n`), []);
+  assert.deepEqual(sitesFor(`expect(x).toThrow("${SPECIFIER}");\n`), []);
+});
+
+test("every site points at the literal node, so a caller can rewrite it in place", () => {
+  const source = `import { errorText } from "${SPECIFIER}";\nvoid errorText;\n`;
+  const [site] = sitesFor(source);
+  assert.equal(source.slice(site.node.getStart(site.node.getSourceFile()), site.node.getEnd()), `"${SPECIFIER}"`);
+});
