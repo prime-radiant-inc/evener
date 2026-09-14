@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -263,29 +264,34 @@ func TestProjectStableActivityDelegate_ChildUnavailable(t *testing.T) {
 	}
 }
 
+// TestProjectStableActivityDelegate_DepthTruncated asserts the shape the
+// depth bound reports: truncated, no continuation, and a diagnostic naming the
+// session to request. A token here would name that child as a fresh root at
+// position 0 — the page a direct request returns — while claiming generations
+// this page never loaded the child's journals to read.
 func TestProjectStableActivityDelegate_DepthTruncated(t *testing.T) {
 	t.Parallel()
 	row := stableActivitySnapshot("dlg_1", "root", "child", "inspect")
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", RootID: "root",
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
-		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
+		// Nothing under the bound is loaded, so there is no child entry.
+		Children: map[string]*activitySessionSnapshot{},
 	}
 	budget := newBoundedActivityBudget("root", time.Unix(1, 0).UTC(), 0)
-	// maxDepth is 32; set depth to 32 so the child is truncated. The path must
-	// not contain the delegate id yet: appendActivityPath adds row.id inside
-	// the projection, and decodeActivityContinuation rejects duplicate hops.
+	// maxDepth is 32; depth 32 is the bound.
 	delegate := projectStableActivityDelegate(snap, row, budget, 32, nil, 0)
-	if !delegate.Branch.Truncated || delegate.Branch.Continuation == "" {
-		t.Fatalf("expected truncation, got %+v", delegate.Branch)
+	if !delegate.Branch.Truncated {
+		t.Fatalf("expected a truncated branch, got %+v", delegate.Branch)
 	}
-	// The continuation should be decodable for the right root.
-	cont, err := decodeActivityContinuation(delegate.Branch.Continuation, "root")
-	if err != nil {
-		t.Fatalf("continuation decode: %v", err)
+	if delegate.Branch.Continuation != "" {
+		t.Fatalf("branch offers a continuation (%q); the bound reports the session to request instead", delegate.Branch.Continuation)
 	}
-	if cont.SessionID != "child" {
-		t.Errorf("continuation session = %q, want child", cont.SessionID)
+	if delegate.Branch.Error != "" {
+		t.Fatalf("branch error = %q, want none: the bound is not a failure", delegate.Branch.Error)
+	}
+	if len(delegate.Diagnostics) != 1 || !strings.Contains(delegate.Diagnostics[0], `"child"`) {
+		t.Fatalf("diagnostics = %q, want one naming the child session to request", delegate.Diagnostics)
 	}
 }
 
@@ -441,7 +447,7 @@ func TestTrimActivityTreeToFit(t *testing.T) {
 			Entries: []appwire.JobActivityEntry{{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})}},
 		},
 	}
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	got, err := trimActivityTreeToFit(tree, "root", nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +478,7 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 			Entries: entries,
 		},
 	}
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	got, err := trimActivityTreeToFit(tree, "root", nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +512,7 @@ func TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries(t *testing.T)
 	}}
 	shape.Root.Branch.Truncated = true
 	shape.Root.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version: activityContinuationV1, RootID: "root", SessionID: "root",
+		Version: activityContinuationVersion, RootID: "root", SessionID: "root",
 	})
 	recomputeActivitySession(&shape.Root)
 	entryless, err := json.Marshal(shape)
@@ -522,7 +528,7 @@ func TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries(t *testing.T)
 		})}},
 	}}
 
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	got, err := trimActivityTreeToFit(tree, "root", nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +571,7 @@ func TestTrimActivityTreeToFit_EnvelopeTooLargeLeavesConsistentCounts(t *testing
 		Entries: []appwire.JobActivityEntry{},
 	}}
 
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	got, err := trimActivityTreeToFit(tree, "root", nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +604,7 @@ func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
 	}}
 	shape.Root.Branch.Truncated = true
 	shape.Root.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version: activityContinuationV1, RootID: "root", SessionID: "root",
+		Version: activityContinuationVersion, RootID: "root", SessionID: "root",
 	})
 	recomputeActivitySession(&shape.Root)
 	entryless, err := json.Marshal(shape)
@@ -615,7 +621,7 @@ func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
 		})}},
 	}}
 
-	got, err := trimActivityTreeToFit(tree, "root", 0, nil, 0, activityTrimResume{})
+	got, err := trimActivityTreeToFit(tree, "root", nil, 0, activityTrimResume{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,10 +649,10 @@ func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
 func TestTrimActivityTrailingEntry_EmptyReturnsFalse(t *testing.T) {
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}
-	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}); ok {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, nil, 0, activityTrimResume{}); ok {
 		t.Error("empty entries should return false")
 	}
-	if _, ok := trimActivityTrailingEntry(nil, "root", nil, 0, nil, 0, activityTrimResume{}); ok {
+	if _, ok := trimActivityTrailingEntry(nil, "root", nil, nil, 0, activityTrimResume{}); ok {
 		t.Error("nil session should return false")
 	}
 }
@@ -665,7 +671,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
 		},
 	}
-	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, activityTrimResume{}); !ok {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, nil, 0, activityTrimResume{}); !ok {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	// The recursive call trims the child's entry and returns true; the
@@ -688,7 +694,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 // trimActivityTrailingEntry mints a continuation carrying the trimmed
 // session's own JobsEpoch/DelegatesEpoch from the projection snapshot,
 // rather than the zero value: omitting them would weaken the staleness
-// check a resumed continuation relies on. The per-session jobsEpochs map
+// check a resumed continuation relies on. The per-session epochs map
 // lets a nested session (whose own JobsEpoch differs from its
 // ancestors') get ITS OWN epoch embedded, not an ancestor's.
 func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
@@ -705,8 +711,11 @@ func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
 		},
 	}
-	jobsEpochs := map[string]uint64{"root": 7, "child": 42}
-	if _, ok := trimActivityTrailingEntry(session, "root", nil, 9, jobsEpochs, 17, activityTrimResume{}); !ok {
+	epochs := map[string]activitySessionEpochs{
+		"root":  {jobs: 7, delegates: 9},
+		"child": {jobs: 42, delegates: 9},
+	}
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, epochs, 17, activityTrimResume{}); !ok {
 		t.Fatal("expected trailing entry to be trimmed")
 	}
 	if child.Branch.Continuation == "" {
@@ -727,36 +736,6 @@ func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 	}
 }
 
-// TestMarkActivityDelegateTruncated_EmbedsEpochsInContinuation asserts
-// markActivityDelegateTruncated mints a continuation carrying the
-// truncated delegate's own JobsEpoch and the shared root's
-// DelegatesEpoch (not the zero value), plus the root's live-clock
-// Revision (budget.revision): all three let a resumed continuation's
-// staleness check detect a rewrite or live mutation that raced the
-// truncation.
-func TestMarkActivityDelegateTruncated_EmbedsEpochsInContinuation(t *testing.T) {
-	t.Parallel()
-	delegate := &appwire.JobActivityDelegate{DelegateID: "dlg_1"}
-	budget := newBoundedActivityBudget("root", time.Unix(1, 0).UTC(), 17)
-	markActivityDelegateTruncated(delegate, budget, "child", []string{"dlg_1"}, 42, 9)
-	if delegate.Branch.Continuation == "" {
-		t.Fatal("expected a continuation token")
-	}
-	cont, err := decodeActivityContinuation(delegate.Branch.Continuation, "root")
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if cont.JobsEpoch != 42 {
-		t.Fatalf("JobsEpoch = %d, want 42", cont.JobsEpoch)
-	}
-	if cont.DelegatesEpoch != 9 {
-		t.Fatalf("DelegatesEpoch = %d, want 9", cont.DelegatesEpoch)
-	}
-	if cont.Revision != 17 {
-		t.Fatalf("Revision = %d, want 17 (the budget's live-clock revision at mint time)", cont.Revision)
-	}
-}
-
 // TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation asserts
 // markActivitySessionTruncated mints a continuation carrying the root's
 // live-clock Revision (budget.revision) -- the value a live resume's
@@ -766,7 +745,7 @@ func TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation(t *testing.T)
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}
 	budget := newBoundedActivityBudget("root", time.Unix(1, 0).UTC(), 17)
-	markActivitySessionTruncated(session, budget, "root", nil, 3, 42, 9)
+	markActivitySessionTruncated(session, budget, "root", nil, 3, activitySessionEpochs{jobs: 42, delegates: 9})
 	if session.Branch.Continuation == "" {
 		t.Fatal("expected a continuation token")
 	}
@@ -806,7 +785,7 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	// The page resumed the child, one hop down, at its sixth entry: j1 and
 	// j2 are the child's entries 5 and 6.
 	resume := activityTrimResume{depth: 1, index: 5}
-	if _, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume); !ok {
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, nil, 0, resume); !ok {
 		t.Fatal("expected the child's trailing entry to be trimmed")
 	}
 	cont, err := decodeActivityContinuation(child.Branch.Continuation, "root")
@@ -821,7 +800,7 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	// page's own target, so the caller may find it unrepresentable and skip
 	// it: that skip lands past the entry's own position, not past this
 	// page's index 0.
-	lastChildEntry, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume)
+	lastChildEntry, ok := trimActivityTrailingEntry(session, "root", nil, nil, 0, resume)
 	if !ok {
 		t.Fatal("expected the child's remaining entry to be trimmed")
 	}
@@ -830,7 +809,7 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	}
 	// The production skip: advance to the entry's own position + 1, then name
 	// it if the page can carry the sentence — which this tiny tree can.
-	mintActivityTrimContinuation(lastChildEntry, "root", lastChildEntry.index+1, 0, nil, 0)
+	mintActivityTrimContinuation(lastChildEntry, "root", lastChildEntry.index+1, nil, 0)
 	skipTree := appwire.JobActivityTree{Root: *session}
 	if err := explainActivitySkippedEntry(&skipTree, lastChildEntry); err != nil {
 		t.Fatalf("explain the skipped entry: %v", err)
@@ -849,7 +828,7 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	// Now the root's own delegate entry: the root is not the session the
 	// page resumed, so its mint carries no offset, and its drop is never
 	// offered for a skip.
-	rootEntry, ok := trimActivityTrailingEntry(session, "root", nil, 0, nil, 0, resume)
+	rootEntry, ok := trimActivityTrailingEntry(session, "root", nil, nil, 0, resume)
 	if !ok {
 		t.Fatal("expected the root's delegate entry to be trimmed")
 	}
@@ -868,34 +847,75 @@ func TestTrimActivityTrailingEntry_MintsResumedSessionsOwnIndex(t *testing.T) {
 	}
 }
 
-// TestCollectActivityJobsEpochs covers the helper trimActivityTrailingEntry
-// relies on to look up a session's own JobsEpoch after projection has
+// TestCollectActivitySessionEpochs covers the helper trimActivityTrailingEntry
+// relies on to look up a session's own generations after projection has
 // already flattened the internal snapshot tree to its wire shape (which
-// carries no epoch information of its own): each session in the tree,
-// nested arbitrarily deep, must map to its OWN JobsEpoch, not an
-// ancestor's.
-func TestCollectActivityJobsEpochs(t *testing.T) {
+// carries none of its own): each session in the tree, nested arbitrarily
+// deep, must map to ITS OWN pair, not an ancestor's. A live root sits above
+// closed children with real generations, which is exactly when taking the
+// root's would mint zeros for a token the resume checks against the child's.
+func TestCollectActivitySessionEpochs(t *testing.T) {
 	t.Parallel()
-	grandchild := &activitySessionSnapshot{SessionID: "grandchild", JobsEpoch: 100}
+	grandchild := &activitySessionSnapshot{SessionID: "grandchild", JobsEpoch: 100, DelegatesEpoch: 3}
 	child := &activitySessionSnapshot{
-		SessionID: "child", JobsEpoch: 42,
+		SessionID: "child", JobsEpoch: 42, DelegatesEpoch: 9,
 		Children: map[string]*activitySessionSnapshot{"grandchild": grandchild},
 	}
 	root := activitySessionSnapshot{
 		SessionID: "root", JobsEpoch: 7,
 		Children: map[string]*activitySessionSnapshot{"child": child},
 	}
-	got := collectActivityJobsEpochs(root)
-	want := map[string]uint64{"root": 7, "child": 42, "grandchild": 100}
+	got := collectActivitySessionEpochs(root)
+	want := map[string]activitySessionEpochs{
+		"root":       {jobs: 7},
+		"child":      {jobs: 42, delegates: 9},
+		"grandchild": {jobs: 100, delegates: 3},
+	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("collectActivityJobsEpochs = %+v, want %+v", got, want)
+		t.Fatalf("collectActivitySessionEpochs = %+v, want %+v", got, want)
+	}
+}
+
+// TestTrimActivityTrailingEntry_MintsTheTrimmedSessionsOwnDelegatesEpoch pins
+// the half of that rule a live root depends on: the delegates generation a
+// mint carries is the trimmed session's own, not the page root's. A live
+// root's own is 0 while a closed child under it folds a real one, so taking
+// the root's would mint a zero the resume then compares against the child's.
+func TestTrimActivityTrailingEntry_MintsTheTrimmedSessionsOwnDelegatesEpoch(t *testing.T) {
+	t.Parallel()
+	child := &appwire.JobActivitySession{
+		SessionID: "child",
+		Entries: []appwire.JobActivityEntry{
+			{Kind: "shell", Job: new(appwire.JobActivityJob{JobID: "j1"})},
+		},
+	}
+	session := &appwire.JobActivitySession{
+		SessionID: "root",
+		Entries: []appwire.JobActivityEntry{
+			{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{DelegateID: "dlg_1", Child: child}},
+		},
+	}
+	// A live root: no generations of its own, above a child that has both.
+	epochs := map[string]activitySessionEpochs{
+		"root":  {},
+		"child": {jobs: 42, delegates: 9},
+	}
+	if _, ok := trimActivityTrailingEntry(session, "root", nil, epochs, 0, activityTrimResume{}); !ok {
+		t.Fatal("expected the child's trailing entry to be trimmed")
+	}
+	cont, err := decodeActivityContinuation(child.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cont.JobsEpoch != 42 || cont.DelegatesEpoch != 9 {
+		t.Fatalf("continuation generations = (%d, %d), want (42, 9) -- the child's own, not the live root's zeros", cont.JobsEpoch, cont.DelegatesEpoch)
 	}
 }
 
 func TestEncodeActivityContinuation(t *testing.T) {
 	t.Parallel()
 	// A valid continuation round-trips.
-	cont := activityContinuation{Version: activityContinuationV1, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}}
+	cont := activityContinuation{Version: activityContinuationVersion, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}}
 	encoded := encodeActivityContinuation(cont)
 	if encoded == "" {
 		t.Fatal("encoded continuation is empty")
@@ -920,22 +940,22 @@ func TestDecodeActivityContinuation_Malformed(t *testing.T) {
 		t.Fatal("whitespace token should error")
 	}
 	// Missing root or session.
-	bad := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "", SessionID: ""})
+	bad := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "", SessionID: ""})
 	if _, err := decodeActivityContinuation(bad, ""); err == nil {
 		t.Fatal("missing root/session should error")
 	}
 	// Invalid root token.
-	badRoot := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "bad root!", SessionID: "root"})
+	badRoot := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "bad root!", SessionID: "root"})
 	if _, err := decodeActivityContinuation(badRoot, ""); err == nil {
 		t.Fatal("invalid root token should error")
 	}
 	// Invalid session token.
-	badSession := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "bad session!"})
+	badSession := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "root", SessionID: "bad session!"})
 	if _, err := decodeActivityContinuation(badSession, ""); err == nil {
 		t.Fatal("invalid session token should error")
 	}
 	// Invalid path hop.
-	badHop := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "root", Path: []string{"bad hop!"}})
+	badHop := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "root", SessionID: "root", Path: []string{"bad hop!"}})
 	if _, err := decodeActivityContinuation(badHop, "root"); err == nil {
 		t.Fatal("invalid path hop should error")
 	}
@@ -1160,7 +1180,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 		t.Fatal("expected a top-level live session to have a jobActivityClock")
 	}
 	cont := activityContinuation{
-		Version:   activityContinuationV1,
+		Version:   activityContinuationVersion,
 		RootID:    s.ID(),
 		SessionID: s.ID(),
 		Revision:  activityCurrentRootRevision(s.jobActivityClock),
@@ -1184,13 +1204,40 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 	// Sanity check the positive case: a continuation minted against the
 	// CURRENT revision is accepted.
 	fresh := activityContinuation{
-		Version:   activityContinuationV1,
+		Version:   activityContinuationVersion,
 		RootID:    s.ID(),
 		SessionID: s.ID(),
 		Revision:  activityCurrentRootRevision(s.jobActivityClock),
 	}
 	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: encodeActivityContinuation(fresh)}); err != nil {
 		t.Fatalf("continuation minted against the current revision was rejected: %v", err)
+	}
+}
+
+// bumpFoldGeneration moves the fold cache's generation for path without
+// changing a byte of what the journal says: the file is taken away, the given
+// read observes it gone — which is what moves the generation — and the same
+// content is written back.
+//
+// A restamped mtime would move it too, and for the wrong reason. Same length
+// with a moved mtime is the cache's ambiguous case, and the probe cannot
+// settle it: the recorded trailing bytes survive a restamp exactly as they
+// survive a rewrite that happens to end the same way, so the cache takes a
+// second stat, sees the length unchanged, and calls it a rewrite. A fixture
+// built on that would be staging the cache's answer to an ambiguity rather
+// than the deletion it means to stage.
+func bumpFoldGeneration(t *testing.T, path string, observe func()) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove %s: %v", path, err)
+	}
+	observe()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("restore %s: %v", path, err)
 	}
 }
 
@@ -1239,10 +1286,11 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
 		t.Fatalf("warm the fold caches: %v", err)
 	}
-	rewritten := time.Unix(1_000_000, 0)
-	if err := os.Chtimes(filepath.Join(jobsDir(stateDir, s.ID()), "delegates.jsonl"), rewritten, rewritten); err != nil {
-		t.Fatalf("restamp the delegate journal: %v", err)
-	}
+	bumpFoldGeneration(t, filepath.Join(jobsDir(stateDir, s.ID()), "delegates.jsonl"), func() {
+		if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+			t.Fatalf("observe the delegate journal gone: %v", err)
+		}
+	})
 	childBase, err := loadHistoricalActivityBase(stateDir, childID, true, newHistoricalActivityCache(context.Background(), s.ID()))
 	if err != nil {
 		t.Fatalf("load the child historically: %v", err)
@@ -1251,19 +1299,92 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 		t.Fatal("fixture did not move the delegate journal's generation; the mismatch under test cannot occur")
 	}
 
-	// What a size trim on the live root's page mints for the child: the
-	// child's own jobs generation, the live root's (zero) delegate
-	// generation, and the live revision.
+	// What a page under this live root mints for the child: the child's own
+	// generations — the session the token targets is the one whose journals
+	// a resume folds — and the live revision.
 	token := encodeActivityContinuation(activityContinuation{
-		Version:   activityContinuationV1,
-		RootID:    s.ID(),
-		SessionID: childID,
-		Path:      []string{delegateID},
-		JobsEpoch: childBase.snapshot.JobsEpoch,
-		Revision:  activityCurrentRootRevision(s.jobActivityClock),
+		Version:        activityContinuationVersion,
+		RootID:         s.ID(),
+		SessionID:      childID,
+		Path:           []string{delegateID},
+		JobsEpoch:      childBase.snapshot.JobsEpoch,
+		DelegatesEpoch: childBase.snapshot.DelegatesEpoch,
+		Revision:       activityCurrentRootRevision(s.jobActivityClock),
 	})
 	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err != nil {
-		t.Fatalf("live root's own continuation into its closed child was rejected: %v", err)
+		t.Fatalf("live root's own continuation into its untouched closed child was rejected: %v", err)
+	}
+}
+
+// TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritten
+// is the other half: a closed child's journal rewritten between mint and
+// resume has to be caught. The live root's revision cannot see it — that clock
+// moves for what the daemon does under this root, not for a file rewritten
+// out of band — so the generations the token carries are the only evidence,
+// and they are the target's own.
+func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritten(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	const delegateID = "dlg_rewritten_child"
+	const childID = "childrewritten"
+	descriptor := stableReadonlyDescriptor(s, delegateID)
+	descriptor.ChildSessionID = childID
+	descriptor.TranscriptRef = encodeRef("", childID)
+	started := time.Unix(40, 0).UTC()
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:                  "complete",
+		communicated:            true,
+		structuredResultPresent: true,
+		descriptor:              descriptor,
+		startedAt:               started,
+		latestActivityAt:        started.Add(time.Second),
+		endedAt:                 started.Add(2 * time.Second),
+	})
+	seedStableReadonlyFinish(t, s, delegateID, descriptor, started, finish, true)
+	childStarted := time.Unix(50, 0).UTC()
+	childJobsPath := s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: childStarted, JobID: "job_child",
+		Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID,
+		StartedAt: &childStarted, Description: "child shell",
+	})
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", s.ID(), 0)
+
+	if _, err := s.JobActivityTree(appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm the fold caches: %v", err)
+	}
+	childBase, err := loadHistoricalActivityBase(stateDir, childID, true, newHistoricalActivityCache(context.Background(), s.ID()))
+	if err != nil {
+		t.Fatalf("load the child historically: %v", err)
+	}
+	token := encodeActivityContinuation(activityContinuation{
+		Version:        activityContinuationVersion,
+		RootID:         s.ID(),
+		SessionID:      childID,
+		Path:           []string{delegateID},
+		JobsEpoch:      childBase.snapshot.JobsEpoch,
+		DelegatesEpoch: childBase.snapshot.DelegatesEpoch,
+		Revision:       activityCurrentRootRevision(s.jobActivityClock),
+	})
+
+	// The child's journal is replaced — the case a ResumeIndex is unsafe to
+	// apply across, and the one the root's clock never sees.
+	bumpFoldGeneration(t, childJobsPath, func() {
+		// Straight at the fold cache: a session load stats a jobs journal and
+		// skips it when it is missing, so only this read observes the absence
+		// that moves the generation.
+		if _, err := historicalJobFoldCache.Get(context.Background(), childJobsPath, extendHistoricalJobFold); err != nil {
+			t.Fatalf("observe the child journal gone: %v", err)
+		}
+	})
+
+	if _, err := s.JobActivityTree(appwire.JobsListParams{Continuation: token}); err == nil {
+		t.Fatal("resumed into a closed child whose journal was rewritten; want the continuation refused")
+	} else if !strings.Contains(err.Error(), "underlying journal changed") {
+		t.Fatalf("error = %v, want a journal-changed staleness error", err)
 	}
 }
 
@@ -1310,7 +1431,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 		t.Fatalf("first page entries = %d, want 1", len(page.Root.Entries))
 	}
 	token := encodeActivityContinuation(activityContinuation{
-		Version:     activityContinuationV1,
+		Version:     activityContinuationVersion,
 		RootID:      s.ID(),
 		SessionID:   s.ID(),
 		ResumeIndex: 1,
@@ -1374,5 +1495,80 @@ func TestJobTreeShapeChange_SurvivesARestart(t *testing.T) {
 	restored.ensureAtLeast(meta.JobTreeRevision)
 	if activityCurrentRootRevision(restored) < moved {
 		t.Fatalf("restored revision = %d, want at least %d", activityCurrentRootRevision(restored), moved)
+	}
+}
+
+// TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed
+// covers the mid-list cutoff's half of the path bound. It builds its path the
+// same absolute way the size trim does, from the tree's root down, so a page
+// resumed several hops deep can reach a length decodeActivityContinuation
+// refuses. A token nobody can submit is worse than none: the reader gets the
+// session to request instead.
+func TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed(t *testing.T) {
+	budget := newBoundedActivityBudget("root", time.Unix(10, 0).UTC(), 7)
+	longest := make([]string, activityMaxContinuationPathLength)
+	for i := range longest {
+		longest[i] = fmt.Sprintf("dlg_%d", i)
+	}
+
+	atLimit := appwire.JobActivitySession{SessionID: "deep"}
+	markActivitySessionTruncated(&atLimit, budget, "deep", longest, 3, activitySessionEpochs{})
+	if !atLimit.Branch.Truncated || atLimit.Branch.Continuation == "" {
+		t.Fatalf("a path exactly at the limit must still mint: truncated=%t continuation=%q", atLimit.Branch.Truncated, atLimit.Branch.Continuation)
+	}
+	if _, err := decodeActivityContinuation(atLimit.Branch.Continuation, "root"); err != nil {
+		t.Fatalf("the token minted at the limit does not decode: %v", err)
+	}
+	if len(atLimit.Diagnostics) != 0 {
+		t.Fatalf("diagnostics %q on a session that minted a usable token, want none", atLimit.Diagnostics)
+	}
+
+	tooLong := appwire.JobActivitySession{SessionID: "deep"}
+	markActivitySessionTruncated(&tooLong, budget, "deep", append(longest, "dlg_one_too_many"), 3, activitySessionEpochs{})
+	if !tooLong.Branch.Truncated {
+		t.Fatal("a session cut off mid-list is truncated whether or not it can name a path back to itself")
+	}
+	if tooLong.Branch.Continuation != "" {
+		t.Fatalf("continuation %q minted for a path of %d hops, which this service's own decoder refuses above %d", tooLong.Branch.Continuation, len(longest)+1, activityMaxContinuationPathLength)
+	}
+	want := activityUnreachableByPathDiagnostic("deep")
+	if !slices.Contains(tooLong.Diagnostics, want) {
+		t.Fatalf("diagnostics %q, want one of them to be %q", tooLong.Diagnostics, want)
+	}
+}
+
+// TestDecodeActivityContinuation_RefusesAnEarlierFormatAsStale pins that a
+// token minted by a build with different field meanings is refused as stale
+// rather than decoded. The fields are checked one by one against what the
+// tree reports now, so a token whose version stayed put while its fields
+// changed meaning would be read as saying something it never said. Stale is
+// the right shape because it is the answer the client already handles:
+// restart pagination once.
+func TestDecodeActivityContinuation_RefusesAnEarlierFormatAsStale(t *testing.T) {
+	legacy := encodeActivityContinuation(activityContinuation{
+		Version:     activityContinuationVersion - 1,
+		RootID:      "root",
+		SessionID:   "root",
+		ResumeIndex: 3,
+	})
+	_, err := decodeActivityContinuation(legacy, "root")
+	if err == nil {
+		t.Fatalf("a version-%d token was accepted; its fields do not mean what this build reads them as", activityContinuationVersion-1)
+	}
+	if !strings.Contains(err.Error(), "activity continuation is stale") {
+		t.Fatalf("error %q, want the stale-continuation rejection the client restarts on", err)
+	}
+	if !strings.Contains(err.Error(), "restart pagination without a continuation") {
+		t.Fatalf("error %q, want it to say what to do next", err)
+	}
+
+	current := encodeActivityContinuation(activityContinuation{
+		Version:     activityContinuationVersion,
+		RootID:      "root",
+		SessionID:   "root",
+		ResumeIndex: 3,
+	})
+	if _, err := decodeActivityContinuation(current, "root"); err != nil {
+		t.Fatalf("this build's own token does not decode: %v", err)
 	}
 }
