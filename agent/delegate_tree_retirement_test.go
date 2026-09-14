@@ -690,14 +690,28 @@ func TestRetirementDelegatePopulatedSourceRefusal(t *testing.T) {
 	}
 }
 
+// retirementModelBarrier parks exactly one provider call: the named session's
+// own turn model call. sessionID is that session's id, which every turn request
+// carries (Session.applyModelRequestMetadata) while the client's auxiliary calls
+// do not: initial-prompt session naming goes through llm.GenerateObject and
+// leaves SessionID empty, and a turn on any other session carries a different id.
+// Gating on the id — rather than on "the first call to arrive" — is what makes
+// entered mean the delegate's turn is parked; without it the async naming call
+// is often the first caller, the real turn has not dispatched, and the stop
+// cancels the run before it ever reaches the model, which mutates the delegate
+// store mid-assertion.
 type retirementModelBarrier struct {
 	retirementDelegateAdapter
-	once    sync.Once
-	entered chan struct{}
-	resume  chan struct{}
+	sessionID string
+	once      sync.Once
+	entered   chan struct{}
+	resume    chan struct{}
 }
 
 func (a *retirementModelBarrier) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if req.SessionID != a.sessionID {
+		return a.retirementDelegateAdapter.Complete(ctx, req)
+	}
 	a.once.Do(func() { close(a.entered); <-a.resume })
 	return a.retirementDelegateAdapter.Complete(ctx, req)
 }
@@ -800,7 +814,7 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 	tree.mu.Lock()
 	generation := tree.durable[d.DelegateID].Generation
 	tree.mu.Unlock()
-	adapter := &retirementModelBarrier{name: "openai", entered: make(chan struct{}), resume: make(chan struct{})}
+	adapter := &retirementModelBarrier{name: "openai", sessionID: d.ChildSessionID, entered: make(chan struct{}), resume: make(chan struct{})}
 	var release sync.Once
 	defer release.Do(func() { close(adapter.resume) })
 	root.client.Register(adapter)
@@ -1334,7 +1348,7 @@ func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
-	adapter := &retirementModelBarrier{name: "openai", entered: make(chan struct{}), resume: make(chan struct{})}
+	adapter := &retirementModelBarrier{name: "openai", sessionID: d.ChildSessionID, entered: make(chan struct{}), resume: make(chan struct{})}
 	var release sync.Once
 	defer release.Do(func() { close(adapter.resume) })
 	root.client.Register(adapter)
@@ -1418,7 +1432,7 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
-	adapter := &retirementModelBarrier{name: "openai", entered: make(chan struct{}), resume: make(chan struct{})}
+	adapter := &retirementModelBarrier{name: "openai", sessionID: d.ChildSessionID, entered: make(chan struct{}), resume: make(chan struct{})}
 	var release sync.Once
 	defer release.Do(func() { close(adapter.resume) })
 	root.client.Register(adapter)
@@ -1499,7 +1513,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
 			defer root.Close()
 			d := retirementIdleDelegate(t, root)
-			adapter := &retirementModelBarrier{name: "openai", entered: make(chan struct{}), resume: make(chan struct{})}
+			adapter := &retirementModelBarrier{name: "openai", sessionID: d.ChildSessionID, entered: make(chan struct{}), resume: make(chan struct{})}
 			var release sync.Once
 			defer release.Do(func() { close(adapter.resume) })
 			root.client.Register(adapter)
