@@ -376,9 +376,13 @@ class Driver {
           throw new Error(`typeText(${ref}): ${applied ? applied.error : "no result from the page (navigated or disconnected?)"}`);
         }
         if (!applied.swapped) {
-          // Nothing was written, and the composer is not at the snapshot
-          // either, so the next attempt recomputes from whatever it holds.
-          target = null;
+          // The target is REMEMBERED across a decline. A swap can be declined
+          // because a render landed after the write as easily as before it,
+          // and forgetting here sent the next attempt past the presence check
+          // and into a recompute from a base that already held the run --
+          // typing it twice. Every attempt asks "is the run where I put it?"
+          // first; the target is replaced only when that says no and the value
+          // is not the snapshot either, which is a genuine concurrent edit.
           reason = `the composer changed under the edit (holds ${JSON.stringify(applied.value)}, expected ${JSON.stringify(base.value)})`;
         } else {
           const after = await this.settleComposer(ref);
@@ -414,7 +418,27 @@ class Driver {
     if (selected !== true) throw new Error(`selectAll: composer textarea for ${ref} did not select its draft`);
   }
 
-  async press(key, modifiers = 0) {
+  // press sends a real key to one session's composer. The CDP event goes to
+  // whatever the page has focused, which is not necessarily the textarea this
+  // scenario is driving, so focus is put back on that composer first -- in the
+  // page, immediately before the key, rather than trusted from whatever ran
+  // last. A Backspace delivered to the wrong element deletes the wrong draft.
+  async press(ref, key, modifiers = 0) {
+    const focused = await evaluate(
+      this.send,
+      `(() => {
+        const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
+        const ta = root && root.querySelector("textarea");
+        if (!ta) return { error: "no composer textarea" };
+        const already = document.activeElement === ta;
+        if (!already) ta.focus();
+        return { restored: !already, focused: document.activeElement === ta }; })()`,
+    );
+    if (!focused || focused.error) {
+      throw new Error(`press(${ref}, ${key}): ${focused ? focused.error : "no result from the page (navigated or disconnected?)"}`);
+    }
+    if (!focused.focused) throw new Error(`press(${ref}, ${key}): the composer would not take focus`);
+    if (focused.restored) console.error(`skillguard: ${ref}: focus was elsewhere before ${key}; restored it`);
     const codes = {
       Enter: { code: "Enter", keyCode: 13 },
       Tab: { code: "Tab", keyCode: 9 },
@@ -716,7 +740,7 @@ class Driver {
     // that made it a token is still in the text; delete it with a real
     // Backspace so the composer holds exactly the prose every later
     // assertion compares against.
-    await this.press("Backspace");
+    await this.press(ref, "Backspace");
     await this.waitPage(
       `(() => { const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
         const ta = root && root.querySelector("textarea"); return ta && !ta.value.endsWith(" ") ? true : null; })()`,
@@ -1042,7 +1066,7 @@ async function runScenarios(driver) {
   // Clear the draft for the next scenario: select all + remove the chip.
   await driver.focusComposer(driver.sessionA);
   await driver.selectAll(driver.sessionA);
-  await driver.press("Backspace");
+  await driver.press(driver.sessionA, "Backspace");
   await driver.removeSkillChip(driver.sessionA);
   state = await driver.composerState(driver.sessionA);
   check(state.text === "" && state.chips.length === 0, `draft not cleared: ${JSON.stringify(state)}`);
@@ -1236,7 +1260,7 @@ async function runScenariosPart2(driver) {
   // Clean the staged draft so later IndexedDB reads stay unambiguous.
   await driver.focusComposer(driver.sessionB);
   await driver.selectAll(driver.sessionB);
-  await driver.press("Backspace");
+  await driver.press(driver.sessionB, "Backspace");
   await driver.removeSkillChip(driver.sessionB);
   // The refusal toast renders OVER the composer card and swallows clicks
   // aimed at its buttons; wait for it to dismiss before any later scenario
@@ -1326,7 +1350,7 @@ async function runScenariosPart2(driver) {
   driver.milestone("delay-commit-kept", keptState);
   await driver.focusComposer(driver.sessionA);
   await driver.selectAll(driver.sessionA);
-  await driver.press("Backspace");
+  await driver.press(driver.sessionA, "Backspace");
 
   // ---- scenario: transport loss + recovery ----
   // Turn-end barrier: the offline submit must persist as a turn/start
