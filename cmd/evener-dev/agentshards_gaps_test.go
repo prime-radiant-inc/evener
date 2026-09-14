@@ -175,6 +175,7 @@ func TestRunShardsScratchError(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("TMPDIR", conflict)
+	isolateToolchainEnv(t)
 	var stdout, stderr bytes.Buffer
 	cfg := shardsConfig{
 		agentDir: fixtureModule(t),

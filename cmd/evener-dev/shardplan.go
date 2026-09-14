@@ -181,7 +181,10 @@ var buildBareFlags = map[string]bool{
 
 // testForwardValueFlags are handed to every shard as -test.<name>=<value>:
 // the binary honours each one as written, and one shard honouring it means
-// all of them do.
+// all of them do. -timeout goes to the survey as well as to every shard,
+// because `go test -timeout` bounds one full run of the package and each of
+// those is such a run -- the survey most of all, being the whole suite in one
+// binary.
 var testForwardValueFlags = map[string]bool{
 	"-count": true, "-timeout": true, "-shuffle": true,
 }
@@ -410,6 +413,13 @@ func checkGoflags(goflags string) error {
 // together with the build the survey measured and whether it ran short. Add,
 // rename, or remove a test and the key changes; otherwise every run reuses the
 // cached survey and pays nothing.
+//
+// The key holds the test list, the classified build flags, short mode and
+// GOFLAGS: the things that decide what was measured. -timeout and the other
+// forwarded test flags are not in it, because they bound or order a run
+// without changing what it costs -- a survey is as valid under a 20m timeout
+// as under 10m, and keying on one would throw away a measurement that still
+// applies.
 //
 // The build belongs in the key because the survey is a cost measurement and
 // the build decides the costs: a -race binary is several times slower than a

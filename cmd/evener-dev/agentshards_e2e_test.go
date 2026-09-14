@@ -24,6 +24,21 @@ func fixtureModule(t *testing.T) string {
 	return abs
 }
 
+// isolateToolchainEnv keeps a run from inheriting the developer's toolchain
+// settings. The runner refuses a test-side flag in GOFLAGS, so
+// `go env -w GOFLAGS=-short` on someone's machine would fail every test that
+// calls runShards -- and a build flag there would quietly change what is
+// built and measured. GOENV=off ignores the written file; the empty GOFLAGS
+// overrides whatever is already exported.
+//
+// Every test that builds a shardsConfig and calls runShards, or that runs the
+// built binary, needs this.
+func isolateToolchainEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", "")
+}
+
 // e2eConfig is a runShards config over the fixture module with isolated
 // TMPDIR and survey cache, capture buffers attached.
 func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string) {
@@ -33,6 +48,7 @@ func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string
 	// The fixture module lives under testdata, outside the repo's go.work
 	// workspace; the child toolchain must resolve its own go.mod instead.
 	t.Setenv("GOWORK", "off")
+	isolateToolchainEnv(t)
 	resolved, err := filepath.EvalSymlinks(tmp)
 	if err != nil {
 		t.Fatalf("resolving TMPDIR fixture: %v", err)
