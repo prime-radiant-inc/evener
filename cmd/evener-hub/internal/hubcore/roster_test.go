@@ -1423,8 +1423,9 @@ func TestHasConfirmedEntryMissingPIDFailsFast(t *testing.T) {
 	roster := NewRosterWithEntries()
 	// Seed the zero-value session key so a lookup that ignores the missing PID
 	// has something to find there.
-	roster.bySess[""] = LiveEntry{Entry: rendezvous.Entry{PID: 4242}}
-	roster.byPID[4242] = LiveEntry{Entry: rendezvous.Entry{PID: 4242}}
+	seeded := LiveEntry{PID: 4242}
+	roster.bySess[""] = seeded
+	roster.byPID[4242] = seeded
 
 	if roster.HasConfirmedEntry(rendezvous.Entry{PID: 9999}) {
 		t.Fatal("a PID absent from byPID was confirmed through the empty session key")

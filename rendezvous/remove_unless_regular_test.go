@@ -1,6 +1,7 @@
 package rendezvous
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +47,7 @@ func TestRemoveUnlessRegularLeavesRegularEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("regular entry was removed: %v", err)
 	}
-	if string(after) != string(before) {
+	if !bytes.Equal(after, before) {
 		t.Fatalf("regular entry mutated: %s", after)
 	}
 }

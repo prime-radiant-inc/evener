@@ -3,6 +3,7 @@
 package rendezvous
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -61,7 +62,7 @@ func TestRemoveUnlessRegularRefusesAReplacementPublishedInTheWindow(t *testing.T
 	if err != nil {
 		t.Fatalf("replacement's live entry was deleted: %v", err)
 	}
-	if string(kept) != string(payload) {
+	if !bytes.Equal(kept, payload) {
 		t.Fatalf("replacement's live entry mutated: %s", kept)
 	}
 }
