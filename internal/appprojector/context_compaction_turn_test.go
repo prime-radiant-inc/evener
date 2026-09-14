@@ -194,3 +194,46 @@ func compactionRecord(layer events.ContextCompactionData) schema.Turn {
 func coldCompactionProjector(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 	return apptranscript.ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
 }
+
+// A fold's layers arrive back to back while the round that triggered them is
+// still running. The first closes the turn it interrupted; the ones after it
+// find no turn open, and a client that reads "the active turn completed" as
+// "the session went idle" (the TUI does, kata s8x8) must not be left there by
+// the last layer of the batch. Every layer says the thread is still active,
+// and a compaction with no turn running still claims nothing.
+func TestAppEventProjectorEveryLayerOfAnInterruptedFoldKeepsTheThreadActive(t *testing.T) {
+	layer := func(name string) events.ContextCompactionData {
+		return events.ContextCompactionData{Layer: name, TurnsBefore: 20, TurnsAfter: 8}
+	}
+	activeFrames := func(out []AppNotification) int {
+		count := 0
+		for _, notification := range out {
+			params, ok := notification.Params.(appwire.ThreadStatusChangedParams)
+			if notification.Method == appwire.NotifyThreadStatusChanged && ok && params.Status.Type == appwire.ThreadStatusActive {
+				count++
+			}
+		}
+		return count
+	}
+
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "ask"}})
+	if got := activeFrames(projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: layer("checkpoint")})); got != 1 {
+		t.Fatalf("active frames after the first layer = %d, want 1", got)
+	}
+	if got := activeFrames(projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: layer("summarize")})); got != 1 {
+		t.Fatalf("active frames after the second layer = %d, want 1: the round the fold interrupted is still running", got)
+	}
+	if got := activeFrames(projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: layer("distill")})); got != 1 {
+		t.Fatalf("active frames after the third layer = %d, want 1", got)
+	}
+
+	// A fold between turns interrupts nothing, and the batch state does not
+	// survive the events that end it.
+	idle := NewAppEventProjector("th_2", "local:th_2")
+	idle.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_2", Data: events.UserInputData{Text: "ask"}})
+	idle.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_2", Data: events.SessionEndData{}})
+	if got := activeFrames(idle.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_2", Data: layer("checkpoint")})); got != 0 {
+		t.Fatalf("active frames for a compaction with no turn running = %d, want 0", got)
+	}
+}

@@ -110,6 +110,20 @@ func TestHubModelEveryCompactionLayerRendersInItsOwnTurn(t *testing.T) {
 	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "th_1"}
 
 	var updated tea.Model = m
+	// A turn is running when the fold starts, which is what the layers
+	// interrupt.
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			ThreadID: "th_1", Ref: "local:th_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		}).Notification,
+	})
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+			ThreadID: "th_1", Ref: "local:th_1", Turn: appwire.Turn{ID: "turn_0", Status: appwire.TurnStatusInProgress},
+		}).Notification,
+	})
 	for i, layer := range []string{"checkpoint", "summarize"} {
 		turnID := fmt.Sprintf("turn_%d", i+1)
 		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
@@ -142,6 +156,19 @@ func TestHubModelEveryCompactionLayerRendersInItsOwnTurn(t *testing.T) {
 				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted},
 			}).Notification,
 		})
+		// Every layer says the round it interrupted is still running.
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+				ThreadID: "th_1", Ref: "local:th_1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			}).Notification,
+		})
+	}
+
+	// The composer must not offer to send into a session still working: the
+	// last layer's turn/completed is not the end of the round.
+	if got := updated.(hubModel); !got.session.processing || got.detail.State != appwire.ThreadStatusActive {
+		t.Fatalf("after checkpoint+summarize: processing=%v state=%q, want the session still active", got.session.processing, got.detail.State)
 	}
 
 	var system []transcript.ChatMessage

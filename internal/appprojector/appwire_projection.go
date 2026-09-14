@@ -75,6 +75,12 @@ type AppEventProjector struct {
 	// real turn, so it must keep minting its own gap id (kata 9ekv) rather
 	// than folding into the prelude turn at the very top of the transcript.
 	historySeeded bool
+	// compactionBatchInterrupted remembers that this run of compaction events
+	// — a fold publishes one per layer, back to back — began while a turn was
+	// running. Only the first layer sees that turn open, because it closes it;
+	// without this the later layers would tell every client the session went
+	// idle while the round that triggered the fold is still going.
+	compactionBatchInterrupted bool
 	// midSessionAnnouncementTurnID is the shared synthetic turn id for the
 	// CURRENT gap between two real turns (nextTurn > 0, activeTurnID == "").
 	// See preTurnAnnouncementTurnID's doc comment (kata 9ekv): it is minted
@@ -263,6 +269,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 
 	if p.threadID == "" {
 		p.threadID = event.SessionID
+	}
+	if event.Kind != events.EventContextCompaction {
+		// The fold's layers arrive back to back, and only the first of them
+		// finds the interrupted turn still open. Anything else marks the end
+		// of that batch. See compactionBatchInterrupted.
+		p.compactionBatchInterrupted = false
 	}
 
 	switch event.Kind {
@@ -1080,7 +1092,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// layers in one live turn that reload shows as two.
 		reserved := p.reservedTurnID
 		wasRealTurnStarted := p.anyTurnStarted
-		interrupted := p.activeTurnID != ""
+		// The first layer of a fold closes the turn it interrupted, so the
+		// layers after it find none open. They are the same interruption, and
+		// the round is still running behind all of them.
+		interrupted := p.activeTurnID != "" || p.compactionBatchInterrupted
+		p.compactionBatchInterrupted = interrupted
 		p.reservedTurnID = ""
 		_, out := p.openTurn("", event.Timestamp)
 		// Compaction is session bookkeeping, not a runnable turn: prelude and
