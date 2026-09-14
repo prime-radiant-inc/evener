@@ -6,7 +6,7 @@ import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
-import { FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
+import { FINGERPRINT_UNAVAILABLE_ERROR, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 import { ProviderConnection } from "./ProviderConnection";
 
 function provider(
@@ -1240,6 +1240,30 @@ test("a destination the hub cannot fingerprint refuses the check without a probe
   await user.click(screen.getByRole("button", { name: "Check connection" }));
   expect(await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE)).toBeTruthy();
   expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
+});
+
+// The write-side counterpart of the refusal above: the row still carries its
+// destination, but the listing serves no fingerprint, so the write would assert
+// an empty endpoint - which the hub accepts rather than validates - and the
+// check that follows would refuse, leaving a saved secret that was never
+// tested. submit() refuses the write locally, with the same message the
+// instance dialogs use for it.
+test("a connection the hub cannot key refuses the save instead of writing an unasserted key", async () => {
+  const { user, client } = setup(fingerprintList(""));
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "sk-ant-unkeyed");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+
+  // Nothing reached the hub: no key write, no credential-JSON write, and no
+  // probe against an endpoint the hub cannot describe.
+  expect(client.calls.find((call) => call.method === "evener/auth/apiKey/set")).toBeUndefined();
+  expect(client.calls.some((call) => call.method === "evener/auth/credentialJson/set")).toBe(false);
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
+  // The exact shared write-refusal wording, not the check-refusal one.
+  expect((await screen.findByRole("alert")).textContent).toBe(FINGERPRINT_UNAVAILABLE_ERROR);
+  // The phase stays idle: the same control is still offered rather than a
+  // spinner left behind by a write that never happened.
+  expect(screen.getByRole("button", { name: "Save and check" })).toHaveProperty("disabled", false);
 });
 
 // A refused endpoint assertion is the same change submit() reports: the

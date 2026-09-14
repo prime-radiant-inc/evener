@@ -22,6 +22,7 @@ import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "../.
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { FINGERPRINT_UNAVAILABLE_ERROR } from "./credentialLabels";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
@@ -48,17 +49,6 @@ const CLASS = {
 // can see.
 const ENDPOINT_CHANGED_ERROR =
   "This connection changed to a different endpoint. Check its destination and enter the value again.";
-
-// A row that carries an endpoint but serves no fingerprint is a destination the
-// hub cannot describe right now: it serves a fingerprint only while it can key
-// one, and an unavailable one is omitted from the listing. A form opened during
-// such an outage keeps that state until the listing refreshes, and submitting
-// would assert nothing against an endpoint nobody checked - which the hub
-// accepts rather than validates. The dialog refuses locally with the same
-// "review its destination" remedy as a moved endpoint: the listing that carries
-// the fingerprint again is what makes the save work.
-const FINGERPRINT_UNAVAILABLE_ERROR =
-  "The hub cannot check this endpoint right now, so the key was not sent. Review its destination and try again once it can be checked.";
 
 // nonEmptyVars trims and drops blank entries before they reach the wire -
 // InstanceCreateParams.Vars only carries variables the user actually set

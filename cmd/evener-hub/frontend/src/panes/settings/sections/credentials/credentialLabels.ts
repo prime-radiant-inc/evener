@@ -173,6 +173,14 @@ export function isEndpointConflict(err: unknown): boolean {
 export const ENDPOINT_CHANGED_TEST_MESSAGE =
   "This connection changed to a different endpoint. Check its destination and test again.";
 
+// FINGERPRINT_UNAVAILABLE_ERROR is what a credential write says when the row has
+// a destination but serves no fingerprint: the hub accepts an empty assertion
+// rather than validating it, so the save is refused locally with the same
+// "review its destination" remedy as a moved endpoint - the listing that carries
+// the fingerprint again is what makes the save work.
+export const FINGERPRINT_UNAVAILABLE_ERROR =
+  "The hub cannot check this endpoint right now, so the key was not sent. Review its destination and try again once it can be checked.";
+
 // FINGERPRINT_UNAVAILABLE_TEST_MESSAGE is what a credential test says when the
 // row has a destination but no fingerprint to assert: the hub would have
 // nothing to compare and would dial whatever the name resolves to now, so the

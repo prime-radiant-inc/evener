@@ -6,6 +6,7 @@ import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import {
   activeSourceLabel,
+  FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   isEndpointConflict,
@@ -538,6 +539,16 @@ function SelectedConnection({
     setResult(null);
     setReview(null);
     if (!saved && storedMode && !host && value.trim()) {
+      // A row with a destination but no fingerprint is one the hub cannot key
+      // right now, and an empty assertion is accepted rather than validated: the
+      // write would land on whatever the name resolves to when it arrives, and
+      // the check that follows would refuse, leaving a secret saved that was
+      // never tested. Refuse the write here, as the instance dialogs do.
+      if (fingerprintUnavailable(row)) {
+        setPhase("idle");
+        setError(FINGERPRINT_UNAVAILABLE_ERROR);
+        return;
+      }
       // The draft was typed against the connection this flow anchored on, and a
       // credential only ever goes to an endpoint the user was shown. If the
       // name resolves to a different destination now - another client edited

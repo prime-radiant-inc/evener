@@ -740,7 +740,17 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	if c.deviceFlows == nil {
 		c.deviceFlows = map[string]deviceFlow{}
 	}
-	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Code: dc, EndpointFingerprint: endpoint, StartedAt: c.now()}
+	// Abandoned device flows have no other reaper: expiry is only checked when a
+	// flow is polled, so a start the user never polls would keep its device code
+	// for the life of the process. Sweep under the same lock, as LoginStart does
+	// for c.flows, so the map holds only live flows plus the one being added.
+	now := c.now()
+	for id, flow := range c.deviceFlows {
+		if now.Sub(flow.StartedAt) >= hubAuthFlowTTL {
+			delete(c.deviceFlows, id)
+		}
+	}
+	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Code: dc, EndpointFingerprint: endpoint, StartedAt: now}
 	c.mu.Unlock()
 	return appwire.AuthDeviceStartResponse{
 		Provider:        provider,
