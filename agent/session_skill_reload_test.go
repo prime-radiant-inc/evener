@@ -1071,6 +1071,78 @@ func TestSkillReload_Budget_StagedNotificationsStayWithinWindow(t *testing.T) {
 	}
 }
 
+// TestSkillReload_Budget_LaterExplanationReservedBeforeEarlierBody pins the
+// reservation half of the fix: before a body is admitted, the space owed to the
+// notifications admission has not appended yet must already be reserved. Two
+// bodies are selected in one receipt in order, so the body that fits alone is
+// processed first: "big" fits the window on its own by a single token, while
+// "titanic" is far larger than the window and is therefore always rejected with
+// a context_budget explanation. Measuring only each body against its own budget
+// would admit "big", and its carrier would leave no room for titanic's visible
+// explanation — the rebuild after admission would overflow and fail the whole
+// turn. The ordering is the point: reserving titanic's explanation up front
+// rejects "big" instead, and the complete staged request still fits. Without
+// that reservation "big" is admitted, so this test is the one that would catch
+// its removal.
+func TestSkillReload_Budget_LaterExplanationReservedBeforeEarlierBody(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	bigBody := strings.Repeat("BIG_5c31 reserve line\n", 60)
+	titanicBody := strings.Repeat("TITANIC_5c31 line\n", 6000)
+	writeSkillMD(t, root, "big", "---\nname: big\ndescription: fixture\n---\n"+bigBody)
+	writeSkillMD(t, root, "titanic", "---\nname: titanic\ndescription: fixture\n---\n"+titanicBody)
+	s, _, _ := newReloadSession(t, root, 100000, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_reserve", nil))
+	seedNumberedSessionHistory(t, s, 12)
+	plantOrdinaryRecord(t, s, root, "big", true)
+	plantOrdinaryRecord(t, s, root, "titanic", true)
+	// The reservation the production check measures is the cost of titanic's
+	// notice; it must be a positive number of tokens for the discrimination.
+	if reserve := skillReloadNotificationReserve("titanic"); reserve <= 0 {
+		t.Fatalf("test setup: titanic's notification reserve = %d, want a positive cost", reserve)
+	}
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"big", "titanic"}},
+			PublicationID: "pub-reserve",
+		},
+	}}
+	s.mu.Unlock()
+
+	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if staged != 0 {
+		t.Fatalf("a valid-selection preparation staged %d tokens, want none", staged)
+	}
+	if batch == nil || len(batch.Items) != 2 || skillContentIdentity(batch.Items[0]).Name != "big" {
+		t.Fatalf("prepared batch = %+v, want big first and titanic second", batch)
+	}
+	bigTokens := llm.EstimateMessagesInputTokens([]llm.Message{llm.User(batch.Items[0].Rendered.Content)}).Tokens
+	window := s.profile.ContextWindowSize()
+	// big fits the window on its own by exactly one token: only the space
+	// reserved for titanic's later context_budget explanation can reject it.
+	budget := &llm.TokenBudget{InputTokens: window - bigTokens - 2}
+	if err := s.admitCompactedSkillReloads(context.Background(), s.profile, budget, staged, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads: %v", err)
+	}
+	if got := reloadOutcomeForSkill(t, s, "big"); got.Status != "failed" || got.ErrorCode != "context_budget" {
+		t.Fatalf("big reload outcome = status %q code %q, want failed context_budget: the earlier body must not consume headroom the later explanation needs", got.Status, got.ErrorCode)
+	}
+	if got := reloadOutcomeForSkill(t, s, "titanic"); got.Status != "failed" || got.ErrorCode != "context_budget" {
+		t.Fatalf("titanic reload outcome = status %q code %q, want failed context_budget", got.Status, got.ErrorCode)
+	}
+	if budget.InputTokens+1 >= window {
+		t.Fatalf("running total after admission = %d with rounding at window %d, want the complete staged request inside the window", budget.InputTokens, window)
+	}
+}
+
 // TestSkillReload_Preload_OnlySelectionIsNoOp pins the preload rule: a
 // selection naming a preload-only inventory entry needs no disk load, admits
 // no body, records no outcome, and still consumes its receipt.
