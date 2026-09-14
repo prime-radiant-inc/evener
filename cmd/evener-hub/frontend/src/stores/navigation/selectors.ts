@@ -1,4 +1,4 @@
-import type { NavigationProjectSummary, NavigationSessionSummary } from "../../protocol/types.gen";
+import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "../../protocol/types.gen";
 import { navigationStore } from "./store";
 import {
   canonicalResourceKey,
@@ -35,6 +35,16 @@ function normalizedRootCount(resource: ResourceState, slot: string): number | un
   return normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
 }
 export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
+/** The manifest's configured launch sources (Component 06a). Empty until the
+ * manifest loads, so a consumer can render across-host affordances only when a
+ * remote host actually exists - the single-host UI stays untouched. */
+const NO_SOURCES: Source[] = [];
+export function selectSources(state = navigationStore.getState()): Source[] {
+  // A stable empty array, NOT a fresh `[]`: this selector is read through
+  // useSyncExternalStore, whose snapshot identity must not change on every
+  // call or the store's subscribers re-render forever.
+  return state.manifest?.data?.sources ?? NO_SOURCES;
+}
 export const selectResource = (key: ResourceKey) => {
   const resourceKey = canonicalResourceKey(key);
   return (s: ReturnType<typeof navigationStore.getState>) => s.resources.get(keyID(resourceKey));

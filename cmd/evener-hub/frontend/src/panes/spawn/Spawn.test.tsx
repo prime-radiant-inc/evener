@@ -14,6 +14,7 @@ import type {
   ModelDescriptor,
   ModelListParams,
   ModelListResponse,
+  NavigationManifest,
   PluginPreviewResponse,
   Thread,
   ThreadCapabilities,
@@ -25,6 +26,8 @@ import { navigate } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import type { ResourceState } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
@@ -151,6 +154,32 @@ function renderSpawn(client: FakeClient, focused = true) {
       <Toast />
     </ClientProvider>,
   );
+}
+
+// Seeds the navigation manifest's launch sources, which the host picker reads
+// through selectSources. Rendered only when the list holds a non-local source.
+function seedSources(sources: NavigationManifest["sources"]): void {
+  const data: NavigationManifest = {
+    generation_id: "generation_test",
+    revision: 1,
+    sources,
+    attentionSummary: { needsYou: 0, error: 0, working: 0 },
+    sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+  };
+  const resource: ResourceState<NavigationManifest> = {
+    key: { kind: "manifest" },
+    data,
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"test"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  navigationStore.setState({ manifest: resource });
 }
 
 // The working directory is changed through an explicit-confirmation picker.
@@ -1209,6 +1238,7 @@ beforeEach(() => {
   localStorage.clear();
   resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
+  resetNavigationStoreForTests();
   modelListOverride = null;
 });
 
@@ -1370,6 +1400,7 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
+  resetNavigationStoreForTests();
   resetThreadsStoreForTests();
   vi.unstubAllGlobals();
   // The shell mounts the Spawn pane only at /new (shell/routing.ts), so a test
@@ -5190,4 +5221,74 @@ test("a remounted draft still shows the path-validation error stored with its in
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
   expect(completionDraft("/tmp/remount-validation-a").fields.getState().advancedOverrides).toEqual({});
   expect(await screen.findByText("remount-a-invalid")).toBeTruthy();
+});
+
+// --- host picker (Component 06b) -------------------------------------------
+
+test("host picker lists sources, preselects local, and disables offline hosts", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
+  expect(picker.value).toBe("local");
+  const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
+  expect(options.map((option) => option.value)).toEqual(["local", "buildbox", "offline-host"]);
+  expect((options.find((option) => option.value === "buildbox") as HTMLOptionElement).disabled).toBe(false);
+  const offline = options.find((option) => option.value === "offline-host") as HTMLOptionElement;
+  expect(offline.disabled).toBe(true);
+  // The reason is in the option's own accessible text, not only a tooltip.
+  expect(offline.textContent).toContain("offline");
+});
+
+test("no host picker renders when the manifest has only local", async () => {
+  seedSources([{ id: "local", label: "Local", kind: "local", online: true }]);
+  renderSpawn(readyClient());
+  await settled();
+
+  expect(screen.queryByLabelText("Host")).toBeNull();
+});
+
+test("choosing a non-local host sends source and persists it in the draft", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/host-target");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.type(promptField(), "run on buildbox");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(completionDraft("/tmp/host-target").fields.getState().source).toBe("buildbox");
+});
+
+test("a local host choice omits source from the thread/start request", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/local-target");
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "stay local");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).not.toHaveProperty("source");
 });

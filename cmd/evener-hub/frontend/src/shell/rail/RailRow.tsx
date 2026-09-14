@@ -37,6 +37,8 @@
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
+import { selectSources } from "../../stores/navigation/selectors";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -81,6 +83,8 @@ const CLASS = {
   activityDanger: requireClass(styles.activityDanger, "RailRow.module.css", "activityDanger"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
+  host: requireClass(styles.host, "RailRow.module.css", "host"),
+  hostOffline: requireClass(styles.hostOffline, "RailRow.module.css", "hostOffline"),
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
@@ -477,8 +481,29 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   );
 }
 
+// A row's host reachability, derived from the manifest's sources (Component
+// 06a) keyed by the row's own host_id. This is deliberately NOT part of the
+// row schema and does NOT reuse Dormant: Jesse's standing decision keeps
+// Dormant meaning "never run". Unknown hosts - including the many RailRow
+// tests that render a row with no manifest store state at all - read as
+// ONLINE, so the badge is purely additive and existing rows keep their
+// meaning. The selector returns a primitive, so a fresh inline closure each
+// render is safe for the store's reference-equality check.
+function useHostOnline(hostId: string): boolean {
+  return useNavigationStore((state) => {
+    const source = selectSources(state).find((candidate) => candidate.id === hostId);
+    return source ? source.online : true;
+  });
+}
+
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
+  // A non-local row names its host on the title line (a LABEL, not a tree
+  // re-layout); reachability comes from the manifest's sources, not from the
+  // row. Dormant keeps its own "never run" meaning - see useHostOnline.
+  const hostId = session.host_id;
+  const showsHost = hostId !== "" && hostId !== "local";
+  const hostOnline = useHostOnline(hostId);
   const needsYouCount = needsYouDescendantCount(session);
   // The state this row PRESENTS (railNodes' displayState): a turn-ended
   // subagent presents as idle, not "your move", because its next input comes
@@ -547,6 +572,20 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             {session.title}
           </span>
           <TrailingChevron info={info} />
+          {/* Host label after the chevron (which hugs the title text), so a
+              remote row says where it lives without pushing the title. The
+              offline marker is visible text, not a color or an aria-only
+              state, and the title carries the same fact for hover. */}
+          {showsHost && (
+            <span
+              data-testid="rail-row-host"
+              className={hostOnline ? CLASS.host : `${CLASS.host} ${CLASS.hostOffline}`}
+              title={hostOnline ? `Host ${hostId}` : `Host ${hostId} is offline`}
+            >
+              {hostId}
+              {!hostOnline && <span data-testid="rail-row-host-offline">{" (offline)"}</span>}
+            </span>
+          )}
         </span>
         {showsSecondLine && (
           <span data-testid="rail-row-activity" className={activityClass} title={gloss}>

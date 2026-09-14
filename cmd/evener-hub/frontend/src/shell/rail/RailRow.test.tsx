@@ -7,9 +7,11 @@ import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { hydrateThread } from "../../protocol/reducer";
+import type { NavigationManifest } from "../../protocol/types.gen";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { manifest } from "../../stores/navigation/testing";
 import {
   keyID,
   navigationOwnedContainerKey,
@@ -67,6 +69,25 @@ function seedPinCatalogForPicker(): void {
   };
   navigationStore.setState({ mode: "v2", resources: new Map([[keyID(resource.key), resource]]) });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
+}
+
+// Seeds the manifest's launch sources, which a row's host badge/offline
+// affordance derives from (Component 06b). A row whose host the manifest does
+// not name reads as online, so the default empty manifest adds no affordance.
+function seedSources(sources: NavigationManifest["sources"]): void {
+  const resource: ResourceState<NavigationManifest> = {
+    key: { kind: "manifest" },
+    data: manifest({ sources }),
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "e",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+  };
+  navigationStore.setState({ manifest: resource });
 }
 
 function PaneFixture() {
@@ -2192,4 +2213,44 @@ test.each(["subagent", "job"] as const)("restart explanation survives %s activit
   const gloss = screen.getByTestId("rail-row-activity").textContent;
   expect(gloss).toContain("restart required");
   expect(gloss).toContain(kind === "subagent" ? "1 subagent working" : "1 job running");
+});
+
+// --- host badge / offline affordance (Component 06b) -----------------------
+
+test("a non-local row renders its host as a badge", () => {
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  const badge = screen.getByTestId("rail-row-host");
+  expect(badge.textContent).toContain("buildbox");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+test("a local row renders no host badge", () => {
+  renderRow({ ref: "local:abc", host_id: "local" });
+  expect(screen.queryByTestId("rail-row-host")).toBeNull();
+});
+
+test("a row on an offline host renders the offline affordance", () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ]);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("buildbox");
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+});
+
+test("a row on an online host has no offline affordance", () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("buildbox");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+test("a host the manifest does not name defaults to online (no offline affordance)", () => {
+  renderRow({ ref: "mystery:abc", host_id: "mystery" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("mystery");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
 });
