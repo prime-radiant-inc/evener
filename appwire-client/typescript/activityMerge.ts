@@ -20,6 +20,7 @@ function cloneSession(session: ActivitySessionNode): ActivitySessionNode {
   return {
     ...session,
     counts: { ...session.counts },
+    diagnostics: session.diagnostics ? [...session.diagnostics] : undefined,
     branch: { ...session.branch },
     entries: session.entries.map(cloneEntry),
   };

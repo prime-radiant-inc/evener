@@ -547,6 +547,18 @@ test("a nested page cannot replace or add coverage on an unrelated branch", () =
 // this delegate -- and that copy is whatever the daemon rendered for the
 // chain, which can be older than what the panel already holds. Grafting it
 // must not cost the row the newer parent-side metadata it is displaying.
+test("a grafted child page keeps the session diagnostics it reported, as the tree's own copy", () => {
+  const current = tree([delegate()]);
+  const reported = ['continuation path limit reached; request session "child" directly'];
+  const page = tree([delegate({ ...session("child", [shell("a")]), diagnostics: reported })]);
+  const result = graftContinuationTree(current, "delegate:delegate", page);
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(entry.delegate.child.diagnostics).toEqual(reported);
+  reported.push("mutated after the graft");
+  expect(entry.delegate.child.diagnostics).toHaveLength(1);
+});
+
 test("a child page grafted under the delegate keeps the delegate's newer metadata", () => {
   const displayed: ActivityDelegateEntry = {
     kind: "delegate",
