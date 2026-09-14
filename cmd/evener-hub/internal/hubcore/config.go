@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -83,6 +84,11 @@ type WebConfig struct {
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).
 	RemoteHostClient func(ctx context.Context, host string) (*appwire.Client, error)
+	// RemoteHostFacts returns the component-04 preflight facts (protocol
+	// version, hub version, OS/arch, advertised features) for a remote host.
+	// The capability probe combines them with its AppWire reads. nil leaves
+	// the preflight-owned fields zero-valued (tests).
+	RemoteHostFacts func(ctx context.Context, host string) (appsource.HostFacts, error)
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)
