@@ -599,8 +599,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				// writes. Tagging only the written form would leave a live
 				// reader and a returning one disagreeing about which fold
 				// produced the same turn.
-				for i := len(*history) - len(records); i < len(*history); i++ {
-					(*history)[i].CompactionFoldID = foldID
+				if history != nil {
+					for i := len(*history) - len(records); i < len(*history); i++ {
+						(*history)[i].CompactionFoldID = foldID
+					}
 				}
 				for i := range records {
 					records[i].turn.CompactionFoldID = foldID
