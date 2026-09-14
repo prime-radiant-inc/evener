@@ -426,6 +426,49 @@ func TestReapStaleCopies_RemovesAbandonedAndSuperseded(t *testing.T) {
 	}
 }
 
+// Moving to a different copy must release the lease on the old one, not leave it
+// held while the new copy goes unprotected.
+func TestEmbeddedSkillsDir_MovesTheLeaseToTheNewCopy(t *testing.T) {
+	firstBase := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, firstBase)
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	embeddedSkillsCache.mu.Lock()
+	firstLeased := embeddedSkillsCache.leasedDir
+	embeddedSkillsCache.mu.Unlock()
+	if firstLeased != first {
+		t.Fatalf("leased dir = %q, want %q", firstLeased, first)
+	}
+
+	secondBase := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, secondBase)
+	second, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (second base): %v", err)
+	}
+	if second == first {
+		t.Fatalf("expected a different copy in the second base, got %q", second)
+	}
+	embeddedSkillsCache.mu.Lock()
+	secondLeased := embeddedSkillsCache.leasedDir
+	embeddedSkillsCache.mu.Unlock()
+	if secondLeased != second {
+		t.Fatalf("leased dir = %q, want the new copy %q", secondLeased, second)
+	}
+
+	// The old copy must now be reapable: its lease was released.
+	past := time.Now().Add(-2 * staleRetainedMaxAge)
+	if err := os.Chtimes(first, past, past); err != nil {
+		t.Fatalf("age old copy: %v", err)
+	}
+	reapStaleCopies(firstBase, time.Now(), "", "")
+	if _, err := os.Stat(first); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("old copy is still leased after moving: %v", err)
+	}
+}
+
 // A copy a live process holds a shared lease on is never reaped, however old it
 // is; once the lease is dropped it becomes reapable.
 func TestReapStaleCopies_SkipsLeasedDirectory(t *testing.T) {
@@ -599,12 +642,20 @@ func TestEmbeddedSkillsDir_ReusesPublishedCopyAfterCacheReset(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(second, "doctoring-evener", "SKILL.md")); err != nil {
 		t.Fatalf("reused copy missing the bundled skill: %v", err)
 	}
+	// The lease machinery keeps a sibling .locks directory, so count only the
+	// published copies rather than every entry in the base.
+	published := 0
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		t.Fatalf("read base: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected exactly one published copy, got %d", len(entries))
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), embeddedSkillsPrefix) {
+			published++
+		}
+	}
+	if published != 1 {
+		t.Fatalf("expected exactly one published copy, got %d in %v", published, entries)
 	}
 }
 

@@ -56,12 +56,13 @@ const (
 // that this process has already published or re-digested dir, so later calls in
 // the same process do not re-walk an immutable copy.
 var embeddedSkillsCache struct {
-	mu       sync.Mutex
-	dir      string
-	digest   string
-	skills   map[string]SkillMeta
-	verified bool
-	lease    skillsLease
+	mu        sync.Mutex
+	dir       string
+	digest    string
+	skills    map[string]SkillMeta
+	verified  bool
+	lease     skillsLease
+	leasedDir string
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -107,22 +108,23 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
 		if embeddedSkillsCache.verified && cacheDirExists(embeddedSkillsCache.dir) {
-			claimEmbeddedSkillsLocked(embeddedSkillsCache.dir)
-			touchDir(embeddedSkillsCache.dir)
-			return embeddedSkillsCache.dir, nil
+			if err := claimEmbeddedSkillsLocked(embeddedSkillsCache.dir); err == nil {
+				touchDir(embeddedSkillsCache.dir)
+				return embeddedSkillsCache.dir, nil
+			}
+			// The copy is being reaped: forget it and publish another rather
+			// than hand back one whose files may vanish mid-session.
+			forgetEmbeddedSkillsLocked()
+		} else if !embeddedSkillsCache.verified && cacheDirUsable(embeddedSkillsCache.dir, embeddedSkillsCache.digest) {
+			if err := claimEmbeddedSkillsLocked(embeddedSkillsCache.dir); err == nil {
+				embeddedSkillsCache.verified = true
+				touchDir(embeddedSkillsCache.dir)
+				return embeddedSkillsCache.dir, nil
+			}
+			forgetEmbeddedSkillsLocked()
+		} else {
+			forgetEmbeddedSkillsLocked()
 		}
-		if !embeddedSkillsCache.verified && cacheDirUsable(embeddedSkillsCache.dir, embeddedSkillsCache.digest) {
-			embeddedSkillsCache.verified = true
-			claimEmbeddedSkillsLocked(embeddedSkillsCache.dir)
-			touchDir(embeddedSkillsCache.dir)
-			return embeddedSkillsCache.dir, nil
-		}
-		// The copy is gone, replaced, or unverified and unusable: forget it and
-		// republish rather than hand back a dangling path.
-		embeddedSkillsCache.dir = ""
-		embeddedSkillsCache.digest = ""
-		embeddedSkillsCache.skills = nil
-		embeddedSkillsCache.verified = false
 	}
 	base, err := embeddedSkillsBaseDir()
 	if err != nil {
@@ -132,36 +134,65 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := claimEmbeddedSkillsLocked(dir); err != nil {
+		return "", fmt.Errorf("leasing bundled skills copy: %w", err)
+	}
 	skills := make(map[string]SkillMeta)
 	ScanSkillsDir(dir, skills)
 	embeddedSkillsCache.dir = dir
 	embeddedSkillsCache.digest = digest
 	embeddedSkillsCache.skills = skills
 	embeddedSkillsCache.verified = true
-	claimEmbeddedSkillsLocked(dir)
 	return dir, nil
 }
 
+// errSkillsLeaseContended reports that another process holds the exclusive lease
+// on a copy, which means that copy is being reaped and must not be used.
+var errSkillsLeaseContended = errors.New("bundled skills copy is being reaped")
+
 // claimEmbeddedSkillsLocked takes a shared lease on the copy this process will
-// read, releasing the lease held for a previous copy. It is best effort: a copy
-// that cannot be leased is still usable, it just has no protection from reaping.
-func claimEmbeddedSkillsLocked(dir string) {
-	if embeddedSkillsCache.lease != nil && embeddedSkillsCache.dir == dir {
-		return
+// read, releasing the lease held for a previous copy. The caller holds the cache
+// mutex. A copy that cannot be leased is not returned to callers: it could be
+// removed while they are reading it.
+func claimEmbeddedSkillsLocked(dir string) error {
+	if embeddedSkillsCache.lease != nil && embeddedSkillsCache.leasedDir == dir {
+		return nil
 	}
+	releaseSkillsLeaseLocked()
+	path, err := skillsLockPath(filepath.Dir(dir), filepath.Base(dir), true)
+	if err != nil {
+		return err
+	}
+	lease, contended, err := acquireSkillsLease(path, false)
+	if err != nil {
+		return err
+	}
+	if contended {
+		return errSkillsLeaseContended
+	}
+	embeddedSkillsCache.lease = lease
+	embeddedSkillsCache.leasedDir = dir
+	return nil
+}
+
+// releaseSkillsLeaseLocked drops the held lease, if any. The caller holds the
+// cache mutex.
+func releaseSkillsLeaseLocked() {
 	if embeddedSkillsCache.lease != nil {
 		_ = embeddedSkillsCache.lease.Release()
 		embeddedSkillsCache.lease = nil
 	}
-	path, err := skillsLockPath(filepath.Dir(dir), filepath.Base(dir), true)
-	if err != nil {
-		return
-	}
-	lease, contended, err := acquireSkillsLease(path, false)
-	if err != nil || contended {
-		return
-	}
-	embeddedSkillsCache.lease = lease
+	embeddedSkillsCache.leasedDir = ""
+}
+
+// forgetEmbeddedSkillsLocked drops the cached copy and its lease. The caller
+// holds the cache mutex.
+func forgetEmbeddedSkillsLocked() {
+	embeddedSkillsCache.dir = ""
+	embeddedSkillsCache.digest = ""
+	embeddedSkillsCache.skills = nil
+	embeddedSkillsCache.verified = false
+	releaseSkillsLeaseLocked()
 }
 
 // cacheDirExists reports whether dir is still a real directory. It never
@@ -228,32 +259,42 @@ func reapStaleFallbackBases(tmpBase string, now time.Time) {
 			continue
 		}
 		path := filepath.Join(tmpBase, entry.Name())
-		if fallbackBaseInUse(path) {
+		leases, ok := leaseFallbackBase(path)
+		if !ok {
 			continue
 		}
 		_ = os.RemoveAll(path)
+		for _, lease := range leases {
+			_ = lease.Release()
+		}
 	}
 }
 
-// fallbackBaseInUse reports whether a cache directory inside base is held by a
-// live process, in which case the whole base must be left alone.
-func fallbackBaseInUse(base string) bool {
+// leaseFallbackBase takes the exclusive lease on every cache copy inside base,
+// reporting whether the whole base is free to remove. The leases stay held until
+// the caller has removed the base, so a reader cannot acquire one in the gap
+// between the check and the removal.
+func leaseFallbackBase(base string) ([]skillsLease, bool) {
 	locks := filepath.Join(base, skillsLockDirName)
 	entries, err := os.ReadDir(locks)
 	if err != nil {
-		return false
+		return nil, true
 	}
+	var leases []skillsLease
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		lease, ok := tryExclusiveLease(filepath.Join(locks, entry.Name()))
 		if !ok {
-			return true
+			for _, held := range leases {
+				_ = held.Release()
+			}
+			return nil, false
 		}
-		_ = lease.Release()
+		leases = append(leases, lease)
 	}
-	return false
+	return leases, true
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that
@@ -443,7 +484,9 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 			continue
 		}
 		// Only remove a directory no live process holds. The exclusive lease is
-		// held across the removal, so a reader cannot acquire it mid-delete.
+		// held across the removal, so a reader cannot acquire it mid-delete. The
+		// lock file itself stays behind: unlinking it after releasing would let a
+		// waiter lock the old inode while a later process locks a new one.
 		lockPath, err := skillsLockPath(base, entry.Name(), true)
 		if err != nil {
 			continue
@@ -454,7 +497,6 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 		}
 		_ = os.RemoveAll(path)
 		_ = lease.Release()
-		_ = os.Remove(lockPath)
 	}
 }
 
