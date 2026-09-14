@@ -1,3 +1,4 @@
+const fs = require("node:fs");
 const path = require("node:path");
 const { getDefaultConfig } = require("expo/metro-config");
 const config = getDefaultConfig(__dirname);
@@ -27,10 +28,15 @@ config.resolver.resolveRequest = (context, name, platform) => {
 	// that will exercise it.
 	if (name === appwireName || name.startsWith(`${appwireName}/`)) {
 		const subpath = name.slice(appwireName.length).replace(/^\//, "");
-		return {
-			type: "sourceFile",
-			filePath: path.join(appwirePackage, `${subpath || "index"}.ts`),
-		};
+		const filePath = path.join(appwirePackage, `${subpath || "index"}.ts`);
+		// A subpath the package does not have falls through rather than
+		// resolving to a file that is not there: Metro's own "unable to
+		// resolve" names the specifier and the import stack, where a missing
+		// sourceFile surfaces later as a read error against a path the author
+		// never wrote.
+		if (fs.existsSync(filePath)) {
+			return { type: "sourceFile", filePath };
+		}
 	}
 	const originModulePath =
 		shared && !name.startsWith(".") && !path.isAbsolute(name)
