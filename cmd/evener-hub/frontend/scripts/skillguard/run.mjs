@@ -305,14 +305,23 @@ class Driver {
       if (!ta) return { error: "no composer textarea" };
       if (document.activeElement !== ta) return { error: "composer is not the focused element" };
       ${body} })()`;
+    // The typed run sitting where it was inserted is the question every retry
+    // turns on -- not equality with the value we wrote. An app that normalizes
+    // or pads its own draft after accepting ours has taken the text; only a
+    // value where the run is absent has not.
+    const runPresent = (state, at) => state.value.slice(at, at + text.length) === text;
 
     let target = null;
     for (let attempt = 1; ; attempt++) {
-      const base = await this.settleComposer(ref);
-      if (!base.focused) throw new Error(`typeText(${ref}): composer is not the focused element`);
+      const settled = await this.settleComposer(ref);
+      if (!settled.focused) throw new Error(`typeText(${ref}): composer is not the focused element`);
       let reason;
-      if (target && base.value === target.next) {
-        if (base.start === target.caretWant && base.end === target.caretWant) return;
+      if (target && runPresent(settled, target.before.start)) {
+        // The text is in. Whatever else the value now holds is the app's, and
+        // the later payload assertions judge it; the repair here is the caret
+        // alone. Recomputing an insertion from a base that already contains
+        // the run would type it twice.
+        if (settled.start === target.caretWant && settled.end === target.caretWant) return;
         const moved = await evaluate(
           this.send,
           act(`ta.selectionStart = ta.selectionEnd = ${target.caretWant};
@@ -322,17 +331,34 @@ class Driver {
           throw new Error(`typeText(${ref}): ${moved ? moved.error : "no result from the page (navigated or disconnected?)"}`);
         }
         const after = await this.settleComposer(ref);
-        if (after.value === target.next && after.start === target.caretWant && after.end === target.caretWant) return;
+        if (runPresent(after, target.before.start) && after.start === target.caretWant && after.end === target.caretWant) {
+          return;
+        }
         reason = `the caret would not stay at ${target.caretWant} (composer holds ${JSON.stringify(after.value)}, caret ${after.start}-${after.end})`;
       } else {
+        // Where to insert from. A value back at the snapshot we typed into is
+        // a REVERT: re-apply the remembered result at the remembered
+        // selection, since the caret that came back with it is not where the
+        // scenario was typing. Anything else is a concurrent edit, and the
+        // insertion is recomputed from what the composer holds now.
+        let base;
+        let next;
+        let caretWant;
+        if (target && settled.value === target.before.value) {
+          base = target.before;
+          next = target.next;
+          caretWant = target.caretWant;
+        } else {
+          base = { value: settled.value, start: settled.start, end: settled.end };
+          next = base.value.slice(0, base.start) + text + base.value.slice(base.end);
+          caretWant = base.start + text.length;
+          target = { before: base, next, caretWant };
+        }
         // The swap compares the VALUE only. A render that resets the selection
         // without touching the text is the exact failure this guard hit, and
         // recomputing the insertion point from a caret that render moved would
-        // type in the wrong place; the settled selection is the one the
+        // type in the wrong place; the remembered selection is the one the
         // scenario meant.
-        const next = base.value.slice(0, base.start) + text + base.value.slice(base.end);
-        const caretWant = base.start + text.length;
-        target = { next, caretWant };
         const applied = await evaluate(
           this.send,
           act(`if (ta.value !== ${JSON.stringify(base.value)}) return { swapped: false, value: ta.value };
@@ -350,19 +376,20 @@ class Driver {
           throw new Error(`typeText(${ref}): ${applied ? applied.error : "no result from the page (navigated or disconnected?)"}`);
         }
         if (!applied.swapped) {
-          // Nothing was written, so the next attempt must recompute from
-          // whatever the composer now holds.
+          // Nothing was written, and the composer is not at the snapshot
+          // either, so the next attempt recomputes from whatever it holds.
           target = null;
           reason = `the composer changed under the edit (holds ${JSON.stringify(applied.value)}, expected ${JSON.stringify(base.value)})`;
         } else {
-          const settled = await this.settleComposer(ref);
+          const after = await this.settleComposer(ref);
           // The caret decides where the NEXT insert lands, so it is as much
           // part of the edit as the text is.
-          if (settled.value === next && settled.start === caretWant && settled.end === caretWant) return;
-          reason =
-            settled.value === next
-              ? `a render moved the caret to ${settled.start}-${settled.end}, expected ${caretWant}`
-              : `a render landed on the edit (holds ${JSON.stringify(settled.value)}, expected ${JSON.stringify(next)})`;
+          if (runPresent(after, base.start)) {
+            if (after.start === caretWant && after.end === caretWant) return;
+            reason = `a render moved the caret to ${after.start}-${after.end}, expected ${caretWant}`;
+          } else {
+            reason = `a render landed on the edit (holds ${JSON.stringify(after.value)}, expected the text at ${base.start})`;
+          }
         }
       }
       if (attempt >= attempts) {
