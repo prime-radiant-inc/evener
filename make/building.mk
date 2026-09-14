@@ -97,15 +97,22 @@ FILE_TARGETS := evener-dev
 # host whose Go caches have stalled, and a compile it starts has no bound and
 # no diagnostic. It takes the binary as a prerequisite instead, and the binary
 # is a real file target so an up-to-date one costs no go command at all --
-# `make -n test` runs no build when nothing under cmd/ or internal/devtool has
-# changed. Those two trees are where every subcommand this binary dispatches
-# lives; a change further down its import graph is not tracked here, and
-# `make build-dev` is the way to force a build regardless.
-EVENER_DEV_SOURCES := $(shell find cmd internal/devtool -name '*.go' -not -name '*_test.go' 2>/dev/null)
+# `make -n test` runs no build when nothing it is built from has changed.
+#
+# "What it is built from" is every tracked Go source and every module manifest
+# in the workspace, not just the two trees its subcommands live in: this binary
+# imports agent, llm, envvars and the rest, so a change there changes what it
+# does. The wide list costs one `git ls-files` per make invocation, measured at
+# 10-20ms for ~3,300 paths, which is nothing beside the build it replaces.
+#
+# Tracked is the operative word: a brand-new file that has not been `git add`ed
+# does not retrigger the build, because git does not know about it yet.
+# `make build-dev` forces a build in that case, and in any other.
+EVENER_DEV_SOURCES := $(shell git ls-files '*.go' 'go.mod' 'go.sum' 'go.work' '*/go.mod' '*/go.sum' 2>/dev/null)
 
 ## Build the evener-dev dev/test infrastructure binary when its sources have
 ## changed. The test gate's prerequisite; `make build-dev` forces a build.
-evener-dev: $(EVENER_DEV_SOURCES) go.mod go.sum
+evener-dev: $(EVENER_DEV_SOURCES)
 	go build -o evener-dev ./cmd/evener-dev/bin/
 
 ## Build the evener-dev dev/test infrastructure binary (agent-shards,

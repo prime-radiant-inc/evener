@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -274,16 +275,52 @@ func TestBoundedAttemptForwardsTheSignalItWasSentNotATermInstead(t *testing.T) {
 	requireGroupGone(t, result.pgid)
 }
 
+// TestBoundedListEscapeeHelper is not a test: it is the middle of three
+// processes that make a reap impossible to finish. Re-executed from this test
+// binary as the attempt's command, it starts a grandchild in a process group
+// of its own -- so the attempt's group kill cannot reach it -- hands it this
+// process's stdout, and then holds. The grandchild keeps that pipe open after
+// the group is killed, which is what a child stuck in an uninterruptible
+// kernel wait does to its parent's wait.
+func TestBoundedListEscapeeHelper(t *testing.T) {
+	if os.Getenv("BOUNDED_LIST_ESCAPEE") == "" {
+		t.Skip("helper process entry point; runs only under the give-up tests")
+	}
+	child := exec.Command(os.Args[0], "-test.run=TestBoundedListSleeperHelper$")
+	child.Env = append(os.Environ(), "BOUNDED_LIST_SLEEPER=1")
+	child.Stdout = os.Stdout
+	// Its own group: the attempt kills the group this process leads, and this
+	// grandchild has to survive that to hold the pipe.
+	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := child.Start(); err != nil {
+		t.Fatalf("starting the escapee: %v", err)
+	}
+	// Held, not waited for: this process is killed where it stands.
+	time.Sleep(2 * time.Second)
+}
+
+// TestBoundedListSleeperHelper is the grandchild: it holds the inherited pipe
+// for long enough to outlast the attempt's reap grace, and exits on its own so
+// nothing has to signal it.
+func TestBoundedListSleeperHelper(t *testing.T) {
+	if os.Getenv("BOUNDED_LIST_SLEEPER") == "" {
+		t.Skip("helper process entry point; runs only under the give-up tests")
+	}
+	time.Sleep(3 * time.Second)
+}
+
+// escapeeCommand is the attempt's command for the give-up tests: this test
+// binary, re-executed, with nothing ambient involved.
+func escapeeCommand(t *testing.T) []string {
+	t.Helper()
+	t.Setenv("BOUNDED_LIST_ESCAPEE", "1")
+	return []string{os.Args[0], "-test.run=TestBoundedListEscapeeHelper$"}
+}
+
 func TestBoundedAttemptGivesUpOnAChildItCannotReap(t *testing.T) {
 	var stderr bytes.Buffer
-	// A grandchild that leaves the group keeps the stdout pipe open, so the
-	// wait cannot return even once the group is killed -- the same shape as a
-	// child stuck in an uninterruptible kernel wait, which is what a stalled
-	// volume produces and what SIGKILL does not reach. It exits on its own,
-	// so nothing here has to signal it.
-	const escapee = `perl -e 'setpgrp(0,0); sleep 3' & exec sleep 60`
 	start := time.Now()
-	result := runBoundedAttempt([]string{"sh", "-c", escapee}, 200*time.Millisecond, 300*time.Millisecond, &stderr, nil)
+	result := runBoundedAttempt(escapeeCommand(t), 200*time.Millisecond, 300*time.Millisecond, &stderr, nil)
 	if !result.unreaped {
 		t.Fatalf("unreaped = false after %s; the attempt waited for a child it could not reap", time.Since(start))
 	}
@@ -300,6 +337,57 @@ func TestBoundedAttemptGivesUpOnAChildItCannotReap(t *testing.T) {
 	// on a group that cannot answer.
 	if strings.Contains(stderr.String(), "left processes running in its group") {
 		t.Fatalf("stderr = %q, want no survivor sweep after giving up", stderr.String())
+	}
+}
+
+func TestBoundedAttemptKeepsTheInterruptWhenItCannotReap(t *testing.T) {
+	var stderr bytes.Buffer
+	// An interrupt is what the operator asked for; a child the kernel will not
+	// let go of does not turn that into a timeout, whose diagnostic would send
+	// them looking at their caches for a signal they sent themselves.
+	signals := make(chan os.Signal, 1)
+	latch := &signalLatch{ch: signals}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		signals <- syscall.SIGTERM
+	}()
+	result := runBoundedAttempt(escapeeCommand(t), 30*time.Second, 300*time.Millisecond, &stderr, latch)
+	if !result.unreaped {
+		t.Fatal("unreaped = false; this case needs the child that cannot be reaped")
+	}
+	if result.exitCode != 143 {
+		t.Fatalf("exitCode = %d, want 143: the run was interrupted, not timed out", result.exitCode)
+	}
+}
+
+func TestBoundedListDoesNotRetryAChildItCannotReap(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	argv := escapeeCommand(t)
+	args := append([]string{"-timeout", "200ms", "-attempts", "3", "-grace", "300ms", "--"}, argv...)
+	code := boundedListWith(args, &stdout, &stderr, nil)
+	if code != 124 {
+		t.Fatalf("exit code = %d, want 124; stderr = %q", code, stderr.String())
+	}
+	// Another attempt would stack a second stuck process on the volume that
+	// already has one.
+	if got := strings.Count(stderr.String(), "did not exit after SIGKILL"); got != 1 {
+		t.Fatalf("gave up %d times, want exactly one attempt; stderr = %q", got, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr = %q: a child that cannot be reaped is not retried", stderr.String())
+	}
+}
+
+func TestFinishedFirstPrefersTheCommandsOwnAnswer(t *testing.T) {
+	// The bound expiring and the command finishing can be ready together, and
+	// select picks at random; the command's answer wins.
+	finished := make(chan error, 1)
+	finished <- nil
+	if ok, _ := finishedFirst(finished); !ok {
+		t.Fatal("finishedFirst = false for a command whose answer was already waiting")
+	}
+	if ok, _ := finishedFirst(make(chan error)); ok {
+		t.Fatal("finishedFirst = true for a command that has not finished")
 	}
 }
 

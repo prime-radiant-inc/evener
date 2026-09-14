@@ -78,14 +78,20 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		close(reaped)
 		done <- err
 	}()
-	select {
-	case err := <-done:
+	// completed is the attempt that ended by the command's own decision,
+	// whether that was noticed while waiting or at the moment the bound
+	// expired.
+	completed := func(err error) attemptResult {
 		result.stdout = out.Bytes()
 		result.err = err
 		result.exitCode = procgroup.ExitCode(cmd.ProcessState)
 		stopSurvivors(cmd.Path, result.pgid, grace, guarded)
 		result.takeLateSignal(latch)
 		return result
+	}
+	select {
+	case err := <-done:
+		return completed(err)
 	case received := <-latch.waiting():
 		// The command runs in a process group of its own, which is what keeps
 		// a wedged compiler off this host -- and also what stops the
@@ -94,6 +100,9 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.interrupted = latch.receive(received)
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v — stopping %s.\n", received, argv[0])
 	case <-time.After(timeout):
+		if finished, err := finishedFirst(done); finished {
+			return completed(err)
+		}
 		result.timedOut = true
 	}
 	// The signal this helper was sent, if it was sent one, then SIGTERM, the
@@ -108,6 +117,13 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.stdout = out.Bytes()
 		result.unreaped = true
 		result.exitCode = 124
+		// A stuck child does not change what the operator asked for: an
+		// interrupt is still an interrupt, and reporting it as a timeout sends
+		// the caller looking at its caches for a signal it sent itself.
+		result.takeLateSignal(latch)
+		if result.interrupted != 0 {
+			result.exitCode = 128 + int(result.interrupted)
+		}
 		return result
 	}
 	stopSurvivors(cmd.Path, result.pgid, grace, guarded)
@@ -118,6 +134,20 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	}
 	result.takeLateSignal(latch)
 	return result
+}
+
+// finishedFirst takes the command's own answer when it is already waiting.
+// The bound expiring and the command finishing can be ready at the same
+// moment, and select picks between ready cases at random, so without this a
+// command that finished microseconds before the bound would be called a
+// timeout: retried, and reported as 124 on the last attempt.
+func finishedFirst(done <-chan error) (bool, error) {
+	select {
+	case err := <-done:
+		return true, err
+	default:
+		return false, nil
+	}
 }
 
 // reapOrGiveUp waits for the reap that the stop above should have produced,
@@ -324,6 +354,11 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 		}
 		result := runBoundedAttempt(argv, *timeout, *grace, stderr, latch)
 		switch {
+		case result.unreaped && result.interrupted == 0:
+			// Retrying stacks another `go list` on the volume that already
+			// has one stuck on it, and the attempt has said why on stderr.
+			_, _ = stdout.Write(result.stdout)
+			return 124
 		case result.interrupted != 0:
 			// An interrupt is an answer about this run, not about the command:
 			// retrying it would be the opposite of what was asked.
