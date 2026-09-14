@@ -32,12 +32,27 @@ func toolResultContent(t schema.Turn) string {
 
 // --- Phase 1: Token tracking + estimation ---
 
+// testEstimateTokens runs the manager's history estimate with the package's
+// standard test profile, so these arithmetic tests exercise the same resolved
+// rule the compaction paths use.
+func testEstimateTokens(t *testing.T, turns []schema.Turn) int {
+	t.Helper()
+	return NewManager(testProfile("openai", "gpt-5.2", 1_000_000), nil, cheapmodel.New(nil)).estimateTokens(turns)
+}
+
+// testEstimateUsedTokens runs the manager's used-token accounting with the same
+// standard profile.
+func testEstimateUsedTokens(t *testing.T, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
+	t.Helper()
+	return NewManager(testProfile("openai", "gpt-5.2", 1_000_000), nil, cheapmodel.New(nil)).estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
+}
+
 func TestEstimateTokens_EmptyHistory(t *testing.T) {
-	got := estimateTokens(nil)
+	got := testEstimateTokens(t, nil)
 	if got != 0 {
 		t.Fatalf("EstimateTokens(nil) = %d, want 0", got)
 	}
-	got = estimateTokens([]schema.Turn{})
+	got = testEstimateTokens(t, []schema.Turn{})
 	if got != 0 {
 		t.Fatalf("EstimateTokens([]) = %d, want 0", got)
 	}
@@ -46,7 +61,7 @@ func TestEstimateTokens_EmptyHistory(t *testing.T) {
 func TestEstimateTokens_SingleUserTurn(t *testing.T) {
 	text := "Hello, world! This is a test message."
 	turns := []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User(text)}}
-	got := estimateTokens(turns)
+	got := testEstimateTokens(t, turns)
 	want := len(text) / 4
 	if got != want {
 		t.Fatalf("EstimateTokens = %d, want %d (len=%d)", got, want, len(text))
@@ -59,7 +74,7 @@ func TestEstimateTokens_WithToolResults(t *testing.T) {
 		{Kind: schema.TurnUserInput, Message: llm.User("read a file")},
 		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", content, false)},
 	}
-	got := estimateTokens(turns)
+	got := testEstimateTokens(t, turns)
 	// messageCharCount counts: message.ToolCallID + part.ToolCallID + part.Name + content
 	// Message-level ToolCallID = "c1" (2), part ToolCallID = "c1" (2), part Name = "read_file" (9), content (36)
 	// User text = "read a file" (11)
@@ -80,7 +95,7 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 			},
 		}},
 	}
-	got := estimateTokens(turns)
+	got := testEstimateTokens(t, turns)
 	// A thinking part with no replay metadata (no signature, no encrypted
 	// content) is display-only — the adapter never re-sends it — so it must not
 	// be billed to the context estimate (issue #653). Only the answer counts.
@@ -100,8 +115,32 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		}},
 	}
 	totalChars := len("let me think about this carefully") + len("crypto-sig") + len("answer")
-	if got := estimateTokens(replayable); got != totalChars/4 {
+	if got := testEstimateTokens(t, replayable); got != totalChars/4 {
 		t.Fatalf("EstimateTokens = %d, want %d", got, totalChars/4)
+	}
+}
+
+// History accounting follows the resolved row rather than a provider name: an
+// Anthropic row's adapter replays an unsigned thinking block, so its text must
+// be billed; a Responses row keeps that text for display only, so it must not.
+// Billing neither (the state before this) under-reported pressure and let
+// compaction defer past the window an oversized request would cross.
+func TestEstimateTokens_BillsUnsignedThinkingByResolvedProtocol(t *testing.T) {
+	const text = 400 // chars → 100 tokens
+	history := []schema.Turn{{Kind: schema.TurnAssistant, Message: llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("t", text)}},
+		},
+	}}}
+
+	anthropic := NewManager(provider.FromResolved(registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic}, nil), nil, cheapmodel.New(nil))
+	if got, want := anthropic.estimateTokens(history), text/4; got != want {
+		t.Fatalf("anthropic history = %d, want %d: the adapter replays the unsigned thinking block", got, want)
+	}
+	responses := NewManager(provider.FromResolved(registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}, nil), nil, cheapmodel.New(nil))
+	if got := responses.estimateTokens(history); got != 0 {
+		t.Fatalf("responses history = %d, want 0: the adapter keeps raw reasoning text for display only", got)
 	}
 }
 
@@ -119,8 +158,8 @@ func TestEstimateTokens_ImageDataDoesNotScaleWithByteLength(t *testing.T) {
 		}}}
 	}
 
-	small := estimateTokens(turnsWithImage(1))
-	large := estimateTokens(turnsWithImage(1_500_000))
+	small := testEstimateTokens(t, turnsWithImage(1))
+	large := testEstimateTokens(t, turnsWithImage(1_500_000))
 
 	if large != small {
 		t.Fatalf("EstimateTokens scaled with raw image bytes: small=%d large=%d", small, large)
@@ -935,8 +974,9 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 
 // makeBigHistory creates a history where EstimateTokens returns approximately targetTokens.
 func makeBigHistory(targetTokens int) []schema.Turn {
+	cm := NewManager(testProfile("openai", "gpt-5.2", 1_000_000), nil, cheapmodel.New(nil))
 	turns := []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")}}
-	for estimateTokens(turns) < targetTokens {
+	for cm.estimateTokens(turns) < targetTokens {
 		id := fmt.Sprintf("c%d", len(turns))
 		turns = append(turns,
 			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"file.go"}`)},
@@ -1007,7 +1047,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 
 	// Each assistant turn ~400 chars = 100 tokens. Need 85% of 500 = 425 tokens.
 	history := []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")}}
-	for estimateTokens(history) < 425 {
+	for testEstimateTokens(t, history) < 425 {
 		history = append(history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
 		)
@@ -1902,7 +1942,7 @@ func TestAttentionResolutionDoesNotConsumeContextBudgetOrRecentSlots(t *testing.
 	}
 	withMarkers = append(withMarkers, visible[2])
 
-	if got, want := estimateUsedTokens(0, 0, withMarkers, 0), estimateUsedTokens(0, 0, visible, 0); got != want {
+	if got, want := testEstimateUsedTokens(t, 0, 0, withMarkers, 0), testEstimateUsedTokens(t, 0, 0, visible, 0); got != want {
 		t.Fatalf("resolution markers changed estimated provider tokens: got %d want %d", got, want)
 	}
 	compacted := checkpoint(withMarkers, 6, nil, "communicate")

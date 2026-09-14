@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 
+	"primeradiant.com/evener/llm/registry"
+
 	// Registered for their image.DecodeConfig side effects: media token
 	// estimation decodes inline image bytes to read width/height.
 	_ "image/gif"
@@ -56,8 +58,27 @@ type InputTokenCounter interface {
 
 // EstimateInputTokens returns a deterministic local estimate for a request.
 // It never counts inline media bytes as text.
+//
+// The unsigned-thinking rule is decided from the provider and model names,
+// because a bare request carries no resolved row. Callers that have resolved
+// the request's target should use EstimateInputTokensForResolved instead: the
+// name rule cannot recognize a curated OpenAI-compatible chat provider whose
+// name carries no marker, nor an instance alias, and both replay unsigned
+// thinking text.
 func EstimateInputTokens(req Request) InputTokenCount {
-	tokens := estimateMessagesInputTokens(req.Provider, req.Model, req.Messages)
+	return estimateInputTokens(targetFromNames(req.Provider, req.Model), req)
+}
+
+// EstimateInputTokensForResolved returns the local estimate with the
+// unsigned-thinking rule decided by the target's resolved row — its protocol
+// and reasoning capabilities — rather than by name. Callers that have resolved
+// the request's target should prefer this.
+func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTokenCount {
+	return estimateInputTokens(targetFromResolved(res, req.Provider, req.Model), req)
+}
+
+func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
+	tokens := estimateMessagesInputTokens(t, req.Messages)
 	if len(req.Tools) > 0 {
 		b, _ := json.Marshal(req.Tools)
 		tokens += len(b) / 4
@@ -76,10 +97,26 @@ func EstimateInputTokens(req Request) InputTokenCount {
 }
 
 // EstimateMessagesInputTokens estimates only a message list. It is useful for
-// history-only accounting that does not yet have a full Request.
+// history-only accounting that does not yet have a full Request. Its
+// unsigned-thinking rule is the name fallback, since a bare message list
+// carries no target; callers that hold a resolved row should use
+// EstimateMessagesInputTokensForResolved.
 func EstimateMessagesInputTokens(messages []Message) InputTokenCount {
+	return estimateMessageList(targetFromNames("", ""), messages)
+}
+
+// EstimateMessagesInputTokensForResolved estimates a message list for a
+// resolved target, deciding the unsigned-thinking rule from the row's protocol
+// and reasoning capabilities. History accounting (the context manager's
+// compaction pressure) uses it so the thinking text those adapters replay is
+// counted.
+func EstimateMessagesInputTokensForResolved(res registry.Resolved, messages []Message) InputTokenCount {
+	return estimateMessageList(targetFromResolved(res, "", ""), messages)
+}
+
+func estimateMessageList(t targetInfo, messages []Message) InputTokenCount {
 	return InputTokenCount{
-		Tokens: estimateMessagesInputTokens("", "", messages),
+		Tokens: estimateMessagesInputTokens(t, messages),
 		Exact:  false,
 		Source: TokenCountSourceLocalEstimate,
 	}
@@ -106,6 +143,12 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	if t.resolved {
 		req = ShapeRequest(req, t.res)
 	}
+	localEstimate := func() InputTokenCount {
+		if t.resolved {
+			return EstimateInputTokensForResolved(t.res, req)
+		}
+		return EstimateInputTokens(req)
+	}
 
 	// countExactly is the exact-count call of whichever half of the target
 	// serves the request; nil when an override offers no exact counter.
@@ -119,7 +162,7 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 		countExactly = func(ctx context.Context) (InputTokenCount, error) { return counter.CountInputTokens(ctx, req) }
 	}
 	if countExactly == nil {
-		out := EstimateInputTokens(req)
+		out := localEstimate()
 		out.Provider = t.name
 		return out, nil
 	}
@@ -129,7 +172,7 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	operation.settle(opCtx, err)
 	if err != nil {
 		if errors.Is(err, ErrInputTokenCountUnsupported) {
-			estimate := EstimateInputTokens(req)
+			estimate := localEstimate()
 			estimate.Provider = t.name
 			return estimate, nil
 		}
@@ -150,18 +193,18 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	return out, nil
 }
 
-func estimateMessagesInputTokens(provider, model string, messages []Message) int {
+func estimateMessagesInputTokens(t targetInfo, messages []Message) int {
 	chars := 0
 	tokens := 0
 	for _, m := range messages {
-		c, t := estimateMessageInputParts(provider, model, m)
+		c, counted := estimateMessageInputParts(t, m)
 		chars += c
-		tokens += t
+		tokens += counted
 	}
 	return tokens + chars/4
 }
 
-func estimateMessageInputParts(provider, model string, m Message) (int, int) {
+func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 	chars := len(m.Name) + len(m.ToolCallID)
 	tokens := 0
 	for _, p := range m.Content {
@@ -170,7 +213,7 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 			chars += len(p.Text)
 		case ContentImage:
 			if p.Image != nil {
-				tokens += estimateImageTokens(provider, model, p.Image)
+				tokens += estimateImageTokens(t.provider, t.model, p.Image)
 			}
 		case ContentAudio:
 			tokens += fallbackMediaTokens
@@ -189,7 +232,7 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 				chars += len(p.ToolResult.ToolCallID)
 				chars += len(p.ToolResult.Name)
 				if len(p.ToolResult.ImageData) > 0 || p.ToolResult.ImageMediaType != "" {
-					tokens += estimateImageTokens(provider, model, &ImageData{Data: p.ToolResult.ImageData, MediaType: p.ToolResult.ImageMediaType})
+					tokens += estimateImageTokens(t.provider, t.model, &ImageData{Data: p.ToolResult.ImageData, MediaType: p.ToolResult.ImageMediaType})
 				}
 				switch x := p.ToolResult.Content.(type) {
 				case string:
@@ -202,7 +245,7 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			chars += thinkingReplayChars(provider, model, p)
+			chars += thinkingReplayChars(t, p)
 		case ContentWebSearch:
 			if p.WebSearch != nil {
 				chars += len(p.WebSearch.Query)
@@ -229,19 +272,10 @@ func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 //     in that field, with the name itself not payload.
 //
 // Text that carries no replay metadata is billed only for the adapters that
-// replay it unsigned (see providerReplaysUnsignedThinking): the Anthropic
-// Messages adapter emits {"type":"thinking","thinking":text}, and the
-// OpenAI-compatible chat adapter replays the text on the reasoning field or
-// merges it into assistant content on a ThinkingAsText row. Every other
-// adapter keeps the pre-existing zero: the OpenAI Responses adapter re-sends a
-// reasoning item only when it carries encrypted_content and keeps raw
-// reasoning_text for display only (gateway-fronted GLM), and Google drops the
-// part.
-//
-// The adapter is chosen by the request's resolved registry row, which the
-// estimator never sees, so the classification is by provider and model name.
-// EstimateMessagesInputTokens carries neither and cannot bill unsigned text.
-func thinkingReplayChars(provider, model string, p ContentPart) int {
+// replay it unsigned, decided by the target the caller supplied: a resolved row
+// decides it exactly (unsignedThinkingReplayed), while a caller that passed
+// only names gets the documented fallback (unsignedThinkingReplayedByName).
+func thinkingReplayChars(target targetInfo, p ContentPart) int {
 	if p.Thinking == nil {
 		return 0
 	}
@@ -271,36 +305,90 @@ func thinkingReplayChars(provider, model string, p ContentPart) int {
 		}
 		return len(t.Text) + len(t.Signature)
 	}
-	if providerReplaysUnsignedThinking(provider, model) {
+	if target.unsignedThinking {
 		return len(t.Text)
 	}
 	return 0
 }
 
-// providerReplaysUnsignedThinking reports whether the adapter selected for a
-// provider replays a ContentThinking part that carries text and no replay
-// metadata. The estimator has no resolved registry row, so the match is on the
-// provider and model names:
+// targetInfo is what the local estimator knows about the request's target: the
+// names the media estimates key on, and whether the target's adapter replays a
+// thinking part that carries text and no replay metadata.
+type targetInfo struct {
+	provider, model  string
+	unsignedThinking bool
+}
+
+// targetFromNames builds the name-based view used by the exported entry points
+// that take a bare Request or message list.
+func targetFromNames(provider, model string) targetInfo {
+	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayedByName(provider, model)}
+}
+
+// targetFromResolved builds the exact view from a resolved registry row.
+func targetFromResolved(res registry.Resolved, provider, model string) targetInfo {
+	return targetInfo{provider: provider, model: model, unsignedThinking: unsignedThinkingReplayed(res)}
+}
+
+// unsignedThinkingReplayed reports whether the adapter the resolved target
+// selects replays a ContentThinking part that carries text and no replay
+// metadata:
 //
-//   - an Anthropic-named provider (anthropic, anthropic-compatible,
-//     google-vertex-anthropic) or a Claude model, which the Anthropic protocol
-//     also serves through aliases, selects the Anthropic Messages adapter;
-//   - an OpenAI-compatible chat name (openai-compatible, openaicompat, an
-//     openai-chat name) selects the OpenAI-compatible chat adapter.
+//   - the Anthropic Messages adapter emits the block it is given as
+//     {"type":"thinking","thinking":text} (anthropic/request.go);
+//   - the OpenAI-compatible chat adapter replays the text on the reasoning
+//     field unless the row is declared non-reasoning, and merges it into
+//     assistant content when the row sets ThinkingAsText
+//     (chatcompletions/messages.go);
+//   - the OpenAI Responses adapter re-sends a reasoning item only when it
+//     carries encrypted_content and keeps raw reasoning_text for display only
+//     (gateway-fronted GLM), and Google drops the part; neither replays this
+//     text.
 //
-// The OpenAI Responses and Google adapters, which drop unsigned text, do not
-// match, nor does a provider whose alias hides its base (an instance named
-// "work" over an OpenAI-compatible row); that alias stays unbilled until a
-// caller can supply the resolved protocol.
-func providerReplaysUnsignedThinking(provider, model string) bool {
+// A row with no resolved protocol falls back to the names it carries, because
+// such a row still knows what it was named.
+func unsignedThinkingReplayed(res registry.Resolved) bool {
+	switch res.Protocol {
+	case registry.ProtocolAnthropic:
+		return true
+	case registry.ProtocolOpenAIChat:
+		return registry.BoolValue(res.Caps.ThinkingAsText) || !res.Caps.ReasoningDisabled()
+	case "":
+		return unsignedThinkingReplayedByName(res.Instance, res.ModelID)
+	default:
+		return false
+	}
+}
+
+// unsignedThinkingReplayedByName is the fallback for callers with no resolved
+// row. The provider name is consulted first, so a model name cannot override a
+// provider that selects a non-replaying adapter; a Claude model is the last
+// resort, for an alias whose name selects nothing.
+//
+// It can only be as good as the names: a curated OpenAI-compatible chat
+// provider whose name carries no marker (ollama, groq, zai, moonshotai, a
+// non-Claude openrouter row) and an instance alias that hides its base are both
+// under-billed here. Callers holding a resolved row avoid that by using
+// EstimateInputTokensForResolved or EstimateMessagesInputTokensForResolved.
+func unsignedThinkingReplayedByName(provider, model string) bool {
 	p := strings.ToLower(strings.TrimSpace(provider))
 	m := strings.ToLower(strings.TrimSpace(model))
 	switch {
-	case strings.Contains(p, "anthropic") || strings.Contains(m, "claude"):
+	case strings.Contains(p, "anthropic"):
+		// Also google-vertex-anthropic and anthropic-compatible, which the
+		// Anthropic protocol serves.
 		return true
-	case strings.Contains(p, "compat") || strings.Contains(p, "openai-chat"):
+	case strings.Contains(p, "google") || strings.Contains(p, "gemini"):
 		// google-compatible names the Google protocol, which drops the part.
-		return !strings.Contains(p, "google")
+		return false
+	case strings.Contains(p, "compat") || strings.Contains(p, "openai-chat"):
+		return true
+	case strings.Contains(p, "openai"):
+		// The curated openai rows speak the Responses protocol, which keeps raw
+		// reasoning text for display only.
+		return false
+	case strings.Contains(m, "claude"):
+		return true
 	default:
 		return false
 	}

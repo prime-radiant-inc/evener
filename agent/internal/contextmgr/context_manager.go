@@ -374,7 +374,7 @@ func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) f
 	measuredLen := cm.historyLenAtMeasure
 	cm.mu.Unlock()
 
-	totalTokens := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
+	totalTokens := cm.estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
 	return float64(totalTokens) / float64(cw)
 }
 
@@ -385,13 +385,13 @@ func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) f
 // measured length is within the current history), it uses the measurement as a
 // baseline and estimates only the turns appended since; otherwise it falls back to
 // the char/4 heuristic over the whole history plus the system prompt.
-func estimateUsedTokens(lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
+func (cm *Manager) estimateUsedTokens(lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
 	if lastTokens > 0 && measuredLen <= len(history) {
 		// Use the known token count as baseline, then estimate only new turns.
-		return lastTokens + estimateTokens(history[measuredLen:])
+		return lastTokens + cm.estimateTokens(history[measuredLen:])
 	}
 	// Fall back to char/4 for everything.
-	return estimateTokens(history) + sysPromptChars/4
+	return cm.estimateTokens(history) + sysPromptChars/4
 }
 
 // EstimatePressure returns the estimated fraction of context window in use.
@@ -411,7 +411,7 @@ func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) sche
 	measuredLen := cm.historyLenAtMeasure
 	cm.mu.Unlock()
 
-	used := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
+	used := cm.estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
 	remaining := max(cw-used, 0)
 	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining}
 }
@@ -438,7 +438,11 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 }
 
 // estimateTokens estimates token count for turns using the char/4 heuristic.
-func estimateTokens(turns []schema.Turn) int {
+// The manager's profile knows the target's protocol and reasoning capabilities,
+// so thinking text is billed exactly for the adapters that replay it: history
+// accounting that kept it at zero let compaction defer past the window an
+// oversized request would cross.
+func (cm *Manager) estimateTokens(turns []schema.Turn) int {
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
 		if t.Kind == schema.TurnAttentionResolution {
@@ -446,7 +450,7 @@ func estimateTokens(turns []schema.Turn) int {
 		}
 		messages = append(messages, t.Message)
 	}
-	return llm.EstimateMessagesInputTokens(messages).Tokens
+	return llm.EstimateMessagesInputTokensForResolved(cm.currentProfile().Resolved(), messages).Tokens
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {
@@ -526,9 +530,9 @@ func (cm *Manager) MaybeCompact(
 	// Layer 1: Deterministic checkpoint at ≥80%.
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := cm.estimateTokens(*history)
 		*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
-		after := estimateTokens(*history)
+		after := cm.estimateTokens(*history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,
@@ -546,7 +550,7 @@ func (cm *Manager) MaybeCompact(
 	// Layer 2: LLM summarization at ≥90%.
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := cm.estimateTokens(*history)
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			// On error, emit warning but continue with current history.
@@ -555,7 +559,7 @@ func (cm *Manager) MaybeCompact(
 			})
 		} else {
 			*history = result
-			after := estimateTokens(*history)
+			after := cm.estimateTokens(*history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,
@@ -597,9 +601,9 @@ func (cm *Manager) ForceCompact(
 
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
-	before := estimateTokens(*history)
+	before := cm.estimateTokens(*history)
 	*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
-	after := estimateTokens(*history)
+	after := cm.estimateTokens(*history)
 	emitFn(events.EventContextCompaction, events.ContextCompactionData{
 		Layer:           "checkpoint",
 		TurnsBefore:     turnsBefore,
@@ -614,7 +618,7 @@ func (cm *Manager) ForceCompact(
 	// Layer 2: LLM summarization (only if client is available).
 	if cm.client != nil {
 		turnsBefore = len(*history)
-		before = estimateTokens(*history)
+		before = cm.estimateTokens(*history)
 		// The summarizer returns the input unchanged for short or unsafe history,
 		// which must not count a pre-existing summary as a newly generated one.
 		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
@@ -627,7 +631,7 @@ func (cm *Manager) ForceCompact(
 		} else {
 			summarized = canSummarize && len(result) > 0 && result[0].Kind == schema.TurnSummary
 			*history = result
-			after := estimateTokens(*history)
+			after := cm.estimateTokens(*history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

@@ -8,6 +8,8 @@ import (
 	"image/png"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestEstimateMessagesInputTokensIsAlwaysMarkedInexact(t *testing.T) {
@@ -439,4 +441,116 @@ func pngImage(t *testing.T, width, height int) []byte {
 		t.Fatalf("png.Encode: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// thinkingOnlyRequest builds a one-message request whose only payload is a
+// thinking part with text and no replay metadata, so the estimate isolates the
+// unsigned-thinking rule.
+func thinkingOnlyRequest(provider, model, text string) Request {
+	return Request{
+		Provider: provider,
+		Model:    model,
+		Messages: []Message{{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{Text: text}},
+		}}},
+	}
+}
+
+// A curated OpenAI-compatible chat provider (ollama, groq, zai, ...) carries no
+// marker in its name, so only the resolved row can say that its adapter replays
+// unsigned thinking text. Admission must bill it: undercounting here is what
+// lets an oversized request pass the local budget.
+func TestApplyTokenBudget_ResolvedOpenAIChatProviderBillsUnsignedThinking(t *testing.T) {
+	const text = 400 // chars → 100 tokens
+	reasoning := true
+	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
+
+	_, with, err := ApplyTokenBudget(thinkingOnlyRequest("ollama", "llama-thinking", strings.Repeat("t", text)), res)
+	if err != nil {
+		t.Fatalf("ApplyTokenBudget(with thinking): %v", err)
+	}
+	_, without, err := ApplyTokenBudget(Request{Provider: "ollama", Model: "llama-thinking"}, res)
+	if err != nil {
+		t.Fatalf("ApplyTokenBudget(without thinking): %v", err)
+	}
+	if got, want := with.InputTokens-without.InputTokens, text/4; got != want {
+		t.Fatalf("thinking text added %d budget tokens, want %d: a resolved openai-chat row replays unsigned thinking text", got, want)
+	}
+}
+
+// The other direction: a row declared non-reasoning that does not merge
+// thinking into content drops the part, so billing it would fail the budget
+// early and force needless compaction.
+func TestApplyTokenBudget_NonReasoningOpenAIChatRowDoesNotBillUnsignedThinking(t *testing.T) {
+	reasoning := false
+	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
+
+	_, with, err := ApplyTokenBudget(thinkingOnlyRequest("openai-compatible", "plain-model", strings.Repeat("t", 400)), res)
+	if err != nil {
+		t.Fatalf("ApplyTokenBudget(with thinking): %v", err)
+	}
+	_, without, err := ApplyTokenBudget(Request{Provider: "openai-compatible", Model: "plain-model"}, res)
+	if err != nil {
+		t.Fatalf("ApplyTokenBudget(without thinking): %v", err)
+	}
+	if got := with.InputTokens - without.InputTokens; got != 0 {
+		t.Fatalf("thinking text added %d budget tokens, want 0: the row drops the part", got)
+	}
+}
+
+// The resolved row decides, not the name: the same openai-named provider bills
+// the text only when its row says the adapter replays it.
+func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
+	const text = 400
+	req := thinkingOnlyRequest("openai", "gpt-x", strings.Repeat("t", text))
+	if got := EstimateInputTokens(req).Tokens; got != 0 {
+		t.Fatalf("name-path estimate = %d, want 0: the curated openai rows speak Responses", got)
+	}
+	reasoning := true
+	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
+	if got, want := EstimateInputTokensForResolved(res, req).Tokens, text/4; got != want {
+		t.Fatalf("resolved estimate = %d, want %d: the row says openai-chat, which replays the text", got, want)
+	}
+}
+
+// The provider name is consulted before the model name, so a Claude model under
+// a Google row does not claim an Anthropic replay; a Claude model under an alias
+// that selects nothing is still the best signal there is.
+func TestEstimateInputTokens_ProviderNameDominatesTheClaudeModelFallback(t *testing.T) {
+	const text = 400
+	google := thinkingOnlyRequest("google", "claude-sonnet", strings.Repeat("t", text))
+	if got := EstimateInputTokens(google).Tokens; got != 0 {
+		t.Fatalf("estimate = %d, want 0: the google provider drops the part regardless of the model name", got)
+	}
+	alias := thinkingOnlyRequest("work", "claude-sonnet", strings.Repeat("t", text))
+	if got, want := EstimateInputTokens(alias).Tokens, text/4; got != want {
+		t.Fatalf("estimate = %d, want %d: an unresolved alias carrying a Claude model still bills", got, want)
+	}
+}
+
+// The history entry point the context manager uses decides by the row too, so
+// compaction pressure sees replayable thinking text and does not see text the
+// adapter drops.
+func TestEstimateMessagesInputTokensForResolved_BillsAndSparesUnsignedThinking(t *testing.T) {
+	const text = 400
+	messages := []Message{{Role: RoleAssistant, Content: []ContentPart{
+		{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("t", text)}},
+	}}}
+
+	anthropic := registry.Resolved{Protocol: registry.ProtocolAnthropic}
+	if got, want := EstimateMessagesInputTokensForResolved(anthropic, messages).Tokens, text/4; got != want {
+		t.Fatalf("anthropic history = %d, want %d", got, want)
+	}
+	responses := registry.Resolved{Protocol: registry.ProtocolOpenAIResponses}
+	if got := EstimateMessagesInputTokensForResolved(responses, messages).Tokens; got != 0 {
+		t.Fatalf("responses history = %d, want 0: the adapter keeps raw reasoning text for display only", got)
+	}
+	reasoning := false
+	chatNo := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
+	if got := EstimateMessagesInputTokensForResolved(chatNo, messages).Tokens; got != 0 {
+		t.Fatalf("non-reasoning chat history = %d, want 0", got)
+	}
+	if got := EstimateMessagesInputTokens(messages).Tokens; got != 0 {
+		t.Fatalf("targetless history = %d, want 0: the name fallback has no row to decide from", got)
+	}
 }

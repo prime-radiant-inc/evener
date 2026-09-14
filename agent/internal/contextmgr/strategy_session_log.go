@@ -77,9 +77,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 
 	// Layer 1: Observation masking.
 	if p >= s.cm.ObservationMaskThreshold {
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokens(*history)
 		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
-		after := estimateTokens(*history)
+		after := s.cm.estimateTokens(*history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "observation_mask",
 			TurnsBefore:     len(*history),
@@ -93,9 +93,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 
 	// Layer 2: Thinking clearing.
 	if p >= s.cm.ThinkingClearThreshold {
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokens(*history)
 		clearThinking(*history, s.cm.PreserveRecentTurns)
-		after := estimateTokens(*history)
+		after := s.cm.estimateTokens(*history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "thinking_clear",
 			TurnsBefore:     len(*history),
@@ -110,9 +110,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// Layer 3 (replaced): Session-log checkpoint.
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokens(*history)
 		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
-		after := estimateTokens(*history)
+		after := s.cm.estimateTokens(*history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "session_log_checkpoint",
 			TurnsBefore:     turnsBefore,
@@ -130,7 +130,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// Layer 4: LLM summarization fallback.
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokens(*history)
 		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
@@ -138,7 +138,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			})
 		} else {
 			*history = result
-			after := estimateTokens(*history)
+			after := s.cm.estimateTokens(*history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

@@ -89,7 +89,7 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 		return false
 	}
 
-	count := llm.EstimateInputTokens(req)
+	count := llm.EstimateInputTokensForResolved(profile.Resolved(), req)
 	warn, approxTokens, pct := contextUsageWarning(cw, count.Tokens)
 	if !warn {
 		return false
