@@ -100,7 +100,7 @@ func detectSupervisorFrom(goos string, launchctlOut, systemdOut, systemdUserOut 
 // `launchctl list` prints "PID Status Label" per line; a job with no running
 // pid shows "-". The doc's precedent is `launchctl list | grep evener-hub`.
 func parseLaunchdHub(out []byte) (string, bool) {
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 3 || fields[0] == "PID" {
 			continue
@@ -117,7 +117,7 @@ func parseLaunchdHub(out []byte) (string, bool) {
 // Each line starts with the unit name, e.g. "evener-hub.service loaded active".
 // A leading status glyph (●) is stripped.
 func parseSystemdHub(out []byte) (string, bool) {
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "●"))
 		if len(fields) == 0 {
 			continue
@@ -177,7 +177,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		// so a nonzero restart exit is only an error if the hub stays unhealthy.
 		if herr := m.waitHealthy(ctx, host); herr != nil {
 			if err != nil {
-				return fmt.Errorf("%w: host %q %s: %v: %s", ErrRestart, host.Name, remote, err, tail(out))
+				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, err, tail(out))
 			}
 			return herr
 		}
@@ -202,7 +202,7 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "ps -p "+pid+" -ww -o command"), nil)
 	if err != nil {
-		return fmt.Errorf("%w: host %q ps pid %s: %v: %s", ErrRestart, host.Name, pid, err, tail(out))
+		return fmt.Errorf("%w: host %q ps pid %s: %w: %s", ErrRestart, host.Name, pid, err, tail(out))
 	}
 	cmdline := strings.TrimSpace(string(out))
 	if cmdline == "" {
@@ -219,7 +219,7 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 	// operations.md:363-377).
 	kout, kerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "kill "+pid), nil)
 	if kerr != nil {
-		return fmt.Errorf("%w: host %q could not stop hub pid %s: %v: %s", ErrRestart, host.Name, pid, kerr, tail(kout))
+		return fmt.Errorf("%w: host %q could not stop hub pid %s: %w: %s", ErrRestart, host.Name, pid, kerr, tail(kout))
 	}
 	if err := m.waitPortClear(ctx, host, port); err != nil {
 		return err
@@ -228,7 +228,7 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 	relaunch := relaunchCommand(cmdline, logPath)
 	rout, rerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
 	if rerr != nil {
-		return fmt.Errorf("%w: host %q relaunch: %v: %s", ErrRestart, host.Name, rerr, tail(rout))
+		return fmt.Errorf("%w: host %q relaunch: %w: %s", ErrRestart, host.Name, rerr, tail(rout))
 	}
 	return nil
 }
@@ -238,7 +238,7 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 func (m *Manager) findHubPID(ctx context.Context, host hostreg.Host, port string) (string, error) {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -ti :"+port+" -sTCP:LISTEN"), nil)
 	if err != nil {
-		return "", fmt.Errorf("%w: host %q no hub listening on :%s to restart: %v: %s", ErrRestart, host.Name, port, err, tail(out))
+		return "", fmt.Errorf("%w: host %q no hub listening on :%s to restart: %w: %s", ErrRestart, host.Name, port, err, tail(out))
 	}
 	pid := firstLine(string(out))
 	if pid == "" {
@@ -251,10 +251,8 @@ func (m *Manager) findHubPID(ctx context.Context, host hostreg.Host, port string
 // is exhausted. lsof exits nonzero when it finds no listener, which is the
 // success condition here.
 func (m *Manager) waitPortClear(ctx context.Context, host hostreg.Host, port string) error {
-	remote := "lsof -ti :" + port + " -sTCP:LISTEN"
-	for i := 0; i < restartStopAttempts; i++ {
-		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
-		if err != nil || strings.TrimSpace(string(out)) == "" {
+	for range restartStopAttempts {
+		if m.portCleared(ctx, host, port) {
 			return nil
 		}
 		if err := m.opts.waitSleep(ctx, restartStopInterval); err != nil {
@@ -264,13 +262,23 @@ func (m *Manager) waitPortClear(ctx context.Context, host hostreg.Host, port str
 	return fmt.Errorf("%w: host %q hub port :%s still held after kill", ErrRestart, host.Name, port)
 }
 
+// portCleared reports whether the host has no listener on the hub port. lsof
+// exits nonzero when it finds none, so its error is this wait's success signal
+// rather than a failure to report; a held port is an empty listing with a nil
+// error. Keeping that judgement here (a boolean) rather than in a bare
+// `if err != nil { return nil }` is what keeps the intent legible.
+func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port string) bool {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -ti :"+port+" -sTCP:LISTEN"), nil)
+	return err != nil || strings.TrimSpace(string(out)) == ""
+}
+
 // waitHealthy polls the host hub's /api/health until it answers or the bound is
 // exhausted. This is the authoritative restart check: supervisor commands can
 // misreport, but a healthy endpoint proves a fresh hub is serving.
 func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host) error {
 	port := hubPort(m.opts.hubAddr())
 	remote := "curl -fsS localhost:" + port + "/api/health"
-	for i := 0; i < restartHealthAttempts; i++ {
+	for range restartHealthAttempts {
 		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil && strings.TrimSpace(string(out)) != "" {
 			return nil
 		}
@@ -295,7 +303,7 @@ func relaunchCommand(cmdline, logPath string) string {
 // from `lsof -p <pid> -a -d 1,2` output. A tty destination (nothing redirected
 // at launch) yields no path.
 func parseLogPath(out []byte) (string, bool) {
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 9 || fields[0] == "COMMAND" {
 			continue

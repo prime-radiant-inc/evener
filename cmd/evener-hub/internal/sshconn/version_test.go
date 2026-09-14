@@ -223,7 +223,7 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 	if bi < 0 || pi < 0 || ri < 0 || si < 0 {
 		t.Fatalf("missing phase(s) in %v", events)
 	}
-	if !(bi < pi && pi < ri && ri < si) {
+	if bi >= pi || pi >= ri || ri >= si {
 		t.Fatalf("phases out of order (build<push<restart<start): %v", events)
 	}
 

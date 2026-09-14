@@ -42,7 +42,7 @@ func localBuild(ctx context.Context, goos, goarch, out string) error {
 	}
 	outBytes, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("go build %s/%s: %v: %s", goos, goarch, err, tail(outBytes))
+		return fmt.Errorf("go build %s/%s: %w: %s", goos, goarch, err, tail(outBytes))
 	}
 	return nil
 }
@@ -94,9 +94,9 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 
 	stageDir, err := os.MkdirTemp("", "evener-deploy-")
 	if err != nil {
-		return fmt.Errorf("%w: host %q staging dir: %v", ErrDeploy, host.Name, err)
+		return fmt.Errorf("%w: host %q staging dir: %w", ErrDeploy, host.Name, err)
 	}
-	defer os.RemoveAll(stageDir)
+	defer func() { _ = os.RemoveAll(stageDir) }()
 	stage := filepath.Join(stageDir, "evener")
 
 	build := m.opts.BuildBinary
@@ -104,14 +104,14 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 		build = localBuild
 	}
 	if err := build(ctx, facts.OS, facts.Arch, stage); err != nil {
-		return fmt.Errorf("%w: host %q build %s/%s: %v", ErrDeploy, host.Name, facts.OS, facts.Arch, err)
+		return fmt.Errorf("%w: host %q build %s/%s: %w", ErrDeploy, host.Name, facts.OS, facts.Arch, err)
 	}
 
 	f, err := os.Open(stage)
 	if err != nil {
-		return fmt.Errorf("%w: host %q open staged binary: %v", ErrDeploy, host.Name, err)
+		return fmt.Errorf("%w: host %q open staged binary: %w", ErrDeploy, host.Name, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	return m.pushBinary(ctx, host, target, f)
 }
@@ -124,14 +124,14 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, 
 		dir := path.Dir(p)
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "test -d "+dir), nil)
 		if err != nil {
-			return "", fmt.Errorf("%w: host %q evener_path directory %q does not exist: %v: %s", ErrDeploy, host.Name, dir, err, tail(out))
+			return "", fmt.Errorf("%w: host %q evener_path directory %q does not exist: %w: %s", ErrDeploy, host.Name, dir, err, tail(out))
 		}
 		return p, nil
 	}
 
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v evener"), nil)
 	if err != nil {
-		return "", fmt.Errorf("%w: host %q evener not found on PATH: %v: %s", ErrDeploy, host.Name, err, tail(out))
+		return "", fmt.Errorf("%w: host %q evener not found on PATH: %w: %s", ErrDeploy, host.Name, err, tail(out))
 	}
 	p := strings.TrimSpace(string(out))
 	if p == "" {
@@ -149,7 +149,7 @@ func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target stri
 	remote := fmt.Sprintf("cat > %s && chmod +x %s && mv %s %s", tmp, tmp, tmp, target)
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), data)
 	if err != nil {
-		return fmt.Errorf("%w: host %q push %s: %v: %s", ErrDeploy, host.Name, target, err, tail(out))
+		return fmt.Errorf("%w: host %q push %s: %w: %s", ErrDeploy, host.Name, target, err, tail(out))
 	}
 	return nil
 }
