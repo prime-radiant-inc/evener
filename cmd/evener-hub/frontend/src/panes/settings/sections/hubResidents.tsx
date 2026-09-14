@@ -369,8 +369,11 @@ export function HubResidents() {
                           Force stop
                         </Button>
                         {/* List-snapshot blockers — visible before any retire attempt
-                            so the operator can see why a row is not retirable. */}
-                        {snapshotBlockers.length > 0 && (
+                            so the operator can see why a row is not retirable. Once a
+                            retire result is displayed, the refusal's own blockers
+                            supersede this snapshot: the claim snapshot carries the same
+                            in-flight leases, so rendering both duplicates the line. */}
+                        {(retireResult === undefined || retireResult.accepted) && snapshotBlockers.length > 0 && (
                           <div className={CLASS.blockers}>
                             {"Blocked by: "}
                             {snapshotBlockers.map(formatBlocker).join(", ")}

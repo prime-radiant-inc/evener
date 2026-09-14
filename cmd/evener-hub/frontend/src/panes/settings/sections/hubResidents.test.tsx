@@ -1176,6 +1176,60 @@ test("retire refusal survives a fresh current snapshot that stops reporting the 
   expect(screen.getAllByText(/session-abc/)).toHaveLength(1);
 });
 
+// ─── Round-8 finding 6: no duplicate "Blocked by" lines after a refusal ──────
+
+test("a refused retire whose blockers subsume the snapshot blockers renders one Blocked by line", async () => {
+  const fake = connectFakeClient();
+  // The list snapshot already reports the in-flight delegate lease, exactly as
+  // the server's status snapshot does.
+  const inFlightBlocker = { category: "delegate", sessionId: "session-root", delegateId: "dlg-xyz" };
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Duplicate blocked resident",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [inFlightBlocker] },
+        canRetire: true,
+        canForceStop: true,
+      },
+    ],
+  }));
+  // The refusal's lifecycle is the daemon's fresh claim snapshot: it carries the
+  // same in-flight delegate lease plus the offline obligation behind the
+  // refusal, so it subsumes the snapshot blocker above.
+  fake.on("evener/daemon/retire", () => ({
+    accepted: false,
+    lifecycle: {
+      phase: "resident",
+      timeoutMillis: 3600000,
+      blockers: [inFlightBlocker, { category: "job", sessionId: "session-root" }],
+    },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Duplicate blocked resident/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+
+  // The refusal's blockers include the in-flight lease the snapshot also
+  // reports. Rendering the snapshot-blockers div as well would duplicate the
+  // same "Blocked by:" line, so exactly one such line must remain.
+  await waitFor(() => {
+    const updatedRow = screen.getByRole("row", { name: /Duplicate blocked resident/ });
+    expect(within(updatedRow).getAllByText(/^Blocked by:/)).toHaveLength(1);
+  });
+  const updatedRow = screen.getByRole("row", { name: /Duplicate blocked resident/ });
+  // The subsumed in-flight blocker must appear once, and the refusal-only
+  // obligation must still be shown.
+  expect(within(updatedRow).getAllByText(/dlg-xyz/)).toHaveLength(1);
+  expect(within(updatedRow).getByText(/job \(session-root\)/)).toBeTruthy();
+});
+
 // ─── M-6: Departed-daemon per-row state is pruned ────────────────────────────
 
 test("a departed daemon's action error is pruned and does not resurface on a same-ref row", async () => {
