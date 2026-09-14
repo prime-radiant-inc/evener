@@ -256,8 +256,15 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 
 	// Captured with the flow: the authorize round trip below is long enough
 	// for an edit to re-point the instance, and this is the only value that
-	// can say which endpoint the user began signing in for.
+	// can say which endpoint the user began signing in for. An empty capture is
+	// only ever "no destination to check", a hub with no state root to key
+	// with, or a destination whose fingerprint the hub could not key right now:
+	// the last is one the completion would have no comparison for, so it is
+	// refused here, before a flow is recorded (verifyFlowEndpoint).
 	endpoint := c.endpointFingerprintFor(provider)
+	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
+		return appwire.AuthLoginStartResponse{}, appwire.Conflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+	}
 	c.mu.Lock()
 	if c.flows == nil {
 		c.flows = map[string]hubAuthFlow{}
@@ -626,8 +633,14 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	// Captured before the device-code request, which is itself a network round
 	// trip: this is the endpoint the flow starts on. One an edit arrives at
 	// during that request has to fail the completion's comparison rather than
-	// be adopted as the destination the user asked for.
+	// be adopted as the destination the user asked for. As on LoginStart, an
+	// empty capture with a destination to name and a state root that cannot key
+	// it is refused before a device code is requested at all: the poll would
+	// have nothing to compare (verifyFlowEndpoint).
 	endpoint := c.endpointFingerprintFor(provider)
+	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
+		return appwire.AuthDeviceStartResponse{}, appwire.Conflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+	}
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
 	if err != nil {
 		if errors.Is(err, authopenai.ErrDeviceCodeNotEnabled) {
@@ -789,18 +802,19 @@ func (c *hubAuthController) nameIsConnectable(name string) bool {
 	return ok
 }
 
-// endpointFingerprintFor is the destination fingerprint a client was shown for
-// name, asked of the same registry the write lands against and over the same
-// identity a listing row serves (destinationFingerprint). Empty when the name
-// resolves to no destination here, or when the hub has no key to digest with -
-// which is also what a client that asserts nothing sends.
-func (c *hubAuthController) endpointFingerprintFor(name string) string {
+// endpointInstanceFor resolves name the way every endpoint question reads it:
+// the instance the registry holds under the name, or, for a curated provider
+// with no instance yet, the listing view resolvedInstanceFor builds - the same
+// lookup List serves a setup entry from. The registry snapshot travels back
+// with the instance so the caller's fingerprint and destination questions
+// describe one generation of providers.toml.
+func (c *hubAuthController) endpointInstanceFor(name string) (*registry.Registry, registry.Instance, bool) {
 	r := c.registry()
 	if r == nil {
-		return ""
+		return nil, registry.Instance{}, false
 	}
 	if inst, ok := r.Instance(name); ok {
-		return destinationFingerprint(c.stateDir, r, inst)
+		return r, inst, true
 	}
 	// A curated provider with no instance yet - no credential - is still listed,
 	// with a setup entry whose fingerprint is built by resolving the provider.
@@ -809,14 +823,54 @@ func (c *hubAuthController) endpointFingerprintFor(name string) string {
 	// needs one.
 	p, ok := r.Provider(name)
 	if !ok {
-		return ""
+		return nil, registry.Instance{}, false
 	}
 	inst, ok := resolvedInstanceFor(r, name, p.Hidden)
+	if !ok {
+		return nil, registry.Instance{}, false
+	}
+	return r, inst, true
+}
+
+// endpointFingerprintFor is the destination fingerprint a client was shown for
+// name, asked of the same registry the write lands against and over the same
+// identity a listing row serves (destinationFingerprint). Empty when the name
+// resolves to no destination here, or when the hub has no key to digest with -
+// which is also what a client that asserts nothing sends. The two are different
+// states this one value cannot tell apart; endpointHasDestination answers which
+// one it is for the flow guards that have to (verifyFlowEndpoint, and the
+// start-time refusals in LoginStart and DeviceStart).
+func (c *hubAuthController) endpointFingerprintFor(name string) string {
+	r, inst, ok := c.endpointInstanceFor(name)
 	if !ok {
 		return ""
 	}
 	return destinationFingerprint(c.stateDir, r, inst)
 }
+
+// endpointHasDestination reports whether name has a destination this hub must
+// be able to check at all, whether or not it can key a fingerprint for it
+// right now: it resolves to an instance that is not hidden and carries a base
+// URL (destinationInstance). A configured state root that cannot yield its key
+// leaves endpointFingerprintFor empty for exactly the names this answers true
+// for, and a sign-in flow started there would have nothing to compare when it
+// completes - so the flow guards refuse it rather than file the record
+// wherever the instance points by then.
+func (c *hubAuthController) endpointHasDestination(name string) bool {
+	r, inst, ok := c.endpointInstanceFor(name)
+	if !ok {
+		return false
+	}
+	_, ok = destinationInstance(r, inst)
+	return ok
+}
+
+// hasEndpointStateRoot reports whether this hub keeps endpoint fingerprints at
+// all: a state root to key them under. A controller with none has nothing to
+// key with, so there is nothing to refuse (verifyEndpointFingerprint's rule),
+// and an empty capture is the only thing a flow on it can carry; a state root
+// that exists but cannot yield its key is the state the flow guards refuse.
+func (c *hubAuthController) hasEndpointStateRoot() bool { return strings.TrimSpace(c.stateDir) != "" }
 
 // verifyEndpointFingerprint refuses a credential write whose client asserted an
 // endpoint this name no longer resolves to. Callers run it inside the
@@ -860,12 +914,25 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 // to the endpoint the flow was started for. The flow's own exchange is a
 // browser round trip long, and an edit that re-points base_url keeps the auth
 // scheme the completion re-checks, so the scheme alone cannot say that the
-// record would land where the user signed in. An empty capture (the hub had no
-// key to digest with when the flow started) or an empty current value (it has
-// none now) is not a refusal: the hub cannot name a destination the user was
-// not shown.
+// record would land where the user signed in.
+//
+// An empty capture means one of two states, and only one of them is refused. A
+// hub with no state root at all has nothing to key with - the rule
+// verifyEndpointFingerprint states for the same bare controller - so an empty
+// capture is the only thing a flow on it can carry, and it is accepted. A hub
+// with a state root that could not yield its key when the flow started has an
+// empty capture for a destination that is real, and the completion has nothing
+// to compare: accepting it would file the record wherever the instance points
+// now, so it is refused (LoginStart and DeviceStart refuse to start that flow
+// in the first place). A hidden or unresolvable name, which has no destination
+// to name, is accepted in either state. An empty current value (the hub has no
+// key now) is refused as before: the hub cannot say the record would land
+// where the flow was started.
 func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
 	if started == "" {
+		if c.endpointHasDestination(name) && c.hasEndpointStateRoot() {
+			return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot key its endpoint fingerprints right now, so review its destination and start the sign-in again")
+		}
 		return nil
 	}
 	current := c.endpointFingerprintFor(name)
