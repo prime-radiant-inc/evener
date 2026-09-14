@@ -137,6 +137,12 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 			line:    "import { AppwireClient } from \"../../appwire-client/typescript\";\n",
 			expects: "by path",
 		},
+		{
+			name:    "the seam directory itself, with the quote right after it",
+			path:    "cmd/evener-hub/frontend/src/app.ts",
+			line:    "import { errorText } from \"../protocol\";\n",
+			expects: "by path",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			files := cleanPackageImportTree()
@@ -169,5 +175,40 @@ func TestPackageImportPathsCheckIgnoresProtocolThatIsNotTheSeam(t *testing.T) {
 	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
 	if !passed {
 		t.Fatalf("the gate fired on a tree that never names the package by path:\n%s", output)
+	}
+}
+
+// A tree that is not there sweeps nothing and says nothing, which reads as a
+// pass. The gate has to refuse to run instead.
+func TestPackageImportPathsCheckRefusesAMissingTree(t *testing.T) {
+	for _, missing := range []string{"cmd/evener-hub/frontend/src", "mobile-native", "mobile/src"} {
+		t.Run(missing, func(t *testing.T) {
+			files := cleanPackageImportTree()
+			for path := range files {
+				if strings.HasPrefix(path, missing+"/") {
+					delete(files, path)
+				}
+			}
+			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+			if passed {
+				t.Fatalf("the gate passed a tree with no %s:\n%s", missing, output)
+			}
+			if !strings.Contains(output, "does not exist") {
+				t.Fatalf("the gate failed for the wrong reason; wanted a missing-tree message in:\n%s", output)
+			}
+		})
+	}
+}
+
+// `cd ""` succeeds and changes nothing, so an empty --root once swept whatever
+// directory the caller was in and reported on a tree nobody asked about.
+func TestPackageImportPathsCheckRefusesAnUnusableRoot(t *testing.T) {
+	for name, root := range map[string]string{"empty": "", "missing": filepath.Join(t.TempDir(), "absent")} {
+		t.Run(name, func(t *testing.T) {
+			passed, output := runPackageImportCheck(t, root)
+			if passed {
+				t.Fatalf("the gate passed with a %s --root:\n%s", name, output)
+			}
+		})
 	}
 }
