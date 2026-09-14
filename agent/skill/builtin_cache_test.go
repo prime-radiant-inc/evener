@@ -31,10 +31,10 @@ func sampleSkillFS() fstest.MapFS {
 	})
 }
 
-func embeddedSkillsCacheState() (string, string, map[string]SkillMeta) {
+func embeddedSkillsCacheState() (string, string, map[string]SkillMeta, bool) {
 	embeddedSkillsCache.mu.Lock()
 	defer embeddedSkillsCache.mu.Unlock()
-	return embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills
+	return embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills, embeddedSkillsCache.verified
 }
 
 // pointEmbeddedSkillsAtBase sends the bundled-skills cache to base, clears the
@@ -43,11 +43,12 @@ func embeddedSkillsCacheState() (string, string, map[string]SkillMeta) {
 func pointEmbeddedSkillsAtBase(t *testing.T, base string) {
 	t.Helper()
 	savedBase := embeddedSkillsBaseDir
-	savedDir, savedDigest, savedSkills := embeddedSkillsCacheState()
+	savedDir, savedDigest, savedSkills, savedVerified := embeddedSkillsCacheState()
 	embeddedSkillsCache.mu.Lock()
 	embeddedSkillsCache.dir = ""
 	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
+	embeddedSkillsCache.verified = false
 	embeddedSkillsCache.mu.Unlock()
 	embeddedSkillsBaseDir = func() (string, error) { return base, nil }
 	t.Cleanup(func() {
@@ -55,6 +56,7 @@ func pointEmbeddedSkillsAtBase(t *testing.T, base string) {
 		embeddedSkillsCache.dir = savedDir
 		embeddedSkillsCache.digest = savedDigest
 		embeddedSkillsCache.skills = savedSkills
+		embeddedSkillsCache.verified = savedVerified
 		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = savedBase
 	})
@@ -337,30 +339,62 @@ func TestCacheDirUsable_RejectsTamperedCopy(t *testing.T) {
 	}
 }
 
-func TestReapStaleStaging_RemovesOnlyAbandonedStaging(t *testing.T) {
+// Aging by the retained threshold also exceeds the shorter staging threshold.
+func TestReapStaleCopies_RemovesAbandonedAndSuperseded(t *testing.T) {
 	base := t.TempDir()
-	old := filepath.Join(base, embeddedSkillsPrefix+"stage-old")
+	oldStage := filepath.Join(base, embeddedSkillsPrefix+"stage-old")
+	oldCopy := filepath.Join(base, retainedSkillsPrefix+"old")
+	current := filepath.Join(base, embeddedSkillsPrefix+strings.Repeat("a", sha256.Size*2))
+	superseded := filepath.Join(base, embeddedSkillsPrefix+strings.Repeat("b", sha256.Size*2))
 	fresh := filepath.Join(base, embeddedSkillsPrefix+"stage-fresh")
-	published := filepath.Join(base, embeddedSkillsPrefix+strings.Repeat("a", sha256.Size*2))
-	retained := filepath.Join(base, retainedSkillsPrefix+"old")
-	for _, dir := range []string{old, fresh, published, retained} {
+	for _, dir := range []string{oldStage, oldCopy, current, superseded, fresh} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatalf("create %s: %v", dir, err)
 		}
 	}
-	past := time.Now().Add(-2 * staleStagingMaxAge)
-	for _, dir := range []string{old, retained} {
+	past := time.Now().Add(-2 * staleRetainedMaxAge)
+	for _, dir := range []string{oldStage, oldCopy, superseded} {
 		if err := os.Chtimes(dir, past, past); err != nil {
 			t.Fatalf("age %s: %v", dir, err)
 		}
 	}
 
-	reapStaleStaging(base, time.Now())
+	reapStaleCopies(base, time.Now(), strings.Repeat("a", sha256.Size*2))
+
+	for _, gone := range []string{oldStage, oldCopy, superseded} {
+		if _, err := os.Stat(gone); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s not reaped: %v", gone, err)
+		}
+	}
+	for _, keep := range []string{current, fresh} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Fatalf("%s was reaped: %v", keep, err)
+		}
+	}
+}
+
+func TestReapStaleFallbackBases_RemovesOnlyThisUsersStaleBases(t *testing.T) {
+	tmp := t.TempDir()
+	prefix := embeddedSkillsPrefix + processOwnerTag() + "-"
+	old := filepath.Join(tmp, prefix+"old")
+	fresh := filepath.Join(tmp, prefix+"fresh")
+	foreign := filepath.Join(tmp, embeddedSkillsPrefix+"someone-else")
+	for _, dir := range []string{old, fresh, foreign} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+	past := time.Now().Add(-2 * staleRetainedMaxAge)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatalf("age base: %v", err)
+	}
+
+	reapStaleFallbackBases(tmp, time.Now())
 
 	if _, err := os.Stat(old); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("stale staging dir not reaped: %v", err)
+		t.Fatalf("stale fallback base not reaped: %v", err)
 	}
-	for _, keep := range []string{fresh, published, retained} {
+	for _, keep := range []string{fresh, foreign} {
 		if _, err := os.Stat(keep); err != nil {
 			t.Fatalf("%s was reaped: %v", keep, err)
 		}
@@ -417,16 +451,18 @@ func TestEmbeddedSkillsDir_ReusesPublishedCopyAfterCacheReset(t *testing.T) {
 func TestEmbeddedSkillsDir_RepublishesWhenCachedDirDisappears(t *testing.T) {
 	base := t.TempDir()
 	savedBase := embeddedSkillsBaseDir
-	savedDir, savedDigest, savedSkills := embeddedSkillsCacheState()
+	savedDir, savedDigest, savedSkills, savedVerified := embeddedSkillsCacheState()
 	embeddedSkillsBaseDir = func() (string, error) { return base, nil }
 	embeddedSkillsCache.mu.Lock()
 	embeddedSkillsCache.dir = filepath.Join(t.TempDir(), "gone")
+	embeddedSkillsCache.verified = false
 	embeddedSkillsCache.mu.Unlock()
 	t.Cleanup(func() {
 		embeddedSkillsCache.mu.Lock()
 		embeddedSkillsCache.dir = savedDir
 		embeddedSkillsCache.digest = savedDigest
 		embeddedSkillsCache.skills = savedSkills
+		embeddedSkillsCache.verified = savedVerified
 		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = savedBase
 	})
@@ -437,5 +473,27 @@ func TestEmbeddedSkillsDir_RepublishesWhenCachedDirDisappears(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "doctoring-evener", "SKILL.md")); err != nil {
 		t.Fatalf("republished copy missing the bundled skill: %v", err)
+	}
+}
+
+// Once this process has resolved and verified a copy, later calls trust it
+// instead of re-walking an immutable directory under a private base.
+func TestEmbeddedSkillsDir_TrustsVerifiedCopyWithinProcess(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(first, "doctoring-evener", "SKILL.md"), []byte("tampered"), 0o644); err != nil {
+		t.Fatalf("tamper copy: %v", err)
+	}
+	second, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (second): %v", err)
+	}
+	if second != first {
+		t.Fatalf("verified copy was not trusted within the process: %q then %q", first, second)
 	}
 }

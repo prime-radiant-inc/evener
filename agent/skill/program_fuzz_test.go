@@ -208,13 +208,13 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 		// the globals pointing at this case's temporary directory.
 		savedBase := embeddedSkillsBaseDir
 		embeddedSkillsCache.mu.Lock()
-		savedDir, savedDigest, savedSkills := embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills
-		embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills = "", "", nil
+		savedDir, savedDigest, savedSkills, savedVerified := embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills, embeddedSkillsCache.verified
+		embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills, embeddedSkillsCache.verified = "", "", nil, false
 		embeddedSkillsCache.mu.Unlock()
 		embeddedSkillsBaseDir = func() (string, error) { return filepath.Join(root, "missing-base"), nil }
 		t.Cleanup(func() {
 			embeddedSkillsCache.mu.Lock()
-			embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills = savedDir, savedDigest, savedSkills
+			embeddedSkillsCache.dir, embeddedSkillsCache.digest, embeddedSkillsCache.skills, embeddedSkillsCache.verified = savedDir, savedDigest, savedSkills, savedVerified
 			embeddedSkillsCache.mu.Unlock()
 			embeddedSkillsBaseDir = savedBase
 		})

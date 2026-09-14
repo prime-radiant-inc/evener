@@ -23,9 +23,9 @@ const embeddedSkillsPrefix = "evener-skills-"
 
 // retainedSkillsPrefix names a private fallback copy that could not take the
 // published name and is handed to the caller for the process lifetime. It is
-// deliberately not the staging prefix, because reapStaleStaging removes
-// abandoned staging directories and must never remove a copy a live process is
-// still reading.
+// deliberately not the staging prefix: staging directories are reaped after a
+// day, while a retained copy is left for much longer because a live process
+// reads it for its lifetime.
 const retainedSkillsPrefix = embeddedSkillsPrefix + "copy-"
 
 // Bounds on what the digest will read from a tree. The bundled skills are a
@@ -40,15 +40,23 @@ const (
 	// staleStagingMaxAge is how long a staging directory abandoned by a failed
 	// publish is left before a later publish reaps it.
 	staleStagingMaxAge = 24 * time.Hour
+	// staleRetainedMaxAge is how long a retained fallback copy, a superseded
+	// published directory, or a randomized fallback base is left before a later
+	// publish reaps it. It is much longer than the staging age because a live
+	// process may still be reading a copy it resolved for its own lifetime.
+	staleRetainedMaxAge = 7 * 24 * time.Hour
 )
 
 // embeddedSkillsCache holds the published bundled-skills directory, the digest
 // of its contents, and its scanned metadata, all process-wide under one mutex.
+// verified records that this process has already published or re-digested dir,
+// so later calls in the same process do not re-walk an immutable copy.
 var embeddedSkillsCache struct {
-	mu     sync.Mutex
-	dir    string
-	digest string
-	skills map[string]SkillMeta
+	mu       sync.Mutex
+	dir      string
+	digest   string
+	skills   map[string]SkillMeta
+	verified bool
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -93,7 +101,11 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 // is gone and refreshes the cached metadata. The caller holds the cache mutex.
 func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
+		if embeddedSkillsCache.verified {
+			return embeddedSkillsCache.dir, nil
+		}
 		if cacheDirUsable(embeddedSkillsCache.dir, embeddedSkillsCache.digest) {
+			embeddedSkillsCache.verified = true
 			return embeddedSkillsCache.dir, nil
 		}
 	}
@@ -110,6 +122,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	embeddedSkillsCache.dir = dir
 	embeddedSkillsCache.digest = digest
 	embeddedSkillsCache.skills = skills
+	embeddedSkillsCache.verified = true
 	return dir, nil
 }
 
@@ -129,11 +142,33 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	// directory keeps the bundled skills available instead of failing the
 	// session; it is not shared between processes, which is the price of the
 	// name being unusable.
+	reapStaleFallbackBases(os.TempDir(), time.Now())
 	fallback, err := os.MkdirTemp("", embeddedSkillsPrefix+processOwnerTag()+"-*")
 	if err != nil {
 		return "", fmt.Errorf("creating private skill cache: %w", err)
 	}
 	return fallback, nil
+}
+
+// reapStaleFallbackBases removes randomized fallback bases this user's earlier
+// processes abandoned. Only this user's exact prefix is matched, and only when
+// old enough that no live process is plausibly still reading it.
+func reapStaleFallbackBases(tmpBase string, now time.Time) {
+	prefix := embeddedSkillsPrefix + processOwnerTag() + "-"
+	entries, err := os.ReadDir(tmpBase)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) < staleRetainedMaxAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(tmpBase, entry.Name()))
+	}
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that
@@ -157,6 +192,11 @@ func ensurePrivateCacheDir(dir string) error {
 	if !cacheDirOwnedByCurrentUser(info) {
 		return fmt.Errorf("skill cache dir %s is not owned by the current user", dir)
 	}
+	if info.Mode().Perm()&0o700 != 0o700 {
+		// Without owner write and execute this process cannot create the staging
+		// directory inside it, so it must not be selected as the cache root.
+		return fmt.Errorf("skill cache dir %s is not usable by its owner", dir)
+	}
 	return nil
 }
 
@@ -169,11 +209,11 @@ func ensurePrivateCacheDir(dir string) error {
 // other occupant leaves the staged private copy in place, because a session
 // without its bundled skills is worse than one that did not reuse the cache.
 func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, error) {
-	reapStaleStaging(base, time.Now())
 	digest, err := digestSkillsFS(skillsFS)
 	if err != nil {
 		return "", "", fmt.Errorf("digesting embedded skills: %w", err)
 	}
+	reapStaleCopies(base, time.Now(), digest)
 	dest := filepath.Join(base, embeddedSkillsPrefix+digest)
 	if publishedSkillsDir(dest, digest) {
 		return dest, digest, nil
@@ -220,10 +260,11 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, err
 
 // retainStagedCopy hands back the private copy already staged when the published
 // name is unusable. It renames the staging directory under the retained prefix,
-// which reapStaleStaging does not match, so a live process's copy is never
-// reaped. A rename that cannot reserve a name leaves the staging directory in
-// place (and keepStaging set) rather than failing the caller, because the caller
-// having its bundled skills matters more than where they came from.
+// which reapStaleCopies leaves alone for far longer than the staging age, so a
+// live process's copy is not reaped out from under it. A rename that cannot
+// reserve a name leaves the staging directory in place (and keepStaging set)
+// rather than failing the caller, because the caller having its bundled skills
+// matters more than where they came from.
 func retainStagedCopy(staging, base, digest string, keepStaging *bool) (string, string) {
 	placeholder, err := os.MkdirTemp(base, retainedSkillsPrefix+"*")
 	if err != nil {
@@ -233,6 +274,9 @@ func retainStagedCopy(staging, base, digest string, keepStaging *bool) (string, 
 	// MkdirTemp reserved a unique name; swap the empty directory for the copy.
 	_ = os.Remove(placeholder)
 	if err := os.Rename(staging, placeholder); err != nil {
+		// Some platforms refuse to replace even an empty directory, so clear the
+		// placeholder rather than leaking it.
+		_ = os.Remove(placeholder)
 		*keepStaging = true
 		return staging, digest
 	}
@@ -252,22 +296,41 @@ func cacheDirUsable(dir, expected string) bool {
 	return err == nil && actual == expected
 }
 
-// reapStaleStaging removes staging directories earlier publishes abandoned, so a
-// machine where the published name stays unusable does not accumulate a copy per
-// run. Only the staging prefix is matched: a retained copy is in use by a live
-// process for its lifetime and is never reaped here.
-func reapStaleStaging(base string, now time.Time) {
+// reapStaleCopies removes cache directories an earlier publish abandoned, so a
+// machine does not accumulate a copy of the embedded tree per run or per binary.
+// Only this package's prefixes are matched: staging directories are transient,
+// while retained fallback copies and superseded published directories are kept
+// until they are old enough that no live process is plausibly still reading
+// them. keepDigest is the digest about to be published and is never reaped.
+func reapStaleCopies(base string, now time.Time, keepDigest string) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return
 	}
-	prefix := embeddedSkillsPrefix + "stage-"
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+		if !entry.IsDir() {
+			continue
+		}
+		rest, ok := strings.CutPrefix(entry.Name(), embeddedSkillsPrefix)
+		if !ok {
+			continue
+		}
+		var maxAge time.Duration
+		switch {
+		case strings.HasPrefix(rest, "stage-"):
+			maxAge = staleStagingMaxAge
+		case strings.HasPrefix(rest, "copy-"):
+			maxAge = staleRetainedMaxAge
+		case len(rest) == sha256.Size*2:
+			if rest == keepDigest {
+				continue
+			}
+			maxAge = staleRetainedMaxAge
+		default:
 			continue
 		}
 		info, err := entry.Info()
-		if err != nil || now.Sub(info.ModTime()) < staleStagingMaxAge {
+		if err != nil || now.Sub(info.ModTime()) < maxAge {
 			continue
 		}
 		_ = os.RemoveAll(filepath.Join(base, entry.Name()))
@@ -321,6 +384,12 @@ func digestSkillsFS(fsys fs.FS) (string, error) {
 		info, err := d.Info()
 		if err != nil {
 			return err
+		}
+		// Type() is zero when the filesystem does not report an entry type, and
+		// IsRegular() treats zero as regular, so re-check the mode from Info
+		// before opening: a FIFO must never reach the open below.
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("embedded skills: %s is not a regular file", path)
 		}
 		if info.Size() > maxEmbeddedSkillBytes {
 			return fmt.Errorf("embedded skills: %s exceeds %d bytes", path, maxEmbeddedSkillBytes)

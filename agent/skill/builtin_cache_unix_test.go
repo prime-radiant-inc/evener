@@ -48,6 +48,18 @@ func TestEnsurePrivateCacheDir_RefusesUnsafeDirectories(t *testing.T) {
 	if err := ensurePrivateCacheDir(open); err == nil {
 		t.Fatal("accepted a group/other-accessible cache dir")
 	}
+
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatalf("create locked dir: %v", err)
+	}
+	// Chmod, not the Mkdir mode, so the ambient umask cannot leave it usable.
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatalf("lock dir: %v", err)
+	}
+	if err := ensurePrivateCacheDir(locked); err == nil {
+		t.Fatal("accepted a cache dir its owner cannot write")
+	}
 }
 
 // A predictable per-user path another local user has already taken must not
