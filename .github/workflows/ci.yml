@@ -28,6 +28,24 @@ jobs:
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
 
+      # The skill guard keeps its driver log, screenshots and helper logs under
+      # a temporary directory when it fails, deliberately, so a failing run can
+      # be read afterwards. On a runner nobody reads it: the directory goes
+      # with the machine, and the failure arrives as one line naming a path
+      # that no longer exists. This is the only copy that outlives the job.
+      # Named for the run so two failures on the same PR do not collide.
+      - name: Keep the skill guard's artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: skillguard-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/skillguard-browser-*/artifacts/**
+          retention-days: 7
+          # The step also fires when make test-web or make build-web is what
+          # failed, and then there is nothing to collect: say so quietly
+          # instead of adding a warning that reads like a second failure.
+          if-no-files-found: ignore
+
   native:
     runs-on: ubuntu-latest
     steps:
