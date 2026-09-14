@@ -164,12 +164,17 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		}
 		skills := make(map[string]SkillMeta)
 		ScanSkillsDir(dir, skills)
+		previousFallbackBase := embeddedSkillsCache.fallbackBase
 		embeddedSkillsCache.dir = dir
 		embeddedSkillsCache.digest = digest
 		embeddedSkillsCache.skills = skills
 		embeddedSkillsCache.verified = true
 		embeddedSkillsCache.fallback = false
 		embeddedSkillsCache.fallbackBase = ""
+		if previousFallbackBase != "" {
+			// A shared copy replaced the private one; its base has no other owner.
+			_ = os.RemoveAll(previousFallbackBase)
+		}
 		return dir, nil
 	}
 	// The shared cache kept being reaped. Publish a private base under the reaped
@@ -185,12 +190,14 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		_ = os.RemoveAll(base)
 		return "", fmt.Errorf("bundled skills cache unavailable (last: %w): %w", lastErr, err)
 	}
+	// Tear down the previous copy first: forget releases any lease held for it
+	// (and removes an old fallback base), so the lease taken below survives.
+	forgetEmbeddedSkillsLocked()
 	// The lock machinery may still refuse a lease; the copy is still usable, it
 	// is just unprotected until the fallback base's age limit.
 	_ = claimEmbeddedSkillsLocked(dir)
 	skills := make(map[string]SkillMeta)
 	ScanSkillsDir(dir, skills)
-	forgetEmbeddedSkillsLocked()
 	embeddedSkillsCache.dir = dir
 	embeddedSkillsCache.digest = digest
 	embeddedSkillsCache.skills = skills
@@ -538,8 +545,8 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 	}
 	// removeDir takes the entry's exclusive lease and re-checks it afterwards: a
 	// publisher can replace the entry between the pass above and the lock, so
-	// age and validity are decided again while the lease is held.
-	removeDir := func(name, path string, maxAge time.Duration, mustBeInvalidDigest bool) {
+	// age is decided again while the lease is held.
+	removeDir := func(name, path string, maxAge time.Duration) {
 		lockPath, err := skillsLockPath(base, name, true)
 		if err != nil {
 			return
@@ -556,10 +563,36 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 		if maxAge > 0 && now.Sub(info.ModTime()) < maxAge {
 			return
 		}
-		if mustBeInvalidDigest && publishedSkillsDir(path, keepDigest) {
+		_ = os.RemoveAll(path)
+	}
+	// removeRejected removes an occupant of the digest name this process needs
+	// that cannot be adopted. A concurrent publisher may have healed the name
+	// between the check above and the lock, so the rejection is rechecked while
+	// the exclusive lease is held.
+	removeRejected := func(name, path string) {
+		lockPath, err := skillsLockPath(base, name, true)
+		if err != nil {
 			return
 		}
-		_ = os.RemoveAll(path)
+		lease, ok := tryExclusiveLease(lockPath)
+		if !ok {
+			return
+		}
+		defer func() { _ = lease.Release() }()
+		if publishedSkillsDir(path, keepDigest) {
+			return
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return
+		}
+		if info.IsDir() {
+			_ = os.RemoveAll(path)
+			return
+		}
+		// A file or symlink is removed with Remove, which deletes the link itself
+		// rather than anything it points at.
+		_ = os.Remove(path)
 	}
 	for _, entry := range entries {
 		path := filepath.Join(base, entry.Name())
@@ -571,17 +604,10 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 			continue
 		}
 		if rest == keepDigest {
-			if entry.IsDir() {
-				// A directory here did not match the digest this process needs,
-				// so it can never be adopted. Remove it under the exclusive lease
-				// so the name heals instead of every run staging another private
-				// copy forever.
-				removeDir(entry.Name(), path, 0, true)
-				continue
-			}
-			// A file or symlink squatting the name this process needs is removed
-			// at once, whatever its age, so the next publish can take the name.
-			_ = os.Remove(path)
+			// A rejected occupant of the name this process needs can never be
+			// adopted, so it is removed under the exclusive lease so the name
+			// heals instead of every run staging another private copy.
+			removeRejected(entry.Name(), path)
 			continue
 		}
 		var maxAge time.Duration
@@ -607,7 +633,7 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 			_ = os.Remove(path)
 			continue
 		}
-		removeDir(entry.Name(), path, maxAge, false)
+		removeDir(entry.Name(), path, maxAge)
 	}
 	pruneObsoleteLocks(base, now)
 }

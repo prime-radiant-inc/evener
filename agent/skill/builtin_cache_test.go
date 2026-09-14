@@ -590,6 +590,73 @@ func TestPruneObsoleteLocks_RemovesOnlyOrphans(t *testing.T) {
 	}
 }
 
+// The private fallback copy must keep the lease it took, so another process's
+// fallback reaper can tell the base is in use.
+func TestEmbeddedSkillsDir_FallbackKeepsItsLease(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	saved := acquireSkillsLease
+	acquireSkillsLease = func(path string, exclusive bool) (skillsLease, bool, error) {
+		if strings.HasPrefix(path, filepath.Join(base, skillsLockDirName)) {
+			return nil, true, nil
+		}
+		return saved(path, exclusive)
+	}
+	t.Cleanup(func() { acquireSkillsLease = saved })
+
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	fallbackBase := filepath.Dir(dir)
+	t.Cleanup(func() { _ = os.RemoveAll(fallbackBase) })
+
+	embeddedSkillsCache.mu.Lock()
+	lease := embeddedSkillsCache.lease
+	leasedDir := embeddedSkillsCache.leasedDir
+	embeddedSkillsCache.mu.Unlock()
+	if lease == nil || leasedDir != dir {
+		t.Fatalf("fallback copy has no lease: lease=%v leasedDir=%q want %q", lease, leasedDir, dir)
+	}
+	if !lease.Valid() {
+		t.Fatal("fallback lease is not valid")
+	}
+
+	// Disable the reaper's own-base skips so only the lease can save the base.
+	embeddedSkillsCache.mu.Lock()
+	embeddedSkillsCache.dir = ""
+	embeddedSkillsCache.fallbackBase = ""
+	embeddedSkillsCache.mu.Unlock()
+	past := time.Now().Add(-2 * staleRetainedMaxAge)
+	if err := os.Chtimes(fallbackBase, past, past); err != nil {
+		t.Fatalf("age fallback base: %v", err)
+	}
+	reapStaleFallbackBases(os.TempDir(), time.Now())
+	if _, err := os.Stat(fallbackBase); err != nil {
+		t.Fatalf("leased fallback base was reaped: %v", err)
+	}
+}
+
+// A valid copy of the digest being published must survive the reaper's pass.
+func TestReapStaleCopies_KeepsValidDigestCopy(t *testing.T) {
+	base := t.TempDir()
+	fsys := sampleSkillFS()
+	digest, err := digestSkillsFS(fsys)
+	if err != nil {
+		t.Fatalf("digestSkillsFS: %v", err)
+	}
+	dest := filepath.Join(base, embeddedSkillsPrefix+digest)
+	if err := copyEmbeddedSkills(fsys, dest); err != nil {
+		t.Fatalf("copyEmbeddedSkills: %v", err)
+	}
+
+	reapStaleCopies(base, time.Now(), digest, "")
+
+	if !cacheDirUsable(dest, digest) {
+		t.Fatal("valid published copy was reaped")
+	}
+}
+
 // A copy a live process holds a shared lease on is never reaped, however old it
 // is; once the lease is dropped it becomes reapable.
 func TestReapStaleCopies_SkipsLeasedDirectory(t *testing.T) {
