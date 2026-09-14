@@ -3,8 +3,8 @@
 Decisions already taken by Jesse:
 
 - Direction **A** (inline watch rows, count on the summary line).
-- **No “next firing.”** Show cadence (`every 10m`) and state (`armed`), which is
-  true for every watch kind.
+- **No “next firing.”** *(superseded; see “The derived next fire” below.)* Show
+  cadence (`every 10m`) and state (`armed`), which is true for every watch kind.
 - **Add the projection**, purely additive. No wire version bump.
 - Fluent expanded view for the activity panel (round 3).
 
@@ -17,6 +17,36 @@ handshake constant, compared with `==` at spawn and roster checks. It is not a
 schema hash. A new `omitempty` field is invisible to the equality checks in both
 directions: an old daemon simply omits it, and an old hub ignores it. The
 frontend must therefore treat the watch list as **absent-able**, not required.
+
+## The derived next fire (supersedes “No next firing”)
+
+Jesse later asked for a next fire, so the decision above is superseded: a
+clock-driven cadence row now carries a derived next-fire instant, and the panel
+words it `next ~4m`.
+
+The instant is derived at the daemon from data the live config already holds:
+the interval, the install instant, and the newest clock fire. The delivery ring
+is deliberately not consulted — it holds every delivery kind (output matches,
+event fires, attach scans), so a watch that legally combines `output_match` with
+`progress_interval_ms` would otherwise date its progress cadence from an
+unrelated match. `agent/job_watch.go`'s `watchDerivedNextFireAt` is the one
+derivation, and `derived_next_fire_at` on `appwire.EvenerWatchCadence` is the
+one field.
+
+The honest contract, and the reason it is worded the way it is:
+
+- **Derived, approximate, never an exact clock time.** The runtime keeps a Go
+  ticker whose callback the scheduler can delay and whose missed ticks coalesce,
+  so every surface words the instant with a `~` (`next ~4m`) and never prints a
+  clock time.
+- **Absent for output and event watches.** Only the `after`, `every` and
+  `progress` cadences carry it, and only when the daemon can derive one.
+- **Absent when no honest future fire exists.** A one-shot that already fired
+  carries none, and an instant already in the past renders nothing rather than
+  promising a fire that has not come.
+- **Ticking metadata stays with the open row.** The panel's collapsed watch row
+  is snapshot data (cadence, count, armed state); the countdown renders on the
+  open row, whose detail already ticks.
 
 ## The path (mirrors the existing jobs plumbing)
 
