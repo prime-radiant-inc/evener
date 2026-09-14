@@ -126,14 +126,18 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 				row.ProbeState = "stale"
 			}
 		}
-		row.CanRetire = row.Compatibility == "compatible" && row.ProbeState == "current" && row.Lifecycle != nil && row.Lifecycle.Phase == "resident"
+		if sessionID != "" && archiveDecisions[hubcore.ArchiveKey{Kind: "session", ID: sessionID}] {
+			row.Archived = true
+		}
+		// Archived rows stay visible with retirement disabled: archive is a
+		// separate axis from probe freshness, and retiring an archived session's
+		// daemon is not offered.
+		row.CanRetire = row.Compatibility == "compatible" && row.ProbeState == "current" &&
+			row.Lifecycle != nil && row.Lifecycle.Phase == "resident" && !row.Archived
 		if cfg.Past != nil && sessionID != "" {
 			if pastEntry, ok := cfg.Past.Find(sessionID); ok {
 				row.Name = pastEntry.Meta.Name
 			}
-		}
-		if sessionID != "" && archiveDecisions[hubcore.ArchiveKey{Kind: "session", ID: sessionID}] {
-			row.Archived = true
 		}
 		response.Daemons = append(response.Daemons, row)
 	}
@@ -206,6 +210,9 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if err := expectedDaemonConflict(current, &params.Identity); err != nil {
 		return appwire.DaemonRetireResponse{}, err
 	}
+	if err := archivedRetireRefusal(cfg, current); err != nil {
+		return appwire.DaemonRetireResponse{}, err
+	}
 	if err := deletionFenceError(cfg, params.Identity.Ref, ref.ThreadID, ""); err != nil {
 		return appwire.DaemonRetireResponse{}, err
 	}
@@ -226,4 +233,29 @@ func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable("local daemon source cannot retire daemons")
 	}
 	return local.RetireDaemonAtEntry(ctx, current, params)
+}
+
+// archivedRetireRefusal refuses a safe retire of a daemon whose session is
+// archived. Archived rows stay visible with retirement disabled, and the
+// decision is revalidated at action time so a row rendered before the archive
+// (or an unarchived row for an archived session) cannot still retire. Both the
+// resolved session id and the alias thread id are checked, since the archive
+// decision is keyed by the stored session id.
+func archivedRetireRefusal(cfg hubcore.WebConfig, entry rendezvous.Entry) error {
+	if cfg.Archive == nil {
+		return nil
+	}
+	decisions, err := cfg.Archive.Decisions()
+	if err != nil {
+		return appwire.Unavailable(fmt.Sprintf("read archive decisions: %v", err))
+	}
+	for _, id := range []string{entry.SessionID, entry.ThreadID} {
+		if id == "" {
+			continue
+		}
+		if decisions[hubcore.ArchiveKey{Kind: "session", ID: id}] {
+			return appwire.Conflict("archived daemons cannot be safely retired")
+		}
+	}
+	return nil
 }

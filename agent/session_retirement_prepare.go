@@ -90,9 +90,15 @@ func (c *RetirementController) Prepare(ctx context.Context, claim *RetirementCla
 	// before its owner, then the root last, so reconstruction prerequisites are
 	// proven bottom-up. No Session lock is held across the I/O inside.
 	for _, child := range sessions {
+		if err := child.scratchRetentionPersistenceError(); err != nil {
+			return nil, fmt.Errorf("retirement preparation: child session %q retained scratch persistence: %w", child.id, err)
+		}
 		if err := child.validateRetirementRestore(ctx); err != nil {
 			return nil, err
 		}
+	}
+	if err := root.scratchRetentionPersistenceError(); err != nil {
+		return nil, fmt.Errorf("retirement preparation: retained scratch persistence: %w", err)
 	}
 	if err := root.validateRetirementRestore(ctx); err != nil {
 		return nil, err

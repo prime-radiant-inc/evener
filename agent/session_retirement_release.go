@@ -104,26 +104,7 @@ func (s *Session) ReleaseForRetirement(ctx context.Context, prepared *Retirement
 		return errRetirementTeardownSpent
 	}
 
-	// Release the exact resident children leaf-first (prepared.sessions is
-	// ordered leaf-first and excludes the root), keeping their durable
-	// identity, descriptors, outcomes and lanes intact.
-	var childErr error
-	for _, child := range prepared.sessions {
-		if child == nil || child == s {
-			continue
-		}
-		if err := retirementReleaseFailure("child_release"); err != nil {
-			childErr = errors.Join(childErr, err)
-			break
-		}
-		childErr = errors.Join(childErr, child.releaseChildRuntimeForRetirement(ctx))
-	}
-	if childErr != nil {
-		c.setReleaseFailure()
-		return childErr
-	}
-
-	if err := s.releaseRuntime(ctx, closeOptions{}, releaseRetirement); err != nil {
+	if err := s.releaseRetirementTeardown(ctx, prepared); err != nil {
 		c.setReleaseFailure()
 		return err
 	}
@@ -142,6 +123,48 @@ func (s *Session) ReleaseForRetirement(ctx context.Context, prepared *Retirement
 		}
 	}
 	return nil
+}
+
+// releaseRetirementTeardown claims the session's single teardown pass and, under
+// that claim, releases every prepared resident child runtime leaf-first and then
+// the root's non-terminal runtime. Claiming the pass before any child is
+// released closes the window in which a concurrent terminal Close could consume
+// the one teardown pass after children had already been mutated — leaving
+// retirement to fail over partially-torn-down child state. A terminal Close that
+// arrives while this pass runs blocks on closeOnce until the pass completes, then
+// observes it spent and does nothing.
+func (s *Session) releaseRetirementTeardown(ctx context.Context, prepared *RetirementPreparation) error {
+	var releaseErr error
+	ran := false
+	s.closeOnce.Do(func() {
+		ran = true
+		// The observation/fault seam at the reservation boundary; the concurrent
+		// release test relies on the point running exactly once.
+		_ = retirementReleaseFailure("teardown_claimed")
+		// Release the exact resident children leaf-first (prepared.sessions is
+		// ordered leaf-first and excludes the root), keeping their durable
+		// identity, descriptors, outcomes and lanes intact.
+		var childErr error
+		for _, child := range prepared.sessions {
+			if child == nil || child == s {
+				continue
+			}
+			if err := retirementReleaseFailure("child_release"); err != nil {
+				childErr = errors.Join(childErr, err)
+				break
+			}
+			childErr = errors.Join(childErr, child.releaseChildRuntimeForRetirement(ctx))
+		}
+		if childErr != nil {
+			releaseErr = childErr
+			return
+		}
+		releaseErr = s.releaseRuntimeOnce(ctx, closeOptions{}, releaseRetirement)
+	})
+	if !ran {
+		return errRetirementTeardownSpent
+	}
+	return releaseErr
 }
 
 // validateRetirementRelease proves the preparation belongs to this session, is

@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -199,9 +201,16 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.reportPromptRenderFailure(promptWarning)
 	// Publish the swapped-in environment's binding and its current/parked
 	// consumer roles outside any Session lock, so retention tracks the same
-	// environment the session now works in.
+	// environment the session now works in. The swap is already committed here
+	// (s.env is next and the caller's rollback must not run), so a publication
+	// failure is reported as a warning rather than returned: the "error ⇒ no
+	// swap" contract stays true. Publishing BEFORE the install is not the
+	// smaller correct option — the roles derive from worktreeRestoreEnv and the
+	// abandoned set, both decided by record() under the same s.mu hold that
+	// installs next, so an early publish would record pre-swap roles.
 	if err := s.registerScratchConsumerRoles(next); err != nil {
-		return err
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+			"scratch retention publication after environment swap failed: %v", err)})
 	}
 	return nil
 }

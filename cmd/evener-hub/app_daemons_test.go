@@ -391,13 +391,14 @@ func TestDaemonResidentInventoryRows(t *testing.T) {
 		}
 	}
 
-	// (a) Archived stays visible and actionable; name comes from saved metadata.
+	// (a) Archived stays visible with retirement disabled (docs/daemon-idle-
+	// retirement.md); name comes from saved metadata.
 	row := byPID[archived.PID]
 	assertIdentity(row, archived)
 	if !row.Archived || row.Name != "Archived resident" {
 		t.Errorf("archived row archived=%v name=%q", row.Archived, row.Name)
 	}
-	if row.Compatibility != "compatible" || row.ProbeState != "current" || row.Lifecycle == nil || !row.CanRetire || !row.CanForceStop {
+	if row.Compatibility != "compatible" || row.ProbeState != "current" || row.Lifecycle == nil || row.CanRetire || !row.CanForceStop {
 		t.Errorf("archived row=%+v", row)
 	}
 	if row.Lifecycle.Blockers == nil {
@@ -647,6 +648,69 @@ func TestDaemonActionRetireReturnsFreshBlockers(t *testing.T) {
 	}
 	if retireCalls != 1 || gotIdentity != list.Daemons[0].Identity {
 		t.Fatalf("retire forwarded identity=%+v calls=%d", gotIdentity, retireCalls)
+	}
+}
+
+// TestDaemonArchivedRowDisablesRetire proves the documented contract that an
+// archived session's resident daemon stays visible with retirement disabled:
+// the rendered row reports CanRetire:false even with a fresh compatible
+// lifecycle, and a retire action against it is refused before any retire RPC
+// reaches the daemon.
+func TestDaemonArchivedRowDisablesRetire(t *testing.T) {
+	runDir := t.TempDir()
+	root := t.TempDir()
+	entry := residentEntryForTest(t, 5201)
+	retireCalls := 0
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonRetire, func(_ context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
+		retireCalls++
+		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: *residentLifecycleForTest()}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
+	writeRendezvous(t, runDir, entry)
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: "idle", Lifecycle: residentLifecycleForTest(), LifecycleFresh: true}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+	if err := archive.Set("session", entry.SessionID, true, time.Now()); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), Roster: roster, Archive: archive, DaemonIdleTimeout: time.Hour}
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := client.DaemonList(t.Context(), appwire.DaemonListParams{})
+	if err != nil {
+		t.Fatalf("DaemonList: %v", err)
+	}
+	if len(list.Daemons) != 1 {
+		t.Fatalf("rows=%d, want 1: %+v", len(list.Daemons), list.Daemons)
+	}
+	row := list.Daemons[0]
+	if !row.Archived || row.CanRetire {
+		t.Fatalf("archived row archived=%v CanRetire=%v, want visible with retirement disabled: %+v", row.Archived, row.CanRetire, row)
+	}
+	if row.Compatibility != "compatible" || row.ProbeState != "current" || row.Lifecycle == nil || !row.CanForceStop {
+		t.Fatalf("archived row lost its fresh lifecycle or force-stop capability: %+v", row)
+	}
+	_, err = client.DaemonRetire(t.Context(), appwire.DaemonRetireParams{Identity: row.Identity})
+	if err == nil {
+		t.Fatal("retire of an archived daemon was accepted")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("archived retire err=%v, want conflict", err)
+	}
+	if retireCalls != 0 {
+		t.Fatalf("archived retire reached the daemon %d times, want 0", retireCalls)
 	}
 }
 

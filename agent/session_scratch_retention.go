@@ -358,17 +358,54 @@ func (s *Session) roleScratchBindingID(manifest sandbox.ScratchManifest, roleEnv
 	return "", false
 }
 
+// scratchRetentionPersistenceError returns the first sticky scratch-retention
+// pin/publish failure recorded on any environment this session owns or shares:
+// the current environment, the environment an enter parked (worktreeRestoreEnv),
+// every environment a swap abandoned, and the live parent's own shared
+// environment. A recorded failure means an allocation was not durably pinned,
+// so preparation and release must fail rather than trust a partially pinned
+// environment. It takes no Session lock across the read.
+func (s *Session) scratchRetentionPersistenceError() error {
+	check := func(env *execenv.LocalExecutionEnvironment) error {
+		if env == nil {
+			return nil
+		}
+		return env.ScratchRetentionError()
+	}
+	if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
+		if err := check(local); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	parked := s.worktreeRestoreEnv
+	abandoned := append([]*execenv.LocalExecutionEnvironment(nil), s.abandonedEnvs...)
+	shared, _ := s.parentSharedEnv.(*execenv.LocalExecutionEnvironment)
+	s.mu.Unlock()
+	envs := make([]*execenv.LocalExecutionEnvironment, 0, len(abandoned)+2)
+	envs = append(envs, parked, shared)
+	envs = append(envs, abandoned...)
+	for _, env := range envs {
+		if err := check(env); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // validateRetainedScratchPresent verifies every referenced allocation still
 // exists at its original path and every binding slot resolves to a pinned
 // reference. It neither acquires a lease nor mutates durable state, so it is
-// safe during preparation.
+// safe during preparation. A non-nil retained pool is not proof that durable
+// storage is still valid: the committed manifest and each pin are revalidated
+// every time, and a recorded pin/publish failure fails the check.
 func (s *Session) validateRetainedScratchPresent() error {
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
 		return nil
 	}
-	if s.retainedScratch.Load() != nil {
-		return nil
+	if err := s.scratchRetentionPersistenceError(); err != nil {
+		return fmt.Errorf("retained scratch persistence: %w", err)
 	}
 	manifest, err := sandbox.LoadScratchRetention(owner)
 	if err != nil {

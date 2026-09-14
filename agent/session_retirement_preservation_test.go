@@ -1804,3 +1804,165 @@ func TestRetirementConcurrentReleaseOnlyOneProceeds(t *testing.T) {
 		t.Fatalf("%d callers reported release success, want exactly 1 (results=%v)", successes, results)
 	}
 }
+
+// TestRetirementValidationRejectsRemovedRetainedScratchAfterPrepare proves the
+// committed retention manifest is revalidated even when a retained pool is
+// already loaded: a scratch directory removed after preparation must fail
+// validation rather than being treated as present because the pool is non-nil.
+func TestRetirementValidationRejectsRemovedRetainedScratchAfterPrepare(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	base := t.TempDir()
+	scratch, err := sandbox.NewSessionScratch(base, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
+	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := sandbox.ScratchBinding{
+		BindingID:      "E0",
+		OwnerSessionID: root.id,
+		WorkingDir:     dir,
+		Slots:          map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}},
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision,
+		[]sandbox.ScratchBinding{binding},
+		[]sandbox.ScratchConsumerBinding{{SessionID: root.id, CurrentBindingID: "E0"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Release the live lease so prepareRetainedScratch can reacquire the handle.
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.prepareRetainedScratch(); err != nil {
+		t.Fatalf("prepareRetainedScratch: %v", err)
+	}
+	if root.retainedScratch.Load() == nil {
+		t.Fatal("fixture prepared no retained pool")
+	}
+	// Remove the retained allocation after preparation.
+	if err := os.RemoveAll(scratch.Dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.validateRetainedScratchPresent(); err == nil {
+		t.Fatal("validation accepted a retained scratch removed after preparation")
+	}
+}
+
+// TestRetirementPreparationFailsOnRecordedScratchPinFailure proves a sticky
+// pin failure recorded after initial install is surfaced as a persistence error
+// during preparation. pinOwnedScratchAfterMint swallows the mint-time failure,
+// so without the preparation check retirement would proceed over an
+// allocation the committed manifest never pinned.
+func TestRetirementPreparationFailsOnRecordedScratchPinFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	env, ok := root.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("root env is not a local environment: %T", root.env)
+	}
+	if env.SessionScratchDir() == "" {
+		if _, err := env.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
+			t.Fatalf("mint scratch: %v", err)
+		}
+	}
+	if env.SessionScratchDir() == "" {
+		t.Fatal("root minted no scratch")
+	}
+	// An invalid owner makes the pin fail; the failure is recorded sticky on the
+	// environment rather than surfacing to the mint caller.
+	if err := env.SetScratchRetentionBinding(sandbox.ScratchOwner{}, sandbox.ScratchBinding{BindingID: "bogus"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.PinOwnedScratch(); err == nil {
+		t.Fatal("expected the pin to fail against an invalid owner")
+	}
+	if env.ScratchRetentionError() == nil {
+		t.Fatal("pin failure was not recorded sticky on the environment")
+	}
+
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	claim, _, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %v %v", claim, err)
+	}
+	if _, err := c.Prepare(context.Background(), claim); err == nil {
+		t.Fatal("preparation accepted an environment with a recorded scratch pin failure")
+	}
+}
+
+// TestRetirementClaimsTeardownBeforeChildRelease proves retirement reserves the
+// session's single teardown pass before releasing any child runtime. A terminal
+// Close racing the boundary must never find the pass still free after children
+// were already released; the reservation point must precede every child_release.
+func TestRetirementClaimsTeardownBeforeChildRelease(t *testing.T) {
+	f := newRetirementPreservationFixture(t)
+	if len(f.childIDs) == 0 {
+		t.Fatal("fixture produced no resident children to release")
+	}
+	claim, state, err := f.controller.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v %v", state, err)
+	}
+	prepared, err := f.controller.Prepare(context.Background(), claim)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := f.controller.Commit(claim); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := f.controller.DrainReaders(context.Background()); err != nil {
+		t.Fatalf("drain readers: %v", err)
+	}
+
+	var order []string
+	retirementReleaseFault = func(point string) error {
+		if point == "teardown_claimed" || point == "child_release" {
+			order = append(order, point)
+		}
+		return nil
+	}
+	defer func() { retirementReleaseFault = nil }()
+
+	if err := f.root.ReleaseForRetirement(context.Background(), prepared); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(order) == 0 || order[0] != "teardown_claimed" {
+		t.Fatalf("retirement did not claim the teardown pass before releasing children; order=%v", order)
+	}
+	childReleases := 0
+	claimIndex := -1
+	for i, point := range order {
+		switch point {
+		case "teardown_claimed":
+			claimIndex = i
+		case "child_release":
+			childReleases++
+		}
+	}
+	if childReleases == 0 {
+		t.Fatalf("fixture released no child runtime; order=%v", order)
+	}
+	if claimIndex != 0 {
+		t.Fatalf("teardown claim was not the first recorded step; order=%v", order)
+	}
+}
