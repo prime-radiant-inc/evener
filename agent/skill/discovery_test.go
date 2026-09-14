@@ -23,7 +23,8 @@ func portableWriteSkill(t *testing.T, dir, name, content string) string {
 }
 
 func TestPortableProjectDirectory(t *testing.T) {
-	root := t.TempDir()
+	// The project root is what discovery resolves before it scans.
+	root := fixtureRoot(t)
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +36,9 @@ func TestPortableProjectDirectory(t *testing.T) {
 }
 
 func TestSkillDiscoveryPrecedence(t *testing.T) {
-	root, home, user, extra1, extra2, plug := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	// Only the project root goes through discovery's resolution; the rest are
+	// reported back as they are passed here.
+	root, home, user, extra1, extra2, plug := fixtureRoot(t), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
