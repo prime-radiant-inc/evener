@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { friendlyErrorMessage } from "../../../protocol/errors";
 import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "../../../protocol/types.gen";
-import { daemonResidentsStore, useDaemonResidentsStore } from "../../../stores/daemonResidents";
+import { daemonResidentsStore, residentRowKey, useDaemonResidentsStore } from "../../../stores/daemonResidents";
 import { Button, ConfirmDialog, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubResidents.module.css";
@@ -136,18 +136,22 @@ export function HubResidents() {
   // lifecycle phase changes; a newly initiated action clears it in the handler
   // below. A lifecycle phase change clears an accepted retire. actionErrors for
   // rows absent from the list are dropped so a departed daemon cannot leave a
-  // stale error behind a later same-ref row. Keyed by the stable identity.ref,
-  // not generation, so a generation rotation neither orphans nor misapplies an
-  // entry. Uses the functional-update form so the maps are not dependencies.
+  // stale error behind a later row that reuses its ref. Keyed by residentRowKey
+  // — the row's generation, falling back to ref, the same key the rows and the
+  // store's pending set use — so the prune consults the daemon that actually
+  // owns each entry. A replaced generation at the same ref is absent under its
+  // own key, which is exactly the "row left the roster" case, so its entry is
+  // cleared rather than misapplied to its replacement. Uses the
+  // functional-update form so the maps are not dependencies.
   useEffect(() => {
     if (!data) return;
-    const daemonByRef = new Map(data.daemons.map((d) => [d.identity.ref, d]));
+    const daemonByKey = new Map(data.daemons.map((d) => [residentRowKey(d.identity), d]));
     setRetireResults((prev) => {
       if (prev.size === 0) return prev;
       let changed = false;
       const next = new Map(prev);
-      for (const [ref, result] of prev) {
-        const daemon = daemonByRef.get(ref);
+      for (const [key, result] of prev) {
+        const daemon = daemonByKey.get(key);
         // A stale or unknown probe carries no lifecycle (the server only sets it
         // while the probe is fresh), so its absent phase must not read as a
         // phase change — that would discard a retire the Hub already accepted
@@ -159,7 +163,7 @@ export function HubResidents() {
         // the offline obligation behind an accepted:false retire is gone. The
         // refusal survives until the phase changes or the row leaves the roster.
         if (!daemon || phaseChanged) {
-          next.delete(ref);
+          next.delete(key);
           changed = true;
         }
       }
@@ -169,9 +173,9 @@ export function HubResidents() {
       if (prev.size === 0) return prev;
       let changed = false;
       const next = new Map(prev);
-      for (const ref of prev.keys()) {
-        if (!daemonByRef.has(ref)) {
-          next.delete(ref);
+      for (const key of prev.keys()) {
+        if (!daemonByKey.has(key)) {
+          next.delete(key);
           changed = true;
         }
       }
@@ -180,25 +184,26 @@ export function HubResidents() {
   }, [data]); // retireResults intentionally omitted — read via functional-update prev
 
   const handleRetire = useCallback(async (identity: DaemonIdentity) => {
+    const key = residentRowKey(identity);
     // Clear any previous action error and stored refusal for this row before
     // starting: a new action supersedes the older attempt's refusal (a fresh
     // refusal replaces it when this RPC resolves).
     setActionErrors((prev) => {
       const next = new Map(prev);
-      next.delete(identity.ref);
+      next.delete(key);
       return next;
     });
     setRetireResults((prev) => {
-      if (!prev.has(identity.ref)) return prev;
+      if (!prev.has(key)) return prev;
       const next = new Map(prev);
-      next.delete(identity.ref);
+      next.delete(key);
       return next;
     });
     try {
       const result = await daemonResidentsStore.getState().retire(identity);
       setRetireResults((prev) => {
         const next = new Map(prev);
-        next.set(identity.ref, result);
+        next.set(key, result);
         return next;
       });
     } catch (err: unknown) {
@@ -206,7 +211,7 @@ export function HubResidents() {
       // the row. The store's error field tracks only refresh failures.
       setActionErrors((prev) => {
         const next = new Map(prev);
-        next.set(identity.ref, friendlyErrorMessage(err));
+        next.set(key, friendlyErrorMessage(err));
         return next;
       });
     }
@@ -216,17 +221,18 @@ export function HubResidents() {
     const identity = confirmForceStop;
     if (!identity) return;
     setConfirmForceStop(null);
+    const key = residentRowKey(identity);
     // Clear any previous action error and stored retire refusal for this row
     // before starting: a new action supersedes the older attempt's outcome.
     setActionErrors((prev) => {
       const next = new Map(prev);
-      next.delete(identity.ref);
+      next.delete(key);
       return next;
     });
     setRetireResults((prev) => {
-      if (!prev.has(identity.ref)) return prev;
+      if (!prev.has(key)) return prev;
       const next = new Map(prev);
-      next.delete(identity.ref);
+      next.delete(key);
       return next;
     });
     try {
@@ -237,7 +243,7 @@ export function HubResidents() {
       // prevents any unsafe action even on a conflict.
       setActionErrors((prev) => {
         const next = new Map(prev);
-        next.set(identity.ref, friendlyErrorMessage(err));
+        next.set(key, friendlyErrorMessage(err));
         return next;
       });
     }
@@ -298,9 +304,13 @@ export function HubResidents() {
             </thead>
             <tbody>
               {data.daemons.map((daemon) => {
-                const retireResult = retireResults.get(daemon.identity.ref);
-                const isPending = pending.has(daemon.identity.ref);
-                const actionError = actionErrors.get(daemon.identity.ref);
+                // Per-row state is keyed the same way the row itself is: by the
+                // row's own generation (see residentRowKey), never the ref alone,
+                // so two live daemons sharing a ref keep separate state.
+                const rowKey = residentRowKey(daemon.identity);
+                const retireResult = retireResults.get(rowKey);
+                const isPending = pending.has(rowKey);
+                const actionError = actionErrors.get(rowKey);
 
                 // Display phase: prefer the retire-response lifecycle when the
                 // Hub accepted it (see displayPhaseFor).
@@ -309,19 +319,16 @@ export function HubResidents() {
                 // List-snapshot blockers from the current probe result.
                 const snapshotBlockers = daemon.lifecycle?.blockers ?? [];
 
-                // React keys must be unique among siblings. listDaemons dedups
-                // by identity.generation, not ref, so two rows can legitimately
-                // share a ref (an unconfirmed rendezvous alongside a confirmed
-                // one, or a replacement in flight). Key by generation, falling
-                // back to ref when it is empty. aria-label includes identity.ref
-                // so rows sharing a display name remain distinguishable.
+                // React keys must be unique among siblings, and residentRowKey is
+                // the same generation-first key the per-row state above uses, so a
+                // row's key and its state always agree. listDaemons dedups by
+                // identity.generation, not ref, so two rows can legitimately share
+                // a ref (an unconfirmed rendezvous alongside a confirmed one, or a
+                // replacement in flight); the ref is the fallback for a row that
+                // reports no generation. aria-label includes identity.ref so rows
+                // sharing a display name remain distinguishable.
                 return (
-                  <tr
-                    key={
-                      daemon.identity.generation ? `gen:${daemon.identity.generation}` : `ref:${daemon.identity.ref}`
-                    }
-                    aria-label={`${daemon.name} ${daemon.identity.ref}`}
-                  >
+                  <tr key={rowKey} aria-label={`${daemon.name} ${daemon.identity.ref}`}>
                     <td>
                       <div>{daemon.name}</div>
                       {/* Root reference — shown under the name per spec. Two
@@ -405,7 +412,7 @@ export function HubResidents() {
         open={confirmForceStop !== null}
         title="Force stop daemon?"
         confirmLabel="Force stop"
-        busy={confirmForceStop !== null && pending.has(confirmForceStop.ref)}
+        busy={confirmForceStop !== null && pending.has(residentRowKey(confirmForceStop))}
         onConfirm={() => void handleForceStopConfirm()}
         onCancel={() => setConfirmForceStop(null)}
       >

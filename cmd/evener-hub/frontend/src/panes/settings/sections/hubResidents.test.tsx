@@ -13,7 +13,12 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "../../../protocol/types.gen";
+import type {
+  DaemonIdentity,
+  DaemonListResponse,
+  DaemonResident,
+  DaemonRetireResponse,
+} from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { HubResidents } from "./hubResidents";
@@ -247,6 +252,250 @@ test("residents sharing a ref but differing in generation render without duplica
   } finally {
     errorSpy.mockRestore();
   }
+});
+
+// ─── Same-ref, different-generation rows ─────────────────────────────────────
+//
+// listDaemons dedups by identity.generation, not identity.ref, so during a
+// replacement or a retire-vs-resume overlap two live daemons legitimately
+// share one ref. Every piece of per-row state must therefore follow the
+// generation that owns it, not the shared ref.
+
+const SHARED_REF = "local:shared-ref-resident";
+
+// sharedRefDaemon builds one row of such a pair: both rows carry SHARED_REF,
+// with a distinct generation/pid/name each so the row under test is addressable.
+function sharedRefDaemon(opts: {
+  generation: string;
+  pid: number;
+  name: string;
+  phase?: string;
+  stale?: boolean;
+  canRetire?: boolean;
+}): DaemonResident {
+  return {
+    identity: {
+      ref: SHARED_REF,
+      pid: opts.pid,
+      startedAt: "2026-09-10T00:00:00Z",
+      generation: opts.generation,
+    },
+    name: opts.name,
+    protocol: "evener-appwire-v5",
+    compatibility: "compatible",
+    archived: false,
+    probeState: opts.stale ? "stale" : "current",
+    // A stale probe carries no lifecycle — the server only sets it while fresh.
+    ...(opts.stale ? {} : { lifecycle: { phase: opts.phase ?? "resident", timeoutMillis: 3600000, blockers: [] } }),
+    canRetire: !opts.stale && (opts.canRetire ?? true),
+    canForceStop: true,
+  };
+}
+
+test("a retire refusal for one generation does not appear on the sibling generation sharing its ref", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      sharedRefDaemon({ generation: "gen-old", pid: 401, name: "Overlap old" }),
+      sharedRefDaemon({ generation: "gen-new", pid: 402, name: "Overlap new" }),
+    ],
+  }));
+  fake.on("evener/daemon/retire", () => ({
+    accepted: false,
+    lifecycle: {
+      phase: "resident",
+      timeoutMillis: 3600000,
+      blockers: [{ category: "turn", sessionId: "session-old" }],
+    },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const oldRow = await screen.findByRole("row", { name: /Overlap old/ });
+  await user.click(within(oldRow).getByRole("button", { name: "Retire now" }));
+
+  // The refusal is stored against the generation that acted.
+  await waitFor(() => {
+    expect(within(screen.getByRole("row", { name: /Overlap old/ })).getByText(/session-old/)).toBeTruthy();
+  });
+  // The sibling generation must not inherit the refusal's blockers.
+  expect(within(screen.getByRole("row", { name: /Overlap new/ })).queryByText(/session-old/)).toBeNull();
+});
+
+test("an in-flight retire on one generation does not disable the sibling generation sharing its ref", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      sharedRefDaemon({ generation: "gen-old", pid: 401, name: "In-flight old" }),
+      sharedRefDaemon({ generation: "gen-new", pid: 402, name: "In-flight new" }),
+    ],
+  }));
+  let releaseRetire!: () => void;
+  fake.on(
+    "evener/daemon/retire",
+    () =>
+      new Promise<DaemonRetireResponse>((resolve) => {
+        releaseRetire = () =>
+          resolve({ accepted: true, lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] } });
+      }),
+  );
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const oldRow = await screen.findByRole("row", { name: /In-flight old/ });
+  await user.click(within(oldRow).getByRole("button", { name: "Retire now" }));
+  await act(async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
+
+  // The acting generation's own buttons are disabled while pending...
+  const pendingRow = screen.getByRole("row", { name: /In-flight old/ });
+  expect(isDisabled(within(pendingRow).getByRole("button", { name: "Retire now" }))).toBe(true);
+  // ...and the sibling generation, which shares the ref, stays actionable.
+  const siblingRow = screen.getByRole("row", { name: /In-flight new/ });
+  expect(isDisabled(within(siblingRow).getByRole("button", { name: "Retire now" }))).toBe(false);
+  expect(isDisabled(within(siblingRow).getByRole("button", { name: "Force stop" }))).toBe(false);
+
+  // Clean up: resolve the held retire so the test does not leak async work.
+  await act(async () => {
+    releaseRetire();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
+});
+
+test("a failed retire on one generation does not show its error on the sibling generation sharing its ref", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      sharedRefDaemon({ generation: "gen-old", pid: 401, name: "Errored old" }),
+      sharedRefDaemon({ generation: "gen-new", pid: 402, name: "Errored new" }),
+    ],
+  }));
+  fake.on("evener/daemon/retire", () => {
+    throw new Error("network error");
+  });
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const oldRow = await screen.findByRole("row", { name: /Errored old/ });
+  await user.click(within(oldRow).getByRole("button", { name: "Retire now" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("row", { name: /Errored old/ }).querySelector("[role='alert']")).toBeTruthy();
+  });
+  // The sibling generation must not inherit the failed action's error.
+  expect(screen.getByRole("row", { name: /Errored new/ }).querySelector("[role='alert']")).toBeNull();
+});
+
+test("same-ref rows of different generations each display their own lifecycle phase", async () => {
+  const fake = connectFakeClient();
+  // The old generation exits as its retire is accepted, so its own probe goes
+  // stale (no lifecycle) while the replacement at the shared ref stays current
+  // and resident. The accepted retire's phase must show only on its own row.
+  let oldStale = false;
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    // The retired generation is listed last: a ref-keyed prune resolves the
+    // shared ref to it, and its stale probe cannot supersede the stored result,
+    // so the leak onto the sibling is observable rather than pruned away.
+    daemons: [
+      sharedRefDaemon({ generation: "gen-new", pid: 402, name: "Phase new" }),
+      sharedRefDaemon({ generation: "gen-old", pid: 401, name: "Phase old", stale: oldStale }),
+    ],
+  }));
+  fake.on("evener/daemon/retire", () => {
+    oldStale = true;
+    return { accepted: true, lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] } };
+  });
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const oldRow = await screen.findByRole("row", { name: /Phase old/ });
+  await user.click(within(oldRow).getByRole("button", { name: "Retire now" }));
+
+  // The accepted retire shows on the generation that was retired...
+  await waitFor(() => {
+    expect(within(screen.getByRole("row", { name: /Phase old/ })).getAllByRole("cell")[4]!.textContent).toBe(
+      "retiring",
+    );
+  });
+  // ...and the same-ref replacement, whose own probe still reports resident,
+  // must not inherit the retired generation's phase.
+  expect(within(screen.getByRole("row", { name: /Phase new/ })).getAllByRole("cell")[4]!.textContent).toBe("resident");
+});
+
+test("a refusal clears when its own generation's phase changes despite a later same-ref row at the old phase", async () => {
+  const fake = connectFakeClient();
+  const newResident = sharedRefDaemon({ generation: "gen-new", pid: 402, name: "Prune new" });
+  // The replacement is listed last: a ref-keyed map would resolve the shared ref
+  // to this row and read the old generation's phase change as no change at all.
+  let daemons: DaemonResident[] = [
+    sharedRefDaemon({ generation: "gen-old", pid: 401, name: "Prune old" }),
+    newResident,
+  ];
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons }));
+  fake.on("evener/daemon/retire", () => ({
+    accepted: false,
+    lifecycle: {
+      phase: "resident",
+      timeoutMillis: 3600000,
+      blockers: [{ category: "turn", sessionId: "session-old" }],
+    },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const oldRow = await screen.findByRole("row", { name: /Prune old/ });
+  await user.click(within(oldRow).getByRole("button", { name: "Retire now" }));
+  await waitFor(() => {
+    expect(within(screen.getByRole("row", { name: /Prune old/ })).getByText(/session-old/)).toBeTruthy();
+  });
+
+  // The retired generation's own probe moves to "retiring" (an external or
+  // concurrent retire) while the replacement at the shared ref stays resident.
+  daemons = [
+    sharedRefDaemon({ generation: "gen-old", pid: 401, name: "Prune old", phase: "retiring", canRetire: false }),
+    newResident,
+  ];
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+
+  // The phase change supersedes the refusal, so no row may still render it.
+  expect(screen.queryAllByText(/session-old/)).toHaveLength(0);
+});
+
+test("a generation rotation at one ref does not carry the old generation's refusal to its replacement", async () => {
+  const fake = connectFakeClient();
+  let daemons: DaemonResident[] = [sharedRefDaemon({ generation: "gen-old", pid: 401, name: "Rotating daemon" })];
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons }));
+  fake.on("evener/daemon/retire", () => ({
+    accepted: false,
+    lifecycle: {
+      phase: "resident",
+      timeoutMillis: 3600000,
+      blockers: [{ category: "turn", sessionId: "session-old" }],
+    },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Rotating daemon/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+  await screen.findByText(/session-old/);
+
+  // The daemon is replaced: same ref, new generation. The refusal belonged to
+  // the generation that left, so the replacement must not render it.
+  daemons = [sharedRefDaemon({ generation: "gen-new", pid: 402, name: "Rotating daemon" })];
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+
+  const replacement = await screen.findByRole("row", { name: /Rotating daemon/ });
+  expect(within(replacement).queryByText(/session-old/)).toBeNull();
 });
 
 // ─── Polling: no further calls after unmount ──────────────────────────────────

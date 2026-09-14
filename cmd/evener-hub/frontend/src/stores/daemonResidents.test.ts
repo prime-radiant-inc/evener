@@ -14,6 +14,7 @@ import {
   _clearDaemonResidentsInflightForTests,
   daemonResidentsStore,
   resetDaemonResidentsStoreForTests,
+  residentRowKey,
   useDaemonResidentsStore,
 } from "./daemonResidents";
 
@@ -199,7 +200,7 @@ describe("refresh", () => {
 });
 
 describe("retire", () => {
-  test("adds and removes identity.ref from pending, sends correct RPC", async () => {
+  test("adds and removes the generation-keyed row key from pending, sends correct RPC", async () => {
     const fake = connectFakeClient();
     const retireResponse: DaemonRetireResponse = {
       accepted: true,
@@ -209,21 +210,25 @@ describe("retire", () => {
     fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
     fake.on("evener/daemon/retire", (params) => {
       expect(params.identity).toEqual(IDENTITY_A);
-      // While the retire is in flight, pending should contain the stable ref key
-      expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.ref)).toBe(true);
+      // While the retire is in flight, pending must hold the acting row's
+      // generation key — not the ref, which a sibling generation can share.
+      expect(daemonResidentsStore.getState().pending.has(residentRowKey(IDENTITY_A))).toBe(true);
       return retireResponse;
     });
 
     const result = await daemonResidentsStore.getState().retire(IDENTITY_A);
 
     expect(result).toEqual(retireResponse);
-    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.ref)).toBe(false);
+    expect(daemonResidentsStore.getState().pending.has(residentRowKey(IDENTITY_A))).toBe(false);
     expect(fake.calls).toContainEqual({ method: "evener/daemon/retire", params: { identity: IDENTITY_A } });
   });
 
-  test("pending key is the stable identity.ref, not generation or PID", async () => {
+  test("pending key is the generation, not the shared ref or PID", async () => {
     const fake = connectFakeClient();
     let capturedPending: Set<string> | null = null;
+    // A live sibling row: same ref as IDENTITY_A, different generation. This is
+    // the shape listDaemons emits during a replacement or retire-vs-resume overlap.
+    const sibling: DaemonIdentity = { ...IDENTITY_A, pid: 1002, generation: "gen-b" };
     const retireResponse: DaemonRetireResponse = {
       accepted: false,
       lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [{ category: "turn" }] },
@@ -236,11 +241,43 @@ describe("retire", () => {
 
     await daemonResidentsStore.getState().retire(IDENTITY_A);
 
-    // Key must be the stable ref so a generation rotation cannot orphan it
+    // The key must identify the generation that acted: a ref-keyed entry would
+    // be shared by both rows, leaking one generation's in-flight state onto the
+    // other and onto any later replacement that reuses the ref.
     expect(capturedPending).not.toBeNull();
-    expect(capturedPending!.has(IDENTITY_A.ref)).toBe(true);
-    expect(capturedPending!.has(IDENTITY_A.generation)).toBe(false);
+    expect(capturedPending!.has(residentRowKey(IDENTITY_A))).toBe(true);
+    expect(capturedPending!.has(IDENTITY_A.ref)).toBe(false);
+    expect(capturedPending!.has(residentRowKey(sibling))).toBe(false);
     expect(capturedPending!.has(String(IDENTITY_A.pid))).toBe(false);
+  });
+
+  test("a same-ref sibling generation is not marked pending while one generation acts", async () => {
+    const fake = connectFakeClient();
+    const sibling: DaemonIdentity = { ...IDENTITY_A, pid: 1002, generation: "gen-b" };
+    const retireResponse: DaemonRetireResponse = {
+      accepted: true,
+      lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] },
+    };
+    let releaseRetire!: () => void;
+    fake.on("evener/daemon/list", () => EMPTY_RESPONSE);
+    fake.on(
+      "evener/daemon/retire",
+      () =>
+        new Promise<DaemonRetireResponse>((resolve) => {
+          releaseRetire = () => resolve(retireResponse);
+        }),
+    );
+
+    const inFlight = daemonResidentsStore.getState().retire(IDENTITY_A);
+    await Promise.resolve(); // let the request handler be invoked
+
+    const pending = daemonResidentsStore.getState().pending;
+    expect(pending.has(residentRowKey(IDENTITY_A))).toBe(true);
+    expect(pending.has(residentRowKey(sibling))).toBe(false);
+
+    releaseRetire();
+    await inFlight;
+    expect(daemonResidentsStore.getState().pending.has(residentRowKey(IDENTITY_A))).toBe(false);
   });
 
   test("throws (propagates error) when retire RPC fails", async () => {
@@ -252,7 +289,7 @@ describe("retire", () => {
 
     await expect(daemonResidentsStore.getState().retire(IDENTITY_A)).rejects.toThrow("retire rejected");
     // pending should be cleared even on error
-    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.ref)).toBe(false);
+    expect(daemonResidentsStore.getState().pending.has(residentRowKey(IDENTITY_A))).toBe(false);
   });
 });
 
@@ -275,7 +312,7 @@ describe("forceStop", () => {
     });
   });
 
-  test("adds and removes identity.ref from pending on force-stop", async () => {
+  test("adds and removes the generation-keyed row key from pending on force-stop", async () => {
     const fake = connectFakeClient();
     let capturedPending: Set<string> | null = null;
     fake.on("evener/thread/forceStop", () => {
@@ -287,8 +324,8 @@ describe("forceStop", () => {
     await daemonResidentsStore.getState().forceStop(IDENTITY_A);
 
     expect(capturedPending).not.toBeNull();
-    expect(capturedPending!.has(IDENTITY_A.ref)).toBe(true);
-    expect(daemonResidentsStore.getState().pending.has(IDENTITY_A.ref)).toBe(false);
+    expect(capturedPending!.has(residentRowKey(IDENTITY_A))).toBe(true);
+    expect(daemonResidentsStore.getState().pending.has(residentRowKey(IDENTITY_A))).toBe(false);
   });
 });
 

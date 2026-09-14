@@ -4,9 +4,10 @@
 // useEffect owns the polling interval; this store starts no permanent timer).
 //
 // Key design points:
-//   • `pending` tracks in-progress actions keyed by the stable identity.ref so
-//     individual rows can show a disabled state while retire/forceStop is in
-//     flight, and a generation rotation cannot orphan the entry.
+//   • `pending` tracks in-progress actions keyed by residentRowKey — the acting
+//     row's generation, falling back to ref — so individual rows can show a
+//     disabled state while retire/forceStop is in flight without disabling a
+//     sibling generation that legitimately shares the same ref.
 //   • A latestGeneration counter lets the generation-check inside runRefresh
 //     discard out-of-order responses when a newer request has already
 //     published its result (e.g., a background refresh overtakes a slow one).
@@ -25,11 +26,25 @@ export interface DaemonResidentsStoreState {
   loading: boolean;
   /** Non-null when the most-recent refresh failed. Stale data is kept. */
   error: string | null;
-  /** generation strings of identity rows with an action currently in flight. */
+  /**
+   * Row keys (see residentRowKey) of the identity rows with an action currently
+   * in flight: `gen:<generation>`, or `ref:<ref>` when the row reports no
+   * generation.
+   */
   pending: Set<string>;
   refresh(): Promise<void>;
   retire(identity: DaemonIdentity): Promise<DaemonRetireResponse>;
   forceStop(identity: DaemonIdentity): Promise<void>;
+}
+
+// residentRowKey identifies one resident row for React keys and per-row state.
+// listDaemons dedups by identity.generation, not identity.ref, so a replacement
+// or a retire-vs-resume overlap yields two live rows sharing one ref. Keying by
+// generation keeps each row's retire result, action error and pending entry on
+// the row it belongs to; the ref is the fallback for a row that reports no
+// generation. The namespaced form matches the <tr> key in hubResidents.tsx.
+export function residentRowKey(identity: DaemonIdentity): string {
+  return identity.generation ? `gen:${identity.generation}` : `ref:${identity.ref}`;
 }
 
 // requireClient reads the currently wired client from connectionStore — the
@@ -105,7 +120,7 @@ export const daemonResidentsStore = createStore<DaemonResidentsStoreState>(() =>
 
   async retire(identity: DaemonIdentity): Promise<DaemonRetireResponse> {
     const client = requireClient();
-    const key = identity.ref;
+    const key = residentRowKey(identity);
     daemonResidentsStore.setState((s) => ({ pending: new Set([...s.pending, key]) }));
     try {
       return await client.request("evener/daemon/retire", { identity });
@@ -122,7 +137,7 @@ export const daemonResidentsStore = createStore<DaemonResidentsStoreState>(() =>
 
   async forceStop(identity: DaemonIdentity): Promise<void> {
     const client = requireClient();
-    const key = identity.ref;
+    const key = residentRowKey(identity);
     daemonResidentsStore.setState((s) => ({ pending: new Set([...s.pending, key]) }));
     try {
       await client.request("evener/thread/forceStop", {
