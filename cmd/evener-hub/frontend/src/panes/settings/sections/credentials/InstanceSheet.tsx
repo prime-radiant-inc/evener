@@ -156,12 +156,15 @@ function draftIdentity(entry: InstanceEntry): string {
  * instance pins base to the old name: the entry owned the name of the curated
  * provider it shadowed, and that name is what its configuration is inherited
  * through, so the hub writes the old name into base before the name is gone.
- * The rename therefore carries base over as this save's own pinning - before's
- * base is empty and the listing's base is the name the instance just left -
- * and any other difference in base is a different instance. */
+ * The rename therefore carries base over as this save's own pinning - before
+ * had no base and the listing's base is the name the instance just left - and
+ * any other difference in base is a different instance. base is wire-
+ * serialized with omitempty, so an empty base arrives absent and fieldValue
+ * normalizes it to the empty value this comparison is written for. */
 function baseCarriedByRename(before: InstanceEntry, listed: InstanceEntry): boolean {
-  if (fieldValue(before, "base") === fieldValue(listed, "base")) return true;
-  return before.base === "" && listed.base === before.name;
+  const beforeBase = fieldValue(before, "base");
+  if (beforeBase === fieldValue(listed, "base")) return true;
+  return beforeBase === "" && listed.base === before.name;
 }
 
 /** The name this save's rename landed under, or undefined when the store's own

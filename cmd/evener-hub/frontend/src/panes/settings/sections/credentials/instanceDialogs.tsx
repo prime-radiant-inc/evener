@@ -16,7 +16,7 @@
 // (roborev round 1, F3): the input is labeled by the env name (what the
 // docs tell users to set) but keyed by the template name, since that is
 // what the registry actually substitutes.
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { credentialsStore } from "../../../../stores/credentials";
@@ -42,7 +42,10 @@ const CLASS = {
 // endpoint the user never reviewed. The dialog compares the row's current
 // fingerprint against the one captured when it opened, refuses the write, and
 // clears the field; the same refusal the guided flow and the instance sheet
-// make when their destination moves.
+// make when their destination moves. The refusal is actionable rather than
+// terminal: it re-anchors the dialog's expectation to the row now on screen,
+// so the re-entry the message asks for saves against the destination the user
+// can see.
 const ENDPOINT_CHANGED_ERROR =
   "This connection changed to a different endpoint. Check its destination and enter the value again.";
 
@@ -341,6 +344,9 @@ export interface ApiKeyDialogProps {
   /** The endpoint fingerprint the dialog was opened against, captured from the
    * row the user acted on. A defined submit asserts this value, so a
    * concurrent endpoint change cannot re-target the already-entered secret.
+   * When a change is detected the dialog re-anchors to the row now on screen,
+   * the destination the user reviews before re-entering the value; see
+   * CredentialValueDialog.handleSubmit.
    * Required (and explicitly undefined when the row showed no endpoint, which
    * is the legitimate "nothing was shown, nothing to assert" case) rather than
    * optional, so a caller that forgets to capture it is a build error instead
@@ -364,7 +370,11 @@ interface CredentialValueDialogProps {
   /** "password" for a single-line secret (ApiKeyDialog); "textarea" for a
    * multi-line paste (CredentialJsonDialog). */
   input: "password" | "textarea";
-  submit: (name: string, value: string) => Promise<AuthStatusResponse>;
+  /** Writes the typed value, asserting the endpoint this submit belongs to.
+   * Handed the dialog's effective expectation rather than closing over the
+   * captured prop, so a value re-entered after a refusal asserts the row now
+   * on screen. */
+  submit: (name: string, value: string, expectedEndpointFingerprint: string | undefined) => Promise<AuthStatusResponse>;
 }
 
 // CredentialValueDialog is the submit/refresh/toast/error flow shared by
@@ -392,6 +402,15 @@ function CredentialValueDialog({
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
   const active = useEditorLifetime();
+  // The expectation the next submit asserts. Seeded from the caller's capture
+  // - the endpoint the row showed when the editor opened - and re-anchored to
+  // the row now on screen when the guard refuses (see handleSubmit). Resynced
+  // when the prop changes: a caller that re-captures while this component
+  // stays mounted starts from its new capture, not a refusal from before.
+  const expected = useRef(expectedEndpointFingerprint);
+  useLayoutEffect(() => {
+    expected.current = expectedEndpointFingerprint;
+  }, [expectedEndpointFingerprint]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -404,11 +423,20 @@ function CredentialValueDialog({
     // the name now resolves to a different one, refuse before any RPC, drop
     // the value, and say why: a save here would assert an endpoint the user
     // never reviewed and could write the secret somewhere they did not choose.
+    // The refusal re-anchors the expectation to the row now on screen, so the
+    // re-entry the error asks for saves against the destination the user can
+    // see instead of being refused forever against the endpoint that is gone.
+    // Re-anchoring is safe: that row is the destination the dialog renders,
+    // the value was cleared so proceeding takes a deliberate retype of the
+    // secret, and the hub re-checks the assertion under its credential lock at
+    // write time, so a second change refuses again.
     // A capture of undefined is nothing to compare against - the row showed no
     // endpoint when the editor opened - so a row that gained one while the
     // dialog sat open is not a change to refuse: submit without an assertion,
     // the "nothing shown, nothing to assert" case this prop's doc names.
-    if (expectedEndpointFingerprint !== undefined && instance.endpointFingerprint !== expectedEndpointFingerprint) {
+    const expectedFingerprint = expected.current;
+    if (expectedFingerprint !== undefined && instance.endpointFingerprint !== expectedFingerprint) {
+      expected.current = instance.endpointFingerprint;
       setValue("");
       setError(ENDPOINT_CHANGED_ERROR);
       return;
@@ -416,7 +444,7 @@ function CredentialValueDialog({
     setError(null);
     setBusy(true);
     try {
-      await submit(instance.name, trimmed);
+      await submit(instance.name, trimmed, expectedFingerprint);
       if (!active.current) return;
       await refreshListingAfterMutation();
       if (!active.current) return;
@@ -492,7 +520,9 @@ export function ApiKeyDialog({ instance, expectedEndpointFingerprint, onCancel, 
       placeholder="paste key"
       successText={`API key saved for ${instance.name}`}
       input="password"
-      submit={(name, value) => credentialsStore.getState().setApiKey(name, value, expectedEndpointFingerprint)}
+      submit={(name, value, expectedFingerprint) =>
+        credentialsStore.getState().setApiKey(name, value, expectedFingerprint)
+      }
     />
   );
 }
@@ -521,7 +551,9 @@ export function CredentialJsonDialog({
       placeholder="paste a service-account key or application_default_credentials.json"
       successText={`Credential JSON saved for ${instance.name}`}
       input="textarea"
-      submit={(name, value) => credentialsStore.getState().setCredentialJson(name, value, expectedEndpointFingerprint)}
+      submit={(name, value, expectedFingerprint) =>
+        credentialsStore.getState().setCredentialJson(name, value, expectedFingerprint)
+      }
     />
   );
 }

@@ -960,6 +960,65 @@ describe("ApiKeyDialog", () => {
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
   });
 
+  // The refusal tells the user to enter the value again, so re-entering it has
+  // to be able to succeed. The row on screen is the destination the user can
+  // review, so the refusal re-anchors the dialog's expectation to it: the
+  // re-typed value asserts the row the dialog is displaying instead of being
+  // refused forever against the endpoint that is already gone.
+  test("a value re-entered after a refusal asserts the row the dialog now displays", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/apiKey/set", () => ({
+      provider: "work",
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <>
+        <ApiKeyDialog
+          instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-original" })}
+          expectedEndpointFingerprint="fp-original"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    // The listing for this name now carries a different endpoint.
+    rerender(
+      <>
+        <ApiKeyDialog
+          instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-changed" })}
+          expectedEndpointFingerprint="fp-original"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+
+    // The error asks for the value again; entering it again saves against the
+    // destination the dialog is now showing.
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() =>
+      expect(fake.calls.find((c) => c.method === "evener/auth/apiKey/set")?.params).toEqual({
+        provider: "work",
+        value: "sk-secret-again",
+        expectedEndpointFingerprint: "fp-changed",
+      }),
+    );
+    expect(onSuccess).toHaveBeenCalled();
+  });
+
   test("a saved key whose listing read is lost is still reported as saved", async () => {
     const fake = connectFakeClient();
     let save!: (value: AuthStatusResponse) => void;

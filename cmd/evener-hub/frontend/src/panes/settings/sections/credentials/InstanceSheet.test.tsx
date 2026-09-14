@@ -1346,11 +1346,13 @@ describe("the form", () => {
   // base to keep the inherited configuration after the name is gone. That is
   // this rename carrying base over, not a different instance wearing the new
   // name, and reading it as a difference rejects the store's own confirmation.
+  // The pre-save entry carries no `base` key at all: the wire drops the empty
+  // value (json:"base,omitempty"), so an empty base arrives absent and the
+  // comparison has to normalize it.
   test("a superseded rename of a curated shadow is confirmed though the rename pinned base", async () => {
     const shadow = instance({
       name: "openai",
       providerId: "openai",
-      base: "",
       protocol: "openai-responses",
       baseUrl: "https://gw.example.test/v1",
       apiKeyEnv: "PORTKEY_KEY",
@@ -1372,6 +1374,35 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
 
+  // The same rename answered by the store instead of superseded: the edit
+  // response applies, so the sheet steers on its own request and the section
+  // re-selects the new name. The pre-save entry is the wire shape again, with
+  // no base, so a normalization applied to one path only would leave the
+  // sheet pinned to the old name here.
+  test("a rename of a curated shadow the store applied steers the sheet onto the new name", async () => {
+    const shadow = instance({
+      name: "openai",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      apiKeyEnv: "PORTKEY_KEY",
+      endpointFingerprint: "fp-shadow",
+    });
+    const fake = new FakeClient("ready");
+    const renamed = { ...shadow, name: "openai-work", base: "openai" };
+    fake.on("evener/instance/edit", () => ({ instances: [renamed], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    const { handlers } = renderSheet(shadow, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+
+    await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work"));
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
   // The pinning is the old name, exactly: a listing whose base is some other
   // value is not this rename carried over but a different instance, and
   // steering the sheet onto it would title one instance with another's values.
@@ -1379,7 +1410,6 @@ describe("the form", () => {
     const shadow = instance({
       name: "openai",
       providerId: "openai",
-      base: "",
       endpointFingerprint: "fp-shadow",
     });
     const { fake, finish } = deferredEdit();
