@@ -512,7 +512,7 @@ func TestTrimActivityTreeToFit_SkipIsMeasuredWithTheTokenItCarries(t *testing.T)
 	}}
 	shape.Root.Branch.Truncated = true
 	shape.Root.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version: activityContinuationV1, RootID: "root", SessionID: "root",
+		Version: activityContinuationVersion, RootID: "root", SessionID: "root",
 	})
 	recomputeActivitySession(&shape.Root)
 	entryless, err := json.Marshal(shape)
@@ -604,7 +604,7 @@ func TestTrimActivityTreeToFit_SkipDiagnosticStaysInsideTheLimit(t *testing.T) {
 	}}
 	shape.Root.Branch.Truncated = true
 	shape.Root.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version: activityContinuationV1, RootID: "root", SessionID: "root",
+		Version: activityContinuationVersion, RootID: "root", SessionID: "root",
 	})
 	recomputeActivitySession(&shape.Root)
 	entryless, err := json.Marshal(shape)
@@ -915,7 +915,7 @@ func TestTrimActivityTrailingEntry_MintsTheTrimmedSessionsOwnDelegatesEpoch(t *t
 func TestEncodeActivityContinuation(t *testing.T) {
 	t.Parallel()
 	// A valid continuation round-trips.
-	cont := activityContinuation{Version: activityContinuationV1, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}}
+	cont := activityContinuation{Version: activityContinuationVersion, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}}
 	encoded := encodeActivityContinuation(cont)
 	if encoded == "" {
 		t.Fatal("encoded continuation is empty")
@@ -940,22 +940,22 @@ func TestDecodeActivityContinuation_Malformed(t *testing.T) {
 		t.Fatal("whitespace token should error")
 	}
 	// Missing root or session.
-	bad := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "", SessionID: ""})
+	bad := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "", SessionID: ""})
 	if _, err := decodeActivityContinuation(bad, ""); err == nil {
 		t.Fatal("missing root/session should error")
 	}
 	// Invalid root token.
-	badRoot := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "bad root!", SessionID: "root"})
+	badRoot := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "bad root!", SessionID: "root"})
 	if _, err := decodeActivityContinuation(badRoot, ""); err == nil {
 		t.Fatal("invalid root token should error")
 	}
 	// Invalid session token.
-	badSession := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "bad session!"})
+	badSession := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "root", SessionID: "bad session!"})
 	if _, err := decodeActivityContinuation(badSession, ""); err == nil {
 		t.Fatal("invalid session token should error")
 	}
 	// Invalid path hop.
-	badHop := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "root", Path: []string{"bad hop!"}})
+	badHop := encodeActivityContinuation(activityContinuation{Version: activityContinuationVersion, RootID: "root", SessionID: "root", Path: []string{"bad hop!"}})
 	if _, err := decodeActivityContinuation(badHop, "root"); err == nil {
 		t.Fatal("invalid path hop should error")
 	}
@@ -1180,7 +1180,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 		t.Fatal("expected a top-level live session to have a jobActivityClock")
 	}
 	cont := activityContinuation{
-		Version:   activityContinuationV1,
+		Version:   activityContinuationVersion,
 		RootID:    s.ID(),
 		SessionID: s.ID(),
 		Revision:  activityCurrentRootRevision(s.jobActivityClock),
@@ -1204,7 +1204,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 	// Sanity check the positive case: a continuation minted against the
 	// CURRENT revision is accepted.
 	fresh := activityContinuation{
-		Version:   activityContinuationV1,
+		Version:   activityContinuationVersion,
 		RootID:    s.ID(),
 		SessionID: s.ID(),
 		Revision:  activityCurrentRootRevision(s.jobActivityClock),
@@ -1297,7 +1297,7 @@ func TestJobActivityTree_LiveRootChildContinuationSurvivesHistoricalEpochs(t *te
 	// generations — the session the token targets is the one whose journals
 	// a resume folds — and the live revision.
 	token := encodeActivityContinuation(activityContinuation{
-		Version:        activityContinuationV1,
+		Version:        activityContinuationVersion,
 		RootID:         s.ID(),
 		SessionID:      childID,
 		Path:           []string{delegateID},
@@ -1355,7 +1355,7 @@ func TestJobActivityTree_LiveRootChildContinuationRejectedAfterTheChildIsRewritt
 		t.Fatalf("load the child historically: %v", err)
 	}
 	token := encodeActivityContinuation(activityContinuation{
-		Version:        activityContinuationV1,
+		Version:        activityContinuationVersion,
 		RootID:         s.ID(),
 		SessionID:      childID,
 		Path:           []string{delegateID},
@@ -1425,7 +1425,7 @@ func TestJobActivityTree_LiveContinuationRejectedAfterADelegateAppears(t *testin
 		t.Fatalf("first page entries = %d, want 1", len(page.Root.Entries))
 	}
 	token := encodeActivityContinuation(activityContinuation{
-		Version:     activityContinuationV1,
+		Version:     activityContinuationVersion,
 		RootID:      s.ID(),
 		SessionID:   s.ID(),
 		ResumeIndex: 1,
@@ -1528,5 +1528,41 @@ func TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed(
 	want := activityUnreachableByPathDiagnostic("deep")
 	if !slices.Contains(tooLong.Diagnostics, want) {
 		t.Fatalf("diagnostics %q, want one of them to be %q", tooLong.Diagnostics, want)
+	}
+}
+
+// TestDecodeActivityContinuation_RefusesAnEarlierFormatAsStale pins that a
+// token minted by a build with different field meanings is refused as stale
+// rather than decoded. The fields are checked one by one against what the
+// tree reports now, so a token whose version stayed put while its fields
+// changed meaning would be read as saying something it never said. Stale is
+// the right shape because it is the answer the client already handles:
+// restart pagination once.
+func TestDecodeActivityContinuation_RefusesAnEarlierFormatAsStale(t *testing.T) {
+	legacy := encodeActivityContinuation(activityContinuation{
+		Version:     1,
+		RootID:      "root",
+		SessionID:   "root",
+		ResumeIndex: 3,
+	})
+	_, err := decodeActivityContinuation(legacy, "root")
+	if err == nil {
+		t.Fatal("a version-1 token was accepted; its fields do not mean what this build reads them as")
+	}
+	if !strings.Contains(err.Error(), "activity continuation is stale") {
+		t.Fatalf("error %q, want the stale-continuation rejection the client restarts on", err)
+	}
+	if !strings.Contains(err.Error(), "restart pagination without a continuation") {
+		t.Fatalf("error %q, want it to say what to do next", err)
+	}
+
+	current := encodeActivityContinuation(activityContinuation{
+		Version:     activityContinuationVersion,
+		RootID:      "root",
+		SessionID:   "root",
+		ResumeIndex: 3,
+	})
+	if _, err := decodeActivityContinuation(current, "root"); err != nil {
+		t.Fatalf("this build's own token does not decode: %v", err)
 	}
 }

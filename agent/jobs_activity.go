@@ -24,7 +24,15 @@ const (
 	activityMaxNewDepth     = 32
 	activityMaxEncodedBytes = 4 << 20
 	activityMaxTokenBytes   = 16 << 10
-	activityContinuationV1  = 1
+	// activityContinuationVersion is the continuation format this build
+	// mints and the only one it accepts. It moves whenever the meaning of a
+	// token's fields moves, because a token is checked field by field: a
+	// version that stayed put while fields were added or repurposed would
+	// let an older token be read as if it said something it never said. A
+	// token from another version is refused as stale, so a client restarts
+	// pagination once, rather than being decoded by some compatibility path
+	// this build has no way to keep honest.
+	activityContinuationVersion = 2
 	// activityMaxContinuationPathLength bounds a client-supplied
 	// continuation's Path at activityMaxNewDepth+1 rather than
 	// activityMaxNewDepth. The two numbers measure different things: the
@@ -181,6 +189,14 @@ func newBoundedActivityBudget(rootID string, now time.Time, revision uint64) *ac
 	}
 }
 
+// activityStaleContinuationError is every rejection a client answers the
+// same way: drop the token and request the session again. One shape for all
+// of them, so a caller can recognise the class without matching on which
+// particular fact stopped being true.
+func activityStaleContinuationError(reason string) error {
+	return fmt.Errorf("activity continuation is stale: %s; restart pagination without a continuation", reason)
+}
+
 func encodeActivityContinuation(cont activityContinuation) string {
 	payload, err := json.Marshal(cont)
 	if err != nil {
@@ -205,8 +221,8 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	if err := json.Unmarshal(raw, &cont); err != nil {
 		return activityContinuation{}, fmt.Errorf("unmarshal continuation: %w", err)
 	}
-	if cont.Version != activityContinuationV1 {
-		return activityContinuation{}, fmt.Errorf("unsupported continuation version %d", cont.Version)
+	if cont.Version != activityContinuationVersion {
+		return activityContinuation{}, activityStaleContinuationError(fmt.Sprintf("format version %d is not the %d this build mints", cont.Version, activityContinuationVersion))
 	}
 	if cont.RootID == "" || cont.SessionID == "" {
 		return activityContinuation{}, errors.New("continuation missing root or session")
@@ -384,7 +400,7 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	target := collectActivitySessionEpochs(*snapshot)[cont.SessionID]
 	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch ||
 		cont.JobsAbsent != target.jobsAbsent || cont.DelegatesAbsent != target.delegatesAbsent {
-		return nil, 0, 0, cache, errors.New("activity continuation is stale: the underlying journal changed; restart pagination without a continuation")
+		return nil, 0, 0, cache, activityStaleContinuationError("the underlying journal changed")
 	}
 
 	// A live session has no fold-cache generation at all (jobsEpoch and
@@ -398,7 +414,7 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	// single request — is caught here.
 	if root.live != nil {
 		if current := activityCurrentRootRevision(root.live.jobActivityClock); cont.Revision != current {
-			return nil, 0, 0, cache, errors.New("activity continuation is stale: the live session changed; restart pagination without a continuation")
+			return nil, 0, 0, cache, activityStaleContinuationError("the live session changed")
 		}
 	}
 	return snapshot, -len(cont.Path), cont.ResumeIndex, cache, nil
@@ -1242,7 +1258,7 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 	}
 	if budget != nil && budget.rootID != "" {
 		session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:         activityContinuationV1,
+			Version:         activityContinuationVersion,
 			RootID:          budget.rootID,
 			SessionID:       sessionID,
 			Path:            append([]string(nil), path...),
@@ -1553,7 +1569,7 @@ func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, r
 	}
 	own := epochs[dropped.session.SessionID]
 	dropped.session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version:         activityContinuationV1,
+		Version:         activityContinuationVersion,
 		RootID:          rootID,
 		SessionID:       dropped.session.SessionID,
 		Path:            append([]string(nil), dropped.path...),

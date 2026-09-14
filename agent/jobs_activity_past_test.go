@@ -404,7 +404,7 @@ func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBud
 	writePastStableDelegates(t, stateDir, rootID, descriptors...)
 
 	cont := activityContinuation{
-		Version: activityContinuationV1, RootID: rootID, SessionID: specialID, Path: []string{"dlg_" + specialID},
+		Version: activityContinuationVersion, RootID: rootID, SessionID: specialID, Path: []string{"dlg_" + specialID},
 	}
 	token := encodeActivityContinuation(cont)
 
@@ -598,7 +598,7 @@ func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildre
 	}
 	targetID := sessionIDs[activityMaxNewDepth]
 	cont := activityContinuation{
-		Version: activityContinuationV1, RootID: sessionIDs[0], SessionID: targetID, Path: path,
+		Version: activityContinuationVersion, RootID: sessionIDs[0], SessionID: targetID, Path: path,
 	}
 	token := encodeActivityContinuation(cont)
 
@@ -728,7 +728,7 @@ func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) 
 		path[i] = fmt.Sprintf("hop%d", i)
 	}
 	token := encodeActivityContinuation(activityContinuation{
-		Version: activityContinuationV1, RootID: "root", SessionID: "session", Path: path,
+		Version: activityContinuationVersion, RootID: "root", SessionID: "session", Path: path,
 	})
 	if _, err := decodeActivityContinuation(token, "root"); err == nil {
 		t.Fatal("expected an error for a continuation path longer than activityMaxContinuationPathLength")
@@ -767,7 +767,7 @@ func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t
 	// "dlg_" + childSessionID here), not the child session ID itself --
 	// buildActivityContinuationAt looks each hop up in
 	// loaded.snapshot.StableDelegates, which is keyed by delegate ID.
-	cont := activityContinuation{Version: activityContinuationV1, RootID: rootID, SessionID: childID, Path: []string{"dlg_" + childID}}
+	cont := activityContinuation{Version: activityContinuationVersion, RootID: rootID, SessionID: childID, Path: []string{"dlg_" + childID}}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
 	if _, _, _, err := buildActivityContinuationAt(root, cont, 0, map[string]bool{rootID: true}, false, cache); err == nil {
 		t.Fatal("expected an error: the load budget is already exhausted before resolving even the first continuation hop")
@@ -1739,7 +1739,7 @@ func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T)
 	// Resume two hops down, which is what makes the absolute path the trim
 	// mints longer than the depth budget alone would allow.
 	resume := encodeActivityContinuation(activityContinuation{
-		Version:   activityContinuationV1,
+		Version:   activityContinuationVersion,
 		RootID:    sessionIDs[0],
 		SessionID: sessionIDs[2],
 		Path:      []string{"dlg_" + sessionIDs[1], "dlg_" + sessionIDs[2]},
