@@ -667,21 +667,21 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string)
 }
 
 // topGlobTags lists the layer tags whose top-level globs a replay must
-// consult, in layer order: every tag the record carries, plus any tag
-// with top-level rows the record lacks (an implicit instance built on a
-// curated record has no LayerConfig layer, but user top-level globs
-// still apply to it — they are "applied to every provider").
+// consult, in layer order (snapshot → overlay → config): every tag the
+// record carries, plus any tag with top-level rows the record lacks (an
+// implicit instance built on a curated record has no LayerConfig layer,
+// but user top-level globs still apply to it — they are "applied to
+// every provider"). The order is the fix: overlay globs replay before
+// user config, never after, so curated values cannot overwrite user
+// settings or disabled flags.
 func (r *Registry) topGlobTags(rec *record) []string {
-	var out []string
 	seen := map[string]bool{}
 	for _, layer := range rec.layers {
-		if !seen[layer.tag] {
-			seen[layer.tag] = true
-			out = append(out, layer.tag)
-		}
+		seen[layer.tag] = true
 	}
+	var out []string
 	for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
-		if !seen[tag] && len(r.topGlobs[tag]) > 0 {
+		if seen[tag] || len(r.topGlobs[tag]) > 0 {
 			out = append(out, tag)
 		}
 	}
@@ -953,6 +953,15 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 			}
 		}
 	}
+	// Top-level globs replay in layer order (snapshot → overlay →
+	// config), not record order: overlay values never overwrite user
+	// config. Tags the record lacks are covered by the trailing loop.
+	for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
+		if !seenTag[tag] && len(r.topGlobs[tag]) > 0 {
+			seenTag[tag] = true
+			applyTop(tag)
+		}
+	}
 	for _, layer := range rec.layers {
 		if !seenTag[layer.tag] {
 			seenTag[layer.tag] = true
@@ -967,11 +976,6 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 			if lr, ok := layer.rows[hit.rowID]; ok && lr.Disabled != nil {
 				disabled = *lr.Disabled
 			}
-		}
-	}
-	for _, tag := range r.topGlobTags(rec) {
-		if !seenTag[tag] {
-			applyTop(tag)
 		}
 	}
 	return disabled

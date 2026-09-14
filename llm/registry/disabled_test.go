@@ -86,6 +86,17 @@ func TestResolve_UserTopGlobBeatsLiveForImplicitInstance(t *testing.T) {
 	}
 }
 
+func TestResolve_UserDisabledBeatsCuratedOverlayGlob(t *testing.T) {
+	// Standalone instance with a user exact disabled=true: layer rows
+	// replay per layer in order, so the user's verdict must stand no
+	// matter what any curated overlay glob carries. (Today no overlay
+	// glob sets Disabled; this pins the ordering, not a current value.)
+	r := fixtureLoad(t, nil, "[providers.custom]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = \"sk\"\n[providers.custom.models.\"claude-opus-4-5-x\"]\ndisabled = true\n")
+	if _, err := r.Resolve("custom/claude-opus-4-5-x"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve user-disabled row = %v, want ErrModelDisabled", err)
+	}
+}
+
 func TestResolve_UserTopGlobDisablesImplicitInstance(t *testing.T) {
 	// A user top-level [models."<glob>"] disabled=true applies to every
 	// provider — including an implicit instance whose record has no

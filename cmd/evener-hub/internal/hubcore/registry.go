@@ -33,10 +33,16 @@ type ProviderRegistry struct {
 	// failed newer fetch — which applies nothing — never blocks an
 	// older in-flight success. snapshots holds the endpoint identity
 	// each in-flight fetch ran against; a remove/rename/re-point
-	// since then drops its rows.
-	generation  uint64
-	lastApplied map[string]uint64
-	snapshots   map[string]string
+	// since then drops its rows. lastGoodLive is the live snapshot of
+	// the most recent successfully loaded registry: a failed reload
+	// parks the holder on the implicit-only fallback, which knows none
+	// of the explicit instances, so carryLive alone would drop their
+	// rows — the next successful Reload re-applies this snapshot
+	// (identity-checked) instead.
+	generation   uint64
+	lastApplied  map[string]uint64
+	snapshots    map[string]string
+	lastGoodLive map[string][]registry.Model
 }
 
 // NewProviderRegistry returns a holder that loads through load. Nothing is
@@ -69,6 +75,23 @@ func (h *ProviderRegistry) Reload() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	carryLive(h.current, r)
+	// The fallback between a failure and its fix knew none of the
+	// explicit instances: re-apply the last-good snapshot for every
+	// instance whose identity still matches, so live-only ids survive
+	// failed-reload recovery.
+	for instance, rows := range h.lastGoodLive {
+		after, ok := r.Instance(instance)
+		if !ok {
+			continue
+		}
+		if before, ok := h.current.Instance(instance); ok && instanceIdentity(before) != instanceIdentity(after) {
+			continue
+		}
+		r.ApplyLive(instance, rows)
+	}
+	for instance, rows := range r.SnapshotLive() {
+		h.noteLive(instance, rows)
+	}
 	h.current, h.loadErr = r, nil
 	h.generation++
 	return nil
@@ -113,13 +136,6 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 	return h.current
 }
 
-// Current returns the held registry a live fetch runs against.
-func (h *ProviderRegistry) Current() *registry.Registry {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.current
-}
-
 // BeginLiveFetchReg atomically pairs instance's fetch token with the
 // registry snapshot the fetch must run against: the client is built
 // from the returned registry, so a Reload landing between the two
@@ -143,20 +159,6 @@ func (h *ProviderRegistry) BeginLiveFetchReg(instance string) (*registry.Registr
 		}
 	}
 	return h.current, h.generation
-}
-
-// BeginLiveFetch mints a fetch token at request start; BeginLiveFetchReg
-// above is the paired form the fetch paths use. A fetch that returns
-// after a newer fetch began — or after a Reload swapped the registry —
-// holds a lower token, and ReapplyLive discards it. Minting at start
-// (not at apply) is what orders overlapping fetches; only successful
-// fetches reaching ReapplyLive is what keeps a failed fetch from
-// superseding a successful concurrent one.
-func (h *ProviderRegistry) BeginLiveFetch() uint64 {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.generation++
-	return h.generation
 }
 
 // ReapplyLive applies rows fetched under token tok to the current
@@ -200,6 +202,20 @@ func (h *ProviderRegistry) ReapplyLive(tok uint64, instance string, rows []regis
 	}
 	h.lastApplied[instance] = tok
 	h.current.ApplyLive(instance, rows)
+	h.noteLive(instance, rows)
+}
+
+// noteLive records rows as the holder's last-good snapshot for
+// instance: every path that lands a listing — ReapplyLive and the
+// successful Reload below — reports here, so failed-reload recovery
+// always has the freshest rows to restore.
+func (h *ProviderRegistry) noteLive(instance string, rows []registry.Model) {
+	if h.lastGoodLive == nil {
+		h.lastGoodLive = map[string][]registry.Model{}
+	}
+	cp := make([]registry.Model, len(rows))
+	copy(cp, rows)
+	h.lastGoodLive[instance] = cp
 }
 
 // LoadError is the error from the last Reload, or nil when it succeeded.

@@ -37,7 +37,7 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 	if reg == nil {
 		return nil
 	}
-	rows, ok, err := fetchInstanceLiveWith(ctx, cmdutil.NewRegistryClient(reg, ""), name)
+	rows, ok, err := fetchInstanceLiveWith(ctx, newLiveClient(reg), name)
 	if err != nil {
 		return err
 	}
@@ -46,6 +46,22 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 	}
 	holder.ReapplyLive(tok, name, rows)
 	return nil
+}
+
+// liveClientGlobals wires NewRegistryClient's two process-wide seams
+// (the Codex authenticator's state root and the build User-Agent) exactly
+// once per process: every prefetch goroutine used to call it
+// concurrently, racing on the same globals. The values are
+// process-constant (the state root comes from the environment, the
+// version from the build), so wiring them once is the whole fix — the
+// per-fetch client itself stays cheap and goroutine-local.
+var liveClientGlobals sync.Once
+
+func newLiveClient(reg *registry.Registry) *llm.Client {
+	liveClientGlobals.Do(func() {
+		cmdutil.NewRegistryClient(reg, "")
+	})
+	return llm.NewClient(llm.WithRegistry(reg), llm.WithClientStateDir(""))
 }
 
 // fetchInstanceLiveWith is fetchInstanceLive against a caller-supplied
@@ -102,7 +118,7 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 			if reg == nil {
 				return
 			}
-			rows, ok, err := fetchInstanceLiveWith(ctx, cmdutil.NewRegistryClient(reg, ""), name)
+			rows, ok, err := fetchInstanceLiveWith(ctx, newLiveClient(reg), name)
 			if err != nil || !ok {
 				return
 			}

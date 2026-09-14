@@ -65,6 +65,54 @@ func TestProviderRegistryDegradesOnOldSchema(t *testing.T) {
 // a Reload) must not overwrite the newer listing. Tokens are claimed
 // once a fetch has a listing to publish, so a failed fetch never mints
 // one at all.
+func TestReloadFailurePreservesLiveForRestoredInstances(t *testing.T) {
+	// A failed reload parks the holder on the implicit-only fallback;
+	// when the file is fixed and the last-good registry comes back,
+	// live-only ids for its explicit instances must come back too —
+	// not just the ids the fallback knew.
+	t.Setenv("GROQ_API_KEY", "gk")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(path, []byte("[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = \"sk\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	h := NewProviderRegistry(hermeticLoader)
+	if err := h.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	h.ReapplyLive(mustBegin(t, h, "gw"), "gw", []registry.Model{{ID: "gpt-live"}})
+	if got := h.Get().LiveModels("gw"); len(got) == 0 {
+		t.Fatal("no live rows before failure")
+	}
+	// Break the file: the holder falls back to implicit-only, which
+	// knows no gw at all.
+	if err := os.WriteFile(path, []byte("default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Reload(); err == nil {
+		t.Fatal("broken file must fail Reload")
+	}
+	// Fix the file: gw comes back with its live-only id.
+	if err := os.WriteFile(path, []byte("[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = \"sk\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got := h.Get().LiveModels("gw"); len(got) == 0 {
+		t.Fatal("live ids lost through failed-reload recovery")
+	}
+}
+
+func mustBegin(t *testing.T, h *ProviderRegistry, instance string) uint64 {
+	t.Helper()
+	_, tok := h.BeginLiveFetchReg(instance)
+	return tok
+}
+
 func TestReapplyLiveDiscardsListingForChangedEndpoint(t *testing.T) {
 	// A fetch that began against endpoint A must not publish into a
 	// registry whose instance now points at endpoint B: the rows came
