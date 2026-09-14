@@ -30,8 +30,16 @@ type relayTestDaemon struct {
 
 func newRelayTestSource(t *testing.T, entries []rendezvous.Entry) (*LocalDaemonSource, *relayTestDaemon) {
 	t.Helper()
+	return newRelayTestSourceListing(t, func() []rendezvous.Entry { return entries })
+}
+
+// newRelayTestSourceListing is newRelayTestSource over a live entry list, for
+// tests where a daemon leaves the roster mid-test.
+func newRelayTestSourceListing(t *testing.T, list func() []rendezvous.Entry) (*LocalDaemonSource, *relayTestDaemon) {
+	t.Helper()
 	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16)}
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		entries := list()
 		out := make([]LocalDaemonEntry, 0, len(entries))
 		for _, entry := range entries {
 			out = append(out, LocalDaemonEntry{Entry: entry})
@@ -1715,5 +1723,66 @@ func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testi
 	}
 	if !replacementOutcome.result.Handoff.Commit() {
 		t.Fatal("replacement handoff commit lost")
+	}
+}
+
+// A daemon that exits for good never reconnects, so the resync a reconnect
+// would carry never comes. Its last frames, if still unpublished when its
+// socket closed, were revoked with the epoch (the contract
+// TestRelaySessionStaleEpochNotificationCannotPublish pins), so a listener is
+// left holding the state from before the exit with nothing on the way to
+// correct it: a web pane keeps reading "Message the agent…" on a session
+// whose daemon is gone (issue #1318). Once the daemon can no longer be found
+// - the roster drops an entry only when its process is gone - recovery owes
+// the listener the re-read instruction itself.
+func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
+	var listingMu sync.Mutex
+	listed := []rendezvous.Entry{relayEntry("thread-1")}
+	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
+		listingMu.Lock()
+		defer listingMu.Unlock()
+		return listed
+	})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+
+	// The daemon exits: its rendezvous entry goes, then its socket closes.
+	listingMu.Lock()
+	listed = nil
+	listingMu.Unlock()
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case delivery := <-deliveries:
+		if delivery.Notification.Method != appwire.NotifyEvenerThreadResync {
+			t.Fatalf("delivery after the daemon exit = %+v, want resync", delivery.Notification)
+		}
+		delivery.Acknowledge()
+	case <-time.After(5 * time.Second):
+		t.Fatal("no resync reached the listener after the daemon exited for good")
+	}
+	if dials := daemon.dials.Load(); dials != 1 {
+		t.Fatalf("dials = %d, want 1: a daemon that left the roster is not dialled", dials)
 	}
 }

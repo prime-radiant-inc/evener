@@ -190,7 +190,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
 				currentEntry, resolveErr := s.relayEntry(ref)
 				if resolveErr != nil {
-					return nil, nil, resolveErr
+					return nil, nil, &relayDaemonGoneError{err: resolveErr}
 				}
 				transport, dialErr := s.dial(ctx, currentEntry.Endpoint, s.client, daemonAuthHeader(currentEntry.HubToken))
 				if dialErr != nil {

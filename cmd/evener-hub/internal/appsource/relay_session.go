@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -9,6 +10,21 @@ import (
 )
 
 type relaySessionConnect func(context.Context, uint64, func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error)
+
+// relayDaemonGoneError marks a connect attempt that found no daemon to dial:
+// the entry this session relayed has left the roster, which drops an entry
+// only once its process is gone. A dial that fails against a listed entry is
+// not this - that daemon may still be coming back. The message is the
+// resolver's own, unchanged, so what a caller reports stays what it was.
+type relayDaemonGoneError struct{ err error }
+
+func (e *relayDaemonGoneError) Error() string { return e.err.Error() }
+func (e *relayDaemonGoneError) Unwrap() error { return e.err }
+
+func isRelayDaemonGone(err error) bool {
+	var gone *relayDaemonGoneError
+	return errors.As(err, &gone)
+}
 
 type relaySession struct {
 	ctx     context.Context
@@ -48,6 +64,11 @@ type relaySession struct {
 	// publishes one evener/thread/resync ahead of anything that connection
 	// produces, whichever caller drove the reconnect (kata 8nyk).
 	resyncPending bool
+	// goneAnnounced records that recovery has already told the listeners to
+	// re-read because the daemon left the roster, so the retries that follow
+	// (the daemon may yet come back) do not repeat it. Reset with
+	// resyncPending on the next disconnect.
+	goneAnnounced bool
 	closed        bool
 }
 
@@ -449,6 +470,7 @@ func (s *relaySession) disconnect(epoch uint64) {
 	// connection. A replacement daemon is a new turn-id generation, so the
 	// feed cannot resume against that state without a re-read first.
 	s.resyncPending = true
+	s.goneAnnounced = false
 	if capture != nil && capture.epoch == epoch && (capture.prepared || capture.routesPublished) {
 		connection.disconnected = true
 		s.mu.Unlock()
@@ -501,12 +523,34 @@ func (s *relaySession) publishPendingResync(params appwire.ThreadReadParams) {
 		return
 	}
 	s.resyncPending = false
+	s.queueResyncLocked(params)
+	s.mu.Unlock()
+}
+
+// publishDaemonGoneResync tells listeners to re-read once the daemon they were
+// following has left the roster for good. A disconnect revokes whatever the
+// daemon said last and was still unpublished (its own close frame included),
+// counting on the reconnect to carry the resync - and a daemon that exited
+// never reconnects, so without this the listener keeps the state from before
+// the exit indefinitely. The pending resync is left armed: a daemon that comes
+// back is a new generation and still owes its own re-read.
+func (s *relaySession) publishDaemonGoneResync(params appwire.ThreadReadParams) {
+	s.mu.Lock()
+	if s.goneAnnounced || s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.goneAnnounced = true
+	s.queueResyncLocked(params)
+	s.mu.Unlock()
+}
+
+func (s *relaySession) queueResyncLocked(params appwire.ThreadReadParams) {
 	resync := *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: params.ThreadID,
 		Ref:      params.Ref,
 	}).Notification
 	s.queuePublishLocked(s.epoch, []appwire.Notification{resync}, nil)
-	s.mu.Unlock()
 }
 
 func (s *relaySession) recoverCanonicalFeed() {
@@ -541,6 +585,9 @@ func (s *relaySession) recoverCanonicalFeed() {
 				return
 			}
 			continue
+		}
+		if isRelayDaemonGone(err) {
+			s.publishDaemonGoneResync(params)
 		}
 
 		attempt++
