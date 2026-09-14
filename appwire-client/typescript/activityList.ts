@@ -23,6 +23,10 @@ export interface ActivityState {
 export interface ActivityBranch extends ActivityDelegateBranch {
   id: string;
   label: string;
+  // Only the root's branch carries diagnostics: the root has no row, so what
+  // the daemon could not read of its journals is the footer's to say. A
+  // delegate's own and its child's are the row's (activityDelegateDiagnostics).
+  diagnostics?: string[];
 }
 
 /** Own activity requests and retained results for one hub/session lifetime. */
@@ -88,7 +92,9 @@ export class ActivityList {
     };
     const root = this.state.tree?.root;
     if (root) {
-      append(activityNodeID(root), root.label, root.branch);
+      if (root.diagnostics?.length)
+        branches.push({ id: activityNodeID(root), label: root.label, ...root.branch, diagnostics: root.diagnostics });
+      else append(activityNodeID(root), root.label, root.branch);
       visitDelegates(root);
     }
     return branches;

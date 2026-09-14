@@ -322,6 +322,27 @@ it("a rendered child that can still be paged names no session to open", async ()
 // continuation under a second id -- a duplicate "Load more" whose session-keyed
 // id no delegate graft matches, or a second, un-actionable copy of a row the
 // delegate already answers for.
+// The root has no row of its own, so what the daemon could not read of its
+// journals is the footer's to say. A delegate's child sentences are the row's
+// (activityDelegateDiagnostics), so they never make a footer row.
+it("reports the root's diagnostics even when nothing was cut short, and never a child's", async () => {
+  const { list, io } = boundary();
+  const torn = "delegate_journal_torn_tail: ignored unterminated trailing batch";
+  io.read = async () => ({ data: { ...tree(), root: { ...tree().root, diagnostics: [torn] } } });
+  await list.refresh();
+  expect(list.branches()).toEqual([{ id: "session:thread", label: "Test", diagnostics: [torn] }]);
+
+  const rendered = delegateTree({}, {});
+  const entry = rendered.root.entries[0] as { delegate: { child?: Record<string, unknown> } };
+  if (!entry.delegate.child) throw new Error("missing child");
+  entry.delegate.child.diagnostics = [
+    'continuation path limit reached; request session "sess_deep_child" directly',
+  ];
+  io.read = async () => ({ data: rendered });
+  await list.refresh();
+  expect(list.branches()).toEqual([]);
+});
+
 it("reports the root and one row per delegate, never a delegate's child twice", async () => {
   const { list, io } = boundary();
   io.read = async () => ({ data: tree(1, ["a"], "cursor") });

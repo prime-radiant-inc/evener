@@ -11,7 +11,10 @@ import {
   formatElapsed,
   splitMandate,
 } from "../../appwire-client/typescript/displayFormat";
-import type { ActivityDelegate } from "../../appwire-client/typescript/activityData";
+import {
+  type ActivityDelegate,
+  activityDelegateDiagnostics,
+} from "../../appwire-client/typescript/activityData";
 import {
   delegateModel,
   delegatePacket,
@@ -143,6 +146,7 @@ export function ActivityDelegateDetails({
   }, [clock]);
 
   const model = delegateModel(delegate);
+  const diagnostics = activityDelegateDiagnostics(delegate);
   const instruction = delegate.mandate ?? delegate.task;
   const hasResult = delegate.structuredResult !== undefined;
   const hasResultInfo =
@@ -209,9 +213,9 @@ export function ActivityDelegateDetails({
           <Messages messages={delegate.warnings} />
         </DetailSection>
       ) : null}
-      {delegate.diagnostics?.length ? (
+      {diagnostics.length ? (
         <DetailSection title="Diagnostics">
-          <Messages messages={delegate.diagnostics} />
+          <Messages messages={diagnostics} />
         </DetailSection>
       ) : null}
 
