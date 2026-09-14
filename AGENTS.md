@@ -61,7 +61,8 @@ directory:
 The name resolves through `tsconfig` `paths`, the Vite and vitest configs, and
 Metro's `resolveRequest`; the frontend and `mobile-native` declare no npm
 dependency on the package. `make lint-package-imports` fails on a path import,
-because nothing else would notice one, and it exempts nothing.
+because nothing else would notice one; it exempts only the resolver configs,
+named one by one.
 
 `mobile-native` needs the `paths` in **`tsconfig.json`**, not only in
 `tsconfig.check.json`: `tsc --noEmit` is passed the latter explicitly, but
