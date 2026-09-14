@@ -724,8 +724,8 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 	tree := appwire.JobActivityTree{Revision: revision, Root: root}
 	// Collected from snapshot (the internal tree projection just consumed)
 	// before trimming works purely on the flattened wire shape, which
-	// carries no epoch information of its own — see
-	// collectActivityJobsEpochs and trimActivityTrailingEntry. revision is
+	// carries no generation information of its own — see
+	// collectActivitySessionEpochs and trimActivityTrailingEntry. revision is
 	// the same value just seeded into budget.revision above, embedded the
 	// same way in whatever continuation trimming mints too.
 	// startDepth is -len(continuation.Path) (loadActivitySnapshotForParams),
@@ -1391,9 +1391,10 @@ func (r activityTrimResume) offsetAt(path []string) int {
 }
 
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
-// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs,
-// revision, and resume feed every continuation trimming mints — see
-// trimActivityTrailingEntry. Dropping an entry is also the only evidence
+// encodes within activityMaxEncodedBytes. epochs — every visited session's
+// own generations, keyed by session ID — together with revision and resume
+// feed every continuation trimming mints, and tell it which sessions cannot
+// mint one at all; see trimActivityTrailingEntry. Dropping an entry is also the only evidence
 // available about WHY the page was too big: an entry that leaves the page
 // within the limit is what did not fit, and is skipped when no later page
 // could carry it either; one that does not is left for a page that
