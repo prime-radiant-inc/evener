@@ -380,7 +380,15 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 	sameSizeAmbiguous := false
 	sameSizeMtimeAgrees := false
 	growthAmbiguous := false
-	if st != nil {
+	// A tombstone records that the path was gone; its size, mtime and tail
+	// describe nothing, so none of the comparisons below can be asked of
+	// it. An empty file appearing at a tombstoned path is the trap: its
+	// length matches the tombstone's zero and only the mtime disagrees,
+	// which reads as a same-size rewrite and would bump a generation the
+	// deletion already moved. A tombstoned path folds from zero, keeping
+	// the generation the deletion gave it.
+	describesContent := st != nil && !st.absent
+	if describesContent {
 		switch {
 		case info.Size() < st.size:
 			// Shrunk: definitely not a pure append. Discard and bump epoch
@@ -528,7 +536,9 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 		// mtime-unresolvable growth.
 	}
 
-	wasCached := st != nil
+	// A tombstone is not a cached fold: reading a path that has just come
+	// back is a first touch, not a rescan of something this cache held.
+	wasCached := describesContent
 	if wasCached && fromOffset == 0 {
 		c.mu.Lock()
 		c.fullRescans++

@@ -1243,8 +1243,32 @@ func TestCache_DeletedPathReportsOneStableGeneration(t *testing.T) {
 		}
 	}
 
-	// The path coming back with different content is a new fold, and it
-	// must not be mistaken for the absence that preceded it.
+	// An empty file is the recreate that a tombstone most easily mistakes
+	// for content: its length matches the tombstone's zero, and only the
+	// mtime disagrees, which is exactly the shape the same-size branches
+	// read as a rewrite. A tombstone describes no content, so none of those
+	// comparisons apply to it and none of their consequences should follow.
+	rescansBeforeEmpty := c.Stats().FullRescans
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get after the empty recreate: %v", err)
+	}
+	if empty.Absent {
+		t.Fatal("a recreated path must not read as absent")
+	}
+	if empty.Epoch != first.Epoch {
+		t.Fatalf("generation %d after an empty file appeared, want the absence's %d -- the deletion was the discard; a tombstone has no content to compare this against", empty.Epoch, first.Epoch)
+	}
+	if got := c.Stats().FullRescans - rescansBeforeEmpty; got != 0 {
+		t.Fatalf("full rescans counted %d for the first fold after a tombstone, want 0 -- nothing was cached to rescan", got)
+	}
+
+	// The path coming back with content is a new fold, and it must not be
+	// mistaken for the absence that preceded it.
+	rescansBeforeContent := c.Stats().FullRescans
 	writeLines(t, path, []int{5, 6, 7})
 	recreated, err := c.Get(ctx, path, extend)
 	if err != nil {
@@ -1255,6 +1279,9 @@ func TestCache_DeletedPathReportsOneStableGeneration(t *testing.T) {
 	}
 	if recreated.Value.sum != 18 {
 		t.Fatalf("value = %+v, want the recreated content (5+6+7)", recreated.Value)
+	}
+	if got := c.Stats().FullRescans - rescansBeforeContent; got != 1 {
+		t.Fatalf("full rescans counted %d for a real append onto a cached empty fold, want 1", got)
 	}
 	// The deletion is the discard, and it already moved the generation; the
 	// path coming back does not discard anything further. What separates
