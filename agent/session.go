@@ -109,13 +109,13 @@ type Session struct {
 	// launches work. It holds historical or not-yet-reconstructed handles until
 	// adoption or release. It is an atomic pointer (a single swapped reference,
 	// never held across work), so it is not a sampling-relevant mutex.
-	retainedScratch          atomic.Pointer[retainedScratchPool]
+	retainedScratch atomic.Pointer[retainedScratchPool]
 	// scratchRetentionErr records the first sticky scratch-retention
 	// publication failure this session observed after an environment swap: the
 	// durable manifest diverged from the live environment and no later swap
 	// repaired it, so preparation must fail closed rather than trust the
 	// manifest. Guarded by mu.
-	scratchRetentionErr error
+	scratchRetentionErr      error
 	delegateController       *delegateTreeController
 	delegateRootSessionID    string
 	owningDelegateID         string
