@@ -216,15 +216,43 @@ class Driver {
 
   // ---- native input ----
 
+  // typeText inserts text at the composer's selection through the DOM, in one
+  // edit.
+  //
+  // It used to dispatch one CDP key event per character. The composer's
+  // textarea is React-controlled: every keystroke's onChange re-renders and
+  // restores the value from state, so a re-render landing between two key
+  // events reorders them. A CI run sent "ROSE_STEER_TURN_14e open a long turn
+  // for steeringP" for "PROSE_STEER_TURN_14e …" -- the first character at the
+  // end -- and the scenario then waited 15s for a transcript line that could
+  // never appear, reporting a timeout rather than the corruption.
+  //
+  // Nothing in this guard needs per-character key events. The inline slash
+  // menu opens off the composer's value and caret, not off keystrokes, and
+  // the semantic keys it does press (Enter, Tab, Escape, Backspace) go
+  // through press(). Assigning through the native value setter is what makes
+  // React's value tracker notice the change and fire onChange; selectAll
+  // already drives the selection this way.
   async typeText(text) {
-    for (const char of text) {
-      await this.send("Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: char,
-        text: char,
-        unmodifiedText: char,
-      });
-      await this.send("Input.dispatchKeyEvent", { type: "keyUp", key: char });
+    const literal = JSON.stringify(text);
+    const inserted = await evaluate(
+      this.send,
+      `(() => { const ta = document.activeElement;
+        if (!ta || ta.tagName !== "TEXTAREA") return { error: "no focused textarea to type into" };
+        const start = ta.selectionStart ?? ta.value.length;
+        const end = ta.selectionEnd ?? ta.value.length;
+        const next = ta.value.slice(0, start) + ${literal} + ta.value.slice(end);
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+        setter.call(ta, next);
+        ta.selectionStart = ta.selectionEnd = start + ${literal}.length;
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+        return { value: ta.value, expected: next }; })()`,
+    );
+    if (inserted?.error) throw new Error(`typeText: ${inserted.error}`);
+    if (inserted.value !== inserted.expected) {
+      throw new Error(
+        `typeText: composer holds ${JSON.stringify(inserted.value)} after the edit, expected ${JSON.stringify(inserted.expected)}`,
+      );
     }
   }
 
@@ -571,7 +599,21 @@ class Driver {
     return labels[0].label;
   }
 
-  async clickSubmit(ref) {
+  // Every submit states the draft it means to send, and the composer is held
+  // to it first. A draft that arrived corrupted used to be discovered much
+  // later, as a wait timing out on a transcript line that could not appear;
+  // named here, the failure says which characters are wrong and stops.
+  async clickSubmit(ref, expectText) {
+    if (typeof expectText !== "string") {
+      throw new Error(`clickSubmit(${ref}): pass the draft this submit means to send`);
+    }
+    const state = await this.composerState(ref);
+    if (!state) throw new Error(`clickSubmit(${ref}): no composer to submit`);
+    if (state.text !== expectText) {
+      throw new Error(
+        `clickSubmit(${ref}): composer holds ${JSON.stringify(state.text)}, expected ${JSON.stringify(expectText)}`,
+      );
+    }
     await this.clickComposerAction(ref, "composer-submit");
   }
 
@@ -810,7 +852,7 @@ async function runScenarios(driver) {
   // so every turn/start submit in the choreography is barriered by
   // construction (see waitForTurnIdle).
   await driver.waitForTurnIdle(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.canonical);
   const durable = await evaluate(driver.send, driver.durableRecordsExpr()).catch(() => ({}));
   driver.milestone("durable-mutation", durable);
   await driver.waitForComposerCleared(driver.sessionA);
@@ -849,7 +891,7 @@ async function runScenarios(driver) {
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.queueTurn);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.queueTurn);
   // The daemon's ACK clears the composer; wait for it before typing again —
   // clearIfUnchanged deliberately keeps a draft that was edited before the
   // ACK landed, so typing too early would strand the queue prose.
@@ -859,7 +901,7 @@ async function runScenarios(driver) {
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.queue1);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.queue1);
   let queue = await driver.waitPage(
     `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
     { label: "queue strip with first pass" },
@@ -887,7 +929,7 @@ async function runScenarios(driver) {
   await driver.selectAll(driver.sessionA);
   await driver.typeText(PROSE.queue2);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.queue2);
   queue = await driver.waitPage(
     `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
     { label: "queue strip with second pass" },
@@ -932,7 +974,7 @@ async function runScenariosPart2(driver) {
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.steerTurn);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.steerTurn);
   // Wait for the ACK's composer clear before typing the steer prose (same
   // clearIfUnchanged race as the queue scenario's hold turn).
   await driver.waitForComposerCleared(driver.sessionA);
@@ -987,7 +1029,7 @@ async function runScenariosPart2(driver) {
   check(attachState.text.includes("[image 1]"), `attachment anchor missing: ${JSON.stringify(attachState.text)}`);
   driver.milestone("attachment-preserved", attachState);
   const attachBaseline = await driver.replyBaseline();
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, attachState.text);
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("attachment-submitted", {
     prose: PROSE.attachment,
@@ -1011,7 +1053,7 @@ async function runScenariosPart2(driver) {
   );
   driver.milestone("caploss-ended", await driver.composerState(driver.sessionB));
   await driver.focusComposer(driver.sessionB);
-  await driver.clickSubmit(driver.sessionB);
+  await driver.clickSubmit(driver.sessionB, PROSE.capabilityLoss);
   // The refusal keeps the draft: text and chips stay, and NOTHING durable is
   // written for this mutation.
   const refused = await driver.composerState(driver.sessionB);
@@ -1040,7 +1082,7 @@ async function runScenariosPart2(driver) {
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.failTurn);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.failTurn);
   // Wait for the ACK's composer clear before typing the failing claim (same
   // clearIfUnchanged race as every other held turn-start).
   await driver.waitForComposerCleared(driver.sessionA);
@@ -1049,7 +1091,7 @@ async function runScenariosPart2(driver) {
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.fail);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.fail);
   const queue = await driver.waitPage(
     `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.fail)})) ? strip : null; })()`,
     { label: "queue strip with failing request" },
@@ -1073,7 +1115,7 @@ async function runScenariosPart2(driver) {
   await driver.typeText(PROSE.fail);
   await driver.selectSkillChip(driver.sessionA);
   const retryBaseline = await driver.replyBaseline();
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.fail);
   await driver.waitForComposerCleared(driver.sessionA);
   await driver.waitForReply(REPLY_TEXT, retryBaseline);
   driver.milestone("fail-retried", { prose: PROSE.fail });
@@ -1086,7 +1128,7 @@ async function runScenariosPart2(driver) {
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.delay);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.delay);
   // The submit was ACCEPTED — the composer clears at the daemon's ACK; wait
   // for it so the newer-draft typing below starts from an empty composer.
   await driver.waitForComposerCleared(driver.sessionA);
@@ -1124,7 +1166,7 @@ async function runScenariosPart2(driver) {
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(PROSE.transport);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, PROSE.transport);
   // With the transport stalled the mutation cannot be acknowledged, but the
   // durable outbox has already persisted it — input text AND skill item — so
   // nothing is lost. (A RECOVERY row only ever appears for failed or orphaned
