@@ -838,10 +838,17 @@ func (s *Session) maybeAppendNotesContext() {
 	body := llm.User(block)
 	modelBody := llm.User(modelBlock)
 	s.mu.Unlock()
-	// The ever-projected transition is part of the committed cut: readers use
-	// it to decide whether an empty store renders the explicit cleared marker,
-	// so publish it before the turn that records the projection.
-	s.publishCommittedNotesLocked()
+	// The ever-projected transition is part of the committed cut: readers use it
+	// to decide whether an empty store renders the explicit cleared marker, so
+	// publish it before the turn that records the projection. It publishes from
+	// the cut already published rather than re-reading the live staging store, so
+	// the transition can never carry a value a mutator has staged but not yet
+	// saved — even if a future caller reaches this without notesUpdateMu.
+	if published := s.notesCommitted.Load(); published != nil && !published.everProjected {
+		next := *published
+		next.everProjected = true
+		s.notesCommitted.Store(&next)
+	}
 	s.appendTurnWithTranscriptMessage(turn, modelBody, body)
 }
 

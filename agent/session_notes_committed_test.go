@@ -490,3 +490,39 @@ func TestNotesProjectionSnapshotIsOneAtomicCut(t *testing.T) {
 		}
 	})
 }
+
+// The ever-projected transition publishes the committed cut, never the live
+// staging store: a staged value exists only between a mutator's write and its
+// metadata save, and a reader that observed it would keep it even if that save
+// failed. The mutators hold notesUpdateMu across that window and this call site
+// holds it too, but the property is pinned at the store level so a future caller
+// without the lock cannot reintroduce the leak (roborev's ninth round).
+func TestNotesProjectionPublishesTheCommittedCutNotTheStagingStore(t *testing.T) {
+	s := newNotesToolSession(t)
+	s.stateDir = t.TempDir()
+	if _, err := s.SetHumanNote("seed-human", "committed human note"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := s.mutateAgentNoteSerialized("committed agent note"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a mutator that staged a value and has not saved it: this is the
+	// state a publish that read the live store would capture.
+	s.mu.Lock()
+	s.agentNote = "tentative agent note"
+	s.mu.Unlock()
+
+	s.maybeAppendNotesContext()
+
+	human, agent, _, everProjected := s.notesProjectionSnapshot()
+	if agent != "committed agent note" {
+		t.Fatalf("published cut captured the staged agent note: %q", agent)
+	}
+	if human != "committed human note" {
+		t.Fatalf("published cut human note = %q, want the committed one", human)
+	}
+	if !everProjected {
+		t.Fatalf("published cut lost the ever-projected transition")
+	}
+}
