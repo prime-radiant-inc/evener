@@ -362,7 +362,7 @@ type pastThreadSkillCatalog struct {
 
 func discoverPastThreadSkills(entry hubcore.PastEntry) pastThreadSkillCatalog {
 	home, _ := os.UserHomeDir()
-	sources, _ := plugin.SkillSources(entry.Meta.Config.PluginDirs)
+	sources, pluginDiagnostics := plugin.SkillSources(entry.Meta.Config.PluginDirs)
 	var env execenv.ExecutionEnvironment
 	if cwd := strings.TrimSpace(entry.Meta.EnvInfo.WorkingDir); cwd != "" {
 		env = execenv.NewLocalExecutionEnvironment(cwd)
@@ -390,18 +390,28 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) pastThreadSkillCatalog {
 			AllowedTools:           append([]string(nil), entry.Meta.AllowedTools...),
 		})
 	}
+	// Plugin-manifest diagnostics precede the catalog's own, matching session
+	// startup's ordering (session_init.go appends catalog diagnostics after the
+	// plugin ones), so the past-thread view reports the same source detail.
 	var diagnostics []appwire.EvenerSkillDiagnostic
+	for _, d := range pluginDiagnostics {
+		diagnostics = append(diagnostics, pastThreadSkillDiagnostic(d))
+	}
 	for _, d := range catalog.Diagnostics {
-		diagnostics = append(diagnostics, appwire.EvenerSkillDiagnostic{
-			Category:    d.Category,
-			Name:        d.Name,
-			Source:      d.Source,
-			OtherSource: d.OtherSource,
-			Field:       d.Field,
-			Message:     d.Message,
-		})
+		diagnostics = append(diagnostics, pastThreadSkillDiagnostic(d))
 	}
 	return pastThreadSkillCatalog{Skills: result, Diagnostics: diagnostics}
+}
+
+func pastThreadSkillDiagnostic(d skill.Diagnostic) appwire.EvenerSkillDiagnostic {
+	return appwire.EvenerSkillDiagnostic{
+		Category:    d.Category,
+		Name:        d.Name,
+		Source:      d.Source,
+		OtherSource: d.OtherSource,
+		Field:       d.Field,
+		Message:     d.Message,
+	}
 }
 
 func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
