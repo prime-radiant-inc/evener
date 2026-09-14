@@ -1911,10 +1911,25 @@ func (s *Session) resetEnvContextTrackerLocked() bool {
 // appendTurnWithTranscriptMessage keeps the live model context and the durable
 // semantic transcript distinct when a tool exposes explicitly private evidence.
 func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) {
-	t := schema.NewTurn(kind, live)
-	persistedTurn := t
+	liveTurn, persistedTurn := newTurnPair(kind, live, persisted)
+	s.recordTurn(liveTurn, persistedTurn)
+}
+
+// newTurnPair mints ONE turn in the two forms a session keeps of it: the live
+// turn the model sees and the persisted form the transcript takes. The
+// persisted form is the live turn with its message swapped, so the two agree
+// on everything else — kind, instant, and the pair identity a fold matches
+// them by (schema.Turn.PairID).
+//
+// Every producer of an append/write pair builds it here. Minting the two
+// separately makes them two different turns: the fold that copies persisted
+// forms past its marker then finds nothing in the log for the live turn it is
+// looking at, writes no copy, and the marker discards the round for good.
+func newTurnPair(kind schema.TurnKind, live, persisted llm.Message) (liveTurn, persistedTurn schema.Turn) {
+	liveTurn = schema.NewTurn(kind, live)
+	persistedTurn = liveTurn
 	persistedTurn.Message = persisted
-	s.recordTurn(t, persistedTurn)
+	return liveTurn, persistedTurn
 }
 
 // appendTurnAfterTranscriptWrite runs one durability-first history-append/
@@ -1963,9 +1978,7 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 }
 
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
-	t := schema.NewTurn(kind, live)
-	persistedTurn := t
-	persistedTurn.Message = persisted
+	t, persistedTurn := newTurnPair(kind, live, persisted)
 	err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
 		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },

@@ -3,6 +3,7 @@ package schema
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/llm"
@@ -271,6 +272,15 @@ type Turn struct {
 	// OwningTurnID identifies the logical turn that owns an ordinary steering
 	// entry. It differs from StableTurnID, which identifies the client mutation.
 	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	// PairID identifies the two forms a session keeps of ONE turn: the live
+	// turn in its history and the persisted form in the pair log a fold copies
+	// from ahead of its markers. Minted once, here, and never serialized — it
+	// names a turn in this process, not a record in the file, so a turn read
+	// back from a transcript has none (issue #1200). Producers build the
+	// persisted form FROM the live turn, which is what carries this across the
+	// two; minting the second form separately makes two turns the fold cannot
+	// match, and the copy it owes is never written.
+	PairID uint64 `json:"-"`
 	// ContextReplay marks a copy appended around compaction solely to restore
 	// model context. Its original transcript entry already owns the UI item.
 	ContextReplay bool `json:"context_replay,omitempty"`
@@ -320,5 +330,9 @@ type Turn struct {
 
 // NewTurn creates a Turn with the current UTC time.
 func NewTurn(kind TurnKind, msg llm.Message) Turn {
-	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC()}
+	return Turn{Kind: kind, Message: msg, Timestamp: time.Now().UTC(), PairID: nextPairID.Add(1)}
 }
+
+// nextPairID mints PairID. It is process-local and never serialized, so it
+// only has to be unique among the turns one running session holds.
+var nextPairID atomic.Uint64

@@ -3042,3 +3042,140 @@ func TestFoldPublication_RetainedRecordsAreStillAnnounced(t *testing.T) {
 		})
 	}
 }
+
+// Every producer of an append/write pair has to build ONE turn in two forms,
+// because that is what lets the fold find the persisted form of a turn it is
+// about to carry past its marker. A producer that mints the two separately
+// makes two turns: the log holds one, the history holds the other, the fold
+// matches neither, no copy is written, and the marker discards the round for
+// good. Each producer is driven through a fold with the round recorded WHILE
+// the fold runs — the window whose turns only the copies carry — and the round
+// has to come back from an anchored restart.
+func TestFoldPublication_EveryPairProducerIsCopiedPastTheMarker(t *testing.T) {
+	t.Parallel()
+	const secret = "SECRET-LIVE-EVIDENCE-r9"
+	const placeholder = "PLACEHOLDER-PERSISTED-FORM-r9"
+	toolMessages := func() (live, persisted llm.Message) {
+		part := func(content string) llm.Message {
+			return llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+				Kind:       llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{ToolCallID: "call-r9", Name: "read_session_transcript", Content: content},
+			}}}
+		}
+		return part(secret), part(placeholder)
+	}
+	cases := []struct {
+		name   string
+		record func(s *Session) error
+	}{
+		{
+			name: "durable append",
+			record: func(s *Session) error {
+				return s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, llm.User(secret), llm.User(placeholder))
+			},
+		},
+		{
+			name: "tool results with delivery commits",
+			record: func(s *Session) error {
+				live, persisted := toolMessages()
+				return s.appendToolResultsWithDeliveryCommitsDurably(live, persisted, nil, nil)
+			},
+		},
+		{
+			name: "tool results",
+			record: func(s *Session) error {
+				live, persisted := toolMessages()
+				return s.appendToolResultsDurably(live, persisted, nil)
+			},
+		},
+		{
+			name: "tool results carrying skill state",
+			record: func(s *Session) error {
+				live, persisted := toolMessages()
+				return s.recordSkillCarrierRoundDurably(live, persisted, &schema.SkillTurnState{})
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			entered := make(chan struct{})
+			proceed := make(chan struct{})
+			var calls atomic.Int32
+			s := newScriptedSummaryCompactSession(t, "pair-producer-"+strings.ReplaceAll(tc.name, " ", "-"), func(llm.Request) llm.Response {
+				if calls.Add(1) == 1 {
+					close(entered)
+					<-proceed
+				}
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+			go func() {
+				for range s.Events() {
+				}
+			}()
+			seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): the fold really folds
+
+			compactErr := make(chan error, 1)
+			go func() { compactErr <- s.Compact(context.Background()) }()
+			<-entered // the fold is mid-flight, past its unlocked snapshot
+			if err := tc.record(s); err != nil {
+				t.Fatalf("record during the fold: %v", err)
+			}
+			close(proceed)
+			if err := <-compactErr; err != nil {
+				t.Fatalf("Compact: %v", err)
+			}
+
+			liveSeen := 0
+			for _, turn := range currentHistory(t, s) {
+				if strings.Contains(turn.Message.Text()+toolResultText(turn), secret) {
+					liveSeen++
+				}
+			}
+			if liveSeen != 1 {
+				t.Fatalf("test setup: the merge-back carried the recorded turn into live history %d times, want once", liveSeen)
+			}
+			data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+			if err != nil {
+				t.Fatalf("readTranscriptFull: %v", err)
+			}
+			copies := 0
+			for _, entry := range data.Entries {
+				if entry.Turn.ContextReplay && strings.Contains(entry.Turn.Message.Text()+toolResultText(entry.Turn), placeholder) {
+					copies++
+				}
+			}
+			if copies != 1 {
+				t.Fatalf("replay copies of the round recorded during the fold = %d, want 1: without one the marker discards it", copies)
+			}
+			resumed := ResumeHistory(data.Entries)
+			seen := 0
+			for _, turn := range resumed {
+				if strings.Contains(turn.Message.Text()+toolResultText(turn), placeholder) {
+					seen++
+				}
+			}
+			if seen != 1 {
+				t.Fatalf("the round appears %d times in the resumed history, want exactly once", seen)
+			}
+			// The live form's private evidence never becomes a durable record.
+			for _, entry := range data.Entries {
+				if strings.Contains(entry.Turn.Message.Text()+toolResultText(entry.Turn), secret) {
+					t.Fatal("the live form reached the transcript; copies carry the persisted projection")
+				}
+			}
+		})
+	}
+}
+
+// toolResultText renders a turn's tool-result contents, which carry no message
+// text of their own.
+func toolResultText(turn schema.Turn) string {
+	var out strings.Builder
+	for _, part := range turn.Message.Content {
+		if part.ToolResult != nil {
+			fmt.Fprintf(&out, "%v", part.ToolResult.Content)
+		}
+	}
+	return out.String()
+}

@@ -536,12 +536,11 @@ func foldPublicationID(lifecycleRevision uint64) string {
 // the copies go down in the order a resume must read them back.
 //
 // The two forms of one turn are matched by the identity the persisted form
-// inherits from its live turn when the session builds it: the kind and the
-// timestamp the turn was minted with. Records carry no durable per-entry id
-// yet (issue #1200); this is the identity they do have, and turns are minted
-// one at a time off a nanosecond clock. Counting occurrences rather than
-// testing membership keeps two turns that somehow share one identity from
-// pulling in each other's entries.
+// inherits from its live turn when the session builds it (see
+// turnPairIdentity). Records carry no durable per-entry id, which is why a
+// turn restored from a transcript can never be matched here — issue #1200.
+// Counting occurrences rather than testing membership keeps two turns that
+// somehow share one identity from pulling in each other's entries.
 func pairsStillInHistory(log, history []schema.Turn) []schema.Turn {
 	live := make(map[turnPairIdentity]int, len(history))
 	for _, turn := range history {
@@ -562,11 +561,22 @@ func pairsStillInHistory(log, history []schema.Turn) []schema.Turn {
 // turnPairIdentity names one turn across the two forms the session keeps of
 // it: the live turn in history and the persisted form in the pair log.
 type turnPairIdentity struct {
+	// pair is schema.Turn.PairID, minted once per turn and carried onto the
+	// persisted form because producers build that form FROM the live turn
+	// (newTurnPair). It is the whole identity when it is there.
+	pair uint64
+	// kind and at are the fallback for a turn that reached the log without a
+	// mint — one built as a literal rather than through schema.NewTurn. A
+	// persisted form is its live turn with the message swapped, so the two
+	// still agree on both.
 	kind schema.TurnKind
 	at   int64
 }
 
 func pairIdentity(turn schema.Turn) turnPairIdentity {
+	if turn.PairID != 0 {
+		return turnPairIdentity{pair: turn.PairID}
+	}
 	return turnPairIdentity{kind: turn.Kind, at: turn.Timestamp.UnixNano()}
 }
 

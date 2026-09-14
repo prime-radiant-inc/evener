@@ -1049,13 +1049,9 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		} else if hasSuccessfulTerminalJobStatusResult(calls, results) {
 			persistErr = s.appendToolResultsDurably(live, persisted, skillState)
 		} else if skillState != nil {
-			liveTurn := schema.NewTurn(schema.TurnToolResults, live)
-			liveTurn.SkillState = skillState
-			persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
-			persistedTurn.SkillState = skillState
 			// The obligation is already durable above, so a failed carrier write
 			// returns rather than reporting a recorded round.
-			persistErr = s.recordSkillCarrierDurably(liveTurn, persistedTurn)
+			persistErr = s.recordSkillCarrierRoundDurably(live, persisted, skillState)
 		} else {
 			s.appendTurnWithTranscriptMessage(schema.TurnToolResults, live, persisted)
 		}
@@ -1148,9 +1144,8 @@ func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delega
 // appendToolResultsDurably mirrors appendTurnWithDurableTranscriptMessage
 // (session.go) with the round's typed skill state attached to both copies.
 func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillState *schema.SkillTurnState) error {
-	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	liveTurn, persistedTurn := newTurnPair(schema.TurnToolResults, live, persisted)
 	liveTurn.SkillState = skillState.Clone()
-	persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
 	persistedTurn.SkillState = skillState.Clone()
 	err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
@@ -1163,14 +1158,25 @@ func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillSta
 	return err
 }
 
+// recordSkillCarrierRoundDurably records one tool-results round that carries
+// typed skill state. It exists so the round is built as ONE turn in its two
+// forms (newTurnPair): the live message the model sees and the persisted
+// projection the transcript takes, sharing the identity a fold matches them
+// by. Two separate mints here left the fold with nothing to copy, and its
+// marker then discarded the round.
+func (s *Session) recordSkillCarrierRoundDurably(live, persisted llm.Message, skillState *schema.SkillTurnState) error {
+	liveTurn, persistedTurn := newTurnPair(schema.TurnToolResults, live, persisted)
+	liveTurn.SkillState = skillState
+	persistedTurn.SkillState = skillState
+	return s.recordSkillCarrierDurably(liveTurn, persistedTurn)
+}
+
 // appendToolResultsWithDeliveryCommitsDurably persists the round's tool
 // results durably with their delegate delivery commits and, when the round
 // included skill tool calls, the typed skill state on both turn copies.
 func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []delegateToolCallDeliveryCommit, skillState *schema.SkillTurnState) error {
-	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
+	liveTurn, persistedTurn := newTurnPair(schema.TurnToolResults, live, persisted)
 	liveTurn.SkillState = skillState.Clone()
-	persistedTurn := liveTurn
-	persistedTurn.Message = persisted
 	persistedTurn.SkillState = skillState.Clone()
 	for _, binding := range commits {
 		if binding.commit != nil {
