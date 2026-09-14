@@ -342,10 +342,10 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // The open affordances ride the tool-call summary line (ToolRow's grammar).
   // Withhold them when that line is hidden and no body is open - the row then
   // shows its stated intent alone, and the control must not trail the
-  // rationale. An expanded body still counts as showing the tool; a delegate
-  // card keeps its control because its descriptor places the open control on
-  // the intent line by design (subagentModule.tsx, "visible folded or not").
-  const trailingVisible = isDelegate || summaryOpen || expanded;
+  // rationale. An expanded body still counts as showing the tool, and a row
+  // with no summary text at all (a delegate card) keeps the intent-line slot
+  // its grammar gives it.
+  const trailingVisible = summaryOpen || expanded || !hasSummaryText;
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
   // row"). Checked AFTER the hooks above so the hook order stays stable across
