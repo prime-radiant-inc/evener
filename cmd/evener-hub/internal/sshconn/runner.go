@@ -138,11 +138,7 @@ func (o Options) serverAliveCountMax() int {
 // sshSeconds renders a duration as whole seconds for an ssh -o option, never
 // below one: ssh rejects "0" for ConnectTimeout/ServerAliveInterval.
 func sshSeconds(d time.Duration) string {
-	s := int(d / time.Second)
-	if s < 1 {
-		s = 1
-	}
-	return strconv.Itoa(s)
+	return strconv.Itoa(max(int(d/time.Second), 1))
 }
 
 // sshBaseArgv is the option prefix shared by every ssh invocation.

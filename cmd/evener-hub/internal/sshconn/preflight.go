@@ -84,7 +84,7 @@ const envProbeScript = `printf '%s\n' "HOME=${HOME-}" "XDG_STATE_HOME=${XDG_STAT
 func parseEnvProbe(out []byte) (map[string]string, error) {
 	env := map[string]string{}
 	text := strings.TrimRight(string(out), "\n")
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if line == "" {
 			continue
 		}
@@ -133,7 +133,7 @@ type launchCheck struct {
 func parseLaunchCheck(out []byte) (launchCheck, error) {
 	var lc launchCheck
 	if err := json.Unmarshal(out, &lc); err != nil {
-		return launchCheck{}, fmt.Errorf("%w: %v", ErrPreflightDecode, err)
+		return launchCheck{}, fmt.Errorf("%w: %w", ErrPreflightDecode, err)
 	}
 	if strings.TrimSpace(lc.Protocol) == "" {
 		return launchCheck{}, fmt.Errorf("%w: launch-check reported no protocol", ErrPreflightDecode)
@@ -188,7 +188,7 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 		if isProtocolMismatchOutput(checkOut) {
 			return pf, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(checkOut))
 		}
-		return pf, fmt.Errorf("%w: host %q launch-check: %v: %s", ErrSSHStart, host.Name, err, tail(checkOut))
+		return pf, fmt.Errorf("%w: host %q launch-check: %w: %s", ErrSSHStart, host.Name, err, tail(checkOut))
 	}
 	lc, err := parseLaunchCheck(checkOut)
 	if err != nil {
@@ -211,7 +211,7 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 func (m *Manager) runRemote(ctx context.Context, host hostreg.Host, remote string) ([]byte, error) {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
 	if err != nil {
-		return out, fmt.Errorf("%w: host %q command %q: %v: %s", ErrSSHStart, host.Name, remote, err, tail(out))
+		return out, fmt.Errorf("%w: host %q command %q: %w: %s", ErrSSHStart, host.Name, remote, err, tail(out))
 	}
 	return out, nil
 }

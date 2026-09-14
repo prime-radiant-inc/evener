@@ -261,7 +261,7 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	sink := newDiagSink(m.opts.stderr())
 	stdio, err := m.runner.Start(ctx, argv, sink)
 	if err != nil {
-		return nil, fmt.Errorf("%w: host %q: %v: %s", ErrSSHStart, host.Name, err, sink.tail())
+		return nil, fmt.Errorf("%w: host %q: %w: %s", ErrSSHStart, host.Name, err, sink.tail())
 	}
 
 	stream := &stdioReadWriter{in: stdio.Stdin(), out: stdio.Stdout()}
@@ -298,14 +298,13 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	}); err != nil {
 		_ = stdio.Kill()
 		go func() { _ = stdio.Wait() }()
-		var mismatch appwire.ProtocolVersionMismatchError
-		if errors.As(err, &mismatch) {
-			return nil, fmt.Errorf("%w: host %q: %v", ErrProtocolIncompatible, host.Name, err)
+		if _, isMismatch := errors.AsType[appwire.ProtocolVersionMismatchError](err); isMismatch {
+			return nil, fmt.Errorf("%w: host %q: %w", ErrProtocolIncompatible, host.Name, err)
 		}
 		if isAuthFailure(sink.tail()) {
-			return nil, fmt.Errorf("%w: host %q: %v: %s", ErrSSHAuth, host.Name, err, sink.tail())
+			return nil, fmt.Errorf("%w: host %q: %w: %s", ErrSSHAuth, host.Name, err, sink.tail())
 		}
-		return nil, fmt.Errorf("%w: host %q initialize: %v: %s", ErrSSHStart, host.Name, err, sink.tail())
+		return nil, fmt.Errorf("%w: host %q initialize: %w: %s", ErrSSHStart, host.Name, err, sink.tail())
 	}
 
 	if m.baseCtx.Err() != nil {
@@ -377,11 +376,11 @@ func (m *Manager) jitterFor(d time.Duration) time.Duration {
 	return defaultJitter(d)
 }
 
-// nextBackoff doubles delay, capped at max.
-func nextBackoff(delay, max time.Duration) time.Duration {
+// nextBackoff doubles delay, capped at limit.
+func nextBackoff(delay, limit time.Duration) time.Duration {
 	delay *= 2
-	if max > 0 && delay > max {
-		return max
+	if limit > 0 && delay > limit {
+		return limit
 	}
 	return delay
 }

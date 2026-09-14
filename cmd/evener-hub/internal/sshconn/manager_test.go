@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -448,10 +449,5 @@ func equalArgv(a, b []string) bool {
 }
 
 func containsToken(argv []string, token string) bool {
-	for _, a := range argv {
-		if a == token {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(argv, token)
 }

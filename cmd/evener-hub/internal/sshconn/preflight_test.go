@@ -83,10 +83,10 @@ func TestParseEnvProbe(t *testing.T) {
 func TestResolveRootsNoXDGFallsBack(t *testing.T) {
 	env := map[string]string{"HOME": "/home/dev", "XDG_STATE_HOME": "", "XDG_CONFIG_HOME": ""}
 	configRoot, stateRoot := resolveRoots("linux", env)
-	if want := filepath.Join("/home/dev", ".config", "evener"); configRoot != want {
+	if want := "/home/dev/.config/evener"; configRoot != want {
 		t.Errorf("configRoot = %q, want %q", configRoot, want)
 	}
-	if want := filepath.Join("/home/dev", ".local", "state", "evener"); stateRoot != want {
+	if want := "/home/dev/.local/state/evener"; stateRoot != want {
 		t.Errorf("stateRoot = %q, want %q", stateRoot, want)
 	}
 }
@@ -94,10 +94,10 @@ func TestResolveRootsNoXDGFallsBack(t *testing.T) {
 func TestResolveRootsRespectsXDG(t *testing.T) {
 	env := map[string]string{"HOME": "/home/dev", "XDG_STATE_HOME": "/xdg/state", "XDG_CONFIG_HOME": "/xdg/config"}
 	configRoot, stateRoot := resolveRoots("linux", env)
-	if want := filepath.Join("/xdg/config", "evener"); configRoot != want {
+	if want := "/xdg/config/evener"; configRoot != want {
 		t.Errorf("configRoot = %q, want %q", configRoot, want)
 	}
-	if want := filepath.Join("/xdg/state", "evener"); stateRoot != want {
+	if want := "/xdg/state/evener"; stateRoot != want {
 		t.Errorf("stateRoot = %q, want %q", stateRoot, want)
 	}
 }
