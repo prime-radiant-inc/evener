@@ -2041,3 +2041,69 @@ func TestLoadSessionJobActivityTree_RefusesAResumeAfterTheDelegateJournalBecomes
 		t.Fatal("resumed a token minted while the delegate journal was readable; the page it resumes into has no delegates at all, so its position counts entries that are not there")
 	}
 }
+
+// TestLoadSessionJobActivityTree_PagesWithAnUnreadableDelegateJournal pins
+// that a session whose delegate journal cannot be read still pages to the
+// end. The unreadable state is stable — nothing is going to repair that
+// journal between two requests — so it is not a reason to refuse a resume,
+// and a mint that forgets to record it hands out a token this build then
+// refuses forever. The work-unit cutoff is the mint site the trim does not
+// exercise, so the fixture drives it: more shell jobs than the budget
+// renders.
+func TestLoadSessionJobActivityTree_PagesWithAnUnreadableDelegateJournal(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "unreadablepagingroot"
+	started := time.Unix(1200, 0).UTC()
+	const jobCount = activityMaxWorkUnits + 120
+	events := make([]jobstore.Event, 0, jobCount)
+	for i := range jobCount {
+		ts := started.Add(time.Duration(i) * time.Second)
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%04d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &ts,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "unreadablepagingchild", "task"))
+	savePastActivityMetaWithTreeRevision(t, stateDir, "unreadablepagingchild", "Child", rootID, 0)
+
+	// Unreadable before the first page is built, and still unreadable when
+	// the next one asks: the state never changes across this walk.
+	original := scanDelegateJournal
+	scanDelegateJournal = func(context.Context, string, int64, delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		return nil, 0, delegatestore.ReadDiagnostics{}, fmt.Errorf("delegates.jsonl line 1: %w", delegatestore.ErrLineTooLong)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	delivered := map[string]bool{}
+	continuation := ""
+	for page := 1; ; page++ {
+		if page > 6 {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %d of %d jobs", page, len(delivered), jobCount)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v -- the delegate journal was unreadable when this token was minted and is unreadable still, so nothing about it changed", page, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job != nil {
+				delivered[entry.Job.JobID] = true
+			}
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			if tree.Root.Branch.Truncated {
+				t.Fatalf("page %d is truncated but minted no continuation; diagnostics %q", page, tree.Root.Diagnostics)
+			}
+			break
+		}
+		if next == continuation {
+			t.Fatalf("page %d re-minted the continuation it was loaded with", page)
+		}
+		continuation = next
+	}
+	if len(delivered) != jobCount {
+		t.Fatalf("delivered %d jobs across the walk, want %d", len(delivered), jobCount)
+	}
+}

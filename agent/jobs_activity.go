@@ -808,6 +808,22 @@ type activitySessionEpochs struct {
 	delegatesUnreadable bool
 }
 
+// epochs is everything a continuation naming this session has to record
+// about its journals. Every mint goes through here rather than assembling
+// the struct itself: a mint site that leaves a field at its zero value
+// claims a state the session is not in, and the resume that compares it
+// then refuses a token nothing invalidated — for a condition that does not
+// change between requests, forever.
+func (s activitySessionSnapshot) epochs() activitySessionEpochs {
+	return activitySessionEpochs{
+		jobs:                s.JobsEpoch,
+		delegates:           s.DelegatesEpoch,
+		jobsAbsent:          s.JobsJournalAbsent,
+		delegatesAbsent:     s.DelegatesJournalAbsent,
+		delegatesUnreadable: s.DelegatesJournalUnreadable,
+	}
+}
+
 // collectActivitySessionEpochs walks snapshot's Children tree and returns
 // every visited session's own generations, keyed by SessionID.
 // trimActivityTrailingEntry needs this because it operates AFTER projection
@@ -818,13 +834,7 @@ func collectActivitySessionEpochs(snapshot activitySessionSnapshot) map[string]a
 	epochs := make(map[string]activitySessionEpochs)
 	var walk func(s activitySessionSnapshot)
 	walk = func(s activitySessionSnapshot) {
-		epochs[s.SessionID] = activitySessionEpochs{
-			jobs:                s.JobsEpoch,
-			delegates:           s.DelegatesEpoch,
-			jobsAbsent:          s.JobsJournalAbsent,
-			delegatesAbsent:     s.DelegatesJournalAbsent,
-			delegatesUnreadable: s.DelegatesJournalUnreadable,
-		}
+		epochs[s.SessionID] = s.epochs()
 		for _, child := range s.Children {
 			if child != nil {
 				walk(*child)
@@ -1041,12 +1051,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 				continue
 			}
 			if !activityConsumeWorkUnit(budget, 1) {
-				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, activitySessionEpochs{
-					jobs:            snapshot.JobsEpoch,
-					delegates:       snapshot.DelegatesEpoch,
-					jobsAbsent:      snapshot.JobsJournalAbsent,
-					delegatesAbsent: snapshot.DelegatesJournalAbsent,
-				})
+				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.epochs())
 				projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
 				return projected
 			}
@@ -1063,12 +1068,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 			continue
 		}
 		if !activityConsumeWorkUnit(budget, 1) {
-			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, activitySessionEpochs{
-				jobs:            snapshot.JobsEpoch,
-				delegates:       snapshot.DelegatesEpoch,
-				jobsAbsent:      snapshot.JobsJournalAbsent,
-				delegatesAbsent: snapshot.DelegatesJournalAbsent,
-			})
+			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.epochs())
 			projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
 			return projected
 		}
