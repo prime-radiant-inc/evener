@@ -9,7 +9,9 @@ import (
 )
 
 func TestSkillSourcesMetadataOnlyFirstManifestReservation(t *testing.T) {
-	first, second := t.TempDir(), t.TempDir()
+	// SkillSources reports these back resolved, so the fixture builds its
+	// expectations from the resolved spelling.
+	first, second := fixtureRoot(t), fixtureRoot(t)
 	for _, dir := range []string{first, second} {
 		if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
 			t.Fatal(err)
