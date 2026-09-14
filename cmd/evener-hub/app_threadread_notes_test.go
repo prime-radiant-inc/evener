@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
@@ -174,5 +176,45 @@ func TestPastThreadReadCanonicalHumanNote(t *testing.T) {
 				t.Fatal("past read rewrote journal")
 			}
 		})
+	}
+}
+
+// A legacy session's hub-side metadata predates the write-path strip: the agent
+// note and the URL fields are projected straight onto the wire for the roster,
+// which the TUI prints directly, so the projection sanitizes them rather than
+// trusting what was persisted (roborev's fifth round).
+func TestPastThreadListSanitizesLegacyAgentNoteAndURLs(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	const payload = "\x1b]0;owned\x07note\u009b31m\u0085"
+	entry.Meta.AgentNote = payload
+	entry.Meta.SessionURLs = []schema.SessionURL{{
+		ID: "u\x1b1", URL: "https://x.test/a\u0085b", Label: payload, AddedBy: "agent", AddedAt: 7,
+	}}
+
+	thread, err := pastEntryThreadForList(context.Background(), cfg, entry)
+	if err != nil {
+		t.Fatalf("pastEntryThreadForList: %v", err)
+	}
+	assertPlain := func(surface, text string) {
+		t.Helper()
+		for _, r := range text {
+			if unicode.IsControl(r) && r != '\n' {
+				t.Fatalf("%s = %q carries control rune %U", surface, text, r)
+			}
+		}
+	}
+	assertPlain("projected agent note", thread.Evener.AgentNote)
+	if len(thread.Evener.SessionURLs) != 1 {
+		t.Fatalf("projected urls = %+v, want one entry", thread.Evener.SessionURLs)
+	}
+	assertPlain("projected URL", thread.Evener.SessionURLs[0].URL)
+	assertPlain("projected URL id", thread.Evener.SessionURLs[0].ID)
+	assertPlain("projected URL label", thread.Evener.SessionURLs[0].Label)
+	if !strings.Contains(thread.Evener.AgentNote, "note") {
+		t.Fatalf("projected agent note %q lost its text", thread.Evener.AgentNote)
 	}
 }

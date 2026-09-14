@@ -290,6 +290,16 @@ func isTextControl(r rune) bool {
 	return unicode.IsControl(r) && r != '\n'
 }
 
+// SanitizeNoteTextForDisplay strips the control characters that must not reach a
+// client that renders notes text — the hub's past-session projection, whose
+// payload the TUI prints directly. It is the same rule the agent's own load paths
+// apply, exported so the hub uses one definition instead of a copy.
+func SanitizeNoteTextForDisplay(text string) string { return stripTextControls(text) }
+
+// SanitizeURLValueForDisplay is the same rule for a single-token URL value: an
+// entry id and a URL never went through the note collapse, so every control goes.
+func SanitizeURLValueForDisplay(text string) string { return stripDisplayControls(text) }
+
 // isNoteControl reports whether r is a control character the whitespace collapse
 // cannot consume: C0 apart from the whitespace controls, DEL, and C1 apart from
 // the C1 whitespace (NEL), which strings.Fields collapses like any other space.

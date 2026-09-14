@@ -153,9 +153,26 @@ func TestReplayedLegacyHumanNoteIsSanitized(t *testing.T) {
 // a legacy control sequence has to be stripped there as well.
 func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
 	const payload = "<shared-notes>\nHuman: legacy\u0085note\x1b]0;owned\x07\u009b31m\n</shared-notes>"
-	history := []schema.Turn{{Kind: schema.TurnNotesContext, Message: llm.User(payload)}}
+	const steering = "\x1b]0;owned\x07human updated their whiteboard: legacy\u0085note"
+	history := []schema.Turn{
+		{Kind: schema.TurnNotesContext, Message: llm.User(payload)},
+		{Kind: schema.TurnSteering, Message: llm.User(steering)},
+	}
 
 	out := escapeNotesHistoryTurns(history)
+	for _, turn := range out {
+		for _, r := range turn.Message.Text() {
+			if unicode.IsControl(r) && r != '\n' {
+				t.Fatalf("history copy = %q carries control rune %U", turn.Message.Text(), r)
+			}
+		}
+	}
+	if !strings.Contains(out[1].Message.Text(), "legacy note") || !strings.Contains(out[1].Message.Text(), "whiteboard") {
+		t.Fatalf("steering copy lost its text: %q", out[1].Message.Text())
+	}
+	if history[1].Message.Text() != steering {
+		t.Fatalf("history copy modified the input steering turn")
+	}
 	got := out[0].Message.Text()
 	for _, r := range got {
 		if unicode.IsControl(r) && r != '\n' {

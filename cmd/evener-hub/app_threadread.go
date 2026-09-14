@@ -754,7 +754,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 			Profile:      entry.Meta.ProfileID,
 			Goal:         persistedGoalState(entry.Meta.Goal),
 			HumanNote:    entry.Meta.HumanNote,
-			AgentNote:    entry.Meta.AgentNote,
+			AgentNote:    agent.SanitizeNoteTextForDisplay(entry.Meta.AgentNote),
 			SessionURLs:  persistedSessionURLs(entry.Meta.SessionURLs),
 			Capabilities: pastThreadCapabilities(),
 			WorkMillis:   entry.Meta.WorkMillis,
@@ -936,7 +936,15 @@ func persistedSessionURLs(urls []schema.SessionURL) []appwire.SessionURL {
 	}
 	out := make([]appwire.SessionURL, 0, len(urls))
 	for _, u := range urls {
-		out = append(out, appwire.SessionURL{ID: u.ID, URL: u.URL, Label: u.Label, AddedBy: u.AddedBy, AddedAt: u.AddedAt})
+		// The hub's metadata can predate the write-path strip, and this payload
+		// is printed by the TUI, so the projected values are sanitized here.
+		out = append(out, appwire.SessionURL{
+			ID:      agent.SanitizeURLValueForDisplay(u.ID),
+			URL:     agent.SanitizeURLValueForDisplay(u.URL),
+			Label:   agent.SanitizeNoteTextForDisplay(u.Label),
+			AddedBy: u.AddedBy,
+			AddedAt: u.AddedAt,
+		})
 	}
 	return out
 }

@@ -869,14 +869,22 @@ func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
 	out := make([]schema.Turn, len(history))
 	copy(out, history)
 	for i := range out {
-		if out[i].Kind != schema.TurnNotesContext {
+		text := out[i].Message.Text()
+		if text == "" {
 			continue
 		}
-		if text := out[i].Message.Text(); text != "" {
+		switch out[i].Kind {
+		case schema.TurnNotesContext:
 			// A turn persisted before the write-path strip can still carry
 			// controls, and the framing escape only knows the framing spellings:
 			// strip the other controls as well before the model copy is built.
 			out[i].Message = llm.User(escapeNotesContextBlock(stripTextControls(text)))
+		case schema.TurnSteering:
+			// A human-note update rides a steering turn, and this copy is what
+			// resumed requests and inherited prefixes hand to the model, so a
+			// legacy steering turn is stripped as well. The stored turn keeps its
+			// bytes; only this copy is rewritten.
+			out[i].Message = llm.User(stripTextControls(text))
 		}
 	}
 	return out
