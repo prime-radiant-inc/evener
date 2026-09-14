@@ -63,10 +63,13 @@ export function packageValuesIn(source) {
 }
 
 const CONSUMER_TREES = ["mobile-native", join("mobile", "src"), join("cmd", "evener-hub", "frontend", "src")];
-// Tests and test support are not shipped and are not consumers of the tarball;
-// the in-repo `testing` specifier they reach for is deliberately absent from
-// the exports map.
-const SKIPPED = new Set(["node_modules", "dist", "ios", "android", ".git", "__snapshots__", "testing"]);
+// Tests are not shipped and are not consumers of the tarball, which the
+// `.test.` filter below handles. Directory names are not the place to say so:
+// skipping every directory called `testing` also skipped the app's own
+// src/stores/testing and src/panes/session/testing, which are ordinary source
+// that happens to serve tests -- and the package's own testing/ tree is not
+// under any of these directories to begin with.
+const SKIPPED = new Set(["node_modules", "dist", "ios", "android", ".git", "__snapshots__"]);
 
 function sources(dir, found = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
