@@ -51,8 +51,10 @@ type failureEntry struct {
 type failureLedger struct {
 	mu sync.Mutex
 	// entries is keyed by exactSignature, preserving the original exact-call
-	// fast path: byte-identical calls share an entry, so both the body-hash
-	// repetition streak and the exact failure streak behave as they always did.
+	// fast path: byte-identical calls share an entry, so the body-hash
+	// repetition streak behaves as it always did. It carries NO failure streak:
+	// that lives on the semantic fingerprint, which byte-identical calls share,
+	// so maintaining one here would be bookkeeping nothing reads.
 	entries map[string]*failureEntry
 	order   []string // entries LRU, most-recently-used last
 
