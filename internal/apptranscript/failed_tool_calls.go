@@ -129,11 +129,6 @@ func failedToolResult(result *failedToolCallResult, toolNames map[string]string)
 	return transcript.FailedToolResult(name, result.IsError, result.ToolState)
 }
 
-// tallyFailedToolCalls applies the failure rule to one entry's narrow content
-// decode: it learns tool names from EVERY call — a fork child's own result can
-// answer a call the inherited prefix announced — and, when counting, counts
-// the failing results. Shared by scanFailedToolCalls and scanDerivedTotals so
-// the two scans apply one rule.
 // countsTowardTotals reports whether an entry's own measurements belong in a
 // session's aggregate figures. A fold re-appends the turns recorded while it
 // ran as ContextReplay copies so its anchor does not discard them, and the
@@ -146,6 +141,11 @@ func countsTowardTotals(contextReplay bool) bool {
 	return !contextReplay
 }
 
+// tallyFailedToolCalls applies the failure rule to one entry's narrow content
+// decode: it learns tool names from EVERY call — a fork child's own result can
+// answer a call the inherited prefix announced — and, when counting, counts
+// the failing results. Shared by scanFailedToolCalls and scanDerivedTotals so
+// the two scans apply one rule.
 func tallyFailedToolCalls(parts []toolScanPart, counting bool, toolNames map[string]string) int {
 	count := 0
 	for _, part := range parts {
