@@ -3,6 +3,7 @@
 package procgroup
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -253,20 +254,78 @@ func TestExistsAnswersForTheGroupNotTheLeader(t *testing.T) {
 	}
 }
 
-// TestStopRefusesAPgidThatIsNotAGroup pins the guard: 0 is this process's own
-// group and negatives are not groups, so a stop built from either would signal
-// something the caller never started.
-func TestStopRefusesAPgidThatIsNotAGroup(t *testing.T) {
-	for _, pgid := range []int{0, -1} {
-		done := make(chan struct{}) // never closed: a signalled group would hang here
-		start := time.Now()
-		StopWith(pgid, syscall.SIGTERM, done, 5*time.Second)
-		if elapsed := time.Since(start); elapsed > time.Second {
-			t.Fatalf("StopWith(%d) took %s, so it waited on a group it should have refused", pgid, elapsed)
-		}
-		Stop(pgid, done, 5*time.Second)
-		if elapsed := time.Since(start); elapsed > 2*time.Second {
-			t.Fatalf("Stop(%d) waited on a group it should have refused", pgid)
+// TestProcessGroupGuardHelper is not a test: it is the process the guard test
+// below re-executes, in a process group of its own. Every entry point here can
+// send a signal to a whole group, and the guard under test is what keeps pgid
+// 0 -- the caller's own group -- from being one of them. Running the check in
+// a child means a guard that is not there signals that child alone, rather
+// than the test binary, the go test that started it, and the terminal or CI
+// job they all share.
+func TestProcessGroupGuardHelper(t *testing.T) {
+	call := os.Getenv("PROCGROUP_GUARD_CALL")
+	if call == "" {
+		t.Skip("helper process entry point; runs only under the guard test")
+	}
+	pgid, err := strconv.Atoi(os.Getenv("PROCGROUP_GUARD_PGID"))
+	if err != nil {
+		t.Fatalf("PROCGROUP_GUARD_PGID=%q: %v", os.Getenv("PROCGROUP_GUARD_PGID"), err)
+	}
+	// Never closed: a stop that signalled a group would wait here for a reap
+	// that is not coming, which the elapsed check below is what catches.
+	never := make(chan struct{})
+	start := time.Now()
+	switch call {
+	case "Terminate":
+		Terminate(pgid)
+	case "Kill":
+		Kill(pgid)
+	case "Stop":
+		Stop(pgid, never, 30*time.Second)
+	case "StopWith":
+		StopWith(pgid, syscall.SIGTERM, never, 30*time.Second)
+	default:
+		t.Fatalf("PROCGROUP_GUARD_CALL=%q is not one of the guarded entry points", call)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("%s(%d) took %s: it waited on a group it should have refused to signal", call, pgid, elapsed)
+	}
+}
+
+// TestTheGroupSignalsRefuseAPgidThatIsNotAGroup pins the guard on every entry
+// point that signals: 0 is the caller's own process group and negatives are
+// not groups, so a signal built from either goes to processes this package
+// never started -- with 0, to the caller itself. A helper that survives its
+// call and exits 0 is the whole assertion: without the guard, Terminate(0) and
+// Kill(0) kill it where it stands, and the stops wait out a reap that cannot
+// come.
+func TestTheGroupSignalsRefuseAPgidThatIsNotAGroup(t *testing.T) {
+	for _, call := range []string{"Terminate", "Kill", "Stop", "StopWith"} {
+		for _, pgid := range []string{"0", "-1"} {
+			t.Run(call+"("+pgid+")", func(t *testing.T) {
+				var log bytes.Buffer
+				helper := exec.Command(os.Args[0], "-test.run=TestProcessGroupGuardHelper$") //nolint:noctx // its own process group, stopped by that group id below
+				helper.Env = append(os.Environ(), "PROCGROUP_GUARD_CALL="+call, "PROCGROUP_GUARD_PGID="+pgid)
+				helper.Stdout, helper.Stderr = &log, &log
+				if err := Start(helper); err != nil {
+					t.Fatalf("starting the helper: %v", err)
+				}
+				child := reapChild(helper)
+				select {
+				case <-child.done:
+				case <-time.After(childReadyTripwire):
+					group := helper.Process.Pid
+					if group == syscall.Getpgrp() {
+						t.Fatalf("the helper shares this process's group (%d); refusing to signal it", group)
+					}
+					// Cleaned up by that group id alone.
+					Kill(group)
+					<-child.done
+					t.Fatalf("the helper never finished; its output was %q", log.String())
+				}
+				if child.err != nil {
+					t.Fatalf("%s(%s) in a child of its own: %v; its output was %q", call, pgid, child.err, log.String())
+				}
+			})
 		}
 	}
 }

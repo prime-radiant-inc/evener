@@ -32,10 +32,22 @@ func Start(cmd *exec.Cmd) error {
 
 // Terminate TERMs the whole group. Best-effort: a group already gone is not
 // an error anyone can act on.
-func Terminate(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGTERM) }
+func Terminate(pgid int) { signalGroup(pgid, syscall.SIGTERM) }
 
 // Kill KILLs the whole group.
-func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
+func Kill(pgid int) { signalGroup(pgid, syscall.SIGKILL) }
+
+// signalGroup is the one place a group signal is sent, and the one place the
+// identifier is checked. 0 means the caller's own process group and negatives
+// are not groups: either would deliver the signal to processes the caller
+// never started -- with 0, to the caller itself and to whatever else shares
+// its group, which for a gate helper is the gate.
+func signalGroup(pgid int, sig syscall.Signal) {
+	if pgid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-pgid, sig)
+}
 
 // Exists reports whether the group still has members. It is the one question
 // that can be asked safely after the direct child has been reaped: a pid
@@ -80,8 +92,8 @@ func Exists(pgid int) bool {
 // fully would need waitid(WNOWAIT), which pure Go doesn't expose. The shell
 // runner's window was zero only because a single-threaded shell cannot
 // reap concurrently with its own stop loop.
-func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
-	StopWith(pgid, syscall.SIGTERM, reaped, grace)
+func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) bool {
+	return StopWith(pgid, syscall.SIGTERM, reaped, grace)
 }
 
 // StopWith is Stop for a caller that was itself signalled: the group is sent
@@ -91,22 +103,29 @@ func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
 // operator actually sent rather than a TERM this layer chose on its behalf.
 // The wait is therefore at most two graces when the forwarded signal is not
 // SIGTERM itself, which is the price of passing on what was sent.
-func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) {
+//
+// It reports whether the group was signalled at all. False means the child
+// was already reaped when the stop was asked for, and the caller is holding
+// the command's own exit status rather than the death this stop would have
+// caused: a caller that decides between "the command answered" and "I stopped
+// it" has to be able to tell those apart, and only the check below knows
+// which side of it the reap landed on.
+func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) bool {
 	if pgid <= 0 {
 		// 0 is this process's own group and negatives are not groups; both
 		// would send the signal somewhere the caller did not start.
-		return
+		return false
 	}
 	select {
 	case <-reaped:
-		return
+		return false
 	default:
 	}
 	if sig != 0 && sig != syscall.SIGTERM {
-		_ = syscall.Kill(-pgid, sig)
+		signalGroup(pgid, sig)
 		select {
 		case <-reaped:
-			return
+			return true
 		case <-time.After(grace):
 		}
 	}
@@ -116,6 +135,7 @@ func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.D
 	case <-time.After(grace):
 		Kill(pgid)
 	}
+	return true
 }
 
 // ExitCode maps a reaped child's state to a shell-style exit code: the exit

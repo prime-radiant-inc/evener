@@ -32,21 +32,29 @@ func Kill(pgid int) {
 // child, and the caller's Wait has already accounted for that child.
 func Exists(int) bool { return false }
 
-func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
+// Stop reports whether the child was signalled, the same question the unix
+// build answers: false when there was nothing to signal.
+func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) bool {
 	if pgid <= 0 {
-		return
+		return false
+	}
+	select {
+	case <-reaped:
+		return false
+	default:
 	}
 	Terminate(pgid)
 	select {
 	case <-reaped:
 	case <-time.After(grace):
 	}
+	return true
 }
 
 // StopWith has no signal to forward on a platform with one way to stop a
 // process, so it is Stop.
-func StopWith(pgid int, _ syscall.Signal, reaped <-chan struct{}, grace time.Duration) {
-	Stop(pgid, reaped, grace)
+func StopWith(pgid int, _ syscall.Signal, reaped <-chan struct{}, grace time.Duration) bool {
+	return Stop(pgid, reaped, grace)
 }
 
 func ExitCode(state *os.ProcessState) int {

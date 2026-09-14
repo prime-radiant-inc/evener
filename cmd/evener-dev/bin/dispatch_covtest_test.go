@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	devcmd "primeradiant.com/evener/cmd/evener-dev"
+	"primeradiant.com/evener/internal/devtool/procgroup"
 )
 
 const devHelp = `Usage: evener-dev <subcommand> [flags]
@@ -100,9 +101,18 @@ func TestDispatchAliasesReachTheSameSubcommand(t *testing.T) {
 	// and the output compared. The dev family writes the process's own
 	// streams, so those are what this captures.
 	t.Setenv("DISPATCH_PRINTING_HELPER", "1")
+	// bounded-list is a process-group stopper and nothing else: on a platform
+	// without process groups it refuses with a usage error rather than running
+	// the command. Both spellings still have to answer alike, which is what
+	// this case is here for.
+	boundedCode, boundedOut := 0, helperLine
+	if !procgroup.Supported {
+		boundedCode, boundedOut = 2, ""
+	}
 	for _, tc := range []struct {
 		name string
 		args []string
+		code int
 		want string
 	}{
 		{
@@ -110,7 +120,8 @@ func TestDispatchAliasesReachTheSameSubcommand(t *testing.T) {
 			// The command is this test binary re-executed, the repo's
 			// helper-process idiom, so nothing ambient is involved.
 			args: []string{"-timeout", "30s", "-attempts", "1", "--", os.Args[0], "-test.run=TestDispatchPrintingHelper$"},
-			want: helperLine,
+			code: boundedCode,
+			want: boundedOut,
 		},
 		{
 			name: "list-build-flags",
@@ -121,8 +132,8 @@ func TestDispatchAliasesReachTheSameSubcommand(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			prefixedCode, prefixedOut := run(append([]string{"dev", tc.name}, tc.args...)...)
 			bareCode, bareOut := run(append([]string{tc.name}, tc.args...)...)
-			if prefixedCode != 0 || bareCode != 0 {
-				t.Fatalf("exit codes = %d (dev %s) and %d (%s), want 0 from both", prefixedCode, tc.name, bareCode, tc.name)
+			if prefixedCode != tc.code || bareCode != tc.code {
+				t.Fatalf("exit codes = %d (dev %s) and %d (%s), want %d from both", prefixedCode, tc.name, bareCode, tc.name, tc.code)
 			}
 			if !strings.Contains(prefixedOut, tc.want) || bareOut != prefixedOut {
 				t.Fatalf("stdout = %q (dev %s) and %q (%s), want %q from both", prefixedOut, tc.name, bareOut, tc.name, tc.want)

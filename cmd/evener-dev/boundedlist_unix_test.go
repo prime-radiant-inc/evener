@@ -324,7 +324,9 @@ func TestBoundedListEscapeeHelper(t *testing.T) {
 	}
 	child := exec.Command(os.Args[0], "-test.run=TestBoundedListSleeperHelper$")
 	child.Env = append(os.Environ(), "BOUNDED_LIST_SLEEPER=1")
-	child.Stdout = os.Stdout
+	// Both of the attempt's pipes, so the grandchild can outlive the attempt
+	// holding either one.
+	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	// Its own group: the attempt kills the group this process leads, and this
 	// grandchild has to survive that to hold the pipe.
 	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -367,6 +369,10 @@ func TestBoundedListSleeperHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("BOUNDED_LIST_SLEEPER_READY"), nil, 0o644); err != nil {
 		t.Fatalf("writing the grandchild's ready file: %v", err)
 	}
+	if goAhead := os.Getenv("BOUNDED_LIST_SLEEPER_SHOUT"); goAhead != "" {
+		shoutIntoTheKeptPipe(t, goAhead)
+		return
+	}
 	hold := 3 * time.Second
 	if value := os.Getenv("BOUNDED_LIST_SLEEPER_HOLD"); value != "" {
 		parsed, err := time.ParseDuration(value)
@@ -376,6 +382,32 @@ func TestBoundedListSleeperHelper(t *testing.T) {
 		hold = parsed
 	}
 	time.Sleep(hold)
+}
+
+// survivorShout is what the grandchild writes into the pipe it still holds
+// after the attempt that opened it is over.
+const survivorShout = "a survivor wrote this"
+
+// shoutIntoTheKeptPipe waits to be told the attempt is over, writes into the
+// stderr it inherited from it, and records which way that went. The write goes
+// through a duplicate of the descriptor because the runtime turns a broken-pipe
+// write on fd 2 itself into a fatal SIGPIPE, and this helper has to outlive the
+// write to report it.
+func shoutIntoTheKeptPipe(t *testing.T, goAhead string) {
+	t.Helper()
+	awaitFile(t, goAhead, "the go-ahead for the survivor's write never came")
+	fd, err := syscall.Dup(int(os.Stderr.Fd()))
+	if err != nil {
+		t.Fatalf("duplicating the inherited stderr: %v", err)
+	}
+	kept := os.NewFile(uintptr(fd), "the attempt's stderr")
+	outcome := "wrote"
+	if _, err := kept.WriteString(survivorShout + "\n"); err != nil {
+		outcome = "refused: " + err.Error()
+	}
+	if err := os.WriteFile(os.Getenv("BOUNDED_LIST_SLEEPER_RECORD"), []byte(outcome), 0o644); err != nil {
+		t.Fatalf("writing the survivor's record: %v", err)
+	}
 }
 
 // escapeeCommand is the attempt's command for the give-up tests: this test
@@ -800,5 +832,141 @@ func TestBoundedAttemptTakesTheExitThatRacedTheBound(t *testing.T) {
 	// And the other ordering, which is the one that must still be a timeout.
 	if finished, _ := finishedFirst(make(chan struct{}), &waitResult{}); finished {
 		t.Fatal("finishedFirst = true for a command that is still running")
+	}
+}
+
+// withStopperStub replaces the process-group half of an attempt for the length
+// of one test, leaving the rest of the attempt real.
+func withStopperStub(t *testing.T, stop func(int, syscall.Signal, <-chan struct{}, time.Duration) bool) {
+	t.Helper()
+	original := realGroupStopper
+	t.Cleanup(func() { realGroupStopper = original })
+	stubbed := original
+	stubbed.stop = stop
+	realGroupStopper = stubbed
+}
+
+// reapedBeforeTheStop stands in for a stop that found the child already gone:
+// it waits for the reap the real one would have seen, and reports that it sent
+// the group nothing.
+func reapedBeforeTheStop(_ int, _ syscall.Signal, reaped <-chan struct{}, _ time.Duration) bool {
+	<-reaped
+	return false
+}
+
+func TestBoundedListKeepsTheStatusOfACommandThatExitedAsTheBoundLanded(t *testing.T) {
+	// The reap can land after the timeout arm has asked whether the command
+	// finished and before the stop reaches the group: microseconds wide, and
+	// not arrangeable from outside, so the ordering is injected. Nothing was
+	// signalled, so what the command exited with is its own answer -- not a
+	// timeout, and not something to retry.
+	withStopperStub(t, reapedBeforeTheStop)
+	var stdout, stderr bytes.Buffer
+	// The command outlives the bound and then exits by itself; with the stop
+	// sending nothing, no signal of this helper's could have ended it.
+	args := []string{"-timeout", "100ms", "-attempts", "3", "-grace", "5s", "--", "sh", "-c", "sleep 0.3; exit 7"}
+	code := boundedListWith(args, &stdout, &stderr, nil)
+	if code != 7 {
+		t.Fatalf("exit code = %d, want 7: the command's own status; stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr = %q: a command that exited is not retried", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "timed out") {
+		t.Fatalf("stderr = %q: the command exited before anything was sent to it", stderr.String())
+	}
+}
+
+func TestBoundedAttemptKeepsTheStatusOfACommandThatExitedAsTheInterruptLanded(t *testing.T) {
+	// The same window on the interrupt arm: 128+signal names a death this
+	// helper caused, and it caused none here. The interrupt still ends the
+	// run -- the runner starts no further attempt -- it just does not decide
+	// the status.
+	withStopperStub(t, reapedBeforeTheStop)
+	signals := make(chan os.Signal, 1)
+	signals <- syscall.SIGTERM
+	var stderr bytes.Buffer
+	result := runBoundedAttempt([]string{"sh", "-c", "sleep 0.3; exit 7"},
+		30*time.Second, 5*time.Second, &stderr, &signalLatch{ch: signals})
+	if result.exitCode != 7 {
+		t.Fatalf("exitCode = %d, want 7: the command's own status; stderr = %q", result.exitCode, stderr.String())
+	}
+	if result.interrupted != syscall.SIGTERM {
+		t.Fatalf("interrupted = %v, want the signal latched so the run stops", result.interrupted)
+	}
+	if result.timedOut || result.stuck {
+		t.Fatalf("timedOut = %v, stuck = %v for a command that exited on its own", result.timedOut, result.stuck)
+	}
+}
+
+func TestASurvivorCannotWriteIntoTheNextAttempt(t *testing.T) {
+	// The copiers read the attempt's pipes, and a process that escaped the
+	// attempt's group still holds the write ends. If the attempt leaves its
+	// read ends open, that copier outlives it -- writing, whenever the
+	// survivor does, into the stderr the next attempt is reporting through.
+	argv, escapeeReady := escapeeCommand(t)
+	dir := t.TempDir()
+	goAhead := filepath.Join(dir, "go-ahead")
+	record := filepath.Join(dir, "survivor-record")
+	t.Setenv("BOUNDED_LIST_SLEEPER_SHOUT", goAhead)
+	t.Setenv("BOUNDED_LIST_SLEEPER_RECORD", record)
+	// One stderr for both attempts, which is what the runner has.
+	var stderr syncBuffer
+	first := runBoundedAttempt(argv, 30*time.Second, 200*time.Millisecond, &stderr, nil)
+	awaitFile(t, escapeeReady, "the escapee never reported its grandchild")
+	if first.exitCode != 1 {
+		t.Fatalf("the first attempt's exitCode = %d, want 1: the survivor held its output; stderr = %q",
+			first.exitCode, stderr.Bytes())
+	}
+	// The attempt is over and the survivor still holds the write ends.
+	if err := os.WriteFile(goAhead, nil, 0o644); err != nil {
+		t.Fatalf("writing the go-ahead: %v", err)
+	}
+	if second := runBoundedAttempt([]string{"sh", "-c", "sleep 1"},
+		30*time.Second, 200*time.Millisecond, &stderr, nil); second.exitCode != 0 {
+		t.Fatalf("the second attempt's exitCode = %d, want 0; stderr = %q", second.exitCode, stderr.Bytes())
+	}
+	awaitFile(t, record, "the survivor never said how its write went")
+	outcome, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("reading the survivor's record: %v", err)
+	}
+	if !strings.HasPrefix(string(outcome), "refused:") {
+		t.Fatalf("the survivor's write %s, want it refused: the attempt closes its read ends when it ends", outcome)
+	}
+	if got := string(stderr.Bytes()); strings.Contains(got, survivorShout) {
+		t.Fatalf("stderr = %q: a survivor's bytes landed in a later attempt's diagnostics", got)
+	}
+}
+
+func TestAwaitDrainDoesNotRestartItsGraceForEverySignal(t *testing.T) {
+	// Output that never arrives, and signals arriving faster than the grace.
+	// One deadline for the whole wait is what ends it: a grace started afresh
+	// each time round the loop would be outrun by the signals, and an
+	// operator sending more of them would extend the wait they are trying to
+	// cut short.
+	signals := make(chan os.Signal, 1)
+	feeding := make(chan struct{})
+	defer close(feeding)
+	go func() {
+		for {
+			select {
+			case <-feeding:
+				return
+			case signals <- syscall.SIGINT:
+			}
+		}
+	}()
+	done := make(chan error, 1)
+	go func() {
+		done <- awaitDrain(make(chan struct{}), 200*time.Millisecond, &signalLatch{ch: signals})
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("awaitDrain returned nil for output that never arrived")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("awaitDrain never returned against a 200ms grace: every signal started it over")
 	}
 }

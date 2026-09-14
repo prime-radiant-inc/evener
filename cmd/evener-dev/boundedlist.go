@@ -86,6 +86,10 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v\n", err)
 		return attemptResult{err: err, exitCode: 1}
 	}
+	// Whatever ends this attempt, the pipes' read ends are closed with it: a
+	// survivor still holding a write end would otherwise keep a copier alive,
+	// and that copier writes into the stderr the next attempt is using.
+	defer feeds.closeReads()
 	drained := feeds.copyInto(&out, guarded)
 	// The child leads its own group, so the group id is its pid.
 	result := attemptResult{pgid: cmd.Process.Pid}
@@ -140,6 +144,11 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		}
 		return result
 	}
+	// bounded is the timeout arm's answer, applied only once the stop below
+	// has confirmed it: the command can still exit in the window between the
+	// check here and the signal there, and an attempt whose command exited is
+	// not a timed-out one.
+	var bounded bool
 	select {
 	case <-reaped:
 		return completed(waited.err())
@@ -168,12 +177,22 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		// `reaped` closes when the process exits, not when its output stops
 		// arriving, so past that check this arm means the command is still
 		// running: it gets stopped now, with no grace spent guessing.
-		result.timedOut = true
+		bounded = true
 	}
 	// The signal this helper was sent, if it was sent one, then SIGTERM, the
 	// grace, and SIGKILL -- and nothing at all if the child was reaped first,
-	// whose pid may already belong to someone else.
-	procgroup.StopWith(result.pgid, result.interrupted, reaped, grace)
+	// whose pid may already belong to someone else. The stop is the last place
+	// that window can be closed, and it says which side of it the reap landed
+	// on.
+	if !realGroupStopper.stop(result.pgid, result.interrupted, reaped, grace) {
+		// The command exited between the check above and the stop, so nothing
+		// was sent to its group: this is the command's own answer, and 124 or
+		// 128+signal would name a death this helper did not cause. A latched
+		// interrupt still ends the run -- the runner starts no further attempt
+		// -- it just no longer decides the status.
+		return completed(waited.err())
+	}
+	result.timedOut = bounded
 	if !reapOrGiveUp(reaped, grace, argv[0], guarded) {
 		// Nothing this process can do reaches a child the kernel will not let
 		// go of. The sweep is skipped on purpose: it would spend another grace
@@ -390,6 +409,21 @@ func openOutputPipes(cmd *exec.Cmd) (*outputPipes, error) {
 	return feeds, nil
 }
 
+// closeReads ends the copying, whatever is still holding the write ends. A
+// process that escaped the attempt's group keeps its copy of the write end,
+// and a copier blocked on that read outlives the attempt that started it --
+// still holding the writers it was given, which for stderr is the one the
+// next attempt writes its diagnostics to.
+func (o *outputPipes) closeReads() {
+	for _, f := range []*os.File{o.stdoutR, o.stderrR} {
+		if f != nil {
+			// Closing a pipe read end unblocks the read in flight on it, so
+			// the copier ends here rather than whenever the survivor does.
+			_ = f.Close()
+		}
+	}
+}
+
 func (o *outputPipes) closeAll() {
 	for _, f := range []*os.File{o.stdoutR, o.stdoutW, o.stderrR, o.stderrW} {
 		if f != nil {
@@ -440,13 +474,19 @@ func (o *outputPipes) copyErr() error {
 // and latches a signal that arrives meanwhile: every wait in this attempt is
 // also a place an operator can interrupt it.
 func awaitDrain(drained <-chan struct{}, grace time.Duration, latch *signalLatch) error {
+	// One deadline for the whole wait, not one per turn around the loop: a
+	// signal that interrupts the wait must not hand the drain a fresh grace,
+	// or an operator sending several would extend the very wait they are
+	// trying to cut short.
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
 	for {
 		select {
 		case <-drained:
 			return nil
 		case received := <-latch.waiting():
 			latch.receive(received)
-		case <-time.After(grace):
+		case <-deadline.C:
 			return fmt.Errorf("the output was still arriving %s after the command ended", grace)
 		}
 	}
@@ -472,12 +512,18 @@ type groupStopper struct {
 	exists    func(int) bool
 	terminate func(int)
 	kill      func(int)
+	// stop is the bound's and the interrupt's stop, and reports whether it
+	// signalled anything: false when the child was reaped in the window
+	// between the attempt's last check and the signal, which is the other
+	// case no test can arrange from outside.
+	stop func(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) bool
 }
 
 var realGroupStopper = groupStopper{
 	exists:    procgroup.Exists,
 	terminate: procgroup.Terminate,
 	kill:      procgroup.Kill,
+	stop:      procgroup.StopWith,
 }
 
 // stopSurvivors stops whatever is still in the command's process group once
