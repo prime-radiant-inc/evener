@@ -49,6 +49,17 @@ const CLASS = {
 const ENDPOINT_CHANGED_ERROR =
   "This connection changed to a different endpoint. Check its destination and enter the value again.";
 
+// A row that carries an endpoint but serves no fingerprint is a destination the
+// hub cannot describe right now: it serves a fingerprint only while it can key
+// one, and an unavailable one is omitted from the listing. A form opened during
+// such an outage keeps that state until the listing refreshes, and submitting
+// would assert nothing against an endpoint nobody checked - which the hub
+// accepts rather than validates. The dialog refuses locally with the same
+// "review its destination" remedy as a moved endpoint: the listing that carries
+// the fingerprint again is what makes the save work.
+const FINGERPRINT_UNAVAILABLE_ERROR =
+  "The hub cannot check this endpoint right now, so the key was not sent. Review its destination and try again once it can be checked.";
+
 // nonEmptyVars trims and drops blank entries before they reach the wire -
 // InstanceCreateParams.Vars only carries variables the user actually set
 // (spec §11.3); a blank templated field means "leave it to the
@@ -342,16 +353,18 @@ export function AddInstanceDialog({
 export interface ApiKeyDialogProps {
   instance: InstanceEntry;
   /** The endpoint fingerprint the dialog was opened against, captured from the
-   * row the user acted on. A defined submit asserts this value, so a
-   * concurrent endpoint change cannot re-target the already-entered secret.
+   * row the user acted on. A submit asserts this value, so a concurrent
+   * endpoint change cannot re-target the already-entered secret.
    * When a change is detected the dialog re-anchors to the row now on screen,
    * the destination the user reviews before re-entering the value; see
    * CredentialValueDialog.handleSubmit.
    * Required (and explicitly undefined when the row showed no endpoint, which
    * is the legitimate "nothing was shown, nothing to assert" case) rather than
    * optional, so a caller that forgets to capture it is a build error instead
-   * of a save that silently asserts nothing. An undefined capture is never
-   * compared against the live row: only a defined capture can be moved. */
+   * of a save that silently asserts nothing. Only a capture and a row that are
+   * both undefined compare equal: a row that gained a fingerprint is a change
+   * to refuse like any other, since an empty assertion carries no endpoint for
+   * the hub to check and would land the value unverified. */
   expectedEndpointFingerprint: string | undefined;
   onCancel: () => void;
   onSuccess: () => void;
@@ -430,15 +443,37 @@ function CredentialValueDialog({
     // the value was cleared so proceeding takes a deliberate retype of the
     // secret, and the hub re-checks the assertion under its credential lock at
     // write time, so a second change refuses again.
-    // A capture of undefined is nothing to compare against - the row showed no
-    // endpoint when the editor opened - so a row that gained one while the
-    // dialog sat open is not a change to refuse: submit without an assertion,
-    // the "nothing shown, nothing to assert" case this prop's doc names.
+    // An undefined capture is no exemption: a row that gained a fingerprint
+    // while the dialog sat open is a change to refuse too. An empty assertion
+    // carries no endpoint for the hub to check - it accepts one while it can
+    // key a fingerprint of its own, so a row that cannot produce one would
+    // otherwise save unverified - and the same local refusal re-anchors the
+    // expectation to the row now on screen, so the retype saves against the
+    // destination the user can see. A capture and a row that are both undefined
+    // still compare equal, so the "nothing shown, nothing to assert" case is
+    // unchanged.
     const expectedFingerprint = expected.current;
-    if (expectedFingerprint !== undefined && instance.endpointFingerprint !== expectedFingerprint) {
+    if (instance.endpointFingerprint !== expectedFingerprint) {
       expected.current = instance.endpointFingerprint;
       setValue("");
       setError(ENDPOINT_CHANGED_ERROR);
+      return;
+    }
+    // The hub serves a fingerprint only while it can key one, so a row that
+    // carries an endpoint and shows none is a destination the hub cannot
+    // describe right now - the state a key outage leaves, and the state a form
+    // opened during one keeps if the listing has not refreshed since. Submitting
+    // here would assert nothing against an endpoint nobody checked, so it is
+    // refused locally, with the same "review its destination" remedy: the
+    // listing that carries the fingerprint again is what makes the save work.
+    // The wire omits an unavailable fingerprint (omitempty), so "shows none"
+    // arrives as undefined as well as ""; both spellings are checked, the
+    // absent-is-empty convention InstanceSheet.fieldValue documents. baseUrl is
+    // the row's "has a destination" field: the listing suppresses it for a
+    // hidden or destinationless row, so an empty baseUrl means there is nothing
+    // for the hub to check and the save may proceed with no assertion.
+    if ((instance.baseUrl ?? "") !== "" && (instance.endpointFingerprint ?? "") === "") {
+      setError(FINGERPRINT_UNAVAILABLE_ERROR);
       return;
     }
     setError(null);

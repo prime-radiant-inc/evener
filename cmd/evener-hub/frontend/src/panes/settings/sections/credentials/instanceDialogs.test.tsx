@@ -889,16 +889,25 @@ describe("ApiKeyDialog", () => {
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
 
-  // An undefined capture is the "the row showed no endpoint, nothing to
-  // assert" case, not a value to match: if the row gains a fingerprint while
-  // the dialog is open there is still nothing captured to compare against, so
-  // the save goes out with no assertion and the typed value survives.
-  test("a fingerprint gained while the dialog is open submits without an assertion", async () => {
+  // An undefined capture used to exempt the guard, so a row that gained a
+  // fingerprint while the dialog sat open went out with no assertion. A hub
+  // that keeps endpoint fingerprints refuses that write - it can describe the
+  // destination, so an empty assertion leaves it unverified - which left the
+  // user in a server refusal loop no local retry could break. The guard now
+  // compares an undefined capture too: the row gaining one is a change to
+  // refuse like any other, and the same local refusal re-anchors the
+  // expectation to the row on screen so the retype saves against the
+  // destination the user can see.
+  test("a fingerprint gained while the dialog is open refuses the save and re-anchors to the row", async () => {
     const fake = connectFakeClient();
-    fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-secret" });
-      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
-    });
+    const setKey = vi.fn(() => ({
+      provider: "work",
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    fake.on("evener/auth/apiKey/set", setKey);
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     const onSuccess = vi.fn();
     const user = userEvent.setup();
@@ -912,8 +921,7 @@ describe("ApiKeyDialog", () => {
     );
     await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
     // The listing entry this name resolves to gains an endpoint identity while
-    // the field holds the secret. The dialog captured none, so there is
-    // nothing to compare a save against.
+    // the field holds the secret.
     rerender(
       <ApiKeyDialog
         instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-new" })}
@@ -923,8 +931,106 @@ describe("ApiKeyDialog", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    // Refused locally, before any RPC: the typed value asserted no endpoint
+    // while the row now carries one.
+    expect(setKey).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+
+    // The refusal re-anchored the expectation to the row on screen: the
+    // re-typed value saves against the destination the dialog now displays.
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() =>
+      expect(fake.calls.find((c) => c.method === "evener/auth/apiKey/set")?.params).toEqual({
+        provider: "work",
+        value: "sk-secret-again",
+        expectedEndpointFingerprint: "fp-new",
+      }),
+    );
+    expect(onSuccess).toHaveBeenCalled();
+  });
+
+  // The hub serves a fingerprint only while it can key one, and the listing
+  // omits what it cannot serve. A row that still carries a destination but no
+  // fingerprint is therefore a destination the hub cannot describe right now -
+  // the state a form opened during a key outage keeps when the listing has not
+  // refreshed since. Submitting would assert nothing for an endpoint nobody
+  // checked, so it is refused locally before any RPC, and the typed value is
+  // kept for the retry the message asks for.
+  test("a destination with no fingerprint refuses the save before any RPC", async () => {
+    const fake = connectFakeClient();
+    const setKey = vi.fn();
+    fake.on("evener/auth/apiKey/set", setKey);
+    const user = userEvent.setup();
+    render(
+      <ApiKeyDialog
+        instance={instance({ name: "work", providerId: "anthropic", baseUrl: "https://work.example/v1" })}
+        expectedEndpointFingerprint={undefined}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(setKey).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("cannot check this endpoint"));
     expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("sk-secret");
+  });
+
+  // The same state spelled as an explicit empty fingerprint, which a producer
+  // that does not omit empty strings (or a fixture) carries; both spellings
+  // mean "the row shows none" and both are refused.
+  test("an explicit empty fingerprint on a destination refuses the save", async () => {
+    const fake = connectFakeClient();
+    const setKey = vi.fn();
+    fake.on("evener/auth/apiKey/set", setKey);
+    const user = userEvent.setup();
+    render(
+      <ApiKeyDialog
+        instance={instance({
+          name: "work",
+          providerId: "anthropic",
+          baseUrl: "https://work.example/v1",
+          endpointFingerprint: "",
+        })}
+        expectedEndpointFingerprint=""
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(setKey).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("cannot check this endpoint"));
+  });
+
+  // The control: a row with no destination (baseUrl empty) and no fingerprint
+  // is the "nothing shown, nothing to assert" case - the hub accepts a write
+  // with no assertion there - so the dialog must still submit it.
+  test("a row with no destination still submits with no assertion", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/apiKey/set", (params) => {
+      expect(params).toEqual({ provider: "work", value: "sk-secret" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <ApiKeyDialog
+          instance={instance({ name: "work", providerId: "anthropic", baseUrl: "" })}
+          expectedEndpointFingerprint={undefined}
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
 
   // The other direction of the same guard: a capture that was defined when the
