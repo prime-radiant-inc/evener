@@ -8,6 +8,7 @@
 package procgroup
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -31,6 +32,25 @@ func Terminate(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGTERM) }
 // Kill KILLs the whole group.
 func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
 
+// Exists reports whether the group still has members. It is the one question
+// that can be asked safely after the direct child has been reaped: a pid
+// cannot be recycled while it is still a live group's id, so anything but
+// ESRCH means this is still the group the caller started. EPERM is a yes --
+// the group is there, this process just may not signal all of it.
+//
+// A group whose only remaining members are zombies also reads as alive, until
+// init reaps them. The cost of that is one survivor diagnostic and at most one
+// grace wait on a group that was already finished; the alternative is probing
+// process state per platform, which is a lot of machinery for a line of
+// output.
+func Exists(pgid int) bool {
+	if pgid <= 0 {
+		return false
+	}
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
 // Stop TERMs the group, waits for the caller to reap the direct child
 // (signalled by closing reaped), and KILLs the group if that takes longer
 // than grace. The grace is a tripwire for children that ignore TERM, not a
@@ -46,10 +66,34 @@ func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
 // runner's window was zero only because a single-threaded shell cannot
 // reap concurrently with its own stop loop.
 func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
+	StopWith(pgid, syscall.SIGTERM, reaped, grace)
+}
+
+// StopWith is Stop for a caller that was itself signalled: the group is sent
+// that signal first, and gets the grace to act on it, before the TERM-then-KILL
+// escalation starts. A child that distinguishes SIGHUP from SIGTERM -- a
+// runner asked to reopen its logs, a shell asked to hang up -- sees what the
+// operator actually sent rather than a TERM this layer chose on its behalf.
+// The wait is therefore at most two graces when the forwarded signal is not
+// SIGTERM itself, which is the price of passing on what was sent.
+func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) {
+	if pgid <= 0 {
+		// 0 is this process's own group and negatives are not groups; both
+		// would send the signal somewhere the caller did not start.
+		return
+	}
 	select {
 	case <-reaped:
 		return
 	default:
+	}
+	if sig != 0 && sig != syscall.SIGTERM {
+		_ = syscall.Kill(-pgid, sig)
+		select {
+		case <-reaped:
+			return
+		case <-time.After(grace):
+		}
 	}
 	Terminate(pgid)
 	select {

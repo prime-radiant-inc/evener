@@ -8,6 +8,7 @@ package procgroup
 import (
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -24,12 +25,25 @@ func Kill(pgid int) {
 	}
 }
 
+// Exists answers no: without process groups there is no group to outlive the
+// child, and the caller's Wait has already accounted for that child.
+func Exists(int) bool { return false }
+
 func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) {
+	if pgid <= 0 {
+		return
+	}
 	Terminate(pgid)
 	select {
 	case <-reaped:
 	case <-time.After(grace):
 	}
+}
+
+// StopWith has no signal to forward on a platform with one way to stop a
+// process, so it is Stop.
+func StopWith(pgid int, _ syscall.Signal, reaped <-chan struct{}, grace time.Duration) {
+	Stop(pgid, reaped, grace)
 }
 
 func ExitCode(state *os.ProcessState) int {

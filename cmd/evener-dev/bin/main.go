@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	devcmd "primeradiant.com/evener/cmd/evener-dev"
@@ -35,7 +36,7 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "dev":
 		return devcmd.Run(args[1:], stdin, stdout, stderr)
-	case "module-lint", "agent-shards":
+	case "module-lint", "agent-shards", "bounded-list":
 		return devcmd.Run(args, stdin, stdout, stderr)
 	case "fuzz-harvest":
 		return fuzzharvestcmd.Run(args[1:], stdin, stdout, stderr)
@@ -62,7 +63,7 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func usage(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(w, "Usage: evener-dev <subcommand> [flags]\n\nSubcommands:\n")
-	_, _ = fmt.Fprintf(tw, "  dev\t\t\tDev tooling (agent-shards, covstmt, module-lint)\n")
+	_, _ = fmt.Fprintf(tw, "  dev\t\t\tDev tooling (%s)\n", strings.Join(devcmd.SubcommandNames(), ", "))
 	_, _ = fmt.Fprintf(tw, "  module-lint\t\tRun golangci-lint across workspace modules in parallel waves\n")
 	_, _ = fmt.Fprintf(tw, "  agent-shards\t\tRun agent test shards in parallel\n")
 	_, _ = fmt.Fprintf(tw, "  fuzz-harvest\t\tHarvest fuzz seed corpora from recorded traffic\n")
