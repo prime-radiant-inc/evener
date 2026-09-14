@@ -452,6 +452,110 @@ func TestNavigationWatchCadenceKindMatchesCodecIdentityBytes(t *testing.T) {
 	}
 }
 
+// A session's project is an IDENTITY on the wire, not a rendered label: the web
+// codec validates it with identity(value.project, true), which caps it at 1024
+// BYTES, and the hub's navigationSessionValueValid mirrors that with a byte
+// length check. The projector bounded it with truncateNavigationRunes at 512
+// runes, which is up to ~2 KiB of multibyte text, so a multibyte-heavy project
+// name produced a summary the codec rejects -- failing the whole navigation
+// response for one field. This test mirrors the codec's identity bound the same
+// way TestValidNavigationTimestampMatchesCodecFixture mirrors its timestamp
+// grammar.
+func TestNavigationSessionProjectMatchesCodecIdentityBytes(t *testing.T) {
+	// 300 four-byte runes = 1200 bytes: past the 1024-byte identity cap while
+	// still only ~300 runes, so the rune bound alone left it over budget.
+	overLong := strings.Repeat("😀", 300)
+	if len(overLong) <= maxNavigationIdentityBytes {
+		t.Fatalf("fixture project = %d bytes, want it over the %d-byte identity cap", len(overLong), maxNavigationIdentityBytes)
+	}
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Project: overLong, Kind: "session", State: "idle",
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	if len(resource.Current.Sessions) != 1 {
+		t.Fatalf("sessions = %+v, want one session", resource.Current.Sessions)
+	}
+	summary := resource.Current.Sessions[0]
+	if summary.Project == overLong {
+		t.Fatalf("projected project = %d bytes, want it cut to the %d-byte identity cap", len(summary.Project), maxNavigationIdentityBytes)
+	}
+	if summary.Project == "" || len(summary.Project) > maxNavigationIdentityBytes {
+		t.Fatalf("projected project = %q (%d bytes), want a non-empty value within %d bytes", summary.Project, len(summary.Project), maxNavigationIdentityBytes)
+	}
+	if !navigationSessionValueValid(summary) {
+		t.Fatalf("projected summary rejected by the hub schema: %+v", summary)
+	}
+}
+
+// The nested job and watch rows carry their own identities, and the codec
+// validates every one of them with identity() at 1024 bytes. Only job_id is
+// guarded by the build's own validation, so job_type, status, watch id and
+// watch source can otherwise reach the wire unbounded and poison the whole
+// session entity exactly as an over-long cadence kind did.
+func TestNavigationNestedIdentityFieldsMatchCodecIdentityBytes(t *testing.T) {
+	overLong := strings.Repeat("😀", 300) // 1200 bytes, 300 runes
+	if len(overLong) <= maxNavigationIdentityBytes {
+		t.Fatalf("fixture identity = %d bytes, want it over the %d-byte identity cap", len(overLong), maxNavigationIdentityBytes)
+	}
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			RunningJobs:   []appwire.EvenerJobInfo{{JobID: "job-running", JobType: overLong, Status: "running"}},
+			CompletedJobs: []appwire.EvenerJobInfo{{JobID: "job-done", JobType: "shell", Status: overLong}},
+			Watches: []appwire.EvenerWatchInfo{
+				{ID: overLong, Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
+				{ID: "watch-b", Source: overLong, CreatedAt: "2026-09-12T10:00:00Z"},
+			},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	if len(resource.Current.Sessions) != 1 {
+		t.Fatalf("sessions = %+v, want one session", resource.Current.Sessions)
+	}
+	summary := resource.Current.Sessions[0]
+	if len(summary.RunningJobs) != 1 || len(summary.CompletedJobs) != 1 || len(summary.Watches) != 2 {
+		t.Fatalf("projected rows = %+v / %+v / %+v, want one running job, one completed job and two watches", summary.RunningJobs, summary.CompletedJobs, summary.Watches)
+	}
+	fields := map[string]string{
+		"job_type":     summary.RunningJobs[0].JobType,
+		"job_status":   summary.CompletedJobs[0].Status,
+		"watch_id":     summary.Watches[0].ID,
+		"watch_source": summary.Watches[1].Source,
+	}
+	for name, value := range fields {
+		if value == overLong {
+			t.Errorf("projected %s = %d bytes, want it cut to the %d-byte identity cap", name, len(value), maxNavigationIdentityBytes)
+			continue
+		}
+		if value == "" || len(value) > maxNavigationIdentityBytes {
+			t.Errorf("projected %s = %q (%d bytes), want a non-empty value within %d bytes", name, value, len(value), maxNavigationIdentityBytes)
+		}
+	}
+	if !navigationSessionValueValid(summary) {
+		t.Fatalf("projected summary rejected by the hub schema: %+v", summary)
+	}
+}
+
 func TestNavigationJobSummaryKeepsFullCommandForTooltip(t *testing.T) {
 	long := strings.Repeat("a", 600)
 	project := hubcore.TreeProject{
@@ -590,8 +694,15 @@ func TestNavigationProjectionSanitizesOversizedUnicodeStrings(t *testing.T) {
 	if got := len([]rune(row.Title)); got != maxNavigationTitleRunes {
 		t.Fatalf("title runes=%d, want %d", got, maxNavigationTitleRunes)
 	}
-	if !utf8.ValidString(row.Title) || len([]rune(row.Project)) != maxNavigationLabelRunes || len([]rune(row.Branch)) != maxNavigationLabelRunes {
-		t.Fatalf("row display strings were not sanitized: %#v", row)
+	if !utf8.ValidString(row.Title) || !utf8.ValidString(row.Project) || !utf8.ValidString(row.Branch) {
+		t.Fatalf("row strings are not valid UTF-8: %#v", row)
+	}
+	// Branch is a rendered label (the codec's boundedString(512) and the schema's
+	// rune count both bound it in runes). Project is an identity on the wire: the
+	// codec's identity(value.project, true) and navigationSessionValueValid both
+	// bound it in BYTES, so it is length-checked as bytes here.
+	if len([]rune(row.Branch)) != maxNavigationLabelRunes || len(row.Project) > maxNavigationIdentityBytes {
+		t.Fatalf("row strings were not sanitized: %#v", row)
 	}
 	source := projection.Manifest().Sources[0]
 	if !utf8.ValidString(source.Label) || len([]rune(source.Label)) != maxNavigationLabelRunes {

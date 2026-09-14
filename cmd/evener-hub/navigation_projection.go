@@ -1183,11 +1183,17 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
 	watches, omittedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
-		Ref:            ref.String(),
-		HostID:         ref.HostID,
-		SessionID:      ref.SessionID,
-		Title:          truncateNavigationRunes(node.Title, maxNavigationTitleRunes),
-		Project:        truncateNavigationRunes(node.Project, maxNavigationLabelRunes),
+		Ref:       ref.String(),
+		HostID:    ref.HostID,
+		SessionID: ref.SessionID,
+		Title:     truncateNavigationRunes(node.Title, maxNavigationTitleRunes),
+		// project is an IDENTITY on the wire, not a rendered label: the web codec
+		// validates it with identity(value.project, true) and the hub schema mirrors
+		// that, both capping it at maxNavigationIdentityBytes BYTES. The rune-bounded
+		// label helper capped it at 512 runes, which is up to ~2 KiB of multibyte
+		// text -- a summary the codec rejects, failing the whole navigation response.
+		// Bound it in bytes for the same limit.
+		Project:        truncateNavigationBytes(node.Project, maxNavigationIdentityBytes),
 		State:          node.State,
 		Kind:           node.Kind,
 		Branch:         truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
@@ -1211,9 +1217,17 @@ func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.
 	out := make(hubapi.NavigationArray[hubapi.NavigationJobSummary], 0, len(jobs))
 	for _, job := range jobs {
 		summary := hubapi.NavigationJobSummary{
+			// job_type and status are identities to the codec and the hub schema
+			// (identity() at maxNavigationIdentityBytes BYTES), and unlike job_id
+			// they are not guarded by the build's own identity validation. Bound
+			// them in bytes: a value within the limit passes through unchanged, and a
+			// pathological one is cut instead of failing the whole navigation
+			// response. job_id stays raw: it is a key clients address jobs by, and an
+			// over-long one is rejected by validateNavigationNodesContext rather than
+			// silently rewritten to a different id.
 			JobID:   job.JobID,
-			JobType: job.JobType,
-			Status:  job.Status,
+			JobType: truncateNavigationBytes(job.JobType, maxNavigationIdentityBytes),
+			Status:  truncateNavigationBytes(job.Status, maxNavigationIdentityBytes),
 			Command: truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
 			Task:    truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
 			Reason:  truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
@@ -1296,13 +1310,16 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 			}
 		}
 		out = append(out, hubapi.NavigationWatchSummary{
-			// ID and Source are identity, not display text: the rail and the
-			// panel derive row keys from watch.id, and truncateNavigationRunes
-			// appends an ellipsis that can collapse two distinct long ids into
-			// the same label. navigationJobs leaves JobID/JobType/Status
-			// untruncated for the same reason; only display fields are bounded.
-			ID:             watch.ID,
-			Source:         watch.Source,
+			// ID and Source are identities to the codec and the hub schema
+			// (identity() at maxNavigationIdentityBytes BYTES), so they are
+			// bounded in bytes rather than runes: every value within the limit
+			// passes through unchanged, and a pathological one is cut instead of
+			// failing the whole navigation response. The rail and the panel derive
+			// row keys from watch.id, which is why this is the validator's own
+			// identity limit and not the tighter 512-rune label bound -- that one
+			// would rewrite ids that are perfectly representable today.
+			ID:             truncateNavigationBytes(watch.ID, maxNavigationIdentityBytes),
+			Source:         truncateNavigationBytes(watch.Source, maxNavigationIdentityBytes),
 			Target:         truncateNavigationRunes(watch.Target, maxNavigationLabelRunes),
 			SendTo:         truncateNavigationRunes(watch.SendTo, maxNavigationLabelRunes),
 			Note:           truncateNavigationRunes(watch.Note, maxNavigationLabelRunes),
