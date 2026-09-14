@@ -64,37 +64,42 @@ const (
 )
 
 type Descriptor struct {
-	ChildSessionID                string                `json:"child_session_id"`
-	TranscriptRef                 string                `json:"transcript_ref"`
-	ParentDelegateID              string                `json:"parent_delegate_id,omitempty"`
-	OwnerSessionID                string                `json:"owner_session_id"`
-	VisibleSessionID              string                `json:"visible_session_id,omitempty"`
-	OriginTurnID                  string                `json:"origin_turn_id,omitempty"`
-	OriginToolCallID              string                `json:"origin_tool_call_id,omitempty"`
-	OriginItemID                  string                `json:"origin_item_id,omitempty"`
-	Task                          string                `json:"task"`
-	Description                   string                `json:"description,omitempty"`
-	AgentType                     string                `json:"agent_type"`
-	RequestedModel                string                `json:"requested_model,omitempty"`
-	ResolvedProfileID             string                `json:"resolved_profile_id,omitempty"`
-	ResolvedModel                 string                `json:"resolved_model,omitempty"`
-	FrozenRolePrompt              string                `json:"frozen_role_prompt,omitempty"`
-	TaskTemplates                 []task.TaskTemplate   `json:"task_templates,omitempty"`
-	ToolNameCeiling               []string              `json:"tool_name_ceiling,omitempty"`
-	FrozenSkillNames              []string              `json:"frozen_skill_names,omitempty"`
-	FrozenSkillBodies             []string              `json:"frozen_skill_bodies,omitempty"`
-	WorkingDir                    string                `json:"working_dir,omitempty"`
-	LocalEnvPolicy                string                `json:"local_env_policy,omitempty"`
-	ResultSchema                  json.RawMessage       `json:"result_schema,omitempty"`
-	ExplicitToolGrants            []string              `json:"explicit_tool_grants,omitempty"`
-	DelegationAllowance           int                   `json:"delegation_allowance,omitempty"`
-	Isolation                     string                `json:"isolation,omitempty"`
-	Sandbox                       *SandboxSnapshot      `json:"sandbox,omitempty"`
-	Config                        schema.ConfigSnapshot `json:"config"`
-	SharedTaskStoreOwnerSessionID string                `json:"shared_task_store_owner_session_id,omitempty"`
-	ParentWatchGranted            bool                  `json:"parent_watch_granted,omitempty"`
-	Provenance                    *provenance.Causal    `json:"provenance,omitempty"`
-	Resumable                     bool                  `json:"resumable"`
+	ChildSessionID    string              `json:"child_session_id"`
+	TranscriptRef     string              `json:"transcript_ref"`
+	ParentDelegateID  string              `json:"parent_delegate_id,omitempty"`
+	OwnerSessionID    string              `json:"owner_session_id"`
+	VisibleSessionID  string              `json:"visible_session_id,omitempty"`
+	OriginTurnID      string              `json:"origin_turn_id,omitempty"`
+	OriginToolCallID  string              `json:"origin_tool_call_id,omitempty"`
+	OriginItemID      string              `json:"origin_item_id,omitempty"`
+	Task              string              `json:"task"`
+	Description       string              `json:"description,omitempty"`
+	AgentType         string              `json:"agent_type"`
+	RequestedModel    string              `json:"requested_model,omitempty"`
+	ResolvedProfileID string              `json:"resolved_profile_id,omitempty"`
+	ResolvedModel     string              `json:"resolved_model,omitempty"`
+	FrozenRolePrompt  string              `json:"frozen_role_prompt,omitempty"`
+	TaskTemplates     []task.TaskTemplate `json:"task_templates,omitempty"`
+	ToolNameCeiling   []string            `json:"tool_name_ceiling,omitempty"`
+	FrozenSkillNames  []string            `json:"frozen_skill_names,omitempty"`
+	FrozenSkillBodies []string            `json:"frozen_skill_bodies,omitempty"`
+	// FrozenSkillMetadata carries each frozen preload's typed provenance
+	// (description, source, content digests) alongside the unchanged
+	// names/bodies. Absent on legacy descriptors, where the provenance stays
+	// unknown rather than reconstructed.
+	FrozenSkillMetadata           []schema.FrozenSkillPreload `json:"frozen_skill_metadata,omitempty"`
+	WorkingDir                    string                      `json:"working_dir,omitempty"`
+	LocalEnvPolicy                string                      `json:"local_env_policy,omitempty"`
+	ResultSchema                  json.RawMessage             `json:"result_schema,omitempty"`
+	ExplicitToolGrants            []string                    `json:"explicit_tool_grants,omitempty"`
+	DelegationAllowance           int                         `json:"delegation_allowance,omitempty"`
+	Isolation                     string                      `json:"isolation,omitempty"`
+	Sandbox                       *SandboxSnapshot            `json:"sandbox,omitempty"`
+	Config                        schema.ConfigSnapshot       `json:"config"`
+	SharedTaskStoreOwnerSessionID string                      `json:"shared_task_store_owner_session_id,omitempty"`
+	ParentWatchGranted            bool                        `json:"parent_watch_granted,omitempty"`
+	Provenance                    *provenance.Causal          `json:"provenance,omitempty"`
+	Resumable                     bool                        `json:"resumable"`
 }
 
 type SandboxSnapshot struct {

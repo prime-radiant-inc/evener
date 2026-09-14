@@ -579,3 +579,50 @@ func TestPopulateStableDelegateSendResult_StructuredResultOnly(t *testing.T) {
 		t.Error("StructuredResultValid should be false (default) when packet value is nil")
 	}
 }
+
+// TestRolePreload_OperationIdentitySaveFailureFailsSpawn pins the fail-soft
+// boundary for role preloads. A real skill-RESOLUTION failure stays fail-soft —
+// the delegate runs without that preload — but a failure to PERSIST the
+// operation identity must fail the spawn: continuing there starts the delegate
+// silently without the preloads its role configured, which is a different fact
+// from "that skill is not available".
+func TestRolePreload_OperationIdentitySaveFailureFailsSpawn(t *testing.T) {
+	root := t.TempDir()
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_role_preload")
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir, NoProjectPrompts: true}), withoutGitSnapshot())
+	repair := breakSessionMetaPath(t, s)
+	defer repair()
+
+	selection := subagentModelSelection{agent: &plugin.Agent{Name: "probe", Skills: []string{"opaque"}}}
+	_, err := s.prepareSubagentRunFromSelection(
+		context.Background(), "preload task", root, 0, "probe", "", nil, nil, selection, nil, nil,
+	)
+	if err == nil {
+		t.Fatal("a failed skill operation identity save must fail the spawn, not start a delegate without its configured preloads")
+	}
+	if !strings.Contains(err.Error(), "skill operation identity") {
+		t.Fatalf("error = %v, want the operation-identity persistence failure", err)
+	}
+}
+
+// TestRolePreload_OperationIdentitySaveFailureFailsDescribe pins the same
+// boundary on the committed-descriptor path.
+func TestRolePreload_OperationIdentitySaveFailureFailsDescribe(t *testing.T) {
+	root := t.TempDir()
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_role_describe")
+	stateDir := t.TempDir()
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir, NoProjectPrompts: true}), withoutGitSnapshot())
+	repair := breakSessionMetaPath(t, s)
+	defer repair()
+
+	runtime := delegateRuntime{owner: s}
+	selection := subagentModelSelection{agent: &plugin.Agent{Name: "probe", Skills: []string{"opaque"}}}
+	_, _, err := runtime.describe(context.Background(), delegateArgs{}, "preload brief", "", nil, selection, nil)
+	if err == nil {
+		t.Fatal("a failed skill operation identity save must fail the descriptor, not commit one without its configured preloads")
+	}
+	if !strings.Contains(err.Error(), "skill operation identity") {
+		t.Fatalf("error = %v, want the operation-identity persistence failure", err)
+	}
+}

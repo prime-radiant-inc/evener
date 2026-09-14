@@ -206,7 +206,7 @@ func TestNotificationWakeFirstRequestReflectsURLRemoval(t *testing.T) {
 	// snapshot (the cleared marker — the removal emptied the store).
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: "carrier-1",
-		Input:            clientMutationInput("ping", nil),
+		Input:            clientMutationInput("ping", nil, nil),
 	}); err != nil {
 		t.Fatalf("queue steer: %v", err)
 	}
