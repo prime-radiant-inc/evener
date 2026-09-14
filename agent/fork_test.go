@@ -641,3 +641,79 @@ func TestForkSession_RejectsReservedDeviceNameParentID(t *testing.T) {
 		t.Fatalf("ForkSession with reserved device name parentID error = %v, want schema.ErrInvalidSessionID", err)
 	}
 }
+
+// A parent that has compacted has replay copies in its transcript: second
+// records of turns the file already holds, written so the fold's marker cannot
+// discard them. A fork copies the prefix verbatim — the child needs the whole
+// run to replay it — but the child's own counters describe a conversation, and
+// a copy is not another turn of it. Counting one inflates the child's turn
+// count and, through it, everything derived from it.
+func TestForkSession_ReplayCopiesAreCopiedButNotCounted(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	parentID := "01PARENT00000000000000009"
+	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: parentID, CreatedAt: time.Now().UTC(), ProfileID: "openai", Model: "gpt-5.2", WorkingDir: "/tmp/test",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	input := schema.NewTurn(schema.TurnUserInput, llm.User("first task"))
+	reply := schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply"))
+	copyOf := func(turn schema.Turn) schema.Turn {
+		turn.ContextReplay = true
+		turn.CompactionFoldID = "fold_fork_counts"
+		return turn
+	}
+	marker := schema.NewTurn(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"))
+	marker.CompactionFoldID = "fold_fork_counts"
+	for _, turn := range []schema.Turn{input, reply, copyOf(input), copyOf(reply), marker, schema.NewTurn(schema.TurnUserInput, llm.User("second task"))} {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append turn: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+	meta := schema.SessionMeta{
+		ID: parentID, ProfileID: "openai", Model: "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 50},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/test"},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), TurnCount: 2,
+	}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	// Fork at the last entry: the prefix is everything the fold left behind.
+	childID, err := ForkSession(stateDir, parentID, 6, "second task, forked", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.TurnCount != 1 {
+		t.Errorf("child TurnCount = %d, want 1: the copied assistant turn is the same reply written down again", childMeta.TurnCount)
+	}
+	if childMeta.AcceptedInputTurns != 2 {
+		t.Errorf("child AcceptedInputTurns = %d, want 2 (the prefix's input and the forked one): the copied input is the same input written down again", childMeta.AcceptedInputTurns)
+	}
+	// And the copies are still in the child's transcript, where its own replay
+	// needs them.
+	_, entries, _, err := readTranscript(filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl"))
+	if err != nil {
+		t.Fatalf("readTranscript(child): %v", err)
+	}
+	copies := 0
+	for _, entry := range entries {
+		if entry.Turn.ContextReplay {
+			copies++
+		}
+	}
+	if copies != 2 {
+		t.Fatalf("child transcript carries %d replay copies, want the parent's 2: the fork copies the run whole", copies)
+	}
+}

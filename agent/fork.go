@@ -296,6 +296,13 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		if err := tw.Append(entry.Turn); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
+		if entry.Turn.ContextReplay {
+			// A fold's copy is a second record of a turn this prefix already
+			// holds — the child needs it to replay the run past the marker,
+			// and it is not another turn of the conversation these counters
+			// describe.
+			continue
+		}
 		if entry.Turn.Kind == schema.TurnAssistant {
 			modelResponses++
 		}
