@@ -299,6 +299,16 @@ describe("watchIsScheduled", () => {
       watchIsScheduled(watch({ events: ["a"], cadence: [{ kind: "events" }, { kind: "after", seconds: 60 }] })),
     ).toBe(true);
   });
+
+  test("a watch with no clock cadence has no schedule, even with no condition at all", () => {
+    // An empty watch, and an event watch whose events list is empty with no
+    // wildcard, both fell through to watchKind's "scheduled" default - a
+    // schedule that does not exist. Before the fix watchIsScheduled returned
+    // true for both, so the detail mounted an empty timeline and skipped the
+    // no-schedule line.
+    expect(watchIsScheduled(watch())).toBe(false);
+    expect(watchIsScheduled(watch({ events: [], cadence: [{ kind: "events" }] }))).toBe(false);
+  });
 });
 
 describe("forbidden vocabulary", () => {

@@ -152,6 +152,48 @@ func TestThreadListClearsClearedRootWatchFromLiveSample(t *testing.T) {
 	}
 }
 
+// A DESCENDANT watch removed since the last refresh leaves the child's row on
+// the next thread/list, exactly as the root's does. The resolver answers a known
+// descendant with no watches with a non-nil empty sample, which replaces the
+// cached watches; a nil answer is still "no fresh sample" and leaves the cached
+// projection standing.
+func TestThreadListClearsRemovedDescendantWatchFromLiveSample(t *testing.T) {
+	answer := []agent.WatchStatusInfo{}
+	srv := seedDescendantWatchServer(t, func(threadID string) []agent.WatchStatusInfo {
+		if threadID == "child" {
+			return answer
+		}
+		return nil
+	})
+	// The child's cached projection still carries the watch it held before the
+	// clear.
+	srv.mu.Lock()
+	srv.appDescendants["child"].thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{
+		Watches: []appwire.EvenerWatchInfo{{ID: "watch-child", Source: "self"}},
+	}
+	srv.mu.Unlock()
+
+	response, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	child := response.Data[1]
+	if child.Evener.Diagnostics != nil && len(child.Evener.Diagnostics.Watches) != 0 {
+		t.Fatalf("cleared descendant diagnostics = %+v, want the removed watch gone", child.Evener.Diagnostics)
+	}
+
+	// A nil answer is "no fresh sample": the cached projection stands.
+	answer = nil
+	response, err = srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	child = response.Data[1]
+	if child.Evener.Diagnostics == nil || len(child.Evener.Diagnostics.Watches) != 1 || child.Evener.Diagnostics.Watches[0].ID != "watch-child" {
+		t.Fatalf("nil-answer descendant diagnostics = %+v, want the cached watch preserved", child.Evener.Diagnostics)
+	}
+}
+
 // The descendant rows are rebuilt per call and the slices are copied, so a
 // caller mutating a response can never reach the agent state behind the seam.
 func TestThreadListDescendantWatchesDoNotAliasTheSource(t *testing.T) {

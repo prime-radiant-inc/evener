@@ -64,11 +64,14 @@ type WatchCadenceInfo struct {
 	Kind    string  `json:"kind"`
 	Seconds float64 `json:"seconds,omitempty"`
 	// DerivedNextFireAt is the next instant this clock-driven cadence is expected
-	// to fire, derived from data the daemon already holds (the install instant,
-	// the interval, and the newest delivery instant in the ring). It is an
-	// approximation: the runtime keeps a ticker the scheduler can delay, so the
-	// real fire can slide later. Absent for output and event cadences, which have
-	// no schedule.
+	// to fire, derived from data the daemon already holds: the install instant
+	// and the newest CLOCK fire (a repeating cadence advances from whichever of
+	// the two is later; a one-shot from the install instant alone). The delivery
+	// ring is display-only and is deliberately not consulted, because it mixes
+	// every delivery kind and an output match would move a progress cadence's
+	// date. It is an approximation: the runtime keeps a ticker the scheduler can
+	// delay, so the real fire can slide later. Absent for output and event
+	// cadences, which have no schedule.
 	DerivedNextFireAt string `json:"derived_next_fire_at,omitempty"`
 	// Every is the fire-every-Nth-matching-event throttle on an "events"
 	// cadence; zero (absent) means fire on every matching event. Only the

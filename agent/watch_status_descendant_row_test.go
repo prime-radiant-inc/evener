@@ -138,6 +138,39 @@ func TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer(t *testing.T) {
 	}
 }
 
+// A KNOWN descendant with no watches must answer with a non-nil empty slice, not
+// nil. The list path merges only a non-nil sample, so nil can only mean "this ID
+// is not a descendant I can see"; a descendant that just lost its last watch
+// would otherwise keep showing stale rows forever. The root, an empty ID, and an
+// unknown ID stay nil, and a nested known descendant with no watches is
+// non-nil empty too, so the recursion still distinguishes "found, empty" from
+// "not found".
+func TestLiveWatchesForDescendantKnownEmptyIsNotEmptyAnswer(t *testing.T) {
+	root := newDescendantWatchSession(t)
+	child := newDescendantWatchSession(t)
+	grandchild := newDescendantWatchSession(t)
+	registerDescendantSession(t, root, child)
+	registerDescendantSession(t, child, grandchild)
+
+	childRows := root.LiveWatchesForDescendant(child.ID())
+	if childRows == nil || len(childRows) != 0 {
+		t.Fatalf("known descendant with no watches = %+v, want a non-nil empty answer", childRows)
+	}
+	nestedRows := root.LiveWatchesForDescendant(grandchild.ID())
+	if nestedRows == nil || len(nestedRows) != 0 {
+		t.Fatalf("known nested descendant with no watches = %+v, want a non-nil empty answer", nestedRows)
+	}
+	if rows := root.LiveWatchesForDescendant(root.ID()); rows != nil {
+		t.Fatalf("root lookup through the descendant accessor = %+v, want nil", rows)
+	}
+	if rows := root.LiveWatchesForDescendant("nobody"); rows != nil {
+		t.Fatalf("unknown descendant = %+v, want nil", rows)
+	}
+	if rows := root.LiveWatchesForDescendant(""); rows != nil {
+		t.Fatalf("empty descendant ID = %+v, want nil", rows)
+	}
+}
+
 func newDescendantWatchSession(t *testing.T) *Session {
 	t.Helper()
 	return newSession(t, withConfig(SessionConfig{

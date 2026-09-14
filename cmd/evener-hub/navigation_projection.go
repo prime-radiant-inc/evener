@@ -1293,7 +1293,7 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 				Kind:              truncateNavigationBytes(step.Kind, maxNavigationIdentityBytes),
 				Seconds:           step.Seconds,
 				DerivedNextFireAt: nextFireAt,
-				Every:             step.Every,
+				Every:             navigationBoundEvery(step.Every),
 				Filter:            truncateNavigationRunes(step.Filter, maxNavigationLabelRunes),
 			})
 		}
@@ -1335,6 +1335,22 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 		})
 	}
 	return out, len(watches) - len(out)
+}
+
+// navigationBoundEvery clamps the events cadence's every-Nth throttle to the
+// codec's safe integer range. `every` is caller-supplied and the daemon bounds
+// it only to the platform int range, so on 64-bit it can sit above 2^53-1;
+// projecting it verbatim fails navigationSessionValueValid and makes the whole
+// resource -- every session in it -- unreadable. Clamping rather than dropping
+// is the honest choice: the wire spells an absent/zero every as "no throttle"
+// (the codec reads every > 0 as a throttle), so dropping would misstate a
+// throttled watch as firing on every matching event. A clamped value is still a
+// throttle and still passes the schema.
+func navigationBoundEvery(value int) int {
+	if value > int(maxNavigationSafeInteger) {
+		return int(maxNavigationSafeInteger)
+	}
+	return value
 }
 
 // navigationTimestampPattern matches exactly the grammar the web codec's

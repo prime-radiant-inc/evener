@@ -97,20 +97,9 @@ export function watchName(watch: NavigationWatchSummary): string {
   return watchTitle(watch);
 }
 
-// Watch kind is decided from the condition fields themselves, never from
-// parsing prose: a watch can carry several cadence rows at once, and an
-// output/event condition is what makes it a condition watch.
-type WatchKind = "output" | "event" | "scheduled";
-
-function watchKind(watch: NavigationWatchSummary): WatchKind {
-  if ((watch.output_match ?? "").trim() !== "") return "output";
-  if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) return "event";
-  return "scheduled";
-}
-
 // The cadence kinds that fire on a clock rather than on a condition. A watch
 // can carry these alongside an output/event condition, so the rail and the
-// detail must read them independently of watchKind's single condition label.
+// detail must read them from the cadence rows themselves.
 const CLOCK_CADENCE_KINDS: ReadonlySet<string> = new Set(["after", "every", "progress"]);
 
 function clockCadenceLabels(watch: NavigationWatchSummary): string[] {
@@ -121,13 +110,13 @@ function clockCadenceLabels(watch: NavigationWatchSummary): string[] {
 }
 
 // A watch is "scheduled" when it has ANY clock cadence, even when it also has
-// an output/event condition. A pure condition watch (no clock cadence at all)
-// is the only kind with no schedule to draw - which is exactly the statement
-// the no-schedule line makes, so collapsing a multi-trigger watch to its
-// condition kind would make that line false for it.
+// an output/event condition. A watch with no clock cadence at all - a pure
+// condition watch, but also an empty watch or an event watch with an empty
+// events list and no wildcard - has no schedule to draw, which is exactly the
+// statement the no-schedule line makes. The condition fields therefore cannot
+// stand in for "scheduled": only the clock cadence labels decide it.
 export function watchIsScheduled(watch: NavigationWatchSummary): boolean {
-  if (clockCadenceLabels(watch).length > 0) return true;
-  return watchKind(watch) === "scheduled";
+  return clockCadenceLabels(watch).length > 0;
 }
 
 // The supplied delivery instants as epoch millis, oldest first. Unparseable

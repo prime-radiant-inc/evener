@@ -231,6 +231,17 @@ describe("ActivityWatchDetail timeline", () => {
     expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
   });
 
+  test("a watch with no clock cadence and no condition gets the no-schedule line, not an empty timeline", () => {
+    // An empty watch has no clock cadence, so it has no schedule to draw. It used
+    // to fall through to "scheduled", mount ActivityWatchTimeline (which renders
+    // nothing for zero deliveries), and skip the no-schedule line, leaving the
+    // detail strip blank.
+    render(<ActivityWatchDetail row={row()} now={NOW} />);
+    expect(screen.queryByTestId("watch-timeline")).toBeNull();
+    expect(screen.queryAllByTestId("watch-timeline-dot")).toHaveLength(0);
+    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
+  });
+
   test("a watch with an output match and a clock cadence draws its timeline, not the no-schedule line", () => {
     render(
       <ActivityWatchDetail

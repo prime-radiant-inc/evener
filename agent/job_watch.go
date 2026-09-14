@@ -2562,6 +2562,11 @@ func (s *Session) liveWatchStatuses() []WatchStatusInfo {
 // ancestor is filtered out here (it belongs on the ancestor's row), and a
 // keyless watch the child owns never surfaces on an ancestor's projection. The
 // root is not its own descendant, so a root (or unknown) session ID returns nil.
+// A KNOWN descendant with no watches is a third case: it returns a NON-nil empty
+// slice, because the list path must be able to tell "this descendant has no
+// watches now" from "this ID is not a descendant I can see". nil therefore means
+// only the root, an empty ID, an unknown ID, or (inside the recursion) a subtree
+// that does not contain the queried session.
 //
 // This is sampled on read, not cached: watch state changes without a per-child
 // app event on this daemon, so the caller re-derives it on every list/read.
@@ -2575,7 +2580,14 @@ func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
 	children := s.liveSubagentSessions()
 	for _, child := range children {
 		if child != nil && child.ID() == sessionID {
-			return child.liveWatchStatuses()
+			if rows := child.liveWatchStatuses(); rows != nil {
+				return rows
+			}
+			// A known descendant with no watches is still a real answer: the
+			// non-nil empty slice is how a descendant that just lost its last
+			// watch leaves its thread row. nil stays reserved for the root, an
+			// empty ID, an unknown ID, and the recursion's "not found here".
+			return []WatchStatusInfo{}
 		}
 	}
 	// A nested descendant is reached through its own parent, so the lookup
@@ -2603,8 +2615,10 @@ func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
 // An empty answer for the root is non-nil: the caller merges only a nil answer
 // as "no fresh sample, leave the cached projection alone", so a non-nil empty
 // slice is how a watch cleared since the last diagnostics refresh leaves the
-// row. An unknown or empty ID, and a descendant with no watches, stay nil
-// (LiveWatchesForDescendant's own behavior).
+// row. A known descendant with no watches is likewise non-nil empty, exactly as
+// the root's is, so a descendant cleared since the last refresh leaves its row
+// too. An unknown or empty ID stays nil (LiveWatchesForDescendant's own
+// behavior).
 func (s *Session) LiveWatchesForSession(sessionID string) []WatchStatusInfo {
 	if s == nil || sessionID == "" {
 		return nil
@@ -2703,9 +2717,14 @@ func watchDerivedNextFireAt(cfg *watchConfig, interval time.Duration) string {
 	if cfg == nil || interval <= 0 {
 		return ""
 	}
-	// An already-fired one-shot is done; its durable teardown is the only thing
-	// still pending, and that is not a fire.
-	if cfg.oneShot && (cfg.firedPendingEnd || len(cfg.deliveryTimes) > 0) {
+	// A one-shot advances from the install instant and fires exactly once. Once
+	// it has fired it has no next fire; its durable teardown is the only thing
+	// still pending, and that is not a fire. firedPendingEnd and a recorded
+	// delivery both mark it, but a send-routed one-shot fires without either
+	// while its frame is still settling: lastClockFire is stamped at the fire,
+	// so a non-zero lastClockFire is the reliable "already fired" signal in that
+	// window. A one-shot must never advance from lastClockFire.
+	if cfg.oneShot && (cfg.firedPendingEnd || !cfg.lastClockFire.IsZero() || len(cfg.deliveryTimes) > 0) {
 		return ""
 	}
 	base := cfg.createdAt

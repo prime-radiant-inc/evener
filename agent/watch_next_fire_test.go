@@ -177,3 +177,54 @@ func TestWatchCadencesDeriveNextFireFromTheClockFireNotAnyDelivery(t *testing.T)
 		t.Fatalf("progress derived next fire = %q, want %q (the tick at %v, not the match at %v)", got, want, tick, match)
 	}
 }
+
+// A send-routed one-shot fires its single tick (stamping lastClockFire) but
+// counts no delivery until its frame settles, and firedPendingEnd is not set
+// while the durable teardown is still pending. In that window the old guard
+// (firedPendingEnd || len(deliveryTimes) > 0) was false, so the derivation
+// returned lastClockFire.Add(interval) -- a future instant for a watch that will
+// never fire again. Before the fix this test fails: the pending-settlement case
+// asserts the empty string and gets the phantom future instant back. A non-zero
+// lastClockFire must read as "already fired" for a one-shot, and a one-shot must
+// never advance from lastClockFire; an unfired one-shot and a repeating watch
+// keep their own behavior.
+func TestWatchDerivedNextFireOneShotFiredPendingSettlementHasNoNextFire(t *testing.T) {
+	created := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	fmtTime := func(tm time.Time) string { return tm.Format(time.RFC3339Nano) }
+
+	// Fired one-shot, settlement still pending: lastClockFire set, delivery ring
+	// empty, firedPendingEnd not yet set.
+	firedPendingSettlement := &watchConfig{
+		timer: true, oneShot: true, timerSeconds: 600, progressIntervalMS: 600_000,
+		createdAt: created, lastClockFire: created.Add(600 * time.Second),
+	}
+	got := watchCadencesOf(firedPendingSettlement)
+	if len(got) != 1 || got[0].Kind != "after" {
+		t.Fatalf("cadences = %+v, want one after cadence", got)
+	}
+	if got[0].DerivedNextFireAt != "" {
+		t.Fatalf("derived next fire = %q, want empty: a fired one-shot has no next fire", got[0].DerivedNextFireAt)
+	}
+
+	// Not yet fired: install instant + interval.
+	unfired := &watchConfig{
+		timer: true, oneShot: true, timerSeconds: 600, progressIntervalMS: 600_000,
+		createdAt: created,
+	}
+	got = watchCadencesOf(unfired)
+	wantUnfired := fmtTime(created.Add(600 * time.Second))
+	if len(got) != 1 || got[0].DerivedNextFireAt != wantUnfired {
+		t.Fatalf("unfired one-shot derived next fire = %+v, want %q", got, wantUnfired)
+	}
+
+	// A repeating watch still advances from lastClockFire.
+	repeating := &watchConfig{
+		timer: true, timerSeconds: 300, progressIntervalMS: 300_000,
+		createdAt: created, lastClockFire: created.Add(600 * time.Second),
+	}
+	got = watchCadencesOf(repeating)
+	wantRepeating := fmtTime(created.Add(900 * time.Second))
+	if len(got) != 1 || got[0].DerivedNextFireAt != wantRepeating {
+		t.Fatalf("repeating derived next fire = %+v, want %q", got, wantRepeating)
+	}
+}

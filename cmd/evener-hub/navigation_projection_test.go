@@ -452,6 +452,56 @@ func TestNavigationWatchCadenceKindMatchesCodecIdentityBytes(t *testing.T) {
 	}
 }
 
+// The events cadence's every-Nth throttle is caller-supplied and the daemon
+// bounds it only to the platform int range, so on 64-bit it can sit above the
+// codec's safe integer range (2^53-1). Projecting it verbatim failed
+// navigationSessionValueValid and made the whole resource -- every session in
+// it -- unreadable. The projector must clamp it. Clamping, not dropping: the
+// wire spells an absent/zero every as "no throttle" (the codec reads every > 0
+// as a throttle), so dropping would misstate a throttled watch as firing on
+// every matching event. This mirrors the codec's safe-integer bound the way
+// TestValidNavigationTimestampMatchesCodecFixture mirrors its timestamp grammar.
+func TestNavigationWatchCadenceEveryClampedToSafeInteger(t *testing.T) {
+	oversized := int(maxNavigationSafeInteger) + 1
+	node := hubcore.TreeNode{
+		ID: "session-a", Title: "a", Kind: "session", State: "idle",
+		Watches: []appwire.EvenerWatchInfo{{
+			ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z",
+			Events:  []string{"assistant.tool"},
+			Cadence: []appwire.EvenerWatchCadence{{Kind: "events", Every: oversized}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := projection.LivePage(0, maxNavigationSectionRows)
+	if len(resource.Sessions) != 1 || len(resource.Sessions[0].Watches) != 1 {
+		t.Fatalf("live sessions = %+v, want one session with one watch", resource.Sessions)
+	}
+	cadence := resource.Sessions[0].Watches[0].Cadence
+	if len(cadence) != 1 {
+		t.Fatalf("cadence = %+v, want one step", cadence)
+	}
+	got := cadence[0].Every
+	// 0 means "no throttle" on the wire, so a clamped throttle must stay
+	// positive: dropping the field would misstate the watch's behaviour.
+	if got <= 0 {
+		t.Fatalf("projected every = %d, want a positive clamped throttle", got)
+	}
+	if uint64(got) > maxNavigationSafeInteger {
+		t.Fatalf("projected every = %d, want at most %d; the codec rejects the whole response otherwise", got, maxNavigationSafeInteger)
+	}
+	if got == oversized {
+		t.Fatal("projected every was not clamped; the codec would reject it")
+	}
+	// The hub schema mirrors the codec, so the projected summary must pass it --
+	// this is the value that reaches the client.
+	if !navigationSessionValueValid(resource.Sessions[0]) {
+		t.Fatalf("projected summary rejected by the hub schema: %+v", resource.Sessions[0])
+	}
+}
+
 // A session's project is an IDENTITY on the wire, not a rendered label: the web
 // codec validates it with identity(value.project, true), which caps it at 1024
 // BYTES, and the hub's navigationSessionValueValid mirrors that with a byte
