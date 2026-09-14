@@ -316,3 +316,41 @@ it("a rendered child that can still be paged names no session to open", async ()
     list.branches().some((branch) => branch.continuation === "cursor"),
   ).toBe(true);
 });
+
+// One owner per token. A delegate row reports for the child session it
+// rendered, so appending that child as a row of its own repeats the same
+// continuation under a second id -- a duplicate "Load more" whose session-keyed
+// id no delegate graft matches, or a second, un-actionable copy of a row the
+// delegate already answers for.
+it("reports the root and one row per delegate, never a delegate's child twice", async () => {
+  const { list, io } = boundary();
+  io.read = async () => ({ data: tree(1, ["a"], "cursor") });
+  await list.refresh();
+  expect(list.branches()).toEqual([
+    { id: "session:thread", label: "Test", truncated: true, continuation: "cursor" },
+  ]);
+
+  io.read = async () => ({ data: delegateTree({}, { truncated: true }) });
+  await list.refresh();
+  expect(list.branches()).toEqual([
+    {
+      id: "delegate:dlg_deep",
+      label: "Deep work",
+      truncated: true,
+      openSessionRef: "local:sess_deep_child",
+    },
+  ]);
+
+  io.read = async () => ({
+    data: delegateTree({}, { truncated: true, continuation: "child-cursor" }),
+  });
+  await list.refresh();
+  expect(list.branches()).toEqual([
+    {
+      id: "delegate:dlg_deep",
+      label: "Deep work",
+      truncated: true,
+      continuation: "child-cursor",
+    },
+  ]);
+});
