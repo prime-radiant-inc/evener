@@ -95,8 +95,45 @@ func normalisedFlag(raw string) (whole, name, value string, inline bool) {
 	if strings.HasPrefix(whole, "--") && len(whole) > 2 {
 		whole = whole[1:]
 	}
+	// `go test` takes the test binary's own spelling too: -test.run is -run.
+	// The prefix comes off only when what remains is a flag that exists, so
+	// -test.race does not become the sanitiser -- the same rule the shard
+	// runner follows, for the same reason.
+	if after, ok := strings.CutPrefix(whole, "-test."); ok && after != "" {
+		if stripped := "-" + after; isKnownTestFlag(stripped) {
+			whole = stripped
+		}
+	}
 	name, value, inline = strings.Cut(whole, "=")
 	return whole, name, value, inline
+}
+
+// testBinaryFlags are the names `go help testflag` documents, which are the
+// ones the compiled binary answers to as -test.<name>. They are listed here
+// rather than derived from the tables above, which mix in build flags: -race
+// is a build flag, so -test.race is not the sanitiser and its prefix does not
+// come off.
+var testBinaryFlags = map[string]bool{
+	"-artifacts": true, "-bench": true, "-benchmem": true, "-benchtime": true,
+	"-blockprofile": true, "-blockprofilerate": true, "-count": true,
+	"-cover": true, "-covermode": true, "-coverpkg": true,
+	"-coverprofile": true, "-cpu": true, "-cpuprofile": true,
+	"-failfast": true, "-fullpath": true, "-fuzz": true,
+	"-fuzzminimizetime": true, "-fuzztime": true, "-gocoverdir": true,
+	"-json": true, "-list": true, "-memprofile": true,
+	"-memprofilerate": true, "-mutexprofile": true,
+	"-mutexprofilefraction": true, "-outputdir": true, "-parallel": true,
+	"-run": true, "-short": true, "-shuffle": true, "-skip": true,
+	"-timeout": true, "-trace": true, "-v": true, "-vet": true,
+}
+
+// isKnownTestFlag reports whether a name is one the test binary has, which is
+// what makes dropping its -test. prefix safe.
+func isKnownTestFlag(name string) bool {
+	if i := strings.IndexByte(name, '='); i > 0 {
+		name = name[:i]
+	}
+	return testBinaryFlags[name]
 }
 
 // packageSelectionFlags is the answer, in the spelling `go list` will be given.
@@ -166,9 +203,9 @@ func listBuildFlags(args []string, stdout, stderr io.Writer) int {
 	for _, f := range forward {
 		// A caller reading a truncated answer enumerates under fewer flags
 		// than the tests are built with, which is the failure this subcommand
-		// exists to prevent -- so a write that did not land fails the run.
-		if _, err := fmt.Fprintln(stdout, f); err != nil {
-			_, _ = fmt.Fprintf(stderr, "list-build-flags: writing %s: %v\n", f, err)
+		// exists to prevent -- so a write that did not land, in full, fails
+		// the run.
+		if !forwardOutput(stdout, []byte(f+"\n"), "list-build-flags: "+f, stderr) {
 			return 1
 		}
 	}

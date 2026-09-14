@@ -594,7 +594,7 @@ func TestBoundedListFailsWhenTheListCannotBeHandedOver(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("exit code = 0 after a short write; stderr = %q", stderr.String())
 	}
-	if got := stderr.String(); !strings.Contains(got, "of the command's output") {
+	if got := stderr.String(); !strings.Contains(got, "the command's output: wrote 1 of") {
 		t.Fatalf("stderr = %q, want it to name the bytes that did not land", got)
 	}
 }
@@ -776,5 +776,29 @@ func TestBoundedListDoesNotRetryACommandThatDecided(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "retrying") {
 		t.Fatalf("stderr = %q: a command that decided is not retried", stderr.String())
+	}
+}
+
+func TestBoundedAttemptTakesTheExitThatRacedTheBound(t *testing.T) {
+	// The timer and the exit can be ready at the same moment, and select picks
+	// between ready cases at random, so the timeout arm asks first whether the
+	// command has already finished. The ordering is injected, because it
+	// cannot be arranged from outside: a command that sleeps exactly as long
+	// as the bound loses the race on every machine I can run this on.
+	waited := &waitResult{}
+	answer := errors.New("the command's own answer")
+	waited.publish(answer)
+	reaped := make(chan struct{})
+	close(reaped)
+	finished, err := finishedFirst(reaped, waited)
+	if !finished {
+		t.Fatal("finishedFirst = false for a command that had already exited: the timeout arm would call it a timeout and retry it")
+	}
+	if !errors.Is(err, answer) {
+		t.Fatalf("finishedFirst err = %v, want the answer the command published", err)
+	}
+	// And the other ordering, which is the one that must still be a timeout.
+	if finished, _ := finishedFirst(make(chan struct{}), &waitResult{}); finished {
+		t.Fatal("finishedFirst = true for a command that is still running")
 	}
 }

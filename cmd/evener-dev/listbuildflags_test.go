@@ -54,6 +54,13 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		// -C is refused rather than consumed: the gate decides which directory
 		// each module is enumerated in, and this would move one.
 		{name: "-C is refused", args: []string{"-C", "/tmp"}, err: "-C is not supported here"},
+		// The test binary's own spelling, consumed with its value like the
+		// flag it is: -test.run is -run, and the word after it is a regex.
+		{name: "the binary's spelling of a value flag", args: []string{"-test.run", "-race"}},
+		{name: "and of one that selects packages", args: []string{"-test.short", "-race"}, want: []string{"-race"}},
+		// -test.race is not -race: the binary has no such flag, so nothing is
+		// stripped and nothing is forwarded.
+		{name: "a -test. name the binary does not have", args: []string{"-test.race"}},
 		{name: "a flag with nothing after it", args: []string{"-short", "-tags"}, err: "-tags was given with nothing after it"},
 		{name: "and one whose value was the last word", args: []string{"-run"}, err: "-run was given with nothing after it"},
 		{name: "and what came before it still counts", args: []string{"-race", "-args", "-tags", "x"}, want: []string{"-race"}},
@@ -206,8 +213,8 @@ func TestListBuildFlagsFailsWhenItsAnswerCannotBeDelivered(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("exit code = 0 after a write that failed; stderr = %q", stderr.String())
 	}
-	if got := stderr.String(); !strings.Contains(got, "list-build-flags: writing -race") {
-		t.Fatalf("stderr = %q, want the flag that could not be written", got)
+	if got := stderr.String(); !strings.Contains(got, "list-build-flags: -race: wrote 0 of") {
+		t.Fatalf("stderr = %q, want the flag that could not be written and how much of it landed", got)
 	}
 }
 

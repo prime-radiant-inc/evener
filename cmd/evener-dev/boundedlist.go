@@ -158,9 +158,16 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.interrupted = latch.receive(received)
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v — stopping %s.\n", received, argv[0])
 	case <-time.After(timeout):
+		// The timer and the exit can be ready at the same moment, and select
+		// picks between ready cases at random: a command that exited as the
+		// bound expired is not a timeout, and retrying it would repeat work it
+		// had finished.
+		if finished, err := finishedFirst(reaped, waited); finished {
+			return completed(err)
+		}
 		// `reaped` closes when the process exits, not when its output stops
-		// arriving, so this arm means the command is still running: it gets
-		// stopped now, with no grace spent guessing.
+		// arriving, so past that check this arm means the command is still
+		// running: it gets stopped now, with no grace spent guessing.
 		result.timedOut = true
 	}
 	// The signal this helper was sent, if it was sent one, then SIGTERM, the
@@ -596,14 +603,14 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 		case result.stuck && result.interrupted == 0:
 			// Retrying stacks another `go list` on the volume that already
 			// has one stuck on it, and the attempt has said why on stderr.
-			if !forwardOutput(stdout, result.stdout, stderr) {
+			if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
 				return 1
 			}
 			return 124
 		case result.interrupted != 0:
 			// An interrupt is an answer about this run, not about the command:
 			// retrying it would be the opposite of what was asked.
-			if !forwardOutput(stdout, result.stdout, stderr) {
+			if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
 				return 1
 			}
 			return result.exitCode
@@ -611,7 +618,7 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 			// Whatever it decided, it decided: a command that exits non-zero
 			// has an answer about its input, and repeating it repeats the
 			// answer.
-			if !forwardOutput(stdout, result.stdout, stderr) {
+			if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
 				return 1
 			}
 			return result.exitCode
@@ -623,7 +630,7 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 				argv[0], *timeout, attemptCount(*attempts))
 			// Whatever it managed to print before the bound is the evidence a
 			// caller has to work from, so it is passed through here too.
-			if !forwardOutput(stdout, result.stdout, stderr) {
+			if !forwardOutput(stdout, result.stdout, "bounded-list: the command's output", stderr) {
 				return 1
 			}
 			return 124
@@ -632,20 +639,20 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 	return 124
 }
 
-// forwardOutput hands the caller what the command printed, and says so when it
-// could not. A caller reading a truncated package list tests the packages it
-// received and reports a pass for the rest, which is the one failure this
-// helper must never produce quietly.
-func forwardOutput(stdout io.Writer, data []byte, stderr io.Writer) bool {
+// forwardOutput hands the caller an answer in full, and says so when it could
+// not: what names whose answer it is. A caller reading a truncated package
+// list tests the packages it received and reports a pass for the rest, which
+// is the one failure this helper must never produce quietly.
+func forwardOutput(stdout io.Writer, data []byte, what string, stderr io.Writer) bool {
 	n, err := stdout.Write(data)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "bounded-list: wrote %d of %d bytes of the command's output: %v\n", n, len(data), err)
+		_, _ = fmt.Fprintf(stderr, "%s: wrote %d of %d bytes: %v\n", what, n, len(data), err)
 		return false
 	}
 	if n != len(data) {
 		// io.Writer may return a short count with no error at all, and a
-		// caller reading the short list cannot tell.
-		_, _ = fmt.Fprintf(stderr, "bounded-list: wrote %d of %d bytes of the command's output\n", n, len(data))
+		// caller reading the short answer cannot tell.
+		_, _ = fmt.Fprintf(stderr, "%s: wrote %d of %d bytes\n", what, n, len(data))
 		return false
 	}
 	return true
