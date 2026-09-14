@@ -1785,6 +1785,57 @@ func TestInstances_EndpointFingerprintIsOmittedWithoutAKey(t *testing.T) {
 	}
 }
 
+// A state root the hub cannot key under is not silent: the listing has to say
+// why every fingerprint is missing (the rows a client cannot verify against,
+// and the writes that fail closed with nothing visible behind them). The entry
+// names the key file and the reason, never key material, and a healthy hub has
+// no such entry.
+func TestInstances_ListDiagnosesAnUnusableEndpointFingerprintKey(t *testing.T) {
+	newWork := func(t *testing.T) *instancesFixture {
+		t.Helper()
+		f := newInstancesFixture(t, nil)
+		if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		return f
+	}
+	keyDiagnostics := func(diags []string) []string {
+		var out []string
+		for _, d := range diags {
+			if strings.HasPrefix(d, endpointFingerprintKeyFile+": ") {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
+	t.Run("a healthy hub reports nothing", func(t *testing.T) {
+		f := newWork(t)
+		if got := keyDiagnostics(f.ctl.List().Diagnostics); len(got) != 0 {
+			t.Fatalf("a healthy hub diagnosed its key file: %v", got)
+		}
+	})
+
+	t.Run("an unusable key is reported", func(t *testing.T) {
+		f := newWork(t)
+		// A directory where the key file belongs: neither reading nor creating
+		// it can succeed, so every fingerprint is omitted and the pane has to
+		// say why.
+		unkeyableStateRoot(t, f.stateDir)
+		diags := f.ctl.List().Diagnostics
+		found := keyDiagnostics(diags)
+		if len(found) != 1 {
+			t.Fatalf("Diagnostics = %v, want exactly one entry for the unusable %s", diags, endpointFingerprintKeyFile)
+		}
+		if !strings.Contains(found[0], "(endpoint fingerprints are unavailable until it can be read or written)") {
+			t.Fatalf("diagnostic = %q, want it to say the fingerprints are unavailable until the key can be read or written", found[0])
+		}
+		if strings.Contains(found[0], "in the way") {
+			t.Fatalf("diagnostic carried the obstacle file's content: %q", found[0])
+		}
+	})
+}
+
 // A curated provider with no credential yet has no instance, but the listing
 // still advertises a setup entry for it whose endpoint fingerprint is built by
 // resolving the provider. A client asserting that value has to be answered from
@@ -1991,6 +2042,35 @@ func TestInstances_EndpointFingerprintRepairsAnEmptyKeyFile(t *testing.T) {
 	}
 }
 
+// Something unusable at the key path does not leave the state root unkeyable
+// when it can be lifted: an empty directory cannot be renamed over and is not
+// a key, so it is removed and the path keyed atomically. (A non-empty
+// directory cannot be either and stays the obstacle the diagnostics name.)
+func TestInstances_EndpointFingerprintRepairsAnEmptyKeyPathDirectory(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	if err := os.Mkdir(keyPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", keyPath, err)
+	}
+
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
+		t.Fatal("an empty directory at the key path left the endpoint fingerprint omitted")
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", keyPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("key path mode = %v, want a regular key file", info.Mode())
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("the repaired key file is %04o, want 0600", perm)
+	}
+}
+
 // A credential write that landed must not be reported as failed because the
 // config it belongs to cannot be loaded: the secret is stored either way, and a
 // caller told it failed retypes one the hub already has. The reload failure
@@ -2028,8 +2108,11 @@ func TestInstances_ApiKeySetLandsWhenTheRegistryCannotReload(t *testing.T) {
 // computes no fingerprint for the name cannot say the key would land there. The
 // unkeyable state root is exactly the state that would otherwise switch the
 // protection off silently, so a write carrying an assertion has to fail closed
-// and ask the user to look again. A client that was shown nothing asserts
-// nothing, which is still the one case with no check to make.
+// and ask the user to look again. An empty assertion is refused there too: the
+// client was shown nothing because the hub could not key a fingerprint, and
+// landing the key anyway would leave the destination unverified without a word.
+// Only a hub with no state root at all has nothing to key with and nothing to
+// refuse (TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithoutAStateRoot).
 func TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
@@ -2052,14 +2135,59 @@ func TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck(t *testing.T) {
 	if v, _ := f.store.Get("work"); v != "" {
 		t.Fatalf("stored key = %q, want nothing stored for an assertion that cannot be checked", v)
 	}
-	// The client that was shown nothing is still nothing to check: an empty
-	// assertion is what the pane sends when the listing carried no fingerprint,
-	// and refusing that would block every write in an unkeyable hub.
-	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+	// The client that was shown nothing asserts nothing - and it was shown
+	// nothing because the hub cannot key a fingerprint, so the write has to fail
+	// closed here too. Accepting the empty assertion would let a concurrent
+	// endpoint change receive the credential with no verification at all, which
+	// is the hole an unusable key used to open silently.
+	_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
 		Provider: "work",
 		Value:    "sk-no-assertion",
+	})
+	if err == nil {
+		t.Fatal("ApiKeySet accepted a write whose destination the hub cannot key a fingerprint for")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("ApiKeySet = %v, want a Conflict saying the destination cannot be verified", err)
+	}
+	if !strings.Contains(err.Error(), "cannot key its endpoint fingerprints right now") {
+		t.Fatalf("refusal = %q, want it to say the hub cannot key its endpoint fingerprints", err)
+	}
+	if v, _ := f.store.Get("work"); v != "" {
+		t.Fatalf("stored key = %q, want nothing stored for a write the hub cannot verify", v)
+	}
+}
+
+// The other side of the same rule: a hub with no state root at all (a bare test
+// controller) has nothing to key an endpoint fingerprint with, so no client
+// could have been shown one and there is no verification to fail closed on. The
+// empty assertion is accepted there, and the write lands.
+func TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithoutAStateRoot(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// No state root: nothing to key with, and every row omits its fingerprint.
+	f.ctl.auth.stateDir = ""
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
+		t.Fatalf("EndpointFingerprint = %q, want it omitted with no state root", got)
+	}
+
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider: "work",
+		Value:    "sk-no-root",
 	}); err != nil {
-		t.Fatalf("ApiKeySet refused a write that asserted nothing: %v", err)
+		t.Fatalf("ApiKeySet refused a write with no state root to key an endpoint with: %v", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-no-root" {
+		t.Fatalf("stored key = %q, want the write to have landed", v)
+	}
+	// Nothing to report, either: there is no key file that could be unusable.
+	for _, d := range f.ctl.List().Diagnostics {
+		if strings.HasPrefix(d, endpointFingerprintKeyFile+": ") {
+			t.Fatalf("a hub with no state root diagnosed a key file it does not have: %q", d)
+		}
 	}
 }
 
@@ -3833,5 +3961,85 @@ func TestInstances_ListWaitsForAMutationHoldingTheLock(t *testing.T) {
 	default:
 		t.Fatalf("List served a mixed row: baseURL=%q apiKeyEnv=%q endpointFingerprint=%q; want all of A (%q/%q/%q) or all of B (%q/%q/%q)",
 			row.BaseURL, row.APIKeyEnv, row.EndpointFingerprint, aURL, aKey, fpA, bURL, bKey, fpB)
+	}
+}
+
+// List's snapshot covers credential writes too, not only providers.toml
+// mutations: Logout holds credMu exclusively while it decides which layer the
+// name clears and removes it, and a listing that ran inside that section would
+// pair the credential state of one generation with the registry view of
+// another. List takes the shared side of credMu across its whole snapshot (mu
+// then credMu, the documented order), so it cannot return while an exclusive
+// section is held, and the listing taken afterwards is one generation
+// throughout.
+func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	settled := entry(t, f.ctl.List(), "work")
+	if settled.ActiveSource != "store" || !settled.HasStoredFile {
+		t.Fatalf("fixture drift: settled row = %+v, want the stored key's source", settled)
+	}
+	if settled.EndpointFingerprint == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+
+	// Paused inside Logout's exclusive credMu section, before the clear it
+	// performs: that is the section a listing must not read through.
+	originalClear := f.ctl.auth.clearCredential
+	clearEntered := make(chan struct{})
+	releaseClear := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClear) }) }
+	f.ctl.auth.clearCredential = func(name string) error {
+		close(clearEntered)
+		<-releaseClear
+		return originalClear(name)
+	}
+	t.Cleanup(release)
+
+	logoutDone := make(chan error, 1)
+	go func() {
+		_, err := f.ctl.auth.Logout(appwire.AuthLogoutParams{Provider: "work"})
+		logoutDone <- err
+	}()
+	select {
+	case <-clearEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Logout never reached the credential clear, so its exclusive section was not held")
+	}
+
+	listDone := make(chan appwire.InstanceListResponse, 1)
+	go func() { listDone <- f.ctl.List() }()
+
+	// The exclusive section is held, so List has to be waiting on it: one that
+	// returns here read a credential state a writer is still deciding.
+	select {
+	case got := <-listDone:
+		row := entry(t, got, "work")
+		t.Fatalf("List returned while a credential write held the lock: row activeSource=%q hasStoredFile=%v endpointFingerprint=%q; want the listing to wait for the section to end",
+			row.ActiveSource, row.HasStoredFile, row.EndpointFingerprint)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case err := <-logoutDone:
+		if err != nil {
+			t.Fatalf("Logout: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Logout never finished after its section was released")
+	}
+
+	// The listing afterwards is one generation: the cleared credential state
+	// beside the registry view that names it, never one half beside the other.
+	after := entry(t, f.ctl.List(), "work")
+	if after.ActiveSource != "none" || after.HasStoredFile {
+		t.Fatalf("post-logout row = activeSource %q hasStoredFile %v, want the cleared generation", after.ActiveSource, after.HasStoredFile)
 	}
 }

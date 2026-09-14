@@ -60,6 +60,16 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 	// generation's credential fields beside the other's URL and fingerprint.
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	// The shared side of credMu covers the rest of the same snapshot: a logout
+	// or a providers.toml mutation holds it exclusively while it changes the
+	// credential state and the registry view, so a listing that ran through that
+	// section would pair one generation's credential status with another's
+	// membership, endpoint and fingerprints. The order is the documented mu then
+	// credMu, and a bare controller with no auth has nothing to hold.
+	if c.auth != nil {
+		c.auth.credMu.RLock()
+		defer c.auth.credMu.RUnlock()
+	}
 	entries := make([]appwire.InstanceEntry, 0)
 	providers := make([]appwire.ProviderDescriptor, 0)
 	userLayer := ""
@@ -121,10 +131,17 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 		}
 		userLayer = r.UserLayerNote()
 	}
+	diagnostics := c.reg.Diagnostics()
+	// The pane has to be able to say why every fingerprint is missing: a state
+	// root whose key cannot be read or written is what omits them, and the
+	// writes that would otherwise assert one are refused (verifyEndpointFingerprint).
+	if keyDiagnostic := endpointFingerprintKeyDiagnostic(c.authStateDir()); keyDiagnostic != "" {
+		diagnostics = append(diagnostics, keyDiagnostic)
+	}
 	return appwire.InstanceListResponse{
 		Instances:          entries,
 		AvailableProviders: providers,
-		Diagnostics:        c.reg.Diagnostics(),
+		Diagnostics:        diagnostics,
 		UserLayer:          userLayer,
 		// The wire bit is the refusal the mutators would give, asked once, so
 		// the pane cannot offer an edit this controller would reject.
@@ -346,6 +363,20 @@ var (
 // never sent anywhere: only a holder of the key can recompute a digest. A key
 // that can neither be read nor created yields nil, and the caller then omits
 // the fingerprint.
+func endpointFingerprintKey(stateDir string) []byte {
+	key, _ := endpointFingerprintKeyState(stateDir)
+	return key
+}
+
+// endpointFingerprintKeyState is endpointFingerprintKey plus the reason no key
+// is available, for the callers that have to say so: a credential write whose
+// client asserted nothing is refused while a state root exists but cannot be
+// keyed (hubAuthController.verifyEndpointFingerprint), and the listing carries
+// the reason as a diagnostic (endpointFingerprintKeyDiagnostic).
+//
+// An empty stateDir is a bare controller with no state root at all: there is
+// nothing to key with, so there is nothing to refuse on the write side and
+// nothing to report - that case is (nil, nil), not an error.
 //
 // The key file is read fresh on every use - nothing is held between calls - so
 // rotation is the answer to a key that may have leaked (readEndpointFingerprintKey
@@ -353,10 +384,10 @@ var (
 // deleting the file sees that take effect in a running hub immediately, not only
 // after a restart. The lock is held across the read and the repair so concurrent
 // hubs serialize on creating the one file they share.
-func endpointFingerprintKey(stateDir string) []byte {
+func endpointFingerprintKeyState(stateDir string) ([]byte, error) {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
-		return nil
+		return nil, nil
 	}
 	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
 	endpointFingerprintKeyMu.Lock()
@@ -365,13 +396,27 @@ func endpointFingerprintKey(stateDir string) []byte {
 	if err != nil {
 		key, err = repairEndpointFingerprintKey(path)
 		if err != nil {
-			return nil
+			return nil, err
 		}
 	}
 	if len(key) == 0 {
-		return nil
+		return nil, fmt.Errorf("%s is not a usable endpoint fingerprint key", path)
 	}
-	return key
+	return key, nil
+}
+
+// endpointFingerprintKeyDiagnostic is what the listing says when a state root
+// exists but cannot yield its key: every fingerprint is omitted (see
+// endpointFingerprint) and every credential write that asserts nothing is
+// refused (see hubAuthController.verifyEndpointFingerprint), so the pane has to
+// say why rather than show a silently unkeyed hub. The reason is the read or
+// repair error - it names the file and what is wrong with it, never key
+// material - and a bare controller with no state root has nothing to report.
+func endpointFingerprintKeyDiagnostic(stateDir string) string {
+	if _, err := endpointFingerprintKeyState(stateDir); err != nil {
+		return fmt.Sprintf("%s: %v (endpoint fingerprints are unavailable until it can be read or written)", endpointFingerprintKeyFile, err)
+	}
+	return ""
 }
 
 // readEndpointFingerprintKey returns the key at path, refusing a file this hub
@@ -422,46 +467,91 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 }
 
 // repairEndpointFingerprintKey puts a usable key at path: it creates one where
-// there is none, and replaces a corrupt one. O_EXCL is why a key another hub
-// wrote first is used as-is - two hubs must not each key their own digests -
-// and a file that exists but is not usable is removed so the next attempt can
-// write a fresh one.
+// there is none, and replaces one that cannot be read. The fresh key is written
+// to a temp file beside path and published atomically: os.Link creates it only
+// while the path is still absent, so a key another hub wrote first is used
+// as-is - two hubs must not each key their own digests - and a path that is
+// present but unusable is replaced with os.Rename, so the path never stops
+// holding a key. The one thing removed is an empty directory, which a rename
+// cannot replace and which can never be a key: a state root a stray `mkdir`
+// planted in stays recoverable (a non-empty one is left as the obstacle it
+// is). A usable key is never replaced.
 func repairEndpointFingerprintKey(path string) ([]byte, error) {
+	var lastErr error
 	for range 2 {
-		var raw [32]byte
-		if _, err := rand.Read(raw[:]); err != nil {
-			return nil, err
-		}
-		key := []byte(base64.RawURLEncoding.EncodeToString(raw[:]))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return nil, err
-		}
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		key, err := publishFreshEndpointFingerprintKey(path)
 		if err == nil {
-			if _, err := f.Write(key); err != nil {
-				_ = f.Close()
-				return nil, err
-			}
-			if err := f.Sync(); err != nil {
-				_ = f.Close()
-				return nil, err
-			}
-			if err := f.Close(); err != nil {
-				return nil, err
-			}
 			return key, nil
 		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("%s is not a usable endpoint fingerprint key", path)
+	}
+	return nil, lastErr
+}
+
+// publishFreshEndpointFingerprintKey writes one fresh key beside path and
+// publishes it, returning the key at path afterwards: its own, or the usable
+// one another hub published in the meantime. The temp file is removed on every
+// path; after os.Link or os.Rename the published name is a second link to the
+// same inode, not the file callers read.
+func publishFreshEndpointFingerprintKey(path string) ([]byte, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return nil, err
+	}
+	key := []byte(base64.RawURLEncoding.EncodeToString(raw[:]))
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return nil, err
+	}
+	tmp := filepath.Join(dir, fmt.Sprintf(".%s.%s.tmp", filepath.Base(path), hex.EncodeToString(suffix[:])))
+	defer func() { _ = os.Remove(tmp) }()
+	// The temp is created through the same O_NOFOLLOW-aware helper the read path
+	// uses: a link planted at a key path must not be able to redirect a write of
+	// the hub's own secret.
+	f, err := createEndpointFingerprintKey(tmp)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := f.Write(key); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tmp, path); err != nil {
 		if !errors.Is(err, os.ErrExist) {
 			return nil, err
 		}
+		// Another hub published first, or an unusable file is in the way: a
+		// usable key is the one to use, anything else is replaced atomically.
 		if existing, readErr := readEndpointFingerprintKey(path); readErr == nil {
 			return existing, nil
 		}
-		if removeErr := os.Remove(path); removeErr != nil {
-			return nil, removeErr
+		// An empty directory is not a key and cannot be renamed over, so it is the
+		// one obstacle this removes; a non-empty one cannot be either and stays the
+		// obstacle the diagnostics name.
+		if info, statErr := os.Lstat(path); statErr == nil && info.IsDir() {
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return nil, removeErr
+			}
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("%s is not a usable endpoint fingerprint key", path)
+	return key, nil
 }
 
 // writeLoadable is the invariant every mutation holds: a providers.toml the

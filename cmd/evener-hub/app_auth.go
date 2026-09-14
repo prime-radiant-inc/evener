@@ -823,10 +823,20 @@ func (c *hubAuthController) endpointFingerprintFor(name string) string {
 // credential lock, which is what makes the check and the write one step: a
 // client's own comparison reads a listing that a concurrent change can outdate,
 // so between its check and this RPC the name can move to an endpoint the user
-// never reviewed - and then the secret would land there. An empty assertion
-// (a client that was shown no endpoint, or an older peer) is not a refusal.
+// never reviewed - and then the secret would land there.
+//
+// An empty assertion is a client that was shown no endpoint. That is nothing to
+// check only while the hub itself has nothing to key with - no state root at
+// all, a bare controller - or can key a fingerprint: a state root that exists
+// but cannot be read or written is exactly the state that serves empty
+// fingerprints to every client, and accepting the assertions that follow would
+// let a concurrent endpoint change receive the credential with no verification
+// at all. There the write fails closed, with a refusal the user can act on.
 func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) error {
 	if asserted == "" {
+		if _, err := endpointFingerprintKeyState(c.stateDir); err != nil {
+			return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
+		}
 		return nil
 	}
 	current := c.endpointFingerprintFor(name)
@@ -834,8 +844,9 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 	// was shown an endpoint, and a hub that can no longer describe where the
 	// name points cannot say the credential would land there. Landing it anyway
 	// would let a deleted key file or an unreachable state root switch the guard
-	// off without a word. Only a client that asserted nothing (one that was
-	// shown no endpoint, or an older peer) is nothing to check.
+	// off without a word. A client that asserted nothing is handled above: that
+	// is nothing to check only while the hub can key a fingerprint or has no
+	// state root at all.
 	if current == "" {
 		return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
 	}

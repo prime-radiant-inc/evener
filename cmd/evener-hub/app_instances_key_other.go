@@ -12,3 +12,11 @@ import "os"
 func openEndpointFingerprintKey(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY, 0)
 }
+
+// createEndpointFingerprintKey creates the key file at path for writing. No
+// O_NOFOLLOW exists on this platform, so a link at the path is not refused by
+// the open; the repair writes only a temp name it has just generated, and the
+// publish step judges the path it replaces (see publishFreshEndpointFingerprintKey).
+func createEndpointFingerprintKey(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+}
