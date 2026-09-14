@@ -1880,7 +1880,7 @@ func requireEnvelopeRequest(t *testing.T, requests []llm.Request, name, body, so
 }
 
 func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	body := skillSelectionFixtureBody("BODY_612")
 	source := writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-start"
@@ -1938,7 +1938,7 @@ func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) 
 }
 
 func TestClientMutation_SkillSelectionOnlyStartIsContent(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	body := skillSelectionFixtureBody("BODY_613")
 	source := writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-only-start"
@@ -1969,7 +1969,7 @@ func TestClientMutation_SkillSelectionOnlyStartIsContent(t *testing.T) {
 }
 
 func TestClientMutation_SkillSelectionQueueConsumesCurrentDiskBytes(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	firstBody := skillSelectionFixtureBody("BODY_ORIG")
 	source := writeSkillMDAndReturn(t, root, "probe", firstBody)
 	mutationID := "skill-selection-queue"
@@ -2080,7 +2080,7 @@ func TestClientMutation_SkillSelectionMissingSecondNameFailsVisible(t *testing.T
 // before the post-tool steering drain.
 func skillSteerMidTurnSession(t *testing.T, steer func() error) (*Session, *agenttest.ScriptedAdapter, string) {
 	t.Helper()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	body := skillSelectionFixtureBody("BODY_612")
 	source := writeSkillMDAndReturn(t, root, "probe", body)
 	var steerOnce sync.Once
@@ -2234,7 +2234,7 @@ func TestClientMutation_SkillSelectionSteerFailedPreparationKeepsTurnRunning(t *
 }
 
 func TestClientMutation_SkillSelectionDrainCombinesQueueAndExtraSelections(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	probeBody := skillSelectionFixtureBody("BODY_PROBE")
 	probe2Body := skillSelectionFixtureBody("BODY_PROBE2")
 	probeSource := writeSkillMDAndReturn(t, root, "probe", probeBody)
@@ -2365,7 +2365,7 @@ func TestClientMutation_SkillSelectionCancelThenDrainUsesRemainingSelection(t *t
 }
 
 func TestClientMutation_SkillSelectionQueueReturnKeepsSelectionRunnable(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	body := skillSelectionFixtureBody("BODY_612")
 	writeSkillMDAndReturn(t, root, "probe", body)
 	mutationID := "skill-selection-queue-return"
@@ -2429,7 +2429,7 @@ func TestClientMutation_SkillSelectionSameIDAlteredSelectionConflicts(t *testing
 }
 
 func TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim(t *testing.T) {
-	dir := t.TempDir()
+	dir := skillFixtureRoot(t)
 	markGitRoot(t, dir)
 	body := skillSelectionFixtureBody("BODY_612")
 	writeSkillMDAndReturn(t, dir, "probe", body)
@@ -2468,7 +2468,7 @@ func TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim(t *testing.T) {
 }
 
 func TestClientMutation_SkillSelectionRestartAfterClaimRequeuesSelection(t *testing.T) {
-	dir := t.TempDir()
+	dir := skillFixtureRoot(t)
 	markGitRoot(t, dir)
 	body := skillSelectionFixtureBody("BODY_612")
 	writeSkillMDAndReturn(t, dir, "probe", body)
