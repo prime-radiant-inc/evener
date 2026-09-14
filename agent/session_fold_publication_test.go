@@ -2200,6 +2200,9 @@ func TestFoldPublication_FailedReplayCopyWriteLeavesNoAnchor(t *testing.T) {
 // an error for a marker nobody can read, with no poison to stop anything.
 type failMarkerWriteFS struct {
 	afero.Fs
+	// only, when set, narrows the failure to the marker whose encoded line
+	// contains it — so a fold can lose its summary and keep its checkpoint.
+	only   []byte
 	failed atomic.Bool
 }
 
@@ -2225,7 +2228,11 @@ type failMarkerWriteFile struct {
 }
 
 func (file *failMarkerWriteFile) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte(`"kind":"SUMMARY"`)) || bytes.Contains(p, []byte(`"kind":"CHECKPOINT"`)) {
+	marker := bytes.Contains(p, []byte(`"kind":"SUMMARY"`)) || bytes.Contains(p, []byte(`"kind":"CHECKPOINT"`))
+	if only := file.fs.only; only != nil {
+		marker = bytes.Contains(p, only)
+	}
+	if marker {
 		file.fs.failed.Store(true)
 		return 0, errors.New("injected marker write failure")
 	}
@@ -3178,4 +3185,62 @@ func toolResultText(turn schema.Turn) string {
 		}
 	}
 	return out.String()
+}
+
+// A fold runs its layers in order and publishes the LAST marker as the head of
+// its history — the summary replaces the checkpoint that came before it. A
+// returning reader anchors on the last marker in the FILE, so when the
+// summary's write fails and the checkpoint's landed, the reader's anchor is
+// the checkpoint. The live session has to say the same thing: keeping a
+// summary the transcript never took would leave the two describing different
+// compactions of the same conversation.
+func TestFoldPublication_AMarkerThatDidNotLandIsNotThePublishedAnchor(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "anchoring-marker-lost-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failMarkerWriteFS{Fs: afero.NewOsFs(), only: []byte(`"kind":"SUMMARY"`)}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	for i := range 12 { // recorded pairs, so the fold has persisted forms to copy
+		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no summary marker write failed, so this is not the lost-anchor path")
+	}
+
+	live := currentHistory(t, s)
+	if len(live) == 0 || live[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("published head = %v, want the checkpoint the transcript took: the summary never landed", live[0].Kind)
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnSummary {
+			t.Fatal("test setup: a summary marker reached the transcript")
+		}
+	}
+	resumed := ResumeHistory(data.Entries)
+	if got, want := expandHistory(resumed, replayScope{}), expandHistory(live, replayScope{}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("live and reload describe different compactions:\nresumed: %v\nlive:    %v", providerMessageOutline(got), providerMessageOutline(want))
+	}
 }

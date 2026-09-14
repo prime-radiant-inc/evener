@@ -338,6 +338,16 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 		}
 	}
 	commit.commitTranscriptsLocked(tailComplete)
+	if adopted := commit.adoptedAnchorTurn(); adopted != nil {
+		// Under s.mu and still inside the transaction: no competing fold can
+		// publish (this hold owns the transcript door), and the head moves
+		// only while it is still a marker this fold put there.
+		s.mu.Lock()
+		if len(s.history) > 0 && isSessionNameCompactionTurn(s.history[0]) && s.history[0].PairID != adopted.PairID {
+			s.history[0] = *adopted
+		}
+		s.mu.Unlock()
+	}
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v; this compaction was not anchored on disk, so a restart replays the transcript from before it", err)})
@@ -501,12 +511,27 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // the receipt is attached to the fold's compaction turns by
 // commitTranscriptsLocked and delivered (with its metadata save) by
 // commitSkillCompactionPublication after the flush.
+// adoptedAnchorTurn is adoptedAnchor for a commit that may not have staged
+// one: a probe driving the transaction directly adopts nothing.
+func (c *foldCommit) adoptedAnchorTurn() *schema.Turn {
+	if c == nil || c.adoptedAnchor == nil {
+		return nil
+	}
+	return c.adoptedAnchor()
+}
+
 type foldCommit struct {
 	claimNoteLocked         func()
 	commitTranscriptsLocked func(anchor bool)
 	// writesCompactionMarker reports whether this fold produced a
 	// CHECKPOINT/SUMMARY to write, answerable before any write happens.
 	writesCompactionMarker func() bool
+	// adoptedAnchor names the marker the published history must take as its
+	// head when the fold's own last marker did not land and an earlier
+	// layer's did — the one a returning reader anchors on. Nil when the live
+	// history and the transcript already name the same marker, and for a
+	// commit nobody staged. Answerable only after commitTranscriptsLocked.
+	adoptedAnchor func() *schema.Turn
 	// foldID tags every record this fold writes; see schema.Turn.
 	foldID                       string
 	flush                        func()
@@ -786,6 +811,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// describe the compaction that anchor represents, so they follow this
 	// rather than any single marker.
 	foldAnchored := true
+	// adoptedAnchor is the marker the live history must take as its head
+	// because it, and not the fold's own last marker, is what a returning
+	// reader will anchor on. Nil whenever the two already agree.
+	var adoptedAnchor *schema.Turn
 	var compactionEventWriteErrs []error
 	var steeringWriteErrs []error
 	// anchor is false when a replay copy could not be written: the fold's own
@@ -815,6 +844,17 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
 		compactionTurnLanded = make([]bool, len(pendingCompactionTurns))
 		sawMarker, landedMarker := false, false
+		// The fold's LAST marker is the one it published: a fold that runs a
+		// checkpoint layer and then a summarize layer holds the summary at the
+		// head of its history, and the checkpoint only as a record of the
+		// layer that produced it.
+		finalMarker := -1
+		for i, turn := range pendingCompactionTurns {
+			if isSessionNameCompactionTurn(turn) {
+				finalMarker = i
+			}
+		}
+		var lastLanded *schema.Turn
 		for i, turn := range pendingCompactionTurns {
 			// Only the anchor is withheld, and the anchor is exactly the
 			// kinds writesCompactionMarker counts — the same predicate, so
@@ -836,9 +876,26 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 				continue
 			}
 			compactionTurnLanded[i] = true
-			landedMarker = landedMarker || marker
+			if marker {
+				landedMarker = true
+				landed := turn
+				lastLanded = &landed
+			}
 		}
 		foldAnchored = !sawMarker || landedMarker
+		// A returning reader anchors on the LAST marker in the file. If this
+		// fold's own last marker did not land but an earlier layer's did, that
+		// earlier one is the anchor the reader will find — so the live history
+		// takes it as its head too, and both sides describe the compaction the
+		// transcript actually holds. The published suffix is unchanged: the
+		// copies already carry it, and it is what the layers left behind
+		// either way.
+		if lastLanded != nil && finalMarker >= 0 && !compactionTurnLanded[finalMarker] {
+			adopted := *lastLanded
+			// The history's markers carry no fold id; only the records do.
+			adopted.CompactionFoldID = ""
+			adoptedAnchor = &adopted
+		}
 		// The fold's own steering goes with the anchor. A resume that finds no
 		// anchor drops the fold's copies and keeps everything else, so
 		// steering describing a compaction that resume cannot see is stale
@@ -856,6 +913,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// with no anchor of their own, which resume handles — an older fold's
 	// marker will not claim them, and with no anchor at all they are dropped
 	// as the duplicates they are.
+	commit.adoptedAnchor = func() *schema.Turn { return adoptedAnchor }
 	commit.writesCompactionMarker = func() bool {
 		// The kinds ResumeHistory anchors on, and only those: a
 		// TurnContextCompaction record moves no anchor.
