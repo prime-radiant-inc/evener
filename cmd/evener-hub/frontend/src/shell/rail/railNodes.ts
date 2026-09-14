@@ -405,14 +405,20 @@ function splitChildren(parent: RailSession, isExpanded: IsExpanded): SessionRail
   // The session's own live watches, after running work: an armed watch is
   // pending, not happening, so it reads below the things currently running.
   // Every row the wire sent stays reachable - the inline cap only hides the
-  // tail behind a count, it never drops it.
+  // tail behind a count, it never drops it. The count also carries the rows the
+  // hub projector omitted (over the per-session cap, or shed by its byte
+  // fitter), which the summary line already reports as "+N more": a fold-out
+  // that ignored them would contradict the row it hangs under.
   const watches = parent.watches ?? [];
-  children.push(...watches.slice(0, MAX_INLINE_WATCHES).map((watch) => toWatchNode(parent, watch)));
-  if (watches.length > MAX_INLINE_WATCHES) {
+  const inlineWatches = watches.slice(0, MAX_INLINE_WATCHES);
+  children.push(...inlineWatches.map((watch) => toWatchNode(parent, watch)));
+  const hiddenWatches = watches.length - inlineWatches.length + (parent.omitted_watches ?? 0);
+  if (hiddenWatches > 0) {
     children.push(
-      // The cap is local to the rail: the wire already carried every watch, so
-      // there is no page to fetch. The row is an honest count, not a control.
-      ...overflowNode(watchOverflowId(parent.row_id), watches.length - MAX_INLINE_WATCHES, [], "more watches", true),
+      // The cap is local to the rail: the wire already carried every retained
+      // watch, and the omitted rows the hub dropped have no page to fetch
+      // either. The row is an honest count, not a control.
+      ...overflowNode(watchOverflowId(parent.row_id), hiddenWatches, [], "more watches", true),
     );
   }
   if (inactiveCount > 0) {

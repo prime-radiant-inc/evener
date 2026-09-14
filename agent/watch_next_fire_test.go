@@ -3,11 +3,15 @@ package agent
 import (
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 // The next-fire instant is derived ONLY from data the daemon already holds: the
-// interval, the install instant, and (for a repeating ticker) the newest
-// delivery instant in the ring. Output/event/condition watches carry none.
+// interval, the install instant, and (for a repeating ticker) the newest CLOCK
+// fire. The delivery ring is not a clock history - it holds output matches and
+// event fires too - so it never anchors the derivation. Output/event/condition
+// watches carry none.
 func TestWatchCadencesDeriveNextFireForClockCadencesOnly(t *testing.T) {
 	created := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
 	at := func(seconds int) time.Time { return created.Add(time.Duration(seconds) * time.Second) }
@@ -35,18 +39,18 @@ func TestWatchCadencesDeriveNextFireForClockCadencesOnly(t *testing.T) {
 			want: []WatchCadenceInfo{{Kind: "every", Seconds: 300, DerivedNextFireAt: fmtTime(at(300))}},
 		},
 		{
-			name: "a fired repeating timer advances from its newest delivery",
+			name: "a fired repeating timer advances from its newest clock fire",
 			cfg: &watchConfig{
 				timer: true, timerSeconds: 300, progressIntervalMS: 300_000,
-				createdAt: created, deliveryTimes: []time.Time{at(300), at(600)},
+				createdAt: created, lastClockFire: at(600),
 			},
 			want: []WatchCadenceInfo{{Kind: "every", Seconds: 300, DerivedNextFireAt: fmtTime(at(900))}},
 		},
 		{
-			name: "a progress watch advances from its newest delivery",
+			name: "a progress watch advances from its newest clock fire",
 			cfg: &watchConfig{
 				progressIntervalMS: 1_000, createdAt: created,
-				deliveryTimes: []time.Time{at(1), at(2)},
+				lastClockFire: at(2),
 			},
 			want: []WatchCadenceInfo{{Kind: "progress", Seconds: 1, DerivedNextFireAt: fmtTime(at(3))}},
 		},
@@ -69,10 +73,12 @@ func TestWatchCadencesDeriveNextFireForClockCadencesOnly(t *testing.T) {
 			want: []WatchCadenceInfo{{Kind: "events"}},
 		},
 		{
-			name: "an output watch with a clock trigger dates only the clock row",
+			// A delivery newer than the newest clock fire - an output match -
+			// must not move the clock cadence's date.
+			name: "a delivery after the newest clock fire does not move the clock row",
 			cfg: &watchConfig{
 				outputMatch: "ready", progressIntervalMS: 1_000, createdAt: created,
-				deliveryTimes: []time.Time{at(1)},
+				lastClockFire: at(1), deliveryTimes: []time.Time{at(1), at(30)},
 			},
 			want: []WatchCadenceInfo{
 				{Kind: "output"},
@@ -92,5 +98,82 @@ func TestWatchCadencesDeriveNextFireForClockCadencesOnly(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWatchCadencesDeriveNextFireFromTheClockFireNotAnyDelivery pins the
+// derivation's anchor. A watch may legally combine output_match with
+// progress_interval_ms, and both fires count a delivery, so the newest entry in
+// the delivery ring is not necessarily a clock fire. The progress cadence's
+// derived next fire must advance from the newest CLOCK fire; reading the ring
+// would shift it to an unrelated output match (or suppress the label when the
+// match instant is recent). Before the fix this test fails: the newest ring
+// entry is the match, so the derived instant lands one interval after the match
+// instead of one interval after the tick.
+func TestWatchCadencesDeriveNextFireFromTheClockFireNotAnyDelivery(t *testing.T) {
+	jm := newTestJM(t)
+	start := time.Unix(1_700_000_000, 0).UTC()
+	// The fake clock leaves the watch's background progress timer inert; the
+	// tick below is driven synchronously, doing exactly that goroutine's work.
+	jm.clock = agenttest.NewFakeClockAt(start)
+	freezeClockAt(jm, start)
+
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	res, err := jm.configureWatch(watchArgs{
+		Operation:          "create",
+		Source:             rec.JobID,
+		Target:             rec.JobID,
+		OutputMatch:        "ready",
+		ProgressIntervalMS: minWatchProgressIntervalMS,
+	})
+	if err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+	jm.mu.Lock()
+	key, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if !ok {
+		t.Fatalf("watch %s is not installed", res.WatchID)
+	}
+
+	// One clock tick at +60s: the progress cadence's newest real fire.
+	tick := start.Add(60 * time.Second)
+	freezeClockAt(jm, tick)
+	if !jm.fireProgressTick(key, cfg) {
+		t.Fatal("the progress tick ended the watch")
+	}
+
+	// An output match lands later, at +90s. Both deliveries are real, but only
+	// the tick is a clock fire, so only the tick may anchor the cadence.
+	match := start.Add(90 * time.Second)
+	freezeClockAt(jm, match)
+	chunk := []byte("ready\n")
+	jm.feedJobOutput(rec.JobID, chunk, int64(len(chunk)))
+
+	jm.mu.Lock()
+	ring := append([]time.Time(nil), cfg.deliveryTimes...)
+	lastClockFire := cfg.lastClockFire
+	jm.mu.Unlock()
+	// The scenario under test: the newest ring entry is the MATCH, not the tick.
+	if len(ring) < 2 || !ring[len(ring)-1].Equal(match) {
+		t.Fatalf("delivery ring = %v, want the output match at %v as the newest entry", ring, match)
+	}
+	// The tick stamped the clock's own history, and the match did not move it.
+	if !lastClockFire.Equal(tick) {
+		t.Fatalf("last clock fire = %v, want the progress tick at %v", lastClockFire, tick)
+	}
+
+	var got string
+	for _, cadence := range watchCadencesOf(cfg) {
+		if cadence.Kind == "progress" {
+			got = cadence.DerivedNextFireAt
+		}
+	}
+	want := tick.Add(time.Duration(minWatchProgressIntervalMS) * time.Millisecond).Format(time.RFC3339Nano)
+	if got != want {
+		t.Fatalf("progress derived next fire = %q, want %q (the tick at %v, not the match at %v)", got, want, tick, match)
 	}
 }

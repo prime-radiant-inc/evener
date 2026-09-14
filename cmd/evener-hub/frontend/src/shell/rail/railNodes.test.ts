@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, test } from "vitest";
 import type { NavigationWatchSummary } from "../../protocol/types.gen";
-import type { RailPinSection, RailProject, RailSession } from "./railNodes";
+import type { OverflowRailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
 import {
   activeWatchCount,
   archivedCount,
@@ -15,6 +15,7 @@ import {
   projectNodes,
   sessionNodes,
   topLevelAncestorRef,
+  watchCountLabel,
   workingDescendantCount,
 } from "./railNodes";
 
@@ -184,6 +185,58 @@ describe("resource projection semantics", () => {
     });
     const [node] = sessionNodes([root], closed);
     expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", suffix: "more watches", pages: [], passive: true });
+  });
+
+  test("counts watches the projector omitted in the fold-out overflow, even under the inline cap", () => {
+    // The hub caps its per-session watch list and reports the rows it dropped
+    // as omitted_watches; the summary line already says "+4 more". A fold-out
+    // that showed only the one retained row would silently contradict it, so
+    // the omitted rows are part of the fold-out's hidden count.
+    const root = session({
+      ref: "root",
+      row_id: "root",
+      watches: [watch({ id: "w1" })],
+      omitted_watches: 4,
+    });
+    const [node] = sessionNodes([root], closed);
+    expect(node?.children.map((child) => child.kind)).toEqual(["watch", "overflow"]);
+    expect(node?.children.at(-1)).toMatchObject({
+      kind: "overflow",
+      count: 4,
+      suffix: "more watches",
+      pages: [],
+      passive: true,
+    });
+  });
+
+  test("the summary line's watch count and the fold-out's hidden count agree", () => {
+    // One total per session: retained rows plus the projector's omitted count.
+    // The fold-out shows the inline head of the retained rows and counts
+    // everything else - retained beyond the cap plus the omitted rows - so the
+    // two surfaces cannot disagree about how many watches the session holds.
+    const cases = [
+      { retained: 1, omitted: 4 },
+      { retained: 3, omitted: 0 },
+      { retained: 5, omitted: 3 },
+      { retained: 2, omitted: 1 },
+    ];
+    for (const c of cases) {
+      const watches = Array.from({ length: c.retained }, (_, i) => watch({ id: `w${i}` }));
+      const root = session({ ref: "root", row_id: "root", watches, omitted_watches: c.omitted });
+      const [node] = sessionNodes([root], closed);
+      const children = node?.children ?? [];
+      const shown = children.filter((child) => child.kind === "watch").length;
+      const overflow = children.find((child) => child.kind === "overflow") as OverflowRailNode | undefined;
+      const hidden = overflow?.count ?? 0;
+      // Every retained row is armed in this matrix, so the summary line counts
+      // all of them; the fold-out plus its overflow must add up to the same
+      // number the line's total implies.
+      expect(shown + hidden).toBe(c.retained + c.omitted);
+      expect(shown).toBe(Math.min(c.retained, 3));
+      const label = watchCountLabel(activeWatchCount(root), c.omitted);
+      if (c.omitted > 0) expect(label).toContain(`+${c.omitted} more`);
+      else expect(label).not.toContain("more");
+    }
   });
 
   test("counts a session's own armed watches once, never a descendant's", () => {

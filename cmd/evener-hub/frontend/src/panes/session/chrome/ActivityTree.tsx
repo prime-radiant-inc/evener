@@ -507,10 +507,12 @@ interface WatchRowViewProps {
 }
 
 // A watch row shares the dense row grammar (toggle, name, right-hand meta) but
-// has no live clock cluster: its meta is cadence plus delivery count or armed
-// state, all snapshot data. Its detail is the one place the panel's `now` is
-// read, so only an open watch detail re-renders on a tick.
-function WatchRowView({
+// has no live clock cluster of its own. Every clock-derived part - the meta's
+// countdown and the detail's ages - exists only while the row is open, so the
+// memoized row compares `now` for an open row and ignores it for a collapsed
+// one. That keeps a collapsed watch row asleep through every tick of the pane
+// chrome's clock, while an open row keeps counting down.
+const WatchRowView = memo(function WatchRowView({
   row,
   detailOpen,
   tabIndex,
@@ -521,12 +523,12 @@ function WatchRowView({
   registerRowRef,
 }: WatchRowViewProps): ReactNode {
   const name = `Watch: ${watchName(row.watch)}`;
-  // The row itself takes no clock: its meta is cadence plus delivery count or
-  // armed state, all snapshot data. A caller with its own ticking clock (the
-  // pane chrome) passes `now`, and the standalone pane passes nothing; either
-  // way only the open detail below reads the clock (from its `now` prop or the
-  // tree's own live context), so a collapsed watch row never re-renders on a
-  // tick. See ActivityWatchDetail.
+  // A collapsed row is all snapshot data - cadence, delivery count, armed state
+  // - so it renders no countdown and takes no clock. An open row renders the
+  // countdown in its meta and the ticking detail below it; a caller with its
+  // own ticking clock (the pane chrome) passes `now`, and the standalone pane
+  // passes nothing so the detail falls back to the tree's live context. See
+  // ActivityWatchDetail.
   return (
     <Fragment>
       <div
@@ -559,11 +561,29 @@ function WatchRowView({
         <WatchGlyph className={CLASS.watchGlyph} testId="watch-glyph" />
         <span className={CLASS.srOnly}>Watch:</span>
         <span className={CLASS.denseName}>{watchName(row.watch)}</span>
-        <span className={CLASS.denseMeta}>{watchMeta(row.watch, now)}</span>
+        <span className={CLASS.denseMeta}>{watchMeta(row.watch, detailOpen ? now : undefined)}</span>
       </div>
       {detailOpen && <ActivityWatchDetail row={row} now={now} />}
     </Fragment>
   );
+}, watchRowViewPropsEqual);
+
+// memo's default shallow compare would wake every collapsed watch row whenever
+// the pane chrome's ticking `now` changes. A collapsed row's output does not
+// read the clock, so `now` only counts for an open row.
+function watchRowViewPropsEqual(prev: WatchRowViewProps, next: WatchRowViewProps): boolean {
+  if (
+    prev.row !== next.row ||
+    prev.detailOpen !== next.detailOpen ||
+    prev.tabIndex !== next.tabIndex ||
+    prev.onSetDetailOpen !== next.onSetDetailOpen ||
+    prev.onFocusRow !== next.onFocusRow ||
+    prev.onKeyDown !== next.onKeyDown ||
+    prev.registerRowRef !== next.registerRowRef
+  ) {
+    return false;
+  }
+  return !next.detailOpen || prev.now === next.now;
 }
 
 // The Watches group title that leads the panel body, with the count of armed

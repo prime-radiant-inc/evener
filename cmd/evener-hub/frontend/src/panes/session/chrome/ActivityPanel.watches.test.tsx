@@ -131,4 +131,23 @@ describe("ActivityPanelBody watches", () => {
     await screen.findByText("No retained activity yet");
     expect(screen.queryByTestId("watch-group")).toBeNull();
   });
+
+  test("a session whose watches were all omitted still shows the watch group, not the empty state", async () => {
+    // The hub caps the watch list and reports the dropped rows as
+    // omitted_watches. Emptiness of the RETAINED rows is not emptiness of the
+    // session's watch content: the group and its "+N more" must render, or the
+    // panel claims there is nothing while the rail row says otherwise.
+    const ref = "ref_watch_omitted";
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    fake.on("evener/jobs/list", () => ({ data: emptyTree(ref) }));
+
+    render(
+      <ActivityPanelBody sessionRef={ref} model={testModel(ref)} now={NOW} watches={undefined} omittedWatches={4} />,
+    );
+
+    await screen.findByTestId("watch-group");
+    expect(screen.getByText("0 armed · +4 more")).toBeTruthy();
+    expect(screen.queryByText("No retained activity yet")).toBeNull();
+  });
 });

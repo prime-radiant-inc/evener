@@ -189,6 +189,10 @@ export function ActivityPanelBody({ sessionRef, model, watches, omittedWatches, 
     const currentTree = retainedTree(entry.load);
     const staleError = entry.load.kind === "ready" ? entry.load.staleError : undefined;
     const ended = entry.load.kind === "ended";
+    // A session whose watch rows were all omitted by the hub's cap still holds
+    // watch content: ActivityTree renders the watch group and its "+N more".
+    // Only a session with neither retained nor omitted watches is empty.
+    const hasWatchContent = (watches?.length ?? 0) > 0 || (omittedWatches ?? 0) > 0;
     return (
       <div className={CLASS.panel}>
         {ended && !currentTree && (
@@ -224,7 +228,7 @@ export function ActivityPanelBody({ sessionRef, model, watches, omittedWatches, 
             {diagnostic}
           </p>
         ))}
-        {currentTree && currentTree.root.entries.length === 0 && (watches?.length ?? 0) === 0 ? (
+        {currentTree && currentTree.root.entries.length === 0 && !hasWatchContent ? (
           emptyPageIsPartial(currentTree) ? (
             // A page can come back with no rows and still have more behind it:
             // the agent drops an entry it cannot encode, says so on the root

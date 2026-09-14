@@ -245,6 +245,16 @@ type watchConfig struct {
 	// deliveries, so the count and the ring can never diverge. It feeds the
 	// activity panel's timeline only; nothing schedules from it.
 	deliveryTimes []time.Time
+	// lastClockFire is the most recent instant a clock tick actually fired for
+	// this config - a timer's fire or a progress-interval tick - stamped from
+	// jm.now() under jm.mu where that tick fires. The delivery ring mixes every
+	// delivery kind (output matches, event fires, attach scans), so the derived
+	// next fire reads this instead of the ring: a watch that legally combines
+	// output_match with progress_interval_ms would otherwise date its progress
+	// cadence from an unrelated output match. Zero means the clock has not
+	// fired yet. Restored and detached configs never schedule, so they leave it
+	// zero exactly as they leave createdAt zero.
+	lastClockFire time.Time
 }
 
 type watchArgs struct {
@@ -2615,12 +2625,14 @@ func watchCadencesOf(cfg *watchConfig) []WatchCadenceInfo {
 
 // watchDerivedNextFireAt is the best honest next-fire instant for one
 // clock-driven watch, from data the config already holds. A repeating ticker
-// (every/progress) advances from its newest delivery instant, or from the
-// install instant when it has not delivered yet; a one-shot advances from the
-// install instant. A one-shot that already fired has no next fire. The value is
-// approximate - the runtime keeps a Go ticker, whose callback the scheduler can
-// delay and whose missed ticks coalesce - which is why every surface that shows
-// it words it with a "~". Returns "" when no instant can be derived.
+// (every/progress) advances from its newest CLOCK fire, or from the install
+// instant when it has not fired yet; a one-shot advances from the install
+// instant. A one-shot that already fired has no next fire. The delivery ring is
+// deliberately not consulted: it holds every delivery kind, so an output match
+// on a watch that also ticks would move the progress cadence's date. The value
+// is approximate - the runtime keeps a Go ticker, whose callback the scheduler
+// can delay and whose missed ticks coalesce - which is why every surface that
+// shows it words it with a "~". Returns "" when no instant can be derived.
 func watchDerivedNextFireAt(cfg *watchConfig, interval time.Duration) string {
 	if cfg == nil || interval <= 0 {
 		return ""
@@ -2631,8 +2643,8 @@ func watchDerivedNextFireAt(cfg *watchConfig, interval time.Duration) string {
 		return ""
 	}
 	base := cfg.createdAt
-	if len(cfg.deliveryTimes) > 0 {
-		base = cfg.deliveryTimes[len(cfg.deliveryTimes)-1]
+	if !cfg.lastClockFire.IsZero() {
+		base = cfg.lastClockFire
 	}
 	if base.IsZero() {
 		return ""
@@ -3660,6 +3672,13 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	if !dec.fire && !dec.endOneShot {
 		jm.mu.Unlock()
 		return false
+	}
+	if dec.fire {
+		// This tick is the cadence's own fire instant, whether it routes to a
+		// send rail (whose delivery is counted only when the frame settles) or
+		// to the notification counted below. The delivery ring cannot serve as
+		// the clock's history; see lastClockFire.
+		cfg.lastClockFire = jm.now()
 	}
 	if dec.sendDelivery {
 		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, root.Provenance)))
