@@ -35,6 +35,8 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
+import { selectSources } from "../../stores/navigation/selectors";
+import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
   Chevron,
@@ -60,6 +62,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
+import selectStyles from "../../widgets/select/select.module.css";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
@@ -174,6 +177,11 @@ const CLASS = {
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
   pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
+  // The host picker's native <select> reuses the Select widget's own stylesheet
+  // class: the widget renders a native <select> too, but its SelectOption has no
+  // per-option disabled flag, and an offline host must be RENDERED yet not
+  // selectable (Component 06b). The class only borrows the visual treatment.
+  hostSelect: requireClass(selectStyles.select, "select.module.css", "select"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -258,6 +266,16 @@ function SpawnForm({
   const [harness, setHarness] = useDraftField(draft, "harness");
   const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
+  const [source, setSource] = useDraftField(draft, "source");
+  // The manifest carries every configured launch source (Component 06a). It is
+  // empty until it loads, and in the common single-host case holds only
+  // "local" - either way no picker renders, so the existing form is unchanged.
+  const sources = useNavigationStore(selectSources);
+  // A draft may name a host that has since disappeared from the manifest
+  // (removed while the draft lived). Fall back to local rather than launching
+  // an unknown source; the stale draft value stays until the picker changes it.
+  const hostChoice = sources.some((candidate) => candidate.id === source) ? source : "local";
+  const remoteHosts = sources.filter((candidate) => candidate.id !== "local");
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   // Entering onboarding records the draft's own scope; the fallback below is
@@ -1324,6 +1342,9 @@ function SpawnForm({
       reasoningEffort: scalars.reasoningEffort,
       accessMode,
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
+      // Omitted for local (startThread drops "local" from the wire), so the
+      // single-host request stays identical to before the host picker existed.
+      source: hostChoice,
     });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
@@ -1513,6 +1534,36 @@ function SpawnForm({
               setDirectoryOpen(false);
             }}
           />
+        )}
+
+        {/* Host picker (Component 06b): rendered only when the manifest lists a
+            non-local source, so the common single-host form is byte-for-byte
+            unchanged. Local is preselected (the draft default). An offline host
+            still renders - the reader can see it exists - but its option is
+            disabled and carries the reason in its own label. */}
+        {remoteHosts.length > 0 && (
+          <FormRow
+            label="Host"
+            htmlFor="spawn-host"
+            help={
+              remoteHosts.some((candidate) => !candidate.online)
+                ? "Where the session runs. Offline hosts can't be selected."
+                : "Where the session runs."
+            }
+          >
+            <select
+              id="spawn-host"
+              className={CLASS.hostSelect}
+              value={hostChoice}
+              onChange={(event) => setSource(event.target.value)}
+            >
+              {sources.map((candidate) => (
+                <option key={candidate.id} value={candidate.id} disabled={!candidate.online}>
+                  {candidate.online ? candidate.label : `${candidate.label} (offline)`}
+                </option>
+              ))}
+            </select>
+          </FormRow>
         )}
 
         <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">

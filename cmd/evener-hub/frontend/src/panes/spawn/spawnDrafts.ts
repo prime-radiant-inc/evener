@@ -23,6 +23,9 @@ interface DraftFields {
   staleModelNotice: string | null;
   reasoningEffort: string;
   accessMode: string;
+  /** Launch source id for this draft (Component 06b's host picker). "local"
+   * is the default and is omitted from the wire by startThread. */
+  source: string;
   advancedOverrides: LaunchConfigLayer;
   advancedValues: AdvancedValues;
   pluginSelection: PluginSelectionState;
@@ -49,6 +52,7 @@ function createDraft(cwd: string) {
       staleModelNotice: null,
       reasoningEffort: defaults.reasoningEffort ?? "",
       accessMode: defaults.accessMode ?? "",
+      source: "local",
       advancedOverrides: {},
       advancedValues: {},
       pluginSelection: { mode: "default" },
