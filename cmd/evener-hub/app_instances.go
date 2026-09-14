@@ -299,29 +299,23 @@ func sanitizeEndpointURL(raw string) string {
 	return u.String()
 }
 
-// endpointFingerprint digests one destination identity, including the parts
-// sanitizeEndpointURL leaves out of the displayed copy: query parameters,
-// userinfo and fragment. A client cannot compare those itself - they must not
-// cross the appwire boundary, since a query string can carry a token - so the
-// digest is what lets it notice that the destination changed under an open
-// form. It is over the identity's exact bytes, so two that differ only in a
-// query parameter fingerprint differently.
+// fingerprintWithKey digests one destination identity with an already-resolved
+// key. The identity includes the parts sanitizeEndpointURL leaves out of the
+// displayed copy - query parameters, userinfo and fragment - which a client
+// cannot compare itself (they must not cross the appwire boundary, since a query
+// string can carry a token); the digest is what lets it notice that the
+// destination changed under an open form. It is over the identity's exact bytes,
+// so two that differ only in a query parameter fingerprint differently.
 //
 // The digest is keyed with the hub's own secret, not a bare hash: the stripped
 // parts can be low-entropy (a password in userinfo, a short query token), and
 // an unkeyed digest of a guessable secret is a guessable function of it - a
 // client holding the listing could recover the secret by brute force, which is
-// exactly what the sanitized copy exists to prevent. A state root the hub
-// cannot key under omits the fingerprint rather than serving that digest.
-func endpointFingerprint(stateDir, identity string) string {
-	return fingerprintWithKey(endpointFingerprintKey(stateDir), identity)
-}
-
-// fingerprintWithKey digests one destination identity with an already-resolved
-// key. An empty key (this hub could not resolve one) or an empty identity has
-// no digest: the caller omits the fingerprint rather than serving an unkeyed
-// one. List resolves one key for its whole listing and passes it here, so every
-// row of that listing is keyed the same way even if a repair lands beside it.
+// exactly what the sanitized copy exists to prevent. An empty key (this hub
+// could not resolve one) or an empty identity has no digest: the caller omits
+// the fingerprint rather than serving an unkeyed one. List resolves one key for
+// its whole listing and passes it here, so every row of that listing is keyed
+// the same way even if a repair lands beside it.
 func fingerprintWithKey(key []byte, identity string) string {
 	if len(key) == 0 || strings.TrimSpace(identity) == "" {
 		return ""
