@@ -46,12 +46,18 @@ const EMPTY_TREE: ActivityTreeData = {
   },
 };
 
-function renderTree(watches?: NavigationWatchSummary[], tree: ActivityTreeData = EMPTY_TREE, omittedWatches?: number) {
+function renderTree(
+  watches?: NavigationWatchSummary[],
+  tree: ActivityTreeData = EMPTY_TREE,
+  omittedWatches?: number,
+  omittedArmedWatches?: number,
+) {
   return render(
     <ActivityTree
       tree={tree}
       watches={watches}
       omittedWatches={omittedWatches}
+      omittedArmedWatches={omittedArmedWatches}
       now={NOW}
       expandedFoldIDs={[]}
       onToggleFold={vi.fn()}
@@ -94,7 +100,15 @@ describe("ActivityTree watch rows", () => {
 
   test("the Watches group header surfaces the rows the projector omitted", () => {
     renderTree([watch({ note: "Still armed" })], EMPTY_TREE, 4);
-    expect(screen.getByText("1 armed · +4 more")).toBeTruthy();
+    expect(screen.getByText("1 armed total · +4 more")).toBeTruthy();
+  });
+
+  test("the Watches group header reports the armed total across omitted rows", () => {
+    // 32 retained armed rows plus 8 omitted armed rows: the header must add the
+    // omitted armed count to the retained one and label it as a total.
+    const watches = Array.from({ length: 32 }, (_, i) => watch({ id: `armed-${i}` }));
+    renderTree(watches, EMPTY_TREE, 8, 8);
+    expect(screen.getByText("40 armed total · +8 more")).toBeTruthy();
   });
 
   test("a clock watch row renders its next fire with a tilde and never the word about", () => {

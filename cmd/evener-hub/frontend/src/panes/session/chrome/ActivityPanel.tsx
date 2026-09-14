@@ -29,6 +29,8 @@ export interface ActivityPanelProps {
   watches?: NavigationWatchSummary[];
   // Rows the hub omitted from `watches`; the Watches header reports "+N more".
   omittedWatches?: number;
+  // The armed subset of those omitted rows; folded into the header's armed total.
+  omittedArmedWatches?: number;
   hideTrigger?: boolean;
   // SessionChrome's desktop replacement button hides this panel's own
   // trigger, but still needs the trigger-owned background summary refresh.
@@ -45,6 +47,7 @@ export interface ActivityPanelBodyProps {
   model: ThreadModel;
   watches?: NavigationWatchSummary[];
   omittedWatches?: number;
+  omittedArmedWatches?: number;
   // The panel's ticking clock, used by the watch durations and timeline.
   now?: number;
 }
@@ -86,7 +89,14 @@ function triggerLabel(counts: ActivityCounts | undefined): string {
 }
 
 /** Shared activity reader body used by the mobile Sheet and desktop pane. */
-export function ActivityPanelBody({ sessionRef, model, watches, omittedWatches, now }: ActivityPanelBodyProps) {
+export function ActivityPanelBody({
+  sessionRef,
+  model,
+  watches,
+  omittedWatches,
+  omittedArmedWatches,
+  now,
+}: ActivityPanelBodyProps) {
   const toasts = useToasts();
   const treeRef = useRef<ActivityTreeHandle>(null);
   const mountedRef = useRef(false);
@@ -270,6 +280,7 @@ export function ActivityPanelBody({ sessionRef, model, watches, omittedWatches, 
               tree={currentTree}
               watches={watches}
               omittedWatches={omittedWatches}
+              omittedArmedWatches={omittedArmedWatches}
               now={now}
               expandedFoldIDs={entry.expandedFoldIDs}
               onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
@@ -294,6 +305,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     now,
     watches,
     omittedWatches,
+    omittedArmedWatches,
     hideTrigger = false,
     refreshWhenHidden = false,
     discoverWhenHidden = refreshWhenHidden,
@@ -334,6 +346,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
             now={now}
             watches={watches}
             omittedWatches={omittedWatches}
+            omittedArmedWatches={omittedArmedWatches}
           />
         ) : null}
       </Sheet>

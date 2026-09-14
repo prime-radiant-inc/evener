@@ -779,7 +779,23 @@ describe("watch count on the summary line", () => {
       omitted_watches: 2,
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch · +2 more");
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch · 1 armed total · +2 more");
+  });
+
+  test("reports the armed total across omitted rows, not just the retained rows", () => {
+    // A session with more armed watches than the hub's per-session cap keeps 32
+    // of them and reports the rest as omitted_armed_watches. The summary must
+    // state the true armed total, labelled as covering the omitted rows, rather
+    // than the retained 32.
+    const session = apiNode({
+      state: "idle",
+      age: "2m",
+      watches: Array.from({ length: 32 }, (_, i) => watchSummary({ id: `armed-${i}` })),
+      omitted_watches: 8,
+      omitted_armed_watches: 8,
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("32 watches · 40 armed total · +8 more");
   });
 
   test("precedes the branch on the visible line", () => {

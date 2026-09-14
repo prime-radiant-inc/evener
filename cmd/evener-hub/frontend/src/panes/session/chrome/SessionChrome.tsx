@@ -303,6 +303,7 @@ export function SessionChrome({
             now={now}
             watches={fallbackSession?.watches}
             omittedWatches={fallbackSession?.omitted_watches}
+            omittedArmedWatches={fallbackSession?.omitted_armed_watches}
             hideTrigger
             refreshWhenHidden
             discoverWhenHidden={discoverActivity}

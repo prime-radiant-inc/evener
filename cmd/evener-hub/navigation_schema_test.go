@@ -394,6 +394,23 @@ func TestNavigationSessionValueValidatesOmittedWatches(t *testing.T) {
 	if navigationSessionValueValid(session) {
 		t.Fatal("a negative omitted watch count must be rejected")
 	}
+	// OmittedArmedWatches is a safe non-negative count AND a subset of
+	// OmittedWatches: an armed count above the omitted total would let the rail
+	// report more armed rows than rows it knows were dropped.
+	session = navigationSchemaSession("local:schema-session", "schema-session")
+	session.OmittedWatches = 3
+	session.OmittedArmedWatches = 2
+	if !navigationSessionValueValid(session) {
+		t.Fatal("an armed subset no greater than the omitted total must be accepted")
+	}
+	session.OmittedArmedWatches = 4
+	if navigationSessionValueValid(session) {
+		t.Fatal("an armed count above the omitted total must be rejected")
+	}
+	session.OmittedArmedWatches = -1
+	if navigationSessionValueValid(session) {
+		t.Fatal("a negative armed omitted count must be rejected")
+	}
 }
 
 func navigationSchemaChainSnapshot(t *testing.T, fixture navigationSchemaFixture, depth int) hubapi.NavigationSnapshot {

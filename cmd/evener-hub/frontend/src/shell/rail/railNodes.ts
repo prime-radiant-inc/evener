@@ -348,7 +348,10 @@ function watchOverflowId(parentRowID: string): string {
  * row as well as on the subagent's own - one watch, several counts. A receiver
  * watch belongs to the session whose summary carries it. */
 export function activeWatchCount(node: RailSession): number {
-  return armedWatchCount(node.watches);
+  // Include the armed rows the hub omitted: past the per-session cap they are
+  // not on `node.watches`, but they are still this session's armed watches, and
+  // counting only the retained rows understates the total.
+  return armedWatchCount(node.watches) + (node.omitted_armed_watches ?? 0);
 }
 
 /** The same count read straight off the wire list, so the activity panel's
@@ -370,13 +373,19 @@ export function armedWatchCount(watches: readonly NavigationWatchSummary[] | und
  * one-shot whose teardown is still pending projects inactive - the base is the
  * retained total and the armed count stays visible beside it
  * (`5 watches · 2 armed`, `5 watches · 2 armed · +3 more`), because the
- * summary's number must match the fold-out that shows all of them. */
+ * summary's number must match the fold-out that shows all of them.
+ *
+ * `armed` is the session's TRUE armed total (activeWatchCount), so it already
+ * includes armed rows the hub omitted. Whenever rows were omitted the figure is
+ * labelled `N armed total`, because the retained rows alone cannot say what
+ * covers the hidden ones - and the label must never understate the session's
+ * armed watches. */
 export function watchCountLabel(armed: number, retained: number, omitted: number): string {
-  const base =
-    retained === armed
-      ? `${armed} watch${armed === 1 ? "" : "es"}`
-      : `${retained} watch${retained === 1 ? "" : "es"} · ${armed} armed`;
-  return omitted > 0 ? `${base} · +${omitted} more` : base;
+  const retainedLabel = `${retained} watch${retained === 1 ? "" : "es"}`;
+  if (omitted === 0) {
+    return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
+  }
+  return `${retainedLabel} · ${armed} armed total · +${omitted} more`;
 }
 
 function subagentIsCurrent(child: RailSession): boolean {

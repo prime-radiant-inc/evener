@@ -1252,6 +1252,7 @@ export interface NavigationSessionSummary {
   more_subagents?: number;
   omitted_descendants?: number;
   omitted_watches?: number;
+  omitted_armed_watches?: number;
   running_jobs?: NavigationJobSummary[];
   completed_jobs?: NavigationJobSummary[];
   watches?: NavigationWatchSummary[];

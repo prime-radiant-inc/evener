@@ -5,6 +5,7 @@ import {
   relativeAge,
   resetSessionWatchesCacheForTests,
   selectRailModel,
+  selectSessionOmittedArmedWatches,
   selectSessionOmittedWatches,
   selectSessionWatches,
   sessionWatchesCacheSizeForTests,
@@ -240,6 +241,7 @@ function watchesState(
   title: string,
   watches: NavigationWatchSummary[],
   omittedWatches = 0,
+  omittedArmedWatches = 0,
 ): ReturnType<typeof navigationStore.getState> {
   const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
   const summary = {
@@ -253,6 +255,7 @@ function watchesState(
     live: true,
     watches,
     omitted_watches: omittedWatches,
+    omitted_armed_watches: omittedArmedWatches,
     children: [],
   } as unknown as NavigationSessionSummary;
   const resource: ResourceState = {
@@ -336,6 +339,21 @@ test("selectSessionOmittedWatches reads the count off the summary and is zero wh
   expect(selectSessionOmittedWatches("local:s", watchesState("t", [watchRow], 5))).toBe(5);
   expect(selectSessionOmittedWatches("local:s", watchesState("t", [watchRow]))).toBe(0);
   expect(selectSessionOmittedWatches("local:absent", watchesState("t", [watchRow], 5))).toBe(0);
+});
+
+// The armed subset of the omitted rows is what the rail and the activity panel
+// add to the retained armed count; it must be readable and zero when absent.
+test("selectSessionOmittedArmedWatches reads the armed subset and is zero when absent", () => {
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  expect(selectSessionOmittedArmedWatches("local:s", watchesState("t", [watchRow], 5, 3))).toBe(3);
+  expect(selectSessionOmittedArmedWatches("local:s", watchesState("t", [watchRow], 5))).toBe(0);
+  expect(selectSessionOmittedArmedWatches("local:absent", watchesState("t", [watchRow], 5, 3))).toBe(0);
 });
 
 test("selectSessionWatches drops the entry when the session summary vanishes", () => {

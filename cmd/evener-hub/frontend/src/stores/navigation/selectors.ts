@@ -301,6 +301,19 @@ export function selectSessionOmittedWatches(
   return summary?.omitted_watches ?? 0;
 }
 
+/** The armed subset of the rows `selectSessionOmittedWatches` counts. A session
+ * whose armed watches exceed the hub's per-session cap retains only the first
+ * of them, so the retained list alone cannot state the true armed total; the
+ * rail and the Activity panel add this to the armed rows they can see. Zero
+ * when the session is not materialized or carries no count. */
+export function selectSessionOmittedArmedWatches(
+  ref: string,
+  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
+): number {
+  const summary = selectSessionSummary(ref, state);
+  return summary?.omitted_armed_watches ?? 0;
+}
+
 import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
 import type { NormalizedResource } from "./codec";
 

@@ -56,6 +56,10 @@ export interface ActivityTreeProps {
   // fitter). The Watches group header reports them as "+N more" so the panel
   // never silently undercounts what the session holds.
   omittedWatches?: number;
+  // The armed subset of those omitted rows. Without it the header's armed count
+  // would report only the retained rows, understating a session whose armed
+  // watches exceed the hub's per-session cap.
+  omittedArmedWatches?: number;
   // The panel's ticking clock, used only by watch durations and the timeline.
   now?: number;
   continuationFailures?: Record<string, string | undefined>;
@@ -608,8 +612,13 @@ function watchRowViewPropsEqual(prev: WatchRowViewProps, next: WatchRowViewProps
 // The Watches group title that leads the panel body, with the count of armed
 // watches on its right. No "needs a look" count: the projection tracks no
 // drops, so there is no abnormal count to report.
+//
+// `armed` is the true total: the retained armed rows plus the armed rows the
+// hub omitted. Whenever rows were omitted the figure is labelled `N armed
+// total`, because it covers rows the panel does not list and the label must
+// never understate the session's armed watches.
 function WatchGroupHeader({ armed, omitted }: { armed: number; omitted: number }): ReactNode {
-  const count = omitted > 0 ? `${armed} armed · +${omitted} more` : `${armed} armed`;
+  const count = omitted > 0 ? `${armed} armed total · +${omitted} more` : `${armed} armed`;
   return (
     <div className={CLASS.watchGroup} data-testid="watch-group">
       <span className={CLASS.watchGroupTitle}>Watches</span>
@@ -814,6 +823,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
     onToggleFold,
     watches,
     omittedWatches = 0,
+    omittedArmedWatches = 0,
     now,
     continuationFailures = {},
     onContinue,
@@ -832,7 +842,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   const activityRows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
   const watchRows = useMemo(() => buildWatchRows(watches), [watches]);
   const rows = useMemo(() => [...watchRows, ...activityRows], [watchRows, activityRows]);
-  const armedWatches = useMemo(() => armedWatchCount(watches), [watches]);
+  const armedWatches = useMemo(() => armedWatchCount(watches) + omittedArmedWatches, [watches, omittedArmedWatches]);
 
   // Stable callbacks so the memoized row views below only re-render when
   // their own row's data, disclosure, or focus actually changes.

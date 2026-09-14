@@ -144,6 +144,39 @@ test("a session entity carrying omitted_watches decodes the count", () => {
   expect(railSession?.omitted_watches).toBe(5);
 });
 
+// The projector also reports how many of the omitted rows were ARMED, so the
+// rail can state the session's true armed total instead of the retained
+// subset. The codec must accept that field too, or a frame carrying it fails
+// validation and the store silently keeps the pre-watch snapshot.
+test("a session entity carrying omitted_armed_watches decodes the armed subset", () => {
+  const snapshot = liveSnapshot(key, LIVE_WATCHES);
+  const sessionKey = entityKey(key, "1");
+  snapshot.entities = snapshot.entities.map((entity) =>
+    entity.key === sessionKey
+      ? {
+          ...entity,
+          value: {
+            ...(entity.value as Record<string, unknown>),
+            omitted_watches: 5,
+            omitted_armed_watches: 3,
+          },
+        }
+      : entity,
+  );
+  const decoded = decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot));
+  expect(decoded.status).toBe("snapshot");
+  if (decoded.status !== "snapshot") throw new Error("fixture is incomplete");
+  const normalized = {
+    key,
+    graph: normalizedGraphFromSnapshot(decoded.snapshot),
+    version: decoded.version,
+    presence: "present" as const,
+  };
+  const railSession = [...selectRailModel(normalized).sessions.values()][0];
+  expect(railSession?.omitted_watches).toBe(5);
+  expect(railSession?.omitted_armed_watches).toBe(3);
+});
+
 test("an events cadence carrying its throttle and filter decodes and survives", () => {
   const eventsWatch: NavigationWatchSummary = {
     id: "watch_events",

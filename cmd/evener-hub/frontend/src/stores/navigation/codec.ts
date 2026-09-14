@@ -104,6 +104,7 @@ const SESSION_OPTIONAL = [
   "more_subagents",
   "omitted_descendants",
   "omitted_watches",
+  "omitted_armed_watches",
   "running_jobs",
   "completed_jobs",
   "watches",
@@ -205,6 +206,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.more_subagents, count) &&
     optional(value.omitted_descendants, count) &&
     optional(value.omitted_watches, count) &&
+    optional(value.omitted_armed_watches, count) &&
     optional(value.running_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
     optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
     optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue))

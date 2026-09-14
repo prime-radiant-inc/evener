@@ -416,7 +416,8 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		!utf8.ValidString(value.Project) || utf8.RuneCountInString(value.Title) > maxNavigationTitleRunes ||
 		utf8.RuneCountInString(value.Branch) > maxNavigationLabelRunes || len(value.Children) != 0 ||
 		!navigationIntCount(value.ClusterCount) || !navigationIntCount(value.MoreSubagents) ||
-		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) {
+		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) ||
+		!navigationIntCount(value.OmittedArmedWatches) || value.OmittedArmedWatches > value.OmittedWatches {
 		return false
 	}
 	for _, jobs := range []hubapi.NavigationArray[hubapi.NavigationJobSummary]{value.RunningJobs, value.CompletedJobs} {

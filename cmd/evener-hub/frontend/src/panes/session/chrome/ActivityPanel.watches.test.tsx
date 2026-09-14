@@ -147,7 +147,31 @@ describe("ActivityPanelBody watches", () => {
     );
 
     await screen.findByTestId("watch-group");
-    expect(screen.getByText("0 armed · +4 more")).toBeTruthy();
+    expect(screen.getByText("0 armed total · +4 more")).toBeTruthy();
     expect(screen.queryByText("No retained activity yet")).toBeNull();
+  });
+
+  test("the Watches header reports the armed total across omitted rows", async () => {
+    // More armed watches than the hub's per-session cap: 32 retained, 8 omitted
+    // and armed. The header must state the true armed total, not the retained
+    // subset, and make clear it covers the omitted rows.
+    const ref = "ref_watch_omitted_armed";
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    fake.on("evener/jobs/list", () => ({ data: emptyTree(ref) }));
+
+    render(
+      <ActivityPanelBody
+        sessionRef={ref}
+        model={testModel(ref)}
+        now={NOW}
+        watches={Array.from({ length: 32 }, (_, i) => watch({ id: `armed-${i}` }))}
+        omittedWatches={8}
+        omittedArmedWatches={8}
+      />,
+    );
+
+    await screen.findByTestId("watch-group");
+    expect(screen.getByText("40 armed total · +8 more")).toBeTruthy();
   });
 });

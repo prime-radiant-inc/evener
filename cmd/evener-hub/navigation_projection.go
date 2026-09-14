@@ -714,13 +714,29 @@ func trimNavigationWatchPayloads(rows []hubapi.NavigationSessionSummary, trim na
 			}
 		case navigationWatchPayloadNoWatches:
 			// Shedding a whole row is still an omission the UI must be able to
-			// report, so the count moves before the rows go. A later trim level
-			// that drops no row (NoDeliveryTimes) must leave it alone.
+			// report, so the counts move before the rows go. The armed subset
+			// moves with the total, preserving 0 <= armed <= omitted. A later
+			// trim level that drops no row (NoDeliveryTimes) must leave both
+			// alone.
+			rows[i].OmittedArmedWatches += countArmedNavigationWatches(rows[i].Watches)
 			rows[i].OmittedWatches += len(rows[i].Watches)
 			rows[i].Watches = nil
 		}
 		trimNavigationWatchPayloads(rows[i].Children, trim)
 	}
+}
+
+// countArmedNavigationWatches counts the armed rows in a watch list. Used only
+// when the fitter sheds a list, so the omitted armed count grows by exactly the
+// armed rows that leave.
+func countArmedNavigationWatches(watches hubapi.NavigationArray[hubapi.NavigationWatchSummary]) int {
+	count := 0
+	for _, watch := range watches {
+		if watch.Active {
+			count++
+		}
+	}
+	return count
 }
 
 func trimNavigationProjectWatchPayloads(resource *hubapi.NavigationProjectResource, trim navigationWatchPayloadTrim) {
@@ -1181,7 +1197,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		updatedAt = &updated
 	}
 	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
-	watches, omittedWatches := navigationWatches(node.Watches)
+	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
 		HostID:    ref.HostID,
@@ -1193,23 +1209,24 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		// label helper capped it at 512 runes, which is up to ~2 KiB of multibyte
 		// text -- a summary the codec rejects, failing the whole navigation response.
 		// Bound it in bytes for the same limit.
-		Project:        truncateNavigationBytes(node.Project, maxNavigationIdentityBytes),
-		State:          node.State,
-		Kind:           node.Kind,
-		Branch:         truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
-		ClusterCount:   node.ClusterCount,
-		Favorite:       !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
-		Rename:         p.projection.renameable(node.ID, ref.String()),
-		Live:           p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
-		AskPending:     node.AskPending,
-		Dormant:        node.Dormant,
-		UpdatedAt:      updatedAt,
-		MoreSubagents:  node.MoreSubagents,
-		RunningJobs:    navigationJobs(node.RunningJobs),
-		CompletedJobs:  navigationJobs(node.CompletedJobs),
-		Watches:        watches,
-		OmittedWatches: omittedWatches,
-		Children:       hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+		Project:             truncateNavigationBytes(node.Project, maxNavigationIdentityBytes),
+		State:               node.State,
+		Kind:                node.Kind,
+		Branch:              truncateNavigationRunes(node.Branch, maxNavigationLabelRunes),
+		ClusterCount:        node.ClusterCount,
+		Favorite:            !pinned && p.projection.sessionFavorite(node.ID, ref.String()),
+		Rename:              p.projection.renameable(node.ID, ref.String()),
+		Live:                p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
+		AskPending:          node.AskPending,
+		Dormant:             node.Dormant,
+		UpdatedAt:           updatedAt,
+		MoreSubagents:       node.MoreSubagents,
+		RunningJobs:         navigationJobs(node.RunningJobs),
+		CompletedJobs:       navigationJobs(node.CompletedJobs),
+		Watches:             watches,
+		OmittedWatches:      omittedWatches,
+		OmittedArmedWatches: omittedArmedWatches,
+		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
 }
 
@@ -1251,18 +1268,33 @@ func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.
 //
 // The list is capped at maxNavigationWatches. Armed (active) rows are ordered
 // ahead of inert ones before the cut, so a session with a lot of stale rows
-// still reports every armed watch it has and the rail's armed count cannot
-// silently drop. The second return is the exact number of rows the caller did
-// NOT receive: rows past the cap plus any row dropped because its created_at is
-// not a representable instant. No row leaves this function uncounted.
-func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArray[hubapi.NavigationWatchSummary], int) {
+// still reports as many armed watches as the cap allows. The second return is
+// the exact number of rows the caller did NOT receive: rows past the cap plus
+// any row dropped because its created_at is not a representable instant. No row
+// leaves this function uncounted.
+//
+// The third return is how many of those omitted rows were still armed. Once a
+// session holds more armed watches than the cap, the retained list alone
+// understates its armed total, so the count is taken from every skipped row
+// rather than inferred from the armed-first order: an unrepresentable armed row
+// can be dropped before the cap fills, and the cap boundary can itself fall
+// inside the armed run.
+func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArray[hubapi.NavigationWatchSummary], int, int) {
 	ordered := append([]appwire.EvenerWatchInfo(nil), watches...)
 	// Stable: armed rows keep their wire order ahead of inert ones, and rows
 	// within each class keep theirs.
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Active && !ordered[j].Active })
 	out := make(hubapi.NavigationArray[hubapi.NavigationWatchSummary], 0, min(len(ordered), maxNavigationWatches))
-	for _, watch := range ordered {
+	omittedArmed := 0
+	for index, watch := range ordered {
 		if len(out) == maxNavigationWatches {
+			// Every remaining row is omitted wholesale. Count the armed ones
+			// directly: the armed-first order does not make the whole tail inert.
+			for _, skipped := range ordered[index:] {
+				if skipped.Active {
+					omittedArmed++
+				}
+			}
 			break
 		}
 		// created_at is a REQUIRED watch field and the web codec validates it as
@@ -1272,6 +1304,9 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 		// whose created_at cannot be represented is dropped rather than poisoning
 		// every other row in the resource; the omitted count below accounts for it.
 		if !validNavigationTimestamp(watch.CreatedAt) {
+			if watch.Active {
+				omittedArmed++
+			}
 			continue
 		}
 		cadence := make([]hubapi.NavigationWatchCadence, 0, len(watch.Cadence))
@@ -1342,11 +1377,14 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 		// backstop: drop any row it would reject, so the omitted count below
 		// accounts for it exactly like an unrepresentable created_at.
 		if !navigationWatchValueValid(row) {
+			if watch.Active {
+				omittedArmed++
+			}
 			continue
 		}
 		out = append(out, row)
 	}
-	return out, len(watches) - len(out)
+	return out, len(watches) - len(out), omittedArmed
 }
 
 // navigationBoundEvery clamps the events cadence's every-Nth throttle to the

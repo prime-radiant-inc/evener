@@ -84,6 +84,39 @@ func TestNavigationWatchesAtOrUnderCapCarriesNoOmitted(t *testing.T) {
 	}
 }
 
+// Rows dropped past the cap can still be ARMED. The retained rows then hold
+// fewer armed watches than the session really has, so the projector must report
+// the armed subset of what it omitted - not just the total - or the rail's
+// armed count silently understates. The ordered list is armed-first, but the
+// count is taken directly from each skipped row, so it is exact even when the
+// cap boundary falls inside the armed run.
+func TestNavigationWatchesCapReportsOmittedArmedCount(t *testing.T) {
+	cases := []struct {
+		name      string
+		inert     int
+		wantOmit  int
+		wantArmed int
+	}{
+		{"every omitted row armed", 0, 40 - maxNavigationWatches, 40 - maxNavigationWatches},
+		{"armed run fits, only inert rows omitted", 12, 40 - maxNavigationWatches, 0},
+		{"cap boundary splits the armed run", 4, 40 - maxNavigationWatches, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			row := projectSessionWithWatches(t, watchListForCap(40, tc.inert))
+			if row.OmittedWatches != tc.wantOmit {
+				t.Fatalf("OmittedWatches = %d, want %d", row.OmittedWatches, tc.wantOmit)
+			}
+			if row.OmittedArmedWatches != tc.wantArmed {
+				t.Fatalf("OmittedArmedWatches = %d, want %d", row.OmittedArmedWatches, tc.wantArmed)
+			}
+			if row.OmittedArmedWatches > row.OmittedWatches {
+				t.Fatalf("OmittedArmedWatches %d exceeds OmittedWatches %d", row.OmittedArmedWatches, row.OmittedWatches)
+			}
+		})
+	}
+}
+
 // A row the projector cannot represent (an invalid created_at the codec would
 // reject) is dropped; the omitted count must include it so no layer drops a row
 // without counting it.
@@ -104,11 +137,12 @@ func TestNavigationWatchesCountsUnrepresentableDrops(t *testing.T) {
 func TestNavigationWatchTrimAddsOmittedCount(t *testing.T) {
 	rows := []hubapi.NavigationSessionSummary{{
 		Watches: hubapi.NavigationArray[hubapi.NavigationWatchSummary]{
-			{ID: "a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
-			{ID: "b", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
+			{ID: "a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true},
+			{ID: "b", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true},
 			{ID: "c", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
 		},
-		OmittedWatches: 5,
+		OmittedWatches:      5,
+		OmittedArmedWatches: 1,
 	}}
 	trimNavigationWatchPayloads(rows, navigationWatchPayloadNoWatches)
 	if rows[0].Watches != nil {
@@ -117,20 +151,34 @@ func TestNavigationWatchTrimAddsOmittedCount(t *testing.T) {
 	if rows[0].OmittedWatches != 8 {
 		t.Fatalf("OmittedWatches = %d, want 5 pre-existing + 3 trimmed = 8", rows[0].OmittedWatches)
 	}
+	// Two of the three shed rows were armed, so the armed subset must grow by
+	// two as well - and can never overtake the total.
+	if rows[0].OmittedArmedWatches != 3 {
+		t.Fatalf("OmittedArmedWatches = %d, want 1 pre-existing + 2 armed trimmed = 3", rows[0].OmittedArmedWatches)
+	}
+	if rows[0].OmittedArmedWatches > rows[0].OmittedWatches {
+		t.Fatalf("OmittedArmedWatches %d exceeds OmittedWatches %d", rows[0].OmittedArmedWatches, rows[0].OmittedWatches)
+	}
 	// Dropping delivery instants removes no row, so the count must not move.
 	rows[0].Watches = hubapi.NavigationArray[hubapi.NavigationWatchSummary]{{ID: "a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"}}
 	trimNavigationWatchPayloads(rows, navigationWatchPayloadNoDeliveryTimes)
 	if rows[0].OmittedWatches != 8 {
 		t.Fatalf("OmittedWatches changed on a non-dropping trim: %d, want 8", rows[0].OmittedWatches)
 	}
+	if rows[0].OmittedArmedWatches != 3 {
+		t.Fatalf("OmittedArmedWatches changed on a non-dropping trim: %d, want 3", rows[0].OmittedArmedWatches)
+	}
 }
 
 // cloneNavigationSummary must copy the count, or a fitted clone would lose it.
 func TestCloneNavigationSummaryCopiesOmittedWatches(t *testing.T) {
-	original := hubapi.NavigationSessionSummary{OmittedWatches: 7}
+	original := hubapi.NavigationSessionSummary{OmittedWatches: 7, OmittedArmedWatches: 3}
 	clone := cloneNavigationSummary(original)
 	if clone.OmittedWatches != 7 {
 		t.Fatalf("clone OmittedWatches = %d, want 7", clone.OmittedWatches)
+	}
+	if clone.OmittedArmedWatches != 3 {
+		t.Fatalf("clone OmittedArmedWatches = %d, want 3", clone.OmittedArmedWatches)
 	}
 }
 

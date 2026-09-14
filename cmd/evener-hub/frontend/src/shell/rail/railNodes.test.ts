@@ -215,10 +215,10 @@ describe("resource projection semantics", () => {
     // everything else - retained beyond the cap plus the omitted rows - so the
     // two surfaces cannot disagree about how many watches the session holds.
     const cases = [
-      { retained: 1, omitted: 4, label: "1 watch · +4 more" },
+      { retained: 1, omitted: 4, label: "1 watch · 1 armed total · +4 more" },
       { retained: 3, omitted: 0, label: "3 watches" },
-      { retained: 5, omitted: 3, label: "5 watches · +3 more" },
-      { retained: 2, omitted: 1, label: "2 watches · +1 more" },
+      { retained: 5, omitted: 3, label: "5 watches · 5 armed total · +3 more" },
+      { retained: 2, omitted: 1, label: "2 watches · 2 armed total · +1 more" },
     ];
     for (const c of cases) {
       const watches = Array.from({ length: c.retained }, (_, i) => watch({ id: `w${i}` }));
@@ -234,8 +234,8 @@ describe("resource projection semantics", () => {
       expect(shown + hidden).toBe(c.retained + c.omitted);
       expect(shown).toBe(Math.min(c.retained, 3));
       const label = watchCountLabel(activeWatchCount(root), c.retained, c.omitted);
-      // All-armed lists keep the exact wording the live review approved: no
-      // separate "armed" suffix when the retained rows are all armed.
+      // An all-armed list keeps the bare count when nothing was omitted; once
+      // rows were omitted the figure is labelled a total covering them.
       expect(label).toBe(c.label);
     }
   });
@@ -258,7 +258,7 @@ describe("resource projection semantics", () => {
       {
         watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
         omitted: 3,
-        label: "5 watches · 2 armed · +3 more",
+        label: "5 watches · 2 armed total · +3 more",
       },
       // All-inactive: 3 retained, 0 armed - still one total of 3.
       {
@@ -299,6 +299,33 @@ describe("resource projection semantics", () => {
     expect(activeWatchCount(parent)).toBe(1);
     expect(activeWatchCount(child)).toBe(2);
     expect(activeWatchCount(session({ ref: "none", row_id: "none" }))).toBe(0);
+  });
+
+  test("adds omitted armed rows to the armed total and labels what the number covers", () => {
+    // A session with more armed watches than the hub's per-session cap: 32
+    // retained, 8 more omitted and all of them armed. The retained rows alone
+    // would report 32, understating the session's armed total of 40.
+    const retained = Array.from({ length: 32 }, (_, i) => watch({ id: `w${i}` }));
+    const root = session({
+      ref: "root",
+      row_id: "root",
+      watches: retained,
+      omitted_watches: 8,
+      omitted_armed_watches: 8,
+    });
+    expect(activeWatchCount(root)).toBe(40);
+    expect(watchCountLabel(activeWatchCount(root), retained.length, 8)).toBe("32 watches · 40 armed total · +8 more");
+    // Even when none of the omitted rows were armed, the figure is still
+    // labelled a total: the panel cannot show which of the omitted rows were
+    // armed, so the number must say what it covers.
+    const mixed = session({
+      ref: "mixed",
+      row_id: "mixed",
+      watches: [watch({ id: "a" }), watch({ id: "b", active: false })],
+      omitted_watches: 3,
+      omitted_armed_watches: 0,
+    });
+    expect(watchCountLabel(activeWatchCount(mixed), 2, 3)).toBe("2 watches · 1 armed total · +3 more");
   });
 
   test("handles cluster disclosure without a second inactive fold", () => {

@@ -235,9 +235,15 @@ type NavigationSessionSummary struct {
 	// represent, and rows the byte-budget fitter shed. It mirrors
 	// OmittedDescendants so the rail and the activity panel can say "+N more"
 	// instead of silently undercounting a session's watches.
-	OmittedWatches int                                   `json:"omitted_watches,omitempty"`
-	RunningJobs    NavigationArray[NavigationJobSummary] `json:"running_jobs,omitempty"`
-	CompletedJobs  NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
+	OmittedWatches int `json:"omitted_watches,omitempty"`
+	// OmittedArmedWatches is the armed subset of OmittedWatches: of the rows
+	// this summary does not carry, how many were still armed. The retained rows
+	// alone cannot answer that once an armed watch falls past the per-session
+	// cap, so the rail and the activity panel read this to report the true
+	// armed total. It is never greater than OmittedWatches.
+	OmittedArmedWatches int                                   `json:"omitted_armed_watches,omitempty"`
+	RunningJobs         NavigationArray[NavigationJobSummary] `json:"running_jobs,omitempty"`
+	CompletedJobs       NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
 	// Watches carries this session's own live watches. Absent on an older
 	// daemon (or a past-index entry) and therefore absent-able for consumers.
 	Watches  NavigationArray[NavigationWatchSummary]   `json:"watches,omitempty"`
