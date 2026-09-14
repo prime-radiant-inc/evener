@@ -344,6 +344,41 @@ func TestSkillComposerBrowser(t *testing.T) {
 
 // ---- fixture ----
 
+// skillGuardLogDriverTail writes the end of the browser driver's log into the
+// test log. The driver reports what it was waiting for and what the page
+// actually showed; without it a failing run in CI says only that a step timed
+// out, with the evidence in a directory the runner discards.
+func skillGuardLogDriverTail(t *testing.T, driverLog string) {
+	t.Helper()
+	contents, err := os.ReadFile(driverLog)
+	if err != nil {
+		t.Logf("driver log unreadable (%v); it may never have been opened", err)
+		return
+	}
+	tail, kept := skillGuardDriverTail(contents, skillGuardDriverTailLines)
+	t.Logf("last %d line(s) of %s:\n%s", kept, driverLog, tail)
+}
+
+// skillGuardDriverTailLines is enough to carry the driver's last step, what it
+// was waiting for, and the page state it dumped, without burying the Go test
+// output that follows it in the same log.
+const skillGuardDriverTailLines = 40
+
+// skillGuardDriverTail returns the last `lines` lines of contents and how many
+// that came to. A trailing newline is not a line of its own, and a log shorter
+// than the limit is returned whole.
+func skillGuardDriverTail(contents []byte, lines int) (string, int) {
+	trimmed := strings.TrimRight(string(contents), "\n")
+	if trimmed == "" {
+		return "", 0
+	}
+	split := strings.Split(trimmed, "\n")
+	if len(split) > lines {
+		split = split[len(split)-lines:]
+	}
+	return strings.Join(split, "\n"), len(split)
+}
+
 func skillGuardSetup(t *testing.T) *skillGuardFixture {
 	t.Helper()
 	// Not t.TempDir(): on failure the artifacts (driver log, screenshots,
@@ -366,6 +401,11 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("test failed; keeping artifacts under %s", root)
+			// The kept directory is only reachable by someone on the machine.
+			// On CI nobody is, and the whole failure reads as one line naming
+			// a path that no longer exists by the time anyone looks, so the
+			// driver's own last words go into the test log too.
+			skillGuardLogDriverTail(t, filepath.Join(root, "artifacts", "driver.log"))
 			return
 		}
 		os.RemoveAll(root)
