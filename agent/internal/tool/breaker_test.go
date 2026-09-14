@@ -182,18 +182,22 @@ func TestFailureLedger_ConcurrentRecord_ConsistentTotal(t *testing.T) {
 	// 50 goroutines across 5 distinct signatures: total recorded entries must
 	// be exactly 5, each with a streak between 1 and 50 (races would corrupt
 	// counts or lose entries, not just get numbers wrong).
+	//
+	// This asserts against the semantic store because that is where the failure
+	// streak lives; the exact-call entry keeps only byte-identical repetition
+	// tracking and no longer carries a failure count.
 	total := 0
 	l.mu.Lock()
-	for _, e := range l.entries {
+	for _, e := range l.semantic {
 		total += e.count
 	}
-	numEntries := len(l.entries)
+	numEntries := len(l.semantic)
 	l.mu.Unlock()
 	if numEntries != 5 {
-		t.Fatalf("entries = %d, want 5 distinct signatures", numEntries)
+		t.Fatalf("semantic entries = %d, want 5 distinct signatures", numEntries)
 	}
 	if total != 50 {
-		t.Fatalf("summed counts = %d, want 50", total)
+		t.Fatalf("summed semantic counts = %d, want 50", total)
 	}
 }
 
