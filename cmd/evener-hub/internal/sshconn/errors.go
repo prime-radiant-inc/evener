@@ -1,0 +1,40 @@
+package sshconn
+
+import "errors"
+
+// Named sentinels for the failure classes spec 04's "Error handling" section
+// enumerates. Callers match them with errors.Is; each returned error wraps the
+// sentinel and adds the host, argv, or stderr tail that identifies the case.
+var (
+	// ErrHostNotFound marks an Ensure for a name the registry does not hold.
+	ErrHostNotFound = errors.New("sshconn: host not found")
+
+	// ErrSSHStart marks a failure to spawn or initialize the ssh bridge, or a
+	// preflight command that could not run. It is retried under backoff when
+	// the manager supervises a channel.
+	ErrSSHStart = errors.New("sshconn: ssh channel start failed")
+
+	// ErrSSHAuth marks a non-interactive authentication failure (BatchMode
+	// refused a password prompt, host key not trusted, no key/agent). It is
+	// terminal: the reconnect loop never spams ssh against a host that cannot
+	// authenticate.
+	ErrSSHAuth = errors.New("sshconn: ssh authentication failed")
+
+	// ErrProtocolIncompatible marks a host whose appwire protocol is not the
+	// controller's. Terminal, and refused before any bridge process starts.
+	ErrProtocolIncompatible = errors.New("sshconn: host protocol incompatible")
+
+	// ErrUnsupportedHost marks a host whose os/arch has no evener build.
+	// Terminal; no deploy is attempted.
+	ErrUnsupportedHost = errors.New("sshconn: unsupported host")
+
+	// ErrLaunchContract marks a host binary that does not advertise the
+	// launch flags the hub requires (today: api-log). In 04a this is surfaced;
+	// the version-match deploy that fixes it is 04b.
+	ErrLaunchContract = errors.New("sshconn: host launch contract not satisfied")
+
+	// ErrPreflightDecode marks preflight output (launch-check JSON or the
+	// environment probe) that could not be parsed. Treated as an incompatible
+	// host: terminal.
+	ErrPreflightDecode = errors.New("sshconn: preflight output unparseable")
+)
