@@ -458,7 +458,7 @@ func FuzzMsfzCallModelWithFallback(f *testing.F) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		modelResp, usedReq, attempt, callErr := sess.callModelWithFallback(ctx, profile, req, nil, "", 1)
+		modelResp, usedReq, attempt, _, callErr := sess.callModelWithFallback(ctx, profile, req, nil, "", 1)
 
 		if callErr == nil {
 			if usedReq.Model == "" {

@@ -50,7 +50,7 @@ func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
 	if req.MaxTokens == nil || *req.MaxTokens <= 0 || *req.MaxTokens > 19_045 {
 		t.Fatalf("prepared MaxTokens = %v, want positive reduced allocation within total cap", req.MaxTokens)
 	}
-	if _, _, _, err := sess.callModelWithFallback(ctx, profile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(ctx, profile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 	}
 	req = sess.applyResponsesContinuationShadowEstimate(req)
 	t.Logf("continuation request full=%d input=%d max=%d", req.FullHistoryInputTokensEstimate, req.InputTokensEstimate, *req.MaxTokens)
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err == nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err == nil {
 		t.Fatal("unsafe continuation delta was accepted")
 	}
 	if requests := adapter.Requests(); len(requests) != 0 {
@@ -155,7 +155,7 @@ func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(llm.Request) (int, bool) { return 400_000, true }
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("tiny delta")}, MaxTokens: new(131_072), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor"}
 	req = sess.applyResponsesContinuationShadowEstimate(req)
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	mu.Lock()
@@ -228,7 +228,7 @@ func TestSessionFallbackTokenBudgetUsesFallbackCap(t *testing.T) {
 		Messages:  []llm.Message{llm.User("task")},
 		MaxTokens: new(131_072),
 	}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	requests := fallbackAdapter.Requests()
@@ -269,7 +269,7 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
 	sess.contextMgr.RecordInputTokens(42, 0)
 
-	modelResp, usedReq, _, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
+	modelResp, usedReq, _, _, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
 		Provider: primary.ID(),
 		Model:    primary.Model(),
 		Messages: []llm.Message{llm.User("task")},
@@ -321,7 +321,7 @@ func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T
 		HistoryMode:        llm.HistoryModeResponsesDelta,
 		PreviousResponseID: "resp-anchor",
 	}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err == nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err == nil {
 		t.Fatal("callModelWithFallback succeeded by relabeling delta messages as full history")
 	}
 	if got := len(primaryAdapter.Requests()); got != 1 {
@@ -581,7 +581,7 @@ func TestSessionFallbackBudgetObservationBeforeClientAdmission(t *testing.T) {
 	sess.cfg.ModelFallbacks = []string{"budget-observe-fallback/fallback"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallbackProfile, nil }
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: []llm.Message{llm.User("task")}, MaxTokens: new(131_072)}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	mu.Lock()
@@ -626,7 +626,7 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallbackProfile, nil }
 	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4LargePNG()}}}}}
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: fullHistory, MaxTokens: new(131_072), FullHistoryInputTokensEstimate: 100_000}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, fullHistory, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, fullHistory, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	requests := fallback.Requests()
@@ -662,7 +662,7 @@ func TestSessionAnchorRejectionRebudgetsFullHistoryRequest(t *testing.T) {
 	defer sess.Close()
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("delta")}, MaxTokens: new(1_000), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor", FullHistoryInputTokensEstimate: 18_000}
 	fullHistory := []llm.Message{llm.User("small history")}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, fullHistory, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, fullHistory, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	requests := adapter.Requests()
@@ -713,7 +713,7 @@ func TestSessionUnsafeFallbackSkippedBeforeLaterFallbackSucceeds(t *testing.T) {
 		return laterProfile, nil
 	}
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: []llm.Message{llm.User("task")}, MaxTokens: new(131_072)}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	if got := len(unsafe.Requests()); got != 0 {
@@ -841,7 +841,7 @@ func TestSessionFallbackNonContextErrorContinuesConfiguredChain(t *testing.T) {
 		return fallbackBProfile, nil
 	}
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: []llm.Message{llm.User("task")}, MaxTokens: new(131_072)}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	if got := len(fallbackA.Requests()); got != 1 {

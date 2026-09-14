@@ -1135,7 +1135,7 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 // fallback-eligible permanent error, retries each configured fallback model in
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
-func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, fullHistory []llm.Message, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
+func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, fullHistory []llm.Message, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, *provider.Profile, error) {
 	previewCalls := map[string]struct{}{}
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -1166,6 +1166,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// earlier one under a caller holding it.
 	recorder := s.roundSalvageRecorder()
 	var primaryRecord groupRecord
+	// usedProfile names the model the round's outcome belongs to: the primary,
+	// unless a fallback answered. Everything downstream that describes the
+	// request's model — the context window, compaction pressure, the usage
+	// warning — must describe that same model.
+	usedProfile := profile
 	modelResp, err := s.callModel(callCtx, policy, profile, req, &primaryRecord)
 	rememberPreviews(modelResp)
 	recorder.Groups = append(recorder.Groups, primaryRecord)
@@ -1175,7 +1180,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// after compaction.
 	if err != nil && isProviderContextLengthError(err) {
 		group.SettleResult(callCtx, err)
-		return withPreviews(modelResp), req, attempt, err
+		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	// len(fullHistory) > 0 keeps the retry's precondition next to the retry:
 	// the rebuilt request sends fullHistory, so a delta paired with an empty
@@ -1214,7 +1219,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	}
 	if err != nil && isProviderContextLengthError(err) {
 		group.SettleResult(callCtx, err)
-		return withPreviews(modelResp), req, attempt, err
+		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	// Fallback chain: when the primary model returns a Permanent-class
 	// provider error (403/404/422/..., including an endpoint that cannot
@@ -1291,14 +1296,16 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			recorder.Groups = append(recorder.Groups, fallbackRecord)
 			if err != nil && isProviderContextLengthError(err) {
 				req = fbReq
+				usedProfile = fbProfile
 				group.SettleResult(callCtx, err)
-				return withPreviews(modelResp), req, attempt, err
+				return withPreviews(modelResp), req, attempt, usedProfile, err
 			}
 			if err == nil {
 				// Reflect the model that actually answered in the
 				// request used for downstream logging (transcript,
 				// EventAssistantTextStart fallback path, etc).
 				req = fbReq
+				usedProfile = fbProfile
 				if s.contextMgr != nil {
 					s.contextMgr.SetProfile(fbProfile)
 				}
@@ -1318,12 +1325,12 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	}
 	if err != nil {
 		group.SettleResult(callCtx, err)
-		return withPreviews(modelResp), req, attempt, err
+		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	attempt.Protocol = group.Protocol()
 	group.SettleResult(callCtx, nil)
-	return withPreviews(modelResp), req, attempt, nil
+	return withPreviews(modelResp), req, attempt, usedProfile, nil
 }
 
 func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) bool {

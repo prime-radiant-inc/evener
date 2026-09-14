@@ -233,7 +233,7 @@ func modelCallTailCatalogFallback(t *testing.T, selector byte) {
 	s.cfg.LLMRetryPolicy = &policy
 	s.cfg.ModelFallbacks = []string{"gpt-5.4"}
 	req := llm.Request{Provider: "openai", Model: "missing-primary", Messages: []llm.Message{llm.User("tail")}}
-	_, _, _, _ = s.callModelWithFallback(context.Background(), s.currentProfile(), req, nil, []string{"high", "xhigh"}[int(selector)&1], 1)
+	_, _, _, _, _ = s.callModelWithFallback(context.Background(), s.currentProfile(), req, nil, []string{"high", "xhigh"}[int(selector)&1], 1)
 }
 
 func modelCallTailSession(t *testing.T) *Session {
