@@ -657,3 +657,50 @@ func TestStopSurvivorsStopsWhenTheGroupGoes(t *testing.T) {
 		t.Fatalf("an empty group said %q, want nothing", quiet.String())
 	}
 }
+
+// failingOnceWriter fails the first write and records the rest, which is what
+// a pipe that breaks mid-copy looks like to the attempt: the command's own
+// output is lost, and the diagnostic about it still has somewhere to go.
+type failingOnceWriter struct {
+	failed bool
+	kept   bytes.Buffer
+}
+
+func (w *failingOnceWriter) Write(p []byte) (int, error) {
+	if !w.failed {
+		w.failed = true
+		return 0, errors.New("the pipe broke")
+	}
+	return w.kept.Write(p)
+}
+
+func TestBoundedAttemptFailsWhenTheCommandsOutputCouldNotBeRead(t *testing.T) {
+	stderr := &failingOnceWriter{}
+	// The command exits 0 and writes to stderr, whose copy fails: the wait
+	// then returns an error that is not the command's status. Reporting
+	// success here would hand a caller a list it cannot tell from a complete
+	// one.
+	result := runBoundedAttempt([]string{"sh", "-c", "echo something >&2; echo primeradiant.com/evener"}, 30*time.Second, time.Second, stderr, nil)
+	if result.err == nil {
+		t.Fatal("err = nil, want the copy failure the wait returned")
+	}
+	if result.exitCode != 1 {
+		t.Fatalf("exitCode = %d, want 1: the command exited 0, but its output did not arrive", result.exitCode)
+	}
+	if got := stderr.kept.String(); !strings.Contains(got, "could not be read in full") {
+		t.Fatalf("stderr = %q, want the attempt to say the output was lost", got)
+	}
+}
+
+func TestBoundedAttemptKeepsAnExitErrorsStatus(t *testing.T) {
+	var stderr bytes.Buffer
+	// The other half of the same branch: a command that exits non-zero returns
+	// an *exec.ExitError, and that status is the answer, not 1.
+	result := runBoundedAttempt([]string{"sh", "-c", "exit 7"}, 30*time.Second, time.Second, &stderr, nil)
+	if result.exitCode != 7 {
+		t.Fatalf("exitCode = %d, want 7: what the command decided", result.exitCode)
+	}
+	if strings.Contains(stderr.String(), "could not be read in full") {
+		t.Fatalf("stderr = %q, want nothing said about an output failure that did not happen", stderr.String())
+	}
+}

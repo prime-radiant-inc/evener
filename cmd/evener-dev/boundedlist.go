@@ -19,6 +19,7 @@ package dev
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -93,7 +94,16 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// expired.
 	completed := func(err error) attemptResult {
 		result.stdout = out.Bytes()
-		result.completeWith(procgroup.ExitCode(cmd.ProcessState), err, latch)
+		exitCode := procgroup.ExitCode(cmd.ProcessState)
+		if _, isExit := errors.AsType[*exec.ExitError](err); err != nil && !isExit && exitCode == 0 {
+			// The command exited cleanly and the wait still failed, which
+			// means its output did not all arrive: the list this attempt would
+			// hand on is not the list the command wrote, and a caller cannot
+			// tell the difference from a short one. Say so, and fail.
+			_, _ = fmt.Fprintf(guarded, "bounded-list: %s finished, but its output could not be read in full: %v\n", argv[0], err)
+			exitCode = 1
+		}
+		result.completeWith(exitCode, err, latch)
 		if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
 			// The command answered, but its group is still there holding the
 			// caches; another attempt would add a second one.
