@@ -183,6 +183,14 @@ function watchValue(value: unknown): boolean {
   );
 }
 
+// Mirrors navigationSessionValueValid exactly: the armed subset can never exceed
+// the omitted total, and an absent total counts as zero rather than as unknown.
+// No producer can send an armed count without a total -- the projector counts
+// every omitted armed row in the total too -- so treating absence as unknown
+// would only let a malformed snapshot through.
+const omittedArmedWithinOmitted = (value: Record<string, unknown>): boolean =>
+  ((value.omitted_armed_watches as number | undefined) ?? 0) <= ((value.omitted_watches as number | undefined) ?? 0);
+
 function sessionValue(value: unknown): value is Record<string, unknown> {
   return (
     exactKeys(value, SESSION_REQUIRED, SESSION_OPTIONAL) &&
@@ -207,6 +215,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.omitted_descendants, count) &&
     optional(value.omitted_watches, count) &&
     optional(value.omitted_armed_watches, count) &&
+    omittedArmedWithinOmitted(value) &&
     optional(value.running_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
     optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
     optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue))
