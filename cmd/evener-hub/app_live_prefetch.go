@@ -66,6 +66,10 @@ var liveClientState struct {
 
 // LiveRegistryClient builds a registry client with the process-wide
 // seams serialized (see liveClientState): safe from any goroutine.
+// EVERY hub path that constructs a registry client must come through
+// here — prefetch fetches, the credential-test probe, the model-list
+// loader — so no unguarded NewRegistryClient call can race the
+// globals from another goroutine.
 func LiveRegistryClient(reg *registry.Registry) *llm.Client {
 	root := reg.StateRoot()
 	liveClientState.Lock()

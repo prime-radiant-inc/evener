@@ -1,6 +1,10 @@
 package hubcore
 
 import (
+	"fmt"
+	"hash/fnv"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,9 +107,29 @@ func (h *ProviderRegistry) Reload() error {
 		}
 		h.noteLive(instance, instanceIdentity(r, instance), rows)
 	}
+	// Drop snapshots for names the fresh registry no longer knows, or
+	// whose identity changed: a later re-add under the same name must
+	// not resurrect the old endpoint's rows.
+	h.pruneLastGoodLive(r)
 	h.current, h.loadErr = r, nil
 	h.generation++
 	return nil
+}
+
+// pruneLastGoodLive deletes cached snapshots for instances absent
+// from r or identity-mismatched with it, so a later re-add under the
+// same name cannot resurrect the old endpoint's rows. Call with the
+// holder lock held.
+func (h *ProviderRegistry) pruneLastGoodLive(r *registry.Registry) {
+	for instance, snap := range h.lastGoodLive {
+		if _, ok := r.Instance(instance); !ok {
+			delete(h.lastGoodLive, instance)
+			continue
+		}
+		if instanceIdentity(r, instance) != snap.identity {
+			delete(h.lastGoodLive, instance)
+		}
+	}
 }
 
 // carryLive re-applies old's cached live listings onto r — but only
@@ -149,24 +173,31 @@ func instanceIdentity(r *registry.Registry, name string) string {
 		return "unknown\x00" + name
 	}
 	endpoint := ""
+	authprint := ""
 	if res, err := r.ResolveInstance(name); err == nil {
 		endpoint = res.Transport.ModelsEndpoint
+		authprint = authFingerprint(res)
 	}
-	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, strconv.Itoa(credentialLength(r, name))}, "\x00")
+	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
 }
 
-// credentialLength reports the length of the resolved credential value
-// behind name, or -1 when resolution yields none: rotation to a
-// different-length secret changes the fingerprint, and presence flips
-// (credential added/removed) change it too. Same-length rotation is
-// the residual gap — accepted, since secret bytes must never enter
-// the identity string.
-func credentialLength(r *registry.Registry, name string) int {
-	res, err := r.ResolveInstance(name)
-	if err != nil || res.Credential.Value == "" {
-		return -1
+// authFingerprint hashes the resolved authentication material
+// non-reversibly (FNV-64a over shapes and lengths, never secret
+// bytes): a same-length key rotation, an OAuth account swap, or a
+// header change alters the fingerprint, so rows fetched under the old
+// credential never publish into the newly-credentialed instance.
+func authFingerprint(res registry.Resolved) string {
+	h := fnv.New64a()
+	cred := res.Credential
+	_, _ = fmt.Fprintf(h, "%s\x01%d\x01", cred.Source, len(cred.Value))
+	_, _ = fmt.Fprintf(h, "%s\x01%s\x01", res.Transport.Auth, res.Transport.AuthHeader)
+	for _, k := range slices.Sorted(maps.Keys(res.CredentialHeaders)) {
+		_, _ = fmt.Fprintf(h, "%s\x01%d\x01", k, len(res.CredentialHeaders[k]))
 	}
-	return len(res.Credential.Value)
+	for _, k := range slices.Sorted(maps.Keys(res.Headers)) {
+		_, _ = fmt.Fprintf(h, "%s\x01%d\x01", k, len(res.Headers[k]))
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // Get returns the registry currently held; nil before the first successful load.

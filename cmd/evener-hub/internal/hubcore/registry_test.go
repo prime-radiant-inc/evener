@@ -101,6 +101,47 @@ func TestInstanceIdentityChangesOnCredentialRotation(t *testing.T) {
 	}
 }
 
+func TestReloadPrunesLastGoodLiveForRemovedInstances(t *testing.T) {
+	// A removed instance's snapshot must not linger: if the name
+	// returns later with a matching identity, the old rows must not
+	// resurrect.
+	h := NewProviderRegistry(hermeticLoader)
+	if err := h.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if h.Get() == nil {
+		t.Fatal("holder has no registry after Reload")
+	}
+	_, _, id := h.BeginLiveFetchReg("gw")
+	h.ReapplyLive(1, "gw", id, []registry.Model{{ID: "gpt-live-x"}})
+	h.mu.Lock()
+	_, kept := h.lastGoodLive["gw"]
+	h.mu.Unlock()
+	if !kept {
+		t.Fatal("no snapshot recorded for gw")
+	}
+	// Simulate a successful reload whose registry no longer knows gw
+	// by pruning against the hermetic registry with gw forgotten: use
+	// a fresh empty-config holder registry instead.
+	empty, err := registry.Load(
+		registry.WithNoUserLayer(),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	h.pruneLastGoodLive(empty)
+	_, kept = h.lastGoodLive["gw"]
+	h.mu.Unlock()
+	if kept {
+		t.Fatal("snapshot for removed instance survived pruning")
+	}
+}
+
 func TestReloadFailurePreservesLiveForRestoredInstances(t *testing.T) {
 	// A failed reload parks the holder on the implicit-only fallback;
 	// when the file is fixed and the last-good registry comes back,

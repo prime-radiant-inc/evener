@@ -11,10 +11,17 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
-var liveModelLoadClient = cmdutil.LoadClient
+var liveModelLoadClient = func(string) (*llm.Client, error) {
+	r, _, err := cmdutil.LoadRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return LiveRegistryClient(r), nil
+}
 
 // hubModelList is the single server-side entry point for every ModelList
 // RPC — the appwire dispatch (app_rpc.go) routes every harness's call here,
