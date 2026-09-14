@@ -596,12 +596,15 @@ func init() {
 	wsR.Body = webSearchBody
 	toolRenderers["web_search"] = wsR
 
-	// notes_read (shared notes): its output is notes text, so it renders
-	// through the terminal-boundary control strip before the generic JSON body
-	// — a legacy pre-strip note must not reach the terminal as an instruction.
-	// Scoped to this tool name alone: every other body, and all shell, file,
-	// and command output, keeps its ANSI.
-	notesReadRenderer := unknownToolRenderer("notes_read")
-	notesReadRenderer.Body = notesTextBody
-	toolRenderers["notes_read"] = notesReadRenderer
+	// The shared-notes tool family: their outputs are note text and URL lines
+	// (urls_add and urls_remove echo the entry they touched, notes_agent_set the
+	// stored note), so each renders through the terminal-boundary control strip
+	// before the generic JSON body — a legacy pre-strip value must not reach the
+	// terminal as an instruction. Scoped to these tool names alone: every other
+	// body, and all shell, file, and command output, keeps its ANSI.
+	for _, name := range []string{"notes_read", "notes_agent_set", "urls_add", "urls_remove"} {
+		renderer := unknownToolRenderer(name)
+		renderer.Body = notesTextBody
+		toolRenderers[name] = renderer
+	}
 }

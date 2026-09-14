@@ -57,29 +57,35 @@ func TestRenderSteeringStripsControls(t *testing.T) {
 	}
 }
 
-// TestRenderNotesReadStripsControls: the shared-notes read tool's output is
-// notes text, rendered today through the registry's generic JSON body.
-func TestRenderNotesReadStripsControls(t *testing.T) {
+// TestRenderSharedNotesToolsStripControls: every tool in the shared-notes family
+// renders notes text and URL lines — urls_add and urls_remove echo the entry they
+// touched, notes_agent_set the stored note — so each goes through the
+// terminal-boundary strip rather than the generic JSON body.
+func TestRenderSharedNotesToolsStripControls(t *testing.T) {
 	withPlainColorProfile(t)
-	tc := transcript.ToolCallInfo{
-		Name:     "notes_read",
-		Output:   notesPayload,
-		Done:     true,
-		Expanded: true,
-	}
-	got := RenderToolCall(tc, 100, false)
-	if stray := strayControl(got); stray != "" {
-		t.Fatalf("rendered notes_read body carries control %s:\n%q", stray, got)
-	}
-	for _, want := range []string{"rebuild the cache", "still working", "https://example.com/x"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("notes_read body lost %q while stripping:\n%q", want, got)
-		}
+	for _, name := range []string{"notes_read", "notes_agent_set", "urls_add", "urls_remove"} {
+		t.Run(name, func(t *testing.T) {
+			tc := transcript.ToolCallInfo{
+				Name:     name,
+				Output:   notesPayload,
+				Done:     true,
+				Expanded: true,
+			}
+			got := RenderToolCall(tc, 100, false)
+			if stray := strayControl(got); stray != "" {
+				t.Fatalf("rendered %s body carries control %s:\n%q", name, stray, got)
+			}
+			for _, want := range []string{"rebuild the cache", "still working", "https://example.com/x"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("%s body lost %q while stripping:\n%q", name, want, got)
+				}
+			}
+		})
 	}
 }
 
-// TestRenderNonNotesToolKeepsANSI is the over-reach guard: only notes_read is
-// routed through the terminal-boundary strip, because every other tool body —
+// TestRenderNonNotesToolKeepsANSI is the over-reach guard: only the shared-notes
+// family is routed through the terminal-boundary strip, because every other tool body —
 // and shell, command, and file output generally — can legitimately carry ANSI.
 func TestRenderNonNotesToolKeepsANSI(t *testing.T) {
 	withPlainColorProfile(t)
