@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // testCost is one top-level test and its surveyed wall-clock cost.
@@ -295,23 +296,18 @@ func parseFlags(flags []string) (parsedFlags, error) {
 				return parsedFlags{}, err
 			}
 			out.short = parsed
-			out.test = append(out.test, testFlag(name, inline, hasInline))
-		case name == "-v":
-			if _, err := boolFlagValue(name, inline, hasInline); err != nil {
+			out.test = append(out.test, testBoolFlag(name, parsed))
+		case testForwardBareFlags[name]:
+			parsed, err := boolFlagValue(name, inline, hasInline)
+			if err != nil {
 				return parsedFlags{}, err
 			}
-			out.test = append(out.test, testFlag(name, inline, hasInline))
-		case name == "-count":
-			if hasValue {
-				if _, err := strconv.Atoi(value); err != nil {
-					return parsedFlags{}, fmt.Errorf("-count=%s is not a number, and every shard binary would refuse it after the survey had already run", value)
-				}
-				out.test = append(out.test, "-test.count="+value)
-			}
-		case testForwardBareFlags[name]:
-			out.test = append(out.test, testFlag(name, inline, hasInline))
+			out.test = append(out.test, testBoolFlag(name, parsed))
 		case testForwardValueFlags[name]:
 			if hasValue {
+				if err := checkForwardedValue(name, value); err != nil {
+					return parsedFlags{}, err
+				}
 				out.test = append(out.test, "-test."+strings.TrimPrefix(name, "-")+"="+value)
 			}
 		case testRefusedValueFlags[name] || testRefusedBareFlags[name]:
@@ -343,14 +339,63 @@ func boolFlagValue(name, inline string, hasInline bool) (bool, error) {
 	return parsed, nil
 }
 
-// testFlag is the shard binary's spelling of a flag, with the caller's inline
-// value kept as written.
-func testFlag(name, inline string, hasInline bool) string {
+// testBoolFlag is the shard binary's spelling of a boolean flag. The value is
+// canonicalised rather than passed on as the caller wrote it: go's flag
+// package reads -v=1, -v=t and -v=TRUE as true, but the test binary's own -v
+// is not a plain boolean -- it takes true, false or test2json -- so those
+// spellings reach it as an error after the survey, the build and the launch.
+// true becomes the bare flag and false the explicit =false, which every
+// boolean the shards are given accepts.
+func testBoolFlag(name string, value bool) string {
 	spelled := "-test." + strings.TrimPrefix(name, "-")
-	if hasInline {
-		return spelled + "=" + inline
+	if value {
+		return spelled
 	}
-	return spelled
+	return spelled + "=false"
+}
+
+// checkForwardedValue refuses at parse time what the shard binary would refuse
+// at its own door, with the same reasoning as -short: the alternative is a
+// survey, a build and a launch of every shard before the flag is read.
+func checkForwardedValue(name, value string) error {
+	switch name {
+	case "-count":
+		// -test.count is a flag.Uint, so -1 and +3 are not counts.
+		if _, err := strconv.ParseUint(value, 10, 64); err != nil {
+			return fmt.Errorf("-count=%s is not a count the shard binaries would take, and they would refuse it after the survey had already run", value)
+		}
+	case "-timeout":
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("-timeout=%s is not a duration, and the survey would have run before any shard said so", value)
+		}
+	case "-shuffle":
+		if value != "off" && value != "on" {
+			if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+				return fmt.Errorf("-shuffle=%s is not off, on, or a seed, and the survey would have run before any shard said so", value)
+			}
+		}
+	}
+	return nil
+}
+
+// checkGoflags refuses a test-side flag that arrives through GOFLAGS. The
+// toolchain applies GOFLAGS to `go test -c`, which compiles the binary; this
+// runner then launches that binary itself, so a -short or -count sitting in
+// GOFLAGS reaches neither the build nor the shards and silently does nothing.
+// Build-side entries are another matter: those do reach the compile, and pass
+// through untouched.
+func checkGoflags(goflags string) error {
+	for entry := range strings.FieldsSeq(goflags) {
+		name := goFlag(entry)
+		if i := strings.IndexByte(name, '='); i > 0 {
+			name = name[:i]
+		}
+		if testForwardValueFlags[name] || testForwardBareFlags[name] ||
+			testRefusedValueFlags[name] || testRefusedBareFlags[name] {
+			return fmt.Errorf("GOFLAGS carries %s, which is a `go test` flag for the test binary, not for the build: this runner compiles with `go test -c` and launches the shards itself, so a flag there reaches neither. Pass it on the command line instead", name)
+		}
+	}
+	return nil
 }
 
 // testSetKey is the survey cache key: the identity of the sorted test list

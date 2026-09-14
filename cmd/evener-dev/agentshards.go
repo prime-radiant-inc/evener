@@ -292,6 +292,15 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
 		return 1
 	}
+	goflags, err := effectiveGoflags()
+	if err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		return 1
+	}
+	if err := checkGoflags(goflags); err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		return 1
+	}
 	extraFlags := parsed.test
 	buildArgs := append([]string{"test", "-c"}, parsed.build...)
 	buildArgs = append(buildArgs, "-o", build, ".")
@@ -313,7 +322,7 @@ func runShards(cfg shardsConfig) int {
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
-	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed)
+	cachedSurvey := cfg.cachedSurveyPath(listOut, parsed, goflags)
 
 	var costs []testCost
 	if !cfg.noSurvey {
@@ -473,15 +482,16 @@ func runShards(cfg shardsConfig) int {
 // effectiveGoflags is what the toolchain will actually apply, which is the
 // environment's GOFLAGS layered over `go env -w`'s. It is part of the survey
 // cache key: a flag that arrives this way changes the binary without appearing
-// in any argument list the runner can see. An unreadable answer is an empty
-// one -- the key then covers one fewer thing, which costs a survey, never a
-// wrong one.
-func effectiveGoflags() string {
+// in any argument list the runner can see. An unreadable answer is not treated
+// as an empty one -- that is the key for "no GOFLAGS at all", and handing one
+// run's survey to another under a different build is the mistake this is in
+// the key to prevent -- so the run stops instead.
+func effectiveGoflags() (string, error) {
 	out, err := exec.CommandContext(context.Background(), "go", "env", "GOFLAGS").Output()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("reading GOFLAGS: %w", err)
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(string(out)), nil
 }
 
 // surveyRedLine is the excerpt grep the script used when the survey pass came
@@ -493,7 +503,7 @@ var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
 // cachedSurveyPath resolves the survey cache file for this test set, or ""
 // when there is nowhere to cache. Cache trouble is never fatal — it only
 // costs the next run a survey.
-func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags) string {
+func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags, goflags string) string {
 	cacheDir := cfg.cacheDir
 	if cacheDir == "" {
 		out, err := exec.CommandContext(context.Background(), "go", "env", "GOCACHE").Output()
@@ -505,7 +515,7 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags) str
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed, effectiveGoflags())+".log")
+	return filepath.Join(cacheDir, "survey-"+testSetKey(listOut, parsed, goflags)+".log")
 }
 
 // surveyCoversTestSet reports whether a cached survey accounts for every test

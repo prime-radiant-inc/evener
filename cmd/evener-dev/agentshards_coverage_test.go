@@ -229,7 +229,7 @@ func TestReplayMatchingLimit(t *testing.T) {
 // TestCachedSurveyPathExplicit covers the explicit cacheDir path.
 func TestCachedSurveyPathExplicit(t *testing.T) {
 	cfg := shardsConfig{cacheDir: t.TempDir()}
-	got := cfg.cachedSurveyPath("TestA\nTestB\n", parsedFlags{})
+	got := cfg.cachedSurveyPath("TestA\nTestB\n", parsedFlags{}, "")
 	if got == "" {
 		t.Fatalf("cachedSurveyPath should not be empty with explicit cacheDir")
 	}
@@ -249,7 +249,7 @@ func TestCachedSurveyPathEmptyGOCACHE(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.cacheDir = filepath.Join(conflict, "sub", "cache")
-	got := cfg.cachedSurveyPath("TestA\n", parsedFlags{})
+	got := cfg.cachedSurveyPath("TestA\n", parsedFlags{}, "")
 	if got != "" {
 		t.Fatalf("cachedSurveyPath with unwritable cacheDir should return empty, got %q", got)
 	}

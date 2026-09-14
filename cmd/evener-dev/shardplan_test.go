@@ -153,7 +153,7 @@ func TestParseFlagsReadsShortInEverySpelling(t *testing.T) {
 		{flags: []string{"-short=false", "-short"}, want: true},
 		{flags: []string{"-short", "-short=false"}, want: false},
 		// A flag's value is a value, not a flag.
-		{flags: []string{"-timeout", "-short"}, want: false},
+		{flags: []string{"-tags", "-short"}, want: false},
 		{flags: nil, want: false},
 	} {
 		parsed, err := parseFlags(tc.flags)
@@ -212,12 +212,12 @@ func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
 		}
 	}
 	// A -C that is another flag's value is a value.
-	parsed, err := parseFlags([]string{"-timeout", "-C", "-short"})
+	parsed, err := parseFlags([]string{"-tags", "-C", "-short"})
 	if err != nil {
-		t.Fatalf("parseFlags(-timeout -C -short) = %v", err)
+		t.Fatalf("parseFlags(-tags -C -short) = %v", err)
 	}
-	if parsed.short != true || len(parsed.build) != 0 {
-		t.Fatalf("parseFlags(-timeout -C -short) = %+v, want short with no build flags", parsed)
+	if !parsed.short || !reflect.DeepEqual(parsed.build, []string{"-tags", "-C"}) {
+		t.Fatalf("parseFlags(-tags -C -short) = %+v, want short with -tags taking -C as its value", parsed)
 	}
 }
 
@@ -244,10 +244,27 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.timeout=5m", "-test.shuffle=on", "-test.failfast"},
 		},
 		{
-			name:  "a forwarded flag's value is a value, even spelled like a build flag",
+			// The value is consumed as a value, and then read: a caller who
+			// wrote -timeout and then forgot its value gets told here, not
+			// after the survey.
+			name:  "a forwarded flag's value is checked, not guessed at",
 			flags: []string{"-timeout", "-race", "-short"},
-			build: nil,
-			test:  []string{"-test.timeout=-race", "-test.short"},
+			err:   "-timeout=-race is not a duration",
+		},
+		{
+			name:  "the values the shards would take",
+			flags: []string{"-timeout", "20m", "-shuffle", "42", "-count", "2"},
+			test:  []string{"-test.timeout=20m", "-test.shuffle=42", "-test.count=2"},
+		},
+		{
+			name:  "-count is a count, not any number",
+			flags: []string{"-count=-1"},
+			err:   "-count=-1 is not a count",
+		},
+		{
+			name:  "a seed or off or on, and nothing else, shuffles",
+			flags: []string{"-shuffle=maybe"},
+			err:   "-shuffle=maybe is not off, on, or a seed",
 		},
 		{
 			name:  "the build flags that used to be dropped without a word",
@@ -308,9 +325,17 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test: nil,
 		},
 		{
-			name:  "the =true spelling of a test flag keeps its value",
-			flags: []string{"-short=true", "-v=false", "--short=true"},
-			test:  []string{"-test.short=true", "-test.v=false", "-test.short=true"},
+			// Canonicalised, because the test binary's -v takes true, false or
+			// test2json and nothing else, while go's flag package reads -v=1,
+			// -v=t and -v=TRUE as true.
+			name:  "boolean spellings become the two the shards accept",
+			flags: []string{"-short=true", "-v=false", "--short=t", "-failfast=0"},
+			test:  []string{"-test.short", "-test.v=false", "-test.short", "-test.failfast=false"},
+		},
+		{
+			name:  "-v=t is -test.v, not a value the binary would refuse",
+			flags: []string{"-v=t"},
+			test:  []string{"-test.v"},
 		},
 		{
 			// The value of a refused flag is still consumed with it, so it
@@ -333,10 +358,10 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			test:  []string{"-test.count=3"},
 		},
 		{
-			name:  "a value that looks like a build flag is still a value",
-			flags: []string{"-timeout", "-trimpath", "-count=1"},
-			build: nil,
-			test:  []string{"-test.timeout=-trimpath", "-test.count=1"},
+			name:  "a build flag's value that looks like a flag is still a value",
+			flags: []string{"-tags", "-trimpath", "-count=1"},
+			build: []string{"-tags", "-trimpath"},
+			test:  []string{"-test.count=1"},
 		},
 		{
 			name:  "-p is the build's parallelism, in both spellings",
@@ -394,5 +419,35 @@ func TestTestSetKeyIsOrderInsensitiveAndStable(t *testing.T) {
 	goflags := testSetKey("TestA\nTestB\n", parsedFlags{}, "-race")
 	if goflags == a || goflags == race || goflags == short {
 		t.Fatalf("a survey under GOFLAGS shares another key: %q", goflags)
+	}
+}
+
+func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		goflags string
+		err     string
+	}{
+		{name: "nothing set", goflags: ""},
+		{name: "build flags flow to the compile", goflags: "-mod=mod -trimpath -tags=integration"},
+		{name: "a test flag reaches neither half", goflags: "-mod=mod -short", err: "-short"},
+		{name: "and in either spelling", goflags: "--count=2", err: "-count"},
+		{name: "including one this runner refuses outright", goflags: "-run=TestFoo", err: "-run"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkGoflags(tc.goflags)
+			if tc.err == "" {
+				if err != nil {
+					t.Fatalf("checkGoflags(%q) = %v, want nothing", tc.goflags, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("checkGoflags(%q) = %v, want a refusal naming %s", tc.goflags, err, tc.err)
+			}
+			if !strings.Contains(err.Error(), "command line") {
+				t.Fatalf("checkGoflags(%q) = %v, want it to say where the flag does work", tc.goflags, err)
+			}
+		})
 	}
 }
