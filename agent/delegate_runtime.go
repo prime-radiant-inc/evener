@@ -2166,11 +2166,27 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	// proves the environment held no scratch this restore could have mistaken
 	// for its own mint.
 	mintedScratch := ownsFresh
+	// adoptedScratch records that adoption below transferred a durable retained
+	// allocation onto an environment this restore created. ownsFresh says only
+	// that the environment is this restore's; after adoption it exposes a
+	// retained handle the manifest still references, never a mint to dispose.
+	adoptedScratch := false
 	defer func() {
 		// The construction below runs the child's git snapshot, which is what
 		// mints an unsandboxed environment's scratch, so a failure after that
 		// point has one to drop as surely as a sandboxed restore has its owned one.
-		if discardEnv && mintedScratch {
+		if !discardEnv {
+			return
+		}
+		switch {
+		case adoptedScratch:
+			// Release the lease the adoption took but keep the directory and its
+			// manifest reference, the handoff a retirement makes: the retained
+			// allocation is durable state a later restore reacquires.
+			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
+				local.RetainSessionScratch()
+			}
+		case mintedScratch:
 			disposeUnadoptedScratch(childEnv)
 		}
 	}()
@@ -2182,9 +2198,14 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	// Binding the exact consumer here is what restores the child's allocation at
 	// its original absolute path instead of minting a replacement.
 	if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
+		// The scratch the environment exposes before adoption is a mint of this
+		// restore (a sandboxed env's provisioned scratch, or none at all); a
+		// scratch adoption installs afterwards is a transferred retained handle.
+		beforeDir := local.SessionScratchDir()
 		if _, err := s.adoptConsumerScratch(local, descriptor.ChildSessionID); err != nil {
 			return nil, false, fmt.Errorf("restore delegate scratch: %w", err)
 		}
+		afterDir := local.SessionScratchDir()
 		// Ownership and failure-path disposal are separate concerns. A shared
 		// child must not own its parent's environment (ownsFresh stays false),
 		// but its construction still mints a scratch on that environment when
@@ -2194,8 +2215,14 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		// was installed: a scratch present before construction — the parent's
 		// own, or the child's adopted retained one — is never this restore's to
 		// dispose.
-		if !ownsFresh && local.SessionScratchDir() == "" {
+		if !ownsFresh && afterDir == "" {
 			mintedScratch = true
+		}
+		// Adoption filled an environment this restore created and that held no
+		// scratch yet. The handle it installed is retained durable state, so the
+		// failure path must retain it, not dispose it.
+		if ownsFresh && beforeDir == "" && afterDir != "" {
+			adoptedScratch = true
 		}
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)

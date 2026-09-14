@@ -975,6 +975,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if err := s.prepareRetainedScratch(); err != nil {
 			return nil, fmt.Errorf("prepare retained scratch: %w", err)
 		}
+		// A failed restore returns nil and is never closed, so the leases
+		// prepareRetainedScratch just reacquired would stay held with no owner.
+		// Release every handle no live environment adopted; a transfer that
+		// succeeded removed its handle from the pool, so an allocation a live
+		// environment adopted is preserved. The directories and the manifest
+		// references stay, so a later restore reacquires them.
+		defer func() {
+			if !restoreComplete {
+				releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
+			}
+		}()
 		// Adopt the root consumer's own current binding onto the restored
 		// environment before it can mint or launch work, so a resumed root
 		// keeps its original scratch path (plan 654's root role).
