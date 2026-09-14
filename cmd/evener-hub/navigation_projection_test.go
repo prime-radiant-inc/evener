@@ -286,6 +286,91 @@ func TestNavigationWatchProjectionDropsWatchWithUnrepresentableCreatedAt(t *test
 	}
 }
 
+// TestNavigationWatchProjectionDropsSchemaInvalidRows pins the review fix for
+// the projector's last unchecked path: navigationWatches byte-bounded and
+// clamped representable values but never ran the hub schema's own watch
+// predicate, so a row with an empty ID, a negative deliveries count, or a
+// negative cadence seconds reached the wire and failed
+// navigationSessionValueValid for the WHOLE session -- and through it every
+// other session in the resource. Each such row is dropped and counted as
+// omitted, exactly like an unrepresentable created_at.
+func TestNavigationWatchProjectionDropsSchemaInvalidRows(t *testing.T) {
+	valid := func(id string) appwire.EvenerWatchInfo {
+		return appwire.EvenerWatchInfo{ID: id, Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}
+	}
+	negativeDeliveries := valid("watch-bad")
+	negativeDeliveries.Deliveries = -1
+	negativeSeconds := valid("watch-bad")
+	negativeSeconds.Cadence = []appwire.EvenerWatchCadence{{Kind: "every", Seconds: -1}}
+	tests := []struct {
+		name string
+		bad  appwire.EvenerWatchInfo
+	}{
+		{name: "empty id", bad: appwire.EvenerWatchInfo{Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}},
+		{name: "negative deliveries", bad: negativeDeliveries},
+		{name: "negative cadence seconds", bad: negativeSeconds},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			row := projectSessionWithWatches(t, []appwire.EvenerWatchInfo{valid("watch-ok"), tc.bad})
+			if len(row.Watches) != 1 || row.Watches[0].ID != "watch-ok" {
+				t.Fatalf("kept watches = %+v, want only the surviving watch-ok", row.Watches)
+			}
+			if row.OmittedWatches != 1 {
+				t.Fatalf("OmittedWatches = %d, want 1 for the schema-invalid row", row.OmittedWatches)
+			}
+			// The projected summary is what reaches the client, so it must pass
+			// the very predicate the malformed row would have failed.
+			if !navigationSessionValueValid(row) {
+				t.Fatalf("projected summary rejected by the hub schema: %+v", row)
+			}
+		})
+	}
+}
+
+// The point of dropping the bad row rather than failing the resource: the OTHER
+// sessions in the same resource stay listed and readable.
+func TestNavigationWatchProjectionInvalidRowKeepsOtherSessions(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{
+			{
+				ID: "session-bad", Title: "bad", Kind: "session", State: "idle",
+				Watches: []appwire.EvenerWatchInfo{{Source: "self", CreatedAt: "2026-09-12T10:00:00Z"}},
+			},
+			{
+				ID: "session-ok", Title: "ok", Kind: "session", State: "idle",
+				Watches: []appwire.EvenerWatchInfo{{ID: "watch-ok", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"}},
+			},
+		},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	if len(resource.Current.Sessions) != 2 {
+		t.Fatalf("sessions = %+v, want both sessions still listed", resource.Current.Sessions)
+	}
+	rows := make(map[string]hubapi.NavigationSessionSummary, len(resource.Current.Sessions))
+	for _, row := range resource.Current.Sessions {
+		rows[row.SessionID] = row
+		if !navigationSessionValueValid(row) {
+			t.Fatalf("session %q rejected by the hub schema: %+v", row.SessionID, row)
+		}
+	}
+	if len(rows["session-bad"].Watches) != 0 || rows["session-bad"].OmittedWatches != 1 {
+		t.Fatalf("session-bad watches = %+v / omitted %d, want none kept and the drop counted", rows["session-bad"].Watches, rows["session-bad"].OmittedWatches)
+	}
+	if len(rows["session-ok"].Watches) != 1 || rows["session-ok"].Watches[0].ID != "watch-ok" {
+		t.Fatalf("session-ok watches = %+v, want the valid row untouched", rows["session-ok"].Watches)
+	}
+}
+
 // TestNavigationWatchCadenceCarriesEventEveryAndFilter proves the events
 // cadence's every-Nth count and filter summary reach the hub's wire summary,
 // so the rail and session panel can distinguish a throttled or filtered event

@@ -215,10 +215,10 @@ describe("resource projection semantics", () => {
     // everything else - retained beyond the cap plus the omitted rows - so the
     // two surfaces cannot disagree about how many watches the session holds.
     const cases = [
-      { retained: 1, omitted: 4 },
-      { retained: 3, omitted: 0 },
-      { retained: 5, omitted: 3 },
-      { retained: 2, omitted: 1 },
+      { retained: 1, omitted: 4, label: "1 watch · +4 more" },
+      { retained: 3, omitted: 0, label: "3 watches" },
+      { retained: 5, omitted: 3, label: "5 watches · +3 more" },
+      { retained: 2, omitted: 1, label: "2 watches · +1 more" },
     ];
     for (const c of cases) {
       const watches = Array.from({ length: c.retained }, (_, i) => watch({ id: `w${i}` }));
@@ -233,9 +233,52 @@ describe("resource projection semantics", () => {
       // number the line's total implies.
       expect(shown + hidden).toBe(c.retained + c.omitted);
       expect(shown).toBe(Math.min(c.retained, 3));
-      const label = watchCountLabel(activeWatchCount(root), c.omitted);
-      if (c.omitted > 0) expect(label).toContain(`+${c.omitted} more`);
-      else expect(label).not.toContain("more");
+      const label = watchCountLabel(activeWatchCount(root), c.retained, c.omitted);
+      // All-armed lists keep the exact wording the live review approved: no
+      // separate "armed" suffix when the retained rows are all armed.
+      expect(label).toBe(c.label);
+    }
+  });
+
+  test("the summary line's total includes retained-but-inactive watches", () => {
+    // A fired one-shot whose teardown is still pending projects inactive, so a
+    // session can hold retained rows that are not armed. The summary line used
+    // to count only the armed rows (`2 watches`) while the fold-out listed all
+    // five, so the two surfaces disagreed. One total now: the retained count,
+    // with the armed count beside it.
+    const inactive = (id: string) => watch({ id, active: false });
+    const cases = [
+      // 2 armed + 3 inactive, nothing omitted: 5 total, 2 armed.
+      {
+        watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
+        omitted: 0,
+        label: "5 watches · 2 armed",
+      },
+      // Same, plus 3 rows the projector omitted.
+      {
+        watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
+        omitted: 3,
+        label: "5 watches · 2 armed · +3 more",
+      },
+      // All-inactive: 3 retained, 0 armed - still one total of 3.
+      {
+        watches: [inactive("w1"), inactive("w2"), inactive("w3")],
+        omitted: 0,
+        label: "3 watches · 0 armed",
+      },
+    ];
+    for (const c of cases) {
+      const root = session({ ref: "root", row_id: "root", watches: c.watches, omitted_watches: c.omitted });
+      const [node] = sessionNodes([root], closed);
+      const children = node?.children ?? [];
+      const shown = children.filter((child) => child.kind === "watch").length;
+      const overflow = children.find((child) => child.kind === "overflow") as OverflowRailNode | undefined;
+      const hidden = overflow?.count ?? 0;
+      const label = watchCountLabel(activeWatchCount(root), root.watches?.length ?? 0, c.omitted);
+      expect(label).toBe(c.label);
+      // The summary's total - the retained base plus the omitted "+N more" -
+      // is exactly the fold-out's shown-plus-hidden total.
+      expect((root.watches?.length ?? 0) + c.omitted).toBe(shown + hidden);
     }
   });
 

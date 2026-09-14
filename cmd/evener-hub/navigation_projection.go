@@ -1309,7 +1309,7 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 				deliveryTimes = append(deliveryTimes, at)
 			}
 		}
-		out = append(out, hubapi.NavigationWatchSummary{
+		row := hubapi.NavigationWatchSummary{
 			// ID and Source are identities to the codec and the hub schema
 			// (identity() at maxNavigationIdentityBytes BYTES), so they are
 			// bounded in bytes rather than runes: every value within the limit
@@ -1332,7 +1332,19 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 			CreatedAt:      watch.CreatedAt,
 			Active:         watch.Active,
 			EndReason:      truncateNavigationRunes(watch.EndReason, maxNavigationLabelRunes),
-		})
+		}
+		// The bounding above keeps a representable value representable, but it
+		// cannot rescue a value that was never valid (an empty ID or Source, a
+		// negative or over-range deliveries count, a cadence with an empty kind
+		// or negative/non-finite seconds). Carrying one such row makes
+		// navigationSessionValueValid reject the WHOLE session -- and through it
+		// every session in the resource. The schema's own predicate is the
+		// backstop: drop any row it would reject, so the omitted count below
+		// accounts for it exactly like an unrepresentable created_at.
+		if !navigationWatchValueValid(row) {
+			continue
+		}
+		out = append(out, row)
 	}
 	return out, len(watches) - len(out)
 }

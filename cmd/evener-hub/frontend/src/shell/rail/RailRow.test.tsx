@@ -748,14 +748,17 @@ describe("watch count on the summary line", () => {
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
   });
 
-  test("counts only armed watches, so a fired one does not inflate it", () => {
+  test("reports the retained total with the armed count, so a fired row is still counted", () => {
     const session = apiNode({
       state: "idle",
       age: "2m",
       watches: [watchSummary({ id: "armed" }), watchSummary({ id: "fired", active: false })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
+    // A retained-but-inactive row is still listed by the fold-out, so the
+    // summary's total is two; the armed count stays visible beside it and is
+    // not inflated by the fired row.
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("2 watches · 1 armed");
   });
 
   test("pluralizes the count", () => {

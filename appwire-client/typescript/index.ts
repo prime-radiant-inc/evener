@@ -37,15 +37,23 @@ export type {
   ActivityJobRow,
   ActivityRow,
   ActivityRowBase,
+  ActivityWatchRow,
 } from "./activityRows";
 export {
   activityDelegateState,
   buildActivityRows,
+  buildWatchRows,
   delegateRowFields,
   foldRowID,
   indexActivityEntities,
   jobIsFailed,
   jobRowFields,
+  watchDeliveryInstants,
+  watchFacts,
+  watchIsScheduled,
+  watchMeta,
+  watchName,
+  watchRowID,
 } from "./activityRows";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";

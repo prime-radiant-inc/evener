@@ -538,9 +538,13 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // this row will show - see railNodes' activeWatchCount.
   const watchCount = activeWatchCount(session);
   const omittedWatchCount = session.omitted_watches ?? 0;
+  // The retained total the fold-out lists. The summary line reports this
+  // (with the armed count beside it when they differ) so it matches the rows
+  // hanging under the row even when a retained watch is inactive.
+  const retainedWatchCount = (session.watches ?? []).length;
   // Omitted rows alone still mean the session holds watches the row does not
   // list, so the line must appear (and say "+N more") even with none retained.
-  const hasWatches = watchCount > 0 || omittedWatchCount > 0;
+  const hasWatches = retainedWatchCount > 0 || omittedWatchCount > 0;
   // A watch is pending work, and it is the one kind that can be the ONLY thing
   // a session has left to do - so it earns the second line on its own. That is
   // a deliberate amendment to "a quiet row is one line" (the rule at the top of
@@ -601,7 +605,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
                 {/* The gloss shares the line's separator convention: the count
                     carries it only when something follows, so a watch-only
                     line ends with the word, not a dangling "·". */}
-                {`${watchCountLabel(watchCount, omittedWatchCount)}${gloss !== "" ? " ·" : ""}`}
+                {`${watchCountLabel(watchCount, retainedWatchCount, omittedWatchCount)}${gloss !== "" ? " ·" : ""}`}
               </span>
             )}
             {gloss !== "" && (

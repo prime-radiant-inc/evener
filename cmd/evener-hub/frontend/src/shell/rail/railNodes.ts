@@ -358,12 +358,24 @@ export function armedWatchCount(watches: readonly NavigationWatchSummary[] | und
   return (watches ?? []).filter((watch) => watch.active).length;
 }
 
-/** The session's summary-line watch count. It adds the exact number of rows the
+/** The session's summary-line watch count. It reports ONE total per session -
+ * the retained rows the fold-out lists plus the exact number of rows the
  * projector omitted (a session above its per-session cap, or rows its byte
- * fitter shed) as "+N more", so a row never quietly undercounts the watches the
- * session holds. The retained armed rows are still counted by armedWatchCount. */
-export function watchCountLabel(armed: number, omitted: number): string {
-  const base = `${armed} watch${armed === 1 ? "" : "es"}`;
+ * fitter shed) as "+N more" - so the summary and the fold-out hanging under it
+ * cannot disagree about how many watches the session holds.
+ *
+ * When every retained row is armed the base is the armed count, byte-identical
+ * to the wording that shipped before the retained/inactive distinction existed
+ * (`1 watch`, `2 watches · +1 more`). When a retained row is inactive - a fired
+ * one-shot whose teardown is still pending projects inactive - the base is the
+ * retained total and the armed count stays visible beside it
+ * (`5 watches · 2 armed`, `5 watches · 2 armed · +3 more`), because the
+ * summary's number must match the fold-out that shows all of them. */
+export function watchCountLabel(armed: number, retained: number, omitted: number): string {
+  const base =
+    retained === armed
+      ? `${armed} watch${armed === 1 ? "" : "es"}`
+      : `${retained} watch${retained === 1 ? "" : "es"} · ${armed} armed`;
   return omitted > 0 ? `${base} · +${omitted} more` : base;
 }
 

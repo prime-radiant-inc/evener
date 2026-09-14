@@ -430,42 +430,54 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		}
 	}
 	for _, watch := range value.Watches {
-		if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) ||
-			!navigationIntCount(watch.Deliveries) || utf8.RuneCountInString(watch.Target) > maxNavigationLabelRunes ||
-			utf8.RuneCountInString(watch.SendTo) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.Note) > maxNavigationLabelRunes ||
-			utf8.RuneCountInString(watch.OutputMatch) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.CreatedAt) > maxNavigationLabelRunes ||
-			utf8.RuneCountInString(watch.EndReason) > maxNavigationLabelRunes {
+		if !navigationWatchValueValid(watch) {
 			return false
 		}
-		for _, cadence := range watch.Cadence {
-			// Mirror the web codec's watchCadenceValue: kind is a required,
-			// non-empty identity bounded to maxNavigationIdentityBytes, a present
-			// seconds value must be finite and non-negative, every is a safe
-			// non-negative count, and filter is bounded like every other rendered
-			// label.
-			if !navigationSchemaIdentity(cadence.Kind, false) ||
-				!navigationCadenceSeconds(cadence.Seconds) ||
-				!navigationIntCount(cadence.Every) ||
-				utf8.RuneCountInString(cadence.Filter) > maxNavigationLabelRunes ||
-				(cadence.DerivedNextFireAt != "" && !validNavigationTimestamp(cadence.DerivedNextFireAt)) {
-				return false
-			}
-		}
-		for _, event := range watch.Events {
-			if utf8.RuneCountInString(event) > maxNavigationLabelRunes {
-				return false
-			}
-		}
-		// The codec validates created_at and each delivery_times entry as strict
-		// RFC3339 and fails the whole snapshot on one bad value, so reject it
-		// here before a malformed instant can reach the client.
-		if !validNavigationTimestamp(watch.CreatedAt) {
+	}
+	return true
+}
+
+// navigationWatchValueValid mirrors the web codec's watch row validation for one
+// wire watch summary. The codec validates a watch as part of the session entity,
+// so one malformed row fails the whole navigation resource; every producer of a
+// NavigationWatchSummary (the projector included) reads this one predicate
+// rather than an ad-hoc subset.
+func navigationWatchValueValid(watch hubapi.NavigationWatchSummary) bool {
+	if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) ||
+		!navigationIntCount(watch.Deliveries) || utf8.RuneCountInString(watch.Target) > maxNavigationLabelRunes ||
+		utf8.RuneCountInString(watch.SendTo) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.Note) > maxNavigationLabelRunes ||
+		utf8.RuneCountInString(watch.OutputMatch) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.CreatedAt) > maxNavigationLabelRunes ||
+		utf8.RuneCountInString(watch.EndReason) > maxNavigationLabelRunes {
+		return false
+	}
+	for _, cadence := range watch.Cadence {
+		// Mirror the web codec's watchCadenceValue: kind is a required,
+		// non-empty identity bounded to maxNavigationIdentityBytes, a present
+		// seconds value must be finite and non-negative, every is a safe
+		// non-negative count, and filter is bounded like every other rendered
+		// label.
+		if !navigationSchemaIdentity(cadence.Kind, false) ||
+			!navigationCadenceSeconds(cadence.Seconds) ||
+			!navigationIntCount(cadence.Every) ||
+			utf8.RuneCountInString(cadence.Filter) > maxNavigationLabelRunes ||
+			(cadence.DerivedNextFireAt != "" && !validNavigationTimestamp(cadence.DerivedNextFireAt)) {
 			return false
 		}
-		for _, at := range watch.DeliveryTimes {
-			if !validNavigationTimestamp(at) {
-				return false
-			}
+	}
+	for _, event := range watch.Events {
+		if utf8.RuneCountInString(event) > maxNavigationLabelRunes {
+			return false
+		}
+	}
+	// The codec validates created_at and each delivery_times entry as strict
+	// RFC3339 and fails the whole snapshot on one bad value, so reject it
+	// here before a malformed instant can reach the client.
+	if !validNavigationTimestamp(watch.CreatedAt) {
+		return false
+	}
+	for _, at := range watch.DeliveryTimes {
+		if !validNavigationTimestamp(at) {
+			return false
 		}
 	}
 	return true
