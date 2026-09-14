@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
+import * as sessionPlacementModule from "../../../shell/sessionPlacement";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
 
@@ -25,12 +26,17 @@ import { ActivityTree } from "./ActivityTree";
 // the real button's icon-only rendering and click behavior are covered in
 // openTranscript.test.tsx, where the workspace harness exists.
 let openTranscript: typeof openTranscriptModule.openTranscript;
+let openSessionByRef: typeof sessionPlacementModule.openSessionByRef;
 let openButtonProps: Array<{
   transcriptRef: string;
   parentRef?: string;
 }>;
 beforeEach(() => {
   openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
+  // Spied for the same reason openTranscript is: ActivityTree.tsx's binding is
+  // already resolved by the time this file loads, so the real module's export
+  // is the one both sides share.
+  openSessionByRef = vi.spyOn(sessionPlacementModule, "openSessionByRef").mockImplementation(() => {});
   openButtonProps = [];
   vi.spyOn(openTranscriptModule, "OpenTranscriptButton").mockImplementation((props) => {
     openButtonProps.push(props);
@@ -183,6 +189,73 @@ afterEach(() => {
 });
 
 describe("ActivityTree", () => {
+  // A delegate the page stopped at: the depth or path bound was reached, so the
+  // branch is truncated and carries no token to page with. #1269 settled that
+  // deliberately -- a token there would name the child as a fresh root at
+  // position 0, which is the page a direct request already returns -- which
+  // leaves the child reachable only by asking for it as its own session.
+  function depthTruncatedTree(): ActivityTreeData {
+    return {
+      revision: 3,
+      root: {
+        kind: "session",
+        sessionId: "sess_root",
+        ref: "ref_root",
+        label: "Root",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: false },
+        entries: [
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_deep",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
+              childSessionId: "sess_deep_child",
+              childRef: "local:sess_deep_child",
+              transcriptRef: "local:sess_deep_child",
+              type: "delegate",
+              lifecycle: "running",
+              phase: "running",
+              status: "running",
+              projectionRevision: 2,
+              terminal: false,
+              resumable: true,
+              task: "Deep work",
+              diagnostics: ['depth limit reached; request session "sess_deep_child" directly'],
+              branch: { truncated: true },
+            },
+          },
+        ],
+        branch: {},
+      },
+    } as unknown as ActivityTreeData;
+  }
+
+  test("a truncated delegate with no continuation offers to open the child session", async () => {
+    const user = userEvent.setup();
+    render(
+      <ActivityTree tree={depthTruncatedTree()} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={vi.fn()} />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    const open = screen.getByRole("button", { name: "Open session" });
+    await user.click(open);
+    expect(openSessionByRef).toHaveBeenCalledWith("local:sess_deep_child");
+  });
+
+  test("a delegate that can still be paged offers Load more, not an open-session link", () => {
+    const tree = depthTruncatedTree();
+    const delegate = (tree.root.entries[0] as { delegate: { branch: { truncated?: boolean; continuation?: string } } })
+      .delegate;
+    delegate.branch = { truncated: true, continuation: "token_deep" };
+
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} onContinue={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "Load more" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open session" })).toBeNull();
+  });
+
   test("stable delegate rows keep navigation and control evidence without activation cards", async () => {
     const user = userEvent.setup();
     const stableTree = {

@@ -29,6 +29,7 @@ import {
   buildActivityRows,
   jobIsFailed,
 } from "../../../protocol/activityRows";
+import { openSessionByRef } from "../../../shell/sessionPlacement";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
@@ -198,6 +199,13 @@ interface ContinuationStrip {
   afterRowID: string;
   token?: string;
   branchError?: string;
+  // openSessionRef is set for a branch the page stopped at with nothing to
+  // page: the depth or continuation-path bound was reached, so the daemon
+  // truncated the branch and deliberately minted no token (a token there
+  // would name this child as a fresh root at position 0, which is the page a
+  // direct request already returns -- see #1269). The child is still
+  // addressable as its own session, and this is the ref that opens it.
+  openSessionRef?: string;
 }
 
 // subtreeLastRowID finds the last visible row belonging to a delegate's
@@ -245,7 +253,12 @@ function collectContinuations(
       const delegate = entry.delegate;
       const targetID = activityNodeID(entry);
       const token = delegate.child?.branch.continuation ?? delegate.branch.continuation;
-      if (token || continuationFailures[targetID] !== undefined) {
+      const truncated = delegate.child?.branch.truncated || delegate.branch.truncated;
+      const childRef = delegate.childRef.trim();
+      // A truncated branch with no token has one way forward and it is not a
+      // page: ask for the child as its own session.
+      const openSessionRef = !token && truncated && childRef ? childRef : undefined;
+      if (token || openSessionRef || continuationFailures[targetID] !== undefined) {
         const afterRowID = subtreeLastRowID(rows, targetID);
         if (afterRowID) {
           strips.push({
@@ -253,6 +266,7 @@ function collectContinuations(
             afterRowID,
             token,
             branchError: delegate.child?.branch.error ?? delegate.branch.error,
+            openSessionRef,
           });
         }
       }
@@ -486,8 +500,23 @@ const ContinuationStripView = memo(function ContinuationStripView({
   return (
     <div className={CLASS.rowActions}>
       <span className={CLASS.rowContinuation}>
-        {failure ?? strip.branchError ?? "This branch is partially retained."}
+        {failure ??
+          strip.branchError ??
+          (strip.openSessionRef ? "This branch continues in its own session." : "This branch is partially retained.")}
       </span>
+      {strip.openSessionRef && (
+        <Button
+          variant="quiet"
+          size="xs"
+          tabIndex={-1}
+          onClick={(event) => {
+            event.stopPropagation();
+            openSessionByRef(strip.openSessionRef ?? "");
+          }}
+        >
+          Open session
+        </Button>
+      )}
       {strip.token && (
         <Button
           variant="quiet"
