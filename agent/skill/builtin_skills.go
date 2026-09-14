@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,9 +115,8 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
 		cached := embeddedSkillsCache.dir
 		if embeddedSkillsCache.fallback && embeddedSkillsCache.verified && cacheDirExists(cached) {
-			// A fallback copy keeps its own lease; only a replaced lock file
-			// makes it unusable.
-			if embeddedSkillsCache.lease == nil || embeddedSkillsCache.lease.Valid() {
+			// A fallback copy is only usable while its own lease is held.
+			if embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() {
 				touchDir(cached)
 				return cached, nil
 			}
@@ -644,43 +644,33 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 }
 
 // digestSkillsFS returns a stable hex digest over every path and byte in fsys.
-// Paths are fs paths (slash-separated) and WalkDir visits in lexical order, so
-// the digest is identical across platforms and processes.
+// Paths are fs paths (slash-separated) and entries are visited in lexical order,
+// so the digest is identical across platforms and processes.
 func digestSkillsFS(fsys fs.FS) (string, error) {
 	sum := sha256.New()
 	entries := 0
 	var total int64
-	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path != "." {
-			entries++
-			if entries > maxEmbeddedSkillEntries {
-				return fmt.Errorf("embedded skills: more than %d entries", maxEmbeddedSkillEntries)
-			}
-			if strings.Count(path, "/") > maxEmbeddedSkillDepth {
-				return fmt.Errorf("embedded skills: %s is nested too deeply", path)
-			}
-		}
-		if d.IsDir() {
+	err := walkSkillsFS(fsys, func(path string, d fs.DirEntry, isDir bool) error {
+		if isDir {
 			return nil
 		}
-		// Decided from the directory entry, before anything is opened: a
-		// symlink points somewhere that can change, a FIFO blocks its open until
-		// a writer arrives, and a device is not something to read. The
-		// published name lives in a shared temp dir, so an occupant this process
-		// did not write may be any of them.
-		if !d.Type().IsRegular() {
-			return fmt.Errorf("embedded skills: %s is not a regular file", path)
+		entries++
+		if entries > maxEmbeddedSkillEntries {
+			return fmt.Errorf("embedded skills: more than %d entries", maxEmbeddedSkillEntries)
+		}
+		if strings.Count(path, "/") > maxEmbeddedSkillDepth {
+			return fmt.Errorf("embedded skills: %s is nested too deeply", path)
 		}
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		// Type() is zero when the filesystem does not report an entry type, and
-		// IsRegular() treats zero as regular, so re-check the mode from Info
-		// before opening: a FIFO must never reach the open below.
+		// Decided from the resolved mode, not just the directory entry: a
+		// symlink points somewhere that can change, a FIFO blocks its open until
+		// a writer arrives, and a device is not something to read. The published
+		// name lives in a shared temp dir, so an occupant this process did not
+		// write may be any of them, and some filesystems do not report a type at
+		// all.
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("embedded skills: %s is not a regular file", path)
 		}
@@ -717,6 +707,106 @@ func digestSkillsFS(fsys fs.FS) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+// walkSkillsFS visits every entry in fsys in lexical order, depth first, and
+// reports whether each entry is a directory. Unlike fs.WalkDir it never reads a
+// whole directory listing before the entry bound can apply, and it resolves an
+// entry's kind from Info when the filesystem does not report a type (NFS, FUSE),
+// so a directory is still recognized and recursed into there.
+func walkSkillsFS(fsys fs.FS, visit func(path string, d fs.DirEntry, isDir bool) error) error {
+	var walk func(name string, depth int) error
+	walk = func(name string, depth int) error {
+		if depth > maxEmbeddedSkillDepth {
+			return fmt.Errorf("embedded skills: %s is nested too deeply", name)
+		}
+		entries, err := readDirBounded(fsys, name)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			child := entry.Name()
+			if name != "." {
+				child = name + "/" + child
+			}
+			isDir, err := entryIsDir(entry)
+			if err != nil {
+				return err
+			}
+			if err := visit(child, entry, isDir); err != nil {
+				return err
+			}
+			if isDir {
+				if err := walk(child, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(".", 0)
+}
+
+// readDirBounded lists one directory in lexical order without ever holding more
+// than the entry bound, so a directory with a hostile number of entries is
+// rejected instead of read into memory.
+func readDirBounded(fsys fs.FS, name string) ([]fs.DirEntry, error) {
+	file, err := fsys.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	dir, ok := file.(fs.ReadDirFile)
+	if !ok {
+		entries, err := fs.ReadDir(fsys, name)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > maxEmbeddedSkillEntries {
+			return nil, fmt.Errorf("embedded skills: more than %d entries", maxEmbeddedSkillEntries)
+		}
+		sortDirEntries(entries)
+		return entries, nil
+	}
+	var entries []fs.DirEntry
+	for {
+		batch, readErr := dir.ReadDir(maxEmbeddedSkillEntries - len(entries) + 1)
+		entries = append(entries, batch...)
+		if len(entries) > maxEmbeddedSkillEntries {
+			return nil, fmt.Errorf("embedded skills: more than %d entries", maxEmbeddedSkillEntries)
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, readErr
+		}
+		if len(batch) == 0 {
+			break
+		}
+	}
+	sortDirEntries(entries)
+	return entries, nil
+}
+
+func sortDirEntries(entries []fs.DirEntry) {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+}
+
+// entryIsDir reports whether entry names a directory, resolving it from Info when
+// the filesystem reports no entry type.
+func entryIsDir(entry fs.DirEntry) (bool, error) {
+	if entry.IsDir() {
+		return true, nil
+	}
+	if entry.Type() != 0 {
+		return false, nil
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsDir(), nil
 }
 
 // extractEmbeddedSkills is the filesystem-backed extraction implementation.

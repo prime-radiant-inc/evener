@@ -523,7 +523,8 @@ func TestEmbeddedSkillsDir_MovesTheLeaseToTheNewCopy(t *testing.T) {
 }
 
 // A copy that cannot be leased must not be handed out: the reaper could delete it
-// mid-session.
+// mid-session. The stub blocks every lease, the private fallback's included, so
+// resolution has nothing protected to return.
 func TestEmbeddedSkillsDir_FailsWhenNoLeaseIsAvailable(t *testing.T) {
 	base := t.TempDir()
 	pointEmbeddedSkillsAtBase(t, base)
@@ -538,6 +539,8 @@ func TestEmbeddedSkillsDir_FailsWhenNoLeaseIsAvailable(t *testing.T) {
 
 func TestForgetEmbeddedSkillsLocked_RemovesFallbackCopy(t *testing.T) {
 	dir := t.TempDir()
+	saved := saveEmbeddedSkillsCache()
+	t.Cleanup(func() { restoreEmbeddedSkillsCache(saved) })
 	embeddedSkillsCache.mu.Lock()
 	embeddedSkillsCache.dir = dir
 	embeddedSkillsCache.fallback = true
