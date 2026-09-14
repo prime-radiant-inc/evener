@@ -82,12 +82,18 @@ test("a symbol the package does not publish leaves every file untouched", () => 
   }
 });
 
-test("mobile-native/scripts keeps its relative imports", () => {
-  const carved = 'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n';
-  const root = fixture({ "mobile-native/scripts/check-hub.mts": carved });
+test("the mobile-native/scripts tools are rewritten like every other consumer", () => {
+  // They were carved out while the premise held that tsx reads no tsconfig
+  // paths. It reads mobile-native/tsconfig.json, which simply had none.
+  const root = fixture({
+    "mobile-native/scripts/check-hub.mts": 'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
+  });
   try {
     assert.equal(rewrite(root).status, 0);
-    assert.equal(readFileSync(path.join(root, "mobile-native/scripts/check-hub.mts"), "utf8"), carved);
+    assert.match(
+      readFileSync(path.join(root, "mobile-native/scripts/check-hub.mts"), "utf8"),
+      /from "@evener\/appwire-client"/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

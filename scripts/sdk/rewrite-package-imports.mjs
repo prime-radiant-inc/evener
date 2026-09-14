@@ -40,17 +40,13 @@ const ts = require("typescript");
 
 // Where the package, the A3 seam and the trees to sweep sit under a given root.
 // Every stub in the seam re-exports the package module of the same name, so a
-// resolved seam path maps to a package module by basename. `mobile-native/
-// scripts` is the plan's named carve-out: those .mts files run under `tsx`,
-// which reads no tsconfig `paths`, so they keep the relative specifier A3
-// gave them.
+// resolved seam path maps to a package module by basename.
 function layoutOf(root) {
   const frontendDir = path.join(root, "cmd", "evener-hub", "frontend");
   return {
     root,
     packageDir: path.join(root, "appwire-client", "typescript"),
     seamDir: path.join(frontendDir, "src", "protocol"),
-    carveOut: path.join(root, "mobile-native", "scripts"),
     trees: [
       { label: "web", dir: path.join(frontendDir, "src") },
       { label: "mobile-native", dir: path.join(root, "mobile-native") },
@@ -94,7 +90,7 @@ function walk(dir, layout, out) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
-      if (full === layout.carveOut || full === layout.seamDir) continue;
+      if (full === layout.seamDir) continue;
       walk(full, layout, out);
     } else if (entry.isFile() && SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
       out.push(full);
