@@ -555,6 +555,55 @@ describe("row rendering", () => {
     expect(within(rows[0]!).getByText(`${"x".repeat(140)}…`)).toBeTruthy();
   });
 
+  // The daemon's own preview names skills only generically ("[skill]" /
+  // "[N skills]"), while every other surface of the SAME submission (the
+  // optimistic queue row and a durable outbox row) names them. Without the
+  // row's own canonical queue.skillNames the marker the user watched appear on
+  // the pending row vanishes the moment the authoritative row replaces it.
+  test("an authoritative row appends its skill markers to the daemon's preview text", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: ["audit the tests"],
+          preview: ["audit the tests"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("audit the tests [skill: pkg:probe]")).toBeTruthy();
+  });
+
+  test("a skill-only authoritative row shows its named marker rather than staying generic", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: ["[skill]"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText(/\[skill: pkg:probe\]/)).toBeTruthy();
+  });
+
   test("each row exposes steer-now, edit, and remove actions", async () => {
     const fake = connectFakeClient();
     await hydrateWithTwoRows(fake);

@@ -27,7 +27,7 @@ import {
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
-import { queueEntryPreviewText, truncateForDisplay } from "./queueDisplay";
+import { queueEntryPreviewText, skillMarkers, truncateForDisplay } from "./queueDisplay";
 import styles from "./queuestrip.module.css";
 
 const CLASS = {
@@ -126,14 +126,6 @@ function recordContent(record: MutationOutboxRecord): { text: string; imageCount
       .map((item) => item.name),
   );
   return { text, imageCount: input.filter((item) => item.type === "image").length, skillNames };
-}
-
-// skillMarkers renders a record's canonical skill selections for display and
-// copy: the name is the selection's whole user-visible identity - the part of
-// a queued entry that is distinct from its typed text. Without it a
-// skill-only record previews blank and copies as an empty string.
-function skillMarkers(names: readonly string[]): string {
-  return names.map((name) => `[skill: ${name}]`).join(" ");
 }
 
 function recordPreview(record: MutationOutboxRecord): string {
@@ -383,7 +375,19 @@ export function QueueStrip({
           const entryId = ids?.[index];
           const fullText = texts?.[index];
           const entrySkillNames = queue?.skillNames?.[index];
-          const displayText = truncateForDisplay(preview?.[index] ?? fullText ?? "");
+          // The daemon's preview names skills only generically ("[skill]" /
+          // "[N skills]"), while the pending and durable rows for the SAME
+          // submission name them from the entry's own canonical selections.
+          // Append those markers here too, or a queued skill selection loses
+          // its name the moment the authoritative row replaces the pending
+          // one. The preview text is truncated first so a full-length line can
+          // never push the markers past the display cap.
+          const displayText = [
+            truncateForDisplay(preview?.[index] ?? fullText ?? ""),
+            skillMarkers(entrySkillNames ?? []),
+          ]
+            .filter((part) => part !== "")
+            .join(" ");
           const busy = entryId !== undefined && busyEntryIds.has(entryId);
           const actionsAvailable = hasIds && entryId !== undefined;
           // A blank-text entry is uneditable only when it carries nothing
