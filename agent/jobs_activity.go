@@ -45,10 +45,18 @@ const (
 	// report the session to request instead of handing back a token this
 	// decoder would refuse (activityContinuationPathFits).
 	//
-	// The extra hop over activityMaxNewDepth is slack, kept because tokens
-	// minted by an earlier build carry it and rejecting them on length
-	// would say "malformed" where the honest answer is whatever the
-	// generation check has to say.
+	// The extra hop over activityMaxNewDepth is not slack for old tokens —
+	// those are refused on version before their length is ever read. It is
+	// the longest path THIS build mints: a page resumed one hop down spends
+	// the whole budget below its target and names an absolute path of
+	// exactly activityMaxNewDepth+1, so a decoder capped at
+	// activityMaxNewDepth would refuse a token this service had just
+	// handed out. Anything past this length is refused, and the mint sites
+	// report the session to request rather than producing one. Both sides
+	// are pinned by
+	// TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed:
+	// a path at the limit still mints and still decodes, one hop past it
+	// mints nothing.
 	activityMaxContinuationPathLength = activityMaxNewDepth + 1
 	// activitySkippedEntrySuffix completes a named skip diagnostic;
 	// activitySkippedEntryShortMessage is what a page falls back to when it
@@ -1272,13 +1280,6 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 	}
 }
 
-// activityContinuationPathFits reports whether a continuation naming this
-// path could be decoded at all. The mint sites ask before encoding: a token
-// whose Path is longer than decodeActivityContinuation accepts is one this
-// service would refuse on the next request, which strands the entries it
-// claims to lead to. Reporting the session to request instead leaves the
-// reader somewhere to go — that session is its own root, where the path
-// starts over at zero.
 // appendActivityDiagnosticOnce adds message to diagnostics unless it is
 // already there. A trim drops one entry per pass and can strike the same
 // session many times over a single page, and a session cut off mid-list can
@@ -1291,6 +1292,13 @@ func appendActivityDiagnosticOnce(diagnostics *[]string, message string) {
 	*diagnostics = append(*diagnostics, message)
 }
 
+// activityContinuationPathFits reports whether a continuation naming this
+// path could be decoded at all. The mint sites ask before encoding: a token
+// whose Path is longer than decodeActivityContinuation accepts is one this
+// service would refuse on the next request, which strands the entries it
+// claims to lead to. Reporting the session to request instead leaves the
+// reader somewhere to go — that session is its own root, where the path
+// starts over at zero.
 func activityContinuationPathFits(path []string) bool {
 	return len(path) <= activityMaxContinuationPathLength
 }
