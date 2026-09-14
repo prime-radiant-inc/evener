@@ -252,6 +252,38 @@ describe("parseDelegate mandate validation", () => {
   });
 });
 
+describe("parseSession diagnostics", () => {
+  it("rejects a root whose diagnostics is not a string array", () => {
+    const tree = treeFixture([]) as { root: Record<string, unknown> };
+    tree.root.diagnostics = "not-an-array";
+    expect(parseActivityTree(tree)).toBeNull();
+  });
+
+  it("drops a rendered child whose diagnostics has a non-string element and marks the delegate incomplete", () => {
+    const child = {
+      sessionId: "sess_child",
+      ref: "ref_child",
+      label: "Child",
+      aggregate: "working",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      diagnostics: [42],
+      entries: [],
+      branch: {},
+    };
+    const tree = parseActivityTree(treeFixture([{ kind: "delegate", delegate: delegateFixture({ child }) }]));
+    const entry = tree?.root.entries[0];
+    expect(entry?.kind).toBe("delegate");
+    if (entry?.kind !== "delegate") return;
+    expect(entry.delegate.child).toBeUndefined();
+    expect(entry.delegate.branch.error).toBe("incomplete");
+  });
+
+  it("omits diagnostics when the wire omits them", () => {
+    const tree = parseActivityTree(treeFixture([]));
+    expect(tree?.root).not.toHaveProperty("diagnostics");
+  });
+});
+
 describe("parseDelegate depth limit", () => {
   it("annotates and truncates the delegate at MAX_RECURSION_DEPTH", () => {
     let child: Record<string, unknown> | undefined;
