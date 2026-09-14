@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"text/template"
+
+	"primeradiant.com/evener/appwire"
 )
 
 func FuzzFieldsOf(f *testing.F) {
@@ -161,4 +163,69 @@ func TestBuildIncludesInstanceEntry(t *testing.T) {
 		return
 	}
 	t.Fatal("build() missing InstanceEntry")
+}
+
+// TestFieldsOfSkillInputContracts pins the skill input wire fields through
+// the same reflection that renders the doc's field tables, so a tag rename
+// or omitempty drift fails here rather than silently reshaping the
+// generated protocol reference.
+func TestFieldsOfSkillInputContracts(t *testing.T) {
+	fieldViews := func(t *testing.T, typ reflect.Type) map[string]fieldView {
+		t.Helper()
+		fields := map[string]fieldView{}
+		for _, field := range fieldsOf(typ) {
+			fields[field.JSON] = field
+		}
+		return fields
+	}
+
+	capabilities := fieldViews(t, reflect.TypeFor[appwire.ThreadCapabilities]())
+	skillInput, ok := capabilities["skillInput"]
+	if !ok || skillInput.GoType != "bool" || !skillInput.Omitempty {
+		t.Fatalf("ThreadCapabilities.skillInput = %+v, want an omitempty bool", skillInput)
+	}
+
+	skillInfo := fieldViews(t, reflect.TypeFor[appwire.EvenerSkillInfo]())
+	for name, wantOmitempty := range map[string]bool{
+		"name":                   false,
+		"disableModelInvocation": false,
+		"userInvocable":          false,
+		"available":              false,
+		"allowedTools":           true,
+	} {
+		field, ok := skillInfo[name]
+		if !ok {
+			t.Fatalf("EvenerSkillInfo missing field %q: %+v", name, skillInfo)
+		}
+		if field.Omitempty != wantOmitempty {
+			t.Fatalf("EvenerSkillInfo.%s omitempty = %v, want %v", name, field.Omitempty, wantOmitempty)
+		}
+	}
+	if field := skillInfo["allowedTools"]; field.GoType != "[]string" {
+		t.Fatalf("EvenerSkillInfo.allowedTools Go type = %q, want []string", field.GoType)
+	}
+
+	diagnostic := fieldViews(t, reflect.TypeFor[appwire.EvenerSkillDiagnostic]())
+	for name, wantOmitempty := range map[string]bool{
+		"category":    false,
+		"name":        true,
+		"source":      false,
+		"otherSource": true,
+		"field":       true,
+		"message":     false,
+	} {
+		field, ok := diagnostic[name]
+		if !ok {
+			t.Fatalf("EvenerSkillDiagnostic missing field %q: %+v", name, diagnostic)
+		}
+		if field.Omitempty != wantOmitempty {
+			t.Fatalf("EvenerSkillDiagnostic.%s omitempty = %v, want %v", name, field.Omitempty, wantOmitempty)
+		}
+	}
+
+	diagnostics := fieldViews(t, reflect.TypeFor[appwire.EvenerDiagnostics]())
+	skillDiagnostics, ok := diagnostics["skillDiagnostics"]
+	if !ok || skillDiagnostics.GoType != "[]appwire.EvenerSkillDiagnostic" || !skillDiagnostics.Omitempty {
+		t.Fatalf("EvenerDiagnostics.skillDiagnostics = %+v, want an omitempty []appwire.EvenerSkillDiagnostic", skillDiagnostics)
+	}
 }

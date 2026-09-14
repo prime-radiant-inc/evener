@@ -302,13 +302,19 @@ func toolProgramHelpers(t *testing.T, payload string) {
 		t.Fatalf("plain document result = %+v, want nil", got)
 	}
 
-	for _, name := range []string{"read_file", "shell", "grep", "glob", "edit_file", "apply_patch", "write_file", "delegate", "task_list", "web_fetch", "communicate", "use_skill", "other"} {
+	for _, name := range []string{"read_file", "shell", "grep", "glob", "edit_file", "apply_patch", "write_file", "delegate", "task_list", "web_fetch", "communicate", "other"} {
 		// grep/glob bound by entry count (MaxLines) via TruncHeadCount, plus a
 		// character cap (MaxChars) applied after the line bound; every other
 		// tool bounds by MaxChars alone.
 		if lim := defaultToolLimit(name); (lim.MaxChars <= 0 && lim.MaxLines <= 0) || lim.Strategy == "" {
 			t.Fatalf("defaultToolLimit(%q) = %+v", name, lim)
 		}
+	}
+	// use_skill deliberately carries NO registry default: skill content is
+	// complete-or-fail at the operation level, so a default tail would
+	// silently truncate a large body (TestToolRegistry_UseSkillHasNoDefaultTailLimit).
+	if lim := defaultToolLimit("use_skill"); lim.MaxChars != 0 || lim.MaxLines != 0 {
+		t.Fatalf("defaultToolLimit(%q) = %+v, want no default limit", "use_skill", lim)
 	}
 	if got := truncateChars("abcdef", 4, schema.TruncTail); !strings.HasSuffix(got, "cdef") {
 		t.Fatalf("tail truncation = %q", got)
