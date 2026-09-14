@@ -223,6 +223,66 @@ func TestSkillDelivery_FailedReinvocationPreservesInventory(t *testing.T) {
 	}
 }
 
+// TestSkillDelivery_UserReinvocationRecordsAuthorization deletes nothing and
+// keeps the body unchanged: a model-route activation records no user
+// authorization, then an explicit user re-invocation of the SAME body reuses
+// the retained content but must still record its source-scoped user
+// authorization. That provenance is what keeps the compaction reload route
+// open once the source disables model invocation.
+func TestSkillDelivery_UserReinvocationRecordsAuthorization(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	body := strings.Repeat("BODY_7f2a\n", 64)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
+	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+	calls := 0
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		calls++
+		if calls == 1 {
+			return toolCallResponse(useSkillCall("skill-1", "opaque"))
+		}
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSession(t, withAdapter(adapter), withDir(root),
+		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+	evs, stop := captureEvents(s)
+	// The model route activates without any user authorization.
+	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := lifecycleInventory(s)["opaque"].Ordinary; got == nil || got.UserAuthorized {
+		t.Fatalf("model activation recorded user authorization: %+v", got)
+	}
+	// The explicit user re-invocation names the same unchanged body.
+	if _, err := s.ProcessInput(context.Background(), "/opaque REQUEST_again", nil); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	ordinary := lifecycleInventory(s)["opaque"].Ordinary
+	if ordinary == nil || !ordinary.UserAuthorized || ordinary.Route != "user_slash" {
+		t.Fatalf("user re-invocation did not record its authorization: %+v", ordinary)
+	}
+	if len(adapter.Requests()) != 3 {
+		t.Fatalf("requests=%d, want the activation round, its commit, and the user dispatch", len(adapter.Requests()))
+	}
+	// The unchanged body was not re-delivered: the user dispatch carries the
+	// single retained carrier, and no new-body event fired for the reuse.
+	requireSingleEnvelope(t, adapter.Requests()[2], "opaque", body, source)
+	if names := skillActivatedEventNames(*evs); len(names) != 1 || names[0] != "opaque" {
+		t.Fatalf("activation events = %v, want only the model activation's new-body event", names)
+	}
+	// The source now disables model invocation; only the recorded user
+	// authorization keeps a compaction reload of the recorded source allowed.
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\ndisable-model-invocation: true\n---\n"+body)
+	identity := ordinary.Identity
+	if _, err := s.prepareSkillActivations(context.Background(), []skillInvocation{{
+		Name: "opaque", Source: &identity, Route: "compaction_reload",
+	}}); err != nil {
+		t.Fatalf("authorized compaction reload denied after the source disabled model invocation: %v", err)
+	}
+}
+
 // TestSkillDelivery_PreDispatchCompaction proves a new activation's carrier
 // survives a real pre-dispatch compaction that keeps it in the retained tail:
 // the dispatch still carries exactly one complete current body.
@@ -444,6 +504,90 @@ func TestSkillDelivery_ChangedSourceBeforeDispatch(t *testing.T) {
 	ordinary := lifecycleInventory(s)["opaque"].Ordinary
 	if ordinary == nil || ordinary.Identity.RenderedDigest != hex.EncodeToString(renderedHash[:]) {
 		t.Fatalf("inventory did not advance to the changed content: %+v", ordinary)
+	}
+	if names := skillActivatedEventNames(*evs); len(names) != 2 {
+		t.Fatalf("activation events = %v, want one per genuinely new body", names)
+	}
+}
+
+// TestSkillDelivery_ChangedSourceRecordsPreviousProvenance pins the
+// changed-content delivery outcome's provenance: the outcome that supersedes
+// the earlier provisional activation records both the identity the model last
+// saw and that record's controls, so the change's history is auditable from the
+// outcome alone.
+func TestSkillDelivery_ChangedSourceRecordsPreviousProvenance(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	oldBody := strings.Repeat("BODY_7f2a\n", 64)
+	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+oldBody)
+	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
+	newBody := strings.Repeat("BODY_9c1e changed\n", 64)
+	calls := 0
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		calls++
+		if calls%2 == 1 {
+			return toolCallResponse(useSkillCall("skill-"+strconv.Itoa((calls+1)/2), "opaque"))
+		}
+		return toolCallResponse(communicateCall("done-1", "ok"))
+	}}
+	s := newSession(t, withAdapter(adapter), withDir(root),
+		withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+	seedNumberedSessionHistory(t, s, 12)
+	s.contextMgr.PreserveRecentTurns = 2
+	evs, stop := captureEvents(s)
+	if _, err := s.ProcessInput(context.Background(), "REQUEST_93d2", nil); err != nil {
+		t.Fatal(err)
+	}
+	before := lifecycleInventory(s)["opaque"].Ordinary
+	if before == nil {
+		t.Fatal("test setup: the first activation recorded no inventory")
+	}
+	// Change the source and remove the old carrier between the provisional
+	// result and the next dispatch.
+	var swapped atomic.Bool
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.execToolCheckpoint = func(name string) {
+			if name == "after_execute" && !swapped.Swap(true) {
+				if err := os.WriteFile(source, []byte("---\nname: opaque\ndescription: fixture\n---\n"+newBody), 0o644); err != nil {
+					t.Errorf("rewrite source: %v", err)
+				}
+				if err := s.Compact(context.Background()); err != nil {
+					t.Errorf("carrier-removing fold: %v", err)
+				}
+			}
+		}
+	})
+	if _, err := s.ProcessInput(context.Background(), "REQUEST_again", nil); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if !swapped.Load() {
+		t.Fatal("the source change never landed")
+	}
+	if len(adapter.Requests()) != 4 {
+		t.Fatalf("requests=%d", len(adapter.Requests()))
+	}
+	delivered := requireSingleEnvelope(t, adapter.Requests()[3], "opaque", newBody, source)
+	renderedHash := sha256.Sum256([]byte(delivered.Raw))
+	var corrected *schema.SkillActivationOutcome
+	for _, state := range skillTurnStates(s) {
+		for i := range state.Outcomes {
+			outcome := state.Outcomes[i]
+			if outcome.Status == "delivered" && outcome.Identity.RenderedDigest == hex.EncodeToString(renderedHash[:]) {
+				copied := outcome
+				corrected = &copied
+			}
+		}
+	}
+	if corrected == nil {
+		t.Fatal("no corrected outcome recorded the changed content")
+	}
+	if corrected.PreviousIdentity == nil || *corrected.PreviousIdentity != before.Identity {
+		t.Fatalf("outcome previous identity = %+v, want the pre-change identity %+v", corrected.PreviousIdentity, before.Identity)
+	}
+	if corrected.PreviousControls == nil || *corrected.PreviousControls != before.Controls {
+		t.Fatalf("outcome previous controls = %+v, want the pre-change controls %+v", corrected.PreviousControls, before.Controls)
 	}
 	if names := skillActivatedEventNames(*evs); len(names) != 2 {
 		t.Fatalf("activation events = %v, want one per genuinely new body", names)

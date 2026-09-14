@@ -371,7 +371,14 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		content := item.Rendered.Content
 		if newIdentity != obligation.Identity {
 			// Changed disk content is reported explicitly; this notification
-			// supersedes the earlier provisional outcome.
+			// supersedes the earlier provisional outcome, so it records the
+			// identity and controls the model last saw alongside the new ones.
+			previousIdentity := obligation.Identity
+			outcome.PreviousIdentity = &previousIdentity
+			if prior != nil {
+				previousControls := prior.Controls
+				outcome.PreviousControls = &previousControls
+			}
 			content = systemNotificationf("Skill %q changed on disk since its earlier activation; the complete current instructions follow.", obligation.Identity.Name) + "\n\n" + content
 		}
 		corrected := obligation
@@ -463,6 +470,14 @@ func (s *Session) planSkillDeliveryCommit(req llm.Request) (skillDeliveryCommit,
 			s.mu.Lock()
 			activation = s.deliveryActivationRecordLocked(obligation, prior)
 			s.mu.Unlock()
+		} else if (obligation.Route == "user_slash" || obligation.Route == "user_selection") && !prior.UserAuthorized {
+			// An explicit user invocation reusing an unchanged body suppresses
+			// the duplicate, but its source-scoped authorization must still be
+			// recorded: without it a later source that disables model invocation
+			// would deny the reload the user's own activation authorized.
+			s.mu.Lock()
+			activation = s.deliveryActivationRecordLocked(obligation, prior)
+			s.mu.Unlock()
 		}
 		commit.Outcomes = append(commit.Outcomes, schema.SkillActivationOutcome{
 			Revision:         revision,
@@ -531,8 +546,15 @@ func (s *Session) commitSkillDelivery(ctx context.Context, commit skillDeliveryC
 				newBodies = append(newBodies, outcome.Identity.Name)
 			}
 		case "already_present":
-			// Unchanged content satisfied an outstanding obligation: no
-			// inventory change and no new-body event.
+			// Unchanged content satisfied an outstanding obligation: the body is
+			// not re-delivered and fires no new-body event, but an explicit user
+			// invocation's provenance still joins the inventory.
+			if outcome.Activation != nil {
+				entry := s.skillLifecycle.Inventory[outcome.Identity.Name]
+				record := *outcome.Activation
+				entry.Ordinary = &record
+				s.skillLifecycle.Inventory[outcome.Identity.Name] = entry
+			}
 		case "failed":
 			// A failed reinvocation preserves the earlier successful record.
 		}
