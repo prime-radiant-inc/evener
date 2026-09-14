@@ -351,9 +351,12 @@ func FuzzSessionLifecyclePureTailCoverage(f *testing.F) {
 			skip bool
 		}{
 			{drainInputs{Awaiting: true, QueuedText: "reply"}, runQueued, true},
+			{drainInputs{Awaiting: true, SteeringCarrierTurnID: "turn_m9"}, runSteeringCarrier, true},
 			{drainInputs{Awaiting: true}, goIdle, true},
 			{drainInputs{FollowUp: "follow"}, runFollowUp, false},
 			{drainInputs{QueuedImages: 1}, runQueued, false},
+			{drainInputs{QueuedImages: 1, SteeringCarrierTurnID: "turn_m9"}, runQueued, false},
+			{drainInputs{NotificationsPending: true, SteeringCarrierTurnID: "turn_m9"}, runSteeringCarrier, false},
 			{drainInputs{NotificationsPending: true}, runNotification, false},
 			{drainInputs{}, armGoalGate, false},
 			{drainInputs{RanKind: EntryNotification, HaveDeferredCont: true}, runDeferredContInline, true},

@@ -745,11 +745,14 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 		t.Fatalf("first ProcessInput: %v", err)
 	}
 
-	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
-		t.Fatalf("second ProcessInput: %v", err)
-	}
+	// The input that accepted the steer carries it before it ends: the
+	// carrier turn runs inside ProcessInput, after the terminal result, so
+	// the next request the model sees is already the steered one (#1308).
 	if requestErr != nil {
 		t.Fatal(requestErr)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want the terminal turn plus the carrier the same input ran", got)
 	}
 }
 
@@ -821,6 +824,18 @@ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing
 		t.Fatal("terminal communicate race checkpoint was not reached")
 	}
 
+	// The terminal result does not consume the steer, and the input does not
+	// end without it either: the drain ladder runs the carrier turn inside
+	// the same ProcessInput, after the terminal result, so no client ever
+	// reads the session idle with the steer undispatched (#1308).
+	if requestErr != nil {
+		t.Fatal(requestErr)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want initial terminal turn plus carrier turn", got)
+	}
+
+	// The acceptance-time wake still fires; it finds nothing left to carry.
 	select {
 	case <-wake:
 		// The scripted in-process adapter and channel wake should complete well
@@ -832,14 +847,8 @@ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing
 	}
 	if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
 		t.Fatalf("ProcessPendingUserInput: %v", err)
-	} else if !ran {
-		t.Fatal("terminal communicate consumed accepted steering; no carrier turn ran")
-	}
-	if requestErr != nil {
-		t.Fatal(requestErr)
-	}
-	if got := len(adapter.Requests()); got != 2 {
-		t.Fatalf("provider requests = %d, want initial terminal turn plus carrier turn", got)
+	} else if ran {
+		t.Fatal("the wake ran a second carrier for steering the input already carried")
 	}
 
 	snapshot := sess.clientMutations.snapshot()
