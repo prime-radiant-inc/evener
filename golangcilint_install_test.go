@@ -2,7 +2,10 @@ package evener_test
 
 import (
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"runtime"
@@ -10,10 +13,20 @@ import (
 	"testing"
 )
 
-// The installer script's failure paths, run for real: no stubbed curl, no
-// stubbed go, and no network. A port nothing is listening on is a real
-// transport failure every machine can produce, which is what makes these
-// deterministic offline.
+// The installer script's paths, run for real: real curl, real bash, real go,
+// and no network beyond loopback. Two shapes of loopback server stand in for
+// the release CDN.
+//
+// The failure cases use a listener that stays up for the test and closes every
+// connection without answering, which curl reports as an empty reply. It is
+// held rather than reserved-and-released because releasing a port leaves a
+// window in which anything on the machine can take it, and the test would then
+// be measuring whatever took it.
+//
+// The version-check cases serve a real install script over that loopback,
+// which writes a small executable printing a version line the test chooses.
+// The script under test then does what it does with any installer: runs the
+// binary and compares what it reports against the pin.
 //
 // #1205 declined the class these replace -- a PATH full of fake binaries,
 // which proves what the fakes were written to prove and nothing about the
@@ -155,5 +168,88 @@ func TestInstallerFailsAfterEveryAttemptWhenTheDownloadCannotStart(t *testing.T)
 	}
 	if !strings.Contains(out, "did not install in 2 attempt(s)") {
 		t.Fatalf("output = %q, want the giving-up line to name the attempts", out)
+	}
+}
+
+// pinnedGolangciVersion reads the pin the script will check against, from the
+// same file the script reads it from.
+func pinnedGolangciVersion(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(repoScriptPath(t, ".tool-versions"))
+	if err != nil {
+		t.Fatalf("reading .tool-versions: %v", err)
+	}
+	for line := range strings.Lines(string(raw)) {
+		if field := strings.Fields(line); len(field) == 2 && field[0] == "golangci-lint" {
+			return field[1]
+		}
+	}
+	t.Fatal("no golangci-lint row in .tool-versions")
+	return ""
+}
+
+// installerServing starts a loopback server whose install.sh writes an
+// executable into the bindir it is given, printing reports as its version
+// line. An empty reports writes nothing, which is the installer that ran and
+// produced no binary.
+func installerServing(t *testing.T, reports string) string {
+	t.Helper()
+	script := "#!/bin/sh\nbindir=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in -b) bindir=\"$2\"; shift 2 ;; *) shift ;; esac\ndone\nmkdir -p \"$bindir\"\n"
+	if reports != "" {
+		script += "cat > \"$bindir/golangci-lint\" <<EOF\n#!/bin/sh\necho '" + reports + "'\nEOF\nchmod +x \"$bindir/golangci-lint\"\n"
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, script)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func TestInstallerAcceptsTheBinaryThatReportsThePin(t *testing.T) {
+	t.Parallel()
+	requireInstallerScriptTools(t, "curl")
+	version := pinnedGolangciVersion(t)
+	code, out := runInstaller(t,
+		"EVENER_GOLANGCI_INSTALLER_URL="+installerServing(t, "golangci-lint has version "+version+" built with go1.27.0"),
+		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
+		"EVENER_GOLANGCI_CURL_RETRIES=0",
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for a binary reporting the pin\n%s", code, out)
+	}
+}
+
+func TestInstallerRefusesABinaryThatReportsAnotherVersion(t *testing.T) {
+	t.Parallel()
+	requireInstallerScriptTools(t, "curl")
+	version := pinnedGolangciVersion(t)
+	code, out := runInstaller(t,
+		"EVENER_GOLANGCI_INSTALLER_URL="+installerServing(t, "golangci-lint has version 0.0.1 built with go1.27.0"),
+		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
+		"EVENER_GOLANGCI_CURL_RETRIES=0",
+	)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 for a binary reporting another version\n%s", code, out)
+	}
+	if !strings.Contains(out, "not the pinned v"+version) {
+		t.Fatalf("output = %q, want the mismatch named against the pin", out)
+	}
+}
+
+func TestInstallerRefusesAnInstallThatProducedNoBinary(t *testing.T) {
+	t.Parallel()
+	requireInstallerScriptTools(t, "curl")
+	code, out := runInstaller(t,
+		// The installer exits 0 and writes nothing, which is the hole pipefail
+		// cannot see: the pipeline succeeded and there is no binary.
+		"EVENER_GOLANGCI_INSTALLER_URL="+installerServing(t, ""),
+		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
+		"EVENER_GOLANGCI_CURL_RETRIES=0",
+	)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 when nothing was installed\n%s", code, out)
+	}
+	if !strings.Contains(out, "did not run after installation") {
+		t.Fatalf("output = %q, want the branch that says the binary does not run", out)
 	}
 }

@@ -90,6 +90,27 @@ if [ -z "$version" ]; then
 	exit 1
 fi
 
+# --retry-all-errors is what makes an HTTP status a failure worth retrying, and
+# it arrived in curl 7.71. An older curl would accept the flag's absence
+# silently in some builds and fail outright in others; either way the retry
+# this script is built around would not be the retry it describes. There is no
+# fallback: a retry reimplemented here would be the shell supervisor this whole
+# change exists to avoid.
+curl_version="$(curl --version 2>/dev/null | awk 'NR==1 {print $2}')"
+curl_major="${curl_version%%.*}"
+curl_rest="${curl_version#*.}"
+curl_minor="${curl_rest%%.*}"
+if [[ ! "$curl_major" =~ ^[0-9]+$ ]] || [[ ! "$curl_minor" =~ ^[0-9]+$ ]]; then
+	printf 'install-golangci-lint.sh: could not read a version out of `curl --version` (got %q); curl 7.71 or newer is required for --retry-all-errors\n' \
+		"$curl_version" >&2
+	exit 2
+fi
+if [ "$curl_major" -lt 7 ] || { [ "$curl_major" -eq 7 ] && [ "$curl_minor" -lt 71 ]; }; then
+	printf 'install-golangci-lint.sh: curl %s is too old; --retry-all-errors needs curl 7.71 or newer\n' \
+		"$curl_version" >&2
+	exit 2
+fi
+
 bindir="$(go env GOPATH)/bin"
 
 # pipefail is what makes the fetch of install.sh part of the attempt: without it
