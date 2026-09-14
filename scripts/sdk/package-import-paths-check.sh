@@ -77,7 +77,16 @@ sources=(
 # above, so the continuation is matched on its own shape instead. In these
 # trees a line that begins with a quoted path IS a module specifier; the sweep
 # finds none today that is not.
-opener='(from[[:space:]]*|import[[:space:]]*|[A-Za-z_$][A-Za-z0-9_$.]*[[:space:]]*\([[:space:]]*|^[[:space:]]*)'
+# The calls that LOAD a module, and only those. An earlier pattern accepted any
+# identifier before the parenthesis, which made readFileSync("…/typescript/x")
+# and new URL("…/typescript/…", import.meta.url) failures of a gate about
+# imports. These are the same names scripts/sdk/module-specifiers.mjs reads --
+# MOCK_CALLS there, matched on the property regardless of the object, so a
+# jest.mock is caught as readily as a vi.mock -- and the Go audit compares the
+# two sets so neither can gain a loader the other does not know.
+mock_calls='mock|doMock|unmock|importActual|importMock'
+loader_call='(require|import|[A-Za-z_$][A-Za-z0-9_$.]*\.('"$mock_calls"'))[[:space:]]*\([[:space:]]*'
+opener='(from[[:space:]]*|import[[:space:]]*|'"$loader_call"'|^[[:space:]]*)'
 # `/protocol/` rather than `protocol`: the seam is only ever reached through a
 # relative path, and a bare `protocol` substring matches @modelcontextprotocol
 # and the "protocol" terminal-reason literal the app really does use. The

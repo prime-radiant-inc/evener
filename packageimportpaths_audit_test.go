@@ -6,7 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -296,13 +299,65 @@ func TestPackageImportPathsCheckCatchesEveryFormTheReaderKnows(t *testing.T) {
 // vitest.config.* also excused a vitest.config.extra.ts, which is not one.
 func TestPackageImportPathsCheckExemptsOnlyTheResolverConfigsThatExist(t *testing.T) {
 	files := cleanPackageImportTree()
+	// A real import, not a new URL(): the sweep reads module loaders only, so
+	// the fixture has to be one for this to be about the exemption.
 	files["mobile-native/vitest.config.extra.ts"] =
-		"const shared = new URL(\"../appwire-client/typescript/index.ts\", import.meta.url);\n"
+		"import { errorText } from \"../appwire-client/typescript/errors\";\nvoid errorText;\n"
 	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
 	if passed {
 		t.Fatalf("the gate excused a file for being named like a resolver config:\n%s", output)
 	}
 	if !strings.Contains(output, "vitest.config.extra.ts") {
 		t.Fatalf("the gate named no offending file:\n%s", output)
+	}
+}
+
+// The sweep reads module LOADERS. An earlier pattern accepted any identifier
+// before a parenthesis, which made an ordinary call carrying the package path
+// -- reading a fixture file, building a URL -- a failure of a gate about
+// imports.
+func TestPackageImportPathsCheckIgnoresCallsThatLoadNothing(t *testing.T) {
+	files := cleanPackageImportTree()
+	files["mobile-native/src/fixtures.ts"] = strings.Join([]string{
+		`const raw = readFileSync("../../appwire-client/typescript/fixtures/thread.jsonl", "utf8");`,
+		`const url = new URL("../../appwire-client/typescript/docContent.ts", import.meta.url);`,
+		`expect(thing).toThrow("../../appwire-client/typescript/errors");`,
+		"",
+	}, "\n")
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if !passed {
+		t.Fatalf("the gate fired on calls that load nothing:\n%s", output)
+	}
+}
+
+// The gate is a grep and the reader is a TypeScript AST walk, and each carries
+// its own list of the calls that take a module specifier. They are compared
+// here rather than trusted to stay equal: a loader added to one and not the
+// other is either a form the gate stops catching or a call it starts flagging.
+func TestPackageImportPathsCheckKnowsTheSameLoaderCallsAsTheReader(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	read := func(rel string) string {
+		raw, readErr := os.ReadFile(filepath.Join(wd, rel))
+		if readErr != nil {
+			t.Fatalf("reading %s: %v", rel, readErr)
+		}
+		return string(raw)
+	}
+	names := func(source, pattern string) []string {
+		match := regexp.MustCompile(pattern).FindStringSubmatch(source)
+		if match == nil {
+			t.Fatalf("no loader-call list found with %q", pattern)
+		}
+		found := regexp.MustCompile(`[A-Za-z]+`).FindAllString(match[1], -1)
+		sort.Strings(found)
+		return found
+	}
+	gate := names(read(filepath.Join("scripts", "sdk", "package-import-paths-check.sh")), `(?m)^mock_calls='([^']*)'`)
+	reader := names(read(filepath.Join("scripts", "sdk", "module-specifiers.mjs")), `MOCK_CALLS = new Set\(\[([^\]]*)\]`)
+	if !slices.Equal(gate, reader) {
+		t.Fatalf("the gate knows %v and the reader knows %v; they have to be the same calls", gate, reader)
 	}
 }
