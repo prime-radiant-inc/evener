@@ -460,7 +460,7 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 		// shares with every other such client (spec §5.1, §8.1).
 		c.Registry().ApplyLive(instance, rows)
 	}
-	return c.resolveListing(instance, live), nil
+	return c.resolveListing(instance, live)
 }
 
 // isOverride reports whether name is a registered adapter override.
@@ -538,12 +538,14 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 // after the caller applied the live rows -- and filters by the §5
 // visibility rule. live reports whether a live listing was fetched;
 // false means registry-only (spec §8.1: an unsupported models endpoint
-// is not a failure).
-func (c *Client) resolveListing(instance string, live bool) ModelListing {
+// is not a failure). A lookup failure is an error, not an empty
+// listing: swallowing it would silently drop a fetched live listing
+// under a mismatched key.
+func (c *Client) resolveListing(instance string, live bool) (ModelListing, error) {
 	r := c.Registry()
 	ids, err := r.ModelIDs(instance)
 	if err != nil {
-		return ModelListing{Live: live}
+		return ModelListing{}, &ConfigurationError{Message: err.Error()}
 	}
 	out := make([]registry.Resolved, 0, len(ids))
 	for _, id := range ids {
@@ -553,7 +555,7 @@ func (c *Client) resolveListing(instance string, live bool) ModelListing {
 		}
 		out = append(out, row)
 	}
-	return ModelListing{Live: live, Models: out}
+	return ModelListing{Live: live, Models: out}, nil
 }
 
 // liveSaysNoTools reports the §5 visibility rule: a row is hidden when the

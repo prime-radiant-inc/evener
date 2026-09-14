@@ -10,6 +10,43 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
+func TestInstances_SetModelDisabledShadowsImplicitInstance(t *testing.T) {
+	// An instance that exists only via an environment credential has
+	// no authored entry: the toggle authors a shadow entry carrying
+	// just the flag, and base/credential resolution still works
+	// through it while the toggle takes effect.
+	f := newInstancesFixture(t, map[string]string{"ANTHROPIC_API_KEY": "sk"})
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	before, ok := f.ctl.reg.Get().Instance("anthropic")
+	if !ok || before.Implicit {
+		// Explicitness of the check matters: the test is vacuous if
+		// the fixture ever authors this instance.
+		if !ok {
+			t.Fatal("no implicit anthropic instance in fixture registry")
+		}
+	}
+	if err := f.ctl.SetModelDisabled(appwire.InstanceSetModelDisabledParams{Name: "anthropic", Model: "claude-opus-4-6", Disabled: true}); err != nil {
+		t.Fatalf("SetModelDisabled: %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "anthropic")
+	row, ok := p.Models["claude-opus-4-6"]
+	if !ok || !registry.BoolValue(row.Disabled) {
+		t.Fatalf("authored shadow row = %+v, want disabled=true", row)
+	}
+	after, ok := f.ctl.reg.Get().Instance("anthropic")
+	if !ok {
+		t.Fatal("anthropic instance vanished after shadowing toggle")
+	}
+	if after.ProviderID != before.ProviderID || after.Protocol != before.Protocol {
+		t.Fatalf("shadowed instance changed identity: %+v -> %+v", before, after)
+	}
+	if _, err := f.ctl.reg.Get().Resolve("anthropic/claude-opus-4-6"); !errors.Is(err, registry.ErrModelDisabled) {
+		t.Fatalf("Resolve after shadow disable = %v, want ErrModelDisabled", err)
+	}
+}
+
 func TestInstances_SetModelDisabledWritesRowAndLists(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"ANTHROPIC_API_KEY": "sk"})
 	writeMinimalProvidersToml(t, f.tomlPath)
