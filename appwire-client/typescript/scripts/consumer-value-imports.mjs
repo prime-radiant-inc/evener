@@ -15,6 +15,53 @@ import ts from "typescript";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
 
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts"];
+
+export function parse(file, text) {
+  return ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+}
+
+// The runtime values a source file takes from each of this package's published
+// specifiers, as a Map of specifier to the EXPORTED names it names (the left
+// half of `X as Y`, since that is what the package has to provide).
+//
+// Re-exports count: `export { graftContinuationTree } from "@evener/appwire-client"`
+// is a consumer taking a value, exactly like an import. Type-only statements
+// and inline `type` members do not: they are erased before anything runs.
+export function packageValuesIn(source) {
+  const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
+  for (const statement of source.statements) {
+    const isImport = ts.isImportDeclaration(statement);
+    const isExport = ts.isExportDeclaration(statement);
+    if (!isImport && !isExport) continue;
+    const moduleSpecifier = statement.moduleSpecifier;
+    if (!moduleSpecifier || !ts.isStringLiteral(moduleSpecifier)) continue;
+    const names = bySpecifier.get(moduleSpecifier.text);
+    if (!names) continue;
+    let elements;
+    if (isImport) {
+      const clause = statement.importClause;
+      if (!clause || clause.isTypeOnly || !clause.namedBindings) continue;
+      if (!ts.isNamedImports(clause.namedBindings)) continue;
+      elements = clause.namedBindings.elements;
+    } else {
+      // `export * from` names nothing to check; only a named list does.
+      if (statement.isTypeOnly || !statement.exportClause || !ts.isNamedExports(statement.exportClause)) continue;
+      elements = statement.exportClause.elements;
+    }
+    for (const element of elements) {
+      if (!element.isTypeOnly) names.add((element.propertyName ?? element.name).text);
+    }
+  }
+  return bySpecifier;
+}
+
 const CONSUMER_TREES = ["mobile-native", join("mobile", "src"), join("cmd", "evener-hub", "frontend", "src")];
 // Tests and test support are not shipped and are not consumers of the tarball;
 // the in-repo `testing` specifier they reach for is deliberately absent from
@@ -26,7 +73,7 @@ function sources(dir, found = []) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!SKIPPED.has(entry.name)) sources(full, found);
-    } else if (entry.isFile() && [".ts", ".tsx"].includes(extname(entry.name)) && !entry.name.includes(".test.")) {
+    } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(extname(entry.name)) && !entry.name.includes(".test.")) {
       found.push(full);
     }
   }
@@ -37,25 +84,9 @@ export function consumerValueImports(repoRoot) {
   const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
   for (const tree of CONSUMER_TREES) {
     for (const file of sources(join(repoRoot, tree))) {
-      const source = ts.createSourceFile(
-        file,
-        readFileSync(file, "utf8"),
-        ts.ScriptTarget.Latest,
-        true,
-        file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-      );
-      for (const statement of source.statements) {
-        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-        const names = bySpecifier.get(statement.moduleSpecifier.text);
-        if (!names) continue;
-        const clause = statement.importClause;
-        // `import type { … }` and inline `type` members are erased before
-        // anything runs, so they are not what a runtime check is about.
-        if (!clause || clause.isTypeOnly || !clause.namedBindings) continue;
-        if (!ts.isNamedImports(clause.namedBindings)) continue;
-        for (const element of clause.namedBindings.elements) {
-          if (!element.isTypeOnly) names.add((element.propertyName ?? element.name).text);
-        }
+      const found = packageValuesIn(parse(file, readFileSync(file, "utf8")));
+      for (const [specifier, names] of found) {
+        for (const name of names) bySpecifier.get(specifier).add(name);
       }
     }
   }

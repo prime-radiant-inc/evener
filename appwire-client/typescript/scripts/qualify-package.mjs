@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
-import { consumerValueImports, PACKAGE_SPECIFIERS } from "./consumer-value-imports.mjs";
+import { consumerValueImports, PACKAGE_SPECIFIERS, packageValuesIn, parse } from "./consumer-value-imports.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -601,30 +601,23 @@ ${presenceLoop}${surface.smoke ?? ""}`,
 // what the consumers import first, so the fixture cannot quietly fall behind.
 function runConsumerResolveCheck() {
   const fixture = "resolve-check.mjs";
-  const source = readFileSync(join(packageDir, "scripts", fixture), "utf8");
-  const declared = new Map();
-  for (const specifier of PACKAGE_SPECIFIERS) {
-    const clause = source.match(new RegExp(`import[\\s]*\\{([^}]*)\\}[\\s]*from "${specifier}";`));
-    assert(clause, `${fixture} no longer imports anything from ${specifier}`);
-    const names = clause[1]
-      .split(",")
-      .map((member) => member.trim())
-      .filter(Boolean)
-      // `docImageURL as docImageURLAtSubpath` is aliased only so the two
-      // specifiers' bindings can coexist here; the export's own name is what
-      // the consumers name and what the tarball has to provide.
-      .map((member) => member.split(" as ")[0].trim());
-    declared.set(specifier, names.sort());
-  }
+  const fixturePath = join(packageDir, "scripts", fixture);
+  // Parsed, not matched: the fixture may take one specifier across several
+  // statements, in either quote style, with the type-only members split off,
+  // and a regex that reads only the first clause would quietly check half a
+  // list. packageValuesIn is the same reader the consumer scan uses.
+  const declared = packageValuesIn(parse(fixturePath, readFileSync(fixturePath, "utf8")));
   const imported = consumerValueImports(resolve(packageDir, "..", ".."));
   for (const specifier of PACKAGE_SPECIFIERS) {
+    const names = [...declared.get(specifier)].sort();
+    assert(names.length > 0, `${fixture} no longer imports anything from ${specifier}`);
     assert.deepEqual(
-      declared.get(specifier),
+      names,
       imported.get(specifier),
       `${fixture}'s imports from ${specifier} have drifted from what this repository's consumers import; update the fixture`,
     );
   }
-  copyFileSync(join(packageDir, "scripts", fixture), join(consumerDir, fixture));
+  copyFileSync(fixturePath, join(consumerDir, fixture));
   run(process.execPath, [join(consumerDir, fixture)], consumerDir);
 }
 
