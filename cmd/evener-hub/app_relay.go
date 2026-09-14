@@ -228,6 +228,23 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 
 // stampForkCapability adds the hub-owned action to an existing capability
 // update. Other permissions and fields remain the daemon's current values.
+// stampResyncTarget names the route a fanned-out resync is being delivered to.
+// The daemon-gone resync (appsource.DaemonGoneResync) carries no target so it
+// reaches every route the relay serves - a read-only child alias shares the
+// root's relay session - and each subscriber acts on the ref it names, so
+// each copy names the subscriber's own.
+func stampResyncTarget(notification appwire.Notification, threadID, ref string) appwire.Notification {
+	if notification.Method != appwire.NotifyEvenerThreadResync {
+		return notification
+	}
+	params, err := json.Marshal(appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref})
+	if err != nil {
+		return notification
+	}
+	notification.Params = params
+	return notification
+}
+
 func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
 	if notification.Method != appwire.NotifyThreadStatusChanged {
 		return notification
@@ -606,6 +623,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			publishTarget := func(delivery appsource.RelayDelivery, target relayTargetState) {
 				notification := delivery.Notification
+				// An untargeted resync is one addressed to every route; the
+				// copy each route gets names that route.
+				if target.routingKey == "" {
+					notification = stampResyncTarget(notification, target.threadID, target.ref)
+				}
 				// The edits only this hub can make to a local daemon's
 				// notification on its way to a browser: the images it can
 				// resolve off disk, and the answer to what a thread can still

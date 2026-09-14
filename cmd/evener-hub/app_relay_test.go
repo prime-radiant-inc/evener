@@ -296,6 +296,94 @@ func TestHubRelayReconnectRoutesOneResyncThroughCanonicalListener(t *testing.T) 
 	}
 }
 
+// The reconnect resync above is targeted at the canonical ref on purpose. The
+// resync recovery publishes when the daemon has left the roster for good is
+// the opposite case: nothing else will ever tell a subscriber on a read-only
+// child alias that the daemon behind its session is gone, so it reaches every
+// route the relay serves, each stamped with that route's own identity - the
+// clients act on params.ref (issue #1318, review round 1).
+func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
+	const (
+		rootRef  = "local:gone-root"
+		childRef = "local:gone-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if _, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appsource.DaemonGoneResync(),
+		Acknowledge:  func() { close(acknowledged) },
+	}
+	<-acknowledged
+	for _, subscriber := range []struct {
+		name   string
+		client *appwire.Client
+		ref    string
+	}{{"root", root, rootRef}, {"child", child, childRef}} {
+		select {
+		case got := <-subscriber.client.Notifications():
+			if got.Method != appwire.NotifyEvenerThreadResync {
+				t.Fatalf("%s received %q, want %q", subscriber.name, got.Method, appwire.NotifyEvenerThreadResync)
+			}
+			var params appwire.ThreadResyncParams
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("%s resync params: %v", subscriber.name, err)
+			}
+			want, _ := appwire.ParseRef(subscriber.ref)
+			if params.Ref != subscriber.ref || params.ThreadID != want.ThreadID {
+				t.Fatalf("%s resync names ref=%q threadId=%q, want its own %q/%q", subscriber.name, params.Ref, params.ThreadID, subscriber.ref, want.ThreadID)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never received the daemon-gone resync", subscriber.name)
+		}
+	}
+}
+
 func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	thread := appwire.Thread{
 		ID:        "thread-delivery",

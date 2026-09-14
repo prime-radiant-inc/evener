@@ -1775,14 +1775,111 @@ func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
 
 	select {
 	case delivery := <-deliveries:
-		if delivery.Notification.Method != appwire.NotifyEvenerThreadResync {
-			t.Fatalf("delivery after the daemon exit = %+v, want resync", delivery.Notification)
-		}
+		expectDaemonGoneResync(t, delivery.Notification)
 		delivery.Acknowledge()
 	case <-time.After(5 * time.Second):
 		t.Fatal("no resync reached the listener after the daemon exited for good")
 	}
 	if dials := daemon.dials.Load(); dials != 1 {
 		t.Fatalf("dials = %d, want 1: a daemon that left the roster is not dialled", dials)
+	}
+}
+
+// expectDaemonGoneResync asserts the re-read instruction recovery publishes
+// for a daemon that is gone: a resync that names no ref, so the hub's relay
+// fans it out to every route this session serves (a read-only child alias
+// shares the root's relay session) and stamps each route's own identity in.
+func expectDaemonGoneResync(t *testing.T, notification appwire.Notification) {
+	t.Helper()
+	if notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("delivery = %+v, want resync", notification)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(notification.Params, &params); err != nil {
+		t.Fatalf("resync params: %v", err)
+	}
+	if _, targeted := params["ref"]; targeted {
+		t.Fatalf("daemon-gone resync names ref %v; it must be untargeted so every route hears it", params["ref"])
+	}
+	if _, targeted := params["threadId"]; targeted {
+		t.Fatalf("daemon-gone resync names threadId %v; it must be untargeted so every route hears it", params["threadId"])
+	}
+}
+
+// Recovery keeps retrying after the daemon is gone (it may come back), and
+// every attempt advances the publication epoch, which revokes whatever is
+// still queued - a queued daemon-gone resync included, when the listener is
+// busy. The resync is the one thing that must survive that: it is published
+// outside the revocable epoch (issue #1318, review round 1).
+func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.T) {
+	var listingMu sync.Mutex
+	listed := []rendezvous.Entry{relayEntry("thread-1")}
+	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
+		listingMu.Lock()
+		defer listingMu.Unlock()
+		return listed
+	})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+	session := relaySessionFor(t, source)
+
+	// A delivery the listener has not acknowledged holds the publisher, so
+	// the resync queued behind it is still waiting when the epoch moves.
+	observeRelayFrame(t, session, relayDelta("thread-1", "barrier"))
+	barrier := <-deliveries
+	if got := decodeRelayDelta(t, barrier.Notification); got != "barrier" {
+		t.Fatalf("barrier delivery = %q, want barrier", got)
+	}
+	listingMu.Lock()
+	listed = nil
+	listingMu.Unlock()
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for recovery to have queued the resync, then do what its next
+	// attempt does: advance the epoch, revoking the current publication fence.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		session.mu.Lock()
+		announced := session.goneAnnounced
+		session.mu.Unlock()
+		if announced {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovery never announced the daemon gone")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	session.mu.Lock()
+	session.advanceEpochLocked()
+	session.mu.Unlock()
+	barrier.Acknowledge()
+
+	select {
+	case delivery := <-deliveries:
+		expectDaemonGoneResync(t, delivery.Notification)
+		delivery.Acknowledge()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the daemon-gone resync was revoked with the epoch and never re-sent")
 	}
 }

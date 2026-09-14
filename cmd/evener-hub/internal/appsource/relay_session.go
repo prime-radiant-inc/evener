@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -534,15 +535,31 @@ func (s *relaySession) publishPendingResync(params appwire.ThreadReadParams) {
 // never reconnects, so without this the listener keeps the state from before
 // the exit indefinitely. The pending resync is left armed: a daemon that comes
 // back is a new generation and still owes its own re-read.
-func (s *relaySession) publishDaemonGoneResync(params appwire.ThreadReadParams) {
+//
+// The job is queued with no epoch and no fence, so it is not revoked by the
+// epoch advance every later reconnect attempt makes: recovery keeps trying
+// after the announcement, and a listener busy with an earlier delivery would
+// otherwise lose the one instruction that tells it the daemon is gone. That
+// is safe where a daemon frame would not be: this frame belongs to no daemon
+// generation, and being re-read late costs one extra read.
+func (s *relaySession) publishDaemonGoneResync() {
 	s.mu.Lock()
 	if s.goneAnnounced || s.closed {
 		s.mu.Unlock()
 		return
 	}
 	s.goneAnnounced = true
-	s.queueResyncLocked(params)
+	s.enqueuePublishJob(relayPublishJob{notifications: []appwire.Notification{DaemonGoneResync()}})
 	s.mu.Unlock()
+}
+
+// DaemonGoneResync is the re-read instruction recovery publishes once the
+// daemon a session relayed has left the roster for good. It names no ref: a
+// read-only child alias shares the root's relay session, and nothing else will
+// ever tell that subscriber its daemon is gone, so the hub's relay fans this
+// out to every route it serves and stamps each route's own identity in.
+func DaemonGoneResync() appwire.Notification {
+	return appwire.Notification{Method: appwire.NotifyEvenerThreadResync, Params: json.RawMessage("{}")}
 }
 
 func (s *relaySession) queueResyncLocked(params appwire.ThreadReadParams) {
@@ -587,7 +604,7 @@ func (s *relaySession) recoverCanonicalFeed() {
 			continue
 		}
 		if isRelayDaemonGone(err) {
-			s.publishDaemonGoneResync(params)
+			s.publishDaemonGoneResync()
 		}
 
 		attempt++
@@ -717,12 +734,17 @@ func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
 }
 
 func (s *relaySession) queuePublishLocked(epoch uint64, notifications []appwire.Notification, done chan struct{}) {
-	job := relayPublishJob{
+	s.enqueuePublishJob(relayPublishJob{
 		epoch:         epoch,
 		fence:         s.publicationFence,
 		notifications: append([]appwire.Notification(nil), notifications...),
 		done:          done,
-	}
+	})
+}
+
+// enqueuePublishJob appends one job to the FIFO and wakes the publisher. A job
+// with no epoch and no fence is dispatched whatever epoch is current.
+func (s *relaySession) enqueuePublishJob(job relayPublishJob) {
 	s.publishMu.Lock()
 	s.publishJobs = append(s.publishJobs, job)
 	s.publishMu.Unlock()
