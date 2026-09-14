@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/url"
 	"os"
@@ -16,7 +17,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
@@ -322,39 +322,25 @@ func destinationFingerprint(stateDir string, r *registry.Registry, inst registry
 const endpointFingerprintKeyFile = "endpoint-fingerprint.key"
 
 var (
-	endpointFingerprintKeyMu    sync.Mutex
-	endpointFingerprintKeyCache = map[string]endpointFingerprintKeyEntry{}
+	endpointFingerprintKeyMu sync.Mutex
 	// endpointFingerprintKeyOwner is the uid a key file has to belong to. A
 	// real uid cannot be varied the way the check needs to be exercised, so it
 	// is a seam in the same sense as the auth store's file operations.
 	endpointFingerprintKeyOwner = os.Getuid
 )
 
-// endpointFingerprintKeyEntry is a cached key with the file identity it was read
-// from, so the cache can tell that the file has been rotated under it.
-type endpointFingerprintKeyEntry struct {
-	key       []byte
-	signature endpointFingerprintKeySignature
-}
-
-// endpointFingerprintKeySignature is the key file as the reader found it: its
-// size and modification time, which a rotation changes.
-type endpointFingerprintKeySignature struct {
-	size    int64
-	modTime time.Time
-}
-
 // endpointFingerprintKey returns the key the endpoint fingerprints are keyed
 // with, creating it under stateDir on first use. It is machine-local, 0600, and
 // never sent anywhere: only a holder of the key can recompute a digest. A key
 // that can neither be read nor created yields nil, and the caller then omits
-// the fingerprint. Only successes are cached, so a state root that becomes
-// writable later starts serving fingerprints again.
+// the fingerprint.
 //
-// A cached key is revalidated against its file on every use. Rotation is the
-// answer to a key that may have leaked (readEndpointFingerprintKey refuses a
-// file it did not write safely), and an operator rotating or deleting the file
-// has to see that take effect in a running hub, not only after a restart.
+// The key file is read fresh on every use - nothing is held between calls - so
+// rotation is the answer to a key that may have leaked (readEndpointFingerprintKey
+// refuses a file the hub did not write safely), and an operator rotating or
+// deleting the file sees that take effect in a running hub immediately, not only
+// after a restart. The lock is held across the read and the repair so concurrent
+// hubs serialize on creating the one file they share.
 func endpointFingerprintKey(stateDir string) []byte {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
@@ -363,16 +349,6 @@ func endpointFingerprintKey(stateDir string) []byte {
 	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
 	endpointFingerprintKeyMu.Lock()
 	defer endpointFingerprintKeyMu.Unlock()
-	if entry, ok := endpointFingerprintKeyCache[stateDir]; ok {
-		// The file's own size and time are what say it is still the file this
-		// key came from. A rewrite that preserved both would need the access to
-		// the state root that can read the key outright, which the validation
-		// below refuses to make easier.
-		if signature, err := endpointFingerprintKeyFileSignature(path); err == nil && signature == entry.signature {
-			return entry.key
-		}
-		delete(endpointFingerprintKeyCache, stateDir)
-	}
 	key, err := readEndpointFingerprintKey(path)
 	if err != nil {
 		key, err = repairEndpointFingerprintKey(path)
@@ -383,35 +359,29 @@ func endpointFingerprintKey(stateDir string) []byte {
 	if len(key) == 0 {
 		return nil
 	}
-	signature, err := endpointFingerprintKeyFileSignature(path)
-	if err != nil {
-		return nil
-	}
-	endpointFingerprintKeyCache[stateDir] = endpointFingerprintKeyEntry{key: key, signature: signature}
 	return key
-}
-
-// endpointFingerprintKeyFileSignature identifies the key file as the reader saw
-// it, Lstat so a symlink at the path is judged as itself here too.
-func endpointFingerprintKeyFileSignature(path string) (endpointFingerprintKeySignature, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return endpointFingerprintKeySignature{}, err
-	}
-	return endpointFingerprintKeySignature{size: info.Size(), modTime: info.ModTime()}, nil
 }
 
 // readEndpointFingerprintKey returns the key at path, refusing a file this hub
 // must not treat as its own secret. The fingerprints' whole guarantee is that
 // only a holder of the key can recompute them (see endpointFingerprint), so a
 // key another user can read is one they can key digests with, and a file that
-// is not this hub's own regular file is not a key it wrote. The caller replaces
+// is not this hub's own regular file is not a key it wrote. Every judgement and
+// the read itself go through one descriptor: the open refuses a symlink at the
+// path, and what is checked is exactly what is read, so nothing swapped in
+// after the open can slip a different file past the checks. The caller replaces
 // what is refused with a fresh 0600 key, which is the answer a key that may have
 // leaked calls for: rotation is what stops it describing anything.
 func readEndpointFingerprintKey(path string) ([]byte, error) {
-	// Lstat, not Stat: what is at the path is judged, not what it points at.
-	// A symlink here is replaced by the rotation below rather than followed.
-	info, err := os.Lstat(path)
+	// The descriptor is the subject: what is at the path is judged and read,
+	// not what it points at. A symlink here is replaced by the rotation below
+	// rather than followed.
+	f, err := openEndpointFingerprintKey(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +394,7 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 	if uid, known := fileOwnerUID(info); known && uid != endpointFingerprintKeyOwner() {
 		return nil, fmt.Errorf("%s is owned by uid %d, not by uid %d", path, uid, endpointFingerprintKeyOwner())
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := io.ReadAll(f)
 	if err != nil {
 		return nil, err
 	}

@@ -1839,8 +1839,8 @@ func TestInstances_ApiKeySetAcceptsTheFingerprintTheCatalogueAdvertises(t *testi
 // to read, which is the whole guarantee the digest rests on (only a holder of
 // the key can recompute it). Using it as-is would keep keying digests with a
 // value someone else knows; the hub rotates it instead, so the exposed key stops
-// describing anything. The write happens before any listing is read, because a
-// key this hub has already loaded is cached for the process.
+// describing anything. The write happens before any listing is read: the file is
+// read fresh on every use, so the next read is the one that sees the rotation.
 func TestInstances_EndpointFingerprintRotatesAKeyOthersCanRead(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
@@ -1902,10 +1902,11 @@ func TestInstances_EndpointFingerprintRotatesAKeyThatIsNotItsOwn(t *testing.T) {
 }
 
 // Rotation is the answer to a key that may have leaked, so it has to take effect
-// in a running hub: a cached key is revalidated against its file, and a key file
-// an operator replaces (a fresh, longer value here, so the signature differs even
-// if the timestamps tie) stops keying digests immediately. A key file that is
-// deleted is rotated rather than kept, so the next use writes a fresh one.
+// in a running hub: the key file is read on every use, so a key file an operator
+// replaces stops keying digests immediately. That includes a replacement that
+// changes neither the file's size nor its modification time, which a size-and-
+// mtime cache could not tell apart. A key file that is deleted is rotated rather
+// than kept, so the next use writes a fresh one.
 func TestInstances_EndpointFingerprintFollowsARotatedKeyFile(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
@@ -1934,6 +1935,29 @@ func TestInstances_EndpointFingerprintFollowsARotatedKeyFile(t *testing.T) {
 	}
 	if _, err := os.Stat(keyPath); err != nil {
 		t.Fatalf("Stat(%s) after the rotation: %v", endpointFingerprintKeyFile, err)
+	}
+
+	// The reviewer's rotation, against the 43-byte key the hub just generated:
+	// a different key of the same length, with the replaced file's own
+	// modification time put back, so size and mtime together cannot tell it apart
+	// from the file it replaced. Only reading the file on every use can see it.
+	before, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	sameLength := []byte("b-rotated-key-an-operator-just-put-here-now")
+	if int64(len(sameLength)) != before.Size() {
+		t.Fatalf("the replacement key is %d bytes, want the %d bytes of the file it replaces", len(sameLength), before.Size())
+	}
+	if err := os.WriteFile(keyPath, sameLength, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if err := os.Chtimes(keyPath, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatalf("Chtimes(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	rotatedSameSize := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if rotatedSameSize == third {
+		t.Fatal("the fingerprint still came from the stale cached key after a same-size, same-mtime replacement")
 	}
 }
 
