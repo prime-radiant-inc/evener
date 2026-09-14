@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/task"
 )
 
 // retirementEvidence reads only this Session's owners. The shared delegate
@@ -139,6 +142,18 @@ func retirementColdEvidence(stateDir, sessionID, delegateID string) ([]Retiremen
 	}
 	if watchPending {
 		blockers = append(blockers, RetirementBlocker{Category: "watch", SessionID: sessionID, DelegateID: delegateID})
+	}
+	// A cold member's next restore opens these durable stores from their primary
+	// files, so a malformed one must block retirement here rather than fail the
+	// restore later. The strict readers are the ones restore itself uses, they
+	// never repair a partial write, and a missing file is not an error: only a
+	// present-but-corrupt store is evidence the restore cannot reconstruct the
+	// member.
+	if _, err := loadClientMutationSnapshotFS(afero.NewOsFs(), stateDir, sessionID); err != nil {
+		return append(blockers, RetirementBlocker{Category: "unsupported", SessionID: sessionID, DelegateID: delegateID}), fmt.Errorf("retirement cold evidence: client mutation snapshot: %w", err)
+	}
+	if err := task.NewTaskStore(stateDir, sessionID).Load(); err != nil {
+		return append(blockers, RetirementBlocker{Category: "unsupported", SessionID: sessionID, DelegateID: delegateID}), fmt.Errorf("retirement cold evidence: task store: %w", err)
 	}
 	return blockers, nil
 }

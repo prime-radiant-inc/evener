@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
@@ -484,8 +485,16 @@ type retainedScratchPool struct {
 	contended map[string]struct{}
 	// adopted maps a transferred allocation's canonical dir to the consumer
 	// session that took it, so a distinct sharing consumer can borrow the same
-	// directory while a duplicate transfer by the same consumer is refused.
+	// directory while a duplicate transfer by the same consumer is refused. A
+	// dir is recorded here when an owning transfer is claimed — before the
+	// environment restore — and cleared again if that restore fails, so a
+	// concurrent adopter never doubles a lease the pool is handing over.
 	adopted map[string]string
+	// mu guards handles and adopted, which adoption and release mutate from the
+	// independent goroutines that can restore distinct children of one root.
+	// bindings, consumers and contended are written only before the pool is
+	// published and are read-only afterwards, so they need no lock.
+	mu sync.Mutex
 }
 
 // validateRetainedScratchGraph fails closed on an incomplete or contradictory
@@ -678,6 +687,8 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 	if pool == nil {
 		return nil
 	}
+	// bindings is written only before the pool is published, so this read needs
+	// no lock.
 	binding, ok := pool.bindings[bindingID]
 	if !ok {
 		return fmt.Errorf("retained scratch: binding %q is not in the manifest", bindingID)
@@ -695,46 +706,109 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 		}
 	}
 	for kind, slot := range binding.Slots {
-		if slot.OwnsLease && existingKinds[kind] {
+		if existingKinds[kind] {
 			continue
 		}
 		key := filepath.Clean(slot.Dir)
-		handle := pool.handles[key]
-		if handle == nil {
-			if prior, already := pool.adopted[key]; already {
-				if prior == adopterID {
-					return fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
-				}
-				borrow, err := sandbox.BorrowRetainedSessionScratch(slot.Dir)
-				if err != nil {
-					return err
-				}
-				ref := sandbox.ScratchReference{Dir: slot.Dir, Kind: kind}
-				if err := env.RestoreSessionScratch(bindingID, ref, borrow); err != nil {
-					return err
-				}
-				continue
-			}
-			if _, contended := pool.contended[key]; contended {
-				// The allocation's lease is still held in this process; it
-				// cannot be double-owned, so leave it with its holder.
-				continue
-			}
-			return fmt.Errorf("retained scratch: binding %q slot %q has no reacquired handle", bindingID, kind)
-		}
 		if !slot.OwnsLease {
-			// A wrapper-only borrow points at the same retained directory
-			// without taking a second lease.
+			// A wrapper-only slot points at a retained directory whose lease
+			// another binding owns. It never takes a second lease, so the borrow
+			// must happen whether the owning handle was reacquired (present), is
+			// held elsewhere in this process (contended), or its owner binding
+			// has not been adopted yet.
+			if pool.scratchSlotTakenBy(key) == adopterID {
+				return fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
+			}
+			if err := borrowRetainedScratch(env, bindingID, kind, slot); err != nil {
+				return err
+			}
 			continue
 		}
-		ref := sandbox.ScratchReference{Dir: slot.Dir, Kind: kind}
-		if err := env.RestoreSessionScratch(bindingID, ref, handle); err != nil {
-			return err
+		handle, prior, already, contended := pool.claimRetainedScratchSlot(key, adopterID)
+		switch {
+		case already && prior == adopterID:
+			return fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
+		case already:
+			// A distinct consumer sharing the allocation borrows the same
+			// directory without doubling the lease its adopter holds.
+			if err := borrowRetainedScratch(env, bindingID, kind, slot); err != nil {
+				return err
+			}
+		case handle != nil:
+			ref := sandbox.ScratchReference{Dir: slot.Dir, Kind: kind}
+			if err := env.RestoreSessionScratch(bindingID, ref, handle); err != nil {
+				// The transfer failed, so the pool must not keep the slot
+				// claimed: drop the claim and leave the handle pooled for a
+				// later, successful adoption.
+				pool.releaseScratchSlotClaim(key, adopterID)
+				return err
+			}
+			pool.finishRetainedScratchSlot(key)
+		case !contended:
+			return fmt.Errorf("retained scratch: binding %q slot %q has no reacquired handle", bindingID, kind)
 		}
-		delete(pool.handles, key)
-		pool.adopted[key] = adopterID
 	}
 	return nil
+}
+
+// borrowRetainedScratch installs a lease-less borrow of one retained directory
+// on env without taking a second lease. It holds no pool lock across the borrow
+// or the restore.
+func borrowRetainedScratch(env *execenv.LocalExecutionEnvironment, bindingID, kind string, slot sandbox.ScratchSlot) error {
+	borrow, err := sandbox.BorrowRetainedSessionScratch(slot.Dir)
+	if err != nil {
+		return err
+	}
+	ref := sandbox.ScratchReference{Dir: slot.Dir, Kind: kind}
+	return env.RestoreSessionScratch(bindingID, ref, borrow)
+}
+
+// scratchSlotTakenBy reports the consumer that has claimed or already taken one
+// pooled allocation, or "" when no adopter holds it.
+func (p *retainedScratchPool) scratchSlotTakenBy(key string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.adopted[key]
+}
+
+// claimRetainedScratchSlot resolves one owning slot under the pool lock. A
+// reacquired handle is returned only after the transfer is claimed for
+// adopterID, so no concurrent adopter can take the same lease; already reports
+// that the slot was claimed before this call, prior names by whom, and
+// contended means its lease is held in this process with no reacquired handle.
+func (p *retainedScratchPool) claimRetainedScratchSlot(key, adopterID string) (handle *sandbox.SessionScratch, prior string, already, contended bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if prior, already = p.adopted[key]; already {
+		return nil, prior, true, false
+	}
+	if handle = p.handles[key]; handle != nil {
+		// Claim the transfer before the environment restore so a concurrent
+		// adopter borrows instead of doubling the lease.
+		p.adopted[key] = adopterID
+		return handle, adopterID, false, false
+	}
+	_, contended = p.contended[key]
+	return nil, "", false, contended
+}
+
+// finishRetainedScratchSlot commits a claimed transfer: the handle leaves the
+// pool and its adopted entry stays as the record of who took the lease.
+func (p *retainedScratchPool) finishRetainedScratchSlot(key string) {
+	p.mu.Lock()
+	delete(p.handles, key)
+	p.mu.Unlock()
+}
+
+// releaseScratchSlotClaim undoes an uncommitted claim after a failed transfer.
+// The handle was never removed, so the pool returns exactly to its
+// pre-transfer state.
+func (p *retainedScratchPool) releaseScratchSlotClaim(key, adopterID string) {
+	p.mu.Lock()
+	if p.adopted[key] == adopterID {
+		delete(p.adopted, key)
+	}
+	p.mu.Unlock()
 }
 
 // adoptConsumerScratch installs the retained owning slot of sessionID's current
@@ -840,14 +914,21 @@ func (s *Session) recordScratchRetentionError(err error) {
 	s.mu.Unlock()
 }
 
+// releaseRetainedScratchPool drops every pooled handle. The handle and adoption
+// maps are cleared under the pool lock, then each lease is released outside it,
+// so a concurrent adoption never observes a half-cleared map.
 func releaseRetainedScratchPool(pool *retainedScratchPool) {
 	if pool == nil {
 		return
 	}
-	for _, handle := range pool.handles {
+	pool.mu.Lock()
+	handles := pool.handles
+	pool.handles = map[string]*sandbox.SessionScratch{}
+	pool.adopted = map[string]string{}
+	pool.mu.Unlock()
+	for _, handle := range handles {
 		_ = handle.Retain()
 	}
-	pool.handles = map[string]*sandbox.SessionScratch{}
 }
 
 // retainedScratchBindingFor resolves the binding ID a session occupies for the
