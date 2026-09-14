@@ -102,16 +102,13 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	}
 }
 
-// TestAgentShardsRunFileHoldsRegex verifies that the -test.run regex for
-// each shard is written to a file (shardN.run) and handed via
-// EVENER_SHARD_RUN_FILE, not passed on the execve argument list. A
-// failing run retains the scratch dir, so we can inspect the files.
 // TestAgentShardsBuildsAndRunsWithTheCallersFlags is the wiring: parseFlags is
 // unit-tested, but nothing proved that runShards hands the build half to
 // `go test -c` and the test half to the shard invocations. The fixture's gate
-// test answers both questions from inside the binary -- the race build tag for
-// the compile, testing.Verbose() for the invocation -- so dropping either half
-// turns this run red.
+// test answers both questions from inside the binary -- a build tag only the
+// caller's -tags can set for the compile, testing.Verbose() for the invocation
+// -- so dropping either half turns this run red. Neither flag needs cgo, so
+// this runs wherever the suite does.
 func TestAgentShardsBuildsAndRunsWithTheCallersFlags(t *testing.T) {
 	cfg, stdout, stderr, _ := e2eConfig(t)
 	cfg.flags = []string{"-tags", "shardfixturetag", "-count=1", "-v"}
@@ -121,6 +118,10 @@ func TestAgentShardsBuildsAndRunsWithTheCallersFlags(t *testing.T) {
 	}
 }
 
+// TestAgentShardsRunFileHoldsRegex verifies that the -test.run regex for
+// each shard is written to a file (shardN.run) and handed via
+// EVENER_SHARD_RUN_FILE, not passed on the execve argument list. A
+// failing run retains the scratch dir, so we can inspect the files.
 func TestAgentShardsRunFileHoldsRegex(t *testing.T) {
 	cfg, stdout, _, tmp := e2eConfig(t)
 	cfg.noSurvey = true

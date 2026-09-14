@@ -193,7 +193,7 @@ var testForwardBareFlags = map[string]bool{
 // testRefusedValueFlags take a value and are refused: consuming the pair first
 // is what keeps `-run -race` from reading the caller's regex as a build flag.
 var testRefusedValueFlags = map[string]bool{
-	"-bench": true, "-benchtime": true, "-blockprofile": true,
+	"-args": true, "-bench": true, "-benchtime": true, "-blockprofile": true,
 	"-blockprofilerate": true, "-covermode": true, "-coverpkg": true,
 	"-coverprofile": true, "-cpu": true, "-cpuprofile": true, "-exec": true,
 	"-fuzz": true, "-fuzzminimizetime": true, "-fuzztime": true,
@@ -219,6 +219,7 @@ var refusalReason = map[string]string{
 	"-run":      "this runner selects each shard's tests from the survey",
 	"-skip":     "use AGENT_SHARD_SKIP, which the survey and the shards both read",
 	"-parallel": "use AGENT_SHARD_PARALLEL; the runner sets -test.parallel per shard",
+	"-args":     "the shards are launched by this runner with the flags it needs, so there is no argument list to append to",
 	"-c":        "this runner already compiles the binary itself",
 	"-o":        "this runner names the binary it compiles",
 	"-n":        "it prints the build instead of running it, so no binary is produced",

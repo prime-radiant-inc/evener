@@ -126,13 +126,26 @@ func runAgentShards(args []string) int {
 // split that work. Keeping the two separate is what lets a loaded host lower
 // the survey's parallelism through AGENT_SHARD_SURVEY_PARALLEL without
 // changing the shard split.
-func surveyArgs(parallel int, skip string, short bool) []string {
+//
+// The caller's -timeout comes here too, and for the same reason it was raised:
+// the survey is the longest single run of the lot, one binary over the whole
+// suite, so a timeout that the shards need is a timeout the survey needed
+// first. -failfast stays with the shards: a survey that stops at the first
+// failure has measured part of the suite, and a partial measurement is worse
+// than none, since the shards would be packed from it as though it were
+// complete.
+func surveyArgs(parallel int, skip string, short bool, testFlags []string) []string {
 	// A config built without runAgentShards leaves the field zero; never hand
 	// the test binary "-test.parallel 0".
 	if parallel < 1 {
 		parallel = defaultSurveyParallel
 	}
 	args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(parallel), "-test.run", "^(Test|Example)", "-test.v"}
+	for _, f := range testFlags {
+		if strings.HasPrefix(f, "-test.timeout=") {
+			args = append(args, f)
+		}
+	}
 	if skip != "" {
 		args = append(args, "-test.skip", skip)
 	}
@@ -318,7 +331,7 @@ func runShards(cfg shardsConfig) int {
 		}
 		if !cacheHit {
 			_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: surveying test costs (one-time for this test set)")
-			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short)
+			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
 			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code

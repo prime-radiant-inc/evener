@@ -87,18 +87,26 @@ func TestRunAgentShardsBadSurveyParallel(t *testing.T) {
 // parallelism the caller asks for must reach the test binary, and the skip and
 // short passthroughs must stay attached.
 func TestSurveyArgsCarryParallelismAndSkip(t *testing.T) {
-	got := surveyArgs(2, "Flaky", true)
+	got := surveyArgs(2, "Flaky", true, nil)
 	want := []string{"-test.count=1", "-test.parallel", "2", "-test.run", "^(Test|Example)", "-test.v", "-test.skip", "Flaky", "-test.short"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("surveyArgs(2, Flaky, true) = %q, want %q", got, want)
 	}
-	got = surveyArgs(6, "", false)
+	got = surveyArgs(6, "", false, nil)
 	want = []string{"-test.count=1", "-test.parallel", "6", "-test.run", "^(Test|Example)", "-test.v"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("surveyArgs(6, \"\", false) = %q, want %q", got, want)
 	}
+	// The caller's -timeout reaches the survey, which is the longest single
+	// run; -failfast does not, because a survey that stops early has measured
+	// only part of the suite.
+	got = surveyArgs(4, "", false, []string{"-test.timeout=20m", "-test.failfast", "-test.v"})
+	want = []string{"-test.count=1", "-test.parallel", "4", "-test.run", "^(Test|Example)", "-test.v", "-test.timeout=20m"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("surveyArgs with a -timeout = %q, want %q", got, want)
+	}
 	// A config built without runAgentShards leaves the field zero.
-	got = surveyArgs(0, "", false)
+	got = surveyArgs(0, "", false, nil)
 	want = []string{"-test.count=1", "-test.parallel", "6", "-test.run", "^(Test|Example)", "-test.v"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("surveyArgs(0, \"\", false) = %q, want %q", got, want)

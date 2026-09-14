@@ -203,6 +203,7 @@ func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
 		{"-exec", "wrap"},
 		{"-o", "bin"},
 		{"-c"},
+		{"-args", "whatever"},
 		// -n prints the build instead of running it: no binary, no shards.
 		{"-n"},
 	} {
