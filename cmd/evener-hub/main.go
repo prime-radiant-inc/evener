@@ -21,6 +21,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -429,6 +430,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 				return nil, err
 			}
 			return ch.Client(), nil
+		},
+		RemoteHostFacts: func(ctx context.Context, host string) (appsource.HostFacts, error) {
+			ch, err := sshManager.Ensure(ctx, host)
+			if err != nil {
+				return appsource.HostFacts{}, err
+			}
+			pf := ch.Preflight()
+			return appsource.HostFacts{
+				ProtocolVersion: pf.Protocol,
+				HubVersion:      pf.Version,
+				OS:              pf.OS,
+				Arch:            pf.Arch,
+				Features:        ch.Client().Features(),
+			}, nil
 		},
 	}, appwireTrace)
 	if appwireTrace != nil {

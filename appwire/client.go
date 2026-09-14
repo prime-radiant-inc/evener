@@ -222,6 +222,13 @@ func (c *Client) Close() error {
 	return c.transport.Close()
 }
 
+// Features returns the feature set the peer advertised during Initialize.
+func (c *Client) Features() FeatureSet {
+	c.featuresMu.RLock()
+	defer c.featuresMu.RUnlock()
+	return c.features
+}
+
 // SetPendingCoordinator installs an optimistic-rendering coordinator
 // that observes the four conversation-affecting Turn* methods. Pass
 // nil to disable. Safe to call before Start.

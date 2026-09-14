@@ -79,7 +79,9 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			_, _ = fmt.Fprintf(os.Stderr, "[hub] remote hosts skipped (no SSH client wired): %s\n", strings.Join(names, ", "))
 		} else {
 			for _, host := range cfg.RemoteHosts {
-				registry.Add(appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient))
+				source := appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)
+				source.SetHostFacts(cfg.RemoteHostFacts)
+				registry.Add(source)
 			}
 		}
 	}

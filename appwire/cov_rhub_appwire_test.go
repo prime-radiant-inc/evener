@@ -561,6 +561,44 @@ func TestClientInitializeCachesFeatures(t *testing.T) {
 	}
 }
 
+// Features exposes the set Initialize cached, so a caller that never saw the
+// InitializeResponse (component 04's preflight seam) can still read it.
+func TestClientFeaturesAccessor(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx := t.Context()
+	client.Start(ctx)
+
+	resp := InitializeResponse{
+		ProtocolVersion: ProtocolVersion,
+		SourceID:        "src",
+		Features:        FeatureSet{ThreadList: true, ModelList: true},
+	}
+	done := make(chan InitializeResponse, 1)
+	go func() {
+		out, err := client.Initialize(ctx, InitializeParams{})
+		if err != nil {
+			t.Errorf("Initialize: %v", err)
+		}
+		done <- out
+	}()
+
+	written := <-transport.writes
+	transport.reads <- ResponseMessage(written.Request.ID, resp)
+
+	select {
+	case out := <-done:
+		if !reflect.DeepEqual(out.Features, resp.Features) {
+			t.Fatalf("Initialize features=%+v, want %+v", out.Features, resp.Features)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Initialize did not return")
+	}
+	if got := client.Features(); !reflect.DeepEqual(got, resp.Features) {
+		t.Fatalf("Features()=%+v, want %+v", got, resp.Features)
+	}
+}
+
 // Notify sends a fire-and-forget notification frame (no id, no pending entry).
 func TestClientNotify(t *testing.T) {
 	transport := newMemoryTransport()
