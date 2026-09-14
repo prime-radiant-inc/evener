@@ -36,7 +36,13 @@ afterEach(() => {
 // A successful perform() deliberately does NOT reconcile the entry (see
 // pendingTurnsStore's own contract), so a resolving perform leaves the chip
 // pending - exactly the optimistic in-flight state PendingChips renders.
-async function seedPending(method: PendingMethod, text: string, ref = "ref_a", attachments?: InputAttachment[]) {
+async function seedPending(
+  method: PendingMethod,
+  text: string,
+  ref = "ref_a",
+  attachments?: InputAttachment[],
+  skillNames: string[] = [],
+) {
   const wireMethod = {
     send: "turn/start",
     steer: "turn/steer",
@@ -51,6 +57,7 @@ async function seedPending(method: PendingMethod, text: string, ref = "ref_a", a
       data: attachment.data,
       name: attachment.name,
     })),
+    ...skillNames.map((name) => ({ type: "skill", name })),
   ];
   const storage = new MutationOutboxIndexedDB();
   await storage.enqueueIntent({
@@ -123,6 +130,22 @@ test("an image-only pending entry shows the image placeholder rather than blank 
   await seedPending("send", "", "ref_a", [{ marker: 1, mediaType: "image/png", data: "AAAA" }]);
   render(<PendingChips sessionRef="ref_a" />);
   expect(screen.getByText("[image]")).toBeTruthy();
+});
+
+// A slash-completed skill submission carries no typed prose, so the marker IS
+// the only thing there is to show - the same [skill: …] the queue strip renders
+// for the identical selection. Without it the in-flight chip reads as a bare
+// "Sending"/"Steering"/"Draining" with an empty body.
+test("a skill-only pending chip shows its skill marker rather than an empty body", async () => {
+  await seedPending("send", "", "ref_a", undefined, ["pkg:probe"]);
+  render(<PendingChips sessionRef="ref_a" />);
+  expect(screen.getByText("[skill: pkg:probe]")).toBeTruthy();
+});
+
+test("a pending chip renders its preview text and skill marker together", async () => {
+  await seedPending("steer", "nudge", "ref_a", undefined, ["pkg:probe"]);
+  render(<PendingChips sessionRef="ref_a" />);
+  expect(screen.getByText("nudge [skill: pkg:probe]")).toBeTruthy();
 });
 
 test("labels each chip with its method so send/steer/drain read apart", async () => {

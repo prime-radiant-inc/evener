@@ -1652,3 +1652,35 @@ func TestDiscoverPastThreadSkillsCarriesDiagnostics(t *testing.T) {
 		t.Fatalf("attach dropped the discovery diagnostics: %+v", thread.Evener.Diagnostics)
 	}
 }
+
+// TestDiscoverPastThreadSkillsCarriesPluginDiagnostics: plugin.SkillSources
+// returns its own manifest-selection diagnostics (a duplicate manifest name is
+// a collision; a directory without a readable manifest is an unreadable
+// source). The past-thread discovery view must preserve them alongside the
+// catalog diagnostics, or thread/read silently omits plugin collisions and
+// unreadable manifests from EvenerDiagnostics.SkillDiagnostics.
+func TestDiscoverPastThreadSkillsCarriesPluginDiagnostics(t *testing.T) {
+	isolateThreadSkillHome(t)
+	root := t.TempDir()
+	first := writeThreadSkillPlugin(t, root, "dup-plugin", "plugin-skill", "first")
+	second := writeThreadSkillPlugin(t, root, "dup-plugin", "plugin-skill", "second")
+	missing := filepath.Join(root, "absent-plugin")
+	entry := hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{PluginDirs: []string{first, second, missing}}}}
+	catalog := discoverPastThreadSkills(entry)
+
+	var collision, unreadable bool
+	for _, d := range catalog.Diagnostics {
+		if d.Category == "collision" && d.Name == "dup-plugin" {
+			collision = true
+		}
+		if d.Category == "unreadable_source" && d.Source == missing {
+			unreadable = true
+		}
+	}
+	if !collision {
+		t.Fatalf("plugin collision diagnostic dropped: %+v", catalog.Diagnostics)
+	}
+	if !unreadable {
+		t.Fatalf("plugin unreadable-source diagnostic dropped: %+v", catalog.Diagnostics)
+	}
+}

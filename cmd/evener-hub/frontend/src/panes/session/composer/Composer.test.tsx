@@ -31,7 +31,7 @@ import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
-import { draftStorageKey, readComposerDraft, readDraft } from "./draft";
+import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import {
   flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
@@ -3475,6 +3475,62 @@ test("a focused thread skill selection stages a canonical chip and submits the u
       { type: "skill", name: "simplify" },
     ],
   });
+});
+
+// model.skills mirrors thread.evener.diagnostics.skills, and the daemon only
+// publishes entries that are available AND user-invocable (agent/status.go) -
+// so a catalog entry reaching this tooltip is always usable. An "unavailable"
+// or "not user-invocable" diagnostic would describe a state the wire cannot
+// carry; the description is the whole tooltip.
+test("a selected skill's tooltip never invents an unavailable or non-user-invocable diagnostic", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_skill_tip_usable";
+  writeComposerDraft(ref, { text: "", skillNames: ["simplify"] });
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "simplify",
+            description: "rewrite",
+            disableModelInvocation: false,
+            userInvocable: false,
+            available: false,
+          },
+        ],
+      },
+    },
+  });
+
+  // The Tooltip wraps the inner name span, so the pointer must land on that
+  // span (mouseenter does not fire for a child of the hovered element).
+  await user.hover(within(screen.getByTestId("composer-skill-chip")).getByText("simplify"));
+  const tip = await screen.findByRole("tooltip");
+  expect(tip.textContent).toBe("rewrite");
+});
+
+// The one diagnostic that CAN happen: the selection outlives the catalog
+// report that backed it, so the tooltip names the skill and says why it is
+// absent.
+test("a selected skill the catalog no longer reports says so in its tooltip", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_skill_tip_missing";
+  writeComposerDraft(ref, { text: "", skillNames: ["vanished"] });
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: { skills: [] },
+    },
+  });
+
+  await user.hover(within(screen.getByTestId("composer-skill-chip")).getByText("vanished"));
+  const tip = await screen.findByRole("tooltip");
+  expect(tip.textContent).toBe("vanished — no longer in this session's skill catalog");
 });
 
 test("a mid-word slash never opens the menu", async () => {

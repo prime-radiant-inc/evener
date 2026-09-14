@@ -240,6 +240,10 @@ type skillGuardFixture struct {
 	control    [2]string
 	skillFile  [2]string
 	helperBin  string
+	// Closed when the driver goroutine has returned. t.Context() is cancelled
+	// before cleanups run, so at cleanup time the driver has been signalled
+	// but may still be writing its last lines into driver.log.
+	driverFinished <-chan struct{}
 }
 
 func TestSkillComposerBrowser(t *testing.T) {
@@ -313,7 +317,10 @@ func TestSkillComposerBrowser(t *testing.T) {
 	// the skill source for the failed-activation scenario).
 	choreo := newSkillGuardChoreography(t, fixture, roster, entries)
 	driverDone := make(chan error, 1)
+	driverFinished := make(chan struct{})
+	fixture.driverFinished = driverFinished
 	go func() {
+		defer close(driverFinished)
 		driverDone <- runSkillGuardDriver(t, fixture, authURL, milestones, entries)
 	}()
 	choreoErr := make(chan error, 1)
@@ -344,6 +351,65 @@ func TestSkillComposerBrowser(t *testing.T) {
 
 // ---- fixture ----
 
+// skillGuardLogDriverTail writes the end of the browser driver's log into the
+// test log. The driver reports what it was waiting for and what the page
+// actually showed; without it a failing run in CI says only that a step timed
+// out, with the evidence in a directory the runner discards.
+// skillGuardDriverDrainTimeout bounds how long a failing test waits for the
+// driver to finish writing. The cancel has already sent it SIGTERM by this
+// point and cmd.WaitDelay force-kills it after 15s, so this is the shorter
+// wait for an orderly exit, not a second timeout on the driver itself.
+const skillGuardDriverDrainTimeout = 5 * time.Second
+
+// skillGuardAwaitDriver waits for the driver goroutine to return, reporting
+// whether it did. A nil channel means the driver never started, and a closed
+// one returns at once, so the paths that already collected the driver's exit
+// pay nothing.
+func skillGuardAwaitDriver(t *testing.T, finished <-chan struct{}, wait time.Duration) bool {
+	t.Helper()
+	if finished == nil {
+		return true
+	}
+	select {
+	case <-finished:
+		return true
+	case <-time.After(wait):
+		t.Logf("driver had not exited %s after the failure; its log may be short of its final lines", wait)
+		return false
+	}
+}
+
+func skillGuardLogDriverTail(t *testing.T, driverLog string) {
+	t.Helper()
+	contents, err := os.ReadFile(driverLog)
+	if err != nil {
+		t.Logf("driver log unreadable (%v); it may never have been opened", err)
+		return
+	}
+	tail, kept := skillGuardDriverTail(contents, skillGuardDriverTailLines)
+	t.Logf("last %d line(s) of %s:\n%s", kept, driverLog, tail)
+}
+
+// skillGuardDriverTailLines is enough to carry the driver's last step, what it
+// was waiting for, and the page state it dumped, without burying the Go test
+// output that follows it in the same log.
+const skillGuardDriverTailLines = 40
+
+// skillGuardDriverTail returns the last `lines` lines of contents and how many
+// that came to. A trailing newline is not a line of its own, and a log shorter
+// than the limit is returned whole.
+func skillGuardDriverTail(contents []byte, lines int) (string, int) {
+	trimmed := strings.TrimRight(string(contents), "\n")
+	if trimmed == "" {
+		return "", 0
+	}
+	split := strings.Split(trimmed, "\n")
+	if len(split) > lines {
+		split = split[len(split)-lines:]
+	}
+	return strings.Join(split, "\n"), len(split)
+}
+
 func skillGuardSetup(t *testing.T) *skillGuardFixture {
 	t.Helper()
 	// Not t.TempDir(): on failure the artifacts (driver log, screenshots,
@@ -363,14 +429,24 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
 		root = resolved
 	}
+	fixture := &skillGuardFixture{root: root}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("test failed; keeping artifacts under %s", root)
+			// The kept directory is only reachable by someone on the machine.
+			// On CI nobody is, and the whole failure reads as one line naming
+			// a path that no longer exists by the time anyone looks, so the
+			// driver's own last words go into the test log too -- once the
+			// driver has finished writing them. The timeout path fails while
+			// the driver is still shutting down, and reading then truncates
+			// the log at whatever had been flushed, losing exactly the lines
+			// that say what it was waiting for.
+			skillGuardAwaitDriver(t, fixture.driverFinished, skillGuardDriverDrainTimeout)
+			skillGuardLogDriverTail(t, filepath.Join(root, "artifacts", "driver.log"))
 			return
 		}
 		os.RemoveAll(root)
 	})
-	fixture := &skillGuardFixture{root: root}
 	fixture.artifact = filepath.Join(root, "artifacts")
 	if err := os.MkdirAll(fixture.artifact, 0o700); err != nil {
 		t.Fatalf("artifact dir: %v", err)
@@ -670,6 +746,8 @@ type skillGuardChoreography struct {
 	err         error
 	failSeen    bool
 	caplossDone bool
+	// The driver's milestone file, which this side appends its own records to.
+	milestonePath string
 }
 
 func newSkillGuardChoreography(t *testing.T, fixture *skillGuardFixture, roster *hubcore.Roster, entries [2]rendezvous.Entry) *skillGuardChoreography {
@@ -691,10 +769,30 @@ func (c *skillGuardChoreography) stop() error {
 
 func (c *skillGuardChoreography) run(milestones string) error {
 	defer close(c.doneCh)
+	c.milestonePath = milestones
 	if err := c.tailMilestones(milestones); err != nil {
 		c.err = err
 	}
 	return c.err
+}
+
+func sinceMs(start time.Time) int64 { return time.Since(start).Milliseconds() }
+
+// milestone appends a Go-owned record to the same file the driver writes, in
+// the same shape, so one ordered timeline carries both sides of the handoff.
+// The tailer reads these back and ignores them: handleMilestone answers only
+// the names the driver emits. A write failure is reported rather than
+// swallowed -- a diagnostic that quietly stops being written is worse than
+// none, since the next reader trusts the gap.
+func (c *skillGuardChoreography) milestone(name string, detail any) {
+	record := map[string]any{
+		"milestone": name,
+		"at":        time.Now().UTC().Format(time.RFC3339Nano),
+		"detail":    detail,
+	}
+	if err := appendFileLine(c.milestonePath, record); err != nil && c.err == nil {
+		c.err = fmt.Errorf("write %s milestone: %w", name, err)
+	}
 }
 
 // handleMilestone reacts to one driver milestone with the real-world fixture
@@ -708,20 +806,40 @@ func (c *skillGuardChoreography) handleMilestone(m skillGuardMilestone) {
 		c.caplossDone = true
 		// Shut the REAL daemon down through its fixture IPC and let the REAL
 		// roster observe the departure.
+		//
+		// Each step reports when it finished. The driver waits 30s after
+		// caploss-staged for the pane to render session B as ended, and when
+		// that wait expired in CI the artifacts could not say which of these
+		// three links had been slow -- none of them left a trace, so a
+		// failure there is unattributable between a daemon that took its time
+		// exiting, a roster refresh that did, and a pane that never
+		// re-rendered at all. These are diagnostics: no wait changes.
+		started := time.Now()
 		if err := appendFileLine(c.fixture.control[1], map[string]string{"command": "shutdown"}); err != nil {
 			c.err = fmt.Errorf("caploss shutdown command: %w", err)
 			return
 		}
+		c.milestone("caploss-shutdown-sent", map[string]any{"sinceStagedMs": sinceMs(started)})
+		exitStarted := time.Now()
 		if err := c.waitHelperExit(1, 30*time.Second); err != nil {
 			c.err = fmt.Errorf("helper beta did not exit: %w", err)
 			return
 		}
+		c.milestone("caploss-helper-exited", map[string]any{
+			"waitedMs":      sinceMs(exitStarted),
+			"sinceStagedMs": sinceMs(started),
+		})
+		refreshStarted := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := c.roster.RefreshAndWait(ctx); err != nil {
 			c.err = fmt.Errorf("roster refresh after helper beta exit: %w", err)
 			return
 		}
+		c.milestone("caploss-roster-refreshed", map[string]any{
+			"waitedMs":      sinceMs(refreshStarted),
+			"sinceStagedMs": sinceMs(started),
+		})
 	case "fail-queued":
 		if c.failSeen {
 			return
@@ -988,7 +1106,9 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		"hold-turn-started", "queued", "queue-returned", "requeued", "drain-committed", "drain-released",
 		"steer-turn-started", "steered", "steer-released",
 		"attachment-preserved", "attachment-submitted",
-		"caploss-staged", "caploss-ended", "caploss-refused",
+		"caploss-staged",
+		"caploss-shutdown-sent", "caploss-helper-exited", "caploss-roster-refreshed",
+		"caploss-ended", "caploss-refused",
 		"fail-turn-started", "fail-queued", "fail-observed", "fail-retried",
 		"delay-submitted", "delay-edited", "delay-commit-kept",
 		"net-failed-kept", "net-restored",
