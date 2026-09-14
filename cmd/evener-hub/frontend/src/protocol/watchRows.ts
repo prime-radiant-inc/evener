@@ -151,7 +151,9 @@ function createConditionText(raw: JsonObject, args?: JsonObject): string | undef
   const afterSeconds = numField(raw, "after_seconds");
   const repeatSeconds = numField(raw, "repeat_seconds");
   const parts: string[] = [];
-  if (spec?.outputMatch) parts.push(`output_match: ${spec.outputMatch}`);
+  if (spec?.outputMatch) {
+    parts.push(`output_match: ${limitWatchText(spec.outputMatch, WATCH_TRIGGER_MAX_CHARS)}`);
+  }
   if (afterSeconds !== undefined) parts.push(`after_seconds: ${afterSeconds}`);
   else if (repeatSeconds !== undefined) parts.push(`repeat_seconds: ${repeatSeconds}`);
   else if (spec?.progressIntervalMS !== undefined) {
@@ -249,26 +251,29 @@ function numAfter(value: string | undefined): number | undefined {
 // takes the field reading, matching what list/inspect show.)
 const CONDITION_PART_SPLIT = /;\s*(?=(?:output_match|after_seconds|repeat_seconds|progress_interval_ms|note|events):)/;
 
-// WATCH_MESSAGE_MAX_CHARS and WATCH_TRUNCATED_INDICATOR mirror the
-// producer's bounds (agent/job_watch.go): the Condition string embeds the
-// note via limitWatchText(cfg.note, watchMessageMaxChars), which truncates by
-// rune with a "\n[truncated]" indicator and performs no whitespace or line
-// folding — the embedding is otherwise the verbatim note value.
+// These bounds and the indicator mirror the producer (agent/job_watch.go).
+// The Condition string embeds output_match with watchTriggerMaxChars and note
+// with watchMessageMaxChars. limitWatchText truncates by rune, includes the
+// indicator inside the bound, and otherwise preserves the value verbatim.
+const WATCH_TRIGGER_MAX_CHARS = 1024;
 const WATCH_MESSAGE_MAX_CHARS = 2048;
 const WATCH_TRUNCATED_INDICATOR = "\n[truncated]";
+
+function limitWatchText(text: string, maxChars: number): string {
+  const runes = Array.from(text);
+  if (maxChars <= 0 || runes.length <= maxChars) return text;
+  const indicator = Array.from(WATCH_TRUNCATED_INDICATOR);
+  const keep = maxChars - indicator.length;
+  if (keep <= 0) return runes.slice(0, maxChars).join("");
+  return runes.slice(0, keep).join("") + WATCH_TRUNCATED_INDICATOR;
+}
 
 // embeddedNoteCandidates lists the exact strings the producer may have
 // embedded as the note: clause for a structured note value: the value itself
 // (cfg.note is already bounded at storage, so this is the live case), plus
 // the limitWatchText truncation for oversized values from stored frames.
 function embeddedNoteCandidates(note: string): string[] {
-  const runes = Array.from(note);
-  if (runes.length <= WATCH_MESSAGE_MAX_CHARS) return [note];
-  const keep = WATCH_MESSAGE_MAX_CHARS - Array.from(WATCH_TRUNCATED_INDICATOR).length;
-  const truncated =
-    keep <= 0
-      ? runes.slice(0, WATCH_MESSAGE_MAX_CHARS).join("")
-      : runes.slice(0, keep).join("") + WATCH_TRUNCATED_INDICATOR;
+  const truncated = limitWatchText(note, WATCH_MESSAGE_MAX_CHARS);
   return truncated === note ? [note] : [note, truncated];
 }
 

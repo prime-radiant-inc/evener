@@ -491,21 +491,29 @@ export function entityOpenTarget(view: EntityView): OpenTarget | undefined {
 }
 ```
 
-- [ ] **Step 4: Share one index per ref, keyed on real watch inputs**
+- [ ] **Step 4: Derive once per TranscriptBody, keyed on real watch inputs**
 
 ```ts
-// One derived view per ref. The watch-fold key must not be the turns array:
-// prose deltas replace it. Key on the job_watch items' position and payload
-// identity instead.
+// TranscriptBody calls this hook once and shares its map with every EntityRef
+// in that body through transcript render context. That records the shipped
+// per-body owner without superseding the design's separate shared-index
+// acceptance across surfaces.
+//
+// The watch-fold key must not be the turns array: prose deltas replace it.
+// Serialize every fold-relevant job_watch input so same-length payload changes
+// rebuild the view while prose-only changes preserve map identity.
 export function watchFoldKey(turns: TurnModel[]): string {
-  const parts: string[] = [];
-  for (const turn of turns) {
-    for (const item of turn.items) {
-      if (item.toolName !== "job_watch") continue;
-      parts.push(`${item.id}:${item.status ?? ""}:${item.argumentsJSON?.length ?? 0}:${item.output?.length ?? 0}`);
-    }
-  }
-  return parts.join("|");
+  return JSON.stringify(
+    watchItems(turns).map((item) => [
+      item.position?.entry ?? null,
+      item.position?.item ?? null,
+      item.argumentsJSON ?? null,
+      item.output ?? null,
+      item.error ?? null,
+      item.status ?? null,
+      item.raw === undefined ? null : JSON.stringify(item.raw),
+    ]),
+  );
 }
 
 export function useEntityView(sessionRef: string, model: ThreadModel): Map<string, EntityView> {
@@ -515,10 +523,10 @@ export function useEntityView(sessionRef: string, model: ThreadModel): Map<strin
   // byte-identical, so it cannot live in the index key.
   const stale = load?.kind === "ready" && load.staleError !== undefined;
   const ended = load?.kind === "ended";
-  const key = watchFoldKey(model.turns);
+  const watchKey = watchFoldKey(model.turns);
   return useMemo(
     () => buildEntityView({ sessionRef, tree, delegates: model.delegates, turns: model.turns, stale, ended }),
-    [sessionRef, tree, model.delegates, key, stale, ended],
+    [sessionRef, tree, model.delegates, watchKey, stale, ended],
   );
 }
 ```

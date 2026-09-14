@@ -134,6 +134,15 @@ test("derives the inspect-format condition from a producer-shaped create and its
   expect(triggerless.get("watch_plain")).toEqual({ id: "watch_plain", state: "watching", source: "job_z" });
 });
 
+test("bounds a create output_match to the producer's 1024-rune truncated form", () => {
+  const pattern = "🙂".repeat(1025);
+  const view = foldWatchSummaries([watchItem("a", { watch_id: "watch_x", watching: true, output_match: pattern })]);
+  const condition = view.get("watch_x")?.condition;
+
+  expect(condition).toBe(`output_match: ${"🙂".repeat(1012)}\n[truncated]`);
+  expect(Array.from(condition?.slice("output_match: ".length) ?? "")).toHaveLength(1024);
+});
+
 test.each([
   ["one-shot", { after_seconds: 90 }, "after_seconds: 90"],
   ["repeating", { repeat_seconds: 120 }, "repeat_seconds: 120"],
