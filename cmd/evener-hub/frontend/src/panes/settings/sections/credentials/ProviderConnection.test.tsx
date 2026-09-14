@@ -808,6 +808,88 @@ test("review regression: discarded cross-provider create clears the old credenti
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
 });
 
+// The reload's own read can lose the race to a concurrent write, and a write
+// that fails releases the store's loading flag without touching the listing or
+// the error field (stores/credentials.ts applyMutation's finally; the store
+// suite pins that state as "a failed mutation releases loading from a
+// superseded read"). The reload's response was then dropped by the store's
+// version guard, so its false verdict is the only thing that says the reload
+// did not apply: loading and error are both clear while the store still holds
+// the older connection's rows. Adopting whatever same-named row is left there
+// anchors the guided flow on a connection this reload never loaded, so the flow
+// must report the recovery error instead.
+test("a superseded reload read does not baseline a same-named row the store still holds", async () => {
+  const { user, client } = setup();
+  await choose(user, "Azure");
+  const pending = deferred<InstanceListResponse>();
+  client.on("evener/instance/create", () => pending.promise);
+  await user.click(screen.getByRole("button", { name: "Configure provider" }));
+  await user.type(screen.getByLabelText("Name"), "retained-name");
+  await user.click(screen.getByRole("button", { name: "Create" }));
+  // The create's own listing loses the race with the concurrent read, so the
+  // flow reaches its not-ready reload recovery without a row of its own.
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+    pending.resolve({ instances: [], availableProviders: structuredClone(catalogue) });
+    await pending.promise;
+  });
+  expect(await screen.findByRole("button", { name: "Reload connection" })).toBeTruthy();
+  // The older connection's listing still carries a row under this name. It is
+  // hidden, so the flow stays in its recovery state rather than presenting it.
+  const staleRow: InstanceEntry = {
+    ...catalogue[0]!.setup!,
+    name: "retained-name",
+    implicit: false,
+    hidden: true,
+  };
+  client.on("evener/instance/list", () => ({
+    instances: [structuredClone(staleRow)],
+    availableProviders: structuredClone(catalogue),
+  }));
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+
+  const reloadRead = deferred<InstanceListResponse>();
+  const retryRead = deferred<InstanceListResponse>();
+  let reads = 0;
+  client.on("evener/instance/list", () => (reads++ === 0 ? reloadRead.promise : retryRead.promise));
+  await user.click(screen.getByRole("button", { name: "Reload connection" }));
+  // A concurrent write fails while the reload's read is in flight: the write
+  // supersedes the read (the store drops the response) and its failure releases
+  // loading without recording an error or moving the listing.
+  client.on("evener/instance/setDefault", () => {
+    throw new Error("write refused");
+  });
+  await act(async () => {
+    await expect(credentialsStore.getState().setDefault("retained-name")).rejects.toThrow("write refused");
+  });
+  await act(async () => {
+    reloadRead.resolve({ instances: [], availableProviders: structuredClone(catalogue) });
+    await reloadRead.promise;
+    // Let the reload's own retry reach the wire before the second write
+    // supersedes it; a reload without one issues nothing more.
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  });
+  // The retry loses the same way: its response is dropped, so the flow's own
+  // read never applies and the store is left holding the older row.
+  await act(async () => {
+    await expect(credentialsStore.getState().setDefault("retained-name")).rejects.toThrow("write refused");
+  });
+  await act(async () => {
+    retryRead.resolve({ instances: [], availableProviders: structuredClone(catalogue) });
+    await retryRead.promise;
+  });
+
+  expect(
+    await screen.findByText(
+      "The saved connection could not be loaded. Reload it or open the full editor; do not create it again.",
+    ),
+  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Reload connection" })).toBeTruthy();
+  expect(screen.queryByLabelText("API key")).toBeNull();
+});
+
 // Adoption clears the draft unless the adopted connection's destination is the
 // one the value was typed against. "Same destination" means the two rows carry
 // the same non-empty endpoint fingerprint: the same provider can host two

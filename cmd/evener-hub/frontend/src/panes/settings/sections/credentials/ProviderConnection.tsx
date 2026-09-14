@@ -636,8 +636,22 @@ function SelectedConnection({
     const token = ++operation.current;
     setPhase("refreshing");
     setError("");
+    // The listing this reload waits for can be superseded by a concurrent
+    // request (a write or another view's read), and the store drops a
+    // superseded response without applying it. The read's own applied verdict
+    // is what separates "the listing does not carry the connection yet" from
+    // "my response lost the race": a read that did not apply says nothing
+    // about the listing, so baselining from it can anchor the flow on whatever
+    // same-named row another connection left in the store. One retry, then the
+    // recovery message.
+    let applied = false;
     try {
-      await credentialsStore.getState().fetch();
+      applied = await credentialsStore.getState().fetch();
+      if (!current(token)) return;
+      if (!applied) {
+        applied = await credentialsStore.getState().fetch();
+        if (!current(token)) return;
+      }
     } catch {
       // Same dropped-connection case as refreshAndCheck: reusing the reload's
       // own recovery message keeps the user on an actionable path.
@@ -650,7 +664,7 @@ function SelectedConnection({
     setPhase("idle");
     const state = credentialsStore.getState();
     const created = findSetup(name);
-    if (state.loading || state.error || !created) {
+    if (!applied || state.loading || state.error || !created) {
       setError("The saved connection could not be loaded. Reload it or open the full editor; do not create it again.");
     } else setBaseline(created);
   }
