@@ -32,7 +32,7 @@ const (
 	// token from another version is refused as stale, so a client restarts
 	// pagination once, rather than being decoded by some compatibility path
 	// this build has no way to keep honest.
-	activityContinuationVersion = 2
+	activityContinuationVersion = 3
 	// activityMaxContinuationPathLength bounds a client-supplied
 	// continuation's Path at activityMaxNewDepth+1 rather than
 	// activityMaxNewDepth. The two numbers measure different things: the
@@ -97,6 +97,13 @@ type activityContinuation struct {
 	// delegates, so either journal changing presence renumbers the list.
 	JobsAbsent      bool `json:"jobs_absent,omitempty"`
 	DelegatesAbsent bool `json:"dlg_absent,omitempty"`
+	// DelegatesUnreadable records that the delegate journal was there and
+	// could not be read when this token was minted. That read folds
+	// nothing and reports generation 0, the same number a journal read
+	// once and never rewritten reports, so without this a token minted
+	// over a readable journal resumes into a page whose delegate list is
+	// empty — its position counting entries that are not there.
+	DelegatesUnreadable bool `json:"dlg_unreadable,omitempty"`
 	// Revision is the root's jobActivityClock revision (see
 	// activityCurrentRootRevision) at mint time — appwire.JobActivityTree's
 	// own Revision field, carried into the continuation too. Only checked
@@ -139,20 +146,26 @@ type activitySessionSnapshot struct {
 	// markActivitySessionTruncated and collectActivitySessionEpochs.
 	JobsEpoch      uint64
 	DelegatesEpoch uint64
-	// JobsJournalAbsent records that this session had no jobs.jsonl at all
-	// when it was loaded, which JobsEpoch cannot say: a journal that was
-	// never there is stepped over without touching the fold cache and
-	// reports generation 0, and so does a journal folded for the first
-	// time. The entries a session renders are its jobs and then its
-	// delegates, so a journal that appears or disappears between two
-	// requests moves every position a continuation counted — see
-	// activitySessionEpochs.
+	// JobsJournalAbsent records that this session had no jobs.jsonl when the
+	// fold looked, which JobsEpoch cannot say. The fold reports both facts
+	// from one stat — generation 0 and Absent — and a journal folded for the
+	// first time reports that same 0, so the generation alone cannot tell a
+	// file that was never there from one read once and never rewritten. The
+	// entries a session renders are its jobs and then its delegates, so a
+	// journal that appears or disappears between two requests moves every
+	// position a continuation counted — see activitySessionEpochs.
 	JobsJournalAbsent bool
 	// DelegatesJournalAbsent is the same fact for the delegates.jsonl this
 	// session folds, read the same way from the same fold.
 	DelegatesJournalAbsent bool
-	Children               map[string]*activitySessionSnapshot // child session ID
-	Errors                 map[string]error                    // child session ID
+	// DelegatesJournalUnreadable records that the journal was there and
+	// could not be read — a line past the scanner's cap, contained rather
+	// than fatal (see scanRootDelegateState). That read folds nothing, so
+	// the generation it reports is not one it earned, and this is what
+	// separates it from a journal genuinely at generation 0.
+	DelegatesJournalUnreadable bool
+	Children                   map[string]*activitySessionSnapshot // child session ID
+	Errors                     map[string]error                    // child session ID
 }
 
 type activitySessionLocator struct {
@@ -407,7 +420,8 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	// not there.
 	target := collectActivitySessionEpochs(*snapshot)[cont.SessionID]
 	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch ||
-		cont.JobsAbsent != target.jobsAbsent || cont.DelegatesAbsent != target.delegatesAbsent {
+		cont.JobsAbsent != target.jobsAbsent || cont.DelegatesAbsent != target.delegatesAbsent ||
+		cont.DelegatesUnreadable != target.delegatesUnreadable {
 		return nil, 0, 0, cache, activityStaleContinuationError("the underlying journal changed")
 	}
 
@@ -739,14 +753,15 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		JobsEpoch:      base.JobsEpoch,
 		DelegatesEpoch: base.DelegatesEpoch,
 
-		JobsJournalAbsent:      base.JobsJournalAbsent,
-		DelegatesJournalAbsent: base.DelegatesJournalAbsent,
-		Jobs:                   []*jobstore.JobRecord{},
-		LiveJobs:               map[string]*jobstore.JobRecord{},
-		StableDelegates:        make(map[string]delegateSnapshot, 1),
-		Diagnostics:            append([]string(nil), base.Diagnostics...),
-		Children:               make(map[string]*activitySessionSnapshot),
-		Errors:                 make(map[string]error),
+		JobsJournalAbsent:          base.JobsJournalAbsent,
+		DelegatesJournalAbsent:     base.DelegatesJournalAbsent,
+		DelegatesJournalUnreadable: base.DelegatesJournalUnreadable,
+		Jobs:                       []*jobstore.JobRecord{},
+		LiveJobs:                   map[string]*jobstore.JobRecord{},
+		StableDelegates:            make(map[string]delegateSnapshot, 1),
+		Diagnostics:                append([]string(nil), base.Diagnostics...),
+		Children:                   make(map[string]*activitySessionSnapshot),
+		Errors:                     make(map[string]error),
 	}
 	if row, ok := base.StableDelegates[delegateID]; ok {
 		filtered.StableDelegates[delegateID] = row
@@ -788,8 +803,9 @@ type activitySessionEpochs struct {
 	// alongside the generations because it is the one thing they cannot
 	// say: a journal that was never there and a journal folded for the
 	// first time both report 0.
-	jobsAbsent      bool
-	delegatesAbsent bool
+	jobsAbsent          bool
+	delegatesAbsent     bool
+	delegatesUnreadable bool
 }
 
 // collectActivitySessionEpochs walks snapshot's Children tree and returns
@@ -803,10 +819,11 @@ func collectActivitySessionEpochs(snapshot activitySessionSnapshot) map[string]a
 	var walk func(s activitySessionSnapshot)
 	walk = func(s activitySessionSnapshot) {
 		epochs[s.SessionID] = activitySessionEpochs{
-			jobs:            s.JobsEpoch,
-			delegates:       s.DelegatesEpoch,
-			jobsAbsent:      s.JobsJournalAbsent,
-			delegatesAbsent: s.DelegatesJournalAbsent,
+			jobs:                s.JobsEpoch,
+			delegates:           s.DelegatesEpoch,
+			jobsAbsent:          s.JobsJournalAbsent,
+			delegatesAbsent:     s.DelegatesJournalAbsent,
+			delegatesUnreadable: s.DelegatesJournalUnreadable,
 		}
 		for _, child := range s.Children {
 			if child != nil {
@@ -1266,16 +1283,17 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 	}
 	if budget != nil && budget.rootID != "" {
 		session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:         activityContinuationVersion,
-			RootID:          budget.rootID,
-			SessionID:       sessionID,
-			Path:            append([]string(nil), path...),
-			ResumeIndex:     resumeIndex,
-			JobsEpoch:       own.jobs,
-			DelegatesEpoch:  own.delegates,
-			JobsAbsent:      own.jobsAbsent,
-			DelegatesAbsent: own.delegatesAbsent,
-			Revision:        budget.revision,
+			Version:             activityContinuationVersion,
+			RootID:              budget.rootID,
+			SessionID:           sessionID,
+			Path:                append([]string(nil), path...),
+			ResumeIndex:         resumeIndex,
+			JobsEpoch:           own.jobs,
+			DelegatesEpoch:      own.delegates,
+			JobsAbsent:          own.jobsAbsent,
+			DelegatesAbsent:     own.delegatesAbsent,
+			DelegatesUnreadable: own.delegatesUnreadable,
+			Revision:            budget.revision,
 		})
 	}
 }
@@ -1577,16 +1595,17 @@ func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, r
 	}
 	own := epochs[dropped.session.SessionID]
 	dropped.session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version:         activityContinuationVersion,
-		RootID:          rootID,
-		SessionID:       dropped.session.SessionID,
-		Path:            append([]string(nil), dropped.path...),
-		ResumeIndex:     resumeIndex,
-		JobsEpoch:       own.jobs,
-		DelegatesEpoch:  own.delegates,
-		JobsAbsent:      own.jobsAbsent,
-		DelegatesAbsent: own.delegatesAbsent,
-		Revision:        revision,
+		Version:             activityContinuationVersion,
+		RootID:              rootID,
+		SessionID:           dropped.session.SessionID,
+		Path:                append([]string(nil), dropped.path...),
+		ResumeIndex:         resumeIndex,
+		JobsEpoch:           own.jobs,
+		DelegatesEpoch:      own.delegates,
+		JobsAbsent:          own.jobsAbsent,
+		DelegatesAbsent:     own.delegatesAbsent,
+		DelegatesUnreadable: own.delegatesUnreadable,
+		Revision:            revision,
 	})
 }
 

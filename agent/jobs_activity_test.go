@@ -212,7 +212,7 @@ func TestDecodeActivityContinuation_Validation(t *testing.T) {
 		strings.Repeat("a", 16*1024+1),
 		"%%%",
 		base64.RawURLEncoding.EncodeToString([]byte(`{"v":99,"root":"root","session":"root"}`)),
-		base64.RawURLEncoding.EncodeToString([]byte(`{"v":2,"root":"root","session":"root","path":["dlg_1","dlg_1"]}`)),
+		base64.RawURLEncoding.EncodeToString([]byte(`{"v":3,"root":"root","session":"root","path":["dlg_1","dlg_1"]}`)),
 	} {
 		if _, err := decodeActivityContinuation(token, "root"); err == nil {
 			t.Fatalf("invalid continuation accepted: %q", token)

@@ -1540,14 +1540,14 @@ func TestMarkActivitySessionTruncated_ReportsTheSessionWhenThePathCannotBeNamed(
 // restart pagination once.
 func TestDecodeActivityContinuation_RefusesAnEarlierFormatAsStale(t *testing.T) {
 	legacy := encodeActivityContinuation(activityContinuation{
-		Version:     1,
+		Version:     activityContinuationVersion - 1,
 		RootID:      "root",
 		SessionID:   "root",
 		ResumeIndex: 3,
 	})
 	_, err := decodeActivityContinuation(legacy, "root")
 	if err == nil {
-		t.Fatal("a version-1 token was accepted; its fields do not mean what this build reads them as")
+		t.Fatalf("a version-%d token was accepted; its fields do not mean what this build reads them as", activityContinuationVersion-1)
 	}
 	if !strings.Contains(err.Error(), "activity continuation is stale") {
 		t.Fatalf("error %q, want the stale-continuation rejection the client restarts on", err)

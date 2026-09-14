@@ -1977,3 +1977,67 @@ func firstActivityContinuation(t *testing.T, stateDir, rootID string) string {
 	}
 	return tree.Root.Branch.Continuation
 }
+
+// TestLoadSessionJobActivityTree_RefusesAResumeAfterTheDelegateJournalBecomesUnreadable
+// pins what the degraded read may and may not claim. A delegate journal with
+// a line no scanner will read is contained rather than fatal: the page is
+// served with an empty delegate set and a diagnostic. But the generation it
+// reports for that journal is invented — it read nothing — and reporting 0
+// makes it indistinguishable from a journal folded once and never rewritten,
+// so a continuation minted while the journal was readable is accepted against
+// a page whose delegate list is now empty, and its position counts entries
+// that are not there.
+func TestLoadSessionJobActivityTree_RefusesAResumeAfterTheDelegateJournalBecomesUnreadable(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "unreadabledlgroot"
+	seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+	token := firstActivityContinuation(t, stateDir, rootID)
+	cont, err := decodeActivityContinuation(token, rootID)
+	if err != nil {
+		t.Fatalf("decode the minted token: %v", err)
+	}
+	if cont.DelegatesEpoch != 0 {
+		t.Fatalf("minted delegates generation %d, want 0 -- this test is about a token that cannot be told apart from the degraded read's invented 0", cont.DelegatesEpoch)
+	}
+
+	// Something lands in the journal that the scanner refuses. The appended
+	// bytes are what make the fold look again; the scan override is what
+	// makes that look fail, standing in for a line past the reader's cap
+	// without writing one.
+	delegatesPath := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	f, err := os.OpenFile(delegatesPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{\"unreadable\":true}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	original := scanDelegateJournal
+	scanDelegateJournal = func(context.Context, string, int64, delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		return nil, 0, delegatestore.ReadDiagnostics{}, fmt.Errorf("delegates.jsonl line 13: %w", delegatestore.ErrLineTooLong)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	// The contained read still serves a page.
+	degraded, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("a page over an unreadable delegate journal must still be served: %v", err)
+	}
+	found := false
+	for _, diagnostic := range degraded.Root.Diagnostics {
+		if strings.Contains(diagnostic, "delegate_journal_line_too_long") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics %q, want one naming the unreadable journal", degraded.Root.Diagnostics)
+	}
+
+	// The resume is not.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+		t.Fatal("resumed a token minted while the delegate journal was readable; the page it resumes into has no delegates at all, so its position counts entries that are not there")
+	}
+}
