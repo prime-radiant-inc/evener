@@ -267,10 +267,6 @@ func pinnedGolangciVersion(t *testing.T) string {
 	return ""
 }
 
-// installerServing starts a loopback server whose install.sh writes an
-// executable into the bindir it is given, printing reports as its version
-// line. An empty reports writes nothing, which is the installer that ran and
-// produced no binary.
 // installerScript is the install.sh the loopback servers serve: it records the
 // arguments it was handed when a caller asked for them, writes a line to the
 // sentinel when one is given, and writes an executable printing reports into

@@ -150,15 +150,10 @@ bindir="$gopath/bin"
 # --retry-all-errors is what makes --retry cover a failure that is not a
 # connection breaking: an HTTP status, or a reply that ended early.
 #
-# The installer is downloaded to a file and only then run, and the same command
-# serves both paths so they cannot drift apart. Piping curl into sh hands the
-# shell whatever arrived: a response cut off halfway is a script the shell has
-# already started executing, and curl's retry then appends the second response
-# to the first, so the shell runs the truncated half and then the whole thing.
-# A file has no halfway state -- curl either exits 0 with the body or it does
-# not, and sh sees the file only in the first case. That also retires the
-# pipefail form, which was there to notice the download failing on the left of
-# a pipe.
+# The installer is downloaded to a file and run only after curl has exited 0,
+# so a download that failed or arrived in part is never executed: curl either
+# writes the whole body and succeeds, or sh is not reached at all. One command
+# serves both the bounded and the unbounded path, so they cannot drift apart.
 # Armed before the file exists: a failure between the two would otherwise leave
 # whatever mktemp had managed to create.
 trap 'rm -f "${install_script:-}"' EXIT
