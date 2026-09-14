@@ -50,8 +50,9 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 			// or a marker stripped of the id its copies carry — reads as an
 			// anchor with nothing to keep, which discards the turns the copies
 			// exist to carry past it.
-			ContextReplay:    t.ContextReplay,
-			CompactionFoldID: t.CompactionFoldID,
+			ContextReplay:           t.ContextReplay,
+			ContextReplayMergedTail: t.ContextReplayMergedTail,
+			CompactionFoldID:        t.CompactionFoldID,
 		}
 		out = append(out, entry)
 	}

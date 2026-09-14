@@ -243,6 +243,14 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 	// carrying those past a marker needs the durable per-entry identity the
 	// records do not have yet (issue #1200).
 	rewriteTail := pairsStillInHistory(s.persistedAppendLog, published)
+	// Which of those copies are of turns recorded WHILE the fold ran: the
+	// publication merges them in after everything the fold produced, so a
+	// resume has to put them back on the far side of the fold's own steering.
+	// Nothing in a copy says which half it is, so the fold says it here.
+	mergedTail := make(map[turnPairIdentity]int)
+	for _, turn := range published[min(len(folded), len(published)):] {
+		mergedTail[pairIdentity(turn)]++
+	}
 	// Pruned to that same set, here inside the publish: every entry dropped
 	// belongs to a turn the history no longer has, which no later fold can
 	// need. A competing fold still in flight must re-snapshot to publish after
@@ -318,6 +326,10 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 	if commit.writesCompactionMarker() {
 		for _, turn := range rewriteTail {
 			turn.ContextReplay = true
+			turn.ContextReplayMergedTail = mergedTail[pairIdentity(turn)] > 0
+			if turn.ContextReplayMergedTail {
+				mergedTail[pairIdentity(turn)]--
+			}
 			turn.CompactionFoldID = commit.foldID
 			if err := s.writeTranscriptDurableLocked(turn); err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)

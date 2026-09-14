@@ -166,9 +166,10 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 //
 // The anchored branch rebuilds the fold's run in the order the fold HELD it,
 // which is not the order it wrote it: the anchor and the rest of its records,
-// then the copies, then the steering it injected — which the live history
-// keeps after the compaction result, though the transaction writes it
-// immediately after the markers.
+// the copies of the suffix the fold preserved, the steering it injected, then
+// the copies of the turns recorded while the fold ran — which the publication
+// merges in after everything the fold itself produced, though the transaction
+// writes every copy first and the steering last.
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// Scan backward for the last compaction turn.
 	compactionIdx := -1
@@ -198,10 +199,11 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// this anchor's own fold wrote just before it. The fold's footprint is one
 	// contiguous run of records sharing its id — copies first, then the
 	// context-compaction records, markers and injected steering — so the run
-	// is reassembled in the order the fold published it: the fold's own
-	// records from the anchor onward, then its copies, then everything after.
-	// That is the order the fold held in memory, so a resume rebuilds the
-	// history the live session had.
+	// is reassembled in the order the fold PUBLISHED it, which is not the
+	// order it wrote it: the anchor and its records, the copies of the suffix
+	// the fold preserved, the steering the fold injected, then the copies of
+	// the turns recorded while it ran. That is the order the fold held in
+	// memory, so a resume rebuilds the history the live session had.
 	//
 	// An untagged anchor is one written before the tag existed, when the
 	// copies followed their marker and are already inside the range below;
@@ -214,25 +216,31 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 		}
 		result = append(result, entries[i].Turn)
 	}
-	for i := foldStart; i < foldEnd; i++ {
-		if !entries[i].Turn.ContextReplay {
-			continue
+	appendCopies := func(mergedTail bool) {
+		for i := foldStart; i < foldEnd; i++ {
+			if !entries[i].Turn.ContextReplay || entries[i].Turn.ContextReplayMergedTail != mergedTail {
+				continue
+			}
+			turn := entries[i].Turn
+			turn.ContextReplay = false
+			turn.ContextReplayMergedTail = false
+			result = append(result, turn)
 		}
-		turn := entries[i].Turn
-		turn.ContextReplay = false
-		result = append(result, turn)
 	}
-	// The fold's own steering goes last, where the live history holds it: the
-	// fold appends it AFTER the compaction result, so it is the newest thing
-	// the model was told. Writing it in file order would put it ahead of the
-	// turns recorded while the fold ran, and the resumed conversation would
-	// read guidance before the work it was given about.
+	// The published history is the fold's own result — its marker, the suffix
+	// it preserved, then the steering it injected — with the turns recorded
+	// while it ran merged in after all of that. The run on disk is written in
+	// a different order (copies first, so a crash cannot leave an anchor with
+	// nothing to replace what it discards), so the two copy groups go back
+	// around the steering rather than in file order.
+	appendCopies(false)
 	for i := compactionIdx; i < foldEnd; i++ {
 		if entries[i].Turn.ContextReplay || entries[i].Turn.Kind != schema.TurnSteering {
 			continue
 		}
 		result = append(result, entries[i].Turn)
 	}
+	appendCopies(true)
 	anchorFold := entries[compactionIdx].Turn.CompactionFoldID
 	for i := foldEnd; i < len(entries); i++ {
 		// A copy claimed by some OTHER fold is a copy whose marker never

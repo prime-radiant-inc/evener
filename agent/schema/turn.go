@@ -274,6 +274,13 @@ type Turn struct {
 	// ContextReplay marks a copy appended around compaction solely to restore
 	// model context. Its original transcript entry already owns the UI item.
 	ContextReplay bool `json:"context_replay,omitempty"`
+	// ContextReplayMergedTail marks a copy of a turn recorded WHILE the fold
+	// ran — one the publication merged in after everything the fold itself
+	// produced, the steering it injected included. Copies of the suffix the
+	// fold preserved carry it false. The two groups go down in one run, so
+	// this is what tells a resume where the fold's steering sat between them:
+	// the order the published history held (see ResumeHistory).
+	ContextReplayMergedTail bool `json:"context_replay_merged_tail,omitempty"`
 	// CompactionFoldID names the fold that wrote this record: its markers, the
 	// context-compaction records and injected steering around them, and the
 	// ContextReplay copies of the turns recorded while it ran. The copies go

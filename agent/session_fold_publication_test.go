@@ -2709,46 +2709,83 @@ func TestFoldPublication_MarkerlessFoldKeepsAnUnanchoredFoldsDebt(t *testing.T) 
 // both into the provider messages a request would carry and compare. A
 // reassembly that puts the fold's guidance ahead of the work it was given
 // about, or drops the suffix the compaction kept, fails here.
+//
+// The two cases are the two shapes of a fold's copy run: the preserved suffix
+// alone, and the preserved suffix plus a turn recorded WHILE the fold ran,
+// which publishFoldedHistory merges in after everything the fold itself
+// produced — including the steering it injected.
 func TestFoldPublication_ResumeRebuildsTheProviderHistoryTheFoldPublished(t *testing.T) {
 	t.Parallel()
-	s := newScriptedSummaryCompactSession(t, "resume-parity-cheap", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
-	go func() {
-		for range s.Events() {
+	for _, concurrent := range []bool{false, true} {
+		name := "preserved suffix and injected steering"
+		if concurrent {
+			name = "and a turn recorded while the fold ran"
 		}
-	}()
-	for i := range 12 { // > PreserveRecentTurns(6): the fold really folds and really preserves
-		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
-		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
-			t.Fatalf("durable append %d: %v", i, err)
-		}
-	}
-	// A pinned note makes the fold inject steering of its own, which is the
-	// record whose place in the run the reassembly has to get right.
-	s.setPinnedNote("REMEMBER: the API signature")
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			entered := make(chan struct{})
+			proceed := make(chan struct{})
+			var calls atomic.Int32
+			s := newScriptedSummaryCompactSession(t, "resume-parity-"+strings.ReplaceAll(name, " ", "-"), func(llm.Request) llm.Response {
+				if concurrent && calls.Add(1) == 1 {
+					close(entered)
+					<-proceed
+				}
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+			go func() {
+				for range s.Events() {
+				}
+			}()
+			for i := range 12 { // > PreserveRecentTurns(6): the fold really folds and really preserves
+				msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+				if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+					t.Fatalf("durable append %d: %v", i, err)
+				}
+			}
+			// A pinned note makes the fold inject steering of its own, which is
+			// the record whose place in the run the reassembly has to get right.
+			s.setPinnedNote("REMEMBER: the API signature")
 
-	if err := s.Compact(context.Background()); err != nil {
-		t.Fatalf("Compact: %v", err)
-	}
+			const midFold = "recorded while the fold was running"
+			if concurrent {
+				compactErr := make(chan error, 1)
+				go func() { compactErr <- s.Compact(context.Background()) }()
+				<-entered // the fold is mid-flight, past its unlocked snapshot
+				msg := llm.User(midFold)
+				if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+					t.Fatalf("durable append during the fold: %v", err)
+				}
+				close(proceed)
+				if err := <-compactErr; err != nil {
+					t.Fatalf("Compact: %v", err)
+				}
+			} else if err := s.Compact(context.Background()); err != nil {
+				t.Fatalf("Compact: %v", err)
+			}
 
-	live := currentHistory(t, s)
-	if n := countSteering(live, noteHandoffPrefix); n != 1 {
-		t.Fatalf("test setup: the fold injected %d note handoffs, want exactly one to place", n)
-	}
-	if indexOfTurnText(live, "recorded turn 11") < 0 {
-		t.Fatal("test setup: the fold preserved none of the recorded turns")
-	}
+			live := currentHistory(t, s)
+			if n := countSteering(live, noteHandoffPrefix); n != 1 {
+				t.Fatalf("test setup: the fold injected %d note handoffs, want exactly one to place", n)
+			}
+			if indexOfTurnText(live, "recorded turn 11") < 0 {
+				t.Fatal("test setup: the fold preserved none of the recorded turns")
+			}
+			if concurrent && indexOfTurnText(live, midFold) < 0 {
+				t.Fatal("test setup: the merge-back did not carry the concurrently recorded turn into live history")
+			}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	resumed := ResumeHistory(data.Entries)
-	wantMessages := expandHistory(live, replayScope{})
-	gotMessages := expandHistory(resumed, replayScope{})
-	if !reflect.DeepEqual(gotMessages, wantMessages) {
-		t.Fatalf("the resumed provider history differs from the one the fold published:\nresumed: %v\nlive:    %v", providerMessageOutline(gotMessages), providerMessageOutline(wantMessages))
+			data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+			if err != nil {
+				t.Fatalf("readTranscriptFull: %v", err)
+			}
+			resumed := ResumeHistory(data.Entries)
+			wantMessages := expandHistory(live, replayScope{})
+			gotMessages := expandHistory(resumed, replayScope{})
+			if !reflect.DeepEqual(gotMessages, wantMessages) {
+				t.Fatalf("the resumed provider history differs from the one the fold published:\nresumed: %v\nlive:    %v", providerMessageOutline(gotMessages), providerMessageOutline(wantMessages))
+			}
+		})
 	}
 }
 
