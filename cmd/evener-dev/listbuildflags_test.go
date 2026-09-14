@@ -2,6 +2,7 @@ package dev
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,14 @@ import (
 	"strings"
 	"testing"
 )
+
+// fixtureToolchainEnv is what the fixture modules are enumerated under: their
+// own go.mod rather than this repo's workspace, and none of the developer's
+// toolchain settings -- a GOFLAGS carrying -tags would answer the very
+// question these fixtures ask.
+func fixtureToolchainEnv() []string {
+	return append(os.Environ(), "GOWORK=off", "GOFLAGS=", "GOENV=off")
+}
 
 func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 	for _, tc := range []struct {
@@ -99,7 +108,7 @@ func TestPackageSelectionFlagsForwardAnOverlayThatIntroducesAPackage(t *testing.
 		args = append(args, "./...")
 		cmd := exec.Command("go", args...)
 		cmd.Dir = resolved
-		cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "GOENV=off")
+		cmd.Env = fixtureToolchainEnv()
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("go %q in the fixture: %v\n%s", args, err, out)
@@ -143,7 +152,7 @@ func TestPackageSelectionFlagsDecideWhatGoListCanSee(t *testing.T) {
 		args = append(args, "./...")
 		cmd := exec.Command("go", args...)
 		cmd.Dir = module
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = fixtureToolchainEnv()
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("go %q in the fixture: %v\n%s", args, err, out)
@@ -157,5 +166,22 @@ func TestPackageSelectionFlagsDecideWhatGoListCanSee(t *testing.T) {
 	forwarded := packageSelectionFlags([]string{"-tags", "listfixture", "-short", "-count=1"})
 	if got := list(forwarded...); !strings.Contains(got, "listfixture/tagged") {
 		t.Fatalf("go list %q = %q, want the tagged package listed", forwarded, got)
+	}
+}
+
+// refusingWriter fails on the first write, which is what a closed pipe or a
+// full disk looks like to a subcommand handing over its answer.
+type refusingWriter struct{}
+
+func (refusingWriter) Write([]byte) (int, error) { return 0, errors.New("the pipe is gone") }
+
+func TestListBuildFlagsFailsWhenItsAnswerCannotBeDelivered(t *testing.T) {
+	var stderr bytes.Buffer
+	code := listBuildFlags([]string{"--", "-race", "-short"}, refusingWriter{}, &stderr)
+	if code == 0 {
+		t.Fatalf("exit code = 0 after a write that failed; stderr = %q", stderr.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, "list-build-flags: writing -race") {
+		t.Fatalf("stderr = %q, want the flag that could not be written", got)
 	}
 }

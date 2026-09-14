@@ -147,7 +147,13 @@ func listBuildFlags(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	for _, f := range packageSelectionFlags(fs.Args()) {
-		_, _ = fmt.Fprintln(stdout, f)
+		// A caller reading a truncated answer enumerates under fewer flags
+		// than the tests are built with, which is the failure this subcommand
+		// exists to prevent -- so a write that did not land fails the run.
+		if _, err := fmt.Fprintln(stdout, f); err != nil {
+			_, _ = fmt.Fprintf(stderr, "list-build-flags: writing %s: %v\n", f, err)
+			return 1
+		}
 	}
 	return 0
 }

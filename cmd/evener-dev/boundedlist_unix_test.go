@@ -318,6 +318,13 @@ func TestBoundedListEscapeeHelper(t *testing.T) {
 	if err := child.Start(); err != nil {
 		t.Fatalf("starting the escapee: %v", err)
 	}
+	// Say nothing until the grandchild is actually running and holding the
+	// pipe: the test waits on this file rather than on a guess about how long
+	// a fork takes.
+	awaitFile(t, os.Getenv("BOUNDED_LIST_SLEEPER_READY"), "the grandchild never started")
+	if err := os.WriteFile(os.Getenv("BOUNDED_LIST_ESCAPEE_READY"), nil, 0o644); err != nil {
+		t.Fatalf("writing the escapee's ready file: %v", err)
+	}
 	// Held, not waited for: this process is killed where it stands.
 	time.Sleep(2 * time.Second)
 }
@@ -329,21 +336,31 @@ func TestBoundedListSleeperHelper(t *testing.T) {
 	if os.Getenv("BOUNDED_LIST_SLEEPER") == "" {
 		t.Skip("helper process entry point; runs only under the give-up tests")
 	}
+	if err := os.WriteFile(os.Getenv("BOUNDED_LIST_SLEEPER_READY"), nil, 0o644); err != nil {
+		t.Fatalf("writing the grandchild's ready file: %v", err)
+	}
 	time.Sleep(3 * time.Second)
 }
 
 // escapeeCommand is the attempt's command for the give-up tests: this test
-// binary, re-executed, with nothing ambient involved.
-func escapeeCommand(t *testing.T) []string {
+// binary, re-executed, with nothing ambient involved. It returns the path the
+// middle process writes once its grandchild is running, for the cases that
+// have to act at that moment rather than after a guessed interval.
+func escapeeCommand(t *testing.T) ([]string, string) {
 	t.Helper()
+	dir := t.TempDir()
+	escapeeReady := filepath.Join(dir, "escapee-ready")
 	t.Setenv("BOUNDED_LIST_ESCAPEE", "1")
-	return []string{os.Args[0], "-test.run=TestBoundedListEscapeeHelper$"}
+	t.Setenv("BOUNDED_LIST_ESCAPEE_READY", escapeeReady)
+	t.Setenv("BOUNDED_LIST_SLEEPER_READY", filepath.Join(dir, "sleeper-ready"))
+	return []string{os.Args[0], "-test.run=TestBoundedListEscapeeHelper$"}, escapeeReady
 }
 
 func TestBoundedAttemptGivesUpOnAChildItCannotReap(t *testing.T) {
 	var stderr bytes.Buffer
 	start := time.Now()
-	result := runBoundedAttempt(escapeeCommand(t), 200*time.Millisecond, 300*time.Millisecond, &stderr, nil)
+	argv, _ := escapeeCommand(t)
+	result := runBoundedAttempt(argv, 200*time.Millisecond, 300*time.Millisecond, &stderr, nil)
 	if !result.stuck {
 		t.Fatalf("stuck = false after %s; the attempt waited for a child it could not reap", time.Since(start))
 	}
@@ -368,13 +385,16 @@ func TestBoundedAttemptKeepsTheInterruptWhenItCannotReap(t *testing.T) {
 	// An interrupt is what the operator asked for; a child the kernel will not
 	// let go of does not turn that into a timeout, whose diagnostic would send
 	// them looking at their caches for a signal they sent themselves.
+	argv, escapeeReady := escapeeCommand(t)
 	signals := make(chan os.Signal, 1)
 	latch := &signalLatch{ch: signals}
 	go func() {
-		time.Sleep(200 * time.Millisecond)
+		// Once the grandchild is running: signalling before that would stop a
+		// group that has nothing to leave behind.
+		awaitFile(t, escapeeReady, "the escapee never reported its grandchild")
 		signals <- syscall.SIGTERM
 	}()
-	result := runBoundedAttempt(escapeeCommand(t), 30*time.Second, 300*time.Millisecond, &stderr, latch)
+	result := runBoundedAttempt(argv, 30*time.Second, 300*time.Millisecond, &stderr, latch)
 	if !result.stuck {
 		t.Fatal("stuck = false; this case needs the child that cannot be reaped")
 	}
@@ -385,7 +405,7 @@ func TestBoundedAttemptKeepsTheInterruptWhenItCannotReap(t *testing.T) {
 
 func TestBoundedListDoesNotRetryAChildItCannotReap(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	argv := escapeeCommand(t)
+	argv, _ := escapeeCommand(t)
 	args := append([]string{"-timeout", "200ms", "-attempts", "3", "-grace", "300ms", "--"}, argv...)
 	code := boundedListWith(args, &stdout, &stderr, nil)
 	if code != 124 {
