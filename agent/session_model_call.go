@@ -466,12 +466,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// against this request's remaining budget. The notification and carrier
 	// turns land in the same history the rebuild above projects, so the
 	// restored bodies and the reminder join this dispatch.
-	reloadBatch, reloadOutcomes, reloadErr := s.prepareCompactedSkillReloads(ctx)
+	reloadBatch, reloadOutcomes, reloadStagedTokens, reloadErr := s.prepareCompactedSkillReloads(ctx)
 	if reloadErr != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, reloadErr
 	}
 	if reloadBatch != nil {
-		if admitErr := s.admitCompactedSkillReloads(ctx, profile, &budget, reloadBatch, reloadOutcomes); admitErr != nil {
+		if admitErr := s.admitCompactedSkillReloads(ctx, profile, &budget, reloadStagedTokens, reloadBatch, reloadOutcomes); admitErr != nil {
 			return profile, sys, history, req, fullHistory, reasoningEffort, admitErr
 		}
 		if _, err := rebuildForAppendedSkillTurns(); err != nil {

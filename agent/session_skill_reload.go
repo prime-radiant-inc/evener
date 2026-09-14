@@ -171,12 +171,16 @@ func skillInventoryDiagnostics(diagnostics []skill.Diagnostic) []schema.SkillInv
 // returned batch carries the successfully prepared reload bodies in selected
 // order for the caller's budgeted admission, and the returned outcomes carry
 // every reload attempt's typed metadata (failed or pending). A nil batch
-// means no receipt awaited consumption.
+// means no receipt awaited consumption. The returned token count is the
+// input-token cost of every turn preparation appended (reload failure
+// notifications and the fallback reminder); the caller folds it into the
+// admission budget so those staged turns count against the same window the
+// reload bodies do.
 //
 // A receipt whose complete reminder cannot fit the remaining window is a
 // visible error — the full list is kept, never trimmed. Cancelled receipts
 // are terminal records: they authorize nothing and are left in place.
-func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActivationBatch, []schema.SkillActivationOutcome, error) {
+func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActivationBatch, []schema.SkillActivationOutcome, int, error) {
 	s.mu.Lock()
 	handoffs := make([]schema.SkillCompactionReceipt, len(s.skillLifecycle.PendingHandoffs))
 	for i, handoff := range s.skillLifecycle.PendingHandoffs {
@@ -185,15 +189,19 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 	}
 	s.mu.Unlock()
 	if len(handoffs) == 0 {
-		return nil, nil, nil
+		return nil, nil, 0, nil
 	}
 
 	batch := &skillActivationBatch{}
 	var outcomes []schema.SkillActivationOutcome
+	// stagedTokens is the input-token cost of every notification turn appended
+	// below. The caller folds it into the admission budget, because these turns
+	// join the same request the body admission is measured against.
+	stagedTokens := 0
 	reminderPublications := map[string]bool{}
 	for _, receipt := range handoffs {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		if receipt.Phase == skillCompactionReceiptCancelled {
 			continue // a terminal retirement record authorizes nothing
@@ -203,7 +211,7 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 		case "valid":
 			for _, name := range receipt.Operation.Selection.Names {
 				if err := ctx.Err(); err != nil {
-					return nil, nil, err
+					return nil, nil, 0, err
 				}
 				s.mu.Lock()
 				ordinary := s.skillLifecycle.Inventory[name].Ordinary
@@ -241,11 +249,11 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 						Status:       "failed",
 						ErrorCode:    skillActivationErrorCode(err),
 					}
-					if err := s.recordSkillReloadNotification(
-						systemNotificationf("Skill %q could not be reloaded after compaction: %v", name, err),
-						outcome, nil); err != nil {
-						return nil, nil, err
+					notice := systemNotificationf("Skill %q could not be reloaded after compaction: %v", name, err)
+					if err := s.recordSkillReloadNotification(notice, outcome, nil); err != nil {
+						return nil, nil, 0, err
 					}
+					stagedTokens += skillReloadTurnTokens(notice)
 					outcomes = append(outcomes, outcome)
 					continue
 				}
@@ -303,7 +311,7 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 				// failure the caller must see; a restart reconciles the durable
 				// reminder turns the same way.
 				_ = s.consumeSkillReloadReminders(reminderPublications)
-				return nil, nil, fmt.Errorf("the complete post-compaction skill inventory (%d entries) does not fit the remaining context window", len(summary))
+				return nil, nil, 0, fmt.Errorf("the complete post-compaction skill inventory (%d entries) does not fit the remaining context window", len(summary))
 			}
 			turn := schema.NewTurn(schema.TurnSystem, llm.User(content))
 			turn.SkillState = &schema.SkillTurnState{ReloadReminder: &reminder}
@@ -322,17 +330,18 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 				func() { s.history = append(s.history, live) },
 			); err != nil {
 				s.emit(events.EventWarning, warningDataFromError("recording the post-compaction skill reminder failed", err))
-				return nil, nil, fmt.Errorf("recording the post-compaction skill reminder: %w", err)
+				return nil, nil, 0, fmt.Errorf("recording the post-compaction skill reminder: %w", err)
 			}
+			stagedTokens += skillReloadTurnTokens(content)
 			reminderPublications[publicationID] = true
 		}
 	}
 	// The reminder's durable admission is its recorded turn: consume its
 	// receipts now so a retry or restart cannot repeat delivery.
 	if err := s.consumeSkillReloadReminders(reminderPublications); err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
-	return batch, outcomes, nil
+	return batch, outcomes, stagedTokens, nil
 }
 
 // consumeSkillReloadReminders retires the handoffs whose reminders were already
@@ -368,8 +377,11 @@ func (s *Session) consumeSkillReloadReminders(publications map[string]bool) erro
 // and never starts a second compaction or model-repair round. After the
 // bodies and their obligations are durably recorded, the consumed reload
 // receipts are removed by publication identity, disturbing no unrelated
-// pending operation.
-func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provider.Profile, budget *llm.TokenBudget, batch *skillActivationBatch, outcomes []schema.SkillActivationOutcome) error {
+// pending operation. stagedInputTokens is preparation's cost for the turns it
+// already appended; it joins the running total here, and every notification
+// this admission appends joins it too, so the final total covers the complete
+// staged request.
+func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provider.Profile, budget *llm.TokenBudget, stagedInputTokens int, batch *skillActivationBatch, outcomes []schema.SkillActivationOutcome) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -379,6 +391,21 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 	window := 0
 	if profile != nil {
 		window = profile.ContextWindowSize()
+	}
+	// Fold the turns preparation already appended into the same running total
+	// the body admission measures, then reserve — before any body is admitted —
+	// the space every notification this admission can still append: each item
+	// contributes at most one small typed notice (a reuse notice or a
+	// context_budget explanation). Counting the whole remaining allowance in
+	// every admission check is what keeps the COMPLETE staged request inside the
+	// window: a body is admitted only when its carrier AND the explanations the
+	// items after it may still owe both fit, so the rebuild that follows
+	// admission can never overflow the window and fail the whole turn after the
+	// receipts were already consumed.
+	budget.InputTokens += stagedInputTokens
+	pendingNotifications := 0
+	for _, item := range batch.Items {
+		pendingNotifications += skillReloadNotificationReserve(skillContentIdentity(item).Name)
 	}
 	outcomeByID := make(map[string]*schema.SkillActivationOutcome, len(outcomes))
 	for i := range outcomes {
@@ -401,6 +428,9 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 			return err
 		}
 		identity := skillContentIdentity(item)
+		// This item's own notification, if it turns out to need one, is no
+		// longer pending: the allowance now covers only the items after it.
+		pendingNotifications -= skillReloadNotificationReserve(identity.Name)
 		obligation := schema.SkillDeliveryObligation{
 			InvocationID: item.Invocation.InvocationID,
 			Identity:     identity,
@@ -413,29 +443,31 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 			// batch: no duplicate body, obligation stands until final admission.
 			if outcome != nil {
 				outcome.Status = "already_present"
-				if err := s.recordSkillReloadNotification(
-					systemNotificationf("Skill %q's complete current instructions are already present in this conversation; its reload reuses them.", identity.Name),
-					*outcome, nil); err != nil {
+				notice := skillReloadReuseNotification(identity.Name)
+				if err := s.recordSkillReloadNotification(notice, *outcome, nil); err != nil {
 					return err
 				}
+				budget.InputTokens += skillReloadTurnTokens(notice)
 			}
 			obligations = append(obligations, obligation)
 			continue
 		}
 		bodyTokens := llm.EstimateMessagesInputTokens([]llm.Message{llm.User(item.Rendered.Content)}).Tokens
-		if window > 0 && budget.InputTokens+bodyTokens+1 >= window {
+		if window > 0 && budget.InputTokens+pendingNotifications+bodyTokens+1 >= window {
 			// The +1 covers the estimator's per-message rounding against the
 			// dispatch seam's own admission arithmetic (llm.ApplyTokenBudget),
-			// so an admitted reload can never push the rebuilt request over
-			// the window and into a recovery round.
+			// and pendingNotifications covers every notification the items
+			// after this one can still append, so an admitted reload plus the
+			// rest of the staged request can never push the rebuilt request
+			// over the window and into a recovery round.
 			if outcome != nil {
 				outcome.Status = "failed"
 				outcome.ErrorCode = "context_budget"
-				if err := s.recordSkillReloadNotification(
-					systemNotificationf("Skill %q's complete instructions do not fit the remaining context window and were not reloaded after compaction.", identity.Name),
-					*outcome, nil); err != nil {
+				notice := skillReloadContextBudgetNotification(identity.Name)
+				if err := s.recordSkillReloadNotification(notice, *outcome, nil); err != nil {
 					return err
 				}
+				budget.InputTokens += skillReloadTurnTokens(notice)
 			}
 			continue
 		}
@@ -560,6 +592,36 @@ func (s *Session) recordSkillReloadNotification(message string, outcome schema.S
 	}
 	turn.SkillState = state
 	return s.recordSkillCarrierDurably(turn, turn)
+}
+
+// skillReloadTurnTokens estimates the input tokens one recorded reload
+// notification or reminder turn contributes to the request. Every turn this
+// route appends is a single user-role text message, so the same estimator the
+// body admission already uses applies unchanged.
+func skillReloadTurnTokens(content string) int {
+	return llm.EstimateMessagesInputTokens([]llm.Message{llm.User(content)}).Tokens
+}
+
+// skillReloadReuseNotification renders the typed notice recorded when a
+// reload's complete content is already present in the retained tail (or was
+// restored by another activation), so its body is reused rather than duplicated.
+func skillReloadReuseNotification(name string) string {
+	return systemNotificationf("Skill %q's complete current instructions are already present in this conversation; its reload reuses them.", name)
+}
+
+// skillReloadContextBudgetNotification renders the typed explanation recorded
+// when a reload body cannot fit the remaining context window.
+func skillReloadContextBudgetNotification(name string) string {
+	return systemNotificationf("Skill %q's complete instructions do not fit the remaining context window and were not reloaded after compaction.", name)
+}
+
+// skillReloadNotificationReserve bounds the input tokens one admission decision
+// can append as a notification: a reuse notice or a context_budget explanation,
+// whichever is larger for the skill. Admission reserves this much for every
+// item still to be processed, so whatever a later decision appends has space
+// even when an earlier body was admitted right up to the window.
+func skillReloadNotificationReserve(name string) int {
+	return max(skillReloadTurnTokens(skillReloadReuseNotification(name)), skillReloadTurnTokens(skillReloadContextBudgetNotification(name)))
 }
 
 // renderSkillReloadReminder renders the complete typed inventory as a

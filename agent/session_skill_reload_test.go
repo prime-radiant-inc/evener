@@ -815,6 +815,262 @@ func TestSkillReload_Budget_MandatoryMetadataExceeds(t *testing.T) {
 	}
 }
 
+// TestSkillReload_Budget_PreparedReminderCountsAgainstAdmission pins the first
+// missing term in the admission budget: the tokens of the turns preparation
+// already appended. A reminder receipt and a reload receipt are staged in the
+// same round; a budget that admits the body when the reminder's own tokens are
+// ignored must reject it once they count, with the existing typed
+// context_budget outcome and its visible explanation — not an admission that
+// overflows the rebuilt request after the receipts were already consumed. The
+// control run proves the rejection is attributable to the reminder: the same
+// body, prepared alone, fits and is admitted.
+func TestSkillReload_Budget_PreparedReminderCountsAgainstAdmission(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	body := strings.Repeat("TIPPED_5c31 reload body line\n", 80)
+	writeSkillMD(t, root, "tipped", "---\nname: tipped\ndescription: fixture\n---\n"+body)
+	// prepare builds a fresh session whose pending handoffs are the given
+	// reminder receipt (optionally) plus one valid selection of the fixture,
+	// prepares them through the real machinery, and reports what preparation
+	// staged.
+	prepare := func(t *testing.T, withReminder bool) (*Session, *skillActivationBatch, []schema.SkillActivationOutcome, int) {
+		t.Helper()
+		s, _, _ := newReloadSession(t, root, 100000, func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("unused")}
+		}, reloadSummaryResponder("SUMMARY_staged_reminder", nil))
+		seedNumberedSessionHistory(t, s, 12)
+		plantOrdinaryRecord(t, s, root, "tipped", true)
+		// A large preload-only inventory makes the reminder's own tokens
+		// unambiguous against the body's headroom.
+		for i := range 40 {
+			plantPreloadRecord(t, s, fmt.Sprintf("bulk%02d", i), "bulk fixture description")
+		}
+		var receipts []schema.SkillCompactionReceipt
+		if withReminder {
+			receipts = append(receipts, schema.SkillCompactionReceipt{
+				Phase: skillCompactionReceiptDelivered,
+				Operation: schema.SkillCompactionOperation{
+					Generation:    1,
+					Selection:     schema.SkillReloadSelection{State: "absent"},
+					PublicationID: "pub-staged-reminder",
+				},
+			})
+		}
+		receipts = append(receipts, schema.SkillCompactionReceipt{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"tipped"}},
+				PublicationID: "pub-staged-body",
+			},
+		})
+		s.mu.Lock()
+		s.skillLifecycle.PendingHandoffs = receipts
+		s.mu.Unlock()
+		batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
+		if err != nil {
+			t.Fatalf("prepareCompactedSkillReloads (reminder=%v): %v", withReminder, err)
+		}
+		return s, batch, outcomes, staged
+	}
+	bodyTokens := func(t *testing.T, batch *skillActivationBatch) int {
+		t.Helper()
+		if batch == nil || len(batch.Items) != 1 {
+			t.Fatalf("prepared batch = %+v, want the one selected reload", batch)
+		}
+		return llm.EstimateMessagesInputTokens([]llm.Message{llm.User(batch.Items[0].Rendered.Content)}).Tokens
+	}
+	s, batch, outcomes, staged := prepare(t, true)
+	if staged <= 0 {
+		t.Fatalf("the reminder turn was appended but preparation reported %d staged input tokens", staged)
+	}
+	window := s.profile.ContextWindowSize()
+	// One token short of fitting the body on its own, so the reminder's staged
+	// tokens are the only thing that can cross the window.
+	budget := &llm.TokenBudget{InputTokens: window - bodyTokens(t, batch) - 2}
+	if err := s.admitCompactedSkillReloads(context.Background(), s.profile, budget, staged, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads: %v", err)
+	}
+	rejected := reloadOutcomeForSkill(t, s, "tipped")
+	if rejected.Status != "failed" || rejected.ErrorCode != "context_budget" {
+		t.Fatalf("reload outcome = status %q code %q, want failed context_budget: the staged reminder's tokens must count against the body's admission", rejected.Status, rejected.ErrorCode)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("handoffs after admission = %+v, want both consumed", handoffs)
+	}
+	control, controlBatch, controlOutcomes, controlStaged := prepare(t, false)
+	if controlStaged != 0 {
+		t.Fatalf("a valid-selection preparation staged %d tokens, want none", controlStaged)
+	}
+	controlWindow := control.profile.ContextWindowSize()
+	controlBudget := &llm.TokenBudget{InputTokens: controlWindow - bodyTokens(t, controlBatch) - 2}
+	if err := control.admitCompactedSkillReloads(context.Background(), control.profile, controlBudget, controlStaged, controlBatch, controlOutcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads (control): %v", err)
+	}
+	admitted := reloadOutcomeForSkill(t, control, "tipped")
+	if admitted.Status != "pending" {
+		t.Fatalf("control reload outcome = status %q code %q, want pending: the same body must fit when no reminder precedes it", admitted.Status, admitted.ErrorCode)
+	}
+}
+
+// TestSkillReload_Budget_RejectionExplanationCountsAgainstLaterBodies pins the
+// second missing term: the tokens of the notification admission appends for a
+// body it rejects. The first body is far larger than the window and is rejected
+// with a visible context_budget explanation; that explanation's own tokens must
+// enter the running total, so the second body — which fits when the explanation
+// is ignored — is rejected too, instead of being admitted and then failing the
+// whole turn after the receipts were consumed.
+func TestSkillReload_Budget_RejectionExplanationCountsAgainstLaterBodies(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	hugeBody := strings.Repeat("HUGE_5c31 body line\n", 6000)
+	laterBody := strings.Repeat("LATER_5c31 body line\n", 60)
+	writeSkillMD(t, root, "huge", "---\nname: huge\ndescription: fixture\n---\n"+hugeBody)
+	writeSkillMD(t, root, "later", "---\nname: later\ndescription: fixture\n---\n"+laterBody)
+	s, _, _ := newReloadSession(t, root, 100000, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_explanation", nil))
+	seedNumberedSessionHistory(t, s, 12)
+	plantOrdinaryRecord(t, s, root, "huge", true)
+	plantOrdinaryRecord(t, s, root, "later", true)
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"huge", "later"}},
+			PublicationID: "pub-explanation",
+		},
+	}}
+	s.mu.Unlock()
+	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if staged != 0 {
+		t.Fatalf("a valid-selection preparation staged %d tokens, want none", staged)
+	}
+	if batch == nil || len(batch.Items) != 2 {
+		t.Fatalf("prepared batch = %+v, want both selected reloads", batch)
+	}
+	laterTokens := 0
+	for _, item := range batch.Items {
+		if skillContentIdentity(item).Name == "later" {
+			laterTokens = llm.EstimateMessagesInputTokens([]llm.Message{llm.User(item.Rendered.Content)}).Tokens
+		}
+	}
+	if laterTokens <= 0 {
+		t.Fatal("test setup: no later body prepared")
+	}
+	window := s.profile.ContextWindowSize()
+	// One token short of fitting the later body on its own: only the huge
+	// body's rejection explanation can push it over.
+	budget := &llm.TokenBudget{InputTokens: window - laterTokens - 2}
+	if err := s.admitCompactedSkillReloads(context.Background(), s.profile, budget, staged, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads: %v", err)
+	}
+	if got := reloadOutcomeForSkill(t, s, "huge"); got.Status != "failed" || got.ErrorCode != "context_budget" {
+		t.Fatalf("huge reload outcome = status %q code %q, want failed context_budget", got.Status, got.ErrorCode)
+	}
+	if got := reloadOutcomeForSkill(t, s, "later"); got.Status != "failed" || got.ErrorCode != "context_budget" {
+		t.Fatalf("later reload outcome = status %q code %q, want failed context_budget: the earlier rejection's explanation tokens must count against the later body's admission", got.Status, got.ErrorCode)
+	}
+}
+
+// TestSkillReload_Budget_StagedNotificationsStayWithinWindow pins the combined
+// invariant: after an admission that appends notifications, the running total
+// (preparation's staged turns + every body and notification admission recorded)
+// still leaves the complete staged request inside the window, so the rebuild
+// after admission cannot fail the whole turn. The budget is one token short of
+// the second body, so the first body's rejection explanation must both count
+// against the second body and still leave the total under the window.
+func TestSkillReload_Budget_StagedNotificationsStayWithinWindow(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	hugeBody := strings.Repeat("HUGE_5c31 body line\n", 6000)
+	smallBody := strings.Repeat("SMALL_5c31 body line\n", 60)
+	writeSkillMD(t, root, "huge", "---\nname: huge\ndescription: fixture\n---\n"+hugeBody)
+	writeSkillMD(t, root, "small", "---\nname: small\ndescription: fixture\n---\n"+smallBody)
+	s, _, _ := newReloadSession(t, root, 100000, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_within_window", nil))
+	seedNumberedSessionHistory(t, s, 12)
+	plantOrdinaryRecord(t, s, root, "huge", true)
+	plantOrdinaryRecord(t, s, root, "small", true)
+	for i := range 40 {
+		plantPreloadRecord(t, s, fmt.Sprintf("bulk%02d", i), "bulk fixture description")
+	}
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{
+		{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    1,
+				Selection:     schema.SkillReloadSelection{State: "absent"},
+				PublicationID: "pub-within-reminder",
+			},
+		},
+		{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"huge", "small"}},
+				PublicationID: "pub-within-body",
+			},
+		},
+	}
+	s.mu.Unlock()
+	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if staged <= 0 {
+		t.Fatalf("the reminder turn was appended but preparation reported %d staged input tokens", staged)
+	}
+	if batch == nil || len(batch.Items) != 2 {
+		t.Fatalf("prepared batch = %+v, want both selected reloads", batch)
+	}
+	smallTokens := 0
+	for _, item := range batch.Items {
+		if skillContentIdentity(item).Name == "small" {
+			smallTokens = llm.EstimateMessagesInputTokens([]llm.Message{llm.User(item.Rendered.Content)}).Tokens
+		}
+	}
+	if smallTokens <= 0 {
+		t.Fatal("test setup: no small body prepared")
+	}
+	window := s.profile.ContextWindowSize()
+	base := window - staged - smallTokens - 200
+	budget := &llm.TokenBudget{InputTokens: base}
+	if err := s.admitCompactedSkillReloads(context.Background(), s.profile, budget, staged, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads: %v", err)
+	}
+	if got := reloadOutcomeForSkill(t, s, "huge"); got.Status != "failed" || got.ErrorCode != "context_budget" {
+		t.Fatalf("huge reload outcome = status %q code %q, want failed context_budget", got.Status, got.ErrorCode)
+	}
+	if got := reloadOutcomeForSkill(t, s, "small"); got.Status != "pending" {
+		t.Fatalf("small reload outcome = status %q code %q, want pending: the second body fits under the reserved window", got.Status, got.ErrorCode)
+	}
+	if want := base + staged + smallTokens; budget.InputTokens <= want {
+		t.Fatalf("running total after admission = %d, want more than %d: the rejection explanation's tokens must count against the same budget", budget.InputTokens, want)
+	}
+	if budget.InputTokens+1 >= window {
+		t.Fatalf("running total after admission = %d with rounding at window %d, want the complete staged request inside the window", budget.InputTokens, window)
+	}
+	carriers := 0
+	for _, state := range skillTurnStates(s) {
+		if len(state.Obligations) != 0 {
+			carriers++
+		}
+	}
+	if carriers != 1 {
+		t.Fatalf("admitted %d reload carriers, want exactly the small body's", carriers)
+	}
+}
+
 // TestSkillReload_Preload_OnlySelectionIsNoOp pins the preload rule: a
 // selection naming a preload-only inventory entry needs no disk load, admits
 // no body, records no outcome, and still consumes its receipt.
@@ -1004,7 +1260,7 @@ func TestSkillReloadReminder_CarriesDiscoveryDiagnostics(t *testing.T) {
 		},
 	}}
 
-	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
+	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	var reminder *schema.SkillReloadReminder
@@ -1078,7 +1334,7 @@ func TestSkillReloadReminder_ConsumesReceiptOnlyAfterDurableAdmission(t *testing
 	s.transcriptReady = true
 	s.mu.Unlock()
 
-	_, _, err = s.prepareCompactedSkillReloads(context.Background())
+	_, _, _, err = s.prepareCompactedSkillReloads(context.Background())
 	if err == nil {
 		t.Fatal("a reminder whose transcript write failed reported success")
 	}
@@ -1141,7 +1397,7 @@ func TestSkillReloadReminder_DurableReminderConsumedAtRestore(t *testing.T) {
 	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
 		t.Fatalf("the durable reminder left its handoff pending: %+v", handoffs)
 	}
-	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	batch, outcomes, _, err := s.prepareCompactedSkillReloads(context.Background())
 	if err != nil {
 		t.Fatalf("prepareCompactedSkillReloads after reconciliation: %v", err)
 	}
@@ -1227,7 +1483,7 @@ func TestSkillReloadReminder_FitFailureConsumesEarlierReminders(t *testing.T) {
 	}
 	s.mu.Unlock()
 
-	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
 		t.Fatal("the second reminder cannot fit the window; the preparation must fail visibly")
 	}
 	if got := countSkillReloadReminderTurns(s); got != 1 {
@@ -1239,7 +1495,7 @@ func TestSkillReloadReminder_FitFailureConsumesEarlierReminders(t *testing.T) {
 	}
 
 	// The retry must not re-append the reminder that was already admitted.
-	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
 		t.Fatal("the retained reminder still cannot fit the window")
 	}
 	if got := countSkillReloadReminderTurns(s); got != 1 {
@@ -1273,7 +1529,7 @@ func TestSkillReload_AdmittedCarrierWaitsForItsDurableObligation(t *testing.T) {
 	}}
 	s.mu.Unlock()
 
-	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	batch, outcomes, _, err := s.prepareCompactedSkillReloads(context.Background())
 	if err != nil {
 		t.Fatalf("prepareCompactedSkillReloads: %v", err)
 	}
@@ -1282,7 +1538,7 @@ func TestSkillReload_AdmittedCarrierWaitsForItsDurableObligation(t *testing.T) {
 	}
 
 	repair := breakSessionMetaPath(t, s)
-	err = s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, batch, outcomes)
+	err = s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, 0, batch, outcomes)
 	if err == nil {
 		t.Fatal("a failed admission save must surface an error")
 	}
@@ -1347,7 +1603,7 @@ func TestSkillReload_CarrierWriteFailureIsVisible(t *testing.T) {
 	}}
 	s.mu.Unlock()
 
-	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	batch, outcomes, _, err := s.prepareCompactedSkillReloads(context.Background())
 	if err != nil {
 		t.Fatalf("prepareCompactedSkillReloads: %v", err)
 	}
@@ -1356,7 +1612,7 @@ func TestSkillReload_CarrierWriteFailureIsVisible(t *testing.T) {
 	}
 	failSessionTranscript(t, s)
 
-	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, batch, outcomes); err == nil {
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, 0, batch, outcomes); err == nil {
 		t.Fatal("a failed carrier write must surface an error, not report a recorded body")
 	}
 	for _, state := range skillTurnStates(s) {
@@ -1394,7 +1650,7 @@ func TestSkillReload_FailedReloadNotificationWriteFailureIsVisible(t *testing.T)
 	s.mu.Unlock()
 	failSessionTranscript(t, s)
 
-	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
 		t.Fatal("a failed reload-failure notification write must fail the preparation visibly")
 	}
 }
@@ -1435,14 +1691,14 @@ func TestSkillReload_DuplicateSelectionsAdmitOneBody(t *testing.T) {
 	}
 	s.mu.Unlock()
 
-	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	batch, outcomes, _, err := s.prepareCompactedSkillReloads(context.Background())
 	if err != nil {
 		t.Fatalf("prepareCompactedSkillReloads: %v", err)
 	}
 	if batch == nil || len(batch.Items) != 2 {
 		t.Fatalf("test setup: prepared batch = %+v, want both selections", batch)
 	}
-	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, batch, outcomes); err != nil {
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, 0, batch, outcomes); err != nil {
 		t.Fatalf("admitCompactedSkillReloads: %v", err)
 	}
 
@@ -1508,7 +1764,7 @@ func TestSkillReload_IncompleteIdentitySelectionRetiresReceipt(t *testing.T) {
 	}
 	obligations := func() int { return len(lifecycleObligations(s)) }
 
-	batch, outcomes, err := s.prepareCompactedSkillReloads(context.Background())
+	batch, outcomes, _, err := s.prepareCompactedSkillReloads(context.Background())
 	if err != nil {
 		t.Fatalf("prepareCompactedSkillReloads: %v", err)
 	}
@@ -1516,7 +1772,7 @@ func TestSkillReload_IncompleteIdentitySelectionRetiresReceipt(t *testing.T) {
 		t.Fatalf("visible invalid_metadata notices after the first preparation = %d, want exactly one", notices())
 	}
 	if batch != nil {
-		if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, batch, outcomes); err != nil {
+		if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, 0, batch, outcomes); err != nil {
 			t.Fatalf("admitCompactedSkillReloads: %v", err)
 		}
 	}
@@ -1526,7 +1782,7 @@ func TestSkillReload_IncompleteIdentitySelectionRetiresReceipt(t *testing.T) {
 	after1, obligations1 := notices(), obligations()
 
 	// A later request must not re-process the retired selection.
-	if _, _, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
+	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
 		t.Fatalf("second prepareCompactedSkillReloads: %v", err)
 	}
 	if got := notices(); got != after1 {
