@@ -46,10 +46,19 @@
 #   EVENER_GOLANGCI_INSTALL_ATTEMPTS=1 scripts/ops/install-golangci-lint.sh
 #
 # EVENER_GOLANGCI_INSTALL_ATTEMPTS is the total number of attempts (default 3, a
-# positive integer). Backoff between them is 5s, then 10s, and so on.
+# positive integer). Backoff between them is EVENER_GOLANGCI_INSTALL_BACKOFF
+# seconds times the attempt number (default 5, so 5s then 10s), and each
+# attempt's own fetch retries EVENER_GOLANGCI_CURL_RETRIES times (default 3).
+#
+# EVENER_GOLANGCI_INSTALLER_URL is where install.sh is fetched from (default the
+# upstream raw URL). It is here so the failure paths can be tested against a
+# port that refuses connections: real curl, real refusal, no stubbed binaries
+# and no network. The three knobs above exist for the same reason -- a test that
+# waited out the default retries and backoff would be a slow test proving
+# nothing extra -- and a slow link is welcome to raise them.
 set -euo pipefail
 
-installer_url='https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh'
+installer_url="${EVENER_GOLANGCI_INSTALLER_URL:-https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh}"
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
@@ -57,6 +66,18 @@ repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 attempts=${EVENER_GOLANGCI_INSTALL_ATTEMPTS:-3}
 if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_ATTEMPTS must be a positive integer (got %q)\n' "$attempts" >&2
+	exit 2
+fi
+
+backoff=${EVENER_GOLANGCI_INSTALL_BACKOFF:-5}
+if [[ ! "$backoff" =~ ^[0-9]+$ ]]; then
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_INSTALL_BACKOFF must be a non-negative integer of seconds (got %q)\n' "$backoff" >&2
+	exit 2
+fi
+
+curl_retries=${EVENER_GOLANGCI_CURL_RETRIES:-3}
+if [[ ! "$curl_retries" =~ ^[0-9]+$ ]]; then
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_CURL_RETRIES must be a non-negative integer (got %q)\n' "$curl_retries" >&2
 	exit 2
 fi
 
@@ -75,7 +96,7 @@ bindir="$(go env GOPATH)/bin"
 # One pipeline, run either under the bound or directly, so the two paths cannot
 # drift apart. It runs under bash for pipefail, which is what makes a failed
 # fetch of install.sh part of the attempt.
-install_pipeline='set -o pipefail; curl -fsSL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 --retry-all-errors "$1" | sh -s -- -b "$2" "$3"'
+install_pipeline='set -o pipefail; curl -fsSL --connect-timeout 15 --max-time 300 --retry "$4" --retry-delay 2 --retry-all-errors "$1" | sh -s -- -b "$2" "$3"'
 
 evener_dev_bin="$repo_root/evener-dev"
 bounded_list_support=
@@ -100,7 +121,7 @@ bounded_list_available() {
 run_installer() {
 	if bounded_list_available; then
 		"$evener_dev_bin" dev bounded-list -timeout 300s -attempts 1 -grace 5s -- \
-			bash -c "$install_pipeline" install-golangci-lint "$installer_url" "$bindir" "v$version"
+			bash -c "$install_pipeline" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries"
 		return
 	fi
 	if [ "$announced_unbounded" -eq 0 ]; then
@@ -108,7 +129,7 @@ run_installer() {
 			"$evener_dev_bin" >&2
 		announced_unbounded=1
 	fi
-	bash -c "$install_pipeline" install-golangci-lint "$installer_url" "$bindir" "v$version"
+	bash -c "$install_pipeline" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries"
 }
 
 attempt=1
@@ -121,7 +142,7 @@ while :; do
 			"$version" "$attempts" >&2
 		exit 1
 	fi
-	delay=$((attempt * 5))
+	delay=$((attempt * backoff))
 	printf 'install-golangci-lint.sh: install attempt %s of %s failed; retrying in %ss.\n' \
 		"$attempt" "$attempts" "$delay" >&2
 	sleep "$delay"
