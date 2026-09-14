@@ -1972,6 +1972,9 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 type failReplayCopyWriteFS struct {
 	afero.Fs
 	failed atomic.Bool
+	// disarmed lets a later fold write its copies, so a test can run one fold
+	// that could not anchor and then one that can.
+	disarmed atomic.Bool
 }
 
 func (fs *failReplayCopyWriteFS) Create(name string) (afero.File, error) {
@@ -1996,7 +1999,7 @@ type failReplayCopyWriteFile struct {
 }
 
 func (file *failReplayCopyWriteFile) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte(`"context_replay":true`)) {
+	if bytes.Contains(p, []byte(`"context_replay":true`)) && !file.fs.disarmed.Load() {
 		file.fs.failed.Store(true)
 		return 0, errors.New("injected replay-copy write failure")
 	}
@@ -2483,5 +2486,75 @@ func TestFoldPublication_MarkersLandIndependently(t *testing.T) {
 	}
 	if steeringEntries != 1 {
 		t.Fatalf("steering entries in the transcript = %d, want 1 — the reload has to agree with the live stream", steeringEntries)
+	}
+}
+
+// A fold that could not anchor leaves the turns it meant to copy still
+// covered by nothing: their originals stand only because no marker discarded
+// them. The NEXT fold's marker does discard them — so unless that fold copies
+// them too, the turns are gone from every later resume. The pair log is what
+// tells a fold which turns those are, and pruning it at publish threw that
+// away before the copies had landed.
+func TestFoldPublication_TurnsAnUnanchoredFoldLeftBehindSurviveTheNextFold(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "unanchored-then-anchored-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failReplayCopyWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	compactErr := make(chan error, 1)
+	go func() { compactErr <- s.Compact(context.Background()) }()
+	<-entered
+	const recordedText = "turn recorded while the first fold was running"
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(recordedText))
+	s.recordTurn(turn, turn)
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact (unanchored): %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no replay copy write was attempted, so the first fold anchored")
+	}
+
+	// The second fold can write its copies, and its marker anchors — which is
+	// what discards everything before it.
+	faultFS.disarmed.Store(true)
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact (anchored): %v", err)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	seen := 0
+	for _, rt := range resumed {
+		if rt.Message.Text() == recordedText {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("the turn recorded during the un-anchored fold appears %d times in the resumed history, want exactly once", seen)
 	}
 }

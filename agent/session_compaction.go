@@ -228,9 +228,17 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// one (its revision check fails otherwise), so no older snapshot can
 	// need the pruned entries — and snapAppends >= persistedAppendLogBase
 	// for the same reason, since only publications advance the base.
-	rewriteTail := append([]schema.Turn(nil), s.persistedAppendLog[snapAppends-s.persistedAppendLogBase:]...)
-	s.persistedAppendLogBase += len(s.persistedAppendLog)
-	s.persistedAppendLog = nil
+	// Where this fold's rewrite starts. Ordinarily its own snapshot: the turns
+	// recorded while it ran are the ones its marker would discard. But a
+	// PREVIOUS fold that could not anchor left its own turns covered by
+	// nothing — they stand only because no marker discarded them — and this
+	// fold's marker is about to. So the rewrite reaches back to the earliest
+	// such turn and copies those too.
+	tailStart := snapAppends
+	if s.unanchoredAppendLog && s.unanchoredAppendFrom < tailStart {
+		tailStart = s.unanchoredAppendFrom
+	}
+	rewriteTail := append([]schema.Turn(nil), s.persistedAppendLog[tailStart-s.persistedAppendLogBase:]...)
 	if onPublishLocked != nil {
 		onPublishLocked(published)
 	}
@@ -300,6 +308,24 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		}
 	}
 	commit.commitTranscriptsLocked(tailComplete)
+	// The log is pruned HERE, not at publish: until the records are written
+	// there is nothing to say the copies landed, and a log pruned early is a
+	// set of turns the next fold's marker discards with no copy of them
+	// anywhere. A competing fold cannot publish in between — this transaction
+	// holds the transcript door across both — so pruning late keeps the
+	// wholesale rule the snapshot arithmetic relies on.
+	anchored := commit.anchoredNow == nil || commit.anchoredNow()
+	s.mu.Lock()
+	if anchored {
+		s.persistedAppendLogBase += len(s.persistedAppendLog)
+		s.persistedAppendLog = nil
+		s.unanchoredAppendLog = false
+		s.unanchoredAppendFrom = 0
+	} else if !s.unanchoredAppendLog {
+		s.unanchoredAppendLog = true
+		s.unanchoredAppendFrom = tailStart
+	}
+	s.mu.Unlock()
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v; this compaction was not anchored on disk, so a restart replays the transcript from before it", err)})
@@ -440,6 +466,13 @@ type foldCommit struct {
 	flush                        func()
 	resetEnvContextTrackerLocked func(bool)
 	publishedRevision            int
+	// anchoredNow reports what commitTranscriptsLocked found: this fold's
+	// marker is in the transcript, or the fold wrote no marker at all. Either
+	// way nothing of this fold's is missing, which is what lets the
+	// publication forget the turns it copied. Nil for a commit nobody staged —
+	// the probes that drive the transaction directly — which has no marker to
+	// be missing.
+	anchoredNow func() bool
 }
 
 func environmentTurnIDs(history []schema.Turn) map[string]int {
@@ -691,6 +724,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		}
 	}
 	commit := &foldCommit{foldID: foldID}
+	commit.anchoredNow = func() bool { return foldAnchored }
 	// Asked BEFORE anything is written, because the tail now goes down first:
 	// what matters is whether this fold HAS a replacement marker to write, not
 	// whether one landed. A marker whose write then fails leaves tagged copies
