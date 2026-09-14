@@ -196,10 +196,9 @@ func TestMaterializeEmbeddedSkills_DistinctContentDistinctDirs(t *testing.T) {
 	}
 }
 
-// A foreign or tampered occupant of the published name must never be adopted:
-// the content is verified against the digest, and the caller still gets a
-// readable private copy under the retained prefix, which the reaper ignores.
-func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsOccupied(t *testing.T) {
+// A file occupying the published name is healed: it is not a directory, so it is
+// removed and the name published into, rather than falling back forever.
+func TestMaterializeEmbeddedSkills_HealsOccupiedPublishedName(t *testing.T) {
 	base := t.TempDir()
 	fsys := sampleSkillFS()
 	digest, err := digestSkillsFS(fsys)
@@ -215,15 +214,11 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsOccupied(t *testi
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
-	defer os.RemoveAll(dir)
-	if dir == dest {
-		t.Fatalf("adopted the occupied name %q", dest)
-	}
-	if !strings.HasPrefix(filepath.Base(dir), retainedSkillsPrefix) {
-		t.Fatalf("fallback dir %q is not under the retained prefix", dir)
+	if dir != dest {
+		t.Fatalf("expected the occupied name to be healed, got %q want %q", dir, dest)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "sample", "SKILL.md")); err != nil {
-		t.Fatalf("fallback copy missing its skill: %v", err)
+		t.Fatalf("published copy missing its skill: %v", err)
 	}
 }
 
@@ -255,8 +250,9 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedCopyIsTampered(t *testi
 	}
 }
 
-// A symlinked occupant of the published name is not followed or overwritten.
-func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsSymlink(t *testing.T) {
+// A symlinked occupant of the published name is removed with the link, never
+// followed, and the name is published into.
+func TestMaterializeEmbeddedSkills_HealsSymlinkedPublishedName(t *testing.T) {
 	base := t.TempDir()
 	fsys := sampleSkillFS()
 	digest, err := digestSkillsFS(fsys)
@@ -273,16 +269,18 @@ func TestMaterializeEmbeddedSkills_FallsBackWhenPublishedNameIsSymlink(t *testin
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
-	defer os.RemoveAll(dir)
-	if dir == dest {
-		t.Fatalf("adopted the symlinked name %q", dest)
+	if dir != dest {
+		t.Fatalf("expected the symlinked name to be healed, got %q want %q", dir, dest)
 	}
 	info, err := os.Lstat(dest)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("symlink occupant was replaced: %v %v", info, err)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("published name is not a real directory: %v %v", info, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "sample", "SKILL.md")); err != nil {
-		t.Fatalf("fallback copy missing its skill: %v", err)
+		t.Fatalf("published copy missing its skill: %v", err)
+	}
+	if entries, err := os.ReadDir(target); err == nil && len(entries) != 0 {
+		t.Fatalf("symlink target was written through: %v", entries)
 	}
 }
 
@@ -377,6 +375,21 @@ func TestReapStaleCopies_RemovesAbandonedAndSuperseded(t *testing.T) {
 		if _, err := os.Stat(keep); err != nil {
 			t.Fatalf("%s was reaped: %v", keep, err)
 		}
+	}
+}
+
+func TestReapStaleCopies_HealsSquatterOfCurrentDigest(t *testing.T) {
+	base := t.TempDir()
+	digest := strings.Repeat("a", sha256.Size*2)
+	path := filepath.Join(base, embeddedSkillsPrefix+digest)
+	if err := os.WriteFile(path, []byte("squatting"), 0o600); err != nil {
+		t.Fatalf("create squatter: %v", err)
+	}
+
+	reapStaleCopies(base, time.Now(), digest, "")
+
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("squatter of the current digest survived: %v", err)
 	}
 }
 

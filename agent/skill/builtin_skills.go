@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,9 +44,10 @@ const (
 	staleStagingMaxAge = 24 * time.Hour
 	// staleRetainedMaxAge is how long a retained fallback copy, a superseded
 	// published directory, or a randomized fallback base is left before a later
-	// publish reaps it. It is much longer than the staging age because a live
-	// process may still be reading a copy it resolved for its own lifetime.
-	staleRetainedMaxAge = 7 * 24 * time.Hour
+	// publish reaps it. It is deliberately long: a process that resolves a copy
+	// once and keeps reading it refreshes mtime only when it resolves again, so
+	// the age is a use signal, not a hard lifetime.
+	staleRetainedMaxAge = 30 * 24 * time.Hour
 )
 
 // embeddedSkillsCache holds the published bundled-skills directory, the digest
@@ -141,12 +144,14 @@ func cacheDirExists(dir string) bool {
 	return err == nil && info.IsDir()
 }
 
-// touchDir refreshes a cache directory's modification time, so the reaper can
-// tell a directory a live process keeps resolving from one nobody uses. The
-// mtime does not otherwise change when skills are read.
+// touchDir refreshes a cache directory's modification time, and its base's, so
+// the reaper can tell a directory a live process keeps resolving from one
+// nobody uses. The mtime does not otherwise change when skills are read, and a
+// randomized fallback base is aged by its own mtime.
 func touchDir(dir string) {
 	now := time.Now()
 	_ = os.Chtimes(dir, now, now)
+	_ = os.Chtimes(filepath.Dir(dir), now, now)
 }
 
 // defaultEmbeddedSkillsBaseDir returns the private per-user directory the cache
@@ -293,21 +298,25 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, err
 // rather than failing the caller, because the caller having its bundled skills
 // matters more than where they came from.
 func retainStagedCopy(staging, base, digest string, keepStaging *bool) (string, string) {
-	placeholder, err := os.MkdirTemp(base, retainedSkillsPrefix+"*")
-	if err != nil {
-		*keepStaging = true
-		return staging, digest
+	// Renaming onto a fresh random name avoids the placeholder race and works
+	// where a rename cannot replace an existing directory.
+	for range 8 {
+		candidate := filepath.Join(base, retainedSkillsPrefix+randomToken())
+		if err := os.Rename(staging, candidate); err == nil {
+			return candidate, digest
+		}
 	}
-	// MkdirTemp reserved a unique name; swap the empty directory for the copy.
-	_ = os.Remove(placeholder)
-	if err := os.Rename(staging, placeholder); err != nil {
-		// Some platforms refuse to replace even an empty directory, so clear the
-		// placeholder rather than leaking it.
-		_ = os.Remove(placeholder)
-		*keepStaging = true
-		return staging, digest
+	*keepStaging = true
+	return staging, digest
+}
+
+// randomToken returns a short random name component for a retained copy.
+func randomToken() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
 	}
-	return placeholder, digest
+	return hex.EncodeToString(b[:])
 }
 
 // cacheDirUsable reports whether a cached directory still holds the content it
@@ -344,6 +353,15 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 		if !ok {
 			continue
 		}
+		if rest == keepDigest {
+			if entry.IsDir() {
+				continue
+			}
+			// A file or symlink squatting the name this process needs is removed
+			// at once, whatever its age, so the next publish can take the name.
+			_ = os.Remove(path)
+			continue
+		}
 		var maxAge time.Duration
 		switch {
 		case strings.HasPrefix(rest, "stage-"):
@@ -351,9 +369,6 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 		case strings.HasPrefix(rest, "copy-"):
 			maxAge = staleRetainedMaxAge
 		case len(rest) == sha256.Size*2:
-			if rest == keepDigest {
-				continue
-			}
 			maxAge = staleRetainedMaxAge
 		default:
 			continue
@@ -439,12 +454,12 @@ func digestSkillsFS(fsys fs.FS) (string, error) {
 			return err
 		}
 		_, _ = fmt.Fprintf(sum, "%s\x00%d\x00", path, info.Size())
-		// Read at most the size the entry declared, so a file that grows or
-		// misreports its size cannot push the read past the total bound, and a
-		// file that no longer matches its own size is not the copy this is
-		// trying to recognize. Closed here rather than deferred so each file is
-		// released before the walk moves on.
-		read, err := io.Copy(sum, io.LimitReader(file, info.Size()))
+		// Read one byte past the size the entry declared: a file that grew after
+		// the size was read would otherwise have its original prefix hashed and
+		// still compare equal, and a file that no longer matches its own size is
+		// not the copy this is trying to recognize. Closed here rather than
+		// deferred so each file is released before the walk moves on.
+		read, err := io.Copy(sum, io.LimitReader(file, info.Size()+1))
 		if closeErr := file.Close(); err == nil {
 			err = closeErr
 		}
