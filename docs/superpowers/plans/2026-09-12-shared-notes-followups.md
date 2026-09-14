@@ -8,12 +8,13 @@ were deliberately left out of it.
 
 Closed on `shared-notes-followups` (PR #1249) unless noted; hashes are on that branch.
 
-- **1** — fixed in `99fb9b8089`, hardened in `0ce49e706` and `01d2c0782`: the per-row Remove button
-  is disabled while its request is pending, the handler checks a synchronous ref so two clicks
-  inside one tick fire a single request, and the row stays pending until the `evener/urls/updated`
-  push removes the entry from `model.sessionUrls` (a failed request releases it so a retry still
-  reaches the wire). The finding's other half — treating an entry already absent from
-  `model.sessionUrls` as a successful removal — is still not implemented; see the item below.
+- **1** — fixed in `99fb9b8089`, completed in `0ce49e706` and `802276a97`: the per-row Remove button
+  is disabled while its request is pending and the handler checks a synchronous ref, so two clicks
+  inside one tick fire a single request. The finding's other half is implemented as well: a removal
+  the server answers with "no URL entry with id" reads as success, because the outcome the user
+  asked for is already true. An intermediate version held the guard until the `evener/urls/updated`
+  push; roborev's fourth round showed that wedged a row whose id another client re-added before the
+  push landed, so the guard is released when the request settles instead.
 - **2, 7** — fixed in `24a4a433c3` (merged in `fe3c249fc0`): the delayed save samples the instance
   identity inside `save()` after hydration, so a rotation the client has already observed saves
   against the current instance. The daemon's `ExpectedInstanceID` fence remains the authority.
@@ -58,12 +59,10 @@ surfaces a spurious "Couldn't remove link" toast. Disable the per-row button whi
 pending, and treat an entry that is already absent from `model.sessionUrls` as success rather than
 an error.
 
-Implemented as the button guard only: the row is disabled while its request is pending (and a
-synchronous ref keeps two clicks in one tick to one request), so the reported double-click symptom
-cannot occur. The absent-entry half was not implemented: `threadsStore.removeURL` still dispatches
-unconditionally and surfaces an unknown-id error, which is honest for an entry another client
-removed but does show a toast for an outcome the user wanted. Recorded here rather than claimed in
-the Status section.
+Implemented in both halves: the row is disabled while its request is pending (and a synchronous ref
+keeps two clicks in one tick to one request), and a removal the server answers with "no URL entry
+with id" reads as success rather than the spurious "Couldn't remove link" toast, since the entry is
+already gone and the user's intent is satisfied.
 
 ## 2. Stale `expectedInstanceId` at debounce schedule time (Medium)
 
