@@ -188,3 +188,63 @@ func TestListBuildFlagsFailsWhenItsAnswerCannotBeDelivered(t *testing.T) {
 		t.Fatalf("stderr = %q, want the flag that could not be written", got)
 	}
 }
+
+// TestEveryBuildFlagIsAccountedFor closes the class the tables above are one
+// answer to. It reads `go help build` from the toolchain in use and fails when
+// a flag that takes a value is not consumed with its value -- the `-run -race`
+// family of bugs -- or when a flag that changes what `go list` selects is not
+// forwarded.
+//
+// The selection list is written here rather than derived, because "changes
+// which packages or files exist" is a judgement about each flag and not
+// something the help text says. A flag a later toolchain adds fails this test
+// until someone makes that judgement: -workfile and -godebug are the two go
+// has grown recently, and neither exists on go1.27.0 -- `go list
+// -workfile=...` answers `flag provided but not defined`.
+func TestEveryBuildFlagIsAccountedFor(t *testing.T) {
+	t.Parallel()
+	// Every build flag whose value decides which packages or files exist.
+	selects := map[string]bool{
+		"-tags": true, "-overlay": true, "-mod": true, "-modfile": true,
+		"-compiler": true, "-race": true, "-msan": true, "-asan": true,
+	}
+	consumed := func(name string) bool {
+		return goTestValueFlags[name] || packageSelectionValueFlags[name]
+	}
+	forwarded := func(name string) bool {
+		return packageSelectionValueFlags[name] || packageSelectionBareFlags[name]
+	}
+
+	cmd := exec.Command("go", "help", "build")
+	cmd.Env = fixtureToolchainEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go help build: %v", err)
+	}
+	seen := 0
+	for line := range strings.Lines(string(out)) {
+		if !strings.HasPrefix(line, "\t") {
+			continue
+		}
+		field := strings.Fields(line)
+		if len(field) == 0 || !strings.HasPrefix(field[0], "-") || strings.Contains(field[0], "=") {
+			continue // prose, or a spelling with its value written in
+		}
+		name, takesValue := field[0], len(field) > 1
+		seen++
+		if takesValue && !consumed(name) {
+			t.Errorf("%s takes a value and no table consumes it: the word after it would be read as a flag of its own", name)
+		}
+		if selects[name] && !forwarded(name) {
+			t.Errorf("%s changes what `go list` selects and is not forwarded: the enumeration would see a different tree from the one the tests are built for", name)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("go help build listed no flags; the parser is broken, not the toolchain")
+	}
+	for name := range selects {
+		if !forwarded(name) {
+			t.Errorf("%s is named here as selecting packages but is in no forwarding table", name)
+		}
+	}
+}

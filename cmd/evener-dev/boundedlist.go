@@ -146,8 +146,20 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		result.interrupted = latch.receive(received)
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v — stopping %s.\n", received, argv[0])
 	case <-time.After(timeout):
-		if finished, err := finishedFirst(reaped, waited); finished {
-			return completed(err)
+		// The command may have exited already and be draining: Wait returns
+		// only once the copiers are done, so the bound can expire against a
+		// command that has decided. Give the drain the grace the stop would
+		// have taken, before anything is sent -- if the wait returns in it,
+		// nothing needed stopping and the command's own answer stands, with no
+		// timeout for the runner to retry.
+		//
+		// Before the stop, and only there. A child that answers our SIGTERM by
+		// exiting 0 exited because we asked, and calling that its own decision
+		// would report a killed run as a success.
+		select {
+		case <-reaped:
+			return completed(waited.err())
+		case <-time.After(grace):
 		}
 		result.timedOut = true
 	}
@@ -171,18 +183,6 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 			result.exitCode = 128 + int(result.interrupted)
 		}
 		return result
-	}
-	if result.interrupted == 0 && finishedOnItsOwn(cmd.ProcessState, result.interrupted) {
-		// The bound expired while the command was already finishing: Wait
-		// reaps the process first and drains the copiers after, so the clock
-		// can run out against a command that had decided. Its own status says
-		// which happened, and a command that decided is not a timeout.
-		//
-		// Only on this path. An interrupted run is interrupted whatever the
-		// command did next: a child that answers SIGHUP by exiting cleanly
-		// exited because the operator said so, and reporting its 0 would call
-		// that run a success.
-		return completed(waited.err())
 	}
 	if !stopSurvivors(realGroupStopper, cmd.Path, result.pgid, grace, guarded) {
 		result.stuck = true
@@ -233,22 +233,6 @@ func finishedFirst(reaped <-chan struct{}, waited *waitResult) (bool, error) {
 	default:
 		return false, nil
 	}
-}
-
-// finishedOnItsOwn reports whether the command decided its own fate rather
-// than being stopped here: an exit status is its own answer, and so is a death
-// by a signal this helper did not send. Only a death by our SIGTERM or SIGKILL
-// -- or no status at all -- means the bound, or the interrupt, is what ended
-// it.
-func finishedOnItsOwn(state *os.ProcessState, sent syscall.Signal) bool {
-	if state == nil {
-		return false
-	}
-	sig, killed := procgroup.DiedOfSignal(state)
-	if !killed {
-		return state.Exited()
-	}
-	return sig != syscall.SIGTERM && sig != syscall.SIGKILL && sig != sent
 }
 
 // reapOrGiveUp waits for the reap that the stop above should have produced,
