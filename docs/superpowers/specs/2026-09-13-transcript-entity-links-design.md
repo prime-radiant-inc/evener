@@ -174,6 +174,17 @@ to the source stores nor flatten the tree. A separately mounted
 `TranscriptBody` owns its own derivation. The map is memoized over the session
 ref, retained tree, delegate projection, watch-fold key, and stale/ended state.
 
+**Decision (2026-09-14, Jesse):** the derived index is owned per transcript
+body, not shared across bodies mounted for the same ref. An earlier draft of
+this section asked for "one index per `(ref, retained tree, delegates[])`",
+which would have required a cross-body cache; that cache is deliberately not
+built. It existed to protect three properties, all of which hold per body: no
+`EntityRef` flattens the tree or subscribes to a source store, the derivation
+is memoized so prose-only deltas do not rebuild it, and the watch fold re-runs
+only on its real inputs. Two bodies for one ref therefore derive the same
+content independently rather than sharing one instance. Revisit if a second
+concurrent body for the same ref ever becomes a real mount.
+
 The watch fold keys on its actual inputs, not on the turns array: `ThreadModel`
 has no turns version, and agent prose deltas replace that array, so keying on it
 would re-fold every loaded `job_watch` result on each delta. Key on the ordered
