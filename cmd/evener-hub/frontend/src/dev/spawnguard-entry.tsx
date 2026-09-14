@@ -120,6 +120,10 @@ if (new URLSearchParams(window.location.search).has("onboarding")) {
     credentialRequired: true,
     authModes: ["apiKey"],
     baseUrl: "https://provider.example/v1",
+    // A real listing gives a destination its endpoint fingerprint (the hub keys
+    // one unless it cannot). The onboarding check asserts it, so without it the
+    // flow refuses the check and never exposes Continue.
+    endpointFingerprint: "fp-provider",
   };
   fake.on("evener/instance/list", () => {
     const row = { ...setup, activeSource: saved ? "store" : "none", hasStoredFile: saved };
