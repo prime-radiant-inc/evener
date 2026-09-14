@@ -1027,8 +1027,11 @@ func TestBoundedAttemptSaysWhenTheGroupRefusedTheStop(t *testing.T) {
 	if got := stderr.String(); !strings.Contains(got, "stopping sh's process group") || !strings.Contains(got, syscall.EPERM.Error()) {
 		t.Fatalf("stderr = %q, want the refused stop named with what the kernel said", got)
 	}
-	if !result.timedOut {
-		t.Fatalf("timedOut = false: the stop was made, refused or not; stderr = %q", stderr.String())
+	// Not a timeout: the stop reached nothing, and the command exited with a
+	// status of its own while it was being refused.
+	if result.timedOut || result.exitCode != 0 {
+		t.Fatalf("timedOut = %v and exitCode = %d, want the command's own answer: every signal this stop made was refused; stderr = %q",
+			result.timedOut, result.exitCode, stderr.String())
 	}
 }
 

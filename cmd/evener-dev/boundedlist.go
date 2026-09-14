@@ -224,7 +224,13 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// between the check above and the signal -- and then the enumeration did
 	// finish, whatever was left running in its group. Sweeping that is
 	// cleanup, not a reason to run the whole thing again.
-	if endedOnItsOwnTerms(cmd.ProcessState, result.interrupted) {
+	//
+	// On the bound's path only. An interrupt is an answer about the run rather
+	// than about the command, and a command that exited because this helper
+	// passed the operator's signal on to it has not produced one to prefer:
+	// a `go list` that trapped the signal and exited 0 wrote a list that stops
+	// wherever the signal found it, and 0 would tell the gate it was whole.
+	if result.interrupted == 0 && endedOnItsOwnTerms(cmd.ProcessState) {
 		return completed(waited.err())
 	}
 	result.timedOut = bounded
@@ -245,15 +251,16 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 }
 
 // endedOnItsOwnTerms reports whether the leader produced the command's answer
-// rather than dying of a signal this attempt sent it. An exit status is its
-// own answer by definition, and so is a death by a signal this helper never
-// sent -- a compiler killed by the OOM killer has said something about the
-// run, and it is not a timeout.
+// rather than dying of the stop this attempt made. It is asked on the bound's
+// path, where the only signals this attempt sends are TERM and KILL: an exit
+// status is the command's own answer, and so is a death by any other signal --
+// a compiler killed by the OOM killer has said something about the run, and it
+// is not a timeout to retry.
 //
 // A leader killed by someone else's TERM or KILL in the same moment is read as
 // this attempt's doing: a wait status does not say who sent the signal, and the
 // other reading would report a stopped enumeration as a finished one.
-func endedOnItsOwnTerms(state *os.ProcessState, forwarded syscall.Signal) bool {
+func endedOnItsOwnTerms(state *os.ProcessState) bool {
 	if state == nil {
 		// Not reaped, so nothing it did can be read: the caller's own give-up
 		// path owns this, and it is a timeout.
@@ -263,11 +270,7 @@ func endedOnItsOwnTerms(state *os.ProcessState, forwarded syscall.Signal) bool {
 	if !killed {
 		return true
 	}
-	switch sig {
-	case syscall.SIGTERM, syscall.SIGKILL:
-		return false
-	}
-	return sig != forwarded
+	return sig != syscall.SIGTERM && sig != syscall.SIGKILL
 }
 
 // waitResult is where the wait goroutine publishes the command's own answer.
