@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 
@@ -242,4 +243,12 @@ func failAppendN(jm *jobManager, kind jobstore.EventKind, n int) *atomic.Int32 {
 		return orig(e)
 	}
 	return &attempts
+}
+
+// withoutPairID drops the in-process pair identity schema.Turn mints and never
+// serializes (PairID, json:"-"), so a live turn and the entry it was written
+// as can be compared for everything the transcript actually keeps.
+func withoutPairID(turn schema.Turn) schema.Turn {
+	turn.PairID = 0
+	return turn
 }

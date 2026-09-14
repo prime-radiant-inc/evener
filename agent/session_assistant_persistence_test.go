@@ -73,7 +73,9 @@ func TestDelegateAttention_FsyncReadbackAmbiguityRetainsAndRepairsExactResidentT
 	sess.mu.Lock()
 	resident := append([]schema.Turn(nil), sess.history...)
 	sess.mu.Unlock()
-	if len(resident) != 1 || !reflect.DeepEqual(resident[0], want) {
+	// The durable turn was decoded from the file, so it carries no PairID —
+	// that identity names a turn in this process (schema.Turn, json:"-").
+	if len(resident) != 1 || !reflect.DeepEqual(withoutPairID(resident[0]), withoutPairID(want)) {
 		t.Fatalf("resident attention after ambiguous readback = %#v, want exact durable turn %#v", resident, want)
 	}
 
@@ -87,7 +89,9 @@ func TestDelegateAttention_FsyncReadbackAmbiguityRetainsAndRepairsExactResidentT
 	sess.mu.Lock()
 	resident = append([]schema.Turn(nil), sess.history...)
 	sess.mu.Unlock()
-	if len(resident) != 1 || !reflect.DeepEqual(resident[0], want) {
+	// The durable turn was decoded from the file, so it carries no PairID —
+	// that identity names a turn in this process (schema.Turn, json:"-").
+	if len(resident) != 1 || !reflect.DeepEqual(withoutPairID(resident[0]), withoutPairID(want)) {
 		t.Fatalf("repaired resident attention = %#v, want exact durable turn %#v", resident, want)
 	}
 }
