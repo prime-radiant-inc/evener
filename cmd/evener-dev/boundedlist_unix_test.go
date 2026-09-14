@@ -837,7 +837,7 @@ func TestBoundedAttemptTakesTheExitThatRacedTheBound(t *testing.T) {
 
 // withStopperStub replaces the process-group half of an attempt for the length
 // of one test, leaving the rest of the attempt real.
-func withStopperStub(t *testing.T, stop func(int, syscall.Signal, <-chan struct{}, time.Duration) bool) {
+func withStopperStub(t *testing.T, stop func(int, syscall.Signal, <-chan struct{}, time.Duration) (bool, error)) {
 	t.Helper()
 	original := realGroupStopper
 	t.Cleanup(func() { realGroupStopper = original })
@@ -847,11 +847,13 @@ func withStopperStub(t *testing.T, stop func(int, syscall.Signal, <-chan struct{
 }
 
 // reapedBeforeTheStop stands in for a stop that found the child already gone:
-// it waits for the reap the real one would have seen, and reports that it sent
-// the group nothing.
-func reapedBeforeTheStop(_ int, _ syscall.Signal, reaped <-chan struct{}, _ time.Duration) bool {
+// it waits for the reap the real one would have seen, and reports that it
+// stopped nothing. The real stop answers this way twice over -- the reap
+// beating the check, and the group answering ESRCH when the signal goes out --
+// and the attempt cannot tell those apart, which is the point of the answer.
+func reapedBeforeTheStop(_ int, _ syscall.Signal, reaped <-chan struct{}, _ time.Duration) (bool, error) {
 	<-reaped
-	return false
+	return false, nil
 }
 
 func TestBoundedListKeepsTheStatusOfACommandThatExitedAsTheBoundLanded(t *testing.T) {
@@ -1005,5 +1007,86 @@ func TestBoundedListTakesASignalThatLandsWhileItHandsOverTheOutput(t *testing.T)
 	// about the run, not what the command produced.
 	if got := stdout.buf.String(); got != "listed\n" {
 		t.Fatalf("stdout = %q, want the command's output", got)
+	}
+}
+
+func TestBoundedAttemptSaysWhenTheGroupRefusedTheStop(t *testing.T) {
+	// EPERM on a group this process does not own all of is the one kill error
+	// worth a line: the stop went out, and the group may still be there. It
+	// cannot be produced from a test without signalling a group nobody here
+	// owns, so it is injected.
+	withStopperStub(t, func(_ int, _ syscall.Signal, _ <-chan struct{}, _ time.Duration) (bool, error) {
+		return true, syscall.EPERM
+	})
+	var stderr bytes.Buffer
+	// The bound fires while the command runs, and the command then exits on
+	// its own -- the stub sends nothing, so nothing else could have ended it.
+	result := runBoundedAttempt([]string{"sh", "-c", "sleep 0.3"}, 100*time.Millisecond, 5*time.Second, &stderr, nil)
+	if got := stderr.String(); !strings.Contains(got, "stopping sh's process group") || !strings.Contains(got, syscall.EPERM.Error()) {
+		t.Fatalf("stderr = %q, want the refused stop named with what the kernel said", got)
+	}
+	if !result.timedOut {
+		t.Fatalf("timedOut = false: the stop was made, refused or not; stderr = %q", stderr.String())
+	}
+}
+
+func TestSignalLatchSettleTakesASignalThatLandedAfterTheLastLook(t *testing.T) {
+	// The window this closes: the run takes its last look, a signal lands, and
+	// the run returns -- at which point signal.Stop discards it and the run
+	// reports the command's own status for work the operator stopped. settle
+	// stops delivery before it looks, so there is no later signal to lose.
+	signals := make(chan os.Signal, 1)
+	latch := &signalLatch{ch: signals}
+	if sig := latch.poll(); sig != 0 {
+		t.Fatalf("poll = %v before anything was sent", sig)
+	}
+	signals <- syscall.SIGHUP
+	if sig := latch.settle(); sig != syscall.SIGHUP {
+		t.Fatalf("settle = %v, want the signal that landed after the last look", sig)
+	}
+	// It keeps answering with it, and stopping delivery twice is allowed --
+	// which is what leaves the caller's own deferred signal.Stop a no-op.
+	if sig := latch.settle(); sig != syscall.SIGHUP {
+		t.Fatalf("second settle = %v, want the latched signal", sig)
+	}
+	if sig := (*signalLatch)(nil).settle(); sig != 0 {
+		t.Fatalf("settle on no latch = %v, want none", sig)
+	}
+}
+
+func TestEndCopyingJoinsTheCopiersAndReleasesOneItCannotJoin(t *testing.T) {
+	// Joined: the copying is done, so the writer it was given stays attached
+	// and the attempt's own last words still reach the caller.
+	var joined bytes.Buffer
+	attached := &serialWriter{w: &joined}
+	finished := make(chan struct{})
+	close(finished)
+	endCopying(&outputPipes{}, finished, attached, 10*time.Second)
+	if _, err := attached.Write([]byte("still attached\n")); err != nil {
+		t.Fatalf("writing through a joined attempt's writer: %v", err)
+	}
+	if joined.String() != "still attached\n" {
+		t.Fatalf("stderr = %q, want the writer left attached when the copiers finished", joined.String())
+	}
+
+	// Stuck: a copier inside a write that has not returned cannot be joined,
+	// so after the grace the writer is detached and the next attempt's
+	// diagnostics are the only ones the caller sees.
+	var stalled bytes.Buffer
+	detached := &serialWriter{w: &stalled}
+	grace := 200 * time.Millisecond
+	start := time.Now()
+	endCopying(&outputPipes{}, make(chan struct{}), detached, grace)
+	if elapsed := time.Since(start); elapsed < grace {
+		t.Fatalf("endCopying returned in %s, without waiting out the join", elapsed)
+	}
+	n, err := detached.Write([]byte("from a copier the next attempt does not own\n"))
+	if err != nil || n == 0 {
+		// Reported as written on purpose: a copier told its write failed goes
+		// round the loop again rather than ending.
+		t.Fatalf("a released writer answered %d, %v; want the bytes reported as taken", n, err)
+	}
+	if stalled.Len() != 0 {
+		t.Fatalf("stderr = %q: a released writer passed bytes to the caller", stalled.String())
 	}
 }

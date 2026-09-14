@@ -32,15 +32,17 @@ func Kill(pgid int) {
 // child, and the caller's Wait has already accounted for that child.
 func Exists(int) bool { return false }
 
-// Stop reports whether the child was signalled, the same question the unix
-// build answers: false when there was nothing to signal.
-func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) bool {
+// Stop reports whether the child was stopped by this call, the same question
+// the unix build answers: false when there was nothing to signal. The error is
+// what the kill refused with, and os.Process.Kill does not distinguish a
+// process that was already gone, so a stop here never reports one.
+func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) (bool, error) {
 	if pgid <= 0 {
-		return false
+		return false, nil
 	}
 	select {
 	case <-reaped:
-		return false
+		return false, nil
 	default:
 	}
 	Terminate(pgid)
@@ -48,12 +50,12 @@ func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) bool {
 	case <-reaped:
 	case <-time.After(grace):
 	}
-	return true
+	return true, nil
 }
 
 // StopWith has no signal to forward on a platform with one way to stop a
 // process, so it is Stop.
-func StopWith(pgid int, _ syscall.Signal, reaped <-chan struct{}, grace time.Duration) bool {
+func StopWith(pgid int, _ syscall.Signal, reaped <-chan struct{}, grace time.Duration) (bool, error) {
 	return Stop(pgid, reaped, grace)
 }
 

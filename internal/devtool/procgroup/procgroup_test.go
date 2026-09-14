@@ -329,3 +329,40 @@ func TestTheGroupSignalsRefuseAPgidThatIsNotAGroup(t *testing.T) {
 		}
 	}
 }
+
+// noSuchGroup is a group id no kernel can hand out: darwin's default pid
+// ceiling is 99999 and Linux's highest possible pid_max is 4194304, so a
+// signal aimed here has nowhere to go by construction -- which is what makes
+// it safe to aim one. Measured on darwin: kill(-1<<30, sig) answers ESRCH for
+// signal 0 and for SIGTERM, not EINVAL.
+const noSuchGroup = 1 << 30
+
+// TestStopWithReportsAGroupThatWasGoneBeforeTheSignal pins the difference
+// between a stop and a signal that found nothing. The caller's next move
+// depends on it: a child this stop killed is 128+signal, and a child that was
+// already gone is whatever it exited with.
+func TestStopWithReportsAGroupThatWasGoneBeforeTheSignal(t *testing.T) {
+	// Never closed: the reap this stop is about to send its caller to read has
+	// not happened, so the wait below is the grace, in full.
+	never := make(chan struct{})
+	grace := 200 * time.Millisecond
+	start := time.Now()
+	stopped, err := StopWith(noSuchGroup, syscall.SIGTERM, never, grace)
+	elapsed := time.Since(start)
+	if stopped {
+		t.Error("StopWith reported a stop of a group that was not there to stop")
+	}
+	if err != nil {
+		t.Errorf("StopWith err = %v; a group that is gone is an answer, not a refusal", err)
+	}
+	if elapsed < grace {
+		t.Errorf("StopWith returned in %s, before waiting out the reap its caller needs", elapsed)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("StopWith took %s: the wait for that reap is bounded by the grace", elapsed)
+	}
+	// And the same through Stop, which is where the lint runner's stops go.
+	if stopped, err := Stop(noSuchGroup, never, 50*time.Millisecond); stopped || err != nil {
+		t.Errorf("Stop = %v, %v; want no stop reported and no refusal", stopped, err)
+	}
+}

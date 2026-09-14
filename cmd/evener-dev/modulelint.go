@@ -260,7 +260,11 @@ func (l *lintRun) runWave(logdir string, first, last int, statuses []int) waveEn
 				continue
 			default:
 			}
-			go procgroup.Stop(c.pgid, c.reaped, l.grace)
+			// The stop's answer is discarded here: the wave is already
+			// ending, nothing downstream acts on a refused stop, and this
+			// run's writers belong to the loop below, which is still using
+			// them.
+			go func(c child) { _, _ = procgroup.Stop(c.pgid, c.reaped, l.grace) }(c)
 		}
 	}
 	if end.vanished || end.lost != "" {

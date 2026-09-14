@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -86,11 +87,10 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 		_, _ = fmt.Fprintf(guarded, "bounded-list: %v\n", err)
 		return attemptResult{err: err, exitCode: 1}
 	}
-	// Whatever ends this attempt, the pipes' read ends are closed with it: a
-	// survivor still holding a write end would otherwise keep a copier alive,
-	// and that copier writes into the stderr the next attempt is using.
-	defer feeds.closeReads()
 	drained := feeds.copyInto(&out, guarded)
+	// Whatever ends this attempt, its copying ends with it: a copier left
+	// running writes into the stderr the next attempt is reporting through.
+	defer endCopying(feeds, drained, guarded, grace)
 	// The child leads its own group, so the group id is its pid.
 	result := attemptResult{pgid: cmd.Process.Pid}
 	// The wait publishes its answer before it says the child is gone, so
@@ -184,9 +184,16 @@ func runBoundedAttempt(argv []string, timeout, grace time.Duration, stderr io.Wr
 	// whose pid may already belong to someone else. The stop is the last place
 	// that window can be closed, and it says which side of it the reap landed
 	// on.
-	if !realGroupStopper.stop(result.pgid, result.interrupted, reaped, grace) {
-		// The command exited between the check above and the stop, so nothing
-		// was sent to its group: this is the command's own answer, and 124 or
+	stopped, stopErr := realGroupStopper.stop(result.pgid, result.interrupted, reaped, grace)
+	if stopErr != nil {
+		// A signal the kernel refused -- EPERM on a group this process does
+		// not own all of -- is why the group below may still be there.
+		_, _ = fmt.Fprintf(guarded, "bounded-list: stopping %s's process group: %v\n", argv[0], stopErr)
+	}
+	if !stopped {
+		// Nothing was sent to the group: the command exited between the check
+		// above and the stop, or its group was gone by the time the signal
+		// went out. Either way this is the command's own answer, and 124 or
 		// 128+signal would name a death this helper did not cause. A latched
 		// interrupt still ends the run -- the runner starts no further attempt
 		// -- it just no longer decides the status.
@@ -286,7 +293,7 @@ func reapOrGiveUp(reaped <-chan struct{}, grace time.Duration, name string, stde
 // it has already returned, and the next thing this helper would otherwise do
 // is start more work the sender asked it to stop doing.
 type signalLatch struct {
-	ch   <-chan os.Signal
+	ch   chan os.Signal
 	held syscall.Signal
 }
 
@@ -315,6 +322,29 @@ func (l *signalLatch) receive(s os.Signal) syscall.Signal {
 		}
 	}
 	return l.held
+}
+
+// settle is the run's last look at the signals, and the only one that cannot
+// miss one. Delivery is stopped first, so nothing more can arrive, and then
+// everything already delivered is taken: a signal that lands between a poll
+// and the end of the run has nowhere to be noticed, because signal.Stop
+// discards whatever is still in the channel. Stopping delivery twice is
+// allowed, so the caller's own deferred Stop is left with nothing to do.
+func (l *signalLatch) settle() syscall.Signal {
+	if l == nil {
+		return 0
+	}
+	if l.ch != nil {
+		signal.Stop(l.ch)
+	}
+	for {
+		select {
+		case s := <-l.ch:
+			l.receive(s)
+		default:
+			return l.held
+		}
+	}
 }
 
 // poll takes a signal that arrived since anyone last looked, and keeps
@@ -492,18 +522,54 @@ func awaitDrain(drained <-chan struct{}, grace time.Duration, latch *signalLatch
 	}
 }
 
+// endCopying ends the attempt's hold on the writers it was given. The read
+// ends go first, which ends a copier waiting for bytes from a process that
+// escaped the attempt's group. Then the copiers are joined, bounded by the
+// grace like every other wait here.
+//
+// A copier that is inside a write to a stalled stderr cannot be ended at all:
+// closing the read end does not touch a write in flight, and the bytes in that
+// write are already the caller's. So the writer is detached instead, and
+// nothing the copier writes after this attempt reaches the next attempt's
+// diagnostics.
+func endCopying(feeds *outputPipes, drained <-chan struct{}, guarded *serialWriter, grace time.Duration) {
+	feeds.closeReads()
+	select {
+	case <-drained:
+	case <-time.After(grace):
+		guarded.release()
+	}
+}
+
 // serialWriter is one writer two goroutines can use: this helper's own
-// diagnostics and the copier exec runs for the command's stderr.
+// diagnostics and the copier that carries the command's stderr.
 type serialWriter struct {
 	mu sync.Mutex
 	w  io.Writer
+	// released is read without the lock on purpose: the writer it releases
+	// from is released precisely when a copier is stuck holding that lock.
+	released atomic.Bool
 }
 
 func (s *serialWriter) Write(p []byte) (int, error) {
+	if s.released.Load() {
+		// The attempt this writer belonged to is over, and the caller's stderr
+		// belongs to the next one. Reporting the bytes as written is what ends
+		// the copier rather than sending it round the loop again.
+		return len(p), nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.released.Load() {
+		return len(p), nil
+	}
 	return s.w.Write(p)
 }
+
+// release detaches this writer from the caller's stderr. It takes no lock: the
+// copier it is releasing from may be holding one inside a write that has not
+// returned, which is the whole reason for releasing.
+func (s *serialWriter) release() { s.released.Store(true) }
 
 // groupStopper is the process-group half of an attempt, injected so the case
 // that cannot be produced on demand -- a group that outlives SIGKILL -- can
@@ -513,10 +579,11 @@ type groupStopper struct {
 	terminate func(int)
 	kill      func(int)
 	// stop is the bound's and the interrupt's stop, and reports whether it
-	// signalled anything: false when the child was reaped in the window
-	// between the attempt's last check and the signal, which is the other
-	// case no test can arrange from outside.
-	stop func(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) bool
+	// stopped anything: false when the child was reaped, or its group was
+	// already gone, in the window between the attempt's last check and the
+	// signal -- the other case no test can arrange from outside. The error is
+	// a refusal the kernel gave a signal that was sent.
+	stop func(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) (bool, error)
 }
 
 var realGroupStopper = groupStopper{
@@ -616,7 +683,7 @@ func boundedList(args []string, stdout, stderr io.Writer) int {
 	return boundedListWith(args, stdout, stderr, signals)
 }
 
-func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.Signal) int {
+func boundedListWith(args []string, stdout, stderr io.Writer, signals chan os.Signal) int {
 	fs := flag.NewFlagSet("bounded-list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = fmt.Fprint(stderr, boundedListUsage) }
@@ -681,9 +748,10 @@ func boundedListWith(args []string, stdout, stderr io.Writer, signals <-chan os.
 //
 // A signal that arrives while the output is being written has nowhere else to
 // be noticed: writing it is the last thing this helper does, and signal.Stop
-// drops whatever arrived as soon as boundedList returns. Without the poll
-// below, a run the operator interrupted there reports the command's own
-// status -- a success, often enough, for work the operator asked to stop.
+// drops whatever arrived as soon as boundedList returns. So the last look is
+// settle, which stops delivery before it looks: without it, a run the operator
+// interrupted here reports the command's own status -- a success, often
+// enough, for work the operator asked to stop.
 //
 // An attempt that latched a signal itself has already accounted for it, and
 // its answer stands: a command that decided before the signal arrived keeps
@@ -696,7 +764,7 @@ func handOver(stdout io.Writer, result attemptResult, code int, latch *signalLat
 	if result.interrupted != 0 {
 		return code
 	}
-	if sig := latch.poll(); sig != 0 {
+	if sig := latch.settle(); sig != 0 {
 		return 128 + int(sig)
 	}
 	return code
