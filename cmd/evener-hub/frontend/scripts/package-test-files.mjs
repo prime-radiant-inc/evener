@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
+import { resolveSourceFile } from "../../../../scripts/sdk/resolve-source.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const packageDir = path.resolve(frontend, "../../../appwire-client/typescript");
@@ -151,6 +152,13 @@ function moduleSpecifiersIn(file, text) {
   visit(source);
   return found;
 }
+
+// The package's own files are TypeScript, plus the .mjs tooling its tests
+// reach. Extension probing and the directory/index.ts rule are the rewriter's,
+// shared rather than restated: an `existsSync` that says yes to a directory
+// returns the directory, and the caller reads it as a file.
+export const resolvePackageImport = (from, specifier) =>
+  resolveSourceFile(from, specifier, [".ts", ".tsx", ".mjs", ".js"]);
 
 // Every bare specifier reachable from the package's test files, mapped to the
 // package-relative files that name it. The walk stops at the first bare
@@ -297,18 +305,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   const readFile = (file) => readFileSync(file, "utf8");
   const packageSources = sourceFilesOnDisk(packageDir);
-  const resolveRelative = (from, specifier) => {
-    const base = path.resolve(path.dirname(from), specifier);
-    for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}.mjs`, `${base}.js`, path.join(base, "index.ts")]) {
-      if (existsSync(candidate)) return candidate;
-    }
-    return null;
-  };
   for (const problem of [
     describeAppImports(packageSources, readFile, packageDir),
     describeCwdRelativeReads(packageSources, readFile, packageDir),
     describeUnaliasedImports(
-      reachableBareImports(testFilesOnDisk(packageDir), readFile, resolveRelative, packageDir),
+      reachableBareImports(testFilesOnDisk(packageDir), readFile, resolvePackageImport, packageDir),
       aliasKeysFrom(readFile(path.join(frontend, "vite.config.ts"))),
     ),
   ]) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import {
   describeUnaliasedImports,
   pickProofFile,
   reachableBareImports,
+  resolvePackageImport,
   sourceFilesOnDisk,
   testFilesOnDisk,
 } from "./package-test-files.mjs";
@@ -358,4 +359,25 @@ test("describeUnaliasedImports names the specifier and the file that imports it"
 test("describeUnaliasedImports matches a subpath against its package alias", () => {
   const bare = new Map([["@testing-library/react/pure", ["b.test.tsx"]]]);
   assert.equal(describeUnaliasedImports(bare, new Set(["@testing-library/react"])), "");
+});
+
+test("resolvePackageImport answers a directory import with its index, not the directory", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "evener-package-imports-"));
+  try {
+    mkdirSync(path.join(root, "helpers"));
+    writeFileSync(path.join(root, "helpers", "index.ts"), 'import ts from "typescript";\n');
+    writeFileSync(path.join(root, "a.test.ts"), 'import { helper } from "./helpers";\n');
+    assert.equal(resolvePackageImport(path.join(root, "a.test.ts"), "./helpers"), path.join(root, "helpers", "index.ts"));
+
+    // The crash this guards: the walk reads whatever the resolver hands back.
+    const bare = reachableBareImports(
+      [path.join(root, "a.test.ts")],
+      (file) => readFileSync(file, "utf8"),
+      resolvePackageImport,
+      root,
+    );
+    assert.deepEqual([...bare.keys()], ["typescript"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

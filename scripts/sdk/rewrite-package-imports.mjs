@@ -20,9 +20,10 @@
 // missing export, not something to paper over with a deep path.
 
 import { createRequire } from "node:module";
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveSourceFile } from "./resolve-source.mjs";
 
 const checkoutRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -100,14 +101,10 @@ function walk(dir, layout, out) {
 }
 
 // Resolve a relative specifier the way the bundlers do, enough to tell whether
-// it lands inside the package or the seam.
+// it lands inside the package or the seam. TypeScript only: this tool never
+// resolves a .js or .mjs import into the package.
 function resolveSpecifier(fromFile, specifier) {
-  const base = path.resolve(path.dirname(fromFile), specifier);
-  const candidates = [base, `${base}.ts`, `${base}.tsx`, path.join(base, "index.ts")];
-  for (const candidate of candidates) {
-    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
-  }
-  return null;
+  return resolveSourceFile(fromFile, specifier, [".ts", ".tsx"]);
 }
 
 // The package module a resolved path names: "errors", "testing/fakeClient",
