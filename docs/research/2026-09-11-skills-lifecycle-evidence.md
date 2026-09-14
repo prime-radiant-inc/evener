@@ -1246,7 +1246,8 @@ premise of the review brief rather than the code.
   (`cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx` ~1011-1018
   against `agent/status.go` ~173-181); and identity-less terminal cancellation
   receipts that never coalesce or prune
-  (`agent/session_skill_compaction.go` ~292-304).
+  (`agent/session_skill_compaction.go` ~292-304). All three are closed by the
+  follow-up PR recorded below.
 
 ## Post-rebase provenance: rebase onto main (2026-09-14, PR #1168)
 
@@ -1429,6 +1430,16 @@ render a selection through ONE definition. `PendingChips` uses it too, so an
 in-flight skill-only submission finally shows `[skill: name]` instead of a bare
 "Sending"/"Steering"/"Draining".
 
+The first version still doubled the label: a skill-only entry rendered the
+daemon's generic `[skill]` placeholder AND the named marker
+(`[skill] [skill: pkg:probe]`), which the lane's presence-style assertion could
+not see. The round's independent reviewer caught it, and the row composition now
+drops the generic placeholder when the entry carries its own canonical names
+(text previews keep their text, and a non-skill preview such as an image
+placeholder is untouched). The exact-text assertion in
+`QueueStrip.test.tsx` — "a skill-only authoritative row drops the daemon's
+generic placeholder instead of doubling it" — fails without that rule.
+
 The pins are `QueueStrip.test.tsx`'s "an authoritative row appends its skill
 markers to the daemon's preview text" and "a skill-only authoritative row shows
 its named marker rather than staying generic" (2 failures under the reverted row
@@ -1478,6 +1489,18 @@ the reverted chip body).
   slice header aliased to the store's. Fixed alongside the other slices.
   Reverting it fails `TestApplyAndFoldCloneCreatedDescriptor/frozen_skill_metadata`
   with the mutated description visible in the accepted state.
+- **`skillChipDetails`' two diagnostic branches were unreachable.** The daemon
+  publishes only available, user-invocable skills, so `!info.available` and
+  `!info.userInvocable` could never fire and their messages could never be
+  shown. Both are removed and the comment now records why a present entry is
+  always usable; the reachable "no longer in this session's skill catalog"
+  branch is unchanged. The pin is `Composer.test.tsx`'s "a selected skill's
+  tooltip never invents an unavailable or non-user-invocable diagnostic", which
+  plants a flagged entry and asserts the tooltip is exactly the description;
+  restoring the branches fails it. Its sibling — "a selected skill the catalog
+  no longer reports says so in its tooltip" — covers the retained branch and is
+  a coverage pin rather than a load-bearing one for this removal, which the
+  round's reviewer noted and this record states plainly.
 
 ### Declined: `InputItem.UnmarshalJSON` strictness (not fixed, deliberately)
 

@@ -604,6 +604,33 @@ describe("row rendering", () => {
     expect(within(row).getByText(/\[skill: pkg:probe\]/)).toBeTruthy();
   });
 
+  // The daemon's generic "[skill]" placeholder describes exactly the content
+  // the named markers do, so a skill-only row must name the selection ONCE.
+  // The looser "[skill: pkg:probe] is present" assertion above cannot see the
+  // difference, which is how "[skill] [skill: pkg:probe]" slipped through.
+  test("a skill-only authoritative row drops the daemon's generic placeholder instead of doubling it", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: ["[skill]"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("[skill: pkg:probe]")).toBeTruthy();
+    expect(row.textContent).not.toMatch(/\[skill\](\s|$)/);
+  });
+
   test("each row exposes steer-now, edit, and remove actions", async () => {
     const fake = connectFakeClient();
     await hydrateWithTwoRows(fake);

@@ -396,7 +396,7 @@ func TestSkillCompaction_ClearNotePersistsWithoutPendingOperation(t *testing.T) 
 func TestSkillCompaction_CancellationReceiptsAreRetired(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		generation, err := s.requestSkillCompaction(context.Background(), "keep", "opaque-instructions",
 			schema.SkillReloadSelection{State: "valid", Names: []string{}})
 		if err != nil {

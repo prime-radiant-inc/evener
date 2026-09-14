@@ -355,8 +355,10 @@ func (s *Session) retireSkillCompactionCancellationsLocked() bool {
 }
 
 // retireSkillCompactionCancellations retires the terminal cancellation receipts
-// and persists the result. A failed save is only warned: the records survive to
-// the next request, which retries the retirement.
+// and persists the result. A failed save is only warned: the in-memory list is
+// already retired, so the persisted snapshot keeps the records only until the
+// next successful save (which persists the retired list) or a restart, after
+// which the next request retires them again.
 func (s *Session) retireSkillCompactionCancellations() {
 	s.mu.Lock()
 	removed := s.retireSkillCompactionCancellationsLocked()

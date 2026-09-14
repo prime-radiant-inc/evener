@@ -378,16 +378,18 @@ export function QueueStrip({
           // The daemon's preview names skills only generically ("[skill]" /
           // "[N skills]"), while the pending and durable rows for the SAME
           // submission name them from the entry's own canonical selections.
-          // Append those markers here too, or a queued skill selection loses
-          // its name the moment the authoritative row replaces the pending
-          // one. The preview text is truncated first so a full-length line can
-          // never push the markers past the display cap.
-          const displayText = [
-            truncateForDisplay(preview?.[index] ?? fullText ?? ""),
-            skillMarkers(entrySkillNames ?? []),
-          ]
-            .filter((part) => part !== "")
-            .join(" ");
+          // Those named markers are the better label for exactly that content,
+          // so for a skill-only entry they REPLACE the generic placeholder
+          // rather than doubling it ("[skill] [skill: pkg:probe]"). A preview
+          // with prose keeps its text, with the markers appended after it, and
+          // a preview that is not about skills at all - an image placeholder,
+          // say - is untouched. The preview text is truncated first so a
+          // full-length line can never push the markers past the display cap.
+          const namedMarkers = skillMarkers(entrySkillNames ?? []);
+          const hasProse = (fullText ?? "").trim() !== "";
+          const previewText =
+            hasProse || namedMarkers === "" ? truncateForDisplay(preview?.[index] ?? fullText ?? "") : "";
+          const displayText = [previewText, namedMarkers].filter((part) => part !== "").join(" ");
           const busy = entryId !== undefined && busyEntryIds.has(entryId);
           const actionsAvailable = hasIds && entryId !== undefined;
           // A blank-text entry is uneditable only when it carries nothing
