@@ -1,0 +1,51 @@
+//go:build unix
+
+package skill
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestEnsurePrivateCacheDir_CreatesPrivateDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	if err := ensurePrivateCacheDir(dir); err != nil {
+		t.Fatalf("ensurePrivateCacheDir: %v", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatalf("lstat cache dir: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("cache dir mode = %o, want 700", info.Mode().Perm())
+	}
+	if err := ensurePrivateCacheDir(dir); err != nil {
+		t.Fatalf("ensurePrivateCacheDir (again): %v", err)
+	}
+}
+
+func TestEnsurePrivateCacheDir_RefusesUnsafeDirectories(t *testing.T) {
+	root := t.TempDir()
+
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := ensurePrivateCacheDir(link); err == nil {
+		t.Fatal("accepted a symlinked cache dir")
+	}
+
+	open := filepath.Join(root, "open")
+	if err := os.Mkdir(open, 0o700); err != nil {
+		t.Fatalf("create open dir: %v", err)
+	}
+	// Chmod, not the Mkdir mode, so the ambient umask cannot make the directory
+	// private and hide the case under test.
+	if err := os.Chmod(open, 0o755); err != nil {
+		t.Fatalf("open up dir: %v", err)
+	}
+	if err := ensurePrivateCacheDir(open); err == nil {
+		t.Fatal("accepted a group/other-accessible cache dir")
+	}
+}

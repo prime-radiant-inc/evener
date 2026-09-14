@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 const sampleSkillDocument = "---\nname: sample\ndescription: \"A sample skill\"\n---\nBody.\n"
@@ -287,40 +289,64 @@ func TestMaterializeEmbeddedSkills_DigestFailureIsReported(t *testing.T) {
 	}
 }
 
-func TestEnsurePrivateCacheDir_CreatesPrivateDir(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "cache")
-	if err := ensurePrivateCacheDir(dir); err != nil {
-		t.Fatalf("ensurePrivateCacheDir: %v", err)
-	}
-	info, err := os.Lstat(dir)
+// A cached copy is only reused while it still holds the content its name
+// promises; a tampered copy is not trusted.
+func TestCacheDirUsable_RejectsTamperedCopy(t *testing.T) {
+	base := t.TempDir()
+	fsys := sampleSkillFS()
+	digest, err := digestSkillsFS(fsys)
 	if err != nil {
-		t.Fatalf("lstat cache dir: %v", err)
+		t.Fatalf("digestSkillsFS: %v", err)
 	}
-	if info.Mode().Perm() != 0o700 {
-		t.Fatalf("cache dir mode = %o, want 700", info.Mode().Perm())
+	dir := filepath.Join(base, embeddedSkillsPrefix+digest)
+	if err := copyEmbeddedSkills(fsys, dir); err != nil {
+		t.Fatalf("copyEmbeddedSkills: %v", err)
 	}
-	if err := ensurePrivateCacheDir(dir); err != nil {
-		t.Fatalf("ensurePrivateCacheDir (again): %v", err)
+	if !cacheDirUsable(dir) {
+		t.Fatal("fresh published copy reported unusable")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sample", "SKILL.md"), []byte("tampered"), 0o644); err != nil {
+		t.Fatalf("tamper copy: %v", err)
+	}
+	if cacheDirUsable(dir) {
+		t.Fatal("tampered copy reported usable")
+	}
+
+	// A private fallback copy is not digest-named and has nothing to verify.
+	fallback := filepath.Join(base, embeddedSkillsPrefix+"stage-test")
+	if err := os.Mkdir(fallback, 0o700); err != nil {
+		t.Fatalf("create fallback dir: %v", err)
+	}
+	if !cacheDirUsable(fallback) {
+		t.Fatal("private fallback copy reported unusable")
 	}
 }
 
-func TestEnsurePrivateCacheDir_RefusesUnsafeDirectories(t *testing.T) {
-	root := t.TempDir()
+func TestReapStaleStaging_RemovesOnlyOldStaging(t *testing.T) {
+	base := t.TempDir()
+	old := filepath.Join(base, embeddedSkillsPrefix+"stage-old")
+	fresh := filepath.Join(base, embeddedSkillsPrefix+"stage-fresh")
+	published := filepath.Join(base, embeddedSkillsPrefix+strings.Repeat("a", sha256.Size*2))
+	for _, dir := range []string{old, fresh, published} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+	past := time.Now().Add(-2 * staleStagingMaxAge)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatalf("age staging dir: %v", err)
+	}
 
-	link := filepath.Join(root, "link")
-	if err := os.Symlink(t.TempDir(), link); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
-	}
-	if err := ensurePrivateCacheDir(link); err == nil {
-		t.Fatal("accepted a symlinked cache dir")
-	}
+	reapStaleStaging(base, time.Now())
 
-	open := filepath.Join(root, "open")
-	if err := os.Mkdir(open, 0o755); err != nil {
-		t.Fatalf("create open dir: %v", err)
+	if _, err := os.Stat(old); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stale staging dir not reaped: %v", err)
 	}
-	if err := ensurePrivateCacheDir(open); err == nil {
-		t.Fatal("accepted a group/other-accessible cache dir")
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh staging dir reaped: %v", err)
+	}
+	if _, err := os.Stat(published); err != nil {
+		t.Fatalf("published dir reaped: %v", err)
 	}
 }
 

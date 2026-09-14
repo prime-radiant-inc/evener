@@ -20,3 +20,9 @@ func cacheDirOwnedByCurrentUser(info fs.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && int(stat.Uid) == os.Getuid()
 }
+
+// cacheDirHasPrivatePermissions reports whether a cache directory withholds all
+// group and other access.
+func cacheDirHasPrivatePermissions(info fs.FileInfo) bool {
+	return info.Mode().Perm()&0o077 == 0
+}

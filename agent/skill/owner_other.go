@@ -11,3 +11,7 @@ func processOwnerTag() string { return "user" }
 // cacheDirOwnedByCurrentUser cannot check ownership portably; the temp
 // directory is per-user on these platforms.
 func cacheDirOwnedByCurrentUser(fs.FileInfo) bool { return true }
+
+// cacheDirHasPrivatePermissions cannot be checked portably: Windows synthesizes
+// directory modes, so a 0700 directory does not read back as 0700.
+func cacheDirHasPrivatePermissions(fs.FileInfo) bool { return true }
