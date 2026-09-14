@@ -306,7 +306,6 @@ func (s *Session) recordTurnFailure(data events.ErrorData) {
 // — turning it on would reveal only hooks that ran afterwards, which is the
 // same "switch that governs nothing" complaint this fixes (kata qm9y).
 func (s *Session) emitHookCompleted(data events.HookEndData) {
-	s.emit(events.EventHookEnd, data)
 	info := schema.HookInfo{
 		Event:      data.Event,
 		HookType:   data.HookType,
@@ -320,10 +319,37 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	turn := schema.NewTurn(schema.TurnHookCompleted, llm.System(info.Announcement()))
 	turn.Hook = &info
 
+	// Write, then announce. The two publications are not atomic, so whichever
+	// goes second can be overtaken by a concurrently recorded round, and the
+	// live and durable projections then order this hook differently inside the
+	// turn. Writing first is the direction the ordering rule wants: the entry
+	// exists before anything is told about it, so the event can only follow
+	// it. A hook completing while a fold publication holds the transcript door
+	// therefore waits for that door before announcing, and its event lands
+	// after its entry — which is the ordering, not a delay to avoid.
+	//
+	// A FAILED write announces nothing, and leaves nothing in the model
+	// history either: the live event is the only copy a watching client gets,
+	// so a completion published on a write that failed is one a reload cannot
+	// reproduce. appendTurnAfterTranscriptWrite is the shape the environment
+	// append already uses for that — the entry first, the history append only
+	// if it landed.
+	//
 	// SessionStart hooks run inside initSessionState, before the transcript
-	// writer exists (kata d4es). recordTurn holds the turn until it does; no
-	// buffering is needed here.
-	s.recordTurn(turn, turn)
+	// writer exists (kata d4es). The write path holds the turn until it does;
+	// no buffering is needed here.
+	//
+	// This is THIS producer's discipline. Nothing yet requires every producer
+	// to write before announcing; issue #1150 carries that rule.
+	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return
+	}
+	s.emit(events.EventHookEnd, data)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the
