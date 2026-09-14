@@ -116,6 +116,35 @@ func (s *RemoteHubSource) translateOut(out any) error {
 			return err
 		}
 		response.Thread = thread
+	case *appwire.ThreadStartResponse:
+		thread, err := s.fromRemoteThread(response.Thread)
+		if err != nil {
+			return err
+		}
+		response.Thread = thread
+	case *appwire.ThreadResumeResponse:
+		thread, err := s.fromRemoteThread(response.Thread)
+		if err != nil {
+			return err
+		}
+		response.Thread = thread
+	case *appwire.ThreadForkResponse:
+		thread, err := s.fromRemoteThread(response.Thread)
+		if err != nil {
+			return err
+		}
+		response.Thread = thread
+	case *appwire.ThreadClearResponse:
+		thread, err := s.fromRemoteThread(response.Thread)
+		if err != nil {
+			return err
+		}
+		response.Thread = thread
+		ref, err := s.fromRemoteRefString(response.Ref)
+		if err != nil {
+			return err
+		}
+		response.Ref = ref
 	}
 	return nil
 }
