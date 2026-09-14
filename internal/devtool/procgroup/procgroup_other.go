@@ -20,7 +20,8 @@ func Start(cmd *exec.Cmd) error { return cmd.Start() }
 func Terminate(pgid int) { Kill(pgid) }
 
 func Kill(pgid int) {
-	if pgid <= 0 {
+	// The same floor the unix build has: below 2 is never a child of ours.
+	if pgid <= 1 {
 		return
 	}
 	if proc, err := os.FindProcess(pgid); err == nil {
@@ -37,7 +38,7 @@ func Exists(int) bool { return false }
 // what the kill refused with, and os.Process.Kill does not distinguish a
 // process that was already gone, so a stop here never reports one.
 func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) (bool, error) {
-	if pgid <= 0 {
+	if pgid <= 1 {
 		return false, nil
 	}
 	select {

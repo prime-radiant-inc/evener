@@ -542,7 +542,11 @@ func endCopying(feeds *outputPipes, drained <-chan struct{}, guarded *serialWrit
 }
 
 // serialWriter is one writer two goroutines can use: this helper's own
-// diagnostics and the copier that carries the command's stderr.
+// diagnostics and the copier that carries the command's stderr. The lock is
+// held across the write on purpose: stderr is a file for every caller this
+// has -- a terminal, a gate's log -- and a write to one that does not return
+// is the host having stopped, not the command, so an asynchronous buffer
+// between them would buy nothing and lose the ordering of what it buffered.
 type serialWriter struct {
 	mu sync.Mutex
 	w  io.Writer

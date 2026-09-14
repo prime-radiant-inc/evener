@@ -307,6 +307,16 @@ type flagToken struct {
 	inline, hasValue bool
 }
 
+// valueIsNextArgument reports whether a flag written without an = takes the
+// next argument as its value. It is the one fact every reader of a `go test`
+// command line has to agree on -- it is what keeps `-run -race` from being
+// read as two flags -- so it is answered from the tables above, which are the
+// exhaustive split of `go help build` and `go help testflag`, and not from a
+// second list that can drift from them.
+func valueIsNextArgument(name string) bool {
+	return buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name]
+}
+
 // walkFlags walks a `go test` argument list once, normalising each flag and
 // consuming the value of any flag whose value is the next argument, and hands
 // each result to visit. Consuming the pair here is what keeps `-run -race` and
@@ -322,7 +332,7 @@ func walkFlags(flags []string, visit func(flagToken) error) error {
 		if j := strings.IndexByte(tok.whole, '='); j > 0 {
 			tok.name, tok.value, tok.inline, tok.hasValue = tok.whole[:j], tok.whole[j+1:], true, true
 		}
-		if !tok.inline && (buildValueFlags[tok.name] || testForwardValueFlags[tok.name] || testRefusedValueFlags[tok.name]) {
+		if !tok.inline && valueIsNextArgument(tok.name) {
 			if i+1 >= len(flags) {
 				return fmt.Errorf("%s was given with nothing after it, and its value decides what runs", tok.name)
 			}

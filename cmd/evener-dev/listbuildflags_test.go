@@ -238,7 +238,9 @@ func TestEveryBuildFlagIsAccountedFor(t *testing.T) {
 		"-compiler": true, "-race": true, "-msan": true, "-asan": true,
 	}
 	consumed := func(name string) bool {
-		return goTestValueFlags[name] || packageSelectionValueFlags[name]
+		// The set walkFlags consumes a value for, which is the shard runner's
+		// tables: one answer in this package to "is the next word a value".
+		return valueIsNextArgument(name) || packageSelectionValueFlags[name]
 	}
 	forwarded := func(name string) bool {
 		return packageSelectionValueFlags[name] || packageSelectionBareFlags[name]
@@ -272,7 +274,7 @@ func checkDocumentedFlags(t *testing.T, page string, selects map[string]bool, co
 		if len(field) == 0 || !strings.HasPrefix(field[0], "-") || strings.Contains(field[0], "=") {
 			continue // prose, or a spelling with its value written in
 		}
-		_, name, _, _ := normalisedFlag(field[0])
+		name, _, _ := strings.Cut(goFlag(field[0]), "=")
 		takesValue := len(field) > 1
 		seen++
 		if takesValue && !consumed(name) {

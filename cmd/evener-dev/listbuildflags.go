@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 )
 
 // The two tables below are every flag `go help build` documents that changes
@@ -62,118 +61,52 @@ var packageSelectionValueFlags = map[string]bool{
 // by setting a build tag of its own name.
 var packageSelectionBareFlags = map[string]bool{"-race": true, "-msan": true, "-asan": true}
 
-// goTestValueFlags are the flags whose value is the next argument. Nothing
-// here is forwarded: the list exists so that a value is never read as a flag.
-// `-run -race` is a regex whose text is `-race`, and enumerating under a
-// sanitiser the caller did not ask for would build a different tree from the
-// one the tests run in. Every flag that takes a separate value belongs here,
-// whether or not the enumeration would want the flag itself.
-var goTestValueFlags = map[string]bool{
-	// -C takes a directory, and is not forwarded: the enumeration already runs
-	// in the module's own directory.
-	"-C": true, "-bench": true, "-benchtime": true, "-blockprofile": true,
-	"-blockprofilerate": true, "-count": true, "-coverprofile": true,
-	"-covermode": true, "-coverpkg": true, "-cpu": true, "-cpuprofile": true,
-	"-exec": true, "-fuzz": true, "-fuzzminimizetime": true, "-fuzztime": true,
-	"-gocoverdir": true, "-list": true, "-memprofile": true,
-	"-memprofilerate": true, "-mutexprofile": true,
-	"-mutexprofilefraction": true, "-o": true, "-outputdir": true,
-	"-p": true, "-parallel": true, "-run": true, "-shuffle": true,
-	"-skip": true, "-timeout": true, "-trace": true, "-vet": true,
-	// The build flags that take a value, so that theirs is skipped too.
-	"-asmflags": true, "-buildmode": true, "-compiler": true,
-	"-gccgoflags": true, "-gcflags": true, "-installsuffix": true,
-	"-ldflags": true, "-mod": true, "-modfile": true, "-overlay": true,
-	"-pgo": true, "-pkgdir": true, "-toolexec": true,
-}
+// A value is consumed with its flag before anything is classified, and which
+// flags take a separate value is read off the shard runner's tables through
+// walkFlags: there is one answer to that question in this package, not two
+// that can drift. The same goes for the spelling a flag arrives in -- goFlag
+// normalises --tags to -tags and -test.short to -short -- and for the refusal
+// -C gets.
+//
+// The prefix rule is the shard runner's too, and it costs nothing here:
+// measured on go1.27.0, every name where the two tables disagreed about
+// -test.<name> is one `go test` refuses at the door -- -test.vet, -test.args,
+// -test.exec, -test.o, -test.c and -test.n all answer `flag provided but not
+// defined`, and -test.race with them.
 
-// normalisedFlag is a caller's flag in the one spelling everything here
-// compares: go's flag package reads --tags and -tags alike, so a reader that
-// knows one of them drops the other.
-func normalisedFlag(raw string) (whole, name, value string, inline bool) {
-	whole = raw
-	if strings.HasPrefix(whole, "--") && len(whole) > 2 {
-		whole = whole[1:]
-	}
-	// `go test` takes the test binary's own spelling too: -test.run is -run.
-	// The prefix comes off only when what remains is a flag that exists, so
-	// -test.race does not become the sanitiser -- the same rule the shard
-	// runner follows, for the same reason.
-	if after, ok := strings.CutPrefix(whole, "-test."); ok && after != "" {
-		if stripped := "-" + after; isKnownTestFlag(stripped) {
-			whole = stripped
-		}
-	}
-	name, value, inline = strings.Cut(whole, "=")
-	return whole, name, value, inline
-}
-
-// testBinaryFlags are the names `go help testflag` documents, which are the
-// ones the compiled binary answers to as -test.<name>. They are listed here
-// rather than derived from the tables above, which mix in build flags: -race
-// is a build flag, so -test.race is not the sanitiser and its prefix does not
-// come off.
-var testBinaryFlags = map[string]bool{
-	"-artifacts": true, "-bench": true, "-benchmem": true, "-benchtime": true,
-	"-blockprofile": true, "-blockprofilerate": true, "-count": true,
-	"-cover": true, "-covermode": true, "-coverpkg": true,
-	"-coverprofile": true, "-cpu": true, "-cpuprofile": true,
-	"-failfast": true, "-fullpath": true, "-fuzz": true,
-	"-fuzzminimizetime": true, "-fuzztime": true, "-gocoverdir": true,
-	"-json": true, "-list": true, "-memprofile": true,
-	"-memprofilerate": true, "-mutexprofile": true,
-	"-mutexprofilefraction": true, "-outputdir": true, "-parallel": true,
-	"-run": true, "-short": true, "-shuffle": true, "-skip": true,
-	"-timeout": true, "-trace": true, "-v": true, "-vet": true,
-}
-
-// isKnownTestFlag reports whether a name is one the test binary has, which is
-// what makes dropping its -test. prefix safe.
-func isKnownTestFlag(name string) bool {
-	if i := strings.IndexByte(name, '='); i > 0 {
-		name = name[:i]
-	}
-	return testBinaryFlags[name]
-}
+// errAfterArgs stops the walk at -args. Everything after it belongs to the
+// test binary, not to `go test`: a word spelled -race there is an argument
+// whose text is -race, and enumerating under it would build a tree nobody
+// asked for -- including the flag after it, whose value it is not.
+var errAfterArgs = errors.New("-args")
 
 // packageSelectionFlags is the answer, in the spelling `go list` will be given.
 func packageSelectionFlags(args []string) ([]string, error) {
 	var out []string
-	for i := 0; i < len(args); i++ {
-		whole, name, _, inline := normalisedFlag(args[i])
-		if name == "-args" {
-			// Everything after -args belongs to the test binary, not to `go
-			// test`: a word spelled -race there is an argument whose text is
-			// -race, and enumerating under it would build a tree nobody asked
-			// for.
-			return out, nil
-		}
-		if name == "-C" {
-			// The same refusal the shard runner gives it: the gate decides
-			// which directory each module is enumerated and tested in, and a
-			// -C would move one of them.
-			return nil, errors.New("-C is not supported here: the gate enumerates and tests each module from its own directory")
-		}
+	err := walkFlags(args, func(tok flagToken) error {
 		switch {
-		case packageSelectionValueFlags[name]:
-			if inline {
-				out = append(out, whole)
-				continue
+		case tok.name == "-args":
+			return errAfterArgs
+		case tok.name == "-C":
+			// The same refusal the shard runner gives it, in the same words:
+			// the gate decides which directory each module is enumerated and
+			// tested in, and a -C would move one of them.
+			return errUnsupportedC()
+		case packageSelectionValueFlags[tok.name]:
+			if tok.inline {
+				out = append(out, tok.whole)
+				return nil
 			}
-			if i+1 >= len(args) {
-				return nil, fmt.Errorf("%s was given with nothing after it, and its value decides which packages exist", name)
-			}
-			i++
-			out = append(out, name, args[i])
-		case packageSelectionBareFlags[name]:
-			out = append(out, whole)
-		case goTestValueFlags[name] && !inline:
-			if i+1 >= len(args) {
-				return nil, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
-			}
-			// Its value is a value, whatever it looks like.
-			i++
+			// The value goes on as the caller wrote it: it is data, and
+			// normalising it would rewrite a path or a build tag list.
+			out = append(out, tok.name, tok.value)
+		case packageSelectionBareFlags[tok.name]:
+			out = append(out, tok.whole)
 		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errAfterArgs) {
+		return nil, err
 	}
 	return out, nil
 }

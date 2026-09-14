@@ -38,16 +38,24 @@ func Terminate(pgid int) { _ = signalGroup(pgid, syscall.SIGTERM) }
 func Kill(pgid int) { _ = signalGroup(pgid, syscall.SIGKILL) }
 
 // signalGroup is the one place a group signal is sent, and the one place the
-// identifier is checked. 0 means the caller's own process group and negatives
-// are not groups: either would deliver the signal to processes the caller
-// never started -- with 0, to the caller itself and to whatever else shares
-// its group, which for a gate helper is the gate.
+// identifier is checked. Anything below 2 is refused, because kill's group
+// form reads those three numbers as something other than a group:
+//
+//	0 is the caller's own process group, so the signal comes back to the
+//	caller and to whatever shares its group -- for a gate helper, the gate;
+//	1 makes kill(-1, sig), which is every process this user may signal on the
+//	host, and a gate runner has no business sending one of those;
+//	negatives are not groups at all.
+//
+// None of the three can be a group this package started: Start makes the child
+// a group leader, so the group id is a pid the kernel handed out, and no
+// kernel hands out 0 or 1 for a child.
 //
 // It answers with what the kernel said: nil for a signal delivered, ESRCH for
 // a group that was already gone, and EPERM for one this process may not
 // signal -- which is a group that is there.
 func signalGroup(pgid int, sig syscall.Signal) error {
-	if pgid <= 0 {
+	if pgid <= 1 {
 		return syscall.EINVAL
 	}
 	return syscall.Kill(-pgid, sig)
@@ -75,11 +83,13 @@ func signalGroup(pgid int, sig syscall.Signal) error {
 // indefinitely. Probing process state per platform buys nothing against a
 // measured 3-12ms, and would have to be right on two kernels to buy it.
 func Exists(pgid int) bool {
-	if pgid <= 0 {
-		return false
+	// The same three numbers signalGroup refuses, for the same reason: pgid 1
+	// asks after every process on the host, which answers yes and means
+	// nothing, and 0 asks after the caller's own group, which is always there.
+	if err := signalGroup(pgid, 0); err != nil {
+		return errors.Is(err, syscall.EPERM)
 	}
-	err := syscall.Kill(-pgid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return true
 }
 
 // Stop TERMs the group, waits for the caller to reap the direct child
@@ -122,9 +132,15 @@ func Stop(pgid int, reaped <-chan struct{}, grace time.Duration) (bool, error) {
 // matters: the group is there and this process may not signal all of it, so
 // the stop returns true and says why the group may still be running.
 func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) (bool, error) {
-	if pgid <= 0 {
-		// 0 is this process's own group and negatives are not groups; both
-		// would send the signal somewhere the caller did not start.
+	return stopWith(signalGroup, pgid, sig, reaped, grace)
+}
+
+// stopWith is StopWith with the sending injected, so the answers a kernel
+// gives only under conditions a test cannot arrange -- a refusal, a group that
+// went away between two signals -- can be given to it directly.
+func stopWith(send func(int, syscall.Signal) error, pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.Duration) (bool, error) {
+	if pgid <= 1 {
+		// Not a group this package started; signalGroup says why.
 		return false, nil
 	}
 	select {
@@ -133,16 +149,19 @@ func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.D
 	default:
 	}
 	var refused error
-	// delivered records that a signal of ours did reach the group: a group
-	// that is gone after that is a group this stop emptied, whatever the next
-	// signal says about it.
+	// delivered records that a signal of ours did reach the group. Only a
+	// delivered signal makes a stop: a child that exits while every signal
+	// this call made was refused exited on its own, and its caller is holding
+	// the command's own answer rather than a death this stop caused.
 	delivered := false
-	send := func(s syscall.Signal) (gone bool) {
-		err := signalGroup(pgid, s)
+	signal := func(s syscall.Signal) (gone bool) {
+		err := send(pgid, s)
 		switch {
 		case err == nil:
 			delivered = true
 		case errors.Is(err, syscall.ESRCH):
+			// A group that is gone after a signal of ours landed is a group
+			// this stop emptied.
 			return !delivered
 		case refused == nil:
 			refused = err
@@ -150,26 +169,26 @@ func StopWith(pgid int, sig syscall.Signal, reaped <-chan struct{}, grace time.D
 		return false
 	}
 	if sig != 0 && sig != syscall.SIGTERM {
-		if send(sig) {
+		if signal(sig) {
 			awaitReap(reaped, grace)
 			return false, refused
 		}
 		select {
 		case <-reaped:
-			return true, refused
+			return delivered, refused
 		case <-time.After(grace):
 		}
 	}
-	if send(syscall.SIGTERM) {
+	if signal(syscall.SIGTERM) {
 		awaitReap(reaped, grace)
 		return false, refused
 	}
 	select {
 	case <-reaped:
 	case <-time.After(grace):
-		Kill(pgid)
+		signal(syscall.SIGKILL)
 	}
-	return true, refused
+	return delivered, refused
 }
 
 // awaitReap waits out the caller's own reap, bounded by the grace. It is what

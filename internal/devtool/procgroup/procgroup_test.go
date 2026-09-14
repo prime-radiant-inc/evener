@@ -4,6 +4,7 @@ package procgroup
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -292,15 +293,22 @@ func TestProcessGroupGuardHelper(t *testing.T) {
 }
 
 // TestTheGroupSignalsRefuseAPgidThatIsNotAGroup pins the guard on every entry
-// point that signals: 0 is the caller's own process group and negatives are
-// not groups, so a signal built from either goes to processes this package
-// never started -- with 0, to the caller itself. A helper that survives its
-// call and exits 0 is the whole assertion: without the guard, Terminate(0) and
-// Kill(0) kill it where it stands, and the stops wait out a reap that cannot
-// come.
+// point that signals: 0 is the caller's own process group, 1 makes kill(-1),
+// which is every process this user may signal on the host, and negatives are
+// not groups, so a signal built from any of them goes to processes this
+// package never started. A helper that survives its call and exits 0 is the
+// whole assertion: without the guard, Terminate(0) and Kill(0) kill it where
+// it stands, and the stops wait out a reap that cannot come.
+//
+// The 1 case is not mutation-proved, and deliberately: removing the guard and
+// running it would broadcast SIGTERM and then SIGKILL to every process this
+// user owns, on the machine running the tests. What is proved instead, and
+// safely, is the guard in the one place that sends -- see
+// TestSignalGroupRefusesTheNumbersThatAreNotGroups, which asks with signal 0,
+// the one that delivers nothing even when it reaches everything.
 func TestTheGroupSignalsRefuseAPgidThatIsNotAGroup(t *testing.T) {
 	for _, call := range []string{"Terminate", "Kill", "Stop", "StopWith"} {
-		for _, pgid := range []string{"0", "-1"} {
+		for _, pgid := range []string{"0", "1", "-1"} {
 			t.Run(call+"("+pgid+")", func(t *testing.T) {
 				var log bytes.Buffer
 				helper := exec.Command(os.Args[0], "-test.run=TestProcessGroupGuardHelper$") //nolint:noctx // its own process group, stopped by that group id below
@@ -365,4 +373,148 @@ func TestStopWithReportsAGroupThatWasGoneBeforeTheSignal(t *testing.T) {
 	if stopped, err := Stop(noSuchGroup, never, 50*time.Millisecond); stopped || err != nil {
 		t.Errorf("Stop = %v, %v; want no stop reported and no refusal", stopped, err)
 	}
+}
+
+// TestSignalGroupRefusesTheNumbersThatAreNotGroups asks the sender directly,
+// with signal 0 -- which delivers nothing, and so can be asked of the numbers
+// whose whole problem is where a real signal would land. 1 is the one that
+// matters: kill(-1, sig) is every process this user may signal, and a guard
+// that stops at 0 lets a gate runner send it.
+func TestSignalGroupRefusesTheNumbersThatAreNotGroups(t *testing.T) {
+	for _, pgid := range []int{-1, 0, 1} {
+		if err := signalGroup(pgid, 0); !errors.Is(err, syscall.EINVAL) {
+			t.Errorf("signalGroup(%d, 0) = %v, want it refused as not a group", pgid, err)
+		}
+		if Exists(pgid) {
+			t.Errorf("Exists(%d) = true: a number that is not a group has no members to report", pgid)
+		}
+	}
+	// And a real group still answers, so the floor did not swallow the
+	// question it exists to let through.
+	cmd := exec.Command("sh", "-c", "sleep 30") //nolint:noctx // stopped by its own group id below
+	if err := Start(cmd); err != nil {
+		t.Fatalf("starting the fixture: %v", err)
+	}
+	pgid := cmd.Process.Pid
+	if pgid == syscall.Getpgrp() {
+		t.Fatalf("the fixture shares this process's group (%d); refusing to signal it", pgid)
+	}
+	if err := signalGroup(pgid, 0); err != nil {
+		t.Errorf("signalGroup(%d, 0) = %v for a group that is running", pgid, err)
+	}
+	Kill(pgid)
+	_ = cmd.Wait()
+}
+
+// TestStopWithCountsOnlyASignalItManagedToSend is the child that exits on its
+// own while every signal the stop made was refused. Nothing this stop did
+// ended it, so the caller is holding the command's own answer -- and 128+the
+// signal, which is what a reported stop turns into upstream, would name a
+// death that did not happen. The refusal is injected: producing EPERM for real
+// means signalling a group this test does not own.
+func TestStopWithCountsOnlyASignalItManagedToSend(t *testing.T) {
+	reaped := make(chan struct{})
+	var sent []syscall.Signal
+	refuse := func(_ int, s syscall.Signal) error {
+		sent = append(sent, s)
+		// The child exits by itself while the stop is waiting out its grace.
+		close(reaped)
+		return syscall.EPERM
+	}
+	stopped, err := stopWith(refuse, 4242, syscall.SIGTERM, reaped, 5*time.Second)
+	if stopped {
+		t.Error("StopWith reported a stop it was refused permission to make")
+	}
+	if !errors.Is(err, syscall.EPERM) {
+		t.Errorf("err = %v, want the refusal reported", err)
+	}
+	if len(sent) != 1 || sent[0] != syscall.SIGTERM {
+		t.Errorf("signals sent = %v, want one TERM: the reap ends the escalation", sent)
+	}
+
+	// The other half of the same rule: a signal that lands makes a stop.
+	landed := make(chan struct{})
+	deliver := func(_ int, _ syscall.Signal) error { close(landed); return nil }
+	if stopped, err := stopWith(deliver, 4242, syscall.SIGTERM, landed, 5*time.Second); !stopped || err != nil {
+		t.Errorf("stopWith with a delivered signal = %v, %v; want a stop and no refusal", stopped, err)
+	}
+}
+
+// TestProcessGroupOrphanHelper is not a test: it is the leader process the
+// zombie-group test re-executes. It starts a grandchild in its own group,
+// waits until that grandchild has exited, and exits without reaping it -- so
+// the group it led is left holding a zombie for whatever adopts it to clear.
+func TestProcessGroupOrphanHelper(t *testing.T) {
+	gone := os.Getenv("PROCGROUP_ORPHAN_GONE")
+	if gone == "" {
+		t.Skip("helper process entry point; runs only under the zombie-group test")
+	}
+	// No Setpgid: the grandchild stays in the group this process leads, which
+	// is what makes it the group's last member.
+	grandchild := exec.Command("sh", "-c", ": > "+gone) //nolint:noctx // never waited for: the zombie it leaves is the fixture
+	if err := grandchild.Start(); err != nil {
+		t.Fatalf("starting the grandchild: %v", err)
+	}
+	deadline := time.Now().Add(childReadyTripwire)
+	for {
+		if _, err := os.Stat(gone); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the grandchild never wrote %s", gone)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The file is written just before the exit; this is what makes the
+	// grandchild a zombie rather than a process still on its way out. The test
+	// this serves does not depend on it -- a live member is a live group, and
+	// the assertion is about how fast the group empties either way.
+	time.Sleep(50 * time.Millisecond)
+}
+
+// TestExistsAnswersNoOnceAZombieOnlyGroupIsAdopted is the measurement the
+// Exists comment rests on, made on whatever platform runs it. A leader that
+// exits without reaping its grandchild leaves a group whose only member is a
+// zombie, and kill(-pgid, 0) answers for a zombie: the attempt's "the group is
+// still there, so this host has a survivor" decision is built on that window
+// being short, which holds only while something adopts and reaps the orphan.
+// On darwin it was measured at 3-12ms; this test is what says what it is on
+// the platform CI runs.
+func TestExistsAnswersNoOnceAZombieOnlyGroupIsAdopted(t *testing.T) {
+	dir := t.TempDir()
+	gone := filepath.Join(dir, "grandchild-gone")
+	leader := exec.Command(os.Args[0], "-test.run=TestProcessGroupOrphanHelper$") //nolint:noctx // its own process group, cleaned by that id below
+	leader.Env = append(os.Environ(), "PROCGROUP_ORPHAN_GONE="+gone)
+	var log bytes.Buffer
+	leader.Stdout, leader.Stderr = &log, &log
+	if err := Start(leader); err != nil {
+		t.Fatalf("starting the leader: %v", err)
+	}
+	pgid := leader.Process.Pid
+	if pgid == syscall.Getpgrp() {
+		t.Fatalf("the fixture shares this process's group (%d); refusing to signal it", pgid)
+	}
+	child := reapChild(leader)
+	select {
+	case <-child.done:
+	case <-time.After(childReadyTripwire):
+		Kill(pgid)
+		<-child.done
+		t.Fatalf("the leader never exited; its output was %q", log.String())
+	}
+	if child.err != nil {
+		t.Fatalf("the leader exited with %v; its output was %q", child.err, log.String())
+	}
+	// From here the leader is reaped and only the orphan can be answering.
+	const grace = 5 * time.Second
+	start := time.Now()
+	for Exists(pgid) {
+		if time.Since(start) > grace {
+			// Cleaned up by that group id alone.
+			Kill(pgid)
+			t.Fatalf("the group still answered %s after its leader was reaped: a zombie-only group reads as alive on this platform for longer than a stop's grace, so the attempt would call a finished command stuck", time.Since(start))
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Logf("the zombie-only group answered for %s after its leader was reaped", time.Since(start))
 }
