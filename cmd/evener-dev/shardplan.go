@@ -360,8 +360,9 @@ func testBoolFlag(name string, value bool) string {
 func checkForwardedValue(name, value string) error {
 	switch name {
 	case "-count":
-		// -test.count is a flag.Uint, so -1 and +3 are not counts.
-		if _, err := strconv.ParseUint(value, 10, 64); err != nil {
+		// -test.count is a flag.Uint, which is ParseUint in base 0 at the
+		// platform's int size: 0x2, 0b10 and 1_0 are counts, -1 and +3 are not.
+		if _, err := strconv.ParseUint(value, 0, strconv.IntSize); err != nil {
 			return fmt.Errorf("-count=%s is not a count the shard binaries would take, and they would refuse it after the survey had already run", value)
 		}
 	case "-timeout":
@@ -389,6 +390,13 @@ func checkGoflags(goflags string) error {
 		name := goFlag(entry)
 		if i := strings.IndexByte(name, '='); i > 0 {
 			name = name[:i]
+		}
+		// The test binary's own spelling belongs to the binary, and the
+		// toolchain does not hand GOFLAGS to a binary this runner launches, so
+		// it reaches nothing at all. The command line takes it without the
+		// prefix, which is the same answer as for every other test-side flag.
+		if strings.HasPrefix(name, "-test.") {
+			return fmt.Errorf("GOFLAGS carries %s, which is the test binary's own spelling of a flag: this runner launches the shards itself, so nothing in GOFLAGS reaches them. Pass it on the command line without the -test. prefix", name)
 		}
 		if testForwardValueFlags[name] || testForwardBareFlags[name] ||
 			testRefusedValueFlags[name] || testRefusedBareFlags[name] {

@@ -262,6 +262,28 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 			err:   "-count=-1 is not a count",
 		},
 		{
+			name:  "nor a signed one",
+			flags: []string{"-count=+3"},
+			err:   "-count=+3 is not a count",
+		},
+		{
+			// flag.Uint parses in base 0, so these are counts wherever the
+			// caller writes them.
+			name:  "the bases and separators go's own flag package takes",
+			flags: []string{"-count=0x2"},
+			test:  []string{"-test.count=0x2"},
+		},
+		{
+			name:  "binary",
+			flags: []string{"-count=0b10"},
+			test:  []string{"-test.count=0b10"},
+		},
+		{
+			name:  "and an underscore separator",
+			flags: []string{"-count=1_0"},
+			test:  []string{"-test.count=1_0"},
+		},
+		{
 			name:  "a seed or off or on, and nothing else, shuffles",
 			flags: []string{"-shuffle=maybe"},
 			err:   "-shuffle=maybe is not off, on, or a seed",
@@ -433,6 +455,11 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 		{name: "a test flag reaches neither half", goflags: "-mod=mod -short", err: "-short"},
 		{name: "and in either spelling", goflags: "--count=2", err: "-count"},
 		{name: "including one this runner refuses outright", goflags: "-run=TestFoo", err: "-run"},
+		// The binary's own spelling reaches the binary even less: the
+		// toolchain never hands GOFLAGS to a process this runner launches.
+		{name: "the test binary's spelling, bare", goflags: "-test.v", err: "-test.v"},
+		{name: "with a value", goflags: "-mod=mod -test.timeout=1s", err: "-test.timeout"},
+		{name: "and one the command line would have taken", goflags: "-test.count=5", err: "-test.count"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := checkGoflags(tc.goflags)
