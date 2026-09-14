@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 
@@ -143,7 +144,12 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 			keptKinds[kind] = struct{}{}
 		}
 	}
-	moved := sourceBinding.Slots
+	// Snapshot the source's owning slots: the update loop below deletes from
+	// sourceRecord.Slots, and when the source binding is missing from the loaded
+	// manifest sourceRecord aliases sourceBinding. Ranging over a clone keeps the
+	// kinds to move intact across a stale-revision retry instead of letting the
+	// delete shrink the set the eventual write copies.
+	moved := maps.Clone(sourceBinding.Slots)
 	for range 5 {
 		manifest, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
@@ -164,6 +170,10 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 		sourceRecord, ok := findScratchBinding(manifest, sourceBinding.BindingID)
 		if !ok {
 			sourceRecord = sourceBinding
+			// Clone rather than alias sourceBinding.Slots: the loop deletes from
+			// sourceRecord.Slots, and aliasing would mutate the caller's binding
+			// (and, before the moved clone above, the set being moved).
+			sourceRecord.Slots = maps.Clone(sourceBinding.Slots)
 		}
 		if sourceRecord.Slots == nil {
 			sourceRecord.Slots = map[string]sandbox.ScratchSlot{}
@@ -176,6 +186,9 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 				continue
 			}
 			targetRecord.Slots[kind] = sandbox.ScratchSlot{Dir: slot.Dir, OwnsLease: true}
+		}
+		if hook := s.cfg.testOnly.scratchSwapBeforeUpdate; hook != nil {
+			hook()
 		}
 		err = sandbox.UpdateScratchBindings(owner, manifest.Revision,
 			[]sandbox.ScratchBinding{targetRecord, sourceRecord},
@@ -279,6 +292,9 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 	if !ok {
 		return nil
 	}
+	if fault := s.sessionInitFault("swap_scratch_consumer_roles"); fault != nil {
+		return fault
+	}
 	if err := s.installScratchRetention(env); err != nil {
 		return err
 	}
@@ -372,16 +388,24 @@ func (s *Session) scratchRetentionPersistenceError() error {
 		}
 		return env.ScratchRetentionError()
 	}
+	s.mu.Lock()
+	sticky := s.scratchRetentionErr
+	parked := s.worktreeRestoreEnv
+	abandoned := append([]*execenv.LocalExecutionEnvironment(nil), s.abandonedEnvs...)
+	shared, _ := s.parentSharedEnv.(*execenv.LocalExecutionEnvironment)
+	s.mu.Unlock()
+	// A publication failure recorded on the session itself — a swap whose
+	// consumer roles could not be persisted after the environment install — is
+	// as fatal as a pin failure: the manifest diverged from the live
+	// environment, so preparation must fail closed.
+	if sticky != nil {
+		return sticky
+	}
 	if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
 		if err := check(local); err != nil {
 			return err
 		}
 	}
-	s.mu.Lock()
-	parked := s.worktreeRestoreEnv
-	abandoned := append([]*execenv.LocalExecutionEnvironment(nil), s.abandonedEnvs...)
-	shared, _ := s.parentSharedEnv.(*execenv.LocalExecutionEnvironment)
-	s.mu.Unlock()
 	envs := make([]*execenv.LocalExecutionEnvironment, 0, len(abandoned)+2)
 	envs = append(envs, parked, shared)
 	envs = append(envs, abandoned...)
@@ -407,7 +431,11 @@ func (s *Session) validateRetainedScratchPresent() error {
 	if err := s.scratchRetentionPersistenceError(); err != nil {
 		return fmt.Errorf("retained scratch persistence: %w", err)
 	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
+	// Verify each reference's immutable ownership/kind identity pin under the
+	// manifest lock, not just that the directory and manifest path exist: a
+	// missing or foreign pin means the next restore would reject the allocation,
+	// so retirement must fail closed rather than proceed to release it.
+	manifest, err := sandbox.ValidateRetainedScratchPins(owner)
 	if err != nil {
 		return err
 	}
@@ -728,6 +756,88 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 		return false, err
 	}
 	return true, nil
+}
+
+// adoptResumedRootScratch adopts sessionID's retained allocation onto env on
+// the resume path. Resume provisions the sandbox before this runs, and
+// EnableSandbox always mints a fresh session scratch; that fresh mint is a
+// replacement, not a live allocation, so adoptRetainedScratchFor's same-kind
+// guard would skip the persisted sandbox slot and leave the session in a new
+// directory with its retained handle orphaned. When the consumer's binding owns
+// a sandbox allocation at a different directory, drop the freshly minted
+// scratch and rebuild env's kernel wrapper around the retained directory before
+// adopting, so the session resumes in the scratch it originally worked in.
+func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment, sessionID string) error {
+	if env == nil {
+		return nil
+	}
+	if dir, ok := s.retainedConsumerSandboxDir(sessionID); ok &&
+		filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
+		env.DisposeSandboxScratch()
+		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+			return err
+		}
+		return s.rebuildSandboxWrapper(env, dir)
+	}
+	_, err := s.adoptConsumerScratch(env, sessionID)
+	return err
+}
+
+// retainedConsumerSandboxDir returns the directory sessionID's current binding
+// owns for the sandbox kind, or ok=false when there is no prepared pool, no
+// consumer, or no lease-owning sandbox slot.
+func (s *Session) retainedConsumerSandboxDir(sessionID string) (string, bool) {
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		return "", false
+	}
+	consumer, ok := pool.consumers[sessionID]
+	if !ok || consumer.CurrentBindingID == "" {
+		return "", false
+	}
+	binding, ok := pool.bindings[consumer.CurrentBindingID]
+	if !ok {
+		return "", false
+	}
+	slot, ok := binding.Slots[sandbox.ScratchKindSandbox]
+	if !ok || !slot.OwnsLease {
+		return "", false
+	}
+	return slot.Dir, true
+}
+
+// rebuildSandboxWrapper rebuilds env's kernel wrapper around dir after a restore
+// replaced its eagerly provisioned session scratch, so the wrapper grants the
+// restored directory as TMPDIR instead of the discarded fresh mint. A wrapperless
+// env (an off or write-blocked allocation with no kernel layer) is left alone.
+func (s *Session) rebuildSandboxWrapper(env *execenv.LocalExecutionEnvironment, dir string) error {
+	if env.Wrapper == nil {
+		return nil
+	}
+	if env.Sandbox == nil {
+		return errors.New("scratch retention: sandbox wrapper has no resolved policy")
+	}
+	wrapper, err := sandbox.NewWrapper(*env.Sandbox, env.Sandbox.HostBinaryPath(), dir)
+	if err != nil {
+		return err
+	}
+	env.Wrapper = wrapper
+	return nil
+}
+
+// recordScratchRetentionError records the first sticky scratch-retention
+// publication failure on this session, so a later preparation readiness check
+// fails closed instead of trusting a manifest that diverged from the live
+// environments. It takes only s.mu and never blocks on I/O.
+func (s *Session) recordScratchRetentionError(err error) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.scratchRetentionErr == nil {
+		s.scratchRetentionErr = err
+	}
+	s.mu.Unlock()
 }
 
 func releaseRetainedScratchPool(pool *retainedScratchPool) {

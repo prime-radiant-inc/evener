@@ -618,6 +618,43 @@ func verifyRetainedScratchPin(owner ScratchOwner, dir, kind string) error {
 	return nil
 }
 
+// ValidateRetainedScratchPins loads owner's retention manifest under the
+// manifest lock and verifies every referenced allocation still carries this
+// owner's immutable identity pin for its kind. It neither acquires a directory
+// lease nor mutates durable state, so it is safe during retirement preparation;
+// holding the manifest lock across the check serializes it against a concurrent
+// release that tombstones the manifest and removes pins. A released manifest is
+// returned with no verification — retirement has nothing left to protect. It
+// returns the loaded manifest so a caller can continue its own binding checks
+// against the same snapshot.
+func ValidateRetainedScratchPins(owner ScratchOwner) (ScratchManifest, error) {
+	if err := owner.validate(); err != nil {
+		return ScratchManifest{}, err
+	}
+	lock, err := acquireScratchRetentionLock(owner)
+	if err != nil {
+		return ScratchManifest{}, err
+	}
+	defer func() { _ = lock.Release() }()
+	manifest, err := loadScratchRetention(owner)
+	if err != nil {
+		return ScratchManifest{}, err
+	}
+	if manifest.Released {
+		return manifest, nil
+	}
+	for _, ref := range manifest.References {
+		dir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			return ScratchManifest{}, err
+		}
+		if err := verifyRetainedScratchPin(owner, dir, ref.Kind); err != nil {
+			return ScratchManifest{}, err
+		}
+	}
+	return manifest, nil
+}
+
 // revalidateRetainedScratchAfterLease re-checks the tombstone and the directory
 // pin after the directory lease has been acquired, closing the window where a
 // concurrent release could tombstone the manifest and remove the pin between

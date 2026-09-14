@@ -979,7 +979,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// environment before it can mint or launch work, so a resumed root
 		// keeps its original scratch path (plan 654's root role).
 		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-			if _, err := s.adoptConsumerScratch(local, s.id); err != nil {
+			if err := s.adoptResumedRootScratch(local, s.id); err != nil {
 				return nil, fmt.Errorf("adopt retained root scratch: %w", err)
 			}
 		}
@@ -1235,7 +1235,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.attachTranscript(tw)
 	if s.cfg.spawn.parentSessionID == "" {
-		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		// Install retention on the environment that OWNS the scratch: worktree
+		// re-entry above replaces s.env with a clone that adopted the caller's
+		// scratch, so pinning the caller's now-empty environment would publish an
+		// empty binding and leave the active clone's allocation unpinned.
+		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
 			if err := s.installScratchRetention(local); err != nil {
 				return nil, fmt.Errorf("scratch retention: %w", err)
 			}

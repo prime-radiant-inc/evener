@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -967,5 +969,360 @@ func TestRetirementRestoreFailsClosedOnReferenceWithoutBinding(t *testing.T) {
 	root.delegateRootSessionID = ""
 	if err := root.prepareRetainedScratch(); err == nil {
 		t.Fatal("restore prepared a manifest that holds references but no binding")
+	}
+}
+
+// TestRetirementResumedRootSandboxScratchRestoresAtOriginalPath is H1: a resumed
+// root whose persisted binding owns a sandbox-allocated scratch must resume in
+// THAT directory. Resume provisions the sandbox before retained-scratch adoption
+// and EnableSandbox always mints a fresh session scratch; without dropping the
+// fresh mint, the same-kind guard leaves the session in a new directory, orphans
+// the retained sandbox slot, and the wrapper grants the wrong TMPDIR.
+func TestRetirementResumedRootSandboxScratchRestoresAtOriginalPath(t *testing.T) {
+	dir := t.TempDir()
+	root1 := newQueuePersistTestSession(t, dir)
+	owner, ok := root1.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root has no scratch retention owner")
+	}
+	env1, ok := root1.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("root has no local environment")
+	}
+	// Mint a sandbox-kind scratch through the real EnableSandbox path (a
+	// write-blocked off policy eagerly provisions one without a kernel wrapper).
+	if err := env1.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("provision E0's sandbox scratch: %v", err)
+	}
+	scratchDir := env1.SessionScratchDir()
+	if scratchDir == "" {
+		t.Fatal("E0 minted no sandbox scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratchDir) })
+	artifact := filepath.Join(scratchDir, "root-sandbox-required.bin")
+	want := []byte("root-sandbox-artifact")
+	if err := os.WriteFile(artifact, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := root1.installScratchRetention(env1); err != nil {
+		t.Fatalf("install root retention: %v", err)
+	}
+	before, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, ok := findScratchBinding(before, scratchConsumerFor(t, before, root1.id).CurrentBindingID)
+	if !ok {
+		t.Fatal("root has no current binding")
+	}
+	if slot := binding.Slots[sandbox.ScratchKindSandbox]; !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(scratchDir) {
+		t.Fatalf("fixture binding sandbox slot = %+v, want it owning %q", slot, scratchDir)
+	}
+	meta := root1.Meta()
+	// Persist a non-off mode so the resume re-provisions an enforced sandbox and
+	// mints a fresh session scratch before adoption runs.
+	meta.Config.Sandbox = sandbox.ModeRestricted.String()
+
+	env1.RetainSessionScratch()
+	_ = root1.jobManager.closeStoreOnly()
+	if err := root1.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	root2, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+		StateDir: dir,
+		testOnly: testConfig{sandboxProber: bwrapCapableProber(dir), skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root2.Close()
+	env2, ok := root2.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("restored root has no local environment")
+	}
+	if got := env2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratchDir) {
+		t.Fatalf("resumed root sandbox scratch = %q, want the retained %q", got, scratchDir)
+	}
+	if env2.Wrapper == nil {
+		t.Fatal("resumed root lost its kernel wrapper")
+	}
+	if got := env2.Wrapper.SessionTmp(); filepath.Clean(got) != filepath.Clean(scratchDir) {
+		t.Fatalf("resumed wrapper session tmp = %q, want the retained %q", got, scratchDir)
+	}
+	got, err := os.ReadFile(artifact)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("retained sandbox artifact lost at original path %q: bytes=%q err=%v", artifact, got, err)
+	}
+	// The root's current binding still owns the retained sandbox slot.
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedBinding, ok := findScratchBinding(manifest, scratchConsumerFor(t, manifest, root2.id).CurrentBindingID)
+	if !ok {
+		t.Fatal("resumed root has no current binding")
+	}
+	if slot := resumedBinding.Slots[sandbox.ScratchKindSandbox]; !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(scratchDir) {
+		t.Fatalf("resumed binding sandbox slot = %+v, want it owning %q", slot, scratchDir)
+	}
+}
+
+// TestRetirementResumedWorktreePinsTheActiveClone is M1: worktree re-entry
+// replaces s.env with a clone that adopted the caller's scratch, so retention
+// must be installed on the active clone. Installing on the caller's now-empty
+// environment would publish an empty binding and leave the clone's allocation
+// unpinned.
+func TestRetirementResumedWorktreePinsTheActiveClone(t *testing.T) {
+	sr, root := newResumeScratchLane(t)
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root has no scratch retention owner")
+	}
+	r := sr.wt()
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	meta := root.Meta()
+	if meta.WorktreePath == "" {
+		t.Fatal("crashed meta records no worktree occupancy")
+	}
+	// Drop the durable retention state so the resumed root starts without an
+	// existing binding (the finding's "sessions without an existing binding").
+	if err := os.RemoveAll(filepath.Join(sr.stateDir, "scratch-retention")); err != nil {
+		t.Fatal(err)
+	}
+	crashResumeScratchRoot(t, root)
+
+	// A caller environment with a live scratch; re-entry's clone adopts it.
+	launchEnv := execenv.NewLocalExecutionEnvironment(sr.mainRoot)
+	if _, err := launchEnv.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("mint caller scratch: %v", err)
+	}
+	claimed := launchEnv.SessionScratchDir()
+	if claimed == "" {
+		t.Fatal("caller environment minted no scratch")
+	}
+	restored, err := sr.restoreSessionOn(launchEnv, meta, sr.restoreConfig())
+	if err != nil {
+		t.Fatalf("resume root: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	active, ok := restored.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || sameEnvironment(active, launchEnv) {
+		t.Fatalf("re-entry did not install a distinct clone (active=%p caller=%p)", active, launchEnv)
+	}
+	scratch := active.SessionScratchDir()
+	if filepath.Clean(scratch) != filepath.Clean(claimed) {
+		t.Fatalf("active clone scratch = %q, want the adopted %q", scratch, claimed)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, ok := findScratchBinding(manifest, scratchConsumerFor(t, manifest, restored.id).CurrentBindingID)
+	if !ok {
+		t.Fatal("resumed root has no current binding")
+	}
+	slot, ok := binding.Slots[sandbox.ScratchKindUnsandboxed]
+	if !ok || !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(scratch) {
+		t.Fatalf("resumed binding slots = %+v, want the active clone's scratch %q pinned", binding.Slots, scratch)
+	}
+}
+
+// TestRetirementSwapPublicationFailureIsSticky is M3: a post-swap
+// registerScratchConsumerRoles failure is emitted as a warning but must also be
+// recorded sticky, so a later preparation readiness check fails closed with a
+// persistence error instead of trusting a manifest that diverged from the live
+// environments.
+func TestRetirementSwapPublicationFailureIsSticky(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	root := r.s
+	defer root.Close()
+	launch, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("root has no local environment")
+	}
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("mint launch scratch: %v", err)
+	}
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("enter worktree: %v", err)
+	}
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "swap_scratch_consumer_roles" {
+			return errors.New("injected scratch retention publication failure")
+		}
+		return nil
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if err := root.scratchRetentionPersistenceError(); err == nil {
+		t.Fatal("post-swap publication failure was not recorded sticky")
+	}
+	if err := root.validateRetainedScratchPresent(); err == nil {
+		t.Fatal("preparation did not fail closed on the sticky publication failure")
+	}
+}
+
+// TestRetirementStaleSwapRetryKeepsMovedSlots is M4: a stale-revision retry in
+// stageScratchSwapBinding when the source binding is absent from the loaded
+// manifest must not drop the kinds it is moving. Before the fix the loop deleted
+// those kinds from the aliased source map (and so from the moved set), so the
+// eventual successful write left the target binding with no owning slots.
+func TestRetirementStaleSwapRetryKeepsMovedSlots(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root has no scratch retention owner")
+	}
+	base := t.TempDir()
+	workDir := t.TempDir()
+	sandboxScratch, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsandboxedScratch, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		sandboxScratch.Retain()
+		unsandboxedScratch.Retain()
+		_ = os.RemoveAll(sandboxScratch.Dir)
+		_ = os.RemoveAll(unsandboxedScratch.Dir)
+	})
+	if err := sandboxScratch.Pin(owner, sandbox.ScratchReference{Dir: sandboxScratch.Dir, Kind: sandbox.ScratchKindSandbox}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unsandboxedScratch.Pin(owner, sandbox.ScratchReference{Dir: unsandboxedScratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}); err != nil {
+		t.Fatal(err)
+	}
+	// A source environment that names a binding the manifest does NOT hold: the
+	// aliasing path the finding describes.
+	source := execenv.NewLocalExecutionEnvironment(workDir)
+	if err := source.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{
+		BindingID:      "missing-source",
+		OwnerSessionID: root.id,
+		WorkingDir:     workDir,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox:     {Dir: sandboxScratch.Dir, OwnsLease: true},
+			sandbox.ScratchKindUnsandboxed: {Dir: unsandboxedScratch.Dir, OwnsLease: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target := execenv.NewLocalExecutionEnvironment(workDir)
+
+	// Force exactly one stale-revision retry: bump the manifest revision between
+	// the loop's load and its update on the first attempt.
+	flipped := false
+	root.cfg.testOnly.scratchSwapBeforeUpdate = func() {
+		if flipped {
+			return
+		}
+		flipped = true
+		current, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Errorf("load manifest in stale hook: %v", err)
+			return
+		}
+		if err := sandbox.UpdateScratchBindings(owner, current.Revision, nil, nil); err != nil {
+			t.Errorf("bump manifest revision in stale hook: %v", err)
+		}
+	}
+	if err := root.stageScratchSwapBinding(target, source, root.id); err != nil {
+		t.Fatalf("stageScratchSwapBinding: %v", err)
+	}
+	targetBinding, err := target.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, ok := findScratchBinding(manifest, targetBinding.BindingID)
+	if !ok {
+		t.Fatalf("target binding %q missing after the retried swap: %+v", targetBinding.BindingID, manifest.Bindings)
+	}
+	want := map[string]string{
+		sandbox.ScratchKindSandbox:     sandboxScratch.Dir,
+		sandbox.ScratchKindUnsandboxed: unsandboxedScratch.Dir,
+	}
+	for kind, wantDir := range want {
+		slot, ok := stored.Slots[kind]
+		if !ok || !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(wantDir) {
+			t.Fatalf("target binding %q slot %q = %+v, want it owning %q; moved kinds were dropped across the stale retry", stored.BindingID, kind, slot, wantDir)
+		}
+	}
+}
+
+// TestRetirementRejectsForeignRetainedScratchPin is L1: validateRetainedScratchPresent
+// must verify each reference's ownership/kind identity pin, not just that the
+// directory and manifest path exist. A foreign pin means the next restore would
+// reject the allocation, so retirement readiness must fail closed.
+func TestRetirementRejectsForeignRetainedScratchPin(t *testing.T) {
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	base := t.TempDir()
+	const rootID = "l1-foreign-pin-root"
+	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootID}
+	scratch, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		scratch.Retain()
+		_ = os.RemoveAll(scratch.Dir)
+	})
+	if err := scratch.Pin(owner, sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision,
+		[]sandbox.ScratchBinding{{
+			BindingID:      "E0",
+			OwnerSessionID: rootID,
+			WorkingDir:     workDir,
+			Slots:          map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}},
+		}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	root.stateDir = stateDir
+	root.id = rootID
+	root.delegateRootSessionID = ""
+	// Baseline: the identity-matching pin the fixture wrote must be accepted.
+	if err := root.validateRetainedScratchPresent(); err != nil {
+		t.Fatalf("validate with the owner's own pin: %v", err)
+	}
+	// Overwrite the pin with a foreign owner's for the same directory and kind.
+	foreignPin := map[string]any{
+		"version": 1,
+		"owner":   map[string]any{"state_dir": "/foreign-state", "root_session_id": "foreign-root"},
+		"dir":     scratch.Dir,
+		"kind":    sandbox.ScratchKindUnsandboxed,
+	}
+	raw, err := json.Marshal(foreignPin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scratch.Dir, ".evener-retained-session.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.validateRetainedScratchPresent(); err == nil {
+		t.Fatal("retirement readiness accepted a foreign ownership pin")
 	}
 }

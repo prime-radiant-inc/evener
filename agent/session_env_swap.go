@@ -209,6 +209,11 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// abandoned set, both decided by record() under the same s.mu hold that
 	// installs next, so an early publish would record pre-swap roles.
 	if err := s.registerScratchConsumerRoles(next); err != nil {
+		// The swap is already committed (s.env is next and the caller's rollback
+		// must not run), so the failure is a warning for the op — but the manifest
+		// may now diverge from the environment, so it is recorded sticky for the
+		// preparation readiness check to fail closed with a persistence error.
+		s.recordScratchRetentionError(err)
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
 			"scratch retention publication after environment swap failed: %v", err)})
 	}

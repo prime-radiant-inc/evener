@@ -538,6 +538,11 @@ type testConfig struct {
 	// close cancels that work. Nil in production.
 	swapEnvAfterAdopt func(refreshCtx context.Context)
 
+	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
+	// before each UpdateScratchBindings attempt, so a test can make the first
+	// attempt stale and exercise the rebase-and-retry loop. Nil in production.
+	scratchSwapBeforeUpdate func()
+
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
 	// close can land — so a test can run one there against a session whose
