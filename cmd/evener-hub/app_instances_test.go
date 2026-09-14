@@ -16,6 +16,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3695,4 +3697,141 @@ func TestProviderSetup_EnvironmentDestinationIsSanitized(t *testing.T) {
 		t.Fatalf("setup does not reflect sanitized resolved environment destination: %+v", p.Setup)
 	}
 	requireNoProviderSecrets(t, list, "user-sentinel", "password-sentinel", "query-sentinel", "fragment-sentinel")
+}
+
+// List reads the registry snapshot and providers.toml as one view. A mutation
+// writes the file and reloads the registry inside c.mu, so a listing that ran
+// between those two halves of a mutation would serve a row carrying the fresh
+// authored credential fields beside the endpoint and endpoint fingerprint of
+// the view the reload has not committed yet. List has to hold the lock for its
+// whole snapshot: it may not return while a mutation is mid-section, and the
+// listing it does return must be one generation throughout.
+func TestInstances_ListWaitsForAMutationHoldingTheLock(t *testing.T) {
+	const (
+		aURL = "https://a.example.test/v1"
+		bURL = "https://b.example.test/v1"
+		aKey = "KEY_A"
+		bKey = "KEY_B"
+	)
+
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:      "work",
+		Base:      "openai",
+		BaseURL:   aURL,
+		APIKeyEnv: aKey,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	settled := entry(t, f.ctl.List(), "work")
+	if settled.BaseURL != aURL || settled.APIKeyEnv != aKey {
+		t.Fatalf("fixture drift: settled row = %+v, want baseURL %q apiKeyEnv %q", settled, aURL, aKey)
+	}
+	fpA := settled.EndpointFingerprint
+	if fpA == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+
+	// A registry whose loader can be paused. The controller swaps its live
+	// registry (the rollback tests replace f.ctl.reg and f.ctl.auth.reg the same
+	// way), and the pause catches the mutation between its providers.toml write
+	// and the reload that commits it: the file already carries the new values
+	// while the registry still holds the old snapshot.
+	armed := atomic.Bool{}
+	loadEntered := make(chan struct{})
+	releaseLoad := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseLoad) }) }
+	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if armed.CompareAndSwap(true, false) {
+			close(loadEntered)
+			<-releaseLoad
+		}
+		opts := append(
+			testProbeRegistryOptions(f.stateDir, f.store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(f.tomlPath),
+		)
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, f.store, err
+	}
+	replacement := hubcore.NewProviderRegistry(loadFn)
+	if err := replacement.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+	f.ctl.reg = replacement
+	f.ctl.auth.reg = replacement
+
+	editDone := make(chan error, 1)
+	editFinished := make(chan struct{})
+	armed.Store(true)
+	go func() {
+		defer close(editFinished)
+		editDone <- f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: bURL, APIKeyEnv: bKey})
+	}()
+
+	select {
+	case <-loadEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Edit never reached its reload, so the loader was not paused")
+	}
+
+	listDone := make(chan appwire.InstanceListResponse, 1)
+	listFinished := make(chan struct{})
+	go func() {
+		defer close(listFinished)
+		listDone <- f.ctl.List()
+	}()
+	t.Cleanup(func() {
+		release()
+		for _, finished := range []chan struct{}{editFinished, listFinished} {
+			select {
+			case <-finished:
+			case <-time.After(10 * time.Second):
+				t.Error("a goroutine was still blocked after the loader was released")
+			}
+		}
+	})
+
+	// The loader is paused inside the mutation's held lock, so List has to be
+	// waiting on it: one that returns here read a half-committed mutation.
+	select {
+	case got := <-listDone:
+		row := entry(t, got, "work")
+		t.Fatalf("List returned while a mutation held the controller lock: row baseURL=%q apiKeyEnv=%q endpointFingerprint=%q; want the listing to wait and then serve one generation (A: %q/%q/%q, B: %q/%q)",
+			row.BaseURL, row.APIKeyEnv, row.EndpointFingerprint, aURL, aKey, fpA, bURL, bKey)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	if err := <-editDone; err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	select {
+	case resp = <-listDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("List never returned after the mutation completed")
+	}
+
+	// The generations in question, read from the settled pane after the edit.
+	settledB := entry(t, f.ctl.List(), "work")
+	if settledB.BaseURL != bURL || settledB.APIKeyEnv != bKey {
+		t.Fatalf("fixture drift: after the edit the pane serves %+v, want baseURL %q apiKeyEnv %q", settledB, bURL, bKey)
+	}
+	fpB := settledB.EndpointFingerprint
+	if fpB == "" || fpB == fpA {
+		t.Fatalf("fixture drift: moving the endpoint must move the fingerprint: %q then %q", fpA, fpB)
+	}
+
+	row := entry(t, resp, "work")
+	switch {
+	case row.BaseURL == aURL && row.APIKeyEnv == aKey && row.EndpointFingerprint == fpA:
+		// The pre-edit generation, self-consistent.
+	case row.BaseURL == bURL && row.APIKeyEnv == bKey && row.EndpointFingerprint == fpB:
+		// The post-edit generation, self-consistent.
+	default:
+		t.Fatalf("List served a mixed row: baseURL=%q apiKeyEnv=%q endpointFingerprint=%q; want all of A (%q/%q/%q) or all of B (%q/%q/%q)",
+			row.BaseURL, row.APIKeyEnv, row.EndpointFingerprint, aURL, aKey, fpA, bURL, bKey, fpB)
+	}
 }

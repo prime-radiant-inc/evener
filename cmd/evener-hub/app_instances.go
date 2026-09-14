@@ -33,7 +33,12 @@ type hubInstancesController struct {
 	reg                 *hubcore.ProviderRegistry
 	providersConfigPath string
 	auth                *hubAuthController
-	mu                  sync.Mutex
+	// mu is held exclusively across every mutation's read, write and reload,
+	// and shared by List across its whole snapshot: a listing must not pair the
+	// authored layer of one generation of providers.toml with the registry view
+	// of another. Every controller lock is taken in the order mu then
+	// auth.credMu, List included, so the read side adds no ordering.
+	mu sync.RWMutex
 }
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
@@ -48,6 +53,13 @@ func (c *hubInstancesController) write(l *registry.Layer) error {
 // credential status, plus the providers an add form can build on and the
 // diagnostics the pane shows above them.
 func (c *hubInstancesController) List() appwire.InstanceListResponse {
+	// The registry snapshot, the reread of providers.toml and every row built
+	// from both are one view (entryFor): a mutation's write lands the authored
+	// fields before its reload commits the resolved endpoint, so a listing that
+	// ran between them without this lock would serve a row carrying one
+	// generation's credential fields beside the other's URL and fingerprint.
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	entries := make([]appwire.InstanceEntry, 0)
 	providers := make([]appwire.ProviderDescriptor, 0)
 	userLayer := ""
