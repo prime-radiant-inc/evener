@@ -8,7 +8,12 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./ConnectProviderDialog.module.css";
 import { CredentialsSection } from "./CredentialsSection";
-import { activeSourceLabel, safeCredentialTestResult } from "./credentialLabels";
+import {
+  activeSourceLabel,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  isEndpointConflict,
+  safeCredentialTestResult,
+} from "./credentialLabels";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
@@ -201,20 +206,41 @@ function ManageConnections({
     setOpenEditor(editor);
   }
 
+  // instanceFingerprint is where the row the user acted on says the name
+  // resolves. The probe asserts it, so the hub can refuse a check whose name was
+  // re-pointed since this listing was read.
+  function instanceFingerprint(name: string): string | undefined {
+    return instances.find((candidate) => candidate.name === name)?.endpointFingerprint;
+  }
+
   async function testConnection(name: string): Promise<void> {
     const operation = beginOperation();
     const version = instanceVersion.current;
     setTestState({ name, version, pending: true });
     try {
-      const result = safeCredentialTestResult(name, await credentialsStore.getState().testCredentials(name));
+      const result = safeCredentialTestResult(
+        name,
+        await credentialsStore.getState().testCredentials(name, instanceFingerprint(name)),
+      );
       if (!mounted.current || operationVersion.current !== operation || instanceVersion.current !== version) return;
       if (result.status === "success") {
         onConnected(name);
         return;
       }
       setTestState({ name, version, pending: false, result });
-    } catch {
+    } catch (err) {
       if (!mounted.current || operationVersion.current !== operation || instanceVersion.current !== version) return;
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted endpoint: the name moved since this
+        // listing was read. Say so, and re-read the listing so a retry asserts
+        // the destination now on screen rather than the stale one just refused.
+        setTestState({ name, version, pending: false, notice: ENDPOINT_CHANGED_TEST_MESSAGE });
+        void credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
+        return;
+      }
       setTestState({
         name,
         version,

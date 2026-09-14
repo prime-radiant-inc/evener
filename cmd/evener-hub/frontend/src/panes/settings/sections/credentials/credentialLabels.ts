@@ -4,6 +4,7 @@
 // design.md §11.3): computing the credential display from InstanceEntry's
 // activeSource/credentialRequired/auth fields and the providerId grouping -
 // no rendering, no store access, easily unit-tested in isolation.
+import { WireError } from "../../../../protocol/errors";
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 
 const STORED_KEY_LABEL = "Configured via stored API key";
@@ -155,3 +156,19 @@ export function safeCredentialTestResult(provider: string, response: AuthTestRes
 export function safeCredentialTestMessage(status: string): string {
   return CREDENTIAL_TEST_MESSAGES[status] ?? ENDPOINT_FAILURE_MESSAGE;
 }
+
+// isEndpointConflict recognizes the hub's refusal of an asserted destination
+// (appwire.Conflict: code -32013 with data.evenerErrorInfo "conflict"): the
+// name no longer resolves where the client asserting it was told it does. Every
+// credential flow presents this as a changed connection rather than a failure
+// of the endpoint itself.
+export function isEndpointConflict(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "conflict";
+}
+
+// ENDPOINT_CHANGED_TEST_MESSAGE is what a credential test says when the hub
+// refuses its asserted destination: the name moved since the listing the row
+// was read from, so testing again has to start from the destination now on
+// screen.
+export const ENDPOINT_CHANGED_TEST_MESSAGE =
+  "This connection changed to a different endpoint. Check its destination and test again.";

@@ -1,11 +1,10 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import { WireError } from "../../../../protocol/errors";
 import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
-import { activeSourceLabel, safeCredentialTestResult } from "./credentialLabels";
+import { activeSourceLabel, isEndpointConflict, safeCredentialTestResult } from "./credentialLabels";
 import { AddInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
@@ -90,14 +89,6 @@ function destination(row: InstanceEntry | undefined): string {
 }
 function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
-}
-
-// The hub's refusal when the endpoint this flow asserted on a credential write
-// is not the one the name resolves to anymore (appwire.Conflict): the
-// connection moved between this flow's check and the write - the one gap the
-// client cannot close by comparing a listing it already holds.
-function isEndpointConflict(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === "conflict";
 }
 
 export function ProviderConnection(props: ProviderConnectionProps) {

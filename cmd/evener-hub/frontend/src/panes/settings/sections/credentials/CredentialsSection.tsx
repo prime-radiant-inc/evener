@@ -31,7 +31,12 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
 import styles from "./CredentialsSection.module.css";
-import { groupByProvider, safeCredentialTestResult } from "./credentialLabels";
+import {
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  groupByProvider,
+  isEndpointConflict,
+  safeCredentialTestResult,
+} from "./credentialLabels";
 import { InstanceRow } from "./InstanceRow";
 import { InstanceSheet } from "./InstanceSheet";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
@@ -180,6 +185,13 @@ export function CredentialsSection({
     }
   }
 
+  // instanceFingerprint is where the listing the row was read from says the
+  // name resolves. The probe asserts it, so the hub can refuse a check whose
+  // name was re-pointed since that read.
+  function instanceFingerprint(name: string): string | undefined {
+    return instances.find((candidate) => candidate.name === name)?.endpointFingerprint;
+  }
+
   async function handleTestCredentials(name: string): Promise<void> {
     const version = instanceVersion.current;
     if (credentialTests[name]?.version === version && credentialTests[name]?.pending) return;
@@ -196,8 +208,18 @@ export function CredentialsSection({
       }));
     }
     try {
-      settle(await credentialsStore.getState().testCredentials(name));
-    } catch {
+      settle(await credentialsStore.getState().testCredentials(name, instanceFingerprint(name)));
+    } catch (err) {
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted destination: the name moved since this
+        // listing was read, so there is no honest test result to show. Clear
+        // the pending test, say why, and re-read the listing so a retry asserts
+        // the destination now on screen.
+        setCredentialTests((current) => ({ ...current, [name]: { version, pending: false } }));
+        toast.push("error", ENDPOINT_CHANGED_TEST_MESSAGE);
+        void fetch().catch(() => {});
+        return;
+      }
       settle({ provider: name, status: "endpoint_failure", message: "" });
     }
   }

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render as renderComponent, screen, waitFor, wi
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type {
   AuthDeviceStartResponse,
@@ -16,6 +17,7 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { CredentialsSection } from "./CredentialsSection";
+import { ENDPOINT_CHANGED_TEST_MESSAGE } from "./credentialLabels";
 
 // Existing cases exercise management, now reached explicitly from discovery.
 function render(element: ReactElement) {
@@ -911,6 +913,55 @@ describe("ConnectProviderDialog", () => {
     await userEvent.setup().click(within(chooser).getByRole("button", { name: "Retry test" }));
     await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
     expect(attempts).toBe(2);
+  });
+
+  test("the connection test asserts the selected instance's fingerprint", async () => {
+    const row = instance({
+      name: "work",
+      providerId: "anthropic",
+      authModes: ["apiKey"],
+      endpointFingerprint: "fp-manage-test",
+    });
+    const fake = connectFakeClient({ instances: [row], availableProviders: [] });
+    fake.on("evener/auth/test", () => ({ provider: "work", status: "success", message: "ignored" }));
+    const onConnected = vi.fn();
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Test connection" }));
+    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
+    expect(fake.calls.find((call) => call.method === "evener/auth/test")?.params).toEqual({
+      provider: "work",
+      expectedEndpointFingerprint: "fp-manage-test",
+    });
+  });
+
+  test("a refused assertion is shown as a changed connection, not an endpoint failure", async () => {
+    const row = instance({
+      name: "work",
+      providerId: "anthropic",
+      authModes: ["apiKey"],
+      endpointFingerprint: "fp-manage-test",
+    });
+    const listing = { instances: [row], availableProviders: [] };
+    const fake = connectFakeClient(listing);
+    // The refresh the refusal schedules must resolve, so the notice is the
+    // state the row settles into rather than a loading purgatory.
+    fake.on("evener/instance/list", () => listing);
+    fake.on("evener/auth/test", () => {
+      throw new WireError("instance changed", -32013, { evenerErrorInfo: "conflict" });
+    });
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
+
+    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Test connection" }));
+
+    expect(await within(chooser).findByText(ENDPOINT_CHANGED_TEST_MESSAGE)).toBeTruthy();
+    expect(within(chooser).getByRole("button", { name: "Retry test" })).toBeTruthy();
+    expect(
+      within(chooser).queryByText(
+        "The provider endpoint could not be reached. Check the endpoint and network connection.",
+      ),
+    ).toBeNull();
   });
 
   test("cancelling the API-key editor destroys its secret and returns to the chooser", async () => {

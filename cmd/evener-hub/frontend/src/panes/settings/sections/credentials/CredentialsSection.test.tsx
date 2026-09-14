@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type {
   AuthLogoutResponse,
@@ -14,6 +15,7 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
+import { ENDPOINT_CHANGED_TEST_MESSAGE } from "./credentialLabels";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -518,6 +520,72 @@ describe("credential verification", () => {
       await response.promise;
     });
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  // roborev PR #1136: the probe asserts the destination the row was read from,
+  // so the hub can refuse a check whose name has since been re-pointed to an
+  // unreviewed endpoint instead of sending the stored credential there.
+  test("the test asserts the selected instance's fingerprint", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
+    fake.on("evener/auth/test", (params) => {
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+      return { provider: "work", status: "success", message: "Credentials verified." };
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    await vi.waitFor(() => {
+      const calls = fake.calls.filter((call) => call.method === "evener/auth/test");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+    });
+  });
+
+  // roborev PR #1136: the hub refusing the asserted destination is not an
+  // endpoint failure - the name moved since this listing was read, so there is
+  // no honest probe result to show. Report the changed connection, clear the
+  // pending test, and re-read the listing so a retry asserts the destination
+  // now on screen rather than the one the credential was aimed at.
+  test("a refused assertion is reported as a changed connection and re-reads the listing", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    let listCalls = 0;
+    fake.on("evener/instance/list", () => {
+      listCalls += 1;
+      return { instances: [WORK_FP], availableProviders: [] };
+    });
+    fake.on("evener/auth/test", () => {
+      throw new WireError("endpoint changed", -32013, { evenerErrorInfo: "conflict" });
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const callsBefore = listCalls;
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    await screen.findByText(ENDPOINT_CHANGED_TEST_MESSAGE);
+    expect(screen.queryByText(/provider endpoint could not be reached/)).toBeNull();
+    // The refused assertion is not a result: the pending test clears and the
+    // action returns to its idle label.
+    await waitFor(() =>
+      expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    // A retry has to assert the destination now on screen, so the listing is
+    // re-read after the refusal.
+    await waitFor(() => expect(listCalls).toBeGreaterThan(callsBefore));
   });
 });
 
