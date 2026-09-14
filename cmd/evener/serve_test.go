@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1012,6 +1013,91 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 
 	if len(got.Agents) != 2 || got.Agents[0] != "explorer" || got.Agents[1] != "default" {
 		t.Errorf("Agents = %v, want [explorer default]", got.Agents)
+	}
+}
+
+// TestAgentToServerDetailedStatusCopiesRealSkillControls drives REAL
+// discovery (skill.Discover over on-disk SKILL.md fixtures) through the
+// daemon's agent-to-server conversion and proves the Stage 1 invocation
+// controls, availability verdict, and allowed-tools metadata survive it.
+// Skills are fixtures, not hand-set DTO fields: the controls under assertion
+// are parsed from the frontmatter on disk.
+func TestAgentToServerDetailedStatusCopiesRealSkillControls(t *testing.T) {
+	skillsDir := t.TempDir()
+	writeSkillFixture := func(dir, frontmatter string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(skillsDir, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\n" + frontmatter + "\n---\n\nbody text\n"
+		if err := os.WriteFile(filepath.Join(skillsDir, dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSkillFixture("clean", "name: clean\ndescription: a plain user skill\nallowed-tools:\n  - read_file\n  - grep")
+	writeSkillFixture("hidden", "name: hidden\ndescription: hidden from the model\ndisable-model-invocation: true")
+	writeSkillFixture("private", "name: private\ndescription: not user invocable\nuser-invocable: false")
+	writeSkillFixture("broken", "name: broken")
+
+	catalog := skill.Discover(execenv.NewLocalExecutionEnvironment(t.TempDir()), skill.DiscoverOptions{
+		ExtraDirs: []string{skillsDir},
+	})
+
+	// Mirror agent.(*Session).DetailedStatus (agent/status.go): the
+	// inspection catalog carries every winner with its controls, and Skills
+	// is its user-advertisement view.
+	agentStatus := agent.DetailedStatus{SkillCatalog: catalog.InspectionEntries()}
+	for _, descriptor := range agentStatus.SkillCatalog {
+		if descriptor.Unavailable || !descriptor.Controls.UserInvocable {
+			continue
+		}
+		meta := descriptor.Meta
+		meta.Name, meta.Dir, meta.SkillFile = descriptor.CatalogName, "", ""
+		agentStatus.Skills = append(agentStatus.Skills, meta)
+	}
+
+	got := agentToServerDetailedStatus(agentStatus)
+
+	byName := map[string]server.SkillInfo{}
+	for _, s := range got.Skills {
+		byName[s.Name] = s
+	}
+	clean, ok := byName["clean"]
+	if !ok {
+		t.Fatalf("clean skill missing from advertised list: %+v", got.Skills)
+	}
+	if !clean.UserInvocable || !clean.Available || clean.DisableModelInvocation ||
+		!reflect.DeepEqual(clean.AllowedTools, []string{"read_file", "grep"}) {
+		t.Fatalf("clean skill controls = %+v, want user-invocable available with [read_file grep]", clean)
+	}
+	hidden, ok := byName["hidden"]
+	if !ok {
+		t.Fatalf("hidden skill missing from advertised list: %+v", got.Skills)
+	}
+	// disable-model-invocation hides the skill from the MODEL's advertisement
+	// but not from user completion, so the wire must carry its real flag.
+	if !hidden.DisableModelInvocation || !hidden.UserInvocable || !hidden.Available {
+		t.Fatalf("hidden skill controls = %+v, want disable-model-invocation with user-invocable available", hidden)
+	}
+	// The completion predicate (Available && UserInvocable) keeps the
+	// user-invocable skills and excludes the unavailable and not-user-invocable
+	// ones, which real discovery never lists in the user view. Evener's
+	// bundled skills are always part of the real catalog, so the kept set is
+	// asserted by membership, not by exact equality.
+	var kept []string
+	for _, s := range got.Skills {
+		if s.Available && s.UserInvocable {
+			kept = append(kept, s.Name)
+		}
+	}
+	if !slices.Contains(kept, "clean") || !slices.Contains(kept, "hidden") {
+		t.Fatalf("completion predicate kept = %v, want clean and hidden", kept)
+	}
+	if _, listed := byName["broken"]; listed {
+		t.Fatal("unavailable skill was advertised")
+	}
+	if _, listed := byName["private"]; listed {
+		t.Fatal("not-user-invocable skill was advertised")
 	}
 }
 

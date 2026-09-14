@@ -36,6 +36,11 @@ export interface MutationIntent {
   // every marker to prose at the submit boundary, so a payload restored
   // straight into a composer would carry sentences about images in place of
   // the anchors its tiles remove. Absent on intents no composer authored.
+  // Canonical skill selections need no sibling field here: they ride
+  // payload.input as {type: "skill", name} items (appended after the text
+  // and image items by buildComposerInput), so the outbox, optimistic, and
+  // recovery stores all carry them in the one record they already persist -
+  // there is no second outbox or recovery store for them.
   composerText?: string;
 }
 

@@ -1,3 +1,4 @@
+import { canonicalSkillNames } from "../../../../protocol/composerInput";
 import type { ThreadModel } from "../../../../protocol/model";
 import type { InputItem, PendingMutation } from "../../../../protocol/types.gen";
 import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
@@ -12,6 +13,11 @@ export interface PendingTurnEntry {
   method: PendingMethod;
   text: string;
   imageCount: number;
+  // Canonical skill selections submitted alongside (or instead of) the text,
+  // from the same input the entry is otherwise built from. A skill-only
+  // queued submission has no text at all, so these names are its whole
+  // user-visible content.
+  skillNames: string[];
   createdAt?: number;
   state: PendingTurnState;
   source: "outbox" | "optimistic" | "authoritative";
@@ -33,13 +39,18 @@ function pendingMethod(method: string): PendingMethod | undefined {
   return undefined;
 }
 
-function inputPreview(input: InputItem[] | undefined): { text: string; imageCount: number } {
+function inputPreview(input: InputItem[] | undefined): { text: string; imageCount: number; skillNames: string[] } {
   const text = input
     ?.filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
     .join("\n");
   const imageCount = input?.filter((item) => item.type === "image").length ?? 0;
-  return { text: text ?? "", imageCount };
+  const skillNames = canonicalSkillNames(
+    input
+      ?.filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
+      .map((item) => item.name),
+  );
+  return { text: text ?? "", imageCount, skillNames };
 }
 
 type BrowserPendingRecord = MutationOutboxRecord | MutationOptimisticRecord;

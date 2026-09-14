@@ -1,3 +1,4 @@
+import { canonicalSkillNames } from "../../../../protocol/composerInput";
 import type { InputItem } from "../../../../protocol/types.gen";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import { markerText } from "../attachments/textareaMarkers";
@@ -6,6 +7,11 @@ import type { PendingAttachment } from "../attachments/useAttachments";
 export interface RecoveredComposerDraft {
   text: string;
   attachments: PendingAttachment[];
+  // The record's canonical skill selections, deduplicated in catalog order.
+  // A selection is never prose: the payload carried it as a {type: "skill",
+  // name} input item, and restoring it puts the name back on the composer's
+  // selection list rather than into the textarea.
+  skillNames: string[];
 }
 
 function recordInput(record: MutationRecoveryRecord): InputItem[] {
@@ -14,6 +20,14 @@ function recordInput(record: MutationRecoveryRecord): InputItem[] {
 
 function markerNumbers(text: string): number[] {
   return Array.from(text.matchAll(/\[image (\d+)\]/g), (match) => Number(match[1]));
+}
+
+function skillSelections(input: InputItem[]): string[] {
+  return canonicalSkillNames(
+    input
+      .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
+      .map((item) => item.name),
+  );
 }
 
 // The record carries both halves of the pairing the composer needs: the text
@@ -44,13 +58,14 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
       pending: false,
     };
   });
-  return { text, attachments };
+  return { text, attachments, skillNames: skillSelections(input) };
 }
 
 export function mergeRecoveryComposerDraft(
   currentText: string,
   currentAttachments: PendingAttachment[],
   recovered: RecoveredComposerDraft,
+  currentSkillNames: readonly string[] = [],
 ): RecoveredComposerDraft {
   const usedMarkers = new Set([
     ...markerNumbers(currentText),
@@ -69,8 +84,14 @@ export function mergeRecoveryComposerDraft(
     return replacement === undefined ? match : markerText(replacement);
   });
   const text = [currentText, recoveredText].filter((part) => part.length > 0).join("\n\n");
+  // Selections union the same way the text does, current names first, so a
+  // recovery edit never drops a skill the user already selected - and never
+  // duplicates one the record carries too. The union is canonicalized so a
+  // padded or empty name from either side collapses to the same list.
+  const skillNames = canonicalSkillNames([...currentSkillNames, ...recovered.skillNames]);
   return {
     text,
     attachments: [...currentAttachments, ...attachments],
+    skillNames,
   };
 }
