@@ -57,8 +57,12 @@ func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, er
 // StartThread forwards thread/start, which the remote hub serves hub-scoped and
 // spawns on its own host. ThreadStartParams carries no ref.
 func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	remote := params
+	// Source names this source in the controller's registry; the remote hub
+	// would resolve it against its own, so it is cleared before forwarding.
+	remote.Source = ""
 	var out appwire.ThreadStartResponse
-	if err := s.call(ctx, appwire.MethodThreadStart, params, &out); err != nil {
+	if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
 	return out, nil

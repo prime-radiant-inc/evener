@@ -81,6 +81,9 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			for _, host := range cfg.RemoteHosts {
 				source := appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)
 				source.SetHostFacts(cfg.RemoteHostFacts)
+				source.SetHostOnline(func() bool {
+					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
+				})
 				registry.Add(source)
 			}
 		}

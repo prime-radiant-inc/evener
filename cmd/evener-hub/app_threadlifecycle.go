@@ -50,7 +50,10 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
-	sourceID := launchSourceID(params)
+	sourceID := strings.TrimSpace(params.Source)
+	if sourceID == "" {
+		sourceID = launchSourceID(params)
+	}
 	if sourceID != "" && sourceID != "local" {
 		source, ok := sources.Source(sourceID)
 		if !ok || source == nil {

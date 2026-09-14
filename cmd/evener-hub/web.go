@@ -54,6 +54,23 @@ type WebServer struct {
 
 var manifestMarshal = json.Marshal
 
+// sourceOnline reports whether a source can currently serve requests. A
+// source without an OnlineSource implementation is assumed online, as is an
+// unknown ID or a server with no source registry.
+func (s *WebServer) sourceOnline(id string) bool {
+	if s.sources == nil {
+		return true
+	}
+	source, ok := s.sources.Source(id)
+	if !ok || source == nil {
+		return true
+	}
+	if online, ok := source.(appsource.OnlineSource); ok {
+		return online.Online()
+	}
+	return true
+}
+
 // NewWebServer constructs the web server.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	return newWebServer(cfg, nil)
