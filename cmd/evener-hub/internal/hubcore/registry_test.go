@@ -83,7 +83,7 @@ func TestReloadFailurePreservesLiveForRestoredInstances(t *testing.T) {
 	if err := h.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	h.ReapplyLive(mustBegin(t, h, "gw"), "gw", []registry.Model{{ID: "gpt-live"}})
+	h.ReapplyLive(mustBegin(t, h, "gw"), "gw", h.identityOf(t, "gw"), []registry.Model{{ID: "gpt-live-x"}})
 	if got := h.Get().LiveModels("gw"); len(got) == 0 {
 		t.Fatal("no live rows before failure")
 	}
@@ -109,8 +109,17 @@ func TestReloadFailurePreservesLiveForRestoredInstances(t *testing.T) {
 
 func mustBegin(t *testing.T, h *ProviderRegistry, instance string) uint64 {
 	t.Helper()
-	_, tok := h.BeginLiveFetchReg(instance)
+	_, tok, _ := h.BeginLiveFetchReg(instance)
 	return tok
+}
+
+func (h *ProviderRegistry) identityOf(t *testing.T, instance string) string {
+	t.Helper()
+	inst, ok := h.Get().Instance(instance)
+	if !ok {
+		t.Fatalf("no %s instance to fingerprint", instance)
+	}
+	return instanceIdentity(inst)
 }
 
 func TestReapplyLiveDiscardsListingForChangedEndpoint(t *testing.T) {
@@ -127,19 +136,18 @@ func TestReapplyLiveDiscardsListingForChangedEndpoint(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	reg, tok := h.BeginLiveFetchReg("groq")
+	reg, tok, _ := h.BeginLiveFetchReg("groq")
 	if reg == nil {
 		t.Fatal("no registry snapshot")
 	}
 	if _, ok := reg.Instance("groq"); !ok {
 		t.Fatal("no groq instance to fingerprint")
 	}
-	// The instance is re-pointed before the fetch returns: a fresh
-	// begin records the new identity, superseding the old snapshot.
-	_, newer := h.BeginLiveFetchReg("groq")
-	_ = newer
-	h.snapshots["groq"] = "re-pointed-endpoint"
-	h.ReapplyLive(tok, "groq", []registry.Model{{ID: "gpt-live"}})
+	// The real race: the instance is re-pointed and fetch B begins;
+	// A's apply is then judged against the endpoint A actually
+	// queried, not the latest recorded.
+	_, _, _ = h.BeginLiveFetchReg("groq")
+	h.ReapplyLive(tok, "groq", "stale-endpoint-X", []registry.Model{{ID: "gpt-live-x"}})
 	if got := h.Get().LiveModels("groq"); len(got) != 0 {
 		t.Fatalf("live ids = %+v, want stale-endpoint rows dropped", got)
 	}
@@ -156,9 +164,9 @@ func TestReapplyLiveFailedNewerDoesNotBlockOlderSuccess(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	_, older := h.BeginLiveFetchReg("gw")
-	_, _ = h.BeginLiveFetchReg("gw") // newer fetch, fails: applies nothing
-	h.ReapplyLive(older, "gw", []registry.Model{{ID: "gpt-live"}})
+	_, older, _ := h.BeginLiveFetchReg("gw")
+	_, _, _ = h.BeginLiveFetchReg("gw") // newer fetch, fails: applies nothing
+	h.ReapplyLive(older, "gw", "", []registry.Model{{ID: "gpt-live-x"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))
 	for _, m := range got {
@@ -180,17 +188,17 @@ func TestReapplyLiveDiscardsOutOfOrderFetch(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	_, slow := h.BeginLiveFetchReg("gw")
-	_, fast := h.BeginLiveFetchReg("gw")
-	h.ReapplyLive(fast, "gw", []registry.Model{{ID: "gpt-new"}})
-	h.ReapplyLive(slow, "gw", []registry.Model{{ID: "gpt-old"}})
+	_, slow, _ := h.BeginLiveFetchReg("gw")
+	_, fast, _ := h.BeginLiveFetchReg("gw")
+	h.ReapplyLive(fast, "gw", "", []registry.Model{{ID: "gpt-new-x"}})
+	h.ReapplyLive(slow, "gw", "", []registry.Model{{ID: "gpt-old-x"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))
 	for _, m := range got {
 		ids = append(ids, m.ID)
 	}
 	for _, id := range ids {
-		if id == "gpt-old" {
+		if id == "gpt-old-x" {
 			t.Fatalf("live ids = %v, want out-of-order gpt-old discarded", ids)
 		}
 	}
@@ -211,18 +219,18 @@ func TestReapplyLiveDiscardsSupersededFetch(t *testing.T) {
 	if h.Get() == nil {
 		t.Fatal("holder has no registry after Reload")
 	}
-	_, older := h.BeginLiveFetchReg("gw")
-	_, newer := h.BeginLiveFetchReg("gw")
-	h.ReapplyLive(older, "gw", []registry.Model{{ID: "gpt-old"}})
-	h.ReapplyLive(newer, "gw", []registry.Model{{ID: "gpt-new"}})
-	h.ReapplyLive(older, "gw", []registry.Model{{ID: "gpt-old"}})
+	_, older, idOld := h.BeginLiveFetchReg("gw")
+	_, newer, _ := h.BeginLiveFetchReg("gw")
+	h.ReapplyLive(older, "gw", idOld, []registry.Model{{ID: "gpt-old-x"}})
+	h.ReapplyLive(newer, "gw", "", []registry.Model{{ID: "gpt-new-x"}})
+	h.ReapplyLive(older, "gw", idOld, []registry.Model{{ID: "gpt-old-x"}})
 	got := h.Get().LiveModels("gw")
 	ids := make([]string, 0, len(got))
 	for _, m := range got {
 		ids = append(ids, m.ID)
 	}
 	for _, id := range ids {
-		if id == "gpt-old" {
+		if id == "gpt-old-x" {
 			t.Fatalf("live ids = %v, want replayed older apply discarded", ids)
 		}
 	}

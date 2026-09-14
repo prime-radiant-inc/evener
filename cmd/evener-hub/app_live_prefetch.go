@@ -33,7 +33,7 @@ const instanceLiveListTimeout = 8 * time.Second
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, name string) error {
 	// Paired atomically: the client is built from the same snapshot the
 	// token belongs to, so no Reload can slip between the two.
-	reg, tok := holder.BeginLiveFetchReg(name)
+	reg, tok, id := holder.BeginLiveFetchReg(name)
 	if reg == nil {
 		return nil
 	}
@@ -44,7 +44,7 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 	if !ok {
 		return nil
 	}
-	holder.ReapplyLive(tok, name, rows)
+	holder.ReapplyLive(tok, name, id, rows)
 	return nil
 }
 
@@ -114,7 +114,7 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 			// Paired atomically per fetch: each goroutine builds its
 			// client from the same snapshot its token belongs to, so a
 			// Reload between goroutines cannot cross-wire them.
-			reg, tok := holder.BeginLiveFetchReg(name)
+			reg, tok, id := holder.BeginLiveFetchReg(name)
 			if reg == nil {
 				return
 			}
@@ -122,7 +122,7 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 			if err != nil || !ok {
 				return
 			}
-			holder.ReapplyLive(tok, name, rows)
+			holder.ReapplyLive(tok, name, id, rows)
 			if !slices.Equal(before[name], visibleModelIDs(holder.Get(), name)) {
 				mu.Lock()
 				anyChanged = true
