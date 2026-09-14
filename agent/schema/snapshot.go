@@ -189,6 +189,8 @@ type SessionMeta struct {
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
 	// survives daemon restart and evener resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
+	// Skills contains future-only activation metadata, never ordinary bodies.
+	Skills *SkillLifecycleSnapshot `json:"skills,omitempty"`
 	// HumanNote is a projection of the canonical client-mutation snapshot.
 	// It is not imported as human-note authority when restoring a session.
 	HumanNote string `json:"human_note,omitempty"`

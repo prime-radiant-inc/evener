@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -128,33 +127,31 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 		}
 		return commands[i].Source < commands[j].Source
 	})
-	all := make(map[string]skill.SkillMeta)
-	if embedded, err := skill.EmbeddedSkills(); err == nil {
-		maps.Copy(all, embedded)
-	}
-	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
-		skill.ScanSkillsDir(userSkillsDir, all)
-	}
-	maps.Copy(all, skill.DiscoverSkills(env, resolved.Effective.SkillsDirs...))
-	if env == nil {
-		// DiscoverSkills returns nil without scanning anything when there is
-		// no execution environment, but configured extra skill directories
-		// are cwd-independent: a session loads them whatever the cwd, so an
-		// empty-cwd (user-level) catalog scans them directly.
-		for _, dir := range resolved.Effective.SkillsDirs {
-			if strings.TrimSpace(dir) == "" {
-				continue
-			}
-			skill.ScanSkillsDir(dir, all)
-		}
-	}
-	for _, inst := range loaded {
-		maps.Copy(all, inst.Skills)
-	}
-	entries := skill.CatalogEntries(all)
+	// Skill advertisement uses session startup's portable discovery (the same
+	// builder the past-thread catalog uses) so the pre-session catalog shows
+	// exactly what the resulting session loads, with the catalog's real
+	// invocation controls and availability verdict copied verbatim — the
+	// frontend keeps only available && user-invocable rows, so zero-valued
+	// flags would silently advertise nothing.
+	home, _ := os.UserHomeDir()
+	sources, _ := plugin.SkillSources(pluginDirs)
+	catalog := skill.Discover(env, skill.DiscoverOptions{
+		HomeDir:       home,
+		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		ExtraDirs:     resolved.Effective.SkillsDirs,
+		Plugins:       sources,
+	})
+	entries := catalog.UserEntries()
 	skills := make([]appwire.EvenerSkillInfo, 0, len(entries))
 	for _, entry := range entries {
-		skills = append(skills, appwire.EvenerSkillInfo{Name: entry.Name, Description: entry.Description})
+		skills = append(skills, appwire.EvenerSkillInfo{
+			Name:                   entry.CatalogName,
+			Description:            entry.Meta.Description,
+			DisableModelInvocation: entry.Controls.DisableModelInvocation,
+			UserInvocable:          entry.Controls.UserInvocable,
+			Available:              !entry.Unavailable,
+			AllowedTools:           append([]string(nil), entry.Meta.AllowedTools...),
+		})
 	}
 	return appwire.SpawnSlashCatalogResponse{Commands: commands, Skills: skills}, nil
 }

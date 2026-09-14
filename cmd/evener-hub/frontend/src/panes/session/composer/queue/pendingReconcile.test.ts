@@ -1,4 +1,4 @@
-import type { PendingMutation, ThreadModel } from "@evener/appwire-client";
+import type { InputItem, PendingMutation, ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
 import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { reconcilePendingEntries } from "./pendingReconcile";
@@ -72,6 +72,26 @@ test("two same-text outbox records remain distinct by client mutation identity",
   ).toMatchObject([
     { id: "mutation_1", text: "hello", source: "outbox" },
     { id: "mutation_2", text: "hello", source: "outbox" },
+  ]);
+});
+
+// A queued submission can carry ONLY skills, with no typed prose. The
+// canonical skill name is then the entry's entire content, so the pending
+// projection has to keep it - otherwise the row on screen is blank until the
+// daemon's own queue record arrives. Collection goes through the project's one
+// canonicalizer: a padded or duplicated raw item collapses to the same name.
+test("a skill-only pending entry carries its canonical skill selection", () => {
+  const skillInput: InputItem[] = [
+    { type: "skill", name: " pkg:probe " },
+    { type: "skill", name: "pkg:probe" },
+  ];
+  const record: MutationOutboxRecord = {
+    ...outbox("mutation_1", "turn/queue", ""),
+    payload: { ref: "ref_a", input: skillInput, clientMutationId: "mutation_1" },
+    optimisticDisplay: { method: "turn/queue", input: skillInput },
+  };
+  expect(reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE)).toEqual([
+    expect.objectContaining({ id: "mutation_1", text: "", imageCount: 0, skillNames: ["pkg:probe"] }),
   ]);
 });
 

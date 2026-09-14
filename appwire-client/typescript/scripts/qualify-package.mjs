@@ -72,6 +72,7 @@ async function qualify() {
     "translateAttachmentMarkers",
     "buildInput",
     "buildComposerInput",
+    "canonicalSkillNames",
     "METHOD_NAMES",
     "NOTIFICATION_NAMES",
     "STEERING_KINDS",
@@ -275,7 +276,9 @@ assert.equal(client.parseSlashToken("say /rev\\nthen", 13), null);
 const slashItems = client.mergeSlashCommands(
   [{ id: "goal", hint: "sets the session goal" }],
   [{ name: "review", source: "plugin", pluginName: "acme" }],
-  [{ name: "writing", description: "writing skill" }],
+  // Completion offers only skills that are available AND user-invocable
+  // (docs/skills.md), so a skill fixture must carry both flags to appear.
+  [{ name: "writing", description: "writing skill", available: true, userInvocable: true, disableModelInvocation: false }],
 );
 assert.deepEqual(slashItems.map((item) => item.invocation), ["/goal", "/acme:review", "/writing"]);
 assert.deepEqual(
