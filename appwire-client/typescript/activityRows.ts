@@ -181,11 +181,11 @@ function eventCadenceDetail(watch: NavigationWatchSummary): string {
 // or its armed state. The next fire is worded "next ~4m" (never "about", never
 // an exact clock time) and omitted entirely for output/event watches.
 export function watchMeta(watch: NavigationWatchSummary, now?: number): string {
-  // Every configured trigger source is named, not just the one watchKind
-  // happens to pick: a watch can carry an output match, an event trigger, and a
-  // clock cadence at once, and naming only the first would hide the rest.
-  // Derive each condition from its own wire field rather than from watchKind,
-  // which collapses a multi-trigger watch to a single kind.
+  // Every configured trigger source is named, not just one condition kind: a
+  // watch can carry an output match, an event trigger, and a clock cadence at
+  // once, and naming only the first would hide the rest. Derive each condition
+  // from its own wire field rather than collapsing a multi-trigger watch to a
+  // single kind.
   const conditions: string[] = [];
   if ((watch.output_match ?? "").trim() !== "") conditions.push("on output");
   if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
@@ -209,7 +209,7 @@ export function watchFacts(watch: NavigationWatchSummary, now: number): string {
   const segments: string[] = [];
   // Each condition the watch actually carries gets its own segment, so a
   // multi-trigger watch reads as all of what it waits on rather than only the
-  // first kind watchKind classifies.
+  // first condition kind.
   if ((watch.output_match ?? "").trim() !== "") {
     const target = watch.target?.trim() || watch.source;
     segments.push(`Waiting on ${target}, matching ${watch.output_match ?? ""}`);
