@@ -163,6 +163,12 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 // copies it keeps, and the no-anchor branch keeps only entries that never had
 // it. Either way it describes a durable transcript entry's role, not a turn in
 // the resumed session's history.
+//
+// The anchored branch rebuilds the fold's run in the order the fold HELD it,
+// which is not the order it wrote it: the anchor and the rest of its records,
+// then the copies, then the steering it injected — which the live history
+// keeps after the compaction result, though the transaction writes it
+// immediately after the markers.
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	// Scan backward for the last compaction turn.
 	compactionIdx := -1
@@ -203,7 +209,7 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	foldStart, foldEnd := foldRun(entries, compactionIdx)
 	result := make([]schema.Turn, 0, len(entries)-foldStart)
 	for i := compactionIdx; i < foldEnd; i++ {
-		if entries[i].Turn.ContextReplay {
+		if entries[i].Turn.ContextReplay || entries[i].Turn.Kind == schema.TurnSteering {
 			continue
 		}
 		result = append(result, entries[i].Turn)
@@ -215,6 +221,17 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 		turn := entries[i].Turn
 		turn.ContextReplay = false
 		result = append(result, turn)
+	}
+	// The fold's own steering goes last, where the live history holds it: the
+	// fold appends it AFTER the compaction result, so it is the newest thing
+	// the model was told. Writing it in file order would put it ahead of the
+	// turns recorded while the fold ran, and the resumed conversation would
+	// read guidance before the work it was given about.
+	for i := compactionIdx; i < foldEnd; i++ {
+		if entries[i].Turn.ContextReplay || entries[i].Turn.Kind != schema.TurnSteering {
+			continue
+		}
+		result = append(result, entries[i].Turn)
 	}
 	anchorFold := entries[compactionIdx].Turn.CompactionFoldID
 	for i := foldEnd; i < len(entries); i++ {

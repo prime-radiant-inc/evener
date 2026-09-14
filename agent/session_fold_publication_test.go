@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2696,5 +2698,202 @@ func TestFoldPublication_MarkerlessFoldKeepsAnUnanchoredFoldsDebt(t *testing.T) 
 	}
 	if seen != 1 {
 		t.Fatalf("the turn the un-anchored fold left behind appears %d times in the resumed history, want exactly once: the marker-less publication in between took the debt with it", seen)
+	}
+}
+
+// The resumed history is not a slice of the transcript, it is the history the
+// fold published rebuilt out of it — the anchor, the copies of the turns the
+// marker discards, and the steering the fold injected, each back where the
+// live session held it. Asserting that order directly only records whatever
+// the code does today, so the assertion is the live history itself: expand
+// both into the provider messages a request would carry and compare. A
+// reassembly that puts the fold's guidance ahead of the work it was given
+// about, or drops the suffix the compaction kept, fails here.
+func TestFoldPublication_ResumeRebuildsTheProviderHistoryTheFoldPublished(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "resume-parity-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	for i := range 12 { // > PreserveRecentTurns(6): the fold really folds and really preserves
+		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+	// A pinned note makes the fold inject steering of its own, which is the
+	// record whose place in the run the reassembly has to get right.
+	s.setPinnedNote("REMEMBER: the API signature")
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	live := currentHistory(t, s)
+	if n := countSteering(live, noteHandoffPrefix); n != 1 {
+		t.Fatalf("test setup: the fold injected %d note handoffs, want exactly one to place", n)
+	}
+	if indexOfTurnText(live, "recorded turn 11") < 0 {
+		t.Fatal("test setup: the fold preserved none of the recorded turns")
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	wantMessages := expandHistory(live, replayScope{})
+	gotMessages := expandHistory(resumed, replayScope{})
+	if !reflect.DeepEqual(gotMessages, wantMessages) {
+		t.Fatalf("the resumed provider history differs from the one the fold published:\nresumed: %v\nlive:    %v", providerMessageOutline(gotMessages), providerMessageOutline(wantMessages))
+	}
+}
+
+// providerMessageOutline renders a provider message sequence as role/text
+// pairs, so a failure reads as the conversation it is.
+func providerMessageOutline(messages []llm.Message) []string {
+	out := make([]string, 0, len(messages))
+	for _, message := range messages {
+		out = append(out, fmt.Sprintf("%s:%q", message.Role, message.Text()))
+	}
+	return out
+}
+
+// retainMarkerWriteFS lets a compaction marker's line land and then fails the
+// sync that would make it durable, exactly once. The buffered door rolls
+// nothing back, so the line stays in the file: the append reports failure over
+// an entry every reader can see.
+type retainMarkerWriteFS struct {
+	afero.Fs
+	armed  atomic.Bool
+	failed atomic.Bool
+}
+
+func (fs *retainMarkerWriteFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &retainMarkerWriteFile{File: file, fs: fs}, nil
+}
+
+func (fs *retainMarkerWriteFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &retainMarkerWriteFile{File: file, fs: fs}, nil
+}
+
+type retainMarkerWriteFile struct {
+	afero.File
+	fs *retainMarkerWriteFS
+}
+
+func (file *retainMarkerWriteFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"SUMMARY"`)) && !file.fs.failed.Load() {
+		file.fs.armed.Store(true)
+	}
+	return file.File.Write(p)
+}
+
+func (file *retainMarkerWriteFile) Sync() error {
+	if file.fs.armed.Swap(false) {
+		file.fs.failed.Store(true)
+		return errors.New("injected sync failure after the marker landed")
+	}
+	return file.File.Sync()
+}
+
+// A marker whose append failed with its entry RETAINED is a marker every
+// returning reader anchors on. The live session has to act as if it wrote it —
+// because it did: the compaction event, the naming, the steering that
+// describes the compaction. Reporting the failure and then treating the record
+// as absent is how the live stream and the reload come to disagree about
+// whether the compaction happened at all.
+func TestFoldPublication_MarkerRetainedByAFailedWriteStillDispatchesItsEffects(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "retained-marker-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &retainMarkerWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	// Every append syncs, so the marker's own append is the one that fails.
+	writer.SyncInterval = 0
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12)
+
+	var eventsMu sync.Mutex
+	var compactionKinds []string
+	warnings := 0
+	// A sentinel behind the fold's own events: the channel preserves order, so
+	// reading it means every event the flush published has been counted. The
+	// collector cannot be sampled without that — the counts would be whatever
+	// the scheduler had got to.
+	const sentinel = "SENTINEL: every fold event is counted"
+	counted := make(chan struct{})
+	go func() {
+		for event := range s.Events() {
+			eventsMu.Lock()
+			switch event.Kind {
+			case events.EventCompactionTurn:
+				if data, ok := event.Data.(events.CompactionTurnData); ok {
+					compactionKinds = append(compactionKinds, data.Kind)
+				}
+			case events.EventWarning:
+				if data, ok := event.Data.(events.WarningData); ok && data.Message == sentinel {
+					close(counted)
+					eventsMu.Unlock()
+					continue
+				}
+				warnings++
+			}
+			eventsMu.Unlock()
+		}
+	}()
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	s.emit(events.EventWarning, events.WarningData{Message: sentinel})
+	<-counted
+
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no marker write failed, so this is not the retained-entry path")
+	}
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	if !slices.Contains(compactionKinds, string(schema.TurnSummary)) {
+		t.Fatalf("compaction-turn events = %v, want the retained SUMMARY marker's among them: the transcript holds that record", compactionKinds)
+	}
+	if warnings == 0 {
+		t.Fatal("the write failure was never reported; a retained entry is still a failed write")
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	markers := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnSummary {
+			markers++
+		}
+	}
+	if markers != 1 {
+		t.Fatalf("summary markers in the transcript = %d, want the retained one — the reload has to agree with the live stream", markers)
+	}
+	resumed := ResumeHistory(data.Entries)
+	if len(resumed) == 0 || resumed[0].Kind != schema.TurnSummary {
+		t.Fatalf("resume anchored on %v, want the retained marker", resumed)
 	}
 }
