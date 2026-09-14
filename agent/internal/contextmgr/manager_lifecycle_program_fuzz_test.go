@@ -219,13 +219,13 @@ func cmgpCheckThresholdScaling(t *testing.T, profile *provider.Profile) {
 func cmgpCheckElicitNote(t *testing.T, ctx context.Context, token string, cm *Manager, cheap, active *cmgpAdapter, profile *provider.Profile, client *llm.Client) {
 	t.Helper()
 	history := cmgpHistory(token)
-	if _, err := NewManager(profile, nil, cheapmodel.New(nil)).ElicitNote(ctx, history); err == nil {
+	if _, err := NewManager(profile, nil, cheapmodel.New(nil)).ElicitNote(ctx, history, nil); err == nil {
 		t.Fatal("ElicitNote without a client unexpectedly succeeded")
 	}
-	if _, err := NewManager(&provider.Profile{}, client, cheapmodel.New(client)).ElicitNote(ctx, history); err == nil {
+	if _, err := NewManager(&provider.Profile{}, client, cheapmodel.New(client)).ElicitNote(ctx, history, nil); err == nil {
 		t.Fatal("ElicitNote without a model unexpectedly succeeded")
 	}
-	note, err := cm.ElicitNote(ctx, history)
+	note, err := cm.ElicitNote(ctx, history, nil)
 	if err != nil || note != "- retain "+token {
 		t.Fatalf("ElicitNote = %q, %v", note, err)
 	}

@@ -12,7 +12,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
-	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
 )
 
@@ -180,19 +179,8 @@ func registerSkillTool(reg *tool.Registry, deps *toolDeps) {
 		_ = reg.Register(tool.RegisteredTool{
 			Definition: tool.DefUseSkill(),
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				_ = ctx
 				_ = env
-				skillName := fmt.Sprint(args["skill_name"])
-				meta, ok := deps.skill(skillName)
-				if !ok {
-					return nil, fmt.Errorf("skill %q not found", skillName)
-				}
-				deps.emit(events.EventSkillActivated, events.SkillActivatedData{Name: skillName})
-				body, err := skill.LoadSkillBody(meta)
-				if err != nil {
-					return nil, fmt.Errorf("loading skill %q: %w", skillName, err)
-				}
-				return systemNotificationf("Paths referenced in this skill are relative to the skill directory: %q", meta.Dir) + "\n\n" + body, nil
+				return deps.skillActivate(ctx, fmt.Sprint(args["skill_name"]), callIDFromContext(ctx))
 			},
 		})
 	}

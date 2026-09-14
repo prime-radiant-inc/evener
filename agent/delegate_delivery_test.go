@@ -668,7 +668,7 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	result := llm.ToolResultNamed("inline-call-1", "delegate_send", "done one", false)
 	secondResult := llm.ToolResultNamed("inline-call-2", "delegate_send", "done two", false)
 	result.Content = append(result.Content, secondResult.Content...)
-	err = root.appendToolResultsWithDeliveryCommitsDurably(result, result, inlineCommits)
+	err = root.appendToolResultsWithDeliveryCommitsDurably(result, result, inlineCommits, nil)
 	if err == nil {
 		t.Fatal("inline tool-result acknowledgment succeeded after store close")
 	}

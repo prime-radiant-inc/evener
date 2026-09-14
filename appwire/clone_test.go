@@ -135,3 +135,27 @@ func TestCloneThreadClonesTaskAggregateCurrent(t *testing.T) {
 		t.Fatalf("clone current task = %+v, changed with source", clone.Evener.Tasks.Current)
 	}
 }
+
+// TestCloneThreadDeepCopiesQueueSkillNames pins the queue's per-entry skill
+// selections. CloneThread feeds cached thread state and remote-cache snapshots,
+// so a mutation through the clone must never reach the original — neither the
+// outer per-entry slice nor the names inside an entry.
+func TestCloneThreadDeepCopiesQueueSkillNames(t *testing.T) {
+	original := Thread{Evener: EvenerThread{Queue: QueueState{
+		SkillNames: [][]string{{"pkg:a"}, {"pkg:b"}},
+	}}}
+	clone := CloneThread(original)
+	if len(clone.Evener.Queue.SkillNames) != 2 {
+		t.Fatalf("clone queue skillNames = %v, want two entries", clone.Evener.Queue.SkillNames)
+	}
+
+	clone.Evener.Queue.SkillNames[0][0] = "mutated"
+	clone.Evener.Queue.SkillNames[1] = append(clone.Evener.Queue.SkillNames[1], "extra")
+
+	if got := original.Evener.Queue.SkillNames[0][0]; got != "pkg:a" {
+		t.Fatalf("inner slice aliased: original[0][0] = %q, want pkg:a", got)
+	}
+	if got := len(original.Evener.Queue.SkillNames[1]); got != 1 {
+		t.Fatalf("outer slice aliased: original[1] has %d entries, want 1", got)
+	}
+}
