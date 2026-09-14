@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
+import { sessionActionError, WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import type { SessionURL } from "../../../protocol/types.gen";
@@ -12,6 +12,7 @@ import {
   unmountHumanNote,
   useHumanNoteDraft,
 } from "../../../stores/humanNoteDrafts";
+import { beginUrlRemoval, endUrlRemoval, usePendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Sheet, Textarea, useToasts } from "../../../widgets";
 import { isWebHref } from "../../../widgets/contextcard";
@@ -132,6 +133,18 @@ function HumanStatus({
   return null;
 }
 
+// isMissingURLEntryError recognizes the daemon's unknown-url-entry rejection: an
+// invalidParams WireError carrying the "no URL entry with id" contract text
+// (agent/session_notes_rpc.go and server/appwire_runtime.go both build it, and
+// the agent test TestRemoveSessionURLUnknownIDRejects pins it). The code alone is
+// too broad, since every bad-parameter rejection shares it, so the message is
+// what separates a stale row from a real error.
+function isMissingURLEntryError(err: unknown): boolean {
+  return (
+    err instanceof WireError && err.evenerErrorInfo === "invalidParams" && /no URL entry with id/.test(err.message)
+  );
+}
+
 export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   const toasts = useToasts();
   const owner = useRef(Symbol("notes editor"));
@@ -140,6 +153,12 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   const saving = !!state?.submitted && !state.error;
   const saved = state?.saved ?? false;
   const error = state?.error ?? null;
+  // A double-click on one row's Remove must not fire twice: the first request
+  // succeeds and the second reports the entry as already gone. The guard lives
+  // in a store keyed by session and entry id rather than in this component,
+  // because the mobile sheet unmounts the body mid-request and a pane can be
+  // reused for another session (see stores/pendingUrlRemovals).
+  const removingURLs = usePendingUrlRemovals(sessionRef);
   // Editability here tracks the store's own write gate: rendering controls that
   // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
   const live = canWriteHumanNote(model);
@@ -158,11 +177,27 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
     return () => unmountHumanNote(sessionRef, id);
   }, [sessionRef, live, model.capabilities.sharedNotes]);
 
+  // The guard covers the request, not the push. It was held until the
+  // authoritative urls/updated push first, which wedged a row whose id another
+  // client re-added before that push landed, and it reset on unmount anyway.
+  // The double-click problem it exists for is solved at the source instead: a
+  // removal of an entry the server no longer has reads as success below, so a
+  // duplicate request is harmless whichever way it slips through.
   async function handleRemoveURL(url: SessionURL) {
+    // Check and mark in one synchronous step: two clicks inside one tick both
+    // run this handler before any re-render.
+    if (!beginUrlRemoval(sessionRef, url.id)) return;
     try {
       await threadsStore.getState().removeURL(sessionRef, url.id);
     } catch (err) {
-      toasts.push("error", sessionActionError("Couldn't remove link", err));
+      // "No such entry" means this row is stale and the outcome the user asked
+      // for is already true, so it is a success for the UI rather than the
+      // spurious "Couldn't remove link" toast a double-click used to produce.
+      if (!isMissingURLEntryError(err)) {
+        toasts.push("error", sessionActionError("Couldn't remove link", err));
+      }
+    } finally {
+      endUrlRemoval(sessionRef, url.id);
     }
   }
 
@@ -246,6 +281,7 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
                       variant="quiet"
                       size="sm"
                       onClick={() => void handleRemoveURL(url)}
+                      disabled={removingURLs.has(url.id)}
                       aria-label={`Remove ${url.label || url.url}`}
                       data-testid={`shared-notes-url-remove-${url.id}`}
                     >

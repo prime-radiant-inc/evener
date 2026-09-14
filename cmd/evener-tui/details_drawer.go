@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 )
 
@@ -101,19 +102,22 @@ func (d detailsDrawer) View() string {
 	if detail.Capabilities.SharedNotes {
 		b.WriteString(sectionLabel("shared notes"))
 		b.WriteString("\n")
+		// Notes text is the terminal-boundary case: a note persisted before the
+		// write-path strip can still carry ESC/OSC/BEL/C1 controls, and this
+		// drawer is one of the readers that prints it.
 		if detail.HumanNote != "" {
-			fmt.Fprintf(&b, "You:    %s\n", detail.HumanNote)
+			fmt.Fprintf(&b, "You:    %s\n", tuitext.StripControls(detail.HumanNote))
 		}
 		if detail.AgentNote != "" {
-			fmt.Fprintf(&b, "Agent:  %s\n", detail.AgentNote)
+			fmt.Fprintf(&b, "Agent:  %s\n", tuitext.StripControls(detail.AgentNote))
 		}
 		for _, u := range detail.SessionURLs {
-			label := u.URL
+			label := tuitext.StripControls(u.URL)
 			if u.Label != "" {
-				label = fmt.Sprintf("%s (%s)", u.Label, u.URL)
+				label = fmt.Sprintf("%s (%s)", tuitext.StripControls(u.Label), label)
 			}
 			if u.ID != "" {
-				label = fmt.Sprintf("%s [%s]", label, u.ID)
+				label = fmt.Sprintf("%s [%s]", label, tuitext.StripControls(u.ID))
 			}
 			fmt.Fprintf(&b, "Link:   %s\n", label)
 		}
