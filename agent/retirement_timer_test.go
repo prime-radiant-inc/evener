@@ -527,3 +527,54 @@ func TestRetirementTimerRunStopsWithContext(t *testing.T) {
 		t.Fatalf("phase = %q after Run stop, want resident (no claim taken)", got)
 	}
 }
+
+// TestRetirementTimerRefusalRearmsIdleInterval proves a refused TryClaim
+// re-arms the idle interval. The refusal drops eligibleSince and returns to the
+// resident phase, exactly like Abort/AttachRoot/BeginMutation; the controller
+// must therefore wake Run so it re-evaluates the now-settled process and starts
+// a fresh full interval. Without that change notification Run stays parked on
+// its existing timer, no arm is observed, and awaitArm tripwires — the deadline
+// would otherwise stay un-armed until an unrelated event forced evaluation.
+func TestRetirementTimerRefusalRearmsIdleInterval(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	if d := clk.awaitArm(t); d != time.Hour {
+		t.Fatalf("first settled arm = %v, want the full 1h interval", d)
+	}
+
+	// A queued input is an evidence obligation the root reports without being
+	// an admission lease, so TryClaim takes the full evidence path and refuses.
+	root.mu.Lock()
+	root.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
+	root.mu.Unlock()
+
+	claim, state, err := h.ctrl.TryClaim(true)
+	if err != nil {
+		t.Fatalf("TryClaim: %v", err)
+	}
+	if claim != nil {
+		t.Fatalf("queued input did not refuse the claim: %+v", state)
+	}
+	if !hasRetirementBlocker(state.Blockers, "input") {
+		t.Fatalf("refusal lost the queued-input blocker: %+v", state)
+	}
+
+	// Run must have been woken to re-evaluate and arm a fresh full interval
+	// from the refusal instant.
+	if d := clk.awaitArm(t); d != time.Hour {
+		t.Fatalf("re-arm after refused claim = %v, want a fresh full 1h interval", d)
+	}
+	if since := h.ctrl.Snapshot().EligibleSince; since.IsZero() {
+		t.Fatal("Run did not re-establish eligibility after the refusal")
+	}
+}

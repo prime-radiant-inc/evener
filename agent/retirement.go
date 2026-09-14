@@ -284,15 +284,20 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		now = c.clock.Now()
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.phase != "resident" {
-		return nil, c.claimSnapshotLocked(), ErrRetirementUnavailable
+		snapshot := c.claimSnapshotLocked()
+		c.mu.Unlock()
+		return nil, snapshot, ErrRetirementUnavailable
 	}
 	if len(c.active) != 0 || c.root == nil {
-		return nil, c.claimSnapshotLocked(), nil
+		snapshot := c.claimSnapshotLocked()
+		c.mu.Unlock()
+		return nil, snapshot, nil
 	}
 	if !manual && (c.timeout == 0 || c.eligibleSince.IsZero() || now.Before(c.eligibleSince.Add(c.timeout))) {
-		return nil, c.claimSnapshotLocked(), nil
+		snapshot := c.claimSnapshotLocked()
+		c.mu.Unlock()
+		return nil, snapshot, nil
 	}
 	c.phase = "preparing"
 	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation, tree: c.root.delegateController}
@@ -317,7 +322,9 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	}
 	c.mu.Lock()
 	if !c.validClaimLocked(claim) {
-		return nil, c.claimSnapshotLocked(), ErrRetirementUnavailable
+		snapshot := c.claimSnapshotLocked()
+		c.mu.Unlock()
+		return nil, snapshot, ErrRetirementUnavailable
 	}
 	c.blockers = blockers
 	if len(blockers) != 0 || evidenceErr != nil {
@@ -325,9 +332,18 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		c.claim = nil
 		c.phase = "resident"
 		c.eligibleSince = time.Time{}
-		return nil, c.claimSnapshotLocked(), evidenceErr
+		snapshot := c.claimSnapshotLocked()
+		c.mu.Unlock()
+		// The refusal returned the controller to the resident phase and dropped
+		// the interval, exactly like Abort/AttachRoot/BeginMutation. Notify after
+		// dropping the lock so Run re-evaluates the settled process and re-arms
+		// the idle timer instead of waiting for an unrelated event.
+		c.Changed()
+		return nil, snapshot, evidenceErr
 	}
-	return claim, c.claimSnapshotLocked(), nil
+	snapshot := c.claimSnapshotLocked()
+	c.mu.Unlock()
+	return claim, snapshot, nil
 }
 
 func (c *RetirementController) validClaimLocked(claim *RetirementClaim) bool {

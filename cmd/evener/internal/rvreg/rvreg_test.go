@@ -234,12 +234,15 @@ func TestRegistrationRemoveAfterUpdateSessionID(t *testing.T) {
 	}
 }
 
-// TestRegistrationRemoveRefusesExternallyOverwrittenFile is the daemon-exit
+// TestRegistrationRemoveLeavesExternallyOverwrittenFile is the daemon-exit
 // half of the replacement race: if the rendezvous file on disk no longer
 // matches what this process registered (a replacement daemon rewrote it for
-// the same PID), Remove must refuse and leave the replacement's file intact
-// instead of deleting it.
-func TestRegistrationRemoveRefusesExternallyOverwrittenFile(t *testing.T) {
+// the same PID), Remove must leave the replacement's file intact instead of
+// deleting it. The replacement owns the record and this process's own entry is
+// already gone, so the guard's refusal is a completed no-op — Remove returns
+// nil and the shutdown loop does not spend its retry budget or log "entry may
+// be stale" over a live replacement.
+func TestRegistrationRemoveLeavesExternallyOverwrittenFile(t *testing.T) {
 	runDir := t.TempDir()
 	mine := rendezvous.Entry{
 		PID:       4680,
@@ -258,8 +261,8 @@ func TestRegistrationRemoveRefusesExternallyOverwrittenFile(t *testing.T) {
 	if _, err := rendezvous.Write(runDir, replacement); err != nil {
 		t.Fatalf("external overwrite: %v", err)
 	}
-	if err := reg.Remove(); err == nil {
-		t.Fatal("Remove deleted a rendezvous file this process no longer owns")
+	if err := reg.Remove(); err != nil {
+		t.Fatalf("Remove = %v, want nil: a live replacement owns the record, so the refusal is a completed no-op", err)
 	}
 	entries, err := rendezvous.List(runDir)
 	if err != nil {
@@ -267,5 +270,42 @@ func TestRegistrationRemoveRefusesExternallyOverwrittenFile(t *testing.T) {
 	}
 	if len(entries) != 1 || !strings.HasPrefix(entries[0].ThreadID, "01REPLACEMENT") {
 		t.Fatalf("replacement entry destroyed by the stale daemon's Remove: %+v", entries)
+	}
+	// The removal path stays idempotent: a repeated call is still a no-op.
+	if err := reg.Remove(); err != nil {
+		t.Fatalf("second Remove = %v, want nil", err)
+	}
+}
+
+// TestRegistrationRemovePreservesOriginalErrorWhenFallbackRefuses pins that a
+// genuine failure to remove this process's own artifact is reported with its
+// original cause. RemoveIfOwned cannot parse a corrupt regular file, and
+// RemoveUnlessRegular refuses to unlink any regular file, so the fallback's
+// secondary "regular file" refusal must not displace the real failure the
+// shutdown loop logs and retries.
+func TestRegistrationRemovePreservesOriginalErrorWhenFallbackRefuses(t *testing.T) {
+	runDir := t.TempDir()
+	const pid = 6161
+	reg := &Registration{}
+	if err := reg.Register(runDir, rendezvous.Entry{PID: pid, ThreadID: "01OLD", SessionID: "01OLD"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	artifact := filepath.Join(runDir, "6161.json")
+	if err := os.WriteFile(artifact, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("corrupt rendezvous artifact: %v", err)
+	}
+	err := reg.Remove()
+	if err == nil {
+		t.Fatal("expected Remove to fail on an unparseable artifact")
+	}
+	if strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("Remove surfaced the fallback's secondary refusal instead of the original cause: %v", err)
+	}
+	if !strings.Contains(err.Error(), "parse rendezvous file") {
+		t.Fatalf("Remove error = %v, want the original RemoveIfOwned parse failure", err)
+	}
+	// The corrupt regular file is never unlinked unguarded.
+	if _, statErr := os.Stat(artifact); statErr != nil {
+		t.Fatalf("Remove touched the regular artifact it refused to unlink: %v", statErr)
 	}
 }

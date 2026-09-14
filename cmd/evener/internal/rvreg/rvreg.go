@@ -89,12 +89,44 @@ func (r *Registration) Remove() error {
 	// check-then-unlink that is not atomic. That keeps the contract the
 	// shutdown loop relies on -- a cleanup that failed on a transient
 	// filesystem condition still finishes when a later attempt retries it. A
-	// regular file that no longer matches this process's identity is refused by
-	// RemoveIfOwned above and left untouched here too.
+	// regular file is refused by RemoveUnlessRegular as well, and is left
+	// untouched by both.
 	fallbackErr := rendezvous.RemoveUnlessRegular(r.runDir, r.entry.PID)
 	if fallbackErr == nil {
 		r.registered = false
 		return nil
 	}
-	return fallbackErr
+	// Both refused, so a regular file remains at <pid>.json. If it now carries
+	// a different daemon's identity, a replacement reused this PID and rewrote
+	// the record: this process's own entry is already gone, making the guard's
+	// refusal a completed no-op rather than a failure to retry.
+	if diskHoldsReplacement(r.runDir, r.entry) {
+		r.registered = false
+		return nil
+	}
+	// Otherwise this process's own artifact survived a real failure. Return the
+	// original cause, not RemoveUnlessRegular's secondary regular-file refusal,
+	// so the shutdown loop logs and retries what actually went wrong.
+	return err
+}
+
+// diskHoldsReplacement reports whether <pid>.json currently carries a valid
+// rendezvous entry for this PID that is not this registration's identity --
+// i.e. a replacement daemon reused the PID and rewrote the record. It uses the
+// canonical ownership fingerprint (rendezvous.OwnershipFingerprint) so the
+// decision matches the identity authority the daemon and Hub enforce for exact
+// ownership. A missing, unreadable or unparseable artifact reports false, which
+// keeps the caller's original (retryable) error rather than declaring a no-op.
+func diskHoldsReplacement(runDir string, own rendezvous.Entry) bool {
+	entries, err := rendezvous.List(runDir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.PID != own.PID {
+			continue
+		}
+		return rendezvous.OwnershipFingerprint(entry) != rendezvous.OwnershipFingerprint(own)
+	}
+	return false
 }
