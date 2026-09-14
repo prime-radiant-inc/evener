@@ -1136,7 +1136,10 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 		}
 		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
 		client = append(client, steeringMessage{
-			Text:   queued.Text,
+			// A journal written before the write-path strip can carry controls in
+			// the pending text: the rebuilt entry reaches the model and the
+			// transcript, so it is stripped like every other load path.
+			Text:   stripTextControls(queued.Text),
 			Images: queued.Images,
 			Source: events.SteeringSourceUser,
 			// The kind survives the restart because it rode the durable

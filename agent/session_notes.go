@@ -155,7 +155,7 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 			}
 			// The roster renders what this returns and never goes through a
 			// Session, so the load-path strip has to happen here too.
-			return stripNoteControls(*value), true, nil
+			return stripTextControls(*value), true, nil
 		}
 		if err := skipValue(); err != nil {
 			return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
@@ -231,7 +231,7 @@ func sanitizeRestoredURLs(urls []schema.SessionURL) []schema.SessionURL {
 		entry.ID = stripDisplayControls(entry.ID)
 		// Only controls are removed on the way in: the load path must not reshape
 		// what was persisted (a label already carries the write path's collapse).
-		entry.Label = stripNoteControls(entry.Label)
+		entry.Label = stripTextControls(entry.Label)
 		sanitized = append(sanitized, entry)
 	}
 	return sanitized
@@ -251,6 +251,43 @@ func stripDisplayControls(text string) string {
 		}
 		return r
 	}, text)
+}
+
+// stripTextControls removes every control character except the newline that gives
+// stored text its shape. It is the load-path rule for text re-served to a model
+// or a terminal: unlike stripNoteControls it also removes the whitespace controls
+// (C1 NEL, for one) that no later collapse consumes on those paths, and unlike
+// stripDisplayControls it keeps line structure for multi-line text.
+func stripTextControls(text string) string {
+	if !strings.ContainsFunc(text, isTextControl) {
+		return text
+	}
+	var stripped strings.Builder
+	stripped.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r == '\n':
+			stripped.WriteRune(r)
+		case r == '\r':
+			// Dropped rather than spaced: a CRLF pair must not leave a trailing
+			// space behind on the line.
+		case unicode.IsControl(r) && unicode.IsSpace(r):
+			// A whitespace control (tab, NEL (U+0085), vertical tab) keeps words
+			// apart as a space instead of gluing them together.
+			stripped.WriteByte(' ')
+		case unicode.IsControl(r):
+			// Every other control goes.
+		default:
+			stripped.WriteRune(r)
+		}
+	}
+	return stripped.String()
+}
+
+// isTextControl reports whether r is a control character that must not survive
+// into re-served text: every control except the newline.
+func isTextControl(r rune) bool {
+	return unicode.IsControl(r) && r != '\n'
 }
 
 // isNoteControl reports whether r is a control character the whitespace collapse

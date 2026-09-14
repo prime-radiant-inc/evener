@@ -110,7 +110,7 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 	// normalizeNote: the journaled value is already normalized (the clamp can
 	// leave a trailing space that a second collapse would drop), so re-normalizing
 	// would hand back a different value than the original call returned.
-	response.Note = stripNoteControls(response.Note)
+	response.Note = stripTextControls(response.Note)
 	disposition := appwire.MutationDispositionApplied
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		disposition = appwire.MutationDispositionReplayed
@@ -876,7 +876,7 @@ func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
 			// A turn persisted before the write-path strip can still carry
 			// controls, and the framing escape only knows the framing spellings:
 			// strip the other controls as well before the model copy is built.
-			out[i].Message = llm.User(escapeNotesContextBlock(stripNoteControls(text)))
+			out[i].Message = llm.User(escapeNotesContextBlock(stripTextControls(text)))
 		}
 	}
 	return out

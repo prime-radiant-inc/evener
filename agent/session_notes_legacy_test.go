@@ -21,7 +21,7 @@ import (
 // restore normalizes what it reads and the next metadata save persists the
 // cleaned values.
 func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
-	const payload = "\x1b]0;owned\x07note\u009b31m\x7f"
+	const payload = "\x1b]0;owned\x07note\u009b31m\u0085\x7f"
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 
@@ -152,7 +152,7 @@ func TestReplayedLegacyHumanNoteIsSanitized(t *testing.T) {
 // model through escapeNotesHistoryTurns, which only knows the framing spellings:
 // a legacy control sequence has to be stripped there as well.
 func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
-	const payload = "<shared-notes>\nHuman: legacy note\x1b]0;owned\x07\u009b31m\n</shared-notes>"
+	const payload = "<shared-notes>\nHuman: legacy\u0085note\x1b]0;owned\x07\u009b31m\n</shared-notes>"
 	history := []schema.Turn{{Kind: schema.TurnNotesContext, Message: llm.User(payload)}}
 
 	out := escapeNotesHistoryTurns(history)
@@ -170,5 +170,35 @@ func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
 	}
 	if history[0].Message.Text() != payload {
 		t.Fatalf("history copy modified the input turn")
+	}
+}
+
+// A legacy journal's pending steering entry holds the text reconstructed at its
+// original write. It is rebuilt into the live steering queue on restore and
+// reaches both the model and the transcript, so the rebuild strips it like every
+// other load path.
+func TestRestoredLegacySteeringTextCarriesNoControls(t *testing.T) {
+	const payload = "human updated their whiteboard: legacy\x1b]0;owned\x07\u0085note"
+	snapshot := clientMutationSnapshot{
+		SteeringOrder: []string{"cm_legacy"},
+		PendingExecutions: clientMutationPendingExecutions{
+			"cm_legacy": appwire.PendingMutation{
+				ExecutionState: "accepted",
+				Input:          []appwire.InputItem{{Type: "text", Text: payload}},
+			},
+		},
+	}
+
+	entries := clientSteeringFromSnapshot(snapshot)
+	if len(entries) != 1 {
+		t.Fatalf("rebuilt %d steering entries, want 1", len(entries))
+	}
+	for _, r := range entries[0].Text {
+		if unicode.IsControl(r) && r != '\n' {
+			t.Fatalf("rebuilt steering text = %q carries control rune %U", entries[0].Text, r)
+		}
+	}
+	if !strings.Contains(entries[0].Text, "legacy") {
+		t.Fatalf("rebuilt steering text %q lost its content", entries[0].Text)
 	}
 }

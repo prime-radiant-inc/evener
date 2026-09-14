@@ -1039,7 +1039,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Strip rather than normalize: the persisted value already carries the write
 	// path's collapse and clamp, and re-normalizing could reshape it (a clamped
 	// note can end in a space that a second collapse would drop).
-	s.agentNote = stripNoteControls(meta.AgentNote)
+	s.agentNote = stripTextControls(meta.AgentNote)
 	s.sessionURLs = sanitizeRestoredURLs(meta.SessionURLs)
 	// Seed the notes-projection record from the raw form captured above, so the
 	// change-gated projection (maybeAppendNotesContext) does not re-emit a

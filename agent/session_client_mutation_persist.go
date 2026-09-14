@@ -54,7 +54,7 @@ func loadClientMutationSnapshotFS(fs afero.Fs, stateDir, sessionID string) (clie
 	// authority at once (the session's store, the published committed cut, and
 	// ReadCanonicalHumanNote), and the next commit persists the cleaned value.
 	if snapshot.HumanNote != nil {
-		cleaned := stripNoteControls(*snapshot.HumanNote)
+		cleaned := stripTextControls(*snapshot.HumanNote)
 		snapshot.HumanNote = &cleaned
 	}
 	forgetRunningTurnNoOneOwns(&snapshot)
