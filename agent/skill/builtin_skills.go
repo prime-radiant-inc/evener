@@ -51,15 +51,17 @@ const (
 )
 
 // embeddedSkillsCache holds the published bundled-skills directory, the digest
-// of its contents, and its scanned metadata, all process-wide under one mutex.
-// verified records that this process has already published or re-digested dir,
-// so later calls in the same process do not re-walk an immutable copy.
+// of its contents, its scanned metadata, and the shared lease that keeps the
+// copy from being reaped, all process-wide under one mutex. verified records
+// that this process has already published or re-digested dir, so later calls in
+// the same process do not re-walk an immutable copy.
 var embeddedSkillsCache struct {
 	mu       sync.Mutex
 	dir      string
 	digest   string
 	skills   map[string]SkillMeta
 	verified bool
+	lease    skillsLease
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -105,11 +107,13 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
 		if embeddedSkillsCache.verified && cacheDirExists(embeddedSkillsCache.dir) {
+			claimEmbeddedSkillsLocked(embeddedSkillsCache.dir)
 			touchDir(embeddedSkillsCache.dir)
 			return embeddedSkillsCache.dir, nil
 		}
 		if !embeddedSkillsCache.verified && cacheDirUsable(embeddedSkillsCache.dir, embeddedSkillsCache.digest) {
 			embeddedSkillsCache.verified = true
+			claimEmbeddedSkillsLocked(embeddedSkillsCache.dir)
 			touchDir(embeddedSkillsCache.dir)
 			return embeddedSkillsCache.dir, nil
 		}
@@ -134,7 +138,30 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	embeddedSkillsCache.digest = digest
 	embeddedSkillsCache.skills = skills
 	embeddedSkillsCache.verified = true
+	claimEmbeddedSkillsLocked(dir)
 	return dir, nil
+}
+
+// claimEmbeddedSkillsLocked takes a shared lease on the copy this process will
+// read, releasing the lease held for a previous copy. It is best effort: a copy
+// that cannot be leased is still usable, it just has no protection from reaping.
+func claimEmbeddedSkillsLocked(dir string) {
+	if embeddedSkillsCache.lease != nil && embeddedSkillsCache.dir == dir {
+		return
+	}
+	if embeddedSkillsCache.lease != nil {
+		_ = embeddedSkillsCache.lease.Release()
+		embeddedSkillsCache.lease = nil
+	}
+	path, err := skillsLockPath(filepath.Dir(dir), filepath.Base(dir), true)
+	if err != nil {
+		return
+	}
+	lease, contended, err := acquireSkillsLease(path, false)
+	if err != nil || contended {
+		return
+	}
+	embeddedSkillsCache.lease = lease
 }
 
 // cacheDirExists reports whether dir is still a real directory. It never
@@ -161,7 +188,12 @@ func touchDir(dir string) {
 // namespaced by user and verified private, so another user on a shared host
 // cannot occupy the name or read the published copy.
 func defaultEmbeddedSkillsBaseDir() (string, error) {
-	dir := filepath.Join(os.TempDir(), embeddedSkillsPrefix+processOwnerTag())
+	tmpBase := os.TempDir()
+	// Cleanup runs on every resolution, not only when the predictable name is
+	// unusable, so a base that becomes usable again does not strand the fallback
+	// bases earlier runs left behind.
+	reapStaleFallbackBases(tmpBase, time.Now())
+	dir := filepath.Join(tmpBase, embeddedSkillsPrefix+processOwnerTag())
 	if err := ensurePrivateCacheDir(dir); err == nil {
 		return dir, nil
 	}
@@ -170,7 +202,6 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	// directory keeps the bundled skills available instead of failing the
 	// session; it is not shared between processes, which is the price of the
 	// name being unusable.
-	reapStaleFallbackBases(os.TempDir(), time.Now())
 	fallback, err := os.MkdirTemp("", embeddedSkillsPrefix+processOwnerTag()+"-*")
 	if err != nil {
 		return "", fmt.Errorf("creating private skill cache: %w", err)
@@ -180,7 +211,8 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 
 // reapStaleFallbackBases removes randomized fallback bases this user's earlier
 // processes abandoned. Only this user's exact prefix is matched, and only when
-// old enough that no live process is plausibly still reading it.
+// old enough that no live process is plausibly still reading it; a base holding
+// a leased cache directory is left alone.
 func reapStaleFallbackBases(tmpBase string, now time.Time) {
 	prefix := embeddedSkillsPrefix + processOwnerTag() + "-"
 	entries, err := os.ReadDir(tmpBase)
@@ -195,8 +227,33 @@ func reapStaleFallbackBases(tmpBase string, now time.Time) {
 		if err != nil || now.Sub(info.ModTime()) < staleRetainedMaxAge {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(tmpBase, entry.Name()))
+		path := filepath.Join(tmpBase, entry.Name())
+		if fallbackBaseInUse(path) {
+			continue
+		}
+		_ = os.RemoveAll(path)
 	}
+}
+
+// fallbackBaseInUse reports whether a cache directory inside base is held by a
+// live process, in which case the whole base must be left alone.
+func fallbackBaseInUse(base string) bool {
+	locks := filepath.Join(base, skillsLockDirName)
+	entries, err := os.ReadDir(locks)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		lease, ok := tryExclusiveLease(filepath.Join(locks, entry.Name()))
+		if !ok {
+			return true
+		}
+		_ = lease.Release()
+	}
+	return false
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that
@@ -377,15 +434,38 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 		if err != nil || now.Sub(info.ModTime()) < maxAge {
 			continue
 		}
-		if entry.IsDir() {
-			_ = os.RemoveAll(path)
+		if !entry.IsDir() {
+			// A file or symlink squatting a cache name is removed with Remove,
+			// which deletes the link itself rather than anything it points at,
+			// so a later publish can heal the name instead of falling back
+			// forever.
+			_ = os.Remove(path)
 			continue
 		}
-		// A file or symlink squatting a cache name is removed with Remove, which
-		// deletes the link itself rather than anything it points at, so a later
-		// publish can heal the name instead of falling back forever.
-		_ = os.Remove(path)
+		// Only remove a directory no live process holds. The exclusive lease is
+		// held across the removal, so a reader cannot acquire it mid-delete.
+		lockPath, err := skillsLockPath(base, entry.Name(), true)
+		if err != nil {
+			continue
+		}
+		lease, ok := tryExclusiveLease(lockPath)
+		if !ok {
+			continue
+		}
+		_ = os.RemoveAll(path)
+		_ = lease.Release()
+		_ = os.Remove(lockPath)
 	}
+}
+
+// tryExclusiveLease takes the exclusive lease at lockPath, reporting whether it
+// succeeded. A contended or failed lease means the directory must not be removed.
+func tryExclusiveLease(lockPath string) (skillsLease, bool) {
+	lease, contended, err := acquireSkillsLease(lockPath, true)
+	if err != nil || contended {
+		return nil, false
+	}
+	return lease, true
 }
 
 // publishedSkillsDir reports whether dest holds a complete copy of the content

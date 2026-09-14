@@ -1,0 +1,59 @@
+//go:build unix
+
+package skill
+
+import (
+	"errors"
+	"fmt"
+	"os"
+
+	"golang.org/x/sys/unix"
+)
+
+type unixSkillsLease struct {
+	file *os.File
+}
+
+// platformAcquireSkillsLease takes a shared (reader) or exclusive (reaper) flock
+// on the lock file at path.
+func platformAcquireSkillsLease(path string, exclusive bool) (skillsLease, bool, error) {
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, false, fmt.Errorf("open skill lease: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	closeWith := func(cause error) error {
+		if closeErr := file.Close(); closeErr != nil {
+			return errors.Join(cause, fmt.Errorf("close skill lease: %w", closeErr))
+		}
+		return cause
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return nil, false, closeWith(fmt.Errorf("stat skill lease: %w", err))
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, closeWith(errors.New("skill lease is not a regular file"))
+	}
+	how := unix.LOCK_SH
+	if exclusive {
+		how = unix.LOCK_EX
+	}
+	if err := unix.Flock(fd, how|unix.LOCK_NB); err != nil {
+		contended := errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN)
+		return nil, contended, closeWith(fmt.Errorf("lock skill lease: %w", err))
+	}
+	return &unixSkillsLease{file: file}, false, nil
+}
+
+func (lease *unixSkillsLease) Release() error {
+	unlockErr := unix.Flock(int(lease.file.Fd()), unix.LOCK_UN)
+	closeErr := lease.file.Close()
+	if unlockErr != nil {
+		unlockErr = fmt.Errorf("unlock skill lease: %w", unlockErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close skill lease: %w", closeErr)
+	}
+	return errors.Join(unlockErr, closeErr)
+}

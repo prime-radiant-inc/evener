@@ -426,6 +426,62 @@ func TestReapStaleCopies_RemovesAbandonedAndSuperseded(t *testing.T) {
 	}
 }
 
+// A copy a live process holds a shared lease on is never reaped, however old it
+// is; once the lease is dropped it becomes reapable.
+func TestReapStaleCopies_SkipsLeasedDirectory(t *testing.T) {
+	base := t.TempDir()
+	name := embeddedSkillsPrefix + strings.Repeat("a", sha256.Size*2)
+	dir := filepath.Join(base, name)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("create cache dir: %v", err)
+	}
+	past := time.Now().Add(-2 * staleRetainedMaxAge)
+	if err := os.Chtimes(dir, past, past); err != nil {
+		t.Fatalf("age cache dir: %v", err)
+	}
+	lockPath, err := skillsLockPath(base, name, true)
+	if err != nil {
+		t.Fatalf("skillsLockPath: %v", err)
+	}
+	lease, contended, err := acquireSkillsLease(lockPath, false)
+	if err != nil || contended {
+		t.Fatalf("acquire shared lease: %v (contended=%v)", err, contended)
+	}
+
+	reapStaleCopies(base, time.Now(), "", "")
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("leased directory was reaped: %v", err)
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release lease: %v", err)
+	}
+	reapStaleCopies(base, time.Now(), "", "")
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("unleased directory was not reaped: %v", err)
+	}
+}
+
+// The copy this process resolved through the API is protected while it lives.
+func TestReapStaleCopies_KeepsTheCopyInUse(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	past := time.Now().Add(-2 * staleRetainedMaxAge)
+	if err := os.Chtimes(dir, past, past); err != nil {
+		t.Fatalf("age resolved copy: %v", err)
+	}
+
+	reapStaleCopies(base, time.Now(), "", "")
+
+	if _, err := os.Stat(filepath.Join(dir, "doctoring-evener", "SKILL.md")); err != nil {
+		t.Fatalf("in-use copy was reaped: %v", err)
+	}
+}
+
 func TestReapStaleCopies_HealsSquatterOfCurrentDigest(t *testing.T) {
 	base := t.TempDir()
 	digest := strings.Repeat("a", sha256.Size*2)
@@ -438,6 +494,35 @@ func TestReapStaleCopies_HealsSquatterOfCurrentDigest(t *testing.T) {
 
 	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("squatter of the current digest survived: %v", err)
+	}
+}
+
+func TestReapStaleFallbackBases_SkipsBaseWithLeasedCopy(t *testing.T) {
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag()+"-live")
+	name := embeddedSkillsPrefix + strings.Repeat("b", sha256.Size*2)
+	dir := filepath.Join(base, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create fallback base: %v", err)
+	}
+	past := time.Now().Add(-2 * staleRetainedMaxAge)
+	if err := os.Chtimes(base, past, past); err != nil {
+		t.Fatalf("age fallback base: %v", err)
+	}
+	lockPath, err := skillsLockPath(base, name, true)
+	if err != nil {
+		t.Fatalf("skillsLockPath: %v", err)
+	}
+	lease, contended, err := acquireSkillsLease(lockPath, false)
+	if err != nil || contended {
+		t.Fatalf("acquire shared lease: %v (contended=%v)", err, contended)
+	}
+	defer func() { _ = lease.Release() }()
+
+	reapStaleFallbackBases(tmp, time.Now())
+
+	if _, err := os.Stat(base); err != nil {
+		t.Fatalf("in-use fallback base was reaped: %v", err)
 	}
 }
 
