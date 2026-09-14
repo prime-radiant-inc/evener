@@ -212,12 +212,12 @@ function guidedRepair() {
       await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
       expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
       expect(screen.queryByLabelText("API key")).toBeNull();
-      expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+      await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
     },
     async back() {
       await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
       expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-      expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+      await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
     },
   };
 }
@@ -251,7 +251,7 @@ test.each(["save", "refresh", "check", "result"])(
     });
     expect(h.fake.calls).toHaveLength(calls);
     expect(h.connected).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+    await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
     await h.back();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
