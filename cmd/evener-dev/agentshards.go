@@ -13,13 +13,12 @@ package dev
 //	AGENT_SHARD_COUNT      number of shards (default 4)
 //	AGENT_SHARD_PARALLEL   -parallel within each shard (default 3)
 //	AGENT_SHARD_SURVEY_PARALLEL  -parallel for the survey pass (default 6)
-//	AGENT_SHARD_SKIP       regex handed to the SURVEY's -test.skip, and only
-//	                       to it: a skipped test draws no cost line, so it
-//	                       lands in no shard. The shards themselves never
-//	                       receive the flag, so on a cache hit or under
-//	                       AGENT_SHARD_NO_SURVEY the variable does nothing at
-//	                       all. The script behaved the same way; pinned by
-//	                       TestAgentShardsSkipOnlyReachesTheSurvey.
+//	AGENT_SHARD_SKIP       regex handed to the survey's -test.skip and to
+//	                       every shard's: a skipped test draws no cost line,
+//	                       so it lands in no shard, but a cached survey means
+//	                       no survey ran and the shards would otherwise run
+//	                       the test the operator asked to skip. Pinned by
+//	                       TestAgentShardsSkipReachesTheShardsToo.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 //	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-agent-shards)
@@ -407,6 +406,12 @@ func runShards(cfg shardsConfig) int {
 			return 1
 		}
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
+		// The skip reaches the shards, not just the survey: a cached survey
+		// means no survey runs at all, and the shards would then run the very
+		// test the operator asked to skip.
+		if cfg.skip != "" {
+			args = append(args, "-test.skip", cfg.skip)
+		}
 		args = append(args, extraFlags...)
 		log, err := os.Create(filepath.Join(logdir, fmt.Sprintf("shard%d.log", i)))
 		if err != nil {

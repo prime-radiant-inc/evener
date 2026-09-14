@@ -194,6 +194,9 @@ var buildValueFlags = map[string]bool{
 	"-p": true, "-asmflags": true, "-buildmode": true, "-compiler": true,
 	"-gccgoflags": true, "-gcflags": true, "-installsuffix": true,
 	"-ldflags": true, "-mod": true, "-modfile": true, "-overlay": true,
+	// -C is here so that its value is consumed with it; both readers refuse
+	// the flag itself, in errUnsupportedC.
+	"-C":   true,
 	"-pgo": true, "-pkgdir": true, "-tags": true, "-toolexec": true,
 	// -vet chooses the vet checks `go test -c` runs over the package before it
 	// compiles it, so it belongs to the build and not to the shards.
@@ -340,7 +343,7 @@ func parseFlags(flags []string) (parsedFlags, error) {
 		}
 		hasInline := tok.inline
 		if name == "-C" {
-			return errors.New("-C is not supported here: every module is built and tested from its own directory, and a -C would move both somewhere this runner does not expect")
+			return errUnsupportedC()
 		}
 		switch {
 		case buildValueFlags[name]:
@@ -387,6 +390,14 @@ func parseFlags(flags []string) (parsedFlags, error) {
 		return parsedFlags{}, err
 	}
 	return out, nil
+}
+
+// errUnsupportedC is the one refusal both readers give for -C, whether it
+// arrives on the command line or in GOFLAGS: the toolchain applies GOFLAGS to
+// `go test -c` too, so a -C there moves the build out from under a runner that
+// is already standing in the module's own directory.
+func errUnsupportedC() error {
+	return errors.New("-C is not supported here: every module is built and tested from its own directory, and a -C would move both somewhere this runner does not expect")
 }
 
 // boolFlagValue reads a boolean flag's inline value the way go's flag package
@@ -444,6 +455,23 @@ func checkForwardedValue(name, value string) error {
 	return nil
 }
 
+// goflagsEntries splits GOFLAGS the way the toolchain does: on spaces, with a
+// surrounding pair of matching quotes removed, since cmd/internal/quoted.Split
+// is what reads this variable and `GOFLAGS='"-short"'` reaches the build as
+// -short. Without the stripping the quotes would hide a flag from every table
+// here while changing what `go test -c` does.
+func goflagsEntries(goflags string) []string {
+	entries := strings.Fields(goflags)
+	for i, entry := range entries {
+		if len(entry) >= 2 {
+			if quote := entry[0]; (quote == '\'' || quote == '"') && entry[len(entry)-1] == quote {
+				entries[i] = entry[1 : len(entry)-1]
+			}
+		}
+	}
+	return entries
+}
+
 // checkGoflags refuses a test-side flag that arrives through GOFLAGS. The
 // toolchain applies GOFLAGS to `go test -c`, which compiles the binary; this
 // runner then launches that binary itself, so a -short or -count sitting in
@@ -451,7 +479,10 @@ func checkForwardedValue(name, value string) error {
 // Build-side entries are another matter: those do reach the compile, and pass
 // through untouched.
 func checkGoflags(goflags string) error {
-	return walkFlags(strings.Fields(goflags), func(tok flagToken) error {
+	return walkFlags(goflagsEntries(goflags), func(tok flagToken) error {
+		if tok.name == "-C" {
+			return errUnsupportedC()
+		}
 		// A -test. name that survived normalisation is not one the binary has,
 		// so `go test` would hand it over and the binary would refuse it.
 		if strings.HasPrefix(tok.name, "-test.") {

@@ -496,6 +496,13 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 		// Through GOFLAGS the same two names get the same two answers.
 		{name: "the binary's spelling of a flag it has", goflags: "-test.short", err: "-short"},
 		{name: "and of one it does not", goflags: "-test.race", err: "-test.race", advice: "not a flag the test binary has"},
+		// The toolchain reads GOFLAGS with quoting, so a quoted flag reaches
+		// the build and has to reach these tables too.
+		{name: "a quoted test flag is still a test flag", goflags: `-mod=mod "-short"`, err: "-short"},
+		{name: "single quotes likewise", goflags: `'-count=2'`, err: "-count"},
+		// -C moves the build out from under a runner already standing in the
+		// module's directory, whichever route it arrives by.
+		{name: "-C through GOFLAGS", goflags: "-C /tmp", err: "-C is not supported here", advice: "built and tested from its own directory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := checkGoflags(tc.goflags)

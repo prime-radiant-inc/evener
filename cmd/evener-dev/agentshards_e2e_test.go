@@ -457,7 +457,7 @@ func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
 // cost table, so a run that does not survey does not skip. Fixing the wart —
 // threading the regex into the shard invocations and into the cache key —
 // means changing this pin with it.
-func TestAgentShardsSkipOnlyReachesTheSurvey(t *testing.T) {
+func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
 
 	surveyed, stdout, stderr, _ := e2eConfig(t)
@@ -466,14 +466,18 @@ func TestAgentShardsSkipOnlyReachesTheSurvey(t *testing.T) {
 		t.Fatalf("surveyed run with the red test skipped: rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 	}
 
+	// The path that used to run the skipped test: no survey, so nothing had
+	// filtered it out before the shards were packed. The shards are given the
+	// skip themselves now, which is what makes the knob mean the same thing on
+	// a cache hit as on a cold run.
 	unsurveyed, stdout2, stderr2, _ := e2eConfig(t)
 	unsurveyed.skip = "^TestFixtureBeta$"
 	unsurveyed.noSurvey = true
-	if rc := runShards(unsurveyed); rc != 1 {
-		t.Fatalf("unsurveyed run: rc = %d, want 1 — AGENT_SHARD_SKIP reaches the shards now, so the interface comment and this pin are both stale\nstdout:\n%s\nstderr:\n%s", rc, stdout2, stderr2)
+	if rc := runShards(unsurveyed); rc != 0 {
+		t.Fatalf("unsurveyed run with the red test skipped: rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout2, stderr2)
 	}
-	if !strings.Contains(stdout2.String(), "--- FAIL: TestFixtureBeta") {
-		t.Fatalf("the unsurveyed run failed for some reason other than the unskipped test:\n%s", stdout2)
+	if strings.Contains(stdout2.String(), "TestFixtureBeta") {
+		t.Fatalf("the skipped test ran anyway:\n%s", stdout2)
 	}
 }
 
