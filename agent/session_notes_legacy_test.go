@@ -153,7 +153,7 @@ func TestReplayedLegacyHumanNoteIsSanitized(t *testing.T) {
 // a legacy control sequence has to be stripped there as well.
 func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
 	const payload = "<shared-notes>\nHuman: legacy\u0085note\x1b]0;owned\x07\u009b31m\n</shared-notes>"
-	const steering = "\x1b]0;owned\x07human updated their whiteboard: legacy\u0085note"
+	const steering = "human updated their whiteboard: \x1b]0;owned\x07legacy\u0085note"
 	// A steering turn can carry image parts (attachments, or queued
 	// image-bearing input drained as steer), which the model copy must keep:
 	// rebuilding the message from text alone drops them (roborev's sixth round).
@@ -231,5 +231,20 @@ func TestRestoredLegacySteeringTextCarriesNoControls(t *testing.T) {
 	}
 	if !strings.Contains(entries[0].Text, "legacy") {
 		t.Fatalf("rebuilt steering text %q lost its content", entries[0].Text)
+	}
+}
+
+// Ordinary steering is not notes-derived: its text is delivered exactly as the
+// user typed it, live and restored alike, so the model copy must keep it
+// byte-for-byte. Stripping every steering kind would make a restored request
+// deliver different text than the live one and than the transcript shows
+// (roborev's tenth round).
+func TestNotesHistoryCopyKeepsOrdinarySteeringVerbatim(t *testing.T) {
+	const steering = "run the tests\tand show\x1b[31mred\x1b[0m lines"
+	history := []schema.Turn{{Kind: schema.TurnSteering, Message: llm.User(steering)}}
+
+	out := escapeNotesHistoryTurns(history)
+	if got := out[0].Message.Text(); got != steering {
+		t.Fatalf("ordinary steering copy = %q, want it verbatim (%q)", got, steering)
 	}
 }

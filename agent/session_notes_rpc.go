@@ -59,9 +59,9 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 		if changed {
 			reserveClientMutationTurnID(snapshot, record)
 			record.SteeringKind = events.SteeringKindHumanNote
-			text := "human updated their whiteboard: " + stored
+			text := humanNoteSteerPrefix + " " + stored
 			if stored == "" {
-				text = "human updated their whiteboard: (whiteboard cleared)"
+				text = humanNoteSteerPrefix + " (whiteboard cleared)"
 			}
 			addPendingSteering(snapshot, record, []appwire.InputItem{{Type: "text", Text: text}})
 			projection = acceptedClientMutationProjection(record.Method)
@@ -872,6 +872,28 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 // but model context must receive the escaped copy (see escapeNotesContextBlock),
 // or a note carrying the closing tag regains the harness framing on every
 // request the session serves. The input is not modified.
+// humanNoteSteerPrefix opens the steering text a shared-notes update carries.
+// A journal record persisted before SteeringKind was recorded has no kind to
+// read, so the prefix is how a note-origin entry is recognized there.
+const humanNoteSteerPrefix = "human updated their whiteboard:"
+
+// isHumanNoteSteer reports whether steering text came from a shared-notes update,
+// by kind or, for entries older than the kind, by its text. Only note-origin
+// steering is normalized: ordinary steering keeps the bytes the user typed, which
+// is what the live path and the persisted transcript already show.
+func isHumanNoteSteer(kind, text string) bool {
+	return kind == events.SteeringKindHumanNote || strings.HasPrefix(text, humanNoteSteerPrefix)
+}
+
+// rebuiltSteeringText returns a rebuilt steering entry's text: note-origin text is
+// stripped like every other load path, and ordinary steering keeps its bytes.
+func rebuiltSteeringText(kind, text string) string {
+	if !isHumanNoteSteer(kind, text) {
+		return text
+	}
+	return stripTextControls(text)
+}
+
 func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
 	out := make([]schema.Turn, len(history))
 	copy(out, history)
@@ -887,6 +909,12 @@ func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
 			// strip the other controls as well before the model copy is built.
 			out[i].Message = llm.User(escapeNotesContextBlock(stripTextControls(text)))
 		case schema.TurnSteering:
+			if !isHumanNoteSteer(out[i].SteeringKind, text) {
+				// Ordinary steering is delivered exactly as the user typed it, live
+				// and restored alike; only notes-derived text is normalized, so this
+				// copy keeps its bytes.
+				continue
+			}
 			// A human-note update rides a steering turn, and this copy is what
 			// resumed requests and inherited prefixes hand to the model, so the
 			// text parts are stripped as well. Only the text parts change, and
