@@ -206,20 +206,38 @@ export function reachableBareImports(testFiles, read, resolveRelative, dir) {
   return bare;
 }
 
-// The alias Vite would use for a specifier: the longest key that is the
-// specifier itself or a path prefix of it. Null when nothing covers it.
-export function longestAliasPrefix(specifier, aliases) {
-  let longest = null;
+// The alias Vite would use for a specifier: the FIRST key in config order that
+// matches, which is how Rollup's alias plugin resolves -- not the longest one.
+// The difference only shows when a general key precedes a specific one, which
+// is what describeAliasOrder refuses.
+export function firstAliasMatch(specifier, aliases) {
   for (const key of aliases.keys?.() ?? aliases) {
-    if (specifier !== key) {
-      // An exact match always answers; a prefix match answers only if that
-      // alias serves subpaths at all.
-      if (!specifier.startsWith(`${key}/`)) continue;
-      if (!servesSubpaths(key, aliases)) continue;
-    }
-    if (longest === null || key.length > longest.length) longest = key;
+    if (specifier === key) return key;
+    // A prefix match answers only if that alias serves subpaths at all.
+    if (specifier.startsWith(`${key}/`) && servesSubpaths(key, aliases)) return key;
   }
-  return longest;
+  return null;
+}
+
+// First-match means order carries meaning: a key that is a path prefix of a
+// later one swallows it, and `@evener/appwire-client` placed before
+// `@evener/appwire-client/testing` would answer for every testing specifier
+// with index.ts. vite.config.ts says as much in a comment; this is the same
+// rule, enforced.
+export function describeAliasOrder(aliases) {
+  const keys = [...(aliases.keys?.() ?? aliases)];
+  const offenders = [];
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      if (keys[j].startsWith(`${keys[i]}/`)) offenders.push(`${keys[i]} precedes ${keys[j]}, which it swallows`);
+    }
+  }
+  if (offenders.length === 0) return "";
+  return [
+    "vite.config.ts's resolve.alias is ordered so a general key answers before a specific one:",
+    ...offenders.map((line) => `  ${line}`),
+    "Vite takes the FIRST matching alias, so the specific entries have to come first.",
+  ].join("\n");
 }
 
 // A bare specifier with no alias resolves from the importer, which is inside
@@ -235,7 +253,7 @@ export function describeUnaliasedImports(bare, aliases) {
     // entry does not stand in for the subpath entry beside it, and reading
     // only the first two segments called the testing specifier satisfied by
     // the root alias, which maps at index.ts and cannot serve it.
-    if (longestAliasPrefix(specifier, aliases) !== null) continue;
+    if (firstAliasMatch(specifier, aliases) !== null) continue;
     offenders.push(`${specifier}, imported by ${files.join(", ")}`);
   }
   if (offenders.length === 0) return "";
@@ -343,13 +361,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
   const readFile = (file) => readFileSync(file, "utf8");
+  const viteAliases = aliasesFrom(readFileSync(path.join(frontend, "vite.config.ts"), "utf8"));
   const packageSources = sourceFilesOnDisk(packageDir);
   for (const problem of [
     describeAppImports(packageSources, readFile, packageDir),
     describeCwdRelativeReads(packageSources, readFile, packageDir),
+    describeAliasOrder(viteAliases),
     describeUnaliasedImports(
       reachableBareImports(testFilesOnDisk(packageDir), readFile, resolvePackageImport, packageDir),
-      aliasesFrom(readFile(path.join(frontend, "vite.config.ts"))),
+      viteAliases,
     ),
   ]) {
     if (problem) {

@@ -11,6 +11,8 @@ import {
   describeCwdRelativeReads,
   describeDifference,
   describeProofRun,
+  firstAliasMatch,
+  describeAliasOrder,
   describeUnaliasedImports,
   pickProofFile,
   reachableBareImports,
@@ -451,4 +453,37 @@ test("the walk does not follow an erased relative import either", () => {
     "/pkg",
   );
   assert.deepEqual([...bare.keys()], []);
+});
+
+test("the alias Vite uses is the first that matches, in config order", () => {
+  const ordered = new Map([
+    ["@evener/appwire-client/docContent", { servesSubpaths: false }],
+    ["@evener/appwire-client/testing", { servesSubpaths: true }],
+    ["@evener/appwire-client", { servesSubpaths: false }],
+  ]);
+  assert.equal(firstAliasMatch("@evener/appwire-client/docContent", ordered), "@evener/appwire-client/docContent");
+  assert.equal(firstAliasMatch("@evener/appwire-client/testing/fakeClient", ordered), "@evener/appwire-client/testing");
+  assert.equal(firstAliasMatch("@evener/appwire-client", ordered), "@evener/appwire-client");
+});
+
+test("a general key placed before a specific one is refused by name", () => {
+  const reordered = new Map([
+    ["@evener/appwire-client", { servesSubpaths: true }],
+    ["@evener/appwire-client/testing", { servesSubpaths: true }],
+  ]);
+  const problem = describeAliasOrder(reordered);
+  assert.match(problem, /@evener\/appwire-client precedes @evener\/appwire-client\/testing, which it swallows/);
+  assert.match(problem, /takes the FIRST matching alias/);
+  // And with that root entry serving subpaths, first-match really does answer
+  // the testing specifier with the root -- which is the harm the order rule
+  // exists to prevent.
+  assert.equal(firstAliasMatch("@evener/appwire-client/testing/fakeClient", reordered), "@evener/appwire-client");
+});
+
+test("the real config is ordered specific before general", () => {
+  const config = readFileSync(
+    path.resolve(fileURLToPath(import.meta.url), "../../vite.config.ts"),
+    "utf8",
+  );
+  assert.equal(describeAliasOrder(aliasesFrom(config)), "");
 });

@@ -73,5 +73,20 @@
     "name": "TypeScript import-equals require",
     "kind": "require-equals",
     "source": "import loaded = require(\"@@SPEC@@\");\nvoid loaded;\n"
+  },
+  {
+    "name": "side-effect import with no space before the specifier",
+    "kind": "import-side-effect",
+    "source": "import\"@@SPEC@@\";\n"
+  },
+  {
+    "name": "named import with no whitespace at all",
+    "kind": "import-named",
+    "source": "import{errorText}from\"@@SPEC@@\";\nvoid errorText;\n"
+  },
+  {
+    "name": "named re-export with no whitespace at all",
+    "kind": "export-from",
+    "source": "export{errorText}from\"@@SPEC@@\";\n"
   }
 ]

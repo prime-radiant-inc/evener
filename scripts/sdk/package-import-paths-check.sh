@@ -63,7 +63,10 @@ sources=(
 # argument -- `import("x")`, `require("x")`, `vi.mock("x")`, and the rest of
 # vitest's mocking family, which is why the call form is an identifier chain
 # rather than a fixed list of names. Any of the three quotes: a specifier with
-# nothing to interpolate is as spellable in backticks as in quotes.
+# nothing to interpolate is as spellable in backticks as in quotes. And the
+# whitespace after a keyword is optional, because `import"./x"` and
+# `import{a}from"./x"` are what the language accepts, not what a formatter
+# happens to emit.
 # The last alternative is the specifier that opens its own line, which is what
 # a call or an import broken across lines leaves behind:
 #
@@ -74,7 +77,7 @@ sources=(
 # above, so the continuation is matched on its own shape instead. In these
 # trees a line that begins with a quoted path IS a module specifier; the sweep
 # finds none today that is not.
-opener='(from[[:space:]]+|import[[:space:]]+|[A-Za-z_$][A-Za-z0-9_$.]*[[:space:]]*\([[:space:]]*|^[[:space:]]*)'
+opener='(from[[:space:]]*|import[[:space:]]*|[A-Za-z_$][A-Za-z0-9_$.]*[[:space:]]*\([[:space:]]*|^[[:space:]]*)'
 # `/protocol/` rather than `protocol`: the seam is only ever reached through a
 # relative path, and a bare `protocol` substring matches @modelcontextprotocol
 # and the "protocol" terminal-reason literal the app really does use. The
