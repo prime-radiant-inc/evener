@@ -78,15 +78,26 @@ func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, str
 }
 
 // awaitFile waits for a path to appear, failing with label if it never does.
+// Only from the test's own goroutine: t.Fatalf from any other one leaves the
+// test to stall until its timeout instead of failing. A goroutine wants
+// awaitFileErr.
 func awaitFile(t *testing.T, path, label string) {
 	t.Helper()
+	if err := awaitFileErr(path, label); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// awaitFileErr is awaitFile for a goroutine: it reports rather than fails, and
+// the test goroutine is what turns the report into a failure.
+func awaitFileErr(path, label string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, err := os.Stat(path); err == nil {
-			return
+			return nil
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: %s never appeared", label, path)
+			return fmt.Errorf("%s: %s never appeared", label, path)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

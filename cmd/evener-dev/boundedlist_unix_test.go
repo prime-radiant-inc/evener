@@ -22,6 +22,27 @@ import (
 // macOS and CI is Linux; a sleep that is long enough here is a guess there.
 const termProofChild = `trap ': > "${BOUNDED_LIST_TERMED:-/dev/null}"' TERM; : > "${BOUNDED_LIST_READY:-/dev/null}"; while :; do sleep 0.05; done`
 
+// signalWhenReady sends sig once path appears, and returns the check the test
+// goroutine calls afterwards. The waiting happens off the test's goroutine and
+// the failing happens on it: t.Fatal from anywhere else leaves the test to
+// stall until its timeout rather than fail.
+func signalWhenReady(path, label string, signals chan<- os.Signal, sig syscall.Signal) func(*testing.T) {
+	watch := make(chan error, 1)
+	go func() {
+		err := awaitFileErr(path, label)
+		if err == nil {
+			signals <- sig
+		}
+		watch <- err
+	}()
+	return func(t *testing.T) {
+		t.Helper()
+		if err := <-watch; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // readinessFiles gives the child its two paths and returns them. The child
 // inherits this process's environment, so t.Setenv is how they arrive.
 func readinessFiles(t *testing.T) (ready, termed string) {
@@ -155,11 +176,9 @@ func TestBoundedAttemptForwardsAnInterruptToTheGroup(t *testing.T) {
 	// its foreground group. It has to be passed on.
 	ready, _ := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
-	go func() {
-		awaitFile(t, ready, "the child never started")
-		signals <- syscall.SIGTERM
-	}()
+	sent := signalWhenReady(ready, "the child never started", signals, syscall.SIGTERM)
 	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 30*time.Second, 300*time.Millisecond, &stderr, &signalLatch{ch: signals})
+	sent(t)
 	if result.interrupted != syscall.SIGTERM {
 		t.Fatalf("interrupted = %v, want SIGTERM; timedOut = %v", result.interrupted, result.timedOut)
 	}
@@ -176,11 +195,9 @@ func TestBoundedListDoesNotRetryAfterAnInterrupt(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ready, _ := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
-	go func() {
-		awaitFile(t, ready, "the child never started")
-		signals <- syscall.SIGINT
-	}()
+	sent := signalWhenReady(ready, "the child never started", signals, syscall.SIGINT)
 	code := boundedListWith([]string{"-timeout", "30s", "-attempts", "3", "-grace", "300ms", "--", "sh", "-c", termProofChild}, &stdout, &stderr, signals)
+	sent(t)
 	if code != 130 {
 		t.Fatalf("exit code = %d, want 130 for SIGINT; stderr = %q", code, stderr.String())
 	}
@@ -215,14 +232,12 @@ func TestBoundedAttemptTakesASignalThatArrivesDuringCleanup(t *testing.T) {
 	_, termed := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
 	latch := &signalLatch{ch: signals}
-	go func() {
-		// The child writes this when the bound's SIGTERM reaches it, which is
-		// the moment the cleanup's grace begins: a signal sent now lands in
-		// the window nobody is watching.
-		awaitFile(t, termed, "the child was never sent SIGTERM")
-		signals <- syscall.SIGTERM
-	}()
+	// The child writes that file when the bound's SIGTERM reaches it, which is
+	// the moment the cleanup's grace begins: a signal sent then lands in the
+	// window nobody is watching.
+	sent := signalWhenReady(termed, "the child was never sent SIGTERM", signals, syscall.SIGTERM)
 	result := runBoundedAttempt([]string{"sh", "-c", termProofChild}, 200*time.Millisecond, 5*time.Second, &stderr, latch)
+	sent(t)
 	if result.interrupted != syscall.SIGTERM {
 		t.Fatalf("interrupted = %v, want the signal that arrived during cleanup", result.interrupted)
 	}
@@ -239,12 +254,10 @@ func TestBoundedListStopsWhenASignalLandsBetweenAttempts(t *testing.T) {
 	// than announce a retry and start attempt 2.
 	_, termed := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
-	go func() {
-		awaitFile(t, termed, "the child was never sent SIGTERM")
-		signals <- syscall.SIGTERM
-	}()
+	sent := signalWhenReady(termed, "the child was never sent SIGTERM", signals, syscall.SIGTERM)
 	code := boundedListWith([]string{"-timeout", "200ms", "-attempts", "3", "-grace", "5s", "--",
 		"sh", "-c", termProofChild}, &stdout, &stderr, signals)
+	sent(t)
 	if code != 143 {
 		t.Fatalf("exit code = %d, want 143; stderr = %q", code, stderr.String())
 	}
@@ -282,11 +295,9 @@ func TestBoundedAttemptForwardsTheSignalItWasSentNotATermInstead(t *testing.T) {
 	ready, _ := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
 	latch := &signalLatch{ch: signals}
-	go func() {
-		awaitFile(t, ready, "the child never started")
-		signals <- syscall.SIGHUP
-	}()
+	sent := signalWhenReady(ready, "the child never started", signals, syscall.SIGHUP)
 	result := runBoundedAttempt([]string{"sh", "-c", hupAnswerer}, 30*time.Second, time.Second, &stderr, latch)
+	sent(t)
 	if result.interrupted != syscall.SIGHUP {
 		t.Fatalf("interrupted = %v, want SIGHUP", result.interrupted)
 	}
@@ -395,13 +406,11 @@ func TestBoundedAttemptKeepsTheInterruptWhenItCannotReap(t *testing.T) {
 	argv, escapeeReady := escapeeCommand(t)
 	signals := make(chan os.Signal, 1)
 	latch := &signalLatch{ch: signals}
-	go func() {
-		// Once the grandchild is running: signalling before that would stop a
-		// group that has nothing to leave behind.
-		awaitFile(t, escapeeReady, "the escapee never reported its grandchild")
-		signals <- syscall.SIGTERM
-	}()
+	// Once the grandchild is running: signalling before that would stop a
+	// group that has nothing to leave behind.
+	sent := signalWhenReady(escapeeReady, "the escapee never reported its grandchild", signals, syscall.SIGTERM)
 	result := runBoundedAttempt(argv, 30*time.Second, 300*time.Millisecond, &stderr, latch)
+	sent(t)
 	if !result.stuck {
 		t.Fatal("stuck = false; this case needs the child that cannot be reaped")
 	}
@@ -527,13 +536,11 @@ func TestBoundedListDoesNotRetryAFailedCommandAfterAnInterrupt(t *testing.T) {
 	var stderr bytes.Buffer
 	_, termed := readinessFiles(t)
 	signals := make(chan os.Signal, 1)
-	go func() {
-		awaitFile(t, termed, "the child was never sent SIGTERM")
-		signals <- syscall.SIGTERM
-	}()
+	sent := signalWhenReady(termed, "the child was never sent SIGTERM", signals, syscall.SIGTERM)
 	failThenLeaveAChild := failingCommandWithASurvivor(t)
 	latch := &signalLatch{ch: signals}
 	result := runBoundedAttempt(failThenLeaveAChild, 30*time.Second, 5*time.Second, &stderr, latch)
+	sent(t)
 	if result.exitCode != 3 {
 		t.Fatalf("exitCode = %d, want 3: the command's own answer; stderr = %q", result.exitCode, stderr.String())
 	}
@@ -546,12 +553,10 @@ func TestBoundedListDoesNotRetryAFailedCommandAfterAnInterrupt(t *testing.T) {
 	var stdout, runnerErr bytes.Buffer
 	_, termedAgain := readinessFiles(t)
 	runnerSignals := make(chan os.Signal, 1)
-	go func() {
-		awaitFile(t, termedAgain, "the child was never sent SIGTERM")
-		runnerSignals <- syscall.SIGTERM
-	}()
+	sentAgain := signalWhenReady(termedAgain, "the child was never sent SIGTERM", runnerSignals, syscall.SIGTERM)
 	code := boundedListWith(append([]string{"-timeout", "30s", "-attempts", "3", "-grace", "5s", "--"},
 		failingCommandWithASurvivor(t)...), &stdout, &runnerErr, runnerSignals)
+	sentAgain(t)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3; stderr = %q", code, runnerErr.String())
 	}
