@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1788,23 +1789,19 @@ func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T)
 	}
 }
 
-// TestLoadSessionJobActivityTree_ContinuationMintedOverAnAbsentJobJournal
-// measures what a page can promise about a journal that was not there. A
-// missing jobs.jsonl is stepped over without touching the fold cache, so the
-// generation minted for it is zero -- and a journal folded for the first time
-// also reports zero, which makes "absent when this page was built" and
-// "present and never rewritten" the same claim. The entries a session renders
-// are its jobs and then its delegates, so a journal appearing between the two
-// requests shifts every position the token counted.
-func TestLoadSessionJobActivityTree_ContinuationMintedOverAnAbsentJobJournal(t *testing.T) {
-	stateDir := t.TempDir()
-	rootID := "absentjobsroot"
+// seedAbsentJournalActivityRoot writes a root whose delegate entries are big
+// enough to force a trim, with no jobs.jsonl of its own, and returns the
+// root's jobs.jsonl path and its delegate IDs in render order.
+func seedAbsentJournalActivityRoot(t *testing.T, stateDir, rootID string, delegates int) (string, []string) {
+	t.Helper()
 	started := time.Unix(900, 0).UTC()
 	task := strings.Repeat("t", 250_000)
 	var descriptors []delegatestore.Descriptor
-	for i := range 12 {
-		childID := fmt.Sprintf("absentjobschild%02d", i)
+	var ids []string
+	for i := range delegates {
+		childID := fmt.Sprintf("%schild%02d", rootID, i)
 		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, task))
+		ids = append(ids, "dlg_"+childID)
 		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
 			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
 			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
@@ -1813,61 +1810,128 @@ func TestLoadSessionJobActivityTree_ContinuationMintedOverAnAbsentJobJournal(t *
 	}
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 	writePastStableDelegates(t, stateDir, rootID, descriptors...)
-
-	// The root has no jobs.jsonl at all when this page is built.
 	rootJobsPath := filepath.Join(jobsDir(stateDir, rootID), "jobs.jsonl")
 	if _, err := os.Stat(rootJobsPath); !os.IsNotExist(err) {
 		t.Fatalf("stat %s: %v, want the journal absent", rootJobsPath, err)
 	}
-	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	sort.Strings(ids)
+	return rootJobsPath, ids
+}
+
+// TestLoadSessionJobActivityTree_PaginatesWithNoJobJournal pins that a
+// session with no jobs.jsonl at all can still be paged to the end. Its
+// delegates are entries like any other, and a page that trims them has to
+// hand back something the next request can use; refusing to mint over the
+// absent journal leaves everything past the first page unreachable forever,
+// since the journal is never going to appear.
+func TestLoadSessionJobActivityTree_PaginatesWithNoJobJournal(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "nojobsroot"
+	_, want := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+
+	delivered := map[string]bool{}
+	continuation := ""
+	for page := 1; ; page++ {
+		if page > 8 {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %d of %d delegates", page, len(delivered), len(want))
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Delegate != nil {
+				delivered[entry.Delegate.DelegateID] = true
+			}
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			if tree.Root.Branch.Truncated {
+				t.Fatalf("page %d is truncated but minted no continuation; diagnostics %q -- a session whose job journal was never there still has to be pageable", page, tree.Root.Diagnostics)
+			}
+			break
+		}
+		if next == continuation {
+			t.Fatalf("page %d re-minted the continuation it was loaded with", page)
+		}
+		continuation = next
+	}
+	for _, id := range want {
+		if !delivered[id] {
+			t.Fatalf("delegate %q was never delivered across the walk", id)
+		}
+	}
+}
+
+// TestLoadSessionJobActivityTree_RefusesWhenJournalPresenceChanges pins what
+// a generation cannot say. An absent journal reports 0 and a journal folded
+// for the first time reports 0, so presence travels in the token beside the
+// generations and is compared the same way: a journal that appeared, or one
+// that went away, moves the entries the position counts against.
+func TestLoadSessionJobActivityTree_RefusesWhenJournalPresenceChanges(t *testing.T) {
+	t.Run("job journal appears after the mint", func(t *testing.T) {
+		stateDir := t.TempDir()
+		rootID := "appearsroot"
+		rootJobsPath, _ := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+		token := firstActivityContinuation(t, stateDir, rootID)
+
+		started := time.Unix(900, 0).UTC()
+		s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_a",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+		})
+		if _, err := os.Stat(rootJobsPath); err != nil {
+			t.Fatalf("stat %s: %v, want the journal present now", rootJobsPath, err)
+		}
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+			t.Fatal("resumed a token minted before the job journal existed; its position counts delegates only, and jobs now render ahead of them")
+		}
+	})
+
+	t.Run("job journal goes away after the mint", func(t *testing.T) {
+		stateDir := t.TempDir()
+		rootID := "vanishesroot"
+		rootJobsPath, _ := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+		started := time.Unix(900, 0).UTC()
+		s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_a",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+		})
+		token := firstActivityContinuation(t, stateDir, rootID)
+
+		if err := os.Remove(rootJobsPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+			t.Fatal("resumed a token whose job journal has been deleted; the entries its position counts are gone with it")
+		}
+	})
+
+	t.Run("delegate journal goes away after the mint", func(t *testing.T) {
+		stateDir := t.TempDir()
+		rootID := "dlgvanishesroot"
+		seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+		token := firstActivityContinuation(t, stateDir, rootID)
+
+		if err := os.Remove(filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+			t.Fatal("resumed a token whose delegate journal has been deleted; every entry its position counts came from that journal")
+		}
+	})
+}
+
+// firstActivityContinuation returns the continuation the first, unpaged
+// request for rootID mints, failing the test when there is none.
+func firstActivityContinuation(t *testing.T, stateDir, rootID string) string {
+	t.Helper()
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
-	if !first.Root.Branch.Truncated {
-		t.Fatal("the fixture must trim the root's own entries, or there is nothing to mint over")
+	if tree.Root.Branch.Continuation == "" {
+		t.Fatalf("the first page minted no continuation; truncated=%t diagnostics=%q", tree.Root.Branch.Truncated, tree.Root.Diagnostics)
 	}
-	if first.Root.Branch.Continuation != "" {
-		t.Fatalf("continuation %q minted while the root's job journal was absent: its position counts against entries nobody read, and a journal appearing before the resume moves every one of them", first.Root.Branch.Continuation)
-	}
-	wantDiagnostic := activityAbsentJobJournalDiagnostic(rootID)
-	if !slices.Contains(first.Root.Diagnostics, wantDiagnostic) {
-		t.Fatalf("diagnostics %q, want one of them to be %q", first.Root.Diagnostics, wantDiagnostic)
-	}
-
-	// The journal appears. A page built now can mint, and what it mints
-	// resumes into the jobs it actually read.
-	s1cov_writeJobLog(t, stateDir, rootID,
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_a", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(time.Second), JobID: "job_root_b", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(2 * time.Second), JobID: "job_root_c", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
-	)
-	present, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
-	if err != nil {
-		t.Fatalf("page with the journal present: %v", err)
-	}
-	token := present.Root.Branch.Continuation
-	if token == "" {
-		t.Fatalf("no continuation minted with the journal present; diagnostics %q -- the suppression must be specific to an absent journal", present.Root.Diagnostics)
-	}
-	delivered := map[string]bool{}
-	for _, entry := range present.Root.Entries {
-		if entry.Job != nil {
-			delivered[entry.Job.JobID] = true
-		}
-	}
-	for _, id := range []string{"job_root_a", "job_root_b", "job_root_c"} {
-		if !delivered[id] {
-			t.Fatalf("%s was never delivered on the page that read the journal", id)
-		}
-	}
-
-	// The journal goes away again. The token counted against entries that
-	// are gone, and its generation cannot say so: an absent journal reports
-	// the same 0 a first fold does.
-	if err := os.Remove(rootJobsPath); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
-		t.Fatal("resuming a token whose job journal has been deleted was accepted; the position it carries counts against entries that no longer exist")
-	}
+	return tree.Root.Branch.Continuation
 }

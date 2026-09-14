@@ -71,6 +71,15 @@ type activityContinuation struct {
 	ResumeIndex    int      `json:"idx,omitempty"`
 	JobsEpoch      uint64   `json:"jobs_epoch,omitempty"`
 	DelegatesEpoch uint64   `json:"dlg_epoch,omitempty"`
+	// JobsAbsent and DelegatesAbsent record whether each journal existed at
+	// all when this token was minted, which the generations above cannot
+	// say: a journal that is not there reports 0, and so does one folded
+	// for the first time. A resume compares them exactly as it compares the
+	// generations, because a journal that appeared or went away moves the
+	// entries ResumeIndex counts — a session renders its jobs and then its
+	// delegates, so either journal changing presence renumbers the list.
+	JobsAbsent      bool `json:"jobs_absent,omitempty"`
+	DelegatesAbsent bool `json:"dlg_absent,omitempty"`
 	// Revision is the root's jobActivityClock revision (see
 	// activityCurrentRootRevision) at mint time — appwire.JobActivityTree's
 	// own Revision field, carried into the continuation too. Only checked
@@ -122,8 +131,11 @@ type activitySessionSnapshot struct {
 	// requests moves every position a continuation counted — see
 	// activitySessionEpochs.
 	JobsJournalAbsent bool
-	Children          map[string]*activitySessionSnapshot // child session ID
-	Errors            map[string]error                    // child session ID
+	// DelegatesJournalAbsent is the same fact for the delegates.jsonl this
+	// session folds, read the same way from the same fold.
+	DelegatesJournalAbsent bool
+	Children               map[string]*activitySessionSnapshot // child session ID
+	Errors                 map[string]error                    // child session ID
 }
 
 type activitySessionLocator struct {
@@ -361,18 +373,19 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	// target. A live root paging into a CLOSED child is fenced by both: the
 	// clock for what the daemon does under this root, these generations for a
 	// rewrite of the child's journal that the clock never sees.
-	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch {
+	// Presence travels beside the generations and is checked the same way,
+	// because a generation cannot speak for a journal that is not there:
+	// an absent one reports 0 and so does a journal folded for the first
+	// time. A journal that appeared, or went away, renumbers the entries
+	// ResumeIndex counts — which is also why a session whose journal was
+	// never there still mints and still resumes, as long as it is still
+	// not there.
+	target := collectActivitySessionEpochs(*snapshot)[cont.SessionID]
+	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch ||
+		cont.JobsAbsent != target.jobsAbsent || cont.DelegatesAbsent != target.delegatesAbsent {
 		return nil, 0, 0, cache, errors.New("activity continuation is stale: the underlying journal changed; restart pagination without a continuation")
 	}
-	// A generation cannot speak for a journal that is not there: an absent
-	// one reports 0, and so does a journal folded for the first time. No
-	// page mints a resumable token over an absent journal (see
-	// activityAbsentJobJournalDiagnostic), so a token naming this session
-	// was minted while its journal existed — and if it is gone now, the
-	// entries this position counts against are gone with it.
-	if collectActivitySessionEpochs(*snapshot)[cont.SessionID].jobsAbsent {
-		return nil, 0, 0, cache, errors.New("activity continuation is stale: the job journal it counted against is gone; restart pagination without a continuation")
-	}
+
 	// A live session has no fold-cache generation at all (jobsEpoch and
 	// delegatesEpoch above are both 0 for one — activitySessionSnapshot's
 	// doc comment), so the check above cannot speak for a live target:
@@ -701,13 +714,14 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		JobsEpoch:      base.JobsEpoch,
 		DelegatesEpoch: base.DelegatesEpoch,
 
-		JobsJournalAbsent: base.JobsJournalAbsent,
-		Jobs:              []*jobstore.JobRecord{},
-		LiveJobs:          map[string]*jobstore.JobRecord{},
-		StableDelegates:   make(map[string]delegateSnapshot, 1),
-		Diagnostics:       append([]string(nil), base.Diagnostics...),
-		Children:          make(map[string]*activitySessionSnapshot),
-		Errors:            make(map[string]error),
+		JobsJournalAbsent:      base.JobsJournalAbsent,
+		DelegatesJournalAbsent: base.DelegatesJournalAbsent,
+		Jobs:                   []*jobstore.JobRecord{},
+		LiveJobs:               map[string]*jobstore.JobRecord{},
+		StableDelegates:        make(map[string]delegateSnapshot, 1),
+		Diagnostics:            append([]string(nil), base.Diagnostics...),
+		Children:               make(map[string]*activitySessionSnapshot),
+		Errors:                 make(map[string]error),
 	}
 	if row, ok := base.StableDelegates[delegateID]; ok {
 		filtered.StableDelegates[delegateID] = row
@@ -749,7 +763,8 @@ type activitySessionEpochs struct {
 	// alongside the generations because it is the one thing they cannot
 	// say: a journal that was never there and a journal folded for the
 	// first time both report 0.
-	jobsAbsent bool
+	jobsAbsent      bool
+	delegatesAbsent bool
 }
 
 // collectActivitySessionEpochs walks snapshot's Children tree and returns
@@ -762,7 +777,12 @@ func collectActivitySessionEpochs(snapshot activitySessionSnapshot) map[string]a
 	epochs := make(map[string]activitySessionEpochs)
 	var walk func(s activitySessionSnapshot)
 	walk = func(s activitySessionSnapshot) {
-		epochs[s.SessionID] = activitySessionEpochs{jobs: s.JobsEpoch, delegates: s.DelegatesEpoch, jobsAbsent: s.JobsJournalAbsent}
+		epochs[s.SessionID] = activitySessionEpochs{
+			jobs:            s.JobsEpoch,
+			delegates:       s.DelegatesEpoch,
+			jobsAbsent:      s.JobsJournalAbsent,
+			delegatesAbsent: s.DelegatesJournalAbsent,
+		}
 		for _, child := range s.Children {
 			if child != nil {
 				walk(*child)
@@ -979,7 +999,12 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 				continue
 			}
 			if !activityConsumeWorkUnit(budget, 1) {
-				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.JobsEpoch, snapshot.DelegatesEpoch, snapshot.JobsJournalAbsent)
+				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, activitySessionEpochs{
+					jobs:            snapshot.JobsEpoch,
+					delegates:       snapshot.DelegatesEpoch,
+					jobsAbsent:      snapshot.JobsJournalAbsent,
+					delegatesAbsent: snapshot.DelegatesJournalAbsent,
+				})
 				projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
 				return projected
 			}
@@ -996,7 +1021,12 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 			continue
 		}
 		if !activityConsumeWorkUnit(budget, 1) {
-			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.JobsEpoch, snapshot.DelegatesEpoch, snapshot.JobsJournalAbsent)
+			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, activitySessionEpochs{
+				jobs:            snapshot.JobsEpoch,
+				delegates:       snapshot.DelegatesEpoch,
+				jobsAbsent:      snapshot.JobsJournalAbsent,
+				delegatesAbsent: snapshot.DelegatesJournalAbsent,
+			})
 			projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
 			return projected
 		}
@@ -1200,7 +1230,7 @@ func activityConsumeWorkUnit(budget *activityBudget, units int) bool {
 // (ErrLineTooLong), never silently degrades to a partial snapshot that
 // could combine with a projection-phase budget trip into a non-advancing
 // continuation.
-func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *activityBudget, sessionID string, path []string, resumeIndex int, jobsEpoch, delegatesEpoch uint64, jobsAbsent bool) {
+func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *activityBudget, sessionID string, path []string, resumeIndex int, own activitySessionEpochs) {
 	if session == nil {
 		return
 	}
@@ -1209,20 +1239,18 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 		session.Diagnostics = append(session.Diagnostics, activityUnreachableByPathDiagnostic(sessionID))
 		return
 	}
-	if jobsAbsent {
-		session.Diagnostics = append(session.Diagnostics, activityAbsentJobJournalDiagnostic(sessionID))
-		return
-	}
 	if budget != nil && budget.rootID != "" {
 		session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:        activityContinuationV1,
-			RootID:         budget.rootID,
-			SessionID:      sessionID,
-			Path:           append([]string(nil), path...),
-			ResumeIndex:    resumeIndex,
-			JobsEpoch:      jobsEpoch,
-			DelegatesEpoch: delegatesEpoch,
-			Revision:       budget.revision,
+			Version:         activityContinuationV1,
+			RootID:          budget.rootID,
+			SessionID:       sessionID,
+			Path:            append([]string(nil), path...),
+			ResumeIndex:     resumeIndex,
+			JobsEpoch:       own.jobs,
+			DelegatesEpoch:  own.delegates,
+			JobsAbsent:      own.jobsAbsent,
+			DelegatesAbsent: own.delegatesAbsent,
+			Revision:        budget.revision,
 		})
 	}
 }
@@ -1234,13 +1262,6 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 // claims to lead to. Reporting the session to request instead leaves the
 // reader somewhere to go — that session is its own root, where the path
 // starts over at zero.
-// activityAbsentJobJournalDiagnostic is what a session says in place of a
-// continuation it cannot honestly mint, because the job history the position
-// counts against was not there to read.
-func activityAbsentJobJournalDiagnostic(sessionID string) string {
-	return fmt.Sprintf("job journal unavailable; request session %q again", sessionID)
-}
-
 func activityContinuationPathFits(path []string) bool {
 	return len(path) <= activityMaxContinuationPathLength
 }
@@ -1518,19 +1539,17 @@ func mintActivityTrimContinuation(dropped activityTrimmedEntry, rootID string, r
 		return
 	}
 	own := epochs[dropped.session.SessionID]
-	if own.jobsAbsent {
-		dropped.session.Diagnostics = append(dropped.session.Diagnostics, activityAbsentJobJournalDiagnostic(dropped.session.SessionID))
-		return
-	}
 	dropped.session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version:        activityContinuationV1,
-		RootID:         rootID,
-		SessionID:      dropped.session.SessionID,
-		Path:           append([]string(nil), dropped.path...),
-		ResumeIndex:    resumeIndex,
-		JobsEpoch:      own.jobs,
-		DelegatesEpoch: own.delegates,
-		Revision:       revision,
+		Version:         activityContinuationV1,
+		RootID:          rootID,
+		SessionID:       dropped.session.SessionID,
+		Path:            append([]string(nil), dropped.path...),
+		ResumeIndex:     resumeIndex,
+		JobsEpoch:       own.jobs,
+		DelegatesEpoch:  own.delegates,
+		JobsAbsent:      own.jobsAbsent,
+		DelegatesAbsent: own.delegatesAbsent,
+		Revision:        revision,
 	})
 }
 

@@ -58,6 +58,13 @@ type Extend[T any] func(ctx context.Context, path string, fromOffset int64, prio
 type Result[T any] struct {
 	Value  T
 	Offset int64
+	// Absent reports that there was no file at this path when Get looked,
+	// which Epoch cannot say: a path that has never existed and a file
+	// folded for the first time both report generation 0. Value is the
+	// zero fold. Presence is decided by the same stat the fold reads
+	// through, so a caller that asks this instead of stat'ing for itself
+	// cannot see the file appear or vanish between the two looks.
+	Absent bool
 	// Epoch counts how many times this path's cached fold has been
 	// DISCARDED and restarted from byte zero because the file was not a
 	// pure append of what the cache had — shrunk, rewritten at the same
@@ -221,7 +228,7 @@ func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Resu
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			c.drop(path)
-			return Result[T]{}, nil
+			return Result[T]{Absent: true}, nil
 		}
 		var zero Result[T]
 		return zero, statErr
@@ -609,9 +616,9 @@ func captureTailProbe(path string, offset int64) ([]byte, error) {
 // path does not apply here — there is no shared flight for one caller's
 // cancellation to poison in the first place.
 func (c *Cache[T]) readUncached(ctx context.Context, path string, extend Extend[T]) (Result[T], error) {
-	if _, err := os.Stat(path); err != nil {
+	if _, err := c.stat(path); err != nil {
 		if os.IsNotExist(err) {
-			return Result[T]{}, nil
+			return Result[T]{Absent: true}, nil
 		}
 		var zero Result[T]
 		return zero, err
