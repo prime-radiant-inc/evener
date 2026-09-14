@@ -491,6 +491,25 @@ func TestEmbeddedSkillsDir_FallsBackWhenTheCacheKeepsBeingReaped(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "doctoring-evener", "SKILL.md")); err != nil {
 		t.Fatalf("fallback copy missing the bundled skill: %v", err)
 	}
+	// The fallback must live under the prefix the fallback-base reaper scans,
+	// otherwise it leaks unbounded on every call.
+	if !strings.HasPrefix(filepath.Base(dir), embeddedSkillsPrefix+processOwnerTag()+"-") {
+		t.Fatalf("fallback %q is not under the reaped prefix", dir)
+	}
+}
+
+func TestForgetEmbeddedSkillsLocked_RemovesFallbackCopy(t *testing.T) {
+	dir := t.TempDir()
+	embeddedSkillsCache.mu.Lock()
+	embeddedSkillsCache.dir = dir
+	embeddedSkillsCache.fallback = true
+	embeddedSkillsCache.mu.Unlock()
+
+	forgetEmbeddedSkillsLocked()
+
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("fallback copy not removed when forgotten: %v", err)
+	}
 }
 
 func TestPruneObsoleteLocks_RemovesOnlyOrphans(t *testing.T) {

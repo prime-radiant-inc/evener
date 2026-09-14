@@ -63,6 +63,9 @@ var embeddedSkillsCache struct {
 	verified  bool
 	lease     skillsLease
 	leasedDir string
+	// fallback marks a private copy created when the shared cache could not be
+	// leased. It is reaped by reapStaleFallbackBases and removed when replaced.
+	fallback bool
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -107,19 +110,26 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 // is gone and refreshes the cached metadata. The caller holds the cache mutex.
 func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
-		if embeddedSkillsCache.verified && cacheDirExists(embeddedSkillsCache.dir) {
-			if err := claimEmbeddedSkillsLocked(embeddedSkillsCache.dir); err == nil {
-				touchDir(embeddedSkillsCache.dir)
-				return embeddedSkillsCache.dir, nil
+		cached := embeddedSkillsCache.dir
+		if embeddedSkillsCache.fallback && embeddedSkillsCache.verified && cacheDirExists(cached) {
+			// A fallback copy is private to this process and has no shared lock
+			// to take; its age is what bounds it.
+			touchDir(cached)
+			return cached, nil
+		}
+		if embeddedSkillsCache.verified && cacheDirExists(cached) {
+			if err := claimEmbeddedSkillsLocked(cached); err == nil {
+				touchDir(cached)
+				return cached, nil
 			}
 			// The copy is being reaped: forget it and publish another rather
 			// than hand back one whose files may vanish mid-session.
 			forgetEmbeddedSkillsLocked()
-		} else if !embeddedSkillsCache.verified && cacheDirUsable(embeddedSkillsCache.dir, embeddedSkillsCache.digest) {
-			if err := claimEmbeddedSkillsLocked(embeddedSkillsCache.dir); err == nil {
+		} else if !embeddedSkillsCache.verified && cacheDirUsable(cached, embeddedSkillsCache.digest) {
+			if err := claimEmbeddedSkillsLocked(cached); err == nil {
 				embeddedSkillsCache.verified = true
-				touchDir(embeddedSkillsCache.dir)
-				return embeddedSkillsCache.dir, nil
+				touchDir(cached)
+				return cached, nil
 			}
 			forgetEmbeddedSkillsLocked()
 		} else {
@@ -156,18 +166,30 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		embeddedSkillsCache.verified = true
 		return dir, nil
 	}
-	// The shared cache kept being reaped. Fall back to a private copy so the
-	// session still gets its bundled skills, and let the next call retry.
-	dir, err := extractEmbeddedSkills(bundled.Skills(), os.MkdirTemp)
+	// The shared cache kept being reaped. Fall back to a private copy under the
+	// reaped per-user prefix so it is bounded like every other fallback base, and
+	// let a later call retry the shared cache.
+	dir, err := os.MkdirTemp("", embeddedSkillsPrefix+processOwnerTag()+"-*")
 	if err != nil {
+		return "", fmt.Errorf("creating private skills copy: %w", err)
+	}
+	if err := copyEmbeddedSkills(bundled.Skills(), dir); err != nil {
+		_ = os.RemoveAll(dir)
 		return "", fmt.Errorf("bundled skills cache unavailable (last: %w): %w", lastErr, err)
+	}
+	digest, err := digestSkillsFS(bundled.Skills())
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", fmt.Errorf("digesting embedded skills: %w", err)
 	}
 	skills := make(map[string]SkillMeta)
 	ScanSkillsDir(dir, skills)
+	forgetEmbeddedSkillsLocked()
 	embeddedSkillsCache.dir = dir
-	embeddedSkillsCache.digest = ""
+	embeddedSkillsCache.digest = digest
 	embeddedSkillsCache.skills = skills
-	embeddedSkillsCache.verified = false
+	embeddedSkillsCache.verified = true
+	embeddedSkillsCache.fallback = true
 	return dir, nil
 }
 
@@ -181,7 +203,11 @@ var errSkillsLeaseContended = errors.New("bundled skills copy is being reaped")
 // removed while they are reading it.
 func claimEmbeddedSkillsLocked(dir string) error {
 	if embeddedSkillsCache.lease != nil && embeddedSkillsCache.leasedDir == dir {
-		return nil
+		if embeddedSkillsCache.lease.Valid() {
+			return nil
+		}
+		// The lock file was replaced underneath the lease, so it guards nothing.
+		releaseSkillsLeaseLocked()
 	}
 	releaseSkillsLeaseLocked()
 	path, err := skillsLockPath(filepath.Dir(dir), filepath.Base(dir), true)
@@ -210,14 +236,21 @@ func releaseSkillsLeaseLocked() {
 	embeddedSkillsCache.leasedDir = ""
 }
 
-// forgetEmbeddedSkillsLocked drops the cached copy and its lease. The caller
-// holds the cache mutex.
+// forgetEmbeddedSkillsLocked drops the cached copy and its lease. A private
+// fallback copy is removed with it, so replacing one cannot leave a full copy
+// behind. The caller holds the cache mutex.
 func forgetEmbeddedSkillsLocked() {
+	dir := embeddedSkillsCache.dir
+	fallback := embeddedSkillsCache.fallback
 	embeddedSkillsCache.dir = ""
 	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
 	embeddedSkillsCache.verified = false
+	embeddedSkillsCache.fallback = false
 	releaseSkillsLeaseLocked()
+	if fallback && dir != "" {
+		_ = os.RemoveAll(dir)
+	}
 }
 
 // cacheDirExists reports whether dir is still a real directory. It never
@@ -284,13 +317,19 @@ func reapStaleFallbackBases(tmpBase string, now time.Time) {
 			continue
 		}
 		path := filepath.Join(tmpBase, entry.Name())
+		if path == filepath.Dir(embeddedSkillsCache.dir) || path == embeddedSkillsCache.dir {
+			// Never remove this process's own live copy.
+			continue
+		}
 		leases, ok := leaseFallbackBase(path)
 		if !ok {
 			continue
 		}
 		// Release before removing: on Windows an open handle keeps a directory
-		// entry alive even with FILE_SHARE_DELETE, and a fallback base belongs to
-		// one process, so there is no other process to protect it from.
+		// entry alive even with FILE_SHARE_DELETE, so holding them would make the
+		// base impossible to delete. A fallback base belongs to one process, and
+		// that owner is skipped above, so nothing legitimate can lease it in the
+		// gap between the release and the removal.
 		for _, lease := range leases {
 			_ = lease.Release()
 		}
