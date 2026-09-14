@@ -28,10 +28,13 @@ const maxFailureSnippets = 2
 // maxFailureSnippetRunes truncates each retained failure output, in runes.
 const maxFailureSnippetRunes = 500
 
-// failureEntry tracks two independent streaks for the ledger key it is stored
-// under: consecutive failures sharing an error class, and consecutive calls
-// returning a byte-identical result body. The exact-call store uses both; the
-// semantic store uses only the failure streak.
+// failureEntry tracks two independent streaks: consecutive failures sharing an
+// error class, and consecutive calls returning a byte-identical result body.
+// The semantic store keeps the failure streak, keyed by failureFingerprint;
+// byte-identical calls share that fingerprint too, so their failure history
+// lives there. The exact-call store keeps only the byte-identical repetition
+// streak (bodyHash/bodyCount), the fast path that detects a call repeating the
+// same result regardless of error status.
 type failureEntry struct {
 	class    string
 	count    int
@@ -48,8 +51,10 @@ type failureEntry struct {
 type failureLedger struct {
 	mu sync.Mutex
 	// entries is keyed by exactSignature, preserving the original exact-call
-	// fast path: byte-identical calls share an entry, so both the body-hash
-	// repetition streak and the exact failure streak behave as they always did.
+	// fast path: byte-identical calls share an entry, so the body-hash
+	// repetition streak behaves as it always did. It carries NO failure streak:
+	// that lives on the semantic fingerprint, which byte-identical calls share,
+	// so maintaining one here would be bookkeeping nothing reads.
 	entries map[string]*failureEntry
 	order   []string // entries LRU, most-recently-used last
 
@@ -365,10 +370,10 @@ func (l *failureLedger) check(key dispatchKey) (failStreak int, repeatStreak int
 // itself is the signal, since a tool's error flag cannot be trusted (a
 // failing call can report isErr=false with the failure as plain body text).
 // It is tracked on the exact call, so the repetition nudge is unchanged. The
-// returned failure streak is the semantic fingerprint's run; the exact entry's
-// own failure streak is still maintained so byte-identical calls keep their
-// original history. A success zeroes a failure streak and clears the class and
-// snippets, but the entry survives so the body hash persists.
+// returned failure streak is the semantic fingerprint's run; byte-identical
+// calls share that fingerprint, so the exact entry need not maintain a failure
+// streak of its own. A success zeroes the semantic failure streak and clears
+// its class and snippets, but the entry survives so the body hash persists.
 func (l *failureLedger) record(key dispatchKey, isErr bool, output string) (failStreak int, repeatStreak int) {
 	if l == nil { // a zero-value Registry has no ledger and judges nothing
 		return 0, 0
@@ -390,7 +395,6 @@ func (l *failureLedger) record(key dispatchKey, isErr bool, output string) (fail
 		e.bodyHash = bodyHash
 		e.bodyCount = 1
 	}
-	observeFailure(e, isErr, output)
 	repeatStreak = e.bodyCount
 
 	s, ok := l.semantic[key.semantic]
@@ -441,12 +445,15 @@ func observeFailure(e *failureEntry, isErr bool, output string) int {
 	return e.count
 }
 
-// clearFailures retires a call's failure evidence — both the semantic
-// fingerprint's run and the exact call's own streak: the streaks, their error
-// classes, and the retained snippets. A human who authorizes a dispatch has
-// judged the refusals that preceded it, so they may no longer park a later
-// equivalent call; if the authorized call fails again, the next ordinary one
-// records a fresh streak of 1.
+// clearFailures retires a call's failure evidence — the semantic fingerprint's
+// run: its streak, error class, and retained snippets. A human who authorizes a
+// dispatch has judged the refusals that preceded it, so they may no longer park
+// a later equivalent call; if the authorized call fails again, the next
+// ordinary one records a fresh streak of 1.
+//
+// The exact-call entry has no failure streak to retire: it keeps only the
+// byte-identical repetition tracking. It is still touched here so it stays
+// recently used.
 //
 // The body-hash streak is deliberately left alone. Repetition only ever nudges,
 // and approving a call says nothing about whether its output changed.
@@ -462,10 +469,7 @@ func (l *failureLedger) clearFailures(key dispatchKey) {
 		e.snippets = nil
 		l.semanticOrder = l.touch(l.semanticOrder, l.semantic, key.semantic)
 	}
-	if e, ok := l.entries[key.exact]; ok {
-		e.class = ""
-		e.count = 0
-		e.snippets = nil
+	if _, ok := l.entries[key.exact]; ok {
 		l.order = l.touch(l.order, l.entries, key.exact)
 	}
 }
