@@ -1217,9 +1217,15 @@ func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing
 // bumpFoldGeneration moves the fold cache's generation for path without
 // changing a byte of what the journal says: the file is taken away, the given
 // read observes it gone — which is what moves the generation — and the same
-// content is written back. Restamping an mtime does not do this, and should
-// not: the cache asks its tail probe whether the content changed, and for
-// identical content the honest answer is that it did not.
+// content is written back.
+//
+// A restamped mtime would move it too, and for the wrong reason. Same length
+// with a moved mtime is the cache's ambiguous case, and the probe cannot
+// settle it: the recorded trailing bytes survive a restamp exactly as they
+// survive a rewrite that happens to end the same way, so the cache takes a
+// second stat, sees the length unchanged, and calls it a rewrite. A fixture
+// built on that would be staging the cache's answer to an ambiguity rather
+// than the deletion it means to stage.
 func bumpFoldGeneration(t *testing.T, path string, observe func()) {
 	t.Helper()
 	data, err := os.ReadFile(path)
