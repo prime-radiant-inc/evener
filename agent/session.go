@@ -2088,22 +2088,34 @@ func writeHeldTranscriptTurn(w *transcript.Writer, pending heldTranscriptTurn) (
 	if pending.durable {
 		write = w.AppendDurable
 	}
-	err = write(pending.turn)
-	if !entryIsRecorded(err) {
-		return false, err
+	recorded, report := entryOutcome(write(pending.turn))
+	if !recorded {
+		return false, report
 	}
 	if pending.commit != nil {
 		pending.commit()
 	}
-	return true, err
+	return true, report
 }
 
-// entryIsRecorded reports whether a write left its entry in the transcript: a
-// clean write, or one that failed with the entry RETAINED — the whole line
-// landed and the rollback could not take it back out, so a returning reader
-// finds it. Every producer that decides what a record is owed once it exists
-// asks here, so the fold's markers and the hook completions cannot come to
-// different conclusions about the same failure.
+// entryOutcome is the one answer every producer needs about the write it just
+// made: is the entry a record in the transcript, and is there a failure to
+// report. They are independent. A clean write is recorded and silent; a write
+// that failed with the entry RETAINED — the whole line landed and the rollback
+// could not take it back out — is recorded AND reported, because a returning
+// reader finds that record and everything it owes is owed still; every other
+// failure is neither, and the turn is dropped with it.
+//
+// Every write-then-announce decision in the session goes through here — held
+// turns and hook completions (writeHeldTranscriptTurn), the fold's markers,
+// its context-compaction records and its injected steering — so no two record
+// kinds can reach different conclusions about the same failure.
+func entryOutcome(err error) (recorded bool, report error) {
+	return entryIsRecorded(err), err
+}
+
+// entryIsRecorded is entryOutcome's first answer alone, for callers with
+// nothing to report.
 func entryIsRecorded(err error) bool {
 	return err == nil || errors.Is(err, transcript.ErrEntryRetained)
 }

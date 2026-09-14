@@ -2762,12 +2762,15 @@ func providerMessageOutline(messages []llm.Message) []string {
 	return out
 }
 
-// retainMarkerWriteFS lets a compaction marker's line land and then fails the
-// sync that would make it durable, exactly once. The buffered door rolls
-// nothing back, so the line stays in the file: the append reports failure over
-// an entry every reader can see.
+// retainMarkerWriteFS lets one record's line land and then fails the sync that
+// would make it durable, exactly once. The buffered door rolls nothing back,
+// so the line stays in the file: the append reports failure over an entry
+// every reader can see. match picks the record by a fragment of its encoded
+// line, so one fixture serves the marker, the compaction record and the
+// steering record alike.
 type retainMarkerWriteFS struct {
 	afero.Fs
+	match  []byte
 	armed  atomic.Bool
 	failed atomic.Bool
 }
@@ -2794,7 +2797,7 @@ type retainMarkerWriteFile struct {
 }
 
 func (file *retainMarkerWriteFile) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte(`"kind":"SUMMARY"`)) && !file.fs.failed.Load() {
+	if bytes.Contains(p, file.fs.match) && !file.fs.failed.Load() {
 		file.fs.armed.Store(true)
 	}
 	return file.File.Write(p)
@@ -2822,7 +2825,7 @@ func TestFoldPublication_MarkerRetainedByAFailedWriteStillDispatchesItsEffects(t
 	if err := s.closeAttachedTranscript(); err != nil {
 		t.Fatalf("close default transcript: %v", err)
 	}
-	faultFS := &retainMarkerWriteFS{Fs: afero.NewOsFs()}
+	faultFS := &retainMarkerWriteFS{Fs: afero.NewOsFs(), match: []byte(`"kind":"SUMMARY"`)}
 	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
 	if err != nil {
 		t.Fatalf("create transcript: %v", err)
@@ -2895,5 +2898,111 @@ func TestFoldPublication_MarkerRetainedByAFailedWriteStillDispatchesItsEffects(t
 	resumed := ResumeHistory(data.Entries)
 	if len(resumed) == 0 || resumed[0].Kind != schema.TurnSummary {
 		t.Fatalf("resume anchored on %v, want the retained marker", resumed)
+	}
+}
+
+// The same rule, for the two other records a fold writes. A CONTEXT_COMPACTION
+// record and an injected steering record whose append failed with the entry
+// RETAINED are records every returning reader finds, so the events that
+// announce them are owed — a client told nothing about a line the reload shows
+// is the divergence this ordering exists to prevent, reached from the other
+// side. The failure is still reported either way.
+func TestFoldPublication_RetainedRecordsAreStillAnnounced(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		match    string
+		want     events.EventKind
+		recorded func(entry schema.Turn) bool
+	}{
+		{
+			name:     "compaction record",
+			match:    `"kind":"CONTEXT_COMPACTION"`,
+			want:     events.EventContextCompaction,
+			recorded: func(entry schema.Turn) bool { return entry.Kind == schema.TurnContextCompaction },
+		},
+		{
+			name:  "steering record",
+			match: noteHandoffPrefix,
+			want:  events.EventSteeringInjected,
+			recorded: func(entry schema.Turn) bool {
+				return entry.Kind == schema.TurnSteering && strings.Contains(entry.Message.Text(), noteHandoffPrefix)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newScriptedSummaryCompactSession(t, "retained-record-"+strings.ReplaceAll(tc.name, " ", "-"), func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+			if err := s.closeAttachedTranscript(); err != nil {
+				t.Fatalf("close default transcript: %v", err)
+			}
+			faultFS := &retainMarkerWriteFS{Fs: afero.NewOsFs(), match: []byte(tc.match)}
+			writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+			if err != nil {
+				t.Fatalf("create transcript: %v", err)
+			}
+			writer.SyncInterval = 0 // every append syncs, so the matched record's own append fails
+			s.attachTranscript(writer)
+			seedNumberedSessionHistory(t, s, 12)
+			s.setPinnedNote("REMEMBER: the API signature") // the fold's own steering
+
+			const sentinel = "SENTINEL: every fold event is counted"
+			var eventsMu sync.Mutex
+			announced, warnings := 0, 0
+			counted := make(chan struct{})
+			go func() {
+				for event := range s.Events() {
+					eventsMu.Lock()
+					switch {
+					case event.Kind == events.EventWarning:
+						if data, ok := event.Data.(events.WarningData); ok && data.Message == sentinel {
+							close(counted)
+							eventsMu.Unlock()
+							continue
+						}
+						warnings++
+					case event.Kind == tc.want:
+						announced++
+					}
+					eventsMu.Unlock()
+				}
+			}()
+
+			if err := s.Compact(context.Background()); err != nil {
+				t.Fatalf("Compact: %v", err)
+			}
+			s.emit(events.EventWarning, events.WarningData{Message: sentinel})
+			<-counted
+
+			if !faultFS.failed.Load() {
+				t.Fatalf("test setup: no %s write failed, so this is not the retained-entry path", tc.name)
+			}
+			eventsMu.Lock()
+			defer eventsMu.Unlock()
+			if warnings == 0 {
+				t.Fatalf("the %s write failure was never reported; a retained entry is still a failed write", tc.name)
+			}
+			data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+			if err != nil {
+				t.Fatalf("readTranscriptFull: %v", err)
+			}
+			found := 0
+			for _, entry := range data.Entries {
+				if tc.recorded(entry.Turn) {
+					found++
+				}
+			}
+			if found == 0 {
+				t.Fatalf("the retained %s is not in the transcript; the reload has to agree with the live stream", tc.name)
+			}
+			// One announcement per record the reload will show, retained or
+			// not: that is the whole agreement.
+			if announced != found {
+				t.Fatalf("%s events = %d for %d record(s) in the transcript", tc.want, announced, found)
+			}
+		})
 	}
 }

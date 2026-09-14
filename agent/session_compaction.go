@@ -863,8 +863,17 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			hook()
 		}
 		for i, event := range pendingCompactionEvents {
-			if i < len(compactionEventWriteErrs) && compactionEventWriteErrs[i] != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", compactionEventWriteErrs[i])})
+			var writeErr error
+			if i < len(compactionEventWriteErrs) {
+				writeErr = compactionEventWriteErrs[i]
+			}
+			recorded, report := entryOutcome(writeErr)
+			if report != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", report)})
+			}
+			if !recorded {
+				// The record is not in the transcript, so the announcement
+				// would describe a compaction layer no reload can show.
 				continue
 			}
 			s.emit(events.EventContextCompaction, event)
@@ -1094,15 +1103,21 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) [
 // their EventSteeringInjected events; errs aligns with records.
 func (s *Session) emitSteeringTurnRecords(records []steeringTurnRecord, errs []error) {
 	for i, record := range records {
-		if i < len(errs) && errs[i] != nil {
-			// Write, then announce — and a write that failed announces
-			// nothing. The entry is not in the transcript, so the line a
-			// client would show here is one no reload reproduces, under an
-			// owner naming a group the transcript does not have. The model
-			// still sees this steering: the fold appended it to live history
-			// before publishing, which the warning reports and a reload
-			// resolves by not replaying it.
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", errs[i])})
+		var writeErr error
+		if i < len(errs) {
+			writeErr = errs[i]
+		}
+		recorded, report := entryOutcome(writeErr)
+		if report != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", report)})
+		}
+		if !recorded {
+			// Write, then announce — and a write that left no record
+			// announces nothing. The line a client would show is one no
+			// reload reproduces, under an owner naming a group the transcript
+			// does not have. The model still sees this steering: the fold
+			// appended it to live history before publishing, which the
+			// warning reports and a reload resolves by not replaying it.
 			continue
 		}
 		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text, Kind: record.kind})
