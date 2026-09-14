@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -550,6 +551,14 @@ type ContextCompactionData struct {
 	TurnsAfter      int    `json:"turns_after,omitempty"`
 	EstTokensBefore int    `json:"est_tokens_before,omitempty"`
 	EstTokensAfter  int    `json:"est_tokens_after,omitempty"`
+}
+
+// Compaction returns the layer measurements independently of its live owner.
+func (d ContextCompactionData) Compaction() schema.ContextCompaction {
+	return schema.ContextCompaction{
+		Layer: d.Layer, TurnsBefore: d.TurnsBefore, TurnsAfter: d.TurnsAfter,
+		EstTokensBefore: d.EstTokensBefore, EstTokensAfter: d.EstTokensAfter,
+	}
 }
 
 // CompactionTurnData is the payload for an EventCompactionTurn event.

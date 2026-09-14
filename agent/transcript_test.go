@@ -851,6 +851,68 @@ func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 	}
 }
 
+// A fold appends replay-tail copies stamped ContextReplay after the entries it
+// re-presents, so a transcript can hold both. When the fold landed a
+// CHECKPOINT or SUMMARY, ResumeHistory anchors on it and the copies are the
+// only record of those turns it reaches — the case
+// TestCompactionReplay_ResumeHistoryRetainsReplayCopies pins. With no marker
+// in the transcript there is no anchor, every entry comes back, and the copies
+// are duplicates of originals sitting in the same list: the conversation and
+// its tool round would be replayed to the model twice.
+func TestResumeHistoryFromTranscript_NoCompactionDropsReplayCopies(t *testing.T) {
+	t.Parallel()
+	const callID = "resume-no-anchor-call"
+	toolCall := delegateAttentionToolCall(callID)
+	toolResult := llm.ToolResultNamed(callID, "probe", "ok", false)
+	replay := func(kind schema.TurnKind, message llm.Message, seq int) transcript.Entry {
+		turn := schema.NewTurn(kind, message)
+		turn.ContextReplay = true
+		return transcript.Entry{Kind: "entry", Seq: seq, Turn: turn}
+	}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("Hello"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, toolCall)},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnToolResults, toolResult)},
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("Done"))},
+		// The fold's tail rewrite: copies of the three entries above, and no
+		// marker landed ahead of them.
+		replay(schema.TurnAssistant, toolCall, 4),
+		replay(schema.TurnToolResults, toolResult, 5),
+		replay(schema.TurnAssistant, llm.Assistant("Done"), 6),
+	}
+
+	history := ResumeHistory(entries)
+
+	if len(history) != 4 {
+		shape := make([]string, len(history))
+		for i, turn := range history {
+			shape[i] = fmt.Sprintf("%s(replay=%v)", turn.Kind, turn.ContextReplay)
+		}
+		t.Fatalf("resume history = %d turns %v, want the 4 originals with no replay copies", len(history), shape)
+	}
+	expectedKinds := []schema.TurnKind{schema.TurnUserInput, schema.TurnAssistant, schema.TurnToolResults, schema.TurnAssistant}
+	calls, results := 0, 0
+	for i, turn := range history {
+		if turn.Kind != expectedKinds[i] {
+			t.Errorf("turn %d kind = %q, want %q", i, turn.Kind, expectedKinds[i])
+		}
+		if turn.ContextReplay {
+			t.Errorf("turn %d carried the durable replay marker: %#v", i, turn)
+		}
+		for _, part := range turn.Message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == callID {
+				calls++
+			}
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				results++
+			}
+		}
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("resume history rebuilt the tool round as %d calls and %d results, want exactly one of each", calls, results)
+	}
+}
+
 func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 	t.Parallel()
 	entries := make([]transcript.Entry, 10)
@@ -3678,5 +3740,108 @@ func TestReadSessionTranscriptJSONLRejectsHeaderLargerThanHardOutputCap(t *testi
 	}
 	if len(result.Output) > 1024 || !strings.Contains(result.Output, "transcript header exceeds") {
 		t.Fatalf("oversized JSONL header error is not bounded and clear: len=%d output=%q", len(result.Output), result.Output)
+	}
+}
+
+// Anchoring discards everything before the marker, but what follows it is not
+// automatically the record: a LATER fold can have written its tail and then
+// crashed before its own marker, leaving tagged copies after the anchor whose
+// originals are also after the anchor. Those copies are claimed by a marker
+// that never arrived, so they are duplicates exactly like the no-anchor case's,
+// and keeping them replays the stretch twice.
+func TestResumeHistoryFromTranscript_AnchorDropsALaterFoldsUnanchoredCopies(t *testing.T) {
+	t.Parallel()
+	const callID = "resume-later-fold-call"
+	toolCall := delegateAttentionToolCall(callID)
+	toolResult := llm.ToolResultNamed(callID, "probe", "ok", false)
+	entry := func(kind schema.TurnKind, message llm.Message, seq int, foldID string, replay bool) transcript.Entry {
+		turn := schema.NewTurn(kind, message)
+		turn.CompactionFoldID = foldID
+		turn.ContextReplay = replay
+		return transcript.Entry{Kind: "entry", Seq: seq, Turn: turn}
+	}
+	entries := []transcript.Entry{
+		// A fold that completed: its copy, then its marker.
+		entry(schema.TurnAssistant, llm.Assistant("folded away"), 0, "fold_one", true),
+		entry(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"), 1, "fold_one", false),
+		// Turns recorded after it.
+		entry(schema.TurnAssistant, toolCall, 2, "", false),
+		entry(schema.TurnToolResults, toolResult, 3, "", false),
+		// A second fold wrote its tail and crashed before its marker.
+		entry(schema.TurnAssistant, toolCall, 4, "fold_two", true),
+		entry(schema.TurnToolResults, toolResult, 5, "fold_two", true),
+	}
+
+	history := ResumeHistory(entries)
+
+	calls, results := 0, 0
+	for _, turn := range history {
+		if turn.ContextReplay {
+			t.Errorf("resume history carried the durable replay marker: %#v", turn)
+		}
+		for _, part := range turn.Message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == callID {
+				calls++
+			}
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				results++
+			}
+		}
+	}
+	if calls != 1 || results != 1 {
+		t.Fatalf("resume history rebuilt the tool round as %d calls and %d results, want exactly one of each: %d turns", calls, results, len(history))
+	}
+	if len(history) != 4 {
+		t.Fatalf("resume history = %d turns, want the summary, its own copy and the two originals", len(history))
+	}
+}
+
+// The anchored branch reassembles a fold's run rather than slicing it, so the
+// ORDER it puts back is a contract, not an accident: the anchor, then the rest
+// of the fold's own records (its injected steering), then the copies of the
+// turns recorded while it ran, then everything after the run. That is the
+// order the fold published in memory, so a resume rebuilds the same history
+// the live session held.
+func TestResumeHistoryFromTranscript_AnchoredBranchReassemblesFoldOrder(t *testing.T) {
+	t.Parallel()
+	entry := func(kind schema.TurnKind, message llm.Message, seq int, foldID string, replay bool) transcript.Entry {
+		turn := schema.NewTurn(kind, message)
+		turn.CompactionFoldID = foldID
+		turn.ContextReplay = replay
+		return transcript.Entry{Kind: "entry", Seq: seq, Turn: turn}
+	}
+	const foldID = "fold_order"
+	entries := []transcript.Entry{
+		entry(schema.TurnUserInput, llm.User("before the fold"), 0, "", false),
+		entry(schema.TurnAssistant, llm.Assistant("recorded during the fold"), 1, "", false),
+		// The fold's run, in the order publishFoldTransaction writes it.
+		entry(schema.TurnAssistant, llm.Assistant("recorded during the fold"), 2, foldID, true),
+		entry(schema.TurnContextCompaction, llm.System("context compaction"), 3, foldID, false),
+		entry(schema.TurnSummary, llm.System("[CONTEXT SUMMARY]"), 4, foldID, false),
+		entry(schema.TurnSteering, llm.User("goal objective"), 5, foldID, false),
+		entry(schema.TurnUserInput, llm.User("after the fold"), 6, "", false),
+	}
+
+	type step struct {
+		kind schema.TurnKind
+		text string
+	}
+	want := []step{
+		{schema.TurnSummary, "[CONTEXT SUMMARY]"},
+		{schema.TurnSteering, "goal objective"},
+		{schema.TurnAssistant, "recorded during the fold"},
+		{schema.TurnUserInput, "after the fold"},
+	}
+	got := make([]step, 0, len(want))
+	for _, turn := range ResumeHistory(entries) {
+		got = append(got, step{turn.Kind, turn.Message.Text()})
+	}
+	if len(got) != len(want) {
+		t.Fatalf("resume history = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resume history step %d = %v, want %v (full: %v)", i, got[i], want[i], got)
+		}
 	}
 }

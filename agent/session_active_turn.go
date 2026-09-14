@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/evener/agent/events"
 )
 
@@ -360,4 +362,12 @@ func (s *Session) clearRunningTurnReleaseRetry() {
 		generation: s.runningTurnReleaseRetry.generation + 1,
 	}
 	s.releaseRetryMu.Unlock()
+}
+
+// mintCompactionFoldID names one fold. Every record that fold writes carries
+// it — its markers, the context-compaction records and injected steering
+// around them, and the replay copies of the turns recorded while it ran — so a
+// resume can tell which copies the anchor it found is entitled to keep.
+func mintCompactionFoldID() string {
+	return "fold_" + ulid.Make().String()
 }

@@ -861,6 +861,7 @@ func TestPublicTranscriptEntry(t *testing.T) {
 				AttentionID:             "att_123",
 				AttentionResolution:     &schema.AttentionResolutionInfo{},
 				DelegateDeliveryCommits: []schema.DelegateDeliveryCommit{},
+				CompactionFoldID:        "fold_123",
 			},
 		}
 		out, ok := publicTranscriptEntry(entry)
@@ -876,6 +877,12 @@ func TestPublicTranscriptEntry(t *testing.T) {
 		if out.Turn.DelegateDeliveryCommits != nil {
 			t.Fatalf("delegate_delivery_commits should be stripped")
 		}
+		// The fold id names which crash-recovery run wrote the record. A
+		// reader of the public transcript has no use for it and no way to
+		// interpret it: the copies it claims are dropped from this output.
+		if out.Turn.CompactionFoldID != "" {
+			t.Fatalf("compaction_fold_id should be stripped, got %q", out.Turn.CompactionFoldID)
+		}
 	})
 	t.Run("attention resolution excluded", func(t *testing.T) {
 		entry := transcript.Entry{
@@ -884,6 +891,15 @@ func TestPublicTranscriptEntry(t *testing.T) {
 		_, ok := publicTranscriptEntry(entry)
 		if ok {
 			t.Fatalf("expected ok=false for attention resolution")
+		}
+	})
+	t.Run("context replay copy excluded", func(t *testing.T) {
+		entry := transcript.Entry{
+			Turn: schema.Turn{Kind: schema.TurnAssistant, ContextReplay: true},
+		}
+		_, ok := publicTranscriptEntry(entry)
+		if ok {
+			t.Fatalf("expected ok=false for a context replay copy")
 		}
 	})
 }
@@ -941,8 +957,9 @@ func TestPublicTranscriptLine(t *testing.T) {
 			"kind": "entry",
 			"seq":  float64(5),
 			"turn": map[string]any{
-				"kind":    "USER_INPUT",
-				"message": map[string]any{"text": "hello"},
+				"kind":               "USER_INPUT",
+				"message":            map[string]any{"text": "hello"},
+				"compaction_fold_id": "fold_123",
 			},
 		}
 		line, _ := json.Marshal(entry)
@@ -963,6 +980,9 @@ func TestPublicTranscriptLine(t *testing.T) {
 		if _, ok := turn["attention_id"]; ok {
 			t.Fatalf("attention_id should be deleted")
 		}
+		if _, ok := turn["compaction_fold_id"]; ok {
+			t.Fatalf("compaction_fold_id should be deleted; it is crash-recovery metadata, not public transcript content")
+		}
 	})
 	t.Run("attention resolution excluded", func(t *testing.T) {
 		entry := map[string]any{
@@ -976,6 +996,20 @@ func TestPublicTranscriptLine(t *testing.T) {
 		}
 		if include {
 			t.Fatalf("expected include=false for attention resolution")
+		}
+	})
+	t.Run("context replay copy excluded", func(t *testing.T) {
+		entry := map[string]any{
+			"kind": "entry",
+			"turn": map[string]any{"kind": "ASSISTANT", "context_replay": true},
+		}
+		line, _ := json.Marshal(entry)
+		_, include, err := publicTranscriptLine(line, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if include {
+			t.Fatalf("expected include=false for a context replay copy")
 		}
 	})
 	t.Run("invalid json line", func(t *testing.T) {

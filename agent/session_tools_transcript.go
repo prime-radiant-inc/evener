@@ -1023,13 +1023,16 @@ func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 // publicTranscriptEntry strips correlation metadata that is durable only for
 // crash recovery. Resolution markers carry no model/public content and are
 // omitted entirely so interleaved tool calls and results remain adjacent.
+// Compaction replay copies are omitted for the same reason: the entry each one
+// copies still owns the public item, and only resume reads the copy.
 func publicTranscriptEntry(entry transcript.Entry) (transcript.Entry, bool) {
-	if entry.Turn.Kind == schema.TurnAttentionResolution {
+	if entry.Turn.Kind == schema.TurnAttentionResolution || entry.Turn.ContextReplay {
 		return transcript.Entry{}, false
 	}
 	entry.Turn.AttentionID = ""
 	entry.Turn.AttentionResolution = nil
 	entry.Turn.DelegateDeliveryCommits = nil
+	entry.Turn.CompactionFoldID = ""
 	return entry, true
 }
 
@@ -1064,7 +1067,7 @@ func publicTranscriptData(data transcriptData) transcriptData {
 			line, include, err := publicTranscriptLine(data.EntryLines[i], entry.Seq)
 			if err != nil || !include {
 				// The retained line was strictly decoded into entry above, and its
-				// kind already passed the same inclusion check.
+				// kind and replay marker already passed the same inclusion check.
 				panic("validated transcript entry could not be projected publicly")
 			}
 			public.EntryLines = append(public.EntryLines, line)
@@ -1086,12 +1089,19 @@ func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
 	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
 		return nil, false, fmt.Errorf("decode public transcript turn kind: %w", err)
 	}
-	if kind == schema.TurnAttentionResolution {
+	var contextReplay bool
+	if raw, ok := turn["context_replay"]; ok {
+		if err := json.Unmarshal(raw, &contextReplay); err != nil {
+			return nil, false, fmt.Errorf("decode public transcript context replay: %w", err)
+		}
+	}
+	if kind == schema.TurnAttentionResolution || contextReplay {
 		return nil, false, nil
 	}
 	delete(turn, "attention_id")
 	delete(turn, "attention_resolution")
 	delete(turn, "delegate_delivery_commits")
+	delete(turn, "compaction_fold_id")
 	encodedTurn, err := json.Marshal(turn)
 	if err != nil {
 		return nil, false, fmt.Errorf("encode public transcript turn: %w", err)
