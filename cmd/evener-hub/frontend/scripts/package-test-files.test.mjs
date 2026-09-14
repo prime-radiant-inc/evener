@@ -5,12 +5,15 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  aliasKeysFrom,
   collectedUnder,
   describeAppImports,
   describeCwdRelativeReads,
   describeDifference,
   describeProofRun,
+  describeUnaliasedImports,
   pickProofFile,
+  reachableBareImports,
   sourceFilesOnDisk,
   testFilesOnDisk,
 } from "./package-test-files.mjs";
@@ -297,4 +300,62 @@ test("describeProofRun matches when one side reaches the file through a symlink"
   const report = { numTotalTests: 1, numFailedTests: 0, testResults: [{ name: viaLink }] };
   assert.equal(describeProofRun(report, realFile, realDir), "");
   assert.equal(describeProofRun({ ...report, testResults: [{ name: realFile }] }, viaLink, linkDir), "");
+});
+
+test("aliasKeysFrom reads every key of the resolve.alias block", () => {
+  const config = [
+    "export default defineConfig({",
+    "  resolve: {",
+    '    alias: {',
+    '      "@evener/appwire-client/docContent": path.join(dir, "docContent.ts"),',
+    '      react: path.join(__dirname, "node_modules", "react"),',
+    "      // a comment between entries",
+    '      typescript: path.join(__dirname, "node_modules", "typescript"),',
+    "    },",
+    "  },",
+    "});",
+  ].join("\n");
+  assert.deepEqual([...aliasKeysFrom(config)].sort(), [
+    "@evener/appwire-client/docContent",
+    "react",
+    "typescript",
+  ]);
+});
+
+test("reachableBareImports follows relative imports and stops at bare ones", () => {
+  const files = {
+    "/pkg/a.test.ts": 'import { helper } from "./helper";\nimport { expect } from "vitest";\n',
+    "/pkg/helper.ts": 'import ts from "typescript";\nimport { readFileSync } from "node:fs";\n',
+    // Not reachable from any test: the runner's own tooling.
+    "/pkg/scripts/qualify.mjs": 'import { WebSocketServer } from "ws";\n',
+  };
+  const bare = reachableBareImports(
+    ["/pkg/a.test.ts"],
+    (file) => files[file],
+    (from, specifier) => (specifier === "./helper" ? "/pkg/helper.ts" : null),
+    "/pkg",
+  );
+  assert.deepEqual([...bare.keys()].sort(), ["typescript", "vitest"]);
+  assert.deepEqual(bare.get("typescript"), ["helper.ts"]);
+});
+
+test("describeUnaliasedImports excuses vitest and anything the config aliases", () => {
+  const bare = new Map([
+    ["vitest", ["a.test.ts"]],
+    ["react", ["b.test.tsx"]],
+    ["@testing-library/react", ["b.test.tsx"]],
+  ]);
+  assert.equal(describeUnaliasedImports(bare, new Set(["react", "@testing-library/react"])), "");
+});
+
+test("describeUnaliasedImports names the specifier and the file that imports it", () => {
+  const bare = new Map([["typescript", ["scripts/consumer-value-imports.mjs"]]]);
+  const problem = describeUnaliasedImports(bare, new Set(["react"]));
+  assert.match(problem, /typescript, imported by scripts\/consumer-value-imports\.mjs/);
+  assert.match(problem, /CI's web job/);
+});
+
+test("describeUnaliasedImports matches a subpath against its package alias", () => {
+  const bare = new Map([["@testing-library/react/pure", ["b.test.tsx"]]]);
+  assert.equal(describeUnaliasedImports(bare, new Set(["@testing-library/react"])), "");
 });

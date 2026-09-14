@@ -16,12 +16,17 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSyn
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const packageDir = path.resolve(frontend, "../../../appwire-client/typescript");
 
 // Same shape as Vitest's default test glob, applied to the package tree.
 const isTestFile = (name) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(name);
+
+// Vitest resolves this one itself; it is the only bare specifier a package
+// file may name without an alias.
+const SELF_RESOLVING = new Set(["vitest"]);
 
 // Every source file under the package, test or not - the no-app-import sweep
 // has to see the whole tree, not only its tests.
@@ -94,6 +99,105 @@ export function describeAppImports(files, read, dir) {
     "the AppWire package must not import from the app:",
     ...offenders.map((line) => `  ${line}`),
     "Move the file into cmd/evener-hub/frontend/src/, or restate the type it needs locally.",
+  ].join("\n");
+}
+
+// The keys of vite.config.ts's `resolve.alias`, read off its AST rather than
+// matched: this is the list the package's bare imports are held against, and a
+// regex that missed an entry would fail the gate over an alias that is there.
+export function aliasKeysFrom(configText) {
+  const source = ts.createSourceFile("vite.config.ts", configText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const keys = new Set();
+  const visit = (node) => {
+    if (
+      ts.isPropertyAssignment(node) &&
+      !ts.isComputedPropertyName(node.name) &&
+      node.name.text === "alias" &&
+      ts.isObjectLiteralExpression(node.initializer)
+    ) {
+      for (const property of node.initializer.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        const name = property.name;
+        if (ts.isIdentifier(name) || ts.isStringLiteral(name)) keys.add(name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return keys;
+}
+
+function moduleSpecifiersIn(file, text) {
+  const source = ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const found = [];
+  const visit = (node) => {
+    let literal = null;
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+      literal = node.moduleSpecifier;
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      literal = node.argument.literal;
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      literal = node.arguments[0] ?? null;
+    }
+    if (literal && ts.isStringLiteral(literal)) found.push(literal.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+// Every bare specifier reachable from the package's test files, mapped to the
+// package-relative files that name it. The walk stops at the first bare
+// specifier: what is inside node_modules is not this gate's business, and the
+// package's own scripts that Vitest never loads (qualify-package.mjs and its
+// `ws`) are not reachable from a test, so they are not held to this rule.
+export function reachableBareImports(testFiles, read, resolveRelative, dir) {
+  const walked = new Set();
+  const bare = new Map();
+  const walk = (file) => {
+    if (walked.has(file)) return;
+    walked.add(file);
+    for (const specifier of moduleSpecifiersIn(file, read(file))) {
+      if (specifier.startsWith("node:")) continue;
+      if (specifier.startsWith(".")) {
+        const resolved = resolveRelative(file, specifier);
+        if (resolved) walk(resolved);
+        continue;
+      }
+      if (!bare.has(specifier)) bare.set(specifier, []);
+      bare.get(specifier).push(path.relative(dir, file));
+    }
+  };
+  for (const file of testFiles) walk(file);
+  return bare;
+}
+
+// A bare specifier with no alias resolves from the importer, which is inside
+// the package. That works on any machine where `npm ci --prefix
+// appwire-client/typescript` has run for make test-api-package, and fails in
+// CI's web job, which installs only this app - a green local gate over an
+// import CI cannot resolve. This is the check that stops the two diverging.
+export function describeUnaliasedImports(bare, aliasKeys) {
+  const offenders = [];
+  for (const [specifier, files] of [...bare].sort()) {
+    if (SELF_RESOLVING.has(specifier)) continue;
+    const root = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
+    if (aliasKeys.has(specifier) || aliasKeys.has(root)) continue;
+    offenders.push(`${specifier}, imported by ${files.join(", ")}`);
+  }
+  if (offenders.length === 0) return "";
+  return [
+    "the AppWire package's test graph names bare specifiers that vite.config.ts does not alias:",
+    ...offenders.map((line) => `  ${line}`),
+    "Vite resolves those from the package directory, which has node_modules only where",
+    "`npm ci --prefix appwire-client/typescript` has run - not in CI's web job. Add an alias",
+    "in cmd/evener-hub/frontend/vite.config.ts pointing at this app's copy.",
   ].join("\n");
 }
 
@@ -193,9 +297,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   const readFile = (file) => readFileSync(file, "utf8");
   const packageSources = sourceFilesOnDisk(packageDir);
+  const resolveRelative = (from, specifier) => {
+    const base = path.resolve(path.dirname(from), specifier);
+    for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}.mjs`, `${base}.js`, path.join(base, "index.ts")]) {
+      if (existsSync(candidate)) return candidate;
+    }
+    return null;
+  };
   for (const problem of [
     describeAppImports(packageSources, readFile, packageDir),
     describeCwdRelativeReads(packageSources, readFile, packageDir),
+    describeUnaliasedImports(
+      reachableBareImports(testFilesOnDisk(packageDir), readFile, resolveRelative, packageDir),
+      aliasKeysFrom(readFile(path.join(frontend, "vite.config.ts"))),
+    ),
   ]) {
     if (problem) {
       console.error(problem);
