@@ -35,15 +35,25 @@ test-web: web-preflight
 test-web-browser: web-preflight
 	@scripts/web/test-web-browser.sh
 
+# check:scripts is separate from check because they answer different questions
+# with different resolvers. `tsc --noEmit` reads tsconfig.check.json and proves
+# the types line up; check:scripts asks Node's own resolver, through tsx, the
+# only thing that reads tsconfig.json, whether the hand-run scripts/*.mts tools
+# can still load their module graph. The scripts run under no gate, so nothing
+# noticed when they stopped resolving.
 ## The native iPhone app and its shared session core gate.
 ## proves: Native and shared-session Vitest suites plus strict native TypeScript
-##   compilation pass against the checked-in Expo/React Native sources.
+##   compilation pass against the checked-in Expo/React Native sources, and the
+##   hand-run scripts/*.mts tools still resolve their module graph under tsx.
 ## trigger: Native CI; local pre-merge when native or shared mobile sources change.
 ## requires: Node 22.13+ and an already-installed mobile-native dependency tree;
-##   does not contact a hub or provider.
-## fails-when: Native tests, shared-session tests or native typechecking fail.
+##   does not contact a hub or provider - script resolution is checked without
+##   loading anything, since every one of those scripts opens a socket the
+##   moment its body runs.
+## fails-when: Native tests, shared-session tests, native typechecking, or
+##   script module resolution fail.
 test-native:
-	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check
+	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check && NODE_DISABLE_COMPILE_CACHE=1 npm run check:scripts
 
 ## The independently consumable AppWire package qualification gate.
 ## proves: A packed package installs outside the checkout, exposes ESM and
