@@ -48,7 +48,8 @@
 # EVENER_GOLANGCI_INSTALL_ATTEMPTS is the total number of attempts (default 3, a
 # positive integer). Backoff between them is EVENER_GOLANGCI_INSTALL_BACKOFF
 # seconds times the attempt number (default 5, so 5s then 10s), and each
-# attempt's own fetch retries EVENER_GOLANGCI_CURL_RETRIES times (default 3).
+# attempt's own fetch retries EVENER_GOLANGCI_CURL_RETRIES times (default 3),
+# EVENER_GOLANGCI_CURL_RETRY_DELAY seconds apart (default 2).
 #
 # EVENER_GOLANGCI_INSTALLER_URL is where install.sh is fetched from (default the
 # upstream raw URL), and EVENER_GOLANGCI_DEV_BIN is the evener-dev binary this
@@ -94,6 +95,12 @@ fi
 curl_retries=${EVENER_GOLANGCI_CURL_RETRIES:-3}
 if [[ ! "$curl_retries" =~ ^(0|[1-9]|1[0-9]|20)$ ]]; then
 	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_CURL_RETRIES must be a whole number from 0 to 20, without a leading zero (got %q)\n' "$curl_retries" >&2
+	exit 2
+fi
+
+curl_retry_delay=${EVENER_GOLANGCI_CURL_RETRY_DELAY:-2}
+if [[ ! "$curl_retry_delay" =~ ^(0|[1-9]|1[0-9]|20)$ ]]; then
+	printf 'install-golangci-lint.sh: EVENER_GOLANGCI_CURL_RETRY_DELAY must be a whole number of seconds from 0 to 20, without a leading zero (got %q)\n' "$curl_retry_delay" >&2
 	exit 2
 fi
 
@@ -152,13 +159,15 @@ bindir="$gopath/bin"
 # not, and sh sees the file only in the first case. That also retires the
 # pipefail form, which was there to notice the download failing on the left of
 # a pipe.
+# Armed before the file exists: a failure between the two would otherwise leave
+# whatever mktemp had managed to create.
+trap 'rm -f "${install_script:-}"' EXIT
 install_script="$(mktemp "${TMPDIR:-/tmp}/install-golangci-lint.XXXXXX")" || {
 	printf 'install-golangci-lint.sh: could not make a temporary file for the installer\n' >&2
 	exit 2
 }
-trap 'rm -f "$install_script"' EXIT
 
-fetch_and_run='curl -fsSL --connect-timeout 15 --max-time 300 --retry "$4" --retry-delay 2 --retry-all-errors -o "$5" "$1" && sh "$5" -b "$2" "$3"'
+fetch_and_run='curl -fsSL --connect-timeout 15 --max-time 300 --retry "$4" --retry-delay "$6" --retry-all-errors -o "$5" "$1" && sh "$5" -b "$2" "$3"'
 
 evener_dev_bin="${EVENER_GOLANGCI_DEV_BIN:-$repo_root/evener-dev}"
 bounded_list_support=
@@ -183,7 +192,7 @@ bounded_list_available() {
 run_installer() {
 	if bounded_list_available; then
 		"$evener_dev_bin" dev bounded-list -timeout 300s -attempts 1 -grace 5s -- \
-			sh -c "$fetch_and_run" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries" "$install_script"
+			sh -c "$fetch_and_run" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries" "$install_script" "$curl_retry_delay"
 		return
 	fi
 	if [ "$announced_unbounded" -eq 0 ]; then
@@ -191,7 +200,7 @@ run_installer() {
 			"$evener_dev_bin" >&2
 		announced_unbounded=1
 	fi
-	sh -c "$fetch_and_run" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries" "$install_script"
+	sh -c "$fetch_and_run" install-golangci-lint "$installer_url" "$bindir" "v$version" "$curl_retries" "$install_script" "$curl_retry_delay"
 }
 
 attempt=1

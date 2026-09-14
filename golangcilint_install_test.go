@@ -45,14 +45,25 @@ func requireInstallerScriptTools(t *testing.T, tools ...string) {
 	// bash runs it, awk reads the pin out of .tool-versions, and go answers
 	// where the bindir is -- the script reaches all three before it decides
 	// anything, so a missing one is a skip and not a failure.
+	needsCurl := false
 	for _, tool := range append([]string{"bash", "awk", "go"}, tools...) {
+		if tool == "curl" {
+			needsCurl = true
+		}
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not on PATH: %v", tool, err)
 		}
 	}
-	// And the floor the script itself enforces: below it every one of these
-	// tests would be asserting the version refusal instead of its own subject.
-	if major, minor, ok := curlVersion(t); !ok || major < 7 || (major == 7 && minor < 71) {
+	if !needsCurl {
+		// A case that never reaches a download does not care what curl is, or
+		// whether there is one.
+		return
+	}
+	major, minor, ok := curlVersion(t)
+	if !ok {
+		t.Skip("curl's version could not be read, and this script requires 7.71 or newer")
+	}
+	if major < 7 || (major == 7 && minor < 71) {
 		t.Skipf("curl %d.%d is below the 7.71 this script requires", major, minor)
 	}
 }
@@ -103,6 +114,9 @@ func installerEnv(t *testing.T, gopath string, extra ...string) []string {
 		"GOENV=off",
 		"no_proxy=127.0.0.1",
 		"NO_PROXY=127.0.0.1",
+		// Nothing here is waiting out a real link: the retries under test are
+		// about whether they happen, not how far apart.
+		"EVENER_GOLANGCI_CURL_RETRY_DELAY=0",
 		// Which path the script takes must not depend on whether someone has
 		// run `make build-dev` in this worktree: these tests are about the
 		// unbounded one. The bounded path gets its own test when bounded-list
@@ -163,7 +177,7 @@ func emptyReplyURL(t *testing.T) string {
 	return "http://" + listener.Addr().String()
 }
 
-// TestInstallerRefusesABackoffBashWouldReadAsOctal covers the other guard: 08
+// TestInstallerRefusesABackoffItCannotUse covers the other guard: 08
 // passes a naive digits-only check and then fails inside the arithmetic that
 // uses it, which is a failure in the retry rather than in the validation.
 func TestInstallerRefusesABackoffItCannotUse(t *testing.T) {
@@ -257,12 +271,18 @@ func pinnedGolangciVersion(t *testing.T) string {
 // executable into the bindir it is given, printing reports as its version
 // line. An empty reports writes nothing, which is the installer that ran and
 // produced no binary.
-// installerScript is the install.sh the loopback servers serve: it writes an
-// executable printing reports into the bindir it is given, and records the
-// arguments it was handed when a caller asked for them.
-func installerScript(t *testing.T, reports string, argsFile ...string) string {
+// installerScript is the install.sh the loopback servers serve: it records the
+// arguments it was handed when a caller asked for them, writes a line to the
+// sentinel when one is given, and writes an executable printing reports into
+// the bindir.
+func installerScript(t *testing.T, reports, sentinel string, argsFile ...string) string {
 	t.Helper()
 	script := "#!/bin/sh\n"
+	if sentinel != "" {
+		// Early, so that a body cut off later has still reached it: one line
+		// per run of this script, whether whole or fragmentary.
+		script += "echo ran >> " + shellQuote(sentinel) + "\n"
+	}
 	if len(argsFile) == 1 {
 		script += "printf '%s\\n' \"$*\" > " + shellQuote(argsFile[0]) + "\n"
 	}
@@ -280,7 +300,7 @@ func installerScript(t *testing.T, reports string, argsFile ...string) string {
 func installerServing(t *testing.T, reports string) (url, argsFile string) {
 	t.Helper()
 	argsFile = filepath.Join(t.TempDir(), "installer-args")
-	script := installerScript(t, reports, argsFile)
+	script := installerScript(t, reports, "", argsFile)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, script)
 	}))
@@ -365,7 +385,7 @@ func TestInstallerRefusesAnInstallThatProducedNoBinary(t *testing.T) {
 // it -- which is what makes this a test of that flag rather than of --retry.
 func installerServingAfterOneFailure(t *testing.T, reports string) string {
 	t.Helper()
-	script := installerScript(t, reports)
+	script := installerScript(t, reports, "")
 	var mu sync.Mutex
 	served := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -413,9 +433,9 @@ func TestInstallerRetriesADownloadThatDiedInTransit(t *testing.T) {
 // treats the short read as a failure worth retrying, and the retry writes the
 // file from the start -- where a pipe would have handed the shell the half it
 // had already started running, followed by the whole script.
-func installerServingTruncatedThenWhole(t *testing.T, reports string) string {
+func installerServingTruncatedThenWhole(t *testing.T, reports, sentinel string) string {
 	t.Helper()
-	script := installerScript(t, reports)
+	script := installerScript(t, reports, sentinel)
 	var mu sync.Mutex
 	served := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -449,16 +469,26 @@ func TestInstallerRunsOnlyAWholeInstaller(t *testing.T) {
 	t.Parallel()
 	requireInstallerScriptTools(t, "curl")
 	version := pinnedGolangciVersion(t)
+	// The served script appends a line the moment it starts, before the point
+	// the truncated body is cut at. One line means the installer ran once; the
+	// pipe form this replaced would have run the fragment and then the whole
+	// script, and written two.
+	sentinel := filepath.Join(t.TempDir(), "runs")
 	code, out := runInstaller(t,
-		"EVENER_GOLANGCI_INSTALLER_URL="+installerServingTruncatedThenWhole(t, "golangci-lint has version "+version+" built with go1.27.0"),
+		"EVENER_GOLANGCI_INSTALLER_URL="+installerServingTruncatedThenWhole(t, "golangci-lint has version "+version+" built with go1.27.0", sentinel),
 		"EVENER_GOLANGCI_INSTALL_ATTEMPTS=1",
 		"EVENER_GOLANGCI_CURL_RETRIES=1",
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0: the retry fetches the whole installer\n%s", code, out)
 	}
-	// One install: the truncated half was never run, so nothing installed
-	// twice and nothing ran a fragment.
+	runs, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("reading the sentinel: %v", err)
+	}
+	if got := strings.Count(string(runs), "ran"); got != 1 {
+		t.Fatalf("the installer ran %d times, want once: a fragment executed, or the whole script twice\n%s", got, out)
+	}
 	if strings.Contains(out, "install attempt") {
 		t.Fatalf("output = %q, want the script's own loop not to have been used", out)
 	}
