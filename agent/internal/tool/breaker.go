@@ -219,10 +219,14 @@ func canonicalizeValue(v any, topLevel, dropDescription bool) any {
 // KNOWN LIMITATION. Only a BARE integer token overflows exactly. Suffixed
 // spellings of an integer beyond int64 -- "9223372036854775808.0",
 // "9223372036854775808e0" -- are not integer-shaped, so they still round
-// through ParseFloat. Two narrow consequences, both in the safe direction: such
-// a spelling does not fold with the bare form of the same number, and two
-// distinct integers beyond int64 written with the same suffix can collapse to
-// one fingerprint. Folding them exactly needs arbitrary-precision parsing,
+// through ParseFloat. That has two narrow consequences of opposite severity.
+// A suffixed spelling does not fold with the bare form of the same number,
+// which is the safe direction: the breaker fires later than it otherwise
+// would. But two distinct integers beyond int64 written with the same suffix
+// still collapse to one fingerprint, which is the HARMFUL direction -- the same
+// collision class this fix closes for bare tokens, just narrower, because a
+// genuinely changed call is then treated as a repeat and parked rather than
+// executed. Folding them exactly needs arbitrary-precision parsing,
 // which is deliberately NOT done here: big.Rat materializes a token's exponent
 // before it can ask whether the value is an integer, so an eleven-byte
 // "1e1000000" expands to a million digits (measured: ~19ms and ~3MB against
