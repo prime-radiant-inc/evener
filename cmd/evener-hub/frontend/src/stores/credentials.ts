@@ -13,7 +13,7 @@ import {
 import { createStore, useStore } from "zustand";
 import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
-import { type ConnectionStoreState, connectionStore } from "./connection";
+import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
 import { ownClientId } from "./mutationClientIdentity";
 
@@ -154,9 +154,43 @@ export async function fetchHost(host: string): Promise<void> {
   }
 }
 
+// A credential change made ON a remote host reaches this browser wrapped in
+// evener/host/notification, tagged with the host whose own evener/auth/updated
+// it re-emits (app_host_admin.go's fan-out). That host's partition is what a
+// remote spawn reads, so the wrapped notification refetches it -- debounced,
+// like the controller store's own refresh -- and never the controller's
+// listing.
+const HOST_REFETCH_DEBOUNCE_MS = 250;
+const hostRefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleHostRefetch(host: string): void {
+  const pending = hostRefetchTimers.get(host);
+  if (pending !== undefined) clearTimeout(pending);
+  hostRefetchTimers.set(
+    host,
+    setTimeout(() => {
+      hostRefetchTimers.delete(host);
+      void fetchHost(host);
+    }, HOST_REFETCH_DEBOUNCE_MS),
+  );
+}
+
+onConnectionNotification((notification) => {
+  if (notification.method !== "evener/host/notification") return;
+  const { host, method } = (notification.params ?? {}) as { host?: string; method?: string };
+  if (!host || isLocalHost(host)) return;
+  // The instance listing is this store's only wire-truth data, so only a
+  // credential change on that host is actionable here. The fan-out also wraps
+  // launch/plugin/agents-doc updates, which this store does not read.
+  if (method !== "evener/auth/updated") return;
+  scheduleHostRefetch(host);
+});
+
 /** resetHostInstancesForTests clears the partitions between tests. No
  * production code should call this. */
 export function resetHostInstancesForTests(): void {
+  for (const pending of hostRefetchTimers.values()) clearTimeout(pending);
+  hostRefetchTimers.clear();
   hostInstancesStore.setState({ hosts: {}, generation: 0 });
 }
 

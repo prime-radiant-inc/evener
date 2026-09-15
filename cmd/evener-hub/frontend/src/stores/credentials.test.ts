@@ -2,6 +2,7 @@ import type {
   AuthStatusResponse,
   AuthTestResponse,
   HostForwardedResult,
+  HostRequestParams,
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
@@ -1417,6 +1418,86 @@ describe("host-partitioned instance lists (component 07b)", () => {
 
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
     expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+  });
+
+  // A credential change made ON a remote host reaches this browser wrapped in
+  // evener/host/notification, tagged with the host (app_host_admin.go's fan-out
+  // re-emits that host's own evener/auth/updated). It must refresh that host's
+  // OWN partition -- a remote spawn's provider verdict and model catalog read it
+  // -- and never the controller's top-level listing.
+  test("a wrapped remote config notification refetches that host's partition, not the controller's", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    serveRemoteList(fake, REMOTE_LIST);
+    await fetchHost("buildbox");
+
+    // The credential was removed on the host: its own reload reports an
+    // unconfigured instance while the controller's listing is unchanged.
+    const remoteAfter: InstanceListResponse = {
+      instances: [{ ...REMOTE_INSTANCE, activeSource: "none" }],
+      availableProviders: [],
+    };
+    fake.on("evener/host/request", () => remoteAfter as unknown as HostForwardedResult);
+    const controllerList = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", controllerList);
+
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(remoteAfter.instances);
+    // The controller's own listing and its refetch path are untouched.
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    expect(controllerList).not.toHaveBeenCalled();
+  });
+
+  test("wrapped config notifications refetch each named host independently", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    const forwarded: string[] = [];
+    fake.on("evener/host/request", (params) => {
+      forwarded.push((params as HostRequestParams).host);
+      return REMOTE_LIST as unknown as HostForwardedResult;
+    });
+
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    });
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "otherbox", method: "evener/auth/updated", params: {} },
+    });
+    await vi.advanceTimersByTimeAsync(250);
+
+    // One shared debounce would have collapsed these into one host's load.
+    expect(forwarded).toEqual(["buildbox", "otherbox"]);
+  });
+
+  test("a wrapped host config notification this store cannot act on triggers no refetch", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    const requestSpy = vi.fn(() => REMOTE_LIST as unknown as HostForwardedResult);
+    fake.on("evener/host/request", requestSpy);
+    const controllerList = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", controllerList);
+
+    // The fan-out also wraps launch/plugin/agents-doc updates; the instance
+    // listing is this store's only wire-truth data, so they are not actionable.
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/launch/updated", params: {} },
+    });
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(requestSpy).not.toHaveBeenCalled();
+    expect(controllerList).not.toHaveBeenCalled();
   });
 
   test("a controller read does not supersede an in-flight remote host read", async () => {

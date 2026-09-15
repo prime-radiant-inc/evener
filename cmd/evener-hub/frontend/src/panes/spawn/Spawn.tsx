@@ -295,6 +295,23 @@ function SpawnForm({
   // also made an explicit choice (see openProviderSetup below).
   const providerChoiceScopes = useRef<Set<string>>(new Set());
   const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
+  // ConnectProviderDialog is a CONTROLLER-scoped editor: it reads and writes the
+  // package store's top-level fields and issues its auth/test flows on the plain
+  // connection, so it can only configure the controller's own hub. A remote
+  // host's registry lives in that host's own partition (useProviderSetup) and
+  // can only be configured on the host itself, so the connect action is offered
+  // for the controller only - opening it while a remote target is selected
+  // would "connect" the wrong machine and leave the remote spawn blocked with
+  // Start still disabled.
+  const providerSetupIsLocal = isLocalHost(submittedSource);
+  // A target switch while the dialog is open must not leave it mounted over the
+  // newly selected host (or re-open it when the controller is chosen again).
+  const providerDialogHostRef = useRef(submittedSource);
+  useEffect(() => {
+    if (providerDialogHostRef.current === submittedSource) return;
+    providerDialogHostRef.current = submittedSource;
+    setConnectingProvider(false);
+  }, [submittedSource]);
   const providerConnected = useCallback(
     (name?: string) => {
       setConnectingProvider(false);
@@ -344,11 +361,13 @@ function SpawnForm({
     setConnectingProvider(true);
   }, [harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
-  // Scoped by cwd so a draft switch can never show the previous project's
-  // branch while the new HEAD request is in flight - or indefinitely after it
-  // fails (resolveHeadBranch fails soft to "").
-  const [branchHead, setBranchHead] = useState<{ cwd: string; head: string } | null>(null);
-  const branch = branchHead !== null && branchHead.cwd === cwd ? branchHead.head : ""; // display-only (floor §1.7)
+  // Scoped by cwd AND host so neither a draft switch nor a host switch can show
+  // the previous project's/host's branch while the new evener/git/head request
+  // is in flight - or indefinitely after it fails (resolveHeadBranch fails soft
+  // to ""). hostChoice is the machine the effect below asks, so a same-cwd host
+  // switch must invalidate the previous host's answer immediately.
+  const [branchHead, setBranchHead] = useState<{ cwd: string; host: string; head: string } | null>(null);
+  const branch = branchHead !== null && branchHead.host === hostChoice && branchHead.cwd === cwd ? branchHead.head : ""; // display-only (floor §1.7)
   const [accessMode, setAccessMode] = useDraftField(draft, "accessMode");
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
@@ -378,14 +397,20 @@ function SpawnForm({
   // flips busy true; StartingLoader below owns the 1s tick and mounts only
   // while busy, so no interval runs with nothing on screen reading it.
   const [busyStartedAt, setBusyStartedAt] = useDraftField(draft, "busyStartedAt");
-  // Own the effective layer by draft so neither its gate nor inherited labels
-  // can describe the previous project while the current resolve is pending.
-  const [defaultPreview, setDefaultPreview] = useState<{ draft: SpawnDraft; effective: LaunchConfigLayer } | null>(
-    null,
-  );
+  // Own the effective layer by draft AND host so neither its gate nor inherited
+  // labels can describe the previous project or host while the current resolve
+  // is pending. A remote host's default model is that host's own
+  // (evener/launch/resolve is host-scoped), so a same-cwd host switch must not
+  // let the previous host's default satisfy - or fail - the Start model check.
+  const [defaultPreview, setDefaultPreview] = useState<{
+    draft: SpawnDraft;
+    host: string;
+    effective: LaunchConfigLayer;
+  } | null>(null);
   // Every unset launch-config control names its entry in this effective layer:
   // "high (default)", "On (default)", etc. Unknown defaults remain plain.
-  const resolvedDefaults = defaultPreview?.draft === draft ? defaultPreview.effective : null;
+  const resolvedDefaults =
+    defaultPreview?.draft === draft && defaultPreview.host === hostChoice ? defaultPreview.effective : null;
   // kata xgk8: true only once evener/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
@@ -684,7 +709,11 @@ function SpawnForm({
   const remoteSourceLabel =
     displaySources.find((candidate) => candidate.id === submittedSource)?.label ?? submittedSource;
   const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
-  const providerRequired = usesEvenerModels && providerSetup.status === "missing" && !remoteLaunch;
+  // The provider verdict is host-scoped (component 07b): providerSetup reads the
+  // selected host's own partition, so a remote target with no configured
+  // provider on THAT host blocks Start the way a local one does, and the banner
+  // below offers the host-side remediation instead of this controller's editor.
+  const providerRequired = usesEvenerModels && providerSetup.status === "missing";
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
   // below for how noDefaultModel is set. The onboarding scope is a second
@@ -720,9 +749,28 @@ function SpawnForm({
   useEffect(
     () =>
       client.onNotification((n) => {
-        if (n.method === "evener/auth/updated") setCredentialsGeneration((generation) => generation + 1);
+        if (n.method === "evener/auth/updated") {
+          setCredentialsGeneration((generation) => generation + 1);
+          return;
+        }
+        // A remote host's own evener/auth/updated is re-emitted to this browser
+        // wrapped in evener/host/notification tagged with the host
+        // (cmd/evener-hub/app_host_admin.go's remoteHostConfigNotifications).
+        // The selected remote host's catalog must observe it too: otherwise a
+        // credential or model change made on that host never invalidates this
+        // pane's model/list cache, and the form keeps validating against a
+        // stale list (a removed credential still reads "configured", an added
+        // one still reads "missing"). Only the selected host's wrapper is
+        // relevant; another host's never moves this form.
+        if (
+          n.method === "evener/host/notification" &&
+          n.params.host === hostChoice &&
+          n.params.method === "evener/auth/updated"
+        ) {
+          setCredentialsGeneration((generation) => generation + 1);
+        }
       }),
-    [client],
+    [client, hostChoice],
   );
   const modelListCache = useRef<{
     client: object;
@@ -1019,21 +1067,16 @@ function SpawnForm({
   // already have deleted its saved model while the live draft still retains it.
   // Navigation does not cancel origin-owned validation; provider refresh does.
   //
-  // A REMOTE target is not judged by this catalog at all (round ten, matching
-  // the round-seven default-model fallback above): the launch runs on the
-  // selected source's own hub, which resolves its own model, and a model that
-  // is valid there can be one this controller's model/list does not list. So
-  // the sweep is skipped for a remote target - and the target mode is
-  // re-checked when the response lands, because a draft that switches hosts
-  // while the request is in flight still has that request registered against
-  // it. Local targets keep every check unchanged.
+  // The catalog it judges against is the SELECTED host's (component 07b): the
+  // routed model/list answers for that host, so a draft's model is discarded
+  // when the host does not offer it. Storage stays the controller's business -
+  // the sweep above is local-only - so this path never writes a saved default.
   useEffect(() => {
-    if (!globalModelRequest || !usesEvenerModels || remoteLaunch) return;
+    if (!globalModelRequest || !usesEvenerModels) return;
     const initial = draft.fields.getState();
     if (!initial.model) return;
     globalModelRequest.promise.then(
       (r) => {
-        if (remoteLaunchRef.current) return;
         const current = draft.fields.getState();
         if (!globalModelRequest.active || current.model !== initial.model || current.harness !== initial.harness)
           return;
@@ -1044,7 +1087,7 @@ function SpawnForm({
       },
       () => {},
     );
-  }, [draft, globalModelRequest, usesEvenerModels, remoteLaunch]);
+  }, [draft, globalModelRequest, usesEvenerModels]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
   // same model/list catalog the pickers load on demand. Reloads with the
@@ -1106,7 +1149,7 @@ function SpawnForm({
     if (cwd.trim() === "") return undefined;
     let active = true;
     resolveHeadBranch(client, cwd, submittedSource).then((head) => {
-      if (active) setBranchHead({ cwd, head });
+      if (active) setBranchHead({ cwd, host: submittedSource, head });
     });
     return () => {
       active = false;
@@ -1156,7 +1199,7 @@ function SpawnForm({
       Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
         ([result, models]) => {
           if (!active) return;
-          setDefaultPreview({ draft, effective: result.effective });
+          setDefaultPreview({ draft, host: hostChoice, effective: result.effective });
           const defaultModel = (result.effective.model ?? "").trim();
           // A remote target resolves its own default model from its own host's
           // credentials and catalog, so this controller's launchable set is not
@@ -1207,6 +1250,7 @@ function SpawnForm({
   }, [
     cwd,
     draft,
+    submittedSource,
     advancedOverrides,
     advancedModel,
     resolveConfig,
@@ -2113,8 +2157,19 @@ function SpawnForm({
         </div>
         {providerRequired && (
           <div className={CLASS.notice} role="status">
-            <span>Connect a provider to use a model. Sign in or add an API key here.</span>
-            <Button onClick={openProviderSetup}>Connect provider</Button>
+            {providerSetupIsLocal ? (
+              <>
+                <span>Connect a provider to use a model. Sign in or add an API key here.</span>
+                <Button onClick={openProviderSetup}>Connect provider</Button>
+              </>
+            ) : (
+              // A remote host's provider registry is not editable from this
+              // browser: the credentials editor is controller-scoped, so it
+              // would configure the wrong machine. Say where the work has to
+              // happen instead of offering an action that cannot unblock the
+              // spawn.
+              <span>No provider is configured on {remoteSourceLabel}. Configure one on that host to use a model.</span>
+            )}
             <Button variant="quiet" onClick={() => void providerSetup.retry()}>
               Retry provider check
             </Button>
@@ -2124,12 +2179,14 @@ function SpawnForm({
           <div className={CLASS.notice} role="status">
             <span>Could not check provider configuration.</span>
             <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
-            <Button variant="quiet" onClick={openProviderSetup}>
-              Review providers
-            </Button>
+            {providerSetupIsLocal && (
+              <Button variant="quiet" onClick={openProviderSetup}>
+                Review providers
+              </Button>
+            )}
           </div>
         )}
-        {connectingProvider && (
+        {connectingProvider && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
             key={dialogChunkVersion}
             onRetry={retryProviderDialog}
