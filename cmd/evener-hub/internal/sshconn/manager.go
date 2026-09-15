@@ -276,6 +276,12 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		// A terminal failure is the documented EventFailed case, not just a state
 		// transition: a consumer has to be able to tell it from a retryable one.
 		if isTerminal(err) {
+			// A retired channel was announced as attached, so its consumer needs the
+			// matching Detached before the terminal Failed — the contract this file's
+			// event docs state, and without it component 05 keeps the source.
+			if stale != nil {
+				m.detachEvent(name, StateDisconnected)
+			}
 			m.failedEvent(name, err)
 			// The replacement cannot be built, so the dropped channel must not keep
 			// ownership: its supervisor would treat the host as its own and repeat a
@@ -286,22 +292,28 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		lock.Unlock()
 		return nil, err
 	}
+	// Validate before publishing, as reconnectOnce does. Publishing first would
+	// displace the dropped channel whose supervisor is waiting to recover, and a
+	// replacement that died in the handshake would then leave the host with no
+	// supervisor at all — the predecessor's gone with the map entry and none
+	// started for the replacement.
+	if ch.isClosed() || ch.isLost() {
+		// A dropped predecessor stays mapped: its supervisor still owns the host and
+		// will reconnect. With no predecessor there is nothing to supervise, so the
+		// state is honestly disconnected.
+		if stale == nil {
+			m.stateEvent(name, StateDisconnected)
+		}
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, errChannelDropped(name)
+	}
 	if !m.publishChannel(name, ch) {
 		// Close landed while this attach was in flight. Handing back a channel
 		// that nothing will ever supervise would be a lie, so reap it.
 		lock.Unlock()
 		_ = ch.Close()
 		return nil, ErrManagerClosed
-	}
-	// Validate before announcing, as reconnectOnce does: a channel that died
-	// between the handshake and here must not be installed, and consumers must not
-	// be told about one they cannot use. The window left is the inherent one
-	// between this check and the caller's first use.
-	if ch.isClosed() || ch.isLost() {
-		m.clearChannel(name)
-		lock.Unlock()
-		_ = ch.Close()
-		return nil, errChannelDropped(name)
 	}
 	if m.isClosed() || ch.isClosed() {
 		// Close landed between publishing and announcing: nothing will supervise
@@ -566,8 +578,11 @@ func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
 		m.stateEvent(host.Name, StateDisconnected)
 		return false
 	}
-	if m.liveChannel(host.Name) != nil {
-		// Another Ensure attached while we slept; its supervisor owns the host.
+	if m.currentChannel(host.Name) != nil {
+		// Any mapped channel means another supervisor owns this host: one whose link
+		// has dropped is still owned, because its own supervisor is reconnecting.
+		// Keying on liveness here let two supervisors attach for one host, and the
+		// loser's channel was clobbered without ever being detached.
 		return false
 	}
 	attemptCtx, cancel := context.WithTimeout(m.baseCtx, m.opts.attemptLimit())

@@ -1041,6 +1041,7 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 	mismatch := false
 	starts := 0
 	failures := 0
+	var kinds []EventKind
 	canned := cannedRun(nil)
 	fr := &fakeRunner{
 		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -1063,6 +1064,9 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 	m := newTestManager(t, reg, fr, Options{
 		OnEvent: func(ev Event) {
 			events <- ev
+			mu.Lock()
+			kinds = append(kinds, ev.Kind)
+			mu.Unlock()
 			if ev.Kind == EventFailed {
 				mu.Lock()
 				failures++
@@ -1108,9 +1112,24 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 	// merely reconnecting.
 	mu.Lock()
 	atReturn := failures
+	seq := append([]EventKind(nil), kinds...)
 	mu.Unlock()
 	if atReturn < 1 {
 		t.Fatalf("terminal failures announced by the time Ensure returned = %d, want at least 1", atReturn)
+	}
+	// The retired channel was announced as attached, so its consumer must see the
+	// matching Detached before the terminal Failed, not after and not never.
+	detachAt, failAt := -1, -1
+	for i, k := range seq {
+		if k == EventDetached && detachAt < 0 {
+			detachAt = i
+		}
+		if k == EventFailed && failAt < 0 {
+			failAt = i
+		}
+	}
+	if detachAt < 0 || detachAt > failAt {
+		t.Fatalf("terminal failure did not detach the retired channel first: %v", seq)
 	}
 
 	// The terminal failure releases the host too: whichever goroutine won the lock,
@@ -1167,6 +1186,30 @@ func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
 	}
 	if isTerminal(ErrSSHStart) {
 		t.Fatal("a transport failure must stay retryable")
+	}
+}
+
+// A mapped channel is owned even when its link has dropped: its own supervisor is
+// reconnecting, so a second one must stand down rather than attach alongside it
+// and clobber the entry without ever detaching it.
+func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	ch.markLost()
+	if !m.publishChannel("alpha", ch) {
+		t.Fatal("publishChannel refused a live manager")
+	}
+	if got := m.reconnectOnce(host, m.hostLock("alpha")); got {
+		t.Fatal("reconnectOnce reported work to do for a host another channel owns")
+	}
+	if starts := len(fr.recordedStarts()); starts != 0 {
+		t.Fatalf("Start calls = %d, want 0: the mapped channel still owns the host", starts)
+	}
+	if cur := m.currentChannel("alpha"); cur != ch {
+		t.Fatalf("currentChannel = %v, want the mapped channel left alone", cur)
 	}
 }
 
