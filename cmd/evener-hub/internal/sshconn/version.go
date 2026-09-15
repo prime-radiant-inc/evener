@@ -1049,11 +1049,18 @@ func (m *Manager) resolveExecutableName(ctx context.Context, host hostreg.Host, 
 }
 
 // expectedHubExecutable resolves the canonical path of the executable the host
-// hub is expected to run: the configured evener_path when set, else whatever
-// `command -v evener` resolves to. Both are canonicalized on the host, so a
-// symlinked install on either side compares equal.
+// hub is expected to run: the configured evener_path when set, else a target
+// this Manager already resolved for the host, else whatever `command -v evener`
+// resolves to, else the installer's default ~/.local/bin/evener when that file
+// exists. Every path is canonicalized on the host, so a symlinked install on
+// either side compares equal. Sharing deployTarget's fallback is what identifies
+// a hub installed at the installer default but absent from the non-interactive
+// PATH, instead of reporting no executable and forcing a re-deploy.
 func (m *Manager) expectedHubExecutable(ctx context.Context, host hostreg.Host) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
+		return m.resolveRemotePath(ctx, host, p)
+	}
+	if p := m.resolvedTarget(host.Name); p != "" {
 		return m.resolveRemotePath(ctx, host, p)
 	}
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v evener"), nil)
@@ -1062,7 +1069,12 @@ func (m *Manager) expectedHubExecutable(ctx context.Context, host hostreg.Host) 
 	}
 	p := firstLine(string(out))
 	if p == "" {
-		return "", fmt.Errorf("%w: host %q has no evener on PATH and no configured evener_path to identify the hub by; set evener_path", ErrRestart, host.Name)
+		if dp, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
+			p = dp
+		}
+	}
+	if p == "" {
+		return "", fmt.Errorf("%w: host %q has no evener on PATH, no evener at the installer default ~/.local/bin/evener, and no configured evener_path to identify the hub by; set evener_path", ErrRestart, host.Name)
 	}
 	return m.resolveRemotePath(ctx, host, p)
 }

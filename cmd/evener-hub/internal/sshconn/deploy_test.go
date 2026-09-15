@@ -91,7 +91,7 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 		t.Fatalf("pushed bytes = %q", pushedBytes)
 	}
 
-	wantRemote := pushBinaryRemote("/opt/evener/bin/evener")
+	wantRemote := pushBinaryRemote("/opt/evener/bin/evener", int64(len("binary-bytes")))
 	want := rawCommandArgv(m.opts, host, wantRemote)
 	if !equalArgv(pushArgv, want) {
 		t.Fatalf("push argv:\n got %v\nwant %v", pushArgv, want)
@@ -206,9 +206,18 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 // EVENER_SHARE_BINDIR so the symlink lands at evener_path.
 func TestInstallerCommandPinsRefAndDirs(t *testing.T) {
 	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin")
-	want := "curl -fsSL " + installScriptURL + " | env EVENER_INSTALL_VERSION=v1.2.3 BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh"
-	if got != want {
-		t.Fatalf("installerCommand = %q, want %q", got, want)
+	// The installer is fetched to a temp file and curl's status checked before it
+	// runs; a `curl … | sh` pipeline would report sh's status and hide a failed
+	// download.
+	if !strings.Contains(got, "curl -fsSL "+installScriptURL+" -o \"$tmp\" && env ") {
+		t.Fatalf("installerCommand does not check curl before executing the installer: %q", got)
+	}
+	if strings.Contains(got, "| env ") || strings.Contains(got, "| sh") {
+		t.Fatalf("installerCommand still pipes the download into sh: %q", got)
+	}
+	want := "env EVENER_INSTALL_VERSION=v1.2.3 BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh \"$tmp\""
+	if !strings.HasSuffix(got, want) {
+		t.Fatalf("installerCommand = %q, want suffix %q", got, want)
 	}
 	got = installerCommand("snapshot", "", "")
 	if !strings.Contains(got, "EVENER_INSTALL_VERSION=snapshot") || strings.Contains(got, "BINDIR") {
@@ -393,7 +402,7 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	want := pushBinaryRemote("/home/dev/.local/bin/evener")
+	want := pushBinaryRemote("/home/dev/.local/bin/evener", 1)
 	if !strings.Contains(pushJoined, want) {
 		t.Fatalf("push command = %q, want it to contain %q", pushJoined, want)
 	}
@@ -436,7 +445,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellQuote(dir)) {
 		t.Fatalf("test -d does not quote the path with a space: %q", testDirRemote)
 	}
-	wantPush := pushBinaryRemote(target)
+	wantPush := pushBinaryRemote(target, 1)
 	if !strings.Contains(pushRemote, wantPush) {
 		t.Fatalf("push does not quote the paths:\n got %q\nwant it to contain %q", pushRemote, wantPush)
 	}
@@ -477,7 +486,7 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if !strings.Contains(pushRemote, pushBinaryRemote(realPath)) {
+	if !strings.Contains(pushRemote, pushBinaryRemote(realPath, 1)) {
 		t.Fatalf("push does not install onto the symlink's real file %q: %q", realPath, pushRemote)
 	}
 	if strings.Contains(pushRemote, shellQuote(link)) {
@@ -853,7 +862,7 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 // evener.tmp.* files in the install directory. The remote command now arms a trap
 // before streaming, so any failure path removes the temp name.
 func TestPushBinaryRemoteCleansTempOnFailure(t *testing.T) {
-	got := pushBinaryRemote("/opt/evener/bin/evener")
+	got := pushBinaryRemote("/opt/evener/bin/evener", 12)
 	cleanup := `trap 'rm -f "$tmp"' EXIT`
 	idxCleanup := strings.Index(got, cleanup)
 	if idxCleanup < 0 {
@@ -1254,7 +1263,7 @@ func TestDeployPushCreatesMissingEvenerPathTarget(t *testing.T) {
 	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v (a not-yet-installed evener_path must be creatable)", err)
 	}
-	if !strings.Contains(pushJoined, pushBinaryRemote("/opt/evener/bin/evener")) {
+	if !strings.Contains(pushJoined, pushBinaryRemote("/opt/evener/bin/evener", 1)) {
 		t.Fatalf("push = %q, want an install at the creatable target", pushJoined)
 	}
 }
@@ -1293,7 +1302,7 @@ func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deploy: %v (a fresh host with no evener must be provisionable)", err)
 	}
-	if !strings.Contains(pushJoined, pushBinaryRemote("/home/dev/.local/bin/evener")) {
+	if !strings.Contains(pushJoined, pushBinaryRemote("/home/dev/.local/bin/evener", int64(len("staged-binary")))) {
 		t.Fatalf("push = %q, want the installer default target", pushJoined)
 	}
 	if target != "/home/dev/.local/bin/evener" {

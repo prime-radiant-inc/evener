@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/buildinfo"
@@ -314,7 +315,11 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	}
 	defer func() { _ = f.Close() }()
 
-	if err := m.pushBinary(ctx, host, target, f); err != nil {
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q stat staged binary: %w", ErrDeploy, host.Name, err)
+	}
+	if err := m.pushBinary(ctx, host, target, f, info.Size()); err != nil {
 		return "", err
 	}
 	return target, nil
@@ -379,6 +384,25 @@ func (m *Manager) evenerOnPath(ctx context.Context, host hostreg.Host) (string, 
 		return "", nil
 	}
 	return p, nil
+}
+
+// probeInstallerDefaultExecutable reports the host's installer-default evener
+// path (~/.local/bin/evener) when a regular file exists there, and ok=false when
+// it does not. deployTarget falls back to that location to provision a fresh
+// host; preflight and expectedHubExecutable consult it too, so a host whose
+// binary already lives there but is absent from the non-interactive PATH is
+// recognized as running the controller's build rather than re-deployed to on
+// every reconnect. A probe failure is read as absent: this is best-effort
+// discovery, and the deploy path re-resolves (surfacing a real transport error)
+// when nothing is found.
+func (m *Manager) probeInstallerDefaultExecutable(ctx context.Context, host hostreg.Host) (string, bool) {
+	remote := `if [ -n "${HOME-}" ] && [ -f "${HOME-}/.local/bin/evener" ]; then printf '%s\n' "${HOME-}/.local/bin/evener"; fi`
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+	if err != nil {
+		return "", false
+	}
+	p := firstLine(string(out))
+	return p, p != ""
 }
 
 // resolvePathScript is a POSIX-sh path resolver that prints the real path a file
@@ -450,11 +474,16 @@ func (m *Manager) resolveDeployOrCreateTarget(ctx context.Context, host hostreg.
 	}
 	out, cerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, createTargetCommand(p)), nil)
 	if cerr != nil {
-		return "", err
+		// Surface the create attempt's own failure. Returning the resolve error
+		// alone reads as "does not resolve to a real file" and hides the
+		// actionable cause (a missing parent directory, a permission refusal),
+		// so the operator sees no diagnostic for the create that actually
+		// failed.
+		return "", fmt.Errorf("%w: host %q create install target %q: %w: %s", ErrDeploy, host.Name, p, cerr, tail(out))
 	}
 	created := firstLine(string(out))
 	if created == "" {
-		return "", err
+		return "", fmt.Errorf("%w: host %q install target %q cannot be created (the parent directory may not exist): %w", ErrDeploy, host.Name, p, err)
 	}
 	return created, nil
 }
@@ -473,22 +502,31 @@ func createTargetCommand(p string) string {
 
 // pushBinaryRemote builds the remote command that installs a pushed binary: it
 // creates a unique temp name with mktemp (atomic, and unique across manager
-// processes), arms a trap to remove it, streams the binary into it, marks it
-// executable, and mv's it into place. The temp-then-mv makes the install atomic:
-// an interrupted push never leaves a truncated evener at the final path, and the
-// trap removes the temp file on any failure (a failed cat, chmod, or mv, or a
-// dropped connection) so repeated failures do not accumulate evener.tmp.* files
-// in the install directory.
-func pushBinaryRemote(target string) string {
+// processes), arms a trap to remove it, streams the binary into it, verifies the
+// streamed byte count, marks it executable, and mv's it into place. The
+// temp-then-mv makes the install atomic: an interrupted push never leaves a
+// truncated evener at the final path, and the trap removes the temp file on any
+// failure (a failed cat, a byte-count mismatch, chmod, or mv, or a dropped
+// connection) so repeated failures do not accumulate evener.tmp.* files in the
+// install directory.
+//
+// The byte-count check is what makes a truncated transfer a failure rather than
+// silent corruption: ssh reports a dropped stream as a successful EOF, so `cat`
+// exits 0 on a partial transfer and the mv would otherwise install a truncated
+// binary over a working one. size is the staged file's length, compared against
+// the remote temp file before the rename.
+func pushBinaryRemote(target string, size int64) string {
 	tmp := "tmp=$(mktemp " + shellQuote(target+deployTempSuffix+"XXXXXX") + ") || exit 1"
 	cleanup := "trap 'rm -f \"$tmp\"' EXIT"
-	return tmp + "; " + cleanup + "; cat > \"$tmp\" && chmod +x \"$tmp\" && mv \"$tmp\" " + shellQuote(target)
+	verify := "v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.FormatInt(size, 10) + " ]"
+	return tmp + "; " + cleanup + "; cat > \"$tmp\" && " + verify + " && chmod +x \"$tmp\" && mv \"$tmp\" " + shellQuote(target)
 }
 
-// pushBinary streams data to target over an ssh `cat`, then chmod +x and mv it
-// into place. Feeding the binary on the Runner.Run stdin keeps argv[0] == "ssh".
-func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target string, data io.Reader) error {
-	remote := pushBinaryRemote(target)
+// pushBinary streams data to target over an ssh `cat`, verifies the streamed
+// byte count matches size, then chmod +x and mv it into place. Feeding the
+// binary on the Runner.Run stdin keeps argv[0] == "ssh".
+func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target string, data io.Reader, size int64) error {
+	remote := pushBinaryRemote(target, size)
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), data)
 	if err != nil {
 		return fmt.Errorf("%w: host %q push %s: %w: %s", ErrDeploy, host.Name, target, err, tail(out))
@@ -565,14 +603,23 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 
 // installerCommand builds the remote command that runs install.sh pinned to
 // ref, installing into bindir/shareBindir when a custom run target is given.
-// The documented one-liner runs the installer on the host with the variables
-// passed to `env` (not to curl), and every value is shell-quoted.
+// The installer runs on the host with the variables passed to `env` (not to
+// curl), and every value is shell-quoted.
+//
+// It fetches install.sh to a temp file and checks curl's status before running
+// it, rather than piping `curl … | sh`: a pipeline returns the LAST command's
+// status, so a failed download — a truncated stream, a 404, a DNS failure —
+// handed sh an empty script that exited 0 and the deploy looked successful,
+// with the post-install probe then misreading the unchanged binary. With the
+// temp file a failed curl short-circuits before sh ever runs.
 func installerCommand(ref, bindir, shareBindir string) string {
 	env := "EVENER_INSTALL_VERSION=" + shellQuote(ref)
 	if bindir != "" {
 		env += " BINDIR=" + shellQuote(bindir) + " EVENER_SHARE_BINDIR=" + shellQuote(shareBindir)
 	}
-	return "curl -fsSL " + shellQuote(installScriptURL) + " | env " + env + " sh"
+	tmp := "tmp=$(mktemp \"${TMPDIR:-/tmp}/evener-install.XXXXXX\") || exit 1"
+	cleanup := "trap 'rm -f \"$tmp\"' EXIT"
+	return tmp + "; " + cleanup + "; curl -fsSL " + shellQuote(installScriptURL) + " -o \"$tmp\" && env " + env + " sh \"$tmp\""
 }
 
 // deployInstaller is the fallback deploy path for a controller with no build

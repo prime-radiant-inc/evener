@@ -311,6 +311,13 @@ type Manager struct {
 	// dev build on, so the deploy happens at most once per process rather than on
 	// every reconnect.
 	devDeployed map[string]bool
+	// resolvedTargets records, per host, the executable path this Manager
+	// resolved for the host — a deploy target, or a discovered install — so it
+	// can be reused when the registry's evener_path is empty. Without it a host
+	// whose binary is at the installer default ~/.local/bin/evener (off the
+	// non-interactive PATH) was re-deployed on every reconnect, interrupting the
+	// host's sessions each time.
+	resolvedTargets map[string]string
 	// pendingRestarts records, per host, the restart command (a bare relaunch, or
 	// a supervisor's restart) recorded before it ran, with the identity of the hub
 	// it was meant to replace. A restart that left no listener, or that left the
@@ -360,6 +367,7 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		locks:           map[string]*sync.Mutex{},
 		chans:           map[string]*Channel{},
 		devDeployed:     map[string]bool{},
+		resolvedTargets: map[string]string{},
 		pendingRestarts: map[string]pendingRestartState{},
 		supervisors:     map[string]map[*supervisorLoop]struct{}{},
 		announced:       map[string]*Channel{},
@@ -795,6 +803,16 @@ func (m *Manager) Close() error {
 // which is the only place the first-attach bootstrap start may run; a reconnect
 // passes false so it never starts a hub.
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bool) (*Channel, error) {
+	// Address the executable this Manager already resolved for the host when the
+	// registry has no evener_path: a deploy target from an earlier attempt (or a
+	// discovered install) is the binary the host actually runs, and probing the
+	// bare `evener` instead made version auto-match fail and re-deploy on every
+	// reconnect.
+	if strings.TrimSpace(host.EvenerPath) == "" {
+		if p := m.resolvedTarget(host.Name); p != "" {
+			host.EvenerPath = p
+		}
+	}
 	// Refuse an unusable hub address before any ssh command runs: the probe and
 	// restart paths below would otherwise address (and possibly kill) whatever
 	// holds the default port, or poll a port the bridge never dials.
@@ -865,6 +883,11 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			// default location. Use that path for the restart, health re-probe, and
 			// attach instead of assuming a separate `command -v evener` result.
 			host.EvenerPath = resolvedTarget
+			// Persist it too, so the next attempt (including the supervisor's
+			// reconnect, which starts from the original registry host) addresses the
+			// installed binary rather than re-resolving an empty evener_path and
+			// re-deploying.
+			m.setResolvedTarget(host.Name, resolvedTarget)
 		}
 		// The controller's own build is installed now; the dev-identity question
 		// is settled for this Manager's lifetime.
@@ -1659,6 +1682,31 @@ func (m *Manager) markDevDeployed(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.devDeployed[name] = true
+}
+
+// resolvedTarget returns the executable path this Manager resolved for name on
+// an earlier attempt, or "" when none has been recorded.
+func (m *Manager) resolvedTarget(name string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.resolvedTargets[name]
+}
+
+// setResolvedTarget records the executable path this Manager resolved for name.
+// It carries a deploy target (or a discovered install) across attempts, so a
+// later Ensure — or the supervisor's reconnect, which starts from the original
+// registry host — addresses the installed binary instead of a bare `evener` the
+// non-interactive PATH may not carry.
+func (m *Manager) setResolvedTarget(name, target string) {
+	if target == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.resolvedTargets == nil {
+		m.resolvedTargets = map[string]string{}
+	}
+	m.resolvedTargets[name] = target
 }
 
 // pendingRestart returns the restart a failed or unverified restart recorded, or

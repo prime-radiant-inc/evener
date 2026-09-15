@@ -233,8 +233,35 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	}
 	pf.UID = parseEffectiveUID(uidOut)
 
-	lc, err := m.probeLaunchCheck(ctx, host)
+	// Address the executable this Manager already resolved for the host (a deploy
+	// target, or a discovered install) when the registry has no evener_path, so
+	// version auto-match probes the binary the host actually runs rather than a
+	// bare `evener` the non-interactive PATH may not carry.
+	probeHost := host
+	if strings.TrimSpace(probeHost.EvenerPath) == "" {
+		probeHost.EvenerPath = m.resolvedTarget(host.Name)
+	}
+	lc, err := m.probeLaunchCheck(ctx, probeHost)
 	if err != nil {
+		if m.canDeploy() && errors.Is(err, errExecutableMissing) {
+			// The executable is absent from the non-interactive PATH, but the
+			// binary may still exist at the installer's default location
+			// deployTarget falls back to. Probe it before recording the contract
+			// as unknown, so a host that already runs the controller's build at
+			// ~/.local/bin/evener is recognized instead of being re-deployed on
+			// every reconnect.
+			if p, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
+				probeHost.EvenerPath = p
+				if lc2, err2 := m.probeLaunchCheck(ctx, probeHost); err2 == nil {
+					m.setResolvedTarget(host.Name, p)
+					pf.LaunchCheckKnown = true
+					pf.Protocol = lc2.Protocol
+					pf.Version = lc2.Version
+					pf.LaunchFlags = append([]string(nil), lc2.LaunchFlags...)
+					return pf, nil
+				}
+			}
+		}
 		if m.canDeploy() && (errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) || errors.Is(err, errExecutableMissing)) {
 			// The on-disk binary either refused the controller's appwire protocol
 			// outright, returned a contract that cannot be read, or is not there at
