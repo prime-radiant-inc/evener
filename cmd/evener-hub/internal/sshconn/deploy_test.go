@@ -22,14 +22,15 @@ import (
 // stamped with this process's own buildinfo values, so its launch-check version
 // equals the controller's buildinfo.Version().
 func TestBuildLdflagsStampsControllerBuildinfo(t *testing.T) {
-	origSHA, origDirty, origTime, origCh := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.BuildTime, buildinfo.Channel
+	origSHA, origDirty, origTime, origCh, origTag := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.BuildTime, buildinfo.Channel, buildinfo.ReleaseTag
 	t.Cleanup(func() {
-		buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.BuildTime, buildinfo.Channel = origSHA, origDirty, origTime, origCh
+		buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.BuildTime, buildinfo.Channel, buildinfo.ReleaseTag = origSHA, origDirty, origTime, origCh, origTag
 	})
 	buildinfo.GitSHA = "abc1234"
 	buildinfo.GitDirty = "true"
 	buildinfo.BuildTime = "2026-09-14T00:00:00Z"
 	buildinfo.Channel = "snapshot"
+	buildinfo.ReleaseTag = "v1.2.3"
 
 	got := buildLdflags()
 	for _, want := range []string{
@@ -37,6 +38,7 @@ func TestBuildLdflagsStampsControllerBuildinfo(t *testing.T) {
 		"-X primeradiant.com/evener/buildinfo.GitDirty=true",
 		"-X primeradiant.com/evener/buildinfo.BuildTime=2026-09-14T00:00:00Z",
 		"-X primeradiant.com/evener/buildinfo.Channel=snapshot",
+		"-X primeradiant.com/evener/buildinfo.ReleaseTag=v1.2.3",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("buildLdflags() = %q, missing %q", got, want)
@@ -834,7 +836,7 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 	// The push path specifically: with no build source configured it must not
 	// build from the working-directory checkout. (deploy would take the installer
 	// fallback here.)
-	err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	_, err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
 	if err == nil {
 		t.Fatal("deploy succeeded with no configured build source")
 	}
@@ -1287,10 +1289,14 @@ func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}); err != nil {
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	if err != nil {
 		t.Fatalf("deploy: %v (a fresh host with no evener must be provisionable)", err)
 	}
 	if !strings.Contains(pushJoined, pushBinaryRemote("/home/dev/.local/bin/evener")) {
 		t.Fatalf("push = %q, want the installer default target", pushJoined)
+	}
+	if target != "/home/dev/.local/bin/evener" {
+		t.Fatalf("deploy target = %q, want the resolved default target /home/dev/.local/bin/evener", target)
 	}
 }

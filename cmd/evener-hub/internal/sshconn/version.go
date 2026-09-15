@@ -958,11 +958,18 @@ func (m *Manager) recoverHubArgvRaw(ctx context.Context, host hostreg.Host, pid 
 	return argv, nil
 }
 
-// currentHubExecutable resolves the canonical path of the executable of the hub
-// currently listening on the host's configured endpoint, or "" when no single
+// currentHubExecutableName resolves the user-facing path of the executable of the
+// hub currently listening on the host's configured endpoint, or "" when no single
 // hub listener can be identified. It reports no error: an unidentifiable or
 // unprobeable hub is a missing preservation hint, not a reason to fail a deploy.
-func (m *Manager) currentHubExecutable(ctx context.Context, host hostreg.Host) string {
+//
+// It does NOT canonicalize symlinks. The installer fallback needs the path the
+// operator's installation names (argv[0], or the `command -v` result for a bare
+// name) so installerDirs derives BINDIR from the directory holding the
+// user-facing symlink; resolving first returned the real binary under
+// share/evener/bin and produced a nested, wrong install location. Canonical
+// resolution for identity lives in hubExecutableMatches.
+func (m *Manager) currentHubExecutableName(ctx context.Context, host hostreg.Host) string {
 	pids, err := m.hubListenerPIDs(ctx, host, hubPort(m.hostAddr(host)))
 	if err != nil || len(pids) != 1 {
 		return ""
@@ -975,11 +982,7 @@ func (m *Manager) currentHubExecutable(ctx context.Context, host hostreg.Host) s
 	if err != nil {
 		return ""
 	}
-	resolved, err := m.resolveRemotePath(ctx, host, exe)
-	if err != nil {
-		return ""
-	}
-	return resolved
+	return exe
 }
 
 // installableEvenerBasename reports whether install.sh ships a binary with this

@@ -106,6 +106,7 @@ func buildLdflags() string {
 		set("GitDirty", buildinfo.GitDirty),
 		set("BuildTime", buildinfo.BuildTime),
 		set("Channel", buildinfo.Channel),
+		set("ReleaseTag", buildinfo.ReleaseTag),
 	}, " ")
 }
 
@@ -194,6 +195,17 @@ func verifyBuildRevision(root string) error {
 	if changes := strings.TrimSpace(status); changes != "" {
 		return fmt.Errorf("build source %q has uncommitted changes (%s); refusing to deploy code other than the controller's own", root, firstLine(changes))
 	}
+	// gitStatus's porcelain output omits ignored untracked files, so an ignored
+	// .go source file would slip past it and still be compiled into the build.
+	// Check those separately, scoped to Go sources so the ignored (and required)
+	// embedded frontend dist does not count as a change.
+	ignored, err := ignoredGoFiles(root)
+	if err != nil {
+		return fmt.Errorf("build source %q: cannot read its ignored files to check it against this controller's build %q: %w", root, want, err)
+	}
+	if files := strings.TrimSpace(ignored); files != "" {
+		return fmt.Errorf("build source %q has ignored untracked Go files (%s); refusing to deploy code other than the controller's own", root, firstLine(files))
+	}
 	return nil
 }
 
@@ -220,6 +232,22 @@ func gitStatus(root string) (string, error) {
 	return string(out), nil
 }
 
+// ignoredGoFiles lists the ignored untracked .go files in the checkout at root,
+// one per line, empty when there are none. `git status --porcelain` omits ignored
+// paths, so without this an ignored .go source file would be compiled by
+// `go build` while the deployed binary kept the repository's unchanged (clean)
+// SHA — defeating the source/version identity the revision check exists to
+// provide. Only .go files are listed: the build's embedded frontend dist is
+// itself ignored (and required), so a blanket ignored-file check would refuse
+// every real build.
+func ignoredGoFiles(root string) (string, error) {
+	out, err := exec.Command("git", "-C", root, "ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.go").Output() //nolint:noctx // local, fast; no request context to thread here
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // declaresEvenerModule reports whether dir holds a go.mod for this module.
 func declaresEvenerModule(dir string) bool {
 	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
@@ -237,29 +265,34 @@ func declaresEvenerModule(dir string) bool {
 
 // deploy installs a matching build on the host. The cross-compile + push path is
 // primary when a build source is configured; otherwise the installer fallback
-// runs on the host. It returns the run target the manager must use afterwards,
-// which is non-empty only for the installer fallback with an empty evener_path
-// (the installer's own default location, so the restart and attach paths address
-// the binary that was actually installed).
+// runs on the host. It returns the resolved run target the manager must record as
+// host.EvenerPath: the canonical path the push installed to, or the installer's
+// run target. Both are non-empty on success, so the restart, health re-probe, and
+// attach paths address the binary that was actually installed instead of a bare
+// `evener` a fresh host's non-interactive PATH may not carry.
 func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	if m.canBuild() {
-		return "", m.deployPush(ctx, host, facts)
+		return m.deployPush(ctx, host, facts)
 	}
 	return m.deployInstaller(ctx, host, facts)
 }
 
 // deployPush cross-compiles this tree for the host target and atomically
 // installs it at the host's evener path. The existing binary is untouched unless
-// the push fully succeeds.
-func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight) error {
+// the push fully succeeds. It returns the canonical install target so the caller
+// can record it as host.EvenerPath even when the registry did not configure one:
+// on a fresh host that target is the installer default ~/.local/bin/evener, and
+// discarding it left the manager probing the literal `evener`, which the
+// non-interactive PATH cannot resolve.
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	target, err := m.deployTarget(ctx, host, facts)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	stageDir, err := os.MkdirTemp("", "evener-deploy-")
 	if err != nil {
-		return fmt.Errorf("%w: host %q staging dir: %w", ErrDeploy, host.Name, err)
+		return "", fmt.Errorf("%w: host %q staging dir: %w", ErrDeploy, host.Name, err)
 	}
 	defer func() { _ = os.RemoveAll(stageDir) }()
 	stage := filepath.Join(stageDir, "evener")
@@ -272,16 +305,19 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 		}
 	}
 	if err := build(ctx, facts.OS, facts.Arch, stage); err != nil {
-		return fmt.Errorf("%w: host %q build %s/%s: %w", ErrDeploy, host.Name, facts.OS, facts.Arch, err)
+		return "", fmt.Errorf("%w: host %q build %s/%s: %w", ErrDeploy, host.Name, facts.OS, facts.Arch, err)
 	}
 
 	f, err := os.Open(stage)
 	if err != nil {
-		return fmt.Errorf("%w: host %q open staged binary: %w", ErrDeploy, host.Name, err)
+		return "", fmt.Errorf("%w: host %q open staged binary: %w", ErrDeploy, host.Name, err)
 	}
 	defer func() { _ = f.Close() }()
 
-	return m.pushBinary(ctx, host, target, f)
+	if err := m.pushBinary(ctx, host, target, f); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 
 // deployTarget resolves the absolute remote path the binary is installed to:
@@ -475,8 +511,11 @@ const installScriptURL = "https://raw.githubusercontent.com/prime-radiant-inc/ev
 // mapping is therefore:
 //
 //   - release: the stamped ReleaseTag (a Git SHA is never a substitute);
-//   - snapshot: the mutable `snapshot` tag, whose commit is pinned afterwards by
-//     the post-install version check;
+//   - snapshot: the mutable `snapshot` tag. It is not pinned by construction: the
+//     post-install version check accepts it only while the tag still points at
+//     this controller's commit. Once the tag moves past it, the check refuses
+//     terminally (ErrVersionMismatch) rather than re-fetching the same artifact
+//     forever;
 //   - dev/dirty: refused with ErrDeploy — there is no publishable identity to
 //     pin, so the operator must use the push path or Options.BuildBinary.
 //
@@ -539,8 +578,9 @@ func installerCommand(ref, bindir, shareBindir string) string {
 // deployInstaller is the fallback deploy path for a controller with no build
 // source: it runs the installer on the host pinned to the controller's own build
 // channel, then verifies the installed binary is the expected build before any
-// restart or attach. A tag that resolves to a wrong or moved artifact is a
-// failed verification (ErrDeploy), never an attach.
+// restart or attach. A tag that resolves to a wrong or moved artifact is a failed
+// verification (a terminal ErrVersionMismatch), never a retry of the same pinned
+// ref and never an attach.
 func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
 	if err != nil {
@@ -579,29 +619,39 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q installer verification: %w", ErrDeploy, host.Name, err)
 	}
+	// The installer ran, so the fetched artifact is a definitive answer rather
+	// than a transient deploy failure: an installed version other than the
+	// controller's means the pinned ref has moved past this controller's commit
+	// (for a snapshot build, the mutable `snapshot` tag). Refuse terminally as a
+	// version mismatch — ErrDeploy would be retried forever by the supervisor,
+	// re-downloading and re-rejecting the same unmatchable artifact.
 	if want := m.opts.controllerVersion(); lc.Version != want {
-		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact does not match the controller's build)", ErrDeploy, host.Name, lc.Version, want)
+		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact %q does not match the controller's build; a moved channel tag cannot be resolved by retrying)", ErrVersionMismatch, host.Name, lc.Version, want, ref)
 	}
 	return runTarget, nil
 }
 
-// existingInstallableEvener resolves the canonical path of the evener the host
-// already has installed — the running hub's own executable first, then whatever
+// existingInstallableEvener resolves the user-facing install path of the evener
+// the host already has — the running hub's own executable first, then whatever
 // `evener` resolves to on the remote PATH — or "" when none can be identified or
 // the found binary has a basename install.sh does not ship. It is how a deploy
 // with no configured evener_path keeps the existing install location instead of
 // writing to an unrelated default.
+//
+// It deliberately returns the path the installation names (argv[0] / the
+// `command -v` result), not the canonical file a symlink points at. install.sh
+// installs `bin/evener` as a symlink to `share/evener/bin/evener`, so feeding the
+// canonical target into installerDirs derived BINDIR from the real binary's
+// directory and produced nested paths like `share/evener/bin/share/evener/bin`
+// on every upgrade. Canonical resolution is used elsewhere (hubExecutableMatches)
+// for identity; here the layout must be preserved.
 func (m *Manager) existingInstallableEvener(ctx context.Context, host hostreg.Host) string {
-	if exe := m.currentHubExecutable(ctx, host); installableEvenerBasename(exe) {
+	if exe := m.currentHubExecutableName(ctx, host); installableEvenerBasename(exe) {
 		return exe
 	}
 	p, err := m.evenerOnPath(ctx, host)
-	if err != nil || p == "" {
+	if err != nil || p == "" || !installableEvenerBasename(p) {
 		return ""
 	}
-	resolved, err := m.resolveRemotePath(ctx, host, p)
-	if err != nil || !installableEvenerBasename(resolved) {
-		return ""
-	}
-	return resolved
+	return p
 }
