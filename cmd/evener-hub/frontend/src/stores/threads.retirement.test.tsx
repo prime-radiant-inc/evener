@@ -21,10 +21,10 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { Composer as ComposerView } from "../panes/session/composer/Composer";
 import { readDraft } from "../panes/session/composer/draft";
 import {
-  flushPendingTurnsProjectionForTests,
   resetPendingTurnsStoreForTests,
   subscribeComposerSubmissionCommitted,
 } from "../panes/session/composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "../protocol/client";
 import { FAKE_INITIALIZE_RESULT } from "../protocol/testing/fakeSocket";
 import type { WebSocketLike } from "../protocol/transport";
