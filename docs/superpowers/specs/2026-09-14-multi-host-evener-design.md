@@ -208,7 +208,7 @@ manager → remote hub source → fleet view → remote administration.
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
 
-## Tracked code follow-ups (rounds 7–15)
+## Tracked code follow-ups (rounds 7–16)
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
@@ -304,7 +304,11 @@ exact scope. None is a present fact.
   which re-resolves `ActiveSource`/revision under `credentialWrite` and refuses a
   no-longer-writable instance; the pusher calls it instead of the racy
   status-then-`apiKey/set` pair, and classifies `ActiveSource == "none"` by auth
-  scheme, skipping `AuthNone`.
+  scheme, skipping `AuthNone`. The `Provider` value is the instance name and is
+  passed **only** to the provider-keyed auth methods; `evener/instance/list`
+  takes `EmptyParams` (no provider parameter), so the pusher calls it **once**
+  with `{}` and joins the returned `InstanceEntry.Name` /
+  `AvailableProviders[].ID` against the local store keys.
 - **[07] host-routing origin guard (round 14, High)** — enforce the component-05
   loop guard at the one shared host-routing seam (the per-host client accessor or
   a `routeToHost(ctx, hostID, …)` helper) so a **remote-originated** request
@@ -354,3 +358,38 @@ exact scope. None is a present fact.
   waiter. Extends the round-14 bounded-`Close` item above (moving `rw.Close()` to
   a goroutine under `sync.Once.Do` strands every later caller behind the first
   `Close()`).
+- **[05] `HostCapabilities.LaunchResolved` (round 16)** — add the root-keyed field
+  `LaunchResolved map[string]appwire.LaunchConfigResolved` to
+  `HostCapabilities` (in `appsource`), populated by the per-root
+  `evener/launch/resolve` probe and keyed by the root path, so the probe table's
+  per-root effective-config call has somewhere to store its result; component 06
+  consumes it through `CapabilitySource.HostCapabilities`.
+- **[07] `ConfigRevision` exposure (round 16)** — add `ConfigRevision string` to
+  `AuthStatusResponse` and `InstanceEntry` (`appwire/types.go`), populated from
+  the host's effective credential-configuration revision (the same value the
+  host re-resolves under `credentialWrite`), so the controller has a defined
+  source for `ApiKeyConditionalSetParams.ExpectedRevision`: it captures the
+  value from the read-only `auth/status`/`instance/list` read it already makes
+  and echoes it, treating the zero value as "no revision fence" (the source
+  fence still applies). Without this field there is nothing to source the
+  required value from.
+- **[04] cold-bootstrap supervisor match (round 16)** — `sshconn` supervisor
+  detection on the cold-bootstrap path (where no listener exists) must accept a
+  systemd unit / launchd plist only when its definition **both** launches the
+  resolved `run_path` `hub` invocation **and** carries the configured `--addr`
+  (loopback-normalized); a definition that merely mentions `--addr` (e.g. in
+  `Description=`/`Environment=`) or merely contains `evener`/`hub` is not a
+  match. Several matches, or none, fall through to the ad hoc path. Trusted
+  explicit supervisor metadata recorded in the host entry may substitute for an
+  unidentifiable definition; an inferred substring match may not.
+- **[04] guarded compare-and-kill / start-identity pin (round 16)** —
+  `sshconn/version.go` restart must re-read the pid, recovered argv (with
+  `--config`/`--addr` agreeing with the entry's configured `config_path`/`addr`
+  after normalization), effective user, and listening socket in the **same**
+  remote command that issues the signal, refusing `ErrRestart` (no signal, no
+  relaunch) on any mismatch or on a field it cannot re-read; the shipped
+  `restartBare` (`kill <pid>`) is the unguarded form and is not acceptable.
+  Because the guarded form is still check-then-act, closing the PID-reuse window
+  requires a host-side start-identity pin — a `pidfd` for the identified
+  process, or its start time re-compared at signal time. Mirrors component-04
+  acceptance criterion 20.

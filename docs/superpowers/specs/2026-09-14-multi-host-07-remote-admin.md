@@ -407,9 +407,14 @@ is **identity on that name**, not a lookup through `Base`/`ProviderID`.
 Concretely:
 
 - The unit of the push is the local credentials-store entry (`Store.Names()`);
-  its key **is** the instance name and is sent verbatim as the wire `Provider`
-  value in `evener/auth/status`, `evener/instance/list`, and
-  `evener/auth/apiKey/conditionalSet`.
+  its key **is** the instance name. It is sent verbatim as the wire `Provider`
+  value **only to the two provider-keyed auth methods** — `evener/auth/status`
+  and `evener/auth/apiKey/conditionalSet`. `evener/instance/list` accepts
+  `EmptyParams` and has no provider/instance parameter, so the pusher calls it
+  **once** with `{}` and joins the returned entries against the store keys
+  (`InstanceEntry.Name` for the explicit-instance match,
+  `AvailableProviders[].ID` for the implicit-provider fallback — both below);
+  the instance name is never passed to `instance/list`.
 - The remote resolves `Provider` the way `hubAuthController.Status` does
   (`app_auth.go`): first `registry.Instance(name)` (an explicit instance), then
   the implicit-provider fallback `registry.Provider(name)` when that provider is
@@ -518,10 +523,31 @@ post-write `AuthStatusResponse`), is the surface the push report reads: a
 `skipped` classification is delivered as a successful typed response, distinct
 from a wire error (`failed`). `evener/auth/status` is then read only to render
 the report, never to gate the write.
+
+**Where `ExpectedRevision` comes from (required, defined source).** The
+`ExpectedRevision` the controller sends is not invented: the read-only
+responses the pusher already makes expose the instance's configuration
+revision. `AuthStatusResponse` and `InstanceEntry` (`appwire/types.go`) each
+carry a `ConfigRevision string` — the same value the host re-resolves under
+`credentialWrite` (a digest/counter over the instance's effective credential
+configuration, stable while that configuration is unchanged). The controller
+captures it from the read-only `evener/auth/status` call it already makes for
+the report (and, for the implicit-provider fallback, from the joined
+`evener/instance/list` entry) **immediately before** the `conditionalSet`, and
+echoes that captured value as `ExpectedRevision`. This populates a request
+parameter only; it does not re-introduce a client-side gate, because the host
+compares the echoed value to its own under the lock and refuses on any change.
+A controller that has observed no revision (a first push, or a host response
+that omits the field) sends the zero value, which the host interprets as "no
+revision fence" — the source fence (`ExpectedSource`) still applies. A
+revision the controller did not observe is never fabricated.
+
 **Implementation status:** neither `evener/auth/apiKey/conditionalSet` nor the
-response field exists, and the 07c surface above is still the racy two-call
-form; the host-side conditional set is a tracked code follow-up (see the PR
-comment), not a present fact.
+response field exists, and neither `AuthStatusResponse` nor `InstanceEntry`
+exposes a `ConfigRevision` today (so there is presently nothing to source
+`ExpectedRevision` from); the 07c surface above is still the racy two-call
+form. The host-side conditional set and the `ConfigRevision` exposure are
+tracked code follow-ups (see the PR comment), not present facts.
 
 **Honest limitation.** `AuthStatusResponse` never returns the stored key, so the
 pusher cannot tell "same value" from "different value". `updated` is therefore
@@ -620,9 +646,12 @@ Decompose component 07 into four landable PRs.
 - Read the local store through `cfg.CredsStore` or
   `credentials.LoadStore(cmdutil.CredentialsPath())`; enumerate with `Names()`
   and `Get()` (`internal/credentials/store.go`).
-- Query the remote `evener/instance/list` through the proxy channel (and
-  `evener/auth/status` only to fill the report), and **write through the new
-  host-side `evener/auth/apiKey/conditionalSet`** with
+- Query the remote `evener/instance/list` once with `{}` through the proxy
+  channel (it takes `EmptyParams`; the join against the local store keys is on
+  the returned entries) and `evener/auth/status` per matched key to fill the
+  report and capture the instance's `ConfigRevision` (the `expectedRevision`
+  source above), and **write through the new host-side
+  `evener/auth/apiKey/conditionalSet`** with
   `{provider, value, expectedSource, expectedRevision}` — never the
   unconditional `evener/auth/apiKey/set`, which is not atomic with the
   no-clobber check. The host performs the classification and the write inside
@@ -740,10 +769,15 @@ receives a key, and the controller writes nothing.
 - **Push table test:** a fake remote that records `apiKey/conditionalSet` calls
   and reports scripted `status`/`instance/list`; assert the
   added/updated/skipped/failed matrix (a `skipped` arrives as a successful typed
-  response, not a wire error), that `apiKey/clear` is never called, that no
-  conditional set is issued for an
-  `api_key`/`credential_headers`/`env:`-resolving or OAuth/ADC instance, and
-  that remote-only instances survive (fake host store compared before/after).
+  response, not a wire error), that `apiKey/clear` is never called, that
+  **every matched store key is routed through `apiKey/conditionalSet`** — the
+  controller never preflight-skips, because the classification is the host's
+  atomic operation — and that an
+  `api_key`/`credential_headers`/`env:`-resolving or OAuth/ADC instance is
+  driven through the same call and asserted as a **typed `skipped` response**
+  (scripted by the fake host, matching the classification table above) rather
+  than skipped controller-side, and that remote-only instances survive (fake
+  host store compared before/after).
 - **Secret hygiene:** assert no key value appears in the push response, in the
   controller log output, or in a rendered error, reusing the secret-marked
   registry (`envvars/envvars.go`, `Secret`) and `redactEnvSecrets`

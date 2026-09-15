@@ -274,6 +274,9 @@ type HostCapabilities struct {
     Features        appwire.FeatureSet
     OS, Arch        string // component 04 preflight, not AppWire
     LaunchGlobal    appwire.LaunchConfigLayer
+    // per-root effective config: `Roots[i]` -> `evener/launch/resolve` result
+    // for that root (probe row below); empty when a root has no effective layer
+    LaunchResolved  map[string]appwire.LaunchConfigResolved
     Models          appwire.ModelListResponse
     Plugins         appwire.PluginListResponse
     Auth            appwire.AuthListResponse
@@ -292,7 +295,7 @@ Probe calls and their types:
 |---|---|---|
 | protocol / hub version / features | the attach handshake component 04 already performed (`InitializeResponse`, captured by component 04 and exposed via `Channel.Handshake()`; `appwire.Client` has no `Features()` accessor) plus the preflight facts — **not** a second `initialize` | `InitializeResponse` (`appwire/types.go`) |
 | OS/arch | component-04 preflight (no RPC — see gap above) | — |
-| effective launch config | `evener/launch/resolve` per root | `LaunchConfigResolved` (`appwire/types.go`) |
+| effective launch config | `evener/launch/resolve` per root, result keyed by that root path | `LaunchConfigResolved` (`appwire/types.go`), stored in `HostCapabilities.LaunchResolved[root]` |
 | global launch layer | `evener/launch/getLayer` `layer:"global"` | `LaunchConfigLayer` (`appwire/types.go`) — this method returns `LaunchConfigLayer`, **not** `LaunchConfigResolved` (`appwire/protocol.go:179`), matching `HostCapabilities.LaunchGlobal` |
 | available models | `model/list` | `ModelListResponse` (`appwire/types.go`) |
 | plugin inventory | `evener/plugin/list` (+ `evener/marketplace/list` if needed) | `PluginListResponse` (`appwire/types.go`) |

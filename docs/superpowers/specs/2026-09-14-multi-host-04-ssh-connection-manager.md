@@ -1060,14 +1060,23 @@ deploy landed.
   once the supervisor later starts its own instance. Detection must therefore
   match **unit definitions**, not only active units: on systemd, enumerate with
   `systemctl [--user] list-unit-files` (or `list-units --all`) rather than
-  `list-units`, and accept a unit whose definition launches the resolved hub
-  executable (or names the configured `--addr`); on launchd, match the plist
-  whose `ProgramArguments` name the hub executable or `--addr`. The
-  exactly-one-candidate refusal still applies: an ambiguous match falls through
-  to the ad hoc path. The address-ownership check remains required whenever a
-  listener exists (the restart path); on a genuinely stopped host the
-  unit-definition match plus the "refuse to start when a hub already owns the
-  address" pre-check (`runningKnown`) is the substitute.
+  `list-units`; on launchd, inspect the installed plists. A definition is a
+  match **only when it both (a) launches the resolved hub executable running
+  the hub subcommand — the same `run_path` + `hub` tokenization checks 1–4
+  apply to a recovered argv — and (b) carries an `--addr` that, after the
+  loopback normalization above, equals the configured address** (systemd
+  `ExecStart`; launchd `ProgramArguments`). A definition that merely mentions
+  the configured `--addr` (e.g. in `Description=`/`Environment=`, or an
+  unrelated process's flag) or merely names a path containing `evener`/`hub` is
+  **not** a match: without both facts it can select and start an unrelated
+  service. The exactly-one-candidate refusal still applies: several matches, or
+  none, fall through to the ad hoc path. When a supervisor cannot be identified
+  from such a definition, trusted explicit supervisor metadata (an operator-set
+  label/unit name recorded in the host entry) may be used instead, but an
+  inferred substring match may not. The address-ownership check remains
+  required whenever a listener exists (the restart path); on a genuinely stopped
+  host the unit-definition match above plus the "refuse to start when a hub
+  already owns the address" pre-check (`runningKnown`) is the substitute.
 
   **Limit: identification and signal are separate host commands, so there is a
   PID-reuse window.** Every check above is its own command over the ssh seam —
@@ -1456,6 +1465,19 @@ with the remote hub and its daemons still running.
 19. The supervised darwin restart passes `gui/<numeric-uid>/<label>` as one
     bare-safe word (uid from preflight), and a label outside the bare-safe set
     falls through to the ad hoc path; no `$(id -u)` reaches the remote shell.
+20. Restart safety is hardened against the identification/signal PID-reuse
+    window. The signal is a **guarded compare-and-kill**: the pid, recovered
+    argv (with `--config`/`--addr` agreeing with the entry's configured
+    `config_path`/`addr` after loopback normalization), effective user, and
+    listening socket are re-read in the *same* remote command that issues the
+    signal, and the signal goes out only on a full match; any mismatch — or any
+    field that cannot be re-read — refuses with `ErrRestart`, emitting no signal
+    and no relaunch. The bare `restartBare` (`kill <pid>`, `sshconn/version.go`)
+    is not acceptable. Because even a guarded compare-and-kill is still
+    check-then-act, the PID-reuse window is closed only by a host-side
+    start-identity pin — a `pidfd` for the identified process, or its start time
+    re-compared at signal time — and one of those two forms is required. This
+    criterion makes checks 1–5 of §"Stop/restart mechanics" testable end to end.
 
 ## PR size estimate (LOC)
 
