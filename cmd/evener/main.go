@@ -412,8 +412,12 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 			return runUpgrade(args, stdout, stderr)
 		},
 		plugin: runPlugin,
-		hub: func(args []string, _ io.Reader, _ io.Writer, stderr io.Writer) error {
-			if code := hubcmd.Run(args, nil, nil, stderr); code != 0 {
+		hub: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			// The hub's attach subcommand bridges AppWire over this process's
+			// stdin/stdout, so they must be threaded through rather than dropped:
+			// nil makes it fall back to os.Stdin/os.Stdout, which breaks callers
+			// that supply their own streams.
+			if code := hubcmd.Run(args, stdin, stdout, stderr); code != 0 {
 				return subcommandExitError(code)
 			}
 			return nil

@@ -2,7 +2,9 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -155,6 +157,81 @@ func TestLoopbackAddrRewritesWildcardBinds(t *testing.T) {
 		if got := loopbackAddr(tc.in); got != tc.want {
 			t.Errorf("loopbackAddr(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"localhost", true},
+		{"10.0.0.1", false},
+		{"example.com", false},
+		{"0.0.0.0", false},
+	} {
+		if got := isLoopbackHost(tc.host); got != tc.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
+// The bridge carries the hub's capability token over an unencrypted ws://
+// connection, so an address that would leave the host must be refused rather
+// than dialed.
+func TestAttachRefusesNonLoopbackAddr(t *testing.T) {
+	root := t.TempDir()
+	if _, err := hubedge.LoadOrCreateAuthToken(root); err != nil {
+		t.Fatalf("seed auth token: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	deps := defaultMainDeps()
+	deps.stdin = strings.NewReader("")
+	deps.stdout = &stdout
+	deps.loadConfig = func(string) (Config, error) {
+		return Config{Addr: "10.1.2.3:9180", HubStateRoot: root}, nil
+	}
+	cfgPath := filepath.Join(root, "hub.toml")
+
+	// Both the configured address and an explicit --addr must be checked.
+	for _, args := range [][]string{
+		{"--stdio", "--config", cfgPath},
+		{"--stdio", "--addr", "example.com:9180", "--config", cfgPath},
+	} {
+		err := runAttach(args, &stderr, deps)
+		if !errors.Is(err, errNonLoopbackAddr) {
+			t.Fatalf("runAttach(%v) = %v, want errNonLoopbackAddr", args, err)
+		}
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("refusal wrote to stdout: %q", stdout.String())
+	}
+}
+
+// A canceled context is a requested shutdown, and nothing else can end a pump
+// parked on stdio (stdioStream.Close is a no-op), so pumpBoth must return nil
+// promptly rather than the cancellation or a hang.
+func TestPumpBothReturnsCleanlyOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	a, b := net.Pipe()
+	defer a.Close() //nolint:errcheck // test cleanup
+	defer b.Close() //nolint:errcheck // test cleanup
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pumpBoth(ctx, appwire.NewStreamTransport(a), appwire.NewStreamTransport(b))
+	}()
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("pumpBoth after cancel = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pumpBoth did not return after cancellation")
 	}
 }
 

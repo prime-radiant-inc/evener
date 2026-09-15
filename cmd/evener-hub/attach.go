@@ -38,11 +38,21 @@ type attachOptions struct {
 	configPath string
 }
 
+// errNonLoopbackAddr refuses a hub address that would carry the capability token
+// off the host. The bridge dials an unencrypted ws:// URL, so anything but
+// loopback would put the hub's master token on the wire in cleartext.
+var errNonLoopbackAddr = errors.New("attach requires a loopback hub address")
+
 // attachDialTimeout bounds the WebSocket handshake. A hub that accepts the TCP
 // connection but never completes the upgrade would otherwise hang the bridge
 // forever with no way out; the pump that follows is bounded by the caller's
 // context (a signal), not by this.
 const attachDialTimeout = 15 * time.Second
+
+// attachDialClient disables proxying for the handshake. http.DefaultClient
+// honors HTTP_PROXY, which would hand the hub's capability token to the proxy's
+// host instead of the loopback hub.
+var attachDialClient = &http.Client{Transport: &http.Transport{Proxy: nil}}
 
 func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) {
 	opts := attachOptions{configPath: DefaultConfigPath()}
@@ -91,6 +101,11 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
 		addr = cfg.Addr
 	}
 	addr = loopbackAddr(addr)
+	if host, _, splitErr := net.SplitHostPort(addr); splitErr != nil || !isLoopbackHost(host) {
+		err := fmt.Errorf("%w: %q", errNonLoopbackAddr, addr)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	token, err := readAuthToken(cfg.HubStateRoot)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -129,7 +144,7 @@ func proxyAppWire(ctx context.Context, addr, token string, stream appwire.Transp
 	hubURL := "ws://" + addr + "/rpc"
 	dialCtx, cancel := context.WithTimeout(ctx, attachDialTimeout)
 	defer cancel()
-	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, http.DefaultClient, header)
+	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, attachDialClient, header)
 	if err != nil {
 		return fmt.Errorf("no hub at %s: %w", addr, err)
 	}
@@ -143,13 +158,34 @@ func pumpBoth(ctx context.Context, a, b appwire.Transport) error {
 	errs := make(chan error, 2)
 	go pumpTransport(ctx, a, b, errs)
 	go pumpTransport(ctx, b, a, errs)
-	err := <-errs
+	var err error
+	select {
+	case err = <-errs:
+	case <-ctx.Done():
+		// Neither Close below can unblock a pump parked on stdin: stdioStream's
+		// Close is a no-op because the stream is the process's own. Waiting only
+		// on errs therefore left a signaled bridge unreapable except by SIGKILL.
+		err = ctx.Err()
+	}
 	_ = a.Close()
 	_ = b.Close()
-	if err == nil || errors.Is(err, io.EOF) || websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+	// A canceled context is a requested shutdown, not a failure: an operator
+	// pressing Ctrl-C on a healthy bridge must not get a diagnostic and a
+	// nonzero exit. A clean EOF and a normal WebSocket close are the same.
+	if cleanShutdown(ctx, err) {
 		return nil
 	}
 	return err
+}
+
+// cleanShutdown reports whether err ends the bridge normally: the operator
+// canceled it, the peer closed the stream cleanly, or the WebSocket closed with
+// a normal status. Anything else is a failure worth reporting.
+func cleanShutdown(ctx context.Context, err error) bool {
+	return ctx.Err() != nil ||
+		err == nil ||
+		errors.Is(err, io.EOF) ||
+		websocket.CloseStatus(err) == websocket.StatusNormalClosure
 }
 
 func pumpTransport(ctx context.Context, from, to appwire.Transport, errs chan<- error) {
@@ -217,4 +253,13 @@ func loopbackAddr(addr string) string {
 		return net.JoinHostPort("::1", port)
 	}
 	return addr
+}
+
+// isLoopbackHost reports whether host names this machine's loopback interface.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
