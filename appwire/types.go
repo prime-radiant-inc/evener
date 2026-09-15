@@ -3094,6 +3094,13 @@ type InstanceEditParams struct {
 	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
 	CredentialHeader      string            `json:"credentialHeader,omitempty"`
 	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Name (InstanceEntry.endpointFingerprint), checked the way
+	// AuthApiKeySetParams's is. The form was opened on the row the client
+	// listed, so a name another client has re-pointed since must not have its
+	// replacement instance edited. Empty asserts nothing, which is what the TUI
+	// and older clients send.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.

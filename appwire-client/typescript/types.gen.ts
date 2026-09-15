@@ -579,6 +579,7 @@ export interface InstanceEditParams {
   clearApiKeyEnv?: boolean;
   credentialHeader?: string;
   clearCredentialHeader?: boolean;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface InstanceEntry {

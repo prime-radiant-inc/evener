@@ -371,13 +371,24 @@ export function InstanceSheet({
     setFormError(null);
     setBusy(true);
     if (params.newName !== undefined) setRenamingFrom(instance);
+    // The server-side half of the stale-draft guard. The identity check above
+    // compares against the store's listing, which a concurrent change can
+    // outdate between that check and the RPC; the hub re-checks this assertion
+    // under its own locks, so a name re-pointed in that window is refused
+    // rather than edited onto its replacement. A row the hub cannot key serves
+    // no fingerprint, and the sheet has to stay usable during that outage, so
+    // nothing is sent then: the field is optional and an absent assertion means
+    // "checked nothing", which is the pre-fingerprint behaviour the hub keeps
+    // for the TUI and older clients.
+    const fingerprint = instance.endpointFingerprint ?? "";
+    const request = fingerprint === "" ? params : { ...params, expectedEndpointFingerprint: fingerprint };
     try {
       // The store's verdict, not the response, says what landed: a refresh
       // that started after this save answers first, and the store discards
       // this response as superseded. Its listing is then a document nothing
       // holds, so a toast naming it, a reseed from it, or a steer onto a name
       // it alone reports would all show the user a state that is not there.
-      const applied = await credentialsStore.getState().edit(params);
+      const applied = await credentialsStore.getState().edit(request);
       // Except when the store's own list holds this save's rename: the same
       // instance, now wearing the name it was given. Holding the name is not
       // enough on its own - a rename frees a name that any other instance can
