@@ -24,7 +24,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
-import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../scripts/sdk/module-specifiers.mjs";
+import { isLoadedAtRuntime, moduleSpecifierSites, parseSource, walkImportGraph } from "../../scripts/sdk/module-specifiers.mjs";
 
 const self = fileURLToPath(import.meta.url);
 const scriptsDir = path.dirname(self);
@@ -59,16 +59,17 @@ export interface WalkResult {
 
 // Walk each entry's module graph, resolving every specifier the way tsx does
 // and stopping at the first node_modules boundary: what is inside a dependency
-// is not this gate's business.
+// is not this gate's business. The graph walk itself is shared with the
+// package-test gate; the resolve-and-record is the part particular to this one.
+const inNodeModules = (file: string) => file.includes(`${path.sep}node_modules${path.sep}`);
+
 export function walkScriptImports(entries: string[], repoRoot: string, resolve: Resolve = resolveThroughTsx): WalkResult {
-	const walked = new Set<string>();
 	const failures: ResolutionFailure[] = [];
-	const walk = (file: string) => {
-		if (walked.has(file)) return;
-		walked.add(file);
-		if (file.includes(`${path.sep}node_modules${path.sep}`)) return;
-		for (const specifier of runtimeSpecifiers(file)) {
-			if (specifier.startsWith("node:")) continue;
+	const reached = walkImportGraph(
+		entries,
+		(file: string) => runtimeSpecifiers(file),
+		(file: string, specifier: string) => {
+			if (specifier.startsWith("node:")) return null;
 			let resolved: string;
 			try {
 				resolved = resolve(file, specifier);
@@ -78,16 +79,14 @@ export function walkScriptImports(entries: string[], repoRoot: string, resolve: 
 					specifier,
 					reason: (error as Error).message.split("\n")[0],
 				});
-				continue;
+				return null;
 			}
-			if (path.isAbsolute(resolved)) walk(resolved);
-		}
-	};
-	for (const entry of entries) walk(entry);
-	return {
-		failures,
-		reached: [...walked].filter((file) => !file.includes(`${path.sep}node_modules${path.sep}`)),
-	};
+			// Followed only when it lands on a first-party file; a dependency's
+			// own graph is not this gate's business.
+			return path.isAbsolute(resolved) && !inNodeModules(resolved) ? resolved : null;
+		},
+	);
+	return { failures, reached: [...reached] };
 }
 
 // The scripts/*.mts tools under `dir`, excluding this checker itself.

@@ -9,11 +9,11 @@
 // way of panes/spawn/usePluginPreview.ts -- is still a value the tarball has
 // to provide. Over-inclusion only strengthens the check: every name here is
 // something some consumer imports.
-import { readdirSync, readFileSync } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import ts from "typescript";
 import { moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
-import { CONSUMER_TREES, isTestFile, SKIPPED_DIRS, SOURCE_EXTENSIONS } from "../../../scripts/sdk/source-files.mjs";
+import { CONSUMER_TREES, isTestFile, sourceFiles } from "../../../scripts/sdk/source-files.mjs";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
 
@@ -62,23 +62,12 @@ export function packageValuesIn(source, file, problems) {
   return bySpecifier;
 }
 
-// Tests are not shipped and are not consumers of the tarball, which the
-// isTestFile filter below handles. Directory names are not the place to say so:
+// Tests are not shipped and are not consumers of the tarball, so isTestFile
+// filters them out of the walk. A directory name is not the place to say so:
 // skipping every directory called `testing` also skipped the app's own
-// src/stores/testing and src/panes/session/testing, which are ordinary source
-// that happens to serve tests -- and the package's own testing/ tree is not
-// under any of these directories to begin with.
-function sources(dir, found = []) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (!SKIPPED_DIRS.has(entry.name)) sources(full, found);
-    } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(extname(entry.name)) && !isTestFile(entry.name)) {
-      found.push(full);
-    }
-  }
-  return found;
-}
+// src/stores/testing and src/panes/session/testing, ordinary source that
+// happens to serve tests.
+const consumerSources = (dir) => sourceFiles(dir, { keep: (name) => !isTestFile(name) });
 
 // What this repository's consumers do with each published specifier: the
 // runtime VALUES they name, and whether they reach the module at all.
@@ -92,7 +81,7 @@ export function consumerPackageUsage(repoRoot) {
   const usage = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, { values: new Set(), used: false }]));
   const problems = [];
   for (const tree of CONSUMER_TREES) {
-    for (const file of sources(join(repoRoot, tree))) {
+    for (const file of consumerSources(join(repoRoot, tree))) {
       const source = parse(file, readFileSync(file, "utf8"));
       for (const site of moduleSpecifierSites(ts, source)) {
         const entry = usage.get(site.text);

@@ -177,3 +177,34 @@ export function isLoadedAtRuntime(site) {
   if (site.bindings.length === 0) return true;
   return site.bindings.some((binding) => !binding.typeOnly);
 }
+
+// Whether a site brings in named bindings, as opposed to taking the module
+// whole. A namespace import, a side-effect import, a bare re-export, a
+// require, a dynamic import and a mock call all name no members to map onto
+// the package name -- only a named import/re-export or a default import does.
+const KINDS_WITH_BINDINGS = new Set(["import-named", "import-default", "export-from"]);
+
+export function namesBindings(site) {
+  return KINDS_WITH_BINDINGS.has(site.kind);
+}
+
+// A depth-first walk of a module graph from `entries`, each file visited once.
+// `specifiersOf(file)` yields the specifiers a file loads; `follow(file,
+// specifier)` returns the next file to descend into, or null to stop -- a bare
+// specifier, a node_modules boundary or an import the caller records and does
+// not follow. The two graph gates (the native scripts' resolution check and
+// the package's test-file sweep) differ only in those two callbacks. Returns
+// the set of files reached.
+export function walkImportGraph(entries, specifiersOf, follow) {
+  const walked = new Set();
+  const visit = (file) => {
+    if (walked.has(file)) return;
+    walked.add(file);
+    for (const specifier of specifiersOf(file)) {
+      const next = follow(file, specifier);
+      if (next) visit(next);
+    }
+  };
+  for (const entry of entries) visit(entry);
+  return walked;
+}

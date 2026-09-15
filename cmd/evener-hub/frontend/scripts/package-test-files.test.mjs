@@ -149,8 +149,8 @@ test("describeAppImports names every line that reaches into the app", () => {
   };
   const message = describeAppImports(files, (file) => sources[file], dir);
   assert.match(message, /must not import from the app/);
-  assert.match(message, /a\.test\.ts: import Session/);
-  assert.match(message, /b\.ts: import type/);
+  assert.match(message, /a\.test\.ts: imports .*panes\/session\/Session/);
+  assert.match(message, /b\.ts: imports .*shell\/palette\/commands/);
 });
 
 test("describeAppImports catches a side-effect import, a require and a dynamic import", () => {
@@ -162,10 +162,10 @@ test("describeAppImports catches a side-effect import, a require and a dynamic i
     [files[3]]: 'export { x } from "../../cmd/evener-hub/frontend/src/panes/session/Session";\n',
   };
   const message = describeAppImports(files, (file) => sources[file], dir);
-  assert.match(message, /a\.ts: import "/);
-  assert.match(message, /b\.ts: const s = require\(/);
-  assert.match(message, /c\.ts: const m = await import\(/);
-  assert.match(message, /d\.ts: export \{ x \} from/);
+  assert.match(message, /a\.ts: imports .*testSetup/);
+  assert.match(message, /b\.ts: imports .*stores\/threads/);
+  assert.match(message, /c\.ts: imports .*shell\/clientContext/);
+  assert.match(message, /d\.ts: imports .*panes\/session\/Session/);
 });
 
 test("describeAppImports does not fire on a comment that merely names the app path", () => {
@@ -332,9 +332,9 @@ test("the package root does not stand in for a specifier below it", () => {
   // index.ts/testing/fakeClient, which is not a path, so accepting the root
   // as a prefix match said an unresolvable import was aliased.
   const subpath = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
-  assert.match(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client"])), /does not alias/);
-  assert.equal(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client/testing"])), "");
-  assert.equal(describeUnaliasedImports(subpath, new Set(["@evener/appwire-client/testing/fakeClient"])), "");
+  assert.match(describeUnaliasedImports(subpath, new Map([["@evener/appwire-client", { servesSubpaths: false }]])), /does not alias/);
+  assert.equal(describeUnaliasedImports(subpath, new Map([["@evener/appwire-client/testing", { servesSubpaths: true }]])), "");
+  assert.equal(describeUnaliasedImports(subpath, new Map([["@evener/appwire-client/testing/fakeClient", { servesSubpaths: false }]])), "");
 });
 
 test("with the config's targets in hand, a directory alias serves subpaths and a file alias does not", () => {
@@ -368,12 +368,12 @@ test("describeUnaliasedImports excuses vitest and anything the config aliases", 
     ["react", ["b.test.tsx"]],
     ["@testing-library/react", ["b.test.tsx"]],
   ]);
-  assert.equal(describeUnaliasedImports(bare, new Set(["react", "@testing-library/react"])), "");
+  assert.equal(describeUnaliasedImports(bare, new Map([["react", { servesSubpaths: true }], ["@testing-library/react", { servesSubpaths: true }]])), "");
 });
 
 test("describeUnaliasedImports names the specifier and the file that imports it", () => {
   const bare = new Map([["typescript", ["scripts/consumer-value-imports.mjs"]]]);
-  const problem = describeUnaliasedImports(bare, new Set(["react"]));
+  const problem = describeUnaliasedImports(bare, new Map([["react", { servesSubpaths: true }]]));
   assert.match(problem, /typescript, imported by scripts\/consumer-value-imports\.mjs/);
   assert.match(problem, /CI's web job/);
 });
@@ -419,8 +419,8 @@ test("a subpath alias satisfies its own specifier without the root being aliased
   // Reading only the first two segments looked for "@evener/appwire-client",
   // so a tree aliasing just the testing subpath reported a false offender.
   const bare = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
-  assert.equal(describeUnaliasedImports(bare, new Set(["@evener/appwire-client/testing"])), "");
-  assert.match(describeUnaliasedImports(bare, new Set(["@evener/appwire-client/other"])), /does not alias/);
+  assert.equal(describeUnaliasedImports(bare, new Map([["@evener/appwire-client/testing", { servesSubpaths: true }]])), "");
+  assert.match(describeUnaliasedImports(bare, new Map([["@evener/appwire-client/other", { servesSubpaths: true }]])), /does not alias/);
 });
 
 test("an erased import does not demand an alias", () => {

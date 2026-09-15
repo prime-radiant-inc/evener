@@ -20,12 +20,12 @@
 // missing export, not something to paper over with a deep path.
 
 import { createRequire } from "node:module";
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { moduleSpecifierSites, parseSource } from "./module-specifiers.mjs";
+import { moduleSpecifierSites, namesBindings, parseSource } from "./module-specifiers.mjs";
 import { resolveSourceFile } from "./resolve-source.mjs";
-import { CONSUMER_TREES, SKIPPED_DIRS, SOURCE_EXTENSIONS } from "./source-files.mjs";
+import { CONSUMER_TREES, SKIPPED_DIRS, sourceFiles } from "./source-files.mjs";
 
 const checkoutRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -77,32 +77,16 @@ Exits 2, writing nothing, if an import names a symbol the package does not
 publish — fix the package's exports first.`);
 }
 
-function walk(dir, layout, out) {
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (SKIPPED_DIRS.has(entry.name)) continue;
-      if (full === layout.seamDir) continue;
-      walk(full, layout, out);
-    } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(path.extname(entry.name))) {
-      out.push(full);
-    }
-  }
-  return out;
-}
+// Every source file in a tree, the shared walker skipping SKIPPED_DIRS and, on
+// top of that, the A3 seam directory: its stubs re-export the package and are
+// not something to rewrite.
+const treeSourceFiles = (tree, layout) =>
+  sourceFiles(tree, { skipDir: (name, full) => SKIPPED_DIRS.has(name) || full === layout.seamDir });
 
-// Resolve a relative specifier the way the bundlers do, enough to tell whether
-// it lands inside the package or the seam. TypeScript only: this tool never
+// A relative specifier is resolved with resolveSourceFile to tell whether it
+// lands inside the package or the seam. TypeScript only: this tool never
 // resolves a .js or .mjs import into the package.
-function resolveSpecifier(fromFile, specifier) {
-  return resolveSourceFile(fromFile, specifier, [".ts", ".tsx"]);
-}
+const PACKAGE_SOURCE_EXTENSIONS = [".ts", ".tsx"];
 
 // The package module a resolved path names: "errors", "testing/fakeClient",
 // "types.gen". Returns null for anything outside the package and the seam.
@@ -143,7 +127,7 @@ function exportedNames(file, seen = new Set()) {
       // `export * from "./x"` / `export type * from "./x"`: every name x
       // exports becomes a name this module exports.
       if (!statement.moduleSpecifier) continue;
-      const target = resolveSpecifier(file, statement.moduleSpecifier.text);
+      const target = resolveSourceFile(file, statement.moduleSpecifier.text, PACKAGE_SOURCE_EXTENSIONS);
       if (!target) continue;
       for (const name of exportedNames(target, seen)) names.add(name);
       continue;
@@ -229,20 +213,17 @@ function mergedMembers(entries, where, conflicts) {
 function mergeDuplicateImports(file, text, conflicts) {
   const source = parseSource(ts, file, text);
   const groups = new Map();
-  for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
-    const specifier = statement.moduleSpecifier.text;
-    if (!specifier.startsWith(PACKAGE_NAME)) continue;
-    const clause = statement.importClause;
-    if (!clause || clause.name || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) continue;
-    const key = `${specifier}\t${clause.isTypeOnly ? "type" : "value"}`;
-    const members = clause.namedBindings.elements.map((element) => ({
-      local: element.name.text,
-      imported: (element.propertyName ?? element.name).text,
-      typeOnly: Boolean(element.isTypeOnly),
-    }));
+  for (const site of moduleSpecifierSites(ts, source)) {
+    // Only a named import of the package, and read through the shared reader so
+    // the member shapes are not hand-parsed a second time. A named import's
+    // specifier node sits directly under its ImportDeclaration; an inline
+    // `import("x").Name` is also kind import-named but its parent is not one.
+    if (site.kind !== "import-named" || !site.text.startsWith(PACKAGE_NAME)) continue;
+    const statement = site.node.parent;
+    if (!ts.isImportDeclaration(statement)) continue;
+    const key = `${site.text}\t${site.typeOnly ? "type" : "value"}`;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push({ statement, members, typeOnly: Boolean(clause.isTypeOnly), specifier });
+    groups.get(key).push({ statement, members: site.bindings, typeOnly: site.typeOnly, specifier: site.text });
   }
 
   const indent = indentUnitOf(text);
@@ -323,84 +304,70 @@ function main() {
   let statementsRewritten = 0;
 
   for (const tree of layout.trees) {
-    for (const file of walk(tree.dir, layout, [])) {
+    for (const file of treeSourceFiles(tree.dir, layout)) {
       const original = readFileSync(file, "utf8");
       const source = parse(file);
       const edits = [];
       for (const site of moduleSpecifierSites(ts, source)) {
         const specifier = site.text;
         if (!specifier.startsWith(".")) continue;
-        const resolved = resolveSpecifier(file, specifier);
+        const resolved = resolveSourceFile(file, specifier, PACKAGE_SOURCE_EXTENSIONS);
         if (!resolved) continue;
         const moduleID = packageModuleOf(resolved, layout);
         if (moduleID === null) continue;
 
         const where = `${path.relative(root, file)}:${source.getLineAndCharacterOfPosition(site.node.getStart(source)).line + 1}`;
-        // A site that names no binding cannot be mapped onto the root: there
-        // is nothing to look up, and `@evener/appwire-client` is a different
-        // module from the one the author wrote. Only the published subpath can
-        // stand in for a whole module.
-        const wholeModule = [
-          "import-namespace",
-          "import-side-effect",
-          "export-namespace-from",
-          "export-star-from",
-          "dynamic-import",
-          "require",
-          "require-equals",
-          "mock-call",
-        ].includes(
-          site.kind,
-        );
+        // A site that names no binding cannot be mapped onto the root: there is
+        // nothing to look up, and only the published subpath can stand in for a
+        // whole module.
+        const wholeModule = !namesBindings(site);
         const named = site.bindings.map((binding) => binding.imported);
-        let target = null;
+        // How this module maps onto a package specifier: what a whole-module
+        // load becomes (null where the package publishes no such subpath), and
+        // the (published names -> specifier) pairs a named import may satisfy,
+        // tried in order so a name both the root and ./docContent publish maps
+        // to the root. testing/<module> is its own subpath; index and docContent
+        // are the root under another name and the one published subpath; every
+        // other module reaches the package only through the root.
+        let dest;
         if (moduleID.startsWith("testing/")) {
-          // The testing subpath serves its own module, so a name it brings in
-          // has to be an export of that module -- validated the same way the
-          // root and docContent named imports are, against the file the
-          // specifier actually resolved to. A whole-module site names nothing
-          // to check; the subpath is the module.
           const subpath = TESTING_PREFIX + moduleID.slice("testing/".length);
-          if (site.kind === "import-default") {
-            problems.push(`${where}: default import of "${moduleID}"; the package publishes no default export`);
-          } else if (wholeModule) {
-            target = subpath;
-          } else if (named.length === 0) {
-            problems.push(
-              `${where}: empty named import of "${moduleID}" binds nothing, so there is nothing to map onto ${subpath}`,
-            );
-          } else {
-            const testingExports = exportedNames(resolved);
-            if (named.every((binding) => testingExports.has(binding))) target = subpath;
-            else {
-              const missing = named.filter((binding) => !testingExports.has(binding));
-              problems.push(`${where}: "${moduleID}" exports ${missing.join(", ")}, which ${subpath} does not publish`);
-            }
-          }
-        } else if (site.kind === "import-default") {
+          dest = { wholeModule: subpath, named: [[exportedNames(resolved), subpath]] };
+        } else if (moduleID === "index") {
+          dest = { wholeModule: PACKAGE_NAME, named: [[rootExports, PACKAGE_NAME]] };
+        } else if (moduleID === "docContent") {
+          dest = {
+            wholeModule: DOC_CONTENT_SUBPATH,
+            named: [
+              [rootExports, PACKAGE_NAME],
+              [docContentExports, DOC_CONTENT_SUBPATH],
+            ],
+          };
+        } else {
+          dest = { wholeModule: null, named: [[rootExports, PACKAGE_NAME]] };
+        }
+        const [primaryNames, primarySpecifier] = dest.named[0];
+        let target = null;
+        if (site.kind === "import-default") {
           problems.push(`${where}: default import of "${moduleID}"; the package publishes no default export`);
         } else if (wholeModule) {
-          // A namespace object, a re-export of everything, or a runtime load of
-          // one module: all of them need the module itself, and the package
-          // publishes two -- the root and ./docContent. `index` is the root
-          // under another name: both `.../typescript` and `.../typescript/index`
-          // resolve to index.ts, and refusing them said the root was not
-          // published.
-          if (moduleID === "index") target = PACKAGE_NAME;
-          else if (moduleID === "docContent") target = DOC_CONTENT_SUBPATH;
+          // A namespace object, a re-export of everything or a runtime load of
+          // one module all need the module itself; a module the package exposes
+          // no subpath for cannot be taken whole by name.
+          if (dest.wholeModule) target = dest.wholeModule;
           else problems.push(`${where}: ${site.kind} of "${moduleID}", which the package does not publish as a subpath`);
         } else if (named.length === 0) {
-          // `import {} from "./errors"` binds nothing: it has the semantics of
-          // a side-effect import, and every() over no members would have said
-          // the root satisfies it.
-          problems.push(`${where}: empty named import of "${moduleID}" binds nothing, so there is nothing to map onto ${PACKAGE_NAME}`);
-        } else if (named.every((binding) => rootExports.has(binding))) {
-          target = PACKAGE_NAME;
-        } else if (moduleID === "docContent" && named.every((binding) => docContentExports.has(binding))) {
-          target = DOC_CONTENT_SUBPATH;
+          // `import {} from "./errors"` binds nothing: it has the semantics of a
+          // side-effect import, and every() over no members would have said the
+          // specifier satisfies it.
+          problems.push(`${where}: empty named import of "${moduleID}" binds nothing, so there is nothing to map onto ${primarySpecifier}`);
         } else {
-          const missing = named.filter((binding) => !rootExports.has(binding));
-          problems.push(`${where}: "${moduleID}" exports ${missing.join(", ")}, which ${PACKAGE_NAME} does not publish`);
+          const match = dest.named.find(([published]) => named.every((name) => published.has(name)));
+          if (match) target = match[1];
+          else {
+            const missing = named.filter((name) => !primaryNames.has(name));
+            problems.push(`${where}: "${moduleID}" exports ${missing.join(", ")}, which ${primarySpecifier} does not publish`);
+          }
         }
         if (target === null) continue;
         edits.push({ start: site.node.getStart(source), end: site.node.getEnd(), target });
@@ -426,7 +393,7 @@ function main() {
     const conflicts = [];
     let mergedFiles = 0;
     for (const tree of layout.trees) {
-      for (const file of walk(tree.dir, layout, [])) {
+      for (const file of treeSourceFiles(tree.dir, layout)) {
         const merged = mergeDuplicateImports(file, pending.get(file) ?? readFileSync(file, "utf8"), conflicts);
         if (merged === null) continue;
         pending.set(file, merged);
