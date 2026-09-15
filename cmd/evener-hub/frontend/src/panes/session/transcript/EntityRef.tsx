@@ -2,8 +2,6 @@ import {
   activityDelegateState,
   type EntityView,
   entityOpenTarget,
-  humanizeInterval,
-  humanizeSeconds,
   parseConditionText,
   sourceLabel,
 } from "@evener/appwire-client";
@@ -20,7 +18,7 @@ import { formatQuietAge, formatUsagePair } from "../chrome/activityFormat";
 import styles from "./entityref.module.css";
 import { openTranscript } from "./openTranscript";
 import { classifyJobStatus } from "./tools/subagentModuleStore";
-import { watchEventLabel } from "./watchEventLabel";
+import { watchTriggerPhrases } from "./watchConditionPhrase";
 
 export interface EntityRefProps {
   view?: EntityView;
@@ -181,26 +179,11 @@ interface WatchConditionContent {
 function watchConditionContent(condition: string | undefined, note: string | undefined): WatchConditionContent {
   if (!condition) return { note };
   const parsed = parseConditionText(condition, note);
-  const clauses: string[] = [];
-  if (parsed.outputMatch) clauses.push(`output matching “${parsed.outputMatch}”`);
-  if (parsed.afterSeconds !== undefined) clauses.push(`fires ${humanizeSeconds(parsed.afterSeconds)}`);
-  if (parsed.repeatSeconds !== undefined) clauses.push(`fires ${humanizeInterval(parsed.repeatSeconds)}`);
-  if (parsed.progressIntervalMS !== undefined) {
-    clauses.push(`heartbeat ${humanizeInterval(parsed.progressIntervalMS / 1000)}`);
-  }
-  if (parsed.events.length > 0) {
-    const names = parsed.events.map(watchEventLabel).join(", ");
-    const every = parsed.every === undefined ? "" : ` every ${parsed.every}`;
-    const wildcardEvery = parsed.every === undefined ? "" : ` (every ${parsed.every})`;
-    clauses.push(
-      parsed.events.length === 1 && parsed.events[0] === "*" ? `${names}${wildcardEvery}` : `events ${names}${every}`,
-    );
-  }
-  if (parsed.filterToolName || parsed.filterStatus) {
-    clauses.push(
-      `tool calls${parsed.filterToolName ? ` on ${parsed.filterToolName}` : ""}${parsed.filterStatus ? ` with ${parsed.filterStatus}` : ""}`,
-    );
-  }
+  // The trigger wording comes from the shared composer, so this card and the
+  // watch list word the same condition identically: a pattern reads as “ready”
+  // here exactly as it does in a list row, and the wildcard as "any event".
+  const { timer, bits } = watchTriggerPhrases(parsed);
+  const clauses = timer ? [timer, ...bits] : bits;
   return {
     note: note ?? parsed.note,
     summary: clauses.length > 0 ? clauses.join(" · ") : undefined,

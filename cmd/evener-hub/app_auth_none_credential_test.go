@@ -13,6 +13,7 @@ package hub
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -143,5 +144,51 @@ func TestAuthNoneInstance_EveryCredentialSurfaceAgrees(t *testing.T) {
 				t.Error("an auth-none instance requires no credential, so an absent one is nothing missing")
 			}
 		})
+	}
+}
+
+// The other half of the same rule: the surfaces agree that an auth-none
+// instance has no credential, so storing one under it is a write nothing
+// reads. noneAuth (llm/authenticators.go) sends no credential at all, and the
+// transport therefore never looks at what is in the store - a save reported as
+// successful would describe a credential the launch cannot use and leave the
+// secret under a name free to be re-pointed at a scheme that does read it.
+func TestAuthNoneInstance_ApiKeySetRefusesAKeyNothingReads(t *testing.T) {
+	auth, instances := newAuthNoneControllers(t, nil)
+
+	_, err := auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "ollama", Value: "sk-nothing-reads-this"})
+	if err == nil || !strings.Contains(err.Error(), "reads no API key") {
+		t.Fatalf("ApiKeySet(ollama) = %v, want the refusal for an instance that authenticates without a credential", err)
+	}
+	if v, ok := auth.creds.Get("ollama"); ok || v != "" {
+		t.Fatalf("credentials.toml[ollama] = %q/%v, want nothing stored", v, ok)
+	}
+	// And the pane's row still reads as configured: the refusal is about the
+	// write, not about the instance having lost a credential it never had.
+	if row := instanceListRow(t, instances, "ollama"); row.CredentialRequired {
+		t.Error("an auth-none instance requires no credential, so the refused key is nothing missing")
+	}
+}
+
+// The line is exactly auth = none, not "not bearer": optional-bearer sends the
+// stored key when there is one (optionalBearerAuth), so the key field the pane
+// offers that row is a write the transport reads.
+func TestAuthNoneInstance_ApiKeySetAcceptsAKeyOptionalBearerReads(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, t.TempDir(), writeProvidersToml(t, dir, `[providers.work-opt]
+base = "ollama"
+auth = "optional-bearer"
+`))
+
+	got, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-opt", Value: "sk-optional"})
+	if err != nil {
+		t.Fatalf("ApiKeySet(work-opt) = %v, want the key stored for an optional-bearer instance", err)
+	}
+	if v, ok := ctrl.creds.Get("work-opt"); !ok || v != "sk-optional" {
+		t.Fatalf("credentials.toml[work-opt] = %q/%v, want sk-optional/true", v, ok)
+	}
+	if !got.HasStoredFile || got.ActiveSource != "store" {
+		t.Fatalf("status = %+v, want a stored key the row reports", got)
 	}
 }

@@ -13,11 +13,13 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { AuthDevicePollResponse } from "../../../../protocol/types.gen";
+import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { copyText } from "./clipboard";
 import styles from "./oauthDialogs.module.css";
+import { refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
 
 const CLASS = {
@@ -57,7 +59,7 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
     try {
       await credentialsStore.getState().loginComplete(name, flowId, trimmed);
       if (!active.current) return;
-      await credentialsStore.getState().fetch();
+      await refreshListingAfterMutation();
       if (!active.current) return;
       toast.push("success", `Signed in to ${name}`);
       onSuccess();
@@ -152,7 +154,7 @@ export function DeviceCodeDialog({
       }
       if (cancelled || !active.current) return;
       if (resp.state === "authorized") {
-        await credentialsStore.getState().fetch();
+        await refreshListingAfterMutation();
         if (cancelled || !active.current) return;
         toast.push("success", `Signed in to ${name}`);
         onSuccess();
@@ -187,6 +189,20 @@ export function DeviceCodeDialog({
     setCopyFailed(!ok);
   }
 
+  function handleOpenVerificationUrl(): void {
+    try {
+      openInNewTab(verificationUrl);
+    } catch (err) {
+      // openInNewTab refuses a verification URL that does not parse or is not
+      // http(s) by throwing - the loud refusal is what keeps a hostile
+      // `javascript:` URL from running in this origin (shell/openInNewTab.ts).
+      // React never hands an event-handler throw to an error boundary, so
+      // without this catch the refusal would leave a button that silently
+      // does nothing; the toast is what makes it visible to the user.
+      toast.push("error", `Couldn't open the verification page: ${errorText(err)}`);
+    }
+  }
+
   const done = expired || error !== null;
   const statusText =
     error ??
@@ -212,11 +228,7 @@ export function DeviceCodeDialog({
               <Button type="button" variant="quiet" onClick={() => void handleCopy()}>
                 {copied ? "Copied ✓" : "Copy code"}
               </Button>
-              <Button
-                type="button"
-                disabled={!copied}
-                onClick={() => window.open(verificationUrl, "_blank", "noopener")}
-              >
+              <Button type="button" disabled={!copied} onClick={handleOpenVerificationUrl}>
                 Send me to OpenAI
               </Button>
             </>
