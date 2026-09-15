@@ -28,20 +28,24 @@ import (
 // stdout was a framed AppWire Message.
 func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
-	// Capture the upgrade request's Authorization header: the bridge must send
-	// the hub's bearer token. Without this the round trip passes even if the
-	// header is dropped or malformed, because the test handler behind the
-	// AuthGuard never inspects it.
-	var authMu sync.Mutex
+	// The bridge must reach the hub through the edge the hub really serves: the
+	// same /rpc route behind the same AuthGuard. Serving the WebSocket handler
+	// directly would pass even if the bridge dialed the wrong path or sent a
+	// wrong token, because nothing inspected either.
+	var edgeMu sync.Mutex
 	var authHeader string
-	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authMu.Lock()
+	var paths []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rpc", func(w http.ResponseWriter, r *http.Request) {
+		edgeMu.Lock()
 		if authHeader == "" {
 			authHeader = r.Header.Get("Authorization")
 		}
-		authMu.Unlock()
+		paths = append(paths, r.URL.Path)
+		edgeMu.Unlock()
 		server.ServeWebSocket(w, r)
-	}))
+	})
+	httpSrv := httptest.NewServer(hubedge.AuthGuard("test-token")(mux))
 	defer httpSrv.Close()
 	addr := strings.TrimPrefix(httpSrv.URL, "http://")
 
@@ -84,11 +88,36 @@ func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 	recorder.mu.Unlock()
 	assertOnlyAppWireFrames(t, stdout)
 
-	authMu.Lock()
-	gotAuth := authHeader
-	authMu.Unlock()
+	edgeMu.Lock()
+	gotAuth, gotPaths := authHeader, append([]string(nil), paths...)
+	edgeMu.Unlock()
 	if gotAuth != "Bearer test-token" {
 		t.Fatalf("bridge authorization = %q, want %q", gotAuth, "Bearer test-token")
+	}
+	if len(gotPaths) == 0 || gotPaths[0] != "/rpc" {
+		t.Fatalf("bridge dialed %v, want /rpc", gotPaths)
+	}
+}
+
+// A wrong token must be refused by the real edge rather than by a test double:
+// the guard is what keeps the hub's AppWire socket closed to callers that do not
+// hold the capability token.
+func TestAttachBridgeWrongTokenIsRefused(t *testing.T) {
+	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rpc", server.ServeWebSocket)
+	httpSrv := httptest.NewServer(hubedge.AuthGuard("right-token")(mux))
+	defer httpSrv.Close()
+	addr := strings.TrimPrefix(httpSrv.URL, "http://")
+
+	bridgeEnd, controllerEnd := net.Pipe()
+	defer controllerEnd.Close() //nolint:errcheck // test cleanup
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	err := proxyAppWire(ctx, addr, "wrong-token", appwire.NewStreamTransport(bridgeEnd))
+	if err == nil || !strings.Contains(err.Error(), "no hub at "+addr) {
+		t.Fatalf("proxyAppWire with a wrong token = %v, want a refused dial", err)
 	}
 }
 
@@ -152,6 +181,7 @@ func TestLoopbackAddrRewritesWildcardBinds(t *testing.T) {
 		{"127.0.0.1:9180", "127.0.0.1:9180"},
 		{"0.0.0.0:9180", "127.0.0.1:9180"},
 		{"[::]:9180", "[::1]:9180"},
+		{"localhost:9180", "127.0.0.1:9180"},
 		{"192.168.1.5:9180", "192.168.1.5:9180"},
 	} {
 		if got := loopbackAddr(tc.in); got != tc.want {
@@ -167,7 +197,10 @@ func TestIsLoopbackHost(t *testing.T) {
 	}{
 		{"127.0.0.1", true},
 		{"::1", true},
-		{"localhost", true},
+		// Names are never trusted here: loopbackAddr rewrites "localhost" to the
+		// literal before this is consulted, so a resolver cannot redirect a
+		// token-carrying dial.
+		{"localhost", false},
 		{"10.0.0.1", false},
 		{"example.com", false},
 		{"0.0.0.0", false},
@@ -199,6 +232,11 @@ func TestAttachRefusesNonLoopbackAddr(t *testing.T) {
 	for _, args := range [][]string{
 		{"--stdio", "--config", cfgPath},
 		{"--stdio", "--addr", "example.com:9180", "--config", cfgPath},
+		// The userinfo bypass: SplitHostPort reports host "localhost" here and
+		// folds "@evil.example" into the port, so only validating the assembled
+		// URL catches it.
+		{"--stdio", "--addr", "localhost:9180@evil.example", "--config", cfgPath},
+		{"--stdio", "--addr", "127.0.0.1:9180@evil.example", "--config", cfgPath},
 	} {
 		err := runAttach(args, &stderr, deps)
 		if !errors.Is(err, errNonLoopbackAddr) {
@@ -207,6 +245,46 @@ func TestAttachRefusesNonLoopbackAddr(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("refusal wrote to stdout: %q", stdout.String())
+	}
+}
+
+// resolveHubURL is the token's last gate before it crosses an unencrypted
+// connection, so the shapes that try to move the dial off-host are tested
+// directly.
+func TestResolveHubURL(t *testing.T) {
+	for _, tc := range []struct {
+		addr string
+		ok   bool
+	}{
+		{"127.0.0.1:9180", true},
+		{"[::1]:9180", true},
+		{"0.0.0.0:9180", true}, // rewritten to loopback before this is called
+		{"10.0.0.1:9180", false},
+		{"example.com:9180", false},
+		// The userinfo bypass: "host:port@attacker" hides the real destination.
+		{"localhost:9180@evil.example", false},
+		{"127.0.0.1:9180@evil.example", false},
+		{"127.0.0.1:0", false},
+		{"127.0.0.1:99999", false},
+		{"127.0.0.1:notaport", false},
+		{"127.0.0.1:9180/extra", false},
+		{"127.0.0.1:9180?x=1", false},
+		{"127.0.0.1", false},
+	} {
+		got, err := resolveHubURL(loopbackAddr(tc.addr))
+		if !tc.ok {
+			if !errors.Is(err, errNonLoopbackAddr) {
+				t.Errorf("resolveHubURL(%q) err = %v, want errNonLoopbackAddr", tc.addr, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("resolveHubURL(%q) = %v, want a URL", tc.addr, err)
+			continue
+		}
+		if !strings.HasPrefix(got, "ws://") || !strings.HasSuffix(got, "/rpc") {
+			t.Errorf("resolveHubURL(%q) = %q, want a ws:// URL ending in /rpc", tc.addr, got)
+		}
 	}
 }
 

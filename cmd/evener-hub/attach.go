@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"net/url"
 
 	"github.com/coder/websocket"
 
@@ -101,11 +104,6 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
 		addr = cfg.Addr
 	}
 	addr = loopbackAddr(addr)
-	if host, _, splitErr := net.SplitHostPort(addr); splitErr != nil || !isLoopbackHost(host) {
-		err := fmt.Errorf("%w: %q", errNonLoopbackAddr, addr)
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
-		return err
-	}
 	token, err := readAuthToken(cfg.HubStateRoot)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -137,15 +135,23 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
 // <addr>" so the operator sees the actionable cause rather than a bare
 // connection error.
 func proxyAppWire(ctx context.Context, addr, token string, stream appwire.Transport) error {
+	hubURL, err := resolveHubURL(addr)
+	if err != nil {
+		return err
+	}
 	header := http.Header{}
 	if token != "" {
 		header.Set("Authorization", "Bearer "+token)
 	}
-	hubURL := "ws://" + addr + "/rpc"
 	dialCtx, cancel := context.WithTimeout(ctx, attachDialTimeout)
 	defer cancel()
 	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, attachDialClient, header)
 	if err != nil {
+		// A cancel during the handshake is the operator stopping the bridge, not
+		// a failure to reach a hub.
+		if ctx.Err() != nil {
+			return nil
+		}
 		return fmt.Errorf("no hub at %s: %w", addr, err)
 	}
 	return pumpBoth(ctx, ws, stream)
@@ -241,13 +247,15 @@ func readAuthToken(hubStateRoot string) (string, error) {
 // advertises 0.0.0.0 or ::. The IPv6 wildcard maps to ::1 rather than
 // 127.0.0.1: a hub bound IPv6-only is not listening on IPv4, so forcing the
 // family there would fail the dial. Non-wildcard addresses pass through.
+// "localhost" is rewritten to the literal 127.0.0.1 as well: dialing the NAME
+// would hand a poisoned resolver or hosts entry the hub's capability token.
 func loopbackAddr(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return addr
 	}
 	switch host {
-	case "", "0.0.0.0":
+	case "", "0.0.0.0", "localhost":
 		return net.JoinHostPort("127.0.0.1", port)
 	case "::":
 		return net.JoinHostPort("::1", port)
@@ -255,11 +263,40 @@ func loopbackAddr(addr string) string {
 	return addr
 }
 
-// isLoopbackHost reports whether host names this machine's loopback interface.
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
+// resolveHubURL validates addr and returns the ws:// URL to dial. The hub's
+// capability token crosses this connection in cleartext, so the address must
+// provably stay on this host — and the assembled URL is what has to be
+// validated, not the host:port pair. net.SplitHostPort folds anything after an
+// "@" into the port ("localhost:9180@attacker.example" splits as host
+// "localhost" and port "9180@attacker.example"), so a check that trusts its
+// host portion then dials the attacker's host once url.Parse strips the
+// userinfo.
+func resolveHubURL(addr string) (string, error) {
+	refuse := func() (string, error) {
+		return "", fmt.Errorf("%w: %q", errNonLoopbackAddr, addr)
 	}
+	u, err := url.Parse("ws://" + addr + "/rpc")
+	if err != nil {
+		return refuse()
+	}
+	if u.User != nil || u.Path != "/rpc" || u.RawQuery != "" || u.Fragment != "" {
+		return refuse()
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return refuse()
+	}
+	if !isLoopbackHost(u.Hostname()) {
+		return refuse()
+	}
+	return u.String(), nil
+}
+
+// isLoopbackHost reports whether host is a loopback address LITERAL. Names are
+// deliberately not resolved here: loopbackAddr rewrites "localhost" to
+// 127.0.0.1 before this is consulted, so a poisoned resolver or hosts entry
+// cannot aim a token-carrying dial off-host.
+func isLoopbackHost(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
