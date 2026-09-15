@@ -196,7 +196,7 @@ test("keyless connection refreshes the warmed real session catalog without switc
 });
 
 // The same opening flow with the connect-dialog chunk made deliberately slow:
-// an import that outlasts testing-library's 1s default must not fail the flow,
+// an import far past testing-library's 1s default must not fail the flow,
 // because openConnectDialog waits on the import itself. Before that wait
 // existed this is exactly the #1369 flake - the
 // "Already configured access on this host?" query times out at 1000ms while
@@ -205,12 +205,16 @@ test("keyless connection refreshes the warmed real session catalog without switc
 test("a connect-dialog chunk slower than the async-query default still opens the dialog", async () => {
   resetCredentialsStoreForTests();
   // The transform cost is one-time, so only the FIRST import is slow - the
-  // later one the boundary issues resolves from the evaluated module.
+  // later one the boundary issues resolves from the evaluated module. The
+  // delay is 2.5s, not just over 1s: the click path before the query burns
+  // 100-200ms of the query's own 1000ms budget, so a barely-over delay leaves
+  // the red state riding on a ~100ms margin - green again at random, and no
+  // longer protecting anything. 2.5x the budget cannot fit.
   let first = true;
   setConnectDialogImporterForTests(async () => {
     if (first) {
       first = false;
-      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
     }
     return import("../../settings/sections/credentials/ConnectProviderDialog");
   });
