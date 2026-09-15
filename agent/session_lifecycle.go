@@ -1047,6 +1047,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// current objective, so a clear/retarget during the interleaved notification turn
 	// cannot run a stale continuation.
 	var haveDeferredCont bool
+	// carrierUndelivered latches a steering carrier that could not record its
+	// steer; see the tail of the loop.
+	var carrierUndelivered bool
 	for {
 		// Fail closed on a transcript that has stopped accepting records, before
 		// every turn rather than once at admission. A turn from here would run
@@ -1085,8 +1088,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// A carrier that returned its steer undelivered (a failed durable
 		// append, see acceptSteeringCarrierInput) must not be claimed again
 		// by this input: the retry belongs to the next wake, not to a loop
-		// here that would burn a model turn per attempt.
-		carrierUndelivered := s.steeringCarrierUndelivered(ranSteeringCarrier)
+		// here that would burn a model turn per attempt. Latched for the
+		// whole input, not this iteration: a queued message or a
+		// notification turn running next is not a reason to try again.
+		carrierUndelivered = carrierUndelivered || s.steeringCarrierUndelivered(ranSteeringCarrier)
 		processCtx = withSteeringCarrierTurn(processCtx, "")
 		// True when the completion below finalized an interrupt fence naming
 		// this turn: a Stop is what ended it, and the drain branch further down

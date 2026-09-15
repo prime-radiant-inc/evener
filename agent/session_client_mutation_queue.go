@@ -362,17 +362,19 @@ func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
 }
 
 // steeringCarrierUndelivered reports whether the steer that reserved turnID is
-// still pending -- the carrier turn named turnID has not recorded it. It reads
-// the durable store, the same as the claim: an entry consumeSteeringMessage
-// returned after a failed append is back to accepted there, and a delivered
-// one is gone (finalizeIncorporatedSteering).
+// back to accepted -- the carrier turn named turnID took it and could not
+// record it, so consumeSteeringMessage returned the claim (returnClaimedSteering).
+// Accepted is the one state that means undelivered: a delivered steer is gone
+// from the store (finalizeIncorporatedSteering), and one still claimed was
+// appended to the transcript but its incorporation write failed -- it is
+// delivered, the model reads it, and restore reconciles the record later.
 func steeringCarrierUndelivered(snapshot *clientMutationSnapshot, turnID string) bool {
 	if turnID == "" {
 		return false
 	}
 	for _, id := range snapshot.SteeringOrder {
 		if pending, ok := snapshot.PendingExecutions[id]; ok && pending.TurnID == turnID {
-			return true
+			return pending.ExecutionState == "accepted"
 		}
 	}
 	return false
@@ -641,16 +643,14 @@ func (s *Session) wakeForPendingSteering() {
 	// The steer stays parked in PendingExecutions/SteeringOrder until a
 	// user-initiated run trigger clears the gate, so its causal provenance is
 	// never at risk (issue #146, Option C — park in place).
-	if s.clientMutations != nil && s.clientMutations.steeringHeld() {
-		return
-	}
+	//
 	// Only the user's own steering provokes a turn. Daemon-authored steering --
 	// the current-task reminder, hook context, a transcript pointer -- is
 	// context for whatever turn runs next, and the round loop drains it into
 	// that turn. Waking for it would start a turn before the user has said
 	// anything, which is both a turn nobody asked for and a turn that can hold
 	// the session's turn identity when the opening turn/start arrives.
-	if !s.hasPendingUserSteering() {
+	if !s.hasRunnableUserSteering() {
 		return
 	}
 	s.wakePendingUserInput()

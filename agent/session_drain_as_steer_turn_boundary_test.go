@@ -1,15 +1,20 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -429,5 +434,196 @@ func TestSteeringCarrierAppendFailureRunsOnceAndReturnsTheSteer(t *testing.T) {
 	if carrierOpenings != 1 || turnFailures != 1 || inputEnd != "input_complete:idle" {
 		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want one carrier turn, failed once, ending idle (transitions: %s)",
 			carrierOpenings, turnFailures, inputEnd, strings.Join(transitions, " "))
+	}
+}
+
+// steerRefusingFS refuses, forever and before a byte lands, every transcript
+// write that carries the marker -- a disk that has room for everything but
+// the steer. The rollback of such a write succeeds, so the writer stays
+// usable and every other entry keeps landing.
+type steerRefusingFS struct {
+	afero.Fs
+	marker []byte
+}
+
+type steerRefusingFile struct {
+	afero.File
+	marker []byte
+}
+
+func (fs *steerRefusingFS) OpenFile(name string, flag int, mode os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, mode)
+	if err != nil {
+		return nil, err
+	}
+	return &steerRefusingFile{File: file, marker: fs.marker}, nil
+}
+
+func (file *steerRefusingFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, file.marker) {
+		return 0, errors.New("injected: no space left on device")
+	}
+	return file.File.Write(p)
+}
+
+func attachSteerRefusingFS(t *testing.T, s *Session, marker string) {
+	t.Helper()
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(&steerRefusingFS{Fs: afero.NewOsFs(), marker: []byte(marker)}, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.attachTranscript(writer)
+}
+
+// inputBoundary summarizes the events of one ProcessInput call: the carrier
+// openings and turn failures before its session end, and that end.
+func inputBoundary(seen []events.SessionEvent, carrier string) (carrierOpenings, turnFailures int, end string) {
+	for _, ev := range seen {
+		switch ev.Kind {
+		case events.EventSessionEnd:
+			data := ev.Data.(events.SessionEndData)
+			return carrierOpenings, turnFailures, data.Reason + ":" + data.State
+		case events.EventTurnStarted:
+			if ev.Data.(events.TurnStartedData).TurnID == carrier {
+				carrierOpenings++
+			}
+		case events.EventError:
+			turnFailures++
+		}
+	}
+	return carrierOpenings, turnFailures, ""
+}
+
+func carrierTestConfig(dir string, claimed func(string)) SessionConfig {
+	return SessionConfig{
+		MaxSubagentDepth: 1,
+		StateDir:         dir,
+		testOnly: testConfig{
+			skipGitSnapshot:        true,
+			minimalSystemPrompt:    true,
+			noSyncJobStore:         true,
+			steeringCarrierClaimed: claimed,
+		},
+	}
+}
+
+// TestSteeringCarrierFailureIsNotRetriedByALaterTurnOfTheSameInput is review
+// round 2's first finding on #1329: the no-reclaim guard was recomputed per
+// iteration, so a queued message (or a notification, or a goal turn) running
+// after the failed carrier reset it, and the iteration after that claimed the
+// same steer again -- one more failed carrier per intervening turn. The
+// failure is latched for the whole input; the retry stays the next wake's.
+//
+// The disk here refuses the steer's bytes for good, so the queued turn that
+// runs after the failed carrier cannot carry it either (a queued turn drains
+// steering at its start): the steer is still pending when that turn ends,
+// which is exactly the state that provoked the second claim.
+func TestSteeringCarrierFailureIsNotRetriedByALaterTurnOfTheSameInput(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	var s *Session
+	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
+		// A message queued while the carrier is claimed runs as the next
+		// turn of this same input.
+		queueOneMutation(t, s, "cm-queued-third", "third message")
+	})))
+	attachSteerRefusingFS(t, s, "second pass")
+
+	var mu sync.Mutex
+	var seen []events.SessionEvent
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		mu.Lock()
+		seen = append(seen, ev)
+		mu.Unlock()
+	}, func() { close(drained) })
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	close(adapter.release)
+	if err := awaitInput(t, done); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 2 || !requestContainsText(requests[1], "third message") {
+		t.Fatalf("provider requests = %d, want 2: the held leg and the queued message's turn, and no carrier's", len(requests))
+	}
+	if pending, ok := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; !ok || pending.ExecutionState != "accepted" {
+		t.Fatalf("the refused steer is pending=%v state=%q, want accepted (still queued for the next wake)", ok, pending.ExecutionState)
+	}
+	s.Close()
+	<-drained
+	mu.Lock()
+	openings, failures, end := inputBoundary(seen, carrier)
+	transitions := boundaryTransitions(seen)
+	mu.Unlock()
+	if openings != 1 || failures != 1 || end != "input_complete:idle" {
+		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want the carrier claimed once for the whole input (transitions: %s)",
+			openings, failures, end, strings.Join(transitions, " "))
+	}
+}
+
+// TestSteeringCarrierRecordedSteerSurvivesAFailedIncorporationWrite is review
+// round 2's second finding on #1329. consumeSteeringMessage appends the steer
+// to the transcript and then writes its incorporation to the mutation store;
+// when that second write fails the entry stays claimed, and a carrier that
+// read "still pending" as "undelivered" failed its turn over a steer the
+// model was about to read. Only a steer back to accepted is undelivered.
+func TestSteeringCarrierRecordedSteerSurvivesAFailedIncorporationWrite(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	var s *Session
+	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
+		// After the claim, the carrier's store writes are popSteeringHead's
+		// claimed-mark and then finalizeIncorporatedSteering's; fail the
+		// second, after the transcript append that precedes it succeeded.
+		writes := 0
+		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+			writes++
+			if writes == 2 {
+				return errors.New("injected: incorporation write failed")
+			}
+			return nil
+		}
+	})))
+
+	var mu sync.Mutex
+	var seen []events.SessionEvent
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		mu.Lock()
+		seen = append(seen, ev)
+		mu.Unlock()
+	}, func() { close(drained) })
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	close(adapter.release)
+	if err := awaitInput(t, done); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if pending, ok := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; !ok || pending.ExecutionState != "claimed" {
+		t.Fatalf("the steer reads pending=%v state=%q, want claimed: the fault did not land on the incorporation write, so this test is not in the state it means to be", ok, pending.ExecutionState)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
+		t.Fatalf("provider requests = %d carrying the steer=%v, want the carrier to run its model call over the recorded steer", len(requests), len(requests) == 2 && requestContainsText(requests[1], "second pass"))
+	}
+	s.Close()
+	<-drained
+	mu.Lock()
+	openings, failures, end := inputBoundary(seen, carrier)
+	transitions := boundaryTransitions(seen)
+	mu.Unlock()
+	if openings != 1 || failures != 0 || !strings.HasPrefix(end, "input_complete:") {
+		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want one carrier, no failure, a clean completion (transitions: %s)",
+			openings, failures, end, strings.Join(transitions, " "))
 	}
 }
