@@ -391,6 +391,30 @@ test("a focus request on a read-only session waits for the session to accept wri
   await waitFor(() => expect(document.activeElement).toBe(textarea));
 });
 
+test("a held request never steals focus from an active control", async () => {
+  const model = makeModel({ status: { type: "ended" }, humanNote: "Saved" });
+  const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  // /notes on an ended session: the request is held with no editor to serve.
+  topNotesStore.getState().openAndFocus(model.ref);
+  await waitFor(() => expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy());
+
+  // The user moves on - focus lands in an unrelated control (the composer,
+  // say) before the session ever hydrates.
+  const elsewhere = document.createElement("input");
+  document.body.appendChild(elsewhere);
+  elsewhere.focus();
+
+  view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...model, status: { type: "idle" } }} />);
+
+  // Writability arrives: the stale request is consumed SILENTLY. Yanking
+  // focus here would route mid-typing keystrokes into a shared note.
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Human note" })).toBeTruthy());
+  expect(document.activeElement).toBe(elsewhere);
+  expect(topNotesStore.getState().hasPendingFocus(model.ref)).toBe(false);
+  elsewhere.remove();
+});
+
 test("clicking the hint text toggles like the rest of the bar", async () => {
   const user = userEvent.setup();
   const model = makeModel({ humanNote: "Saved note" });
