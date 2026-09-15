@@ -120,6 +120,35 @@ func TestEnsureUnknownHost(t *testing.T) {
 	}
 }
 
+func TestManagerAttached(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	m := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{})
+
+	if m.Attached("alpha") {
+		t.Fatal("never-ensured host reported attached")
+	}
+	ch := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
+	m.setChannel("alpha", ch)
+	if !m.Attached("alpha") {
+		t.Fatal("live channel not reported attached")
+	}
+	// A dropped link is unusable before the supervisor clears it: markLost closes
+	// lost (child exit or monitor error) while done stays open.
+	ch.markLost()
+	if m.Attached("alpha") {
+		t.Fatal("link-lost channel reported attached")
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("close channel: %v", err)
+	}
+	if m.Attached("alpha") {
+		t.Fatal("closed channel reported attached")
+	}
+	if m.Attached("missing") {
+		t.Fatal("unknown host reported attached")
+	}
+}
+
 func TestEnsureStderrWiredToSink(t *testing.T) {
 	var buf bytes.Buffer
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}

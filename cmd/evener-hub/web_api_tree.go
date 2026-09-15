@@ -315,7 +315,11 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		if entry.Project.ID != "" && identifier.ValidateProjectID(entry.Project.ID) == nil && entry.WorkingDir != "" {
 			addNavigationProjectCandidate(carriedProjectCandidates, entry.WorkingDir, entry.Project)
 		}
-		if appThreadTreeLive(thread) {
+		// An offline source keeps its last-known rows visible in metas, but
+		// they are not live: the frontend derives the offline affordance from
+		// the manifest. An empty Source is treated as online (server-owned
+		// local rows), so only source-identified remote rows can be excluded.
+		if appThreadTreeLive(thread) && s.sourceOnline(thread.Source) {
 			live = append(live, entry)
 		}
 	}
@@ -721,7 +725,7 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 			ID:     source.ID(),
 			Label:  source.ID(),
 			Kind:   "appwire",
-			Online: true,
+			Online: s.sourceOnline(source.ID()),
 		})
 	}
 	return sources

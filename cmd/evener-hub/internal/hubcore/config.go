@@ -88,6 +88,10 @@ type WebConfig struct {
 	// The capability probe combines them with its AppWire reads. nil leaves
 	// the preflight-owned fields zero-valued (tests).
 	RemoteHostFacts func(ctx context.Context, host string) (appsource.HostFacts, error)
+	// RemoteHostOnline reports whether a remote host currently has a live
+	// controller-to-host channel (component 06). Nil leaves every remote host
+	// online (tests).
+	RemoteHostOnline func(host string) bool
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)
