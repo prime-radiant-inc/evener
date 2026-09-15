@@ -291,6 +291,7 @@ export interface EvenerDiagnostics {
   hookEvents?: EvenerHookEventStatus[];
   jobs?: EvenerJobInfo[];
   delegates?: EvenerDelegateInfo[];
+  watches?: EvenerWatchInfo[];
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
   delegateDiagnostics?: string[];
@@ -447,6 +448,31 @@ export interface EvenerUsage {
   outputTokens?: number;
   cacheReadTokens?: number;
   totalTokens?: number;
+}
+
+export interface EvenerWatchCadence {
+  kind: string;
+  seconds?: number;
+  derivedNextFireAt?: string;
+  every?: number;
+  filter?: string;
+}
+
+export interface EvenerWatchInfo {
+  id: string;
+  source: string;
+  target?: string;
+  sendTo?: string;
+  note?: string;
+  cadence?: EvenerWatchCadence[];
+  outputMatch?: string;
+  events?: string[];
+  wildcardEvents?: boolean;
+  deliveries: number;
+  deliveryTimes?: string[];
+  createdAt: string;
+  active: boolean;
+  endReason?: string;
 }
 
 export interface FavoriteSetParams {
@@ -1239,8 +1265,11 @@ export interface NavigationSessionSummary {
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
+  omitted_watches?: number;
+  omitted_armed_watches?: number;
   running_jobs?: NavigationJobSummary[];
   completed_jobs?: NavigationJobSummary[];
+  watches?: NavigationWatchSummary[];
   children: NavigationSessionSummary[];
 }
 
@@ -1253,6 +1282,31 @@ export interface NavigationSnapshot {
 export interface NavigationTier {
   sessions: NavigationSessionSummary[];
   remaining: number;
+}
+
+export interface NavigationWatchCadence {
+  kind: string;
+  seconds?: number;
+  derived_next_fire_at?: string;
+  every?: number;
+  filter?: string;
+}
+
+export interface NavigationWatchSummary {
+  id: string;
+  source: string;
+  target?: string;
+  send_to?: string;
+  note?: string;
+  cadence?: NavigationWatchCadence[];
+  output_match?: string;
+  events?: string[];
+  wildcard_events?: boolean;
+  deliveries: number;
+  delivery_times?: string[];
+  created_at: string;
+  active: boolean;
+  end_reason?: string;
 }
 
 export interface NotesHumanSetParams {
