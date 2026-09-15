@@ -122,7 +122,7 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 			}
 			notifyMarketplaceUpdated(server)
 			notifyPluginUpdated(server)
-			notifyAuthUpdated(server, "provider", "source")
+			notifyAuthUpdated(server, "provider", "source", "client")
 			notifyLaunchUpdated(server, root, "user")
 
 		case 2:

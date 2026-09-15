@@ -24,6 +24,7 @@ import (
 
 type credentialProbeFakeClient struct {
 	mu      sync.Mutex
+	reg     *registry.Registry
 	started chan struct{}
 	release chan struct{}
 	calls   int
@@ -52,6 +53,11 @@ func (f *credentialProbeFakeClient) Models(ctx context.Context, _ string) (llm.M
 }
 
 func (f *credentialProbeFakeClient) Close() error { return nil }
+
+// Registry is the configuration an asserting probe validates against. Tests
+// that assert an endpoint fingerprint set it; every other test leaves it nil,
+// where an empty assertion reads nothing.
+func (f *credentialProbeFakeClient) Registry() *registry.Registry { return f.reg }
 
 func (f *credentialProbeFakeClient) callCount() int {
 	f.mu.Lock()

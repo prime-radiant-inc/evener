@@ -278,3 +278,36 @@ test("watchFoldKey changes when equal-length error content changes", () => {
   const after = item({ error: afterError });
   expect(watchFoldKey([turn([after])])).not.toBe(watchFoldKey([turn([before])]));
 });
+
+test("watchFoldKey is order-canonical for positioned watch items", () => {
+  // The fold orders snapshots by transcript position, so the key must not depend
+  // on the order the caller happened to hand the items over in: a page arriving
+  // out of order would otherwise rebuild the view for identical content.
+  const earlier = item({ id: "watch-earlier", position: { entry: 1, item: 0 } });
+  const later = item({ id: "watch-later", position: { entry: 4, item: 2 } });
+
+  expect(watchFoldKey([turn([later]), turn([earlier])])).toBe(watchFoldKey([turn([earlier]), turn([later])]));
+});
+
+test("watchFoldKey keeps caller order when items carry no transcript position", () => {
+  // Unpositioned items have no canonical order, so caller order still decides —
+  // the same rule the fold follows.
+  const first = item({ id: "unpositioned-first", position: undefined, output: '{"watch_id":"watch_a"}' });
+  const second = item({ id: "unpositioned-second", position: undefined, output: '{"watch_id":"watch_b"}' });
+
+  expect(watchFoldKey([turn([first]), turn([second])])).not.toBe(watchFoldKey([turn([second]), turn([first])]));
+});
+
+test("watchFoldKey is order-canonical across a mixed positioned and positionless list", () => {
+  // A positionless item sorts after the positioned ones, so a mixed list has one
+  // canonical order whatever order the caller handed the items over in. Without
+  // that rule the comparator is non-transitive across the boundary and the key
+  // stays caller-order-dependent here, which is the case the positioned-only
+  // test above cannot catch.
+  const positioned = item({ id: "watch-positioned", position: { entry: 2, item: 1 } });
+  const positionless = item({ id: "watch-positionless", position: undefined, output: '{"watch_id":"watch_b"}' });
+
+  expect(watchFoldKey([turn([positionless]), turn([positioned])])).toBe(
+    watchFoldKey([turn([positioned]), turn([positionless])]),
+  );
+});
