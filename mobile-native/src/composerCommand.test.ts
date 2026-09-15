@@ -58,6 +58,16 @@ it.each([
   expect(offered.includes("/drain-as-steer")).toBe(drain);
 });
 
+// /interrupt is Stop: sessionControls' stop, an active status and the
+// interrupt capability, never the capability alone.
+it.each([
+  ["idle", false],
+  ["active", true],
+])("at status %s offers /interrupt=%s on a harness that advertises interrupt", (status, offered) => {
+  const items = ids(builtinComposerItems(conversation({ interrupt: true }, status)));
+  expect(items.includes("/interrupt")).toBe(offered);
+});
+
 it("offers capability-backed builtins without inventing unsupported actions", () => {
   const items = builtinComposerItems(conversation({ compact: true, goal: true }));
   expect(items.map((item) => item.invocation)).toContain("/compact");

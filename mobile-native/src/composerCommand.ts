@@ -38,7 +38,10 @@ const commands = [
   { id: "shutdown", capability: "shutdown", label: "Shut down" },
   { id: "model", args: true, capability: "changeModel", label: "Set model" },
   { id: "reasoning-effort", args: true, capability: null, label: "Set effort" },
-  { id: "interrupt", capability: "interrupt", label: "Interrupt" },
+  // Stop is sessionControls' stop: an active status and the interrupt
+  // capability (the hub folds the status into that flag; the client applies
+  // it too, so the rule is one and the transcript's turn id never enters).
+  { id: "interrupt", capability: "interrupt", control: "stop", label: "Interrupt" },
   // Steering commands read the session's controls (appwire-client/typescript/
   // submitRouting.ts sessionControls): the hub advertises steer as harness
   // support alone, so the status -- and, for a drain, the queue a Stop parked
@@ -144,6 +147,19 @@ export async function submitComposerCommand(
     if (document.getSnapshot().record === record) document.edit("");
     return id;
   }
+  // A command with a control (steer, queue, drain, stop) runs only when the
+  // session's controls admit it: the same rule that offered it in completion,
+  // applied at submission. The v3 mutations name no turn, so no turn id enters.
+  const requireControl = (): void => {
+    if (!("control" in match.command)) return;
+    const turn = context.turn();
+    const controls = turn ? controlsFor(turn) : null;
+    const control = match.command.control;
+    if (!controls || !controls[control])
+      throw new CommandArgumentError(
+        `/${id}: ${controls?.reason[control] ?? "no active turn"}`,
+      );
+  };
   const invalid = () =>
     new CommandArgumentError(
       match.argsText.trim()
@@ -165,15 +181,11 @@ export async function submitComposerCommand(
         );
     };
   } else if (id === "steer" || id === "queue" || id === "drain-as-steer") {
-    // The v3 mutations name no turn; readiness is the session's controls,
-    // the same rule that offered the command in completion.
+    requireControl();
     const turn = context.turn();
-    const control = id === "drain-as-steer" ? "drain" : id;
-    const controls = turn ? controlsFor(turn) : null;
-    if (!turn || !controls || !controls[control])
-      throw new CommandArgumentError(
-        `/${id}: ${controls?.reason[control] ?? "no active turn"}`,
-      );
+    // requireControl refused a missing session above; this narrows for the
+    // revision read below.
+    if (!turn) throw new CommandArgumentError(`/${id}: no active turn`);
     const input = buildComposerInput(match.argsText);
     // The explicit /steer command preserves waiting queue entries. Draining
     // uses its own command and the observed queue revision, as on web.
@@ -218,6 +230,7 @@ export async function submitComposerCommand(
   } else if (id === "goal") {
     operation = () => service.setGoal(match.argsText.trim());
   } else {
+    requireControl();
     operation = () => service[id]();
   }
   let completed: typeof match.command.id | null = null;

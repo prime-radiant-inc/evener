@@ -1478,7 +1478,6 @@ export function ConversationScreen({
 	);
 	async function applyCommand(clear = false) {
 		const action = clear ? "goal" : command?.command.id;
-		const capability = clear ? "goal" : command?.command.capability;
 		if (
 			!service ||
 			!ready ||
