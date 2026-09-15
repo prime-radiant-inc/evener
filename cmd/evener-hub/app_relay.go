@@ -231,15 +231,34 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 // reaches every route the relay serves - a read-only child alias shares the
 // root's relay session - and each subscriber acts on the ref it names, so
 // each copy names the subscriber's own.
+//
+// Two keys are set, the rest of the payload is passed through as raw JSON, the
+// way stampClosedThreadCapabilities replaces one key: re-minting the frame
+// from the fields this hub understands would drop anything else the relay
+// session put in it.
 func stampResyncTarget(notification appwire.Notification, threadID, ref string) appwire.Notification {
 	if notification.Method != appwire.NotifyEvenerThreadResync {
 		return notification
 	}
-	params, err := json.Marshal(appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref})
+	params := map[string]json.RawMessage{}
+	if len(notification.Params) != 0 && json.Unmarshal(notification.Params, &params) != nil {
+		return notification
+	}
+	threadIDValue, err := json.Marshal(threadID)
 	if err != nil {
 		return notification
 	}
-	notification.Params = params
+	refValue, err := json.Marshal(ref)
+	if err != nil {
+		return notification
+	}
+	params["threadId"] = threadIDValue
+	params["ref"] = refValue
+	stamped, err := json.Marshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = stamped
 	return notification
 }
 

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
@@ -380,6 +383,103 @@ func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("%s never received the daemon-gone resync", subscriber.name)
+		}
+	}
+}
+
+// A copy names its route; the rest of what the relay session put in the
+// frame passes through, the way stampClosedThreadCapabilities replaces one
+// key and leaves the payload alone (review round 3 on #1325).
+func TestStampResyncTargetKeepsTheOtherFields(t *testing.T) {
+	stamped := stampResyncTarget(appwire.Notification{
+		Method: appwire.NotifyEvenerThreadResync,
+		Params: json.RawMessage(`{"reason":"daemon gone"}`),
+	}, "gone-child", "local:gone-child")
+	var params map[string]any
+	if err := json.Unmarshal(stamped.Params, &params); err != nil {
+		t.Fatalf("stamped params: %v", err)
+	}
+	if params["ref"] != "local:gone-child" || params["threadId"] != "gone-child" {
+		t.Fatalf("stamped params name ref=%v threadId=%v, want local:gone-child/gone-child", params["ref"], params["threadId"])
+	}
+	if params["reason"] != "daemon gone" {
+		t.Fatalf("stamping dropped the frame's other field: %v", params)
+	}
+}
+
+// With no roster the hub lists daemons straight from the rendezvous files,
+// and a daemon that died leaves its file behind. The relay classifies a
+// daemon as gone only once it is no longer listed, so a dead daemon that
+// stays listed is dialled forever and the subscriber never hears it is gone
+// (review round 3 on #1325). The file alone must not keep a dead process
+// dialable.
+func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, "gone")
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "gone", SessionID: "gone", Source: "local", Evener: appwire.EvenerThread{Ref: "local:gone"}}}, nil
+	})
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer upstream.Close()
+	// The rendezvous file claims a real process, alive for now.
+	process := exec.Command("sleep", "60")
+	if err := process.Start(); err != nil {
+		t.Fatalf("start stand-in process: %v", err)
+	}
+	t.Cleanup(func() { _ = process.Process.Kill(); _ = process.Wait() })
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       process.Process.Pid,
+		Protocol:  appwire.ProtocolVersion,
+		Address:   strings.TrimPrefix(upstream.URL, "http://"),
+		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
+		SourceID:  "local",
+		ThreadID:  "gone",
+		SessionID: "gone",
+	})
+	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:gone", Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The daemon dies: its process is gone and its socket closes, but its
+	// rendezvous file stays. (httptest's CloseClientConnections skips
+	// hijacked WebSockets; the daemon server closes its own.)
+	if err := process.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = process.Wait()
+	if err := daemon.Shutdown(ctx); err != nil {
+		t.Fatalf("daemon shutdown: %v", err)
+	}
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != appwire.NotifyEvenerThreadResync {
+				continue
+			}
+			var params appwire.ThreadResyncParams
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("resync params: %v", err)
+			}
+			if params.Ref != "local:gone" {
+				t.Fatalf("resync names %q, want local:gone", params.Ref)
+			}
+			return
+		case <-deadline:
+			t.Fatal("the subscriber was never told to re-read: the dead daemon's rendezvous file kept it dialable")
 		}
 	}
 }

@@ -66,6 +66,14 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		raw, _ := rendezvous.List(cfg.RunDir)
 		entries := make([]appsource.LocalDaemonEntry, 0, len(raw))
 		for _, entry := range raw {
+			// A crashed daemon leaves its file behind. The roster drops a
+			// daemon whose process is gone, and the relay classifies a daemon
+			// as gone only once it is no longer listed (it keeps dialling a
+			// listed one), so the file alone must not keep a dead process
+			// dialable here either.
+			if !hubcore.ProcessAlive(entry.PID) {
+				continue
+			}
 			entries = append(entries, appsource.LocalDaemonEntry{Entry: entry})
 		}
 		return entries

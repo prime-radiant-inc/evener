@@ -1862,8 +1862,10 @@ func TestHubThreadListProjectsIdleSubagentIdle(t *testing.T) {
 func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 	runDir := t.TempDir()
 	base := time.Now().UTC()
+	// No roster here, so an entry is listed only while its process is: this
+	// process and its parent are two that are.
 	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       101,
+		PID:       os.Getpid(),
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
@@ -1872,7 +1874,7 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		StartedAt: base.Add(-time.Hour),
 	})
 	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       102,
+		PID:       os.Getppid(),
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:2/rpc",
 		SourceID:  "local",
@@ -2083,8 +2085,10 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// The hub has no roster here, so the live entry is kept only while its
+	// process is: this test's own.
 	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       501,
+		PID:       os.Getpid(),
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:501/rpc",
 		SourceID:  "local",
@@ -9438,7 +9442,9 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 				t.Fatalf("resume session=%q", req.SessionID)
 			}
 			entry := rendezvous.Entry{
-				PID:       105,
+				// No roster here, so the entry is listed only while its
+				// process is.
+				PID:       os.Getpid(),
 				Protocol:  appwire.ProtocolVersion,
 				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
 				SourceID:  "local",
