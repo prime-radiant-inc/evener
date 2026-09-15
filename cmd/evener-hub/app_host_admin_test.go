@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,6 +324,16 @@ func TestHostAdminControllerToleratesNilSourceRegistry(t *testing.T) {
 // fails the coverage check below, so a future addition forces a deliberate
 // allow/deny decision instead of silently inheriting a prefix rule.
 func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
+	// policy records the deliberate decision for every ScopeHub catalog method:
+	// true = the evener/host/request proxy forwards it; false = it is denied and
+	// refused with appwire.InvalidParams without reaching the remote. The denied
+	// families are controller-local state or UI (navigation, jobs, tasks,
+	// thread/turn, keybindings, overview, transcript display), local-process
+	// control (upgrade, update, mobile pairing, sandbox escalation), other
+	// mutating local surfaces (archive, pin, favorite, project delete, URLs,
+	// search, subagent preview), and the proxy method itself (no chaining).
+	// Rows are added one method at a time: a catalog method with no row fails the
+	// coverage check below, so a future addition still forces a decision.
 	policy := map[string]bool{
 		"evener/archive/set":                      false,
 		"evener/auth/apiKey/clear":                true,
@@ -337,10 +348,10 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/auth/status":                      true,
 		"evener/auth/test":                        true,
 		"evener/command/list":                     false,
-		"evener/dirs/create":                      false,
+		"evener/dirs/create":                      true, // discovery: create the host directory the spawn form asked for
 		"evener/favorite/set":                     false,
-		"evener/git/head":                         false,
-		"evener/harnesses/list":                   false,
+		"evener/git/head":                         true, // discovery: read-only branch metadata for a remote path
+		"evener/harnesses/list":                   true, // discovery: the host's own harnesses
 		"evener/host/request":                     false,
 		"evener/instance/create":                  true,
 		"evener/instance/edit":                    true,
@@ -362,8 +373,8 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/marketplace/remove":               true,
 		"evener/mobile/pairing":                   false,
 		"evener/navigation/read":                  false,
-		"evener/path/validate":                    false,
-		"evener/paths/complete":                   false,
+		"evener/path/validate":                    true, // discovery: validate against the host's filesystem
+		"evener/paths/complete":                   true, // discovery: complete against the host's filesystem
 		"evener/pin-section/delete":               false,
 		"evener/pin-section/rename":               false,
 		"evener/plugin/checkNow":                  true,
@@ -376,7 +387,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/plugin/setAutoUpgrade":            true,
 		"evener/plugin/upgrade":                   true,
 		"evener/project/delete":                   false,
-		"evener/projects/recent":                  false,
+		"evener/projects/recent":                  true, // discovery: the host's recent project directories
 		"evener/sandbox/escalation/resolve":       false,
 		"evener/search":                           false,
 		"evener/session-pin/assign":               false,
@@ -389,7 +400,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/settings/overview":                false,
 		"evener/settings/transcriptDisplay/get":   false,
 		"evener/settings/transcriptDisplay/patch": false,
-		"evener/spawn/slashCatalog":               false,
+		"evener/spawn/slashCatalog":               true, // discovery: the host's pre-session slash catalog
 		"evener/subagentPreview":                  false,
 		"evener/tasks/list":                       false,
 		"evener/thread/forceStop":                 false,
@@ -399,7 +410,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/update/check":                     false,
 		"evener/upgrade":                          false,
 		"goal/set":                                false,
-		"model/list":                              false,
+		"model/list":                              true, // discovery: the host's own model inventory (ScopeBoth)
 		"notes/human/set":                         false,
 		"thread/clear":                            false,
 		"thread/compact/start":                    false,
@@ -530,10 +541,109 @@ func TestHostAdminAllowListNamesEverySettingsPaneMethod(t *testing.T) {
 		appwire.MethodEvenerAuthCredentialJsonSet,
 		appwire.MethodEvenerAuthDeviceStart,
 		appwire.MethodEvenerAuthDevicePoll,
+		// Host-dependent discovery: the remote settings panes' filesystem
+		// helpers and the spawn form's discovery calls (specs round seven).
+		appwire.MethodEvenerPathsComplete,
+		appwire.MethodEvenerPathValidate,
+		appwire.MethodEvenerDirsCreate,
+		appwire.MethodEvenerProjectsRecent,
+		appwire.MethodEvenerHarnessesList,
+		appwire.MethodEvenerSpawnSlashCatalog,
+		appwire.MethodEvenerGitHead,
+		appwire.MethodModelList,
 	} {
 		if _, ok := remoteHostAdminMethods[name]; !ok {
 			t.Errorf("settings-pane method %q is not in the proxy allow-list", name)
 		}
+	}
+}
+
+// TestHostAdminRequestForwardsDiscoveryMethodAndReturnsResult is the round-seven
+// regression for the settings panes and spawn form: a newly allowed discovery
+// method must reach the selected remote hub and return that hub's own answer.
+func TestHostAdminRequestForwardsDiscoveryMethodAndReturnsResult(t *testing.T) {
+	controller, _, calls := scriptedHostAdmin(t, true, func(method string, params json.RawMessage) hostAdminReply {
+		if method != appwire.MethodEvenerPathsComplete {
+			t.Errorf("remote method = %q, want %q", method, appwire.MethodEvenerPathsComplete)
+		}
+		if string(params) != `{"prefix":"/home/m4/pro"}` {
+			t.Errorf("forwarded params = %s, want the caller's params unchanged", params)
+		}
+		return hostAdminReply{result: appwire.PathsCompleteResponse{
+			Data: []string{"/home/m4/project"},
+		}}
+	})
+
+	out, err := controller.Request(context.Background(), appwire.HostRequestParams{
+		Host:   "m4",
+		Method: appwire.MethodEvenerPathsComplete,
+		Params: json.RawMessage(`{"prefix":"/home/m4/pro"}`),
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	var got appwire.PathsCompleteResponse
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode result %s: %v", out, err)
+	}
+	if len(got.Data) != 1 || got.Data[0] != "/home/m4/project" {
+		t.Fatalf("result = %+v, want the remote's own completion", got.Data)
+	}
+	forwarded := calls()
+	if len(forwarded) != 2 || forwarded[1].method != appwire.MethodEvenerPathsComplete {
+		t.Fatalf("forwarded calls = %+v, want initialize + evener/paths/complete", forwarded)
+	}
+}
+
+// TestHostAdminFanOutLeavesReconnectToTheSupervisorWhileOffline pins the retry
+// discipline: the fan-out must not drive the component-04 connector for a host
+// with no live channel (that would run an SSH preflight on every retry for a
+// terminally failed host), and must pick the host up once it reports online.
+func TestHostAdminFanOutLeavesReconnectToTheSupervisorWhileOffline(t *testing.T) {
+	var online atomic.Bool
+	var dials atomic.Int64
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		dials.Add(1)
+		return nil, errors.New("no live channel")
+	})
+	source.SetHostOnline(online.Load)
+
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, appsource.NewRegistry())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		controller.fanOut(ctx, source)
+	}()
+
+	// Offline: the connector must not be invoked at all, however long we wait.
+	time.Sleep(250 * time.Millisecond)
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("connector invoked %d times for an offline host, want 0", got)
+	}
+
+	// Online: the fan-out subscribes (and here fails, because the connector has
+	// no client), so the connector is at least asked.
+	online.Store(true)
+	deadline := time.Now().Add(5 * time.Second)
+	for dials.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("fan-out never attempted a subscription after the host came online")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fanOut did not return after its context was canceled")
 	}
 }
 

@@ -166,7 +166,7 @@ func TestRemoteHubSourceHostFanOutDoesNotBlockOnFullConsumer(t *testing.T) {
 	go func() {
 		defer close(done)
 		for range remoteHubSubBuffer * 4 {
-			source.publishHostNotification(appwire.Notification{Method: appwire.NotifyEvenerAuthUpdated})
+			source.publishHostNotification(client, appwire.Notification{Method: appwire.NotifyEvenerAuthUpdated})
 		}
 	}()
 	select {
@@ -177,6 +177,101 @@ func TestRemoteHubSourceHostFanOutDoesNotBlockOnFullConsumer(t *testing.T) {
 	if source.hostNotifyDropped.Load() == 0 {
 		t.Fatal("no notification was dropped against a full consumer buffer")
 	}
+}
+
+// TestRemoteHubSourceHostNotificationScopedToOwningClient pins the reconnect
+// safety property behind the dedicated teardown signal: delivery is scoped to
+// the client that owns the subscription, so the old client's teardown can never
+// race a send from the new client's drain goroutine (the send-on-closed-channel
+// panic), and one connection's traffic never leaks into another's subscription.
+func TestRemoteHubSourceHostNotificationScopedToOwningClient(t *testing.T) {
+	owner, _ := newScriptedClient(t, func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{}
+	})
+	other, _ := newScriptedClient(t, func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{}
+	})
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return owner, nil
+	})
+
+	subCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	notifications, err := source.SubscribeHostNotifications(subCtx)
+	if err != nil {
+		t.Fatalf("SubscribeHostNotifications: %v", err)
+	}
+
+	// Another client's drain goroutine must not reach this subscription.
+	source.publishHostNotification(other, appwire.Notification{Method: appwire.NotifyEvenerAuthUpdated})
+	select {
+	case notification := <-notifications:
+		t.Fatalf("subscription received %q published by a foreign client", notification.Method)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The owning client's drain goroutine still delivers.
+	source.publishHostNotification(owner, appwire.Notification{Method: appwire.NotifyEvenerAuthUpdated})
+	select {
+	case notification := <-notifications:
+		if notification.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("notification method = %q", notification.Method)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the owning client's notification")
+	}
+}
+
+// TestRemoteHubSourceHostSubscriptionClosesWhenClientStreamEndsWhilePumpBlocked
+// pins the teardown path a full consumer buffer would otherwise hide: a pump
+// parked on the out send must still observe the owning client's teardown and
+// close the returned channel, or the fan-out could never rebind.
+func TestRemoteHubSourceHostSubscriptionClosesWhenClientStreamEndsWhilePumpBlocked(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{closeConn: true}
+	})
+
+	subCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	// The returned channel is deliberately never read, so the pump fills out and
+	// parks on the send.
+	notifications, err := source.SubscribeHostNotifications(subCtx)
+	if err != nil {
+		t.Fatalf("SubscribeHostNotifications: %v", err)
+	}
+	client := source.hostSubClient(t)
+	for range remoteHubSubBuffer * 3 {
+		source.publishHostNotification(client, appwire.Notification{Method: appwire.NotifyEvenerAuthUpdated})
+	}
+
+	// Kill the client's connection mid-subscription; the drain loop exits and the
+	// blocked pump must follow.
+	var out json.RawMessage
+	_ = source.AdminCall(context.Background(), appwire.MethodEvenerInstanceList, nil, &out)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case _, ok := <-notifications:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("subscription channel was not closed while its pump was parked on a full out")
+		}
+	}
+}
+
+// hostSubClient returns the client of the single registered host subscription.
+func (s *RemoteHubSource) hostSubClient(t *testing.T) *appwire.Client {
+	t.Helper()
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for sub := range s.hostSubs {
+		return sub.client
+	}
+	t.Fatal("no host subscription registered")
+	return nil
 }
 
 // TestRemoteHubSourceSubscribeHostNotificationsDeliversAndUnregisters covers
