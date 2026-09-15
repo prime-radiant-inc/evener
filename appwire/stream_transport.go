@@ -131,7 +131,13 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	stop := context.AfterFunc(ctx, func() { _ = t.rw.Close() })
+	// Cancellation must be RECORDED before the close it performs is observable.
+	// Closing alone let a concurrent call observe the close first and latch the
+	// close error, so the transport then reported io.ErrClosedPipe for a teardown
+	// the caller had asked for. poison latches under the lock and only then
+	// closes, which is the order this needs; and because poison keeps the first
+	// cause, a frame that was already broken stays the reported one.
+	stop := context.AfterFunc(ctx, func() { t.poison(ctx.Err()) })
 	defer stop()
 
 	n, err := t.rw.Write(buf)
@@ -198,7 +204,9 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 	if err := ctx.Err(); err != nil {
 		return Message{}, err
 	}
-	stop := context.AfterFunc(ctx, func() { _ = t.rw.Close() })
+	// Same ordering as Send: record the cancellation before the close that
+	// unblocks this read can be observed by anyone else.
+	stop := context.AfterFunc(ctx, func() { t.poison(ctx.Err()) })
 	defer stop()
 	line, err := t.readLine()
 	if err != nil {
