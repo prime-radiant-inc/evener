@@ -95,6 +95,14 @@ describe("watchMeta", () => {
     expect(watchMeta(w)).toBe("every 10m · 1 delivery");
   });
 
+  test("a spent watch keeps its count and still says it is not armed", () => {
+    // A one-shot whose teardown is pending arrives as active:false with the
+    // delivery it already made. The count alone would read exactly like a watch
+    // still waiting, which is the one thing the collapsed line must not do.
+    const w = watch({ cadence: [{ kind: "after", seconds: 600 }], deliveries: 1, active: false });
+    expect(watchMeta(w)).toBe("after 10m · 1 delivery · not armed");
+  });
+
   test("output watches read on output plus armed state", () => {
     const w = watch({ output_match: "/DONE/", cadence: [{ kind: "output" }], active: true });
     expect(watchMeta(w)).toBe("on output · armed");

@@ -199,8 +199,14 @@ export function watchMeta(watch: NavigationWatchSummary, now?: number): string {
       .find((label) => label !== "");
     if (nextFire !== undefined) conditions.push(nextFire);
   }
-  const suffix = watch.deliveries > 0 ? deliveryCountLabel(watch.deliveries) : armedState(watch);
-  return [...conditions, suffix].filter((part) => part !== "").join(" · ");
+  const parts = [...conditions];
+  if (watch.deliveries > 0) parts.push(deliveryCountLabel(watch.deliveries));
+  // A spent watch keeps its count AND says it is not armed. The count alone
+  // reads exactly like a watch that is still waiting, which is the one thing a
+  // collapsed row must not do: a one-shot whose teardown is still pending
+  // arrives as active:false with the delivery it already made.
+  if (watch.deliveries === 0 || !watch.active) parts.push(armedState(watch));
+  return parts.filter((part) => part !== "").join(" · ");
 }
 
 // A watch's one facts sentence, built only from real fields. The armed segment
