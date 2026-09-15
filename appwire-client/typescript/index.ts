@@ -167,9 +167,12 @@ export {
   decideSubmitRoute,
   isTurnActive,
   NO_ACTIVE_TURN,
+  QUEUE_UNAVAILABLE,
+  SEND_UNAVAILABLE,
   type SessionControlName,
   type SessionControls,
   STEER_UNAVAILABLE,
+  STOP_UNAVAILABLE,
   sessionControls,
   TURN_RUNNING,
 } from "./submitRouting";
