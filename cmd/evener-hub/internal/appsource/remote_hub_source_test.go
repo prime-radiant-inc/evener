@@ -263,6 +263,40 @@ func TestRemoteHubSourceReadThread(t *testing.T) {
 	}
 }
 
+// Subscription fan-out is staged until 05b, so a controller read's subscribe
+// intent must not reach the remote hub: it would register a remote subscription
+// the controller can never retire. The controller-side relay gate is
+// RelayOnThreadRead, which reports false for this source.
+func TestRemoteHubSourceReadThreadStripsSubscription(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:     "t1",
+			Source: "local",
+			Evener: appwire.EvenerThread{Ref: "local:t1"},
+		}}}
+	})
+	if _, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{
+		Ref:                 "host:t1",
+		Subscribe:           true,
+		ReplaceSubscription: true,
+	}); err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	var remote appwire.ThreadReadParams
+	if err := json.Unmarshal(lastMethodCall(t, calls(), appwire.MethodThreadRead), &remote); err != nil {
+		t.Fatalf("decode remote params: %v", err)
+	}
+	if remote.Subscribe || remote.ReplaceSubscription {
+		t.Fatalf("forwarded subscription intent = %+v, want both cleared", remote)
+	}
+	if source.RelayOnThreadRead() {
+		t.Fatal("RelayOnThreadRead = true; the hub would start a staged relay on a plain read")
+	}
+	if source.SupportsThreadRelay() {
+		t.Fatal("SupportsThreadRelay = true; the hub would start a staged relay on a subscribe read")
+	}
+}
+
 func TestRemoteHubSourceListTurns(t *testing.T) {
 	source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
 		if method != appwire.MethodThreadTurnsList {
