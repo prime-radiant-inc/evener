@@ -1552,3 +1552,92 @@ func TestFailedDrainIsNotRetriedByALaterToolRoundOfTheSameInput(t *testing.T) {
 		t.Fatalf("carrier retry attempts = %d after one input with a tool round, want 1: the tool round drained the refused steer again before the backoff", got)
 	}
 }
+
+// TestRetryDuringAnUnrelatedTurnReturnsAStaleClaim is round 7's High, at the
+// moment the reviewer named: the retry fires while an unrelated turn runs, and
+// a steer an earlier carrier left claimed (its append and its claim return
+// both refused) is not that turn's to append. Row 5 preserved it for any turn
+// in flight; the table now preserves only the running turn's own claims.
+func TestRetryDuringAnUnrelatedTurnReturnsAStaleClaim(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-left-claimed",
+		Input:            []appwire.InputItem{{Type: "text", Text: "left claimed"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	// The stale claim, in its end state: claimed in the store, gone from the
+	// queue, no turn running when it was left.
+	if _, ok := s.popSteeringHead(); !ok {
+		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
+	}
+	// An unrelated turn is now the one in flight.
+	runningStartTurn(t, s, "running-turn", "do the thing")
+	s.mu.Lock()
+	s.state = SessionProcessing
+	s.mu.Unlock()
+
+	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
+	s.clock = clk
+	s.scheduleSteeringCarrierRetry()
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+
+	if state := s.clientMutations.snapshot().PendingExecutions["steer-left-claimed"].ExecutionState; state != "accepted" {
+		t.Fatalf("the steer reads %q while an unrelated turn runs, want accepted: row 5 preserved a claim that was not the running turn's", state)
+	}
+	if !s.hasPendingUserSteering() {
+		t.Fatal("the returned steer has no in-memory copy: the running turn's next drain cannot carry it")
+	}
+	if got := carrierRetryAttempts(s); got != 2 {
+		t.Fatalf("carrier retry attempts = %d, want 2: the returned steer re-armed the retry", got)
+	}
+}
+
+// TestReconcileWritesTheStoreOnlyWhenTheTableChangedSomething: rule B runs
+// the table at every input's settle, so a table that changed nothing must
+// cost no durable write.
+func TestReconcileWritesTheStoreOnlyWhenTheTableChangedSomething(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-accepted",
+		Input:            []appwire.InputItem{{Type: "text", Text: "runnable"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	writes := 0
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		writes++
+		return nil
+	}
+	s.reconcileClientSteering(steeringReconcileInputs{})
+	if writes != 0 {
+		t.Fatalf("store writes = %d for a table that changed nothing (row 4), want 0", writes)
+	}
+	// A stale claim with no turn in flight is row 8: one write returns it.
+	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	if _, ok := s.popSteeringHead(); !ok {
+		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
+	}
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		writes++
+		return nil
+	}
+	s.reconcileClientSteering(steeringReconcileInputs{})
+	if writes != 1 {
+		t.Fatalf("store writes = %d for a table that returned a steer (row 8), want 1", writes)
+	}
+	if state := s.clientMutations.snapshot().PendingExecutions["steer-accepted"].ExecutionState; state != "accepted" {
+		t.Fatalf("the steer reads %q, want accepted", state)
+	}
+}

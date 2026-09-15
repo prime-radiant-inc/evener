@@ -934,6 +934,7 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 	s.steeringQueue = s.steeringQueue[1:]
 	s.mu.Unlock()
 	if entry.ClientMutationID != "" {
+		var claimant string
 		if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 			pending, ok := snapshot.PendingExecutions[entry.ClientMutationID]
 			if !ok {
@@ -944,6 +945,8 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 			record := snapshot.Journal[entry.ClientMutationID]
 			record.ExecutionState = "claimed"
 			snapshot.Journal[entry.ClientMutationID] = record
+			// The turn this claim belongs to, for the steering table's row 5.
+			claimant = snapshot.ActiveTurnID
 			return nil
 		}); err != nil {
 			s.mu.Lock()
@@ -957,6 +960,7 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 			s.scheduleSteeringCarrierRetry()
 			return steeringMessage{}, false
 		}
+		s.recordSteeringClaimant(entry.ClientMutationID, claimant)
 		return entry, true
 	}
 	s.persistQueuesSnapshot()
@@ -1078,6 +1082,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			// Incorporated: whatever carried it, the steer is in the transcript
 			// and the store agrees, so a carrier retry episode that may have
 			// been running for it is over.
+			s.forgetSteeringClaimant(msg.ClientMutationID)
 			s.clearSteeringCarrierRetry()
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))

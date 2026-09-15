@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 
@@ -15,13 +16,21 @@ import (
 // on that lock (see InterruptClientMutation's sample of sessionRunning).
 type steeringReconcileInputs struct {
 	// inFlight reports that a turn is running in this process. popSteeringHead
-	// runs only inside a turn, so a claimed steer under a running turn is one
-	// that turn is appending right now, and the table leaves it alone. The
-	// wake-time and restore-time callers answer it from the session state and
-	// the active-turn slot (turnInFlight); the caller that IS the turn passes
-	// false and names itself in callerTurn -- it is handing a steer back, not
-	// racing one.
+	// runs only inside a turn, so a claimed steer the running turn claimed is
+	// one it is appending right now, and the table leaves it alone (row 5);
+	// claimant is what says whose claim it is. The wake-time and restore-time
+	// callers answer inFlight from the session state and the active-turn slot
+	// (turnInFlight); the caller that IS the turn passes false and names
+	// itself in callerTurn -- it is handing a steer back, not racing one.
 	inFlight bool
+	// claimant names the turn a claimed steer was popped under -- the active
+	// turn at popSteeringHead's claimed-mark, recorded in memory -- or "" for
+	// a claim this process did not make. The store cannot answer this: a
+	// pending steer's TurnID is the id it reserved at acceptance, which names
+	// its carrier but not the passenger turn that drains it, so from the
+	// store alone a passenger mid-append and a stale claim look the same. Nil
+	// means no claimant is known for any steer; the session wrapper fills it.
+	claimant func(clientMutationID string) string
 	// callerTurn is the id of the turn calling from inside its own run
 	// (consumeSteeringMessage's failure path), or empty. The slot rule never
 	// releases the caller's own name.
@@ -60,6 +69,25 @@ func (in steeringReconcileInputs) isRecorded(id string) bool {
 	return in.recorded != nil && in.recorded(id)
 }
 
+func (in steeringReconcileInputs) claimedBy(id string) string {
+	if in.claimant == nil {
+		return ""
+	}
+	return in.claimant(id)
+}
+
+// changed reports whether the table left the snapshot different from how it
+// found it. heldBefore is the hold as the table found it: the Stop's
+// re-assert on rows 2-4 is the one change the lists do not carry.
+func (out steeringReconcileOutcome) changed(heldBefore, heldAfter bool) bool {
+	return len(out.returned) > 0 || len(out.finalized) > 0 || len(out.dropped) > 0 ||
+		out.released || out.holdReleased || heldBefore != heldAfter
+}
+
+// errSteeringReconcileNoop is how the session wrapper tells the store that the
+// table changed nothing, so the store commits no snapshot for it.
+var errSteeringReconcileNoop = errors.New("steering reconciliation changed nothing")
+
 // reconcileClientSteering is the ONE place that decides what happens to a
 // client steer no turn is delivering. Every path that used to decide on its
 // own -- the interrupt's finalization, the carrier retry's timer, restore, the
@@ -77,10 +105,19 @@ func (in steeringReconcileInputs) isRecorded(id string) bool {
 //	2  accepted        yes        any       any     leave: the running turn drains it at its next boundary, or it is the running carrier's own claim window
 //	3  accepted        no         any       yes     leave parked; a Stop re-asserts SteeringHeld
 //	4  accepted        no         any       no      leave: runnable, the wake path owns it
-//	5  claimed         yes        any       any     leave: the turn that popped it is appending it
+//	5  claimed         own        any       any     leave: the turn that popped it is appending it
+//	5' claimed         other      -         -       a stale claim: the turn that popped it is gone, having recorded neither the steer nor its return; rows 6-8 decide it as if no turn were in flight
 //	6  claimed         no         yes       any     finalize: the append landed, only the incorporation write failed
 //	7  claimed         no         no        yes     return to accepted and park: the append never landed, a Stop or hold owns the next run
 //	8  claimed         no         no        no      return to accepted and re-arm the retry: the append never landed and nothing else will run it
+//
+// "own" and "other" split "in flight = yes" by steeringReconcileInputs.claimant:
+// own when the claimant is the active turn (the carrier appending the steer
+// it reserved, or a passenger turn appending a steer it drained), other when
+// it is any other name -- an earlier turn's, or none (a claim from before a
+// restart). A stale claim returned to accepted while a turn runs is
+// materialized into the queue (reflectDurableClientSteering) and the running
+// turn's next drain carries it, the same as any accepted steer.
 //
 // Two rules follow the rows, over the whole store rather than one steer:
 //
@@ -103,13 +140,11 @@ func (in steeringReconcileInputs) isRecorded(id string) bool {
 // whole contract reads in one place:
 //
 //	B  the input boundary: every input runs the table with no turn in flight
-//	   as it settles (processInputKindWithProvenance's idle tail). Row 5 leaves
-//	   a claimed steer alone while ANY turn runs -- a passenger mid-append and
-//	   a stale claim look the same from the store, both claimed under an id
-//	   that is not the running turn's -- so the turn that just ended is the
-//	   moment a stale claim (a carrier whose append and claim return both
-//	   failed) comes back through row 8. Nothing else runs the table after a
-//	   turn the steer did not belong to.
+//	   as it settles (processInputKindWithProvenance's idle tail). Row 5'
+//	   returns a stale claim while a turn runs only when the retry timer
+//	   fires during that turn; a claim left with the retry budget spent, or
+//	   under a turn shorter than the backoff, comes back through row 8 here.
+//	   The settle costs no durable write when the table changed nothing.
 //	L  the per-input latch: a steering append that fails inside an input
 //	   (consumeSteeringMessage) latches steeringDrainRefused for that input;
 //	   every later injection point of the same input -- the next tool round,
@@ -158,8 +193,9 @@ func reconcileClientSteering(snapshot *clientMutationSnapshot, in steeringReconc
 				snapshot.SteeringHeld = true
 			}
 		case "claimed":
-			if in.inFlight {
-				// Row 5.
+			if in.inFlight && in.claimedBy(id) == snapshot.ActiveTurnID {
+				// Row 5. (Row 5' falls through: another turn's claim is a
+				// stale one, decided by rows 6-8.)
 				continue
 			}
 			record := snapshot.Journal[id]
@@ -219,7 +255,8 @@ func steeringOrderNamesTurn(snapshot *clientMutationSnapshot, turnID string) boo
 // outcome: the queue is re-read from the store, a steer returned unparked
 // re-arms the carrier retry (row 8), and a store write that refused the result
 // re-arms it too, so the table runs again from the timer. The transcript
-// question is sampled here, before the mutate, unless the caller supplied it.
+// question and the claimants are sampled here, before the mutate, unless the
+// caller supplied them. A table that changed nothing commits no snapshot.
 func (s *Session) reconcileClientSteering(in steeringReconcileInputs) steeringReconcileOutcome {
 	if s.clientMutations == nil {
 		return steeringReconcileOutcome{}
@@ -227,21 +264,63 @@ func (s *Session) reconcileClientSteering(in steeringReconcileInputs) steeringRe
 	if in.recorded == nil {
 		in.recorded = s.recordedClientSteering()
 	}
+	if in.claimant == nil {
+		in.claimant = s.steeringClaimant
+	}
 	var out steeringReconcileOutcome
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		heldBefore := snapshot.SteeringHeld
 		out = reconcileClientSteering(snapshot, in)
+		if !out.changed(heldBefore, snapshot.SteeringHeld) {
+			return errSteeringReconcileNoop
+		}
 		return nil
 	})
+	if errors.Is(err, errSteeringReconcileNoop) {
+		return out
+	}
 	s.reflectDurableClientSteering()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("reconciling client steering failed: %v; the steering retry runs it again", err)})
 		s.scheduleSteeringCarrierRetry()
 		return steeringReconcileOutcome{}
 	}
+	for _, id := range out.returned {
+		s.forgetSteeringClaimant(id)
+	}
+	for _, id := range out.finalized {
+		s.forgetSteeringClaimant(id)
+	}
 	if out.rearm {
 		s.scheduleSteeringCarrierRetry()
 	}
 	return out
+}
+
+// recordSteeringClaimant remembers which turn popSteeringHead claimed a steer
+// under (steeringReconcileInputs.claimant).
+func (s *Session) recordSteeringClaimant(clientMutationID, turnID string) {
+	s.steeringRetryMu.Lock()
+	if s.steeringClaimants == nil {
+		s.steeringClaimants = map[string]string{}
+	}
+	s.steeringClaimants[clientMutationID] = turnID
+	s.steeringRetryMu.Unlock()
+}
+
+// forgetSteeringClaimant drops the record once the steer is no longer claimed
+// (incorporated, or returned to accepted).
+func (s *Session) forgetSteeringClaimant(clientMutationID string) {
+	s.steeringRetryMu.Lock()
+	delete(s.steeringClaimants, clientMutationID)
+	s.steeringRetryMu.Unlock()
+}
+
+// steeringClaimant answers steeringReconcileInputs.claimant from the record.
+func (s *Session) steeringClaimant(clientMutationID string) string {
+	s.steeringRetryMu.Lock()
+	defer s.steeringRetryMu.Unlock()
+	return s.steeringClaimants[clientMutationID]
 }
 
 // latchSteeringDrainRefused records, for the input being processed, that a
