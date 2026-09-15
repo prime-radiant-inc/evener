@@ -436,7 +436,7 @@ func TestForceStopSerializesResumeAndDeletionEntryPoints(t *testing.T) {
 					currentID, stableID = stableID, currentID
 				}
 				runDir := t.TempDir()
-				writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: currentID, ThreadID: currentID, WorkspaceRef: "local:" + stableID, StateDir: stateDir})
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: currentID, ThreadID: currentID, WorkspaceRef: "local:" + stableID, StateDir: stateDir})
 				process := &waitingForceStopProcess{entered: make(chan struct{}), release: make(chan struct{})}
 				spawned := make(chan struct{}, 1)
 				cfg := hubcore.WebConfig{RunDir: runDir, Past: past, ResumeLocks: hubcore.NewResumeLocks(),
@@ -1026,7 +1026,7 @@ func TestHubForceStopRejectsRequestsQueuedBeforeRecovery(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
 	var events []string
 	var resumes atomic.Int32
 	cfg := hubcore.WebConfig{RunDir: runDir, Past: past, ResumeLocks: hubcore.NewResumeLocks(),
@@ -1644,4 +1644,19 @@ func TestForceStopRejectsSoleExitedMarkerForSupersededTarget(t *testing.T) {
 	if got := locks.RecoveryState("B").ResumeSessionID; got != "C" {
 		t.Fatalf("durable current target overwritten: %q", got)
 	}
+}
+
+// exitedPID is the PID of a process that has already exited: a rendezvous
+// file naming it is a crashed daemon's on any host. A fixed number (4242 was
+// the habit) is dead on one machine and somebody's live process on another -
+// on a GitHub runner it was, and a hub with no roster of its own probes the
+// file's PID against the real process table, so the "dead daemon" fixture
+// read as a live one there.
+func exitedPID(t *testing.T) int {
+	t.Helper()
+	exited := exec.Command("true")
+	if err := exited.Run(); err != nil {
+		t.Fatalf("run a process to completion: %v", err)
+	}
+	return exited.Process.Pid
 }
