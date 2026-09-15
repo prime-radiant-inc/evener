@@ -320,9 +320,11 @@ authenticated AppWire socket:
 Read `result.thread.status.type`; repeat until it reaches the state the
 scenario needs. The same response carries
 `result.thread.evener.capabilities` and
-`result.thread.evener.activeTurnId`. A turn is only truly in flight once
-both the `active` status and the active turn id have landed
-(`submitRouting.ts:48-50`'s `isTurnActive`).
+`result.thread.evener.activeTurnId`. The `active` status alone says the
+session is working (`appwire-client/typescript/submitRouting.ts`'s
+`isTurnActive`); the turn id names the open transcript row and is briefly
+absent between the `turn/completed` and `turn/started` of back-to-back
+turns, so do not wait on it to decide idleness.
 
 ### Session operations
 

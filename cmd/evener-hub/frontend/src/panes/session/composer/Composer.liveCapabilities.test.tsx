@@ -339,8 +339,10 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
               activeTurnId: undefined,
               capabilities: { ...daemonCapabilities(true), interrupt: false },
               capabilitySource: "statusFrame",
-              // This frame names no in-flight turn, so there is nothing to steer.
-              showSteer: false,
+              // The frame advertised steer for this status, and the composer
+              // draws what the status says (isTurnActive): Steer present with
+              // Stop gone is the shape the report named.
+              showSteer: true,
               ended: false,
             },
           ],
@@ -464,4 +466,56 @@ test("the follow-up to a session that ended mid-turn can be sent", async () => {
   expect(submitButton().disabled).toBe(false);
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   expect(screen.queryByTestId("composer-stop")).toBeNull();
+});
+
+// The frames the projector's openTurn emits when the daemon runs the next
+// turn inline behind the one that just ended (a queued message, a notification
+// turn, a goal continuation, a drained steering carrier): the previous turn
+// closes, the next opens, the status is republished active. The thread status
+// never leaves active, and the hub relays each frame as its own WebSocket
+// message, so the composer renders between them. Issue #1330: Steer must not
+// blink out at that boundary, because the skill guard's turn-end barrier reads
+// exactly that button and the daemon is still mid-input.
+function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnId: string): void {
+  act(() => {
+    fake.emitNotification({
+      method: "turn/completed",
+      params: {
+        threadId: `thr_${REF}`,
+        ref: REF,
+        turn: { id: endedTurnId, status: "completed", itemsView: "" },
+      },
+    });
+  });
+  expect(screen.queryByTestId("composer-steer"), "Steer after turn/completed of the previous turn").not.toBeNull();
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: `thr_${REF}`,
+        ref: REF,
+        turn: { id: nextTurnId, status: "inProgress", itemsView: "full", startedAt: 6000 },
+      },
+    });
+  });
+  expect(screen.queryByTestId("composer-steer"), "Steer after turn/started of the next turn").not.toBeNull();
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities: daemonCapabilities(true) },
+    });
+  });
+  expect(screen.queryByTestId("composer-steer"), "Steer after the status frame").not.toBeNull();
+}
+
+test("Steer and Stop stay on screen across an inline turn boundary delivered one frame at a time", async () => {
+  const fake = await mountComposer("idle", daemonCapabilities(false));
+  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
+  await type("another thought");
+  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
+
+  emitInlineTurnBoundary(fake, "turn_5", "turn_6");
+
+  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBe("turn_6");
 });

@@ -44,14 +44,27 @@ export function decideSteerRoute(opts: {
   return "none";
 }
 
-// isTurnActive is the interrupt/steer/model-switch "busy" predicate
-// (thread-state.js's legacy EvenerThreadState.isBusy), deliberately NOT the
-// same gate as deriveSendQueueAvailability. That table keys on statusType
-// plus the caller's own pending-send flag (its tier 6), and never on
-// activeTurnId - see its own comment on why folding activeTurnId in would
-// reintroduce a race. Interrupt and steer need exactly the check it refuses:
-// a turn is only truly "in flight" once both the status flip AND the
-// turn/started notification (which populates activeTurnId) have landed.
-export function isTurnActive(statusType: string, activeTurnId: string | undefined): boolean {
-  return statusType === "active" && !!activeTurnId;
+// isTurnActive is the interrupt/steer "busy" predicate: is this session
+// working right now. It reads the thread status and nothing else, because the
+// status is the daemon's own answer to that question and the one the hub
+// derives the steer and interrupt capabilities from (server/appwire_runtime.go
+// appCapabilitiesLocked: `active := status == active`).
+//
+// It deliberately does NOT also require ThreadModel.activeTurnId. That id is
+// the transcript's bookkeeping of which turn row is open, and the projector
+// closes one row before it opens the next: when the daemon runs consecutive
+// turns inside one input (a queued message, a notification turn, a goal
+// continuation, a drained steering carrier) openTurn emits turn/completed then
+// turn/started, the hub relays each as its own message, and the status never
+// leaves active. Between those two frames the session is as busy as it was a
+// moment before; a predicate that read the id went false there, which took
+// Steer off the composer for a frame at every inline turn boundary and passed
+// the skill guard's turn-end barrier mid-input (issue #1330). The daemon says
+// idle with a thread/status/changed frame, and that frame always follows the
+// closing turn/completed, so the status alone is never late in that direction.
+//
+// It is still not deriveSendQueueAvailability's gate: that table folds the
+// caller's own pending-send flag (its tier 6) in, which is a routing concern.
+export function isTurnActive(statusType: string): boolean {
+  return statusType === "active";
 }

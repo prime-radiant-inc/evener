@@ -1223,10 +1223,9 @@ test("the timing caption is absent when nothing is running", async () => {
 // caption claiming it queues would be a lie; this pins the caption to
 // availability.canQueue, not to `busy` alone.
 // status can read "active" before turn/started has populated activeTurnId
-// (isTurnActive's own doc comment on that race window) - Stop/Steer stay
-// hidden there since neither is meaningful without a real turn to act on,
-// and the caption follows the same rule: nothing to explain the timing of
-// until Send/Steer's own ambiguity actually exists.
+// (a hydrate cut inside that window, or a session holding queued work) -
+// Stop/Steer follow the status there (isTurnActive), and the caption stays
+// absent all the same.
 test("the timing caption is absent while status reads active but no turn has actually started yet", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
@@ -1945,17 +1944,20 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "drain me" }] });
 });
 
-// The window after status flips "active" and before activeTurnId arrives is
-// where the two controls part company.
+// The window after status flips "active" and before activeTurnId arrives:
+// both controls follow the status, because both requests name no turn.
 //
-// Steer redirects a turn in flight and its handler needs the id, so it stays
-// behind isTurnActive. Stop does not: threadsStore.interrupt sends turn/interrupt
-// with the ref alone ("Stop is session-scoped, always"), and the daemon decides
-// on the session's own quiescence. Gating the BUTTON on an id the REQUEST does
-// not carry took Stop away from a session the user can see working, and
-// active-with-no-id is a state the wire really reaches: a session holding queued
-// work reports active with no turn running (kata vewa/5gdv).
-test("stop renders during the window after status flips active but before activeTurnId arrives, and steer does not", async () => {
+// threadsStore.interrupt sends turn/interrupt with the ref alone ("Stop is
+// session-scoped, always") and turn/steer carries ref and input; the daemon
+// decides each on the session's own state. Gating a BUTTON on an id the
+// REQUEST does not carry took Stop away from a session the user can see
+// working (kata vewa/5gdv: a session holding queued work reports active with
+// no turn running) and took Steer away for a frame at every inline turn
+// boundary, where the projector closes one turn row before it opens the next
+// while the status never leaves active (issue #1330). The handler's own
+// activeTurnId check still stands between a click and a drain the daemon
+// would reject: in this window it toasts rather than sending.
+test("stop and steer both render during the window after status flips active but before activeTurnId arrives", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -1971,9 +1973,11 @@ test("stop renders during the window after status flips active but before active
   }));
 
   await user.type(textarea(), "hi");
-  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
 
+  await user.click(screen.getByTestId("composer-steer"));
+  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 
   // And it is a working button, not a decoration: the request it sends names
@@ -1996,7 +2000,8 @@ test("stop renders during the window after status flips active but before active
 // (the SAME function, not a separately-gated path). The handler's own
 // internal activeTurnId check is therefore the only thing standing between
 // the keyboard and a doomed steer, and these two cases are where it earns
-// its keep: no turn is in flight, so no Steer button is rendered to gate on.
+// its keep: no turn is in flight, whether or not the status draws a Steer
+// button to gate on.
 test("Shift+Enter with no active turn id shows a 'no active turn' toast rather than attempting a doomed steer", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {

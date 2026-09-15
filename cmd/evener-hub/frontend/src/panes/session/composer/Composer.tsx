@@ -856,34 +856,24 @@ export function Composer({ ref, focused }: ComposerProps) {
     ended && canSendWhenEnded && !tableAvailability.canSend && !tableAvailability.canQueue
       ? { canSend: true, canQueue: false }
       : tableAvailability;
-  const busy = isTurnActive(model.status.type, activeTurnId);
+  // "Is this session working" is the thread status alone (isTurnActive's own
+  // comment on why activeTurnId is not part of it). turn/interrupt and
+  // turn/steer both name no turn (appwire v3 dropped expectedTurnId from every
+  // control mutation) and the daemon answers each on the session's own state,
+  // so neither button is gated on an id the request does not carry: that could
+  // only withhold a control the daemon would have accepted, and did, for a
+  // frame at every inline turn boundary (issue #1330).
+  const busy = isTurnActive(model.status.type);
   const queueDepth = model.queue?.depth ?? 0;
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
 
-  // Stop is SESSION-scoped and Steer is not, so they do not share a gate.
-  //
-  // Stop asks the session to stop working. turn/interrupt names no turn
-  // (appwire v3 dropped expectedTurnId from every control mutation) and the
-  // daemon answers on the session's own quiescence, so the only question the
-  // composer has to answer is "is this session working" -- which is the status
-  // alone. It deliberately does NOT use `busy`: isTurnActive additionally
-  // requires activeTurnId, and gating the BUTTON on an id the REQUEST does not
-  // carry can only ever withhold a Stop the daemon would have accepted.
-  //
-  // Active-with-no-id is a state the wire really reaches -- a session holding
-  // queued work reports active with no turn running, for one. (An earlier
-  // version of this comment attributed it to a turn reservation the daemon
-  // takes at turn/start; that reservation has no production callers and is not
-  // the cause. The gate is wrong for the reason above, which does not depend on
-  // how the state is reached.)
-  //
-  // Steer keeps `busy`. It redirects a turn in flight, and with none running
-  // Send already covers "say something now" -- a presentation choice rather
-  // than a precondition, since an idle session would accept a steer and land
-  // it in the next turn.
-  const showStop = model.status.type === "active" && model.capabilities.interrupt;
+  // Stop and Steer share the gate and part on capability alone: the hub
+  // derives both `interrupt` and `steer` from the same active status
+  // (server/appwire_runtime.go appCapabilitiesLocked), so the pair the composer
+  // draws is the pair the daemon advertised for this status.
+  const showStop = busy && model.capabilities.interrupt;
   const showSteer = busy && model.capabilities.steer;
   // The one state kata 5gdv is about, described by the only code that can see
   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
