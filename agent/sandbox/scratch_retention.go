@@ -706,9 +706,16 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 			continue
 		}
 		lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
-		if err != nil || contended {
+		if contended {
 			// A live lease owns the directory; leave its pin for the collector,
 			// which acquires the lease before deciding.
+			continue
+		}
+		if err != nil {
+			// A confirmed contention reads as "still owned"; anything else (open,
+			// stat or chmod failure) means the lease could not be inspected, so the
+			// release must not look successful.
+			failures = append(failures, fmt.Errorf("sandbox: acquire retention lease for %q: %w", dir, err))
 			continue
 		}
 		// Re-verify identity under the held lease: remove the pin only when it is

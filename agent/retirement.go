@@ -61,11 +61,12 @@ type RetirementController struct {
 	timeout       time.Duration
 	eligibleSince time.Time
 	failure       string
-	// blockers is the refusal evidence from the most recent TryClaim attempt.
-	// It is carried only on claim snapshots (the immediate retire response and
-	// the early returns while admission is closed). It is deliberately NOT read
-	// by Snapshot: a status request must never present an earlier refusal's
-	// evidence as the current obligation set.
+	// blockers is the refusal evidence from the current TryClaim attempt. It is
+	// carried only on claim snapshots (the immediate retire response). It is
+	// cleared when an attempt starts, so an early return that does not re-run
+	// the evidence never presents an earlier refusal's obligations as current.
+	// It is deliberately NOT read by Snapshot: a status request must never
+	// present an earlier refusal's evidence as the current obligation set.
 	blockers []RetirementBlocker
 	claim    *RetirementClaim
 }
@@ -239,7 +240,7 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 	return c.snapshotWithBlockersLocked(nil)
 }
 
-// claimSnapshotLocked carries the last claim attempt's refusal evidence. Only
+// claimSnapshotLocked carries the current claim attempt's refusal evidence. Only
 // TryClaim's own return values use it, so a later status Snapshot can never
 // present a settled obligation's old refusal as current evidence.
 func (c *RetirementController) claimSnapshotLocked() RetirementSnapshot {
@@ -284,6 +285,12 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		now = c.clock.Now()
 	}
 	c.mu.Lock()
+	// Refusal evidence belongs to the attempt that produced it. A prior attempt's
+	// blockers must not surface on any path that does not re-run the evidence
+	// (the early returns below); the live c.active leases are appended separately
+	// by snapshotWithBlockersLocked, so clearing here cannot drop a live
+	// obligation and cannot double-count one.
+	c.blockers = nil
 	if c.phase != "resident" {
 		snapshot := c.claimSnapshotLocked()
 		c.mu.Unlock()

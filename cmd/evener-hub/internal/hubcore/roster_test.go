@@ -1445,6 +1445,58 @@ func (p *survivingOwnerProber) Probe(e rendezvous.Entry) ProbeResult {
 	return ProbeResult{SessionID: e.SessionID, Status: "restartRequired", OK: true}
 }
 
+// TestRosterIdentityUsesCanonicalOwnershipFingerprint is the regression test for
+// the second hand-rolled identity comparison: the roster must decide exact
+// daemon ownership through the same canonical fingerprint the daemon and hub
+// enforce (rendezvous.OwnershipFingerprint), not a hand-picked field subset.
+// The old roster copy ignored WorkingDir and StateDir (so a daemon that merely
+// moved its working or state directory still confirmed as the same owner) while
+// including HubToken, which the canonical fingerprint deliberately excludes.
+// The assertions go through the public HasConfirmedEntry route, not the
+// unexported helper.
+func TestRosterIdentityUsesCanonicalOwnershipFingerprint(t *testing.T) {
+	base := rendezvous.Entry{
+		PID:          4242,
+		Address:      "127.0.0.1:50001",
+		Endpoint:     "ws://daemon/rpc",
+		Protocol:     appwire.ProtocolVersion,
+		SourceID:     "local",
+		ThreadID:     "thread-1",
+		SessionID:    "session-1",
+		InstanceID:   "instance-1",
+		WorkspaceRef: "local/thread-1",
+		WorkingDir:   "/work/a",
+		StateDir:     "/state/a",
+		HubToken:     "token-a",
+		StartedAt:    time.Unix(1700000000, 0).UTC(),
+	}
+	roster := NewRosterWithEntries(LiveEntry{Entry: base, SessionID: base.SessionID})
+	if !roster.HasConfirmedEntry(base) {
+		t.Fatal("identical entry did not confirm its own route")
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*rendezvous.Entry)
+		confirm bool
+	}{
+		// Fields the hand-rolled copy omitted: an ownership change must no longer
+		// confirm the stale route.
+		{"WorkingDir", func(e *rendezvous.Entry) { e.WorkingDir = "/work/b" }, false},
+		{"StateDir", func(e *rendezvous.Entry) { e.StateDir = "/state/b" }, false},
+		// Field the hand-rolled copy wrongly included: the canonical fingerprint
+		// treats it as outside exact ownership, so it must still confirm.
+		{"HubToken", func(e *rendezvous.Entry) { e.HubToken = "token-b" }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := base
+			tc.mutate(&changed)
+			if got := roster.HasConfirmedEntry(changed); got != tc.confirm {
+				t.Fatalf("HasConfirmedEntry(%s changed)=%v, want %v", tc.name, got, tc.confirm)
+			}
+		})
+	}
+}
+
 func TestRosterRefreshEntryDoesNotSucceedWithoutRouteAfterNewerMiss(t *testing.T) {
 	dir := t.TempDir()
 	entry := rendezvous.Entry{PID: 1001, SessionID: "parent", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}

@@ -118,6 +118,65 @@ func TestScratchRetentionUnreferencedReleasedStillCollected(t *testing.T) {
 	}
 }
 
+// TestScratchRetentionReportsLeaseAcquisitionFailure is the regression test for
+// the swallowed lease error: ReleaseScratchRetention must continue for confirmed
+// contention (a genuinely held lease is left for the collector) but must REPORT
+// a real acquisition failure (open/stat/chmod), so a release cannot look
+// successful when a lease could not be inspected or released.
+func TestScratchRetentionReportsLeaseAcquisitionFailure(t *testing.T) {
+	t.Run("contention_stays_quiet", func(t *testing.T) {
+		base, workspace := scratchRetentionBase(t)
+		owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+		scratch, err := NewSessionScratch(base, workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = scratch.Cleanup() }()
+		ref := ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}
+		if err := scratch.Pin(owner, ref); err != nil {
+			t.Fatal(err)
+		}
+		// The live lease is still held (Retain was not called), so the release
+		// must skip the directory without reporting a failure.
+		if err := ReleaseScratchRetention(owner); err != nil {
+			t.Fatalf("a held lease must not be reported as a release failure: %v", err)
+		}
+	})
+
+	t.Run("non_contention_error_reported", func(t *testing.T) {
+		base, workspace := scratchRetentionBase(t)
+		owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+		scratch, err := NewSessionScratch(base, workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref := ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}
+		if err := scratch.Pin(owner, ref); err != nil {
+			t.Fatal(err)
+		}
+		if err := scratch.Retain(); err != nil {
+			t.Fatal(err)
+		}
+		// Replace the lease file with a directory: acquireScratchLease's
+		// open(O_RDWR) of a directory fails for a reason that is not contention
+		// (EWOULDBLOCK/EAGAIN), so the release must surface it.
+		leasePath := filepath.Join(scratch.Dir, sessionScratchLeaseName)
+		if err := os.Remove(leasePath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(leasePath, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		err = ReleaseScratchRetention(owner)
+		if err == nil {
+			t.Fatal("non-contention lease failure was silently swallowed as contention")
+		}
+		if !strings.Contains(err.Error(), scratch.Dir) {
+			t.Fatalf("reported error does not identify the affected directory: %v", err)
+		}
+	})
+}
+
 // TestScratchRetentionPinFailurePreventsLeaseRelease proves a failed pin leaves
 // the live ownership untouched: the lease stays held and no reference is
 // committed, so the allocation cannot be silently collected around failure.

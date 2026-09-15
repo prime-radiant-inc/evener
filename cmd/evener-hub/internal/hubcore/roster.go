@@ -763,10 +763,13 @@ func preferLiveEntry(candidate, current LiveEntry) bool {
 	return candidate.PID > current.PID
 }
 
+// sameDaemonIdentity compares the process identity of two rendezvous entries
+// through the single exact-ownership authority, rendezvous.OwnershipFingerprint.
+// A hand-picked field list drifts from that authority (the previous copy here
+// omitted WorkingDir and StateDir while including HubToken), so the roster
+// would confirm or preserve the wrong owner after an identity change.
 func sameDaemonIdentity(a, b rendezvous.Entry) bool {
-	return a.PID == b.PID && a.Protocol == b.Protocol && a.Endpoint == b.Endpoint && a.Address == b.Address &&
-		a.SourceID == b.SourceID && a.ThreadID == b.ThreadID && a.SessionID == b.SessionID &&
-		a.WorkspaceRef == b.WorkspaceRef && a.InstanceID == b.InstanceID && a.HubToken == b.HubToken && a.StartedAt.Equal(b.StartedAt)
+	return rendezvous.OwnershipFingerprint(a) == rendezvous.OwnershipFingerprint(b)
 }
 
 // HasConfirmedEntry reports whether the exact daemon identity has a live route.

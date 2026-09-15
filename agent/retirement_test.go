@@ -221,6 +221,56 @@ func hasRetirementBlocker(blockers []RetirementBlocker, category string) bool {
 	return false
 }
 
+// TestRetirementEarlyReturnDoesNotPresentResolvedBlocker is the regression test
+// for the stale early-return snapshot: a refused claim's blockers are evidence
+// for that attempt, not controller state that a later attempt inherits. When a
+// subsequent TryClaim early-returns while work is admitted, it must present the
+// live obligation set — not an obligation that has since resolved. The Hub
+// resident UI renders RetirementSnapshot.Blockers verbatim, so the observable
+// consequence is asserted on the returned snapshot content.
+func TestRetirementEarlyReturnDoesNotPresentResolvedBlocker(t *testing.T) {
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	c := retirementEvidenceController(t, root)
+
+	// A queued input is a real evidence obligation (not an admission lease), so
+	// the first attempt runs the full evidence path and refuses.
+	root.mu.Lock()
+	root.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
+	root.mu.Unlock()
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("queued input did not refuse the claim: claim=%v err=%v state=%+v", claim, err, state)
+	}
+	if !hasRetirementBlocker(state.Blockers, "input") {
+		t.Fatalf("refusal lost the queued-input blocker: %+v", state)
+	}
+
+	// The obligation resolves without any further claim attempt.
+	root.mu.Lock()
+	root.inputQueue = nil
+	root.mu.Unlock()
+
+	// Admitted work forces the next manual attempt down the early-return gate
+	// (len(c.active) != 0) instead of re-running evidence.
+	release, err := c.BeginMutation(root.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	_, snapshot, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("early-return claim: %v", err)
+	}
+	if hasRetirementBlocker(snapshot.Blockers, "input") {
+		t.Fatalf("early return re-presented a resolved obligation: %+v", snapshot.Blockers)
+	}
+	if !hasRetirementBlocker(snapshot.Blockers, "turn") {
+		t.Fatalf("early return dropped the live obligation: %+v", snapshot.Blockers)
+	}
+}
+
 // A preparation belongs to one root generation, not just a preparing phase.
 // Deliberately invalidate each private identity component to exercise the exact
 // claim check independently of pointer equality (ordinary callers cannot edit it).
