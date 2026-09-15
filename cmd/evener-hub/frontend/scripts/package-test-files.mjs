@@ -234,11 +234,6 @@ export function describeUnaliasedImports(bare, aliases) {
   const offenders = [];
   for (const [specifier, files] of [...bare].sort()) {
     if (SELF_RESOLVING.has(specifier)) continue;
-    // The first alias that matches, in config order, which is how Rollup's
-    // alias plugin resolves. A package root entry does not stand in for the
-    // subpath entry beside it -- it maps at index.ts and cannot serve one --
-    // and describeAliasOrder refuses an ordering where it would be reached
-    // first anyway.
     if (firstAliasMatch(specifier, aliases) !== null) continue;
     offenders.push(`${specifier}, imported by ${files.join(", ")}`);
   }

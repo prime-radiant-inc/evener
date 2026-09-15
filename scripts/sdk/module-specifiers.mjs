@@ -1,12 +1,12 @@
 // One reader for "where does this file name a module, and how".
 //
-// Five tools in this repo answer that question -- the SDK import rewriter, the
-// value-import derivation behind resolve-check.mjs, the package-test gate's
-// graph walk, the native scripts' resolution check, and (in its own way) the
-// grep gate. Each grew its own AST sweep, and each missed a different form: a
-// no-substitution template literal, a require(), a vi.mock(), a specifier on
-// the line after the call that opens it. A form nobody reads is a form that
-// slips past every one of them in silence, so they read from here instead.
+// Four tools in this repo answer that question -- the SDK import rewriter, the
+// value-import derivation, the package-test gate's graph walk, and the native
+// scripts' resolution check. Each grew its own AST sweep, and each missed a
+// different form: a no-substitution template literal, a require(), a vi.mock(),
+// a specifier on the line after the call that opens it. A form nobody reads is
+// a form that slips past every one of them in silence, so they read from here
+// instead.
 //
 // `ts` is a parameter rather than an import: these callers resolve TypeScript
 // from four different places (the frontend's node_modules, the package's own,

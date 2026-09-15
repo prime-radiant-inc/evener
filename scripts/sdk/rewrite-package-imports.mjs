@@ -155,9 +155,6 @@ function collectExports(file, seen) {
   return names;
 }
 
-// Every module-specifier node in a file that could name the package, with the
-// bindings it brings in. `kind` drives the error messages and the namespace
-// rule: a namespace object cannot come from a root re-export.
 // Biome sorts named members case-insensitively; match it so the native trees,
 // which no formatter gate reaches, come out looking like the web tree.
 function compareMembers(a, b) {
@@ -254,14 +251,11 @@ function mergeDuplicateImports(file, text, conflicts) {
       text: renderImport(members, first.specifier, first.typeOnly, indent),
     });
     for (const entry of rest) {
-      // From the full start, so the comment ABOVE a removed duplicate goes
-      // with it. Starting at the statement left that comment behind, where it
-      // reattached to whatever line followed and read as documenting it.
-      // Trailing newline included, so no blank line is left either.
-      // getFullStart() sits immediately after the PREVIOUS statement, before
-      // the newline that ends its line. Advance to the start of the first line
-      // this statement's trivia occupies, so the line above keeps its
-      // terminator and only whole lines are removed.
+      // Remove the statement and the comment above it (getFullStart reaches
+      // back over its leading trivia), by whole lines: getFullStart lands just
+      // after the previous statement, before that line's newline, so advance to
+      // the first line the trivia actually occupies and take the trailing
+      // newline too -- the line above keeps its terminator and no blank is left.
       let start = entry.statement.getFullStart();
       for (let scan = start; scan < text.length && /\s/.test(text[scan]); ) {
         scan += 1;

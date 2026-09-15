@@ -606,7 +606,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
 // graph, so there is no fixture to fall behind: a specifier with values is
 // imported by name, one used only as a whole module is imported for effect.
 function runConsumerResolveCheck() {
-  const fixture = "resolve-check.mjs";
+  const programFile = "resolve-imports.mjs";
   const usage = consumerPackageUsage(resolve(packageDir, "..", ".."));
   // Each name is aliased under its specifier's index: docImageURL is a value of
   // both the root and ./docContent, and importing it twice under one name would
@@ -619,8 +619,8 @@ function runConsumerResolveCheck() {
       return `import { ${imported.join(", ")} } from "${specifier}";\nvoid [${locals.join(", ")}];`;
     })
     .join("\n")}\n`;
-  writeFileSync(join(consumerDir, fixture), program);
-  run(process.execPath, [join(consumerDir, fixture)], consumerDir);
+  writeFileSync(join(consumerDir, programFile), program);
+  run(process.execPath, [join(consumerDir, programFile)], consumerDir);
 }
 
 try {
