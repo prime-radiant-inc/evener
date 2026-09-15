@@ -187,6 +187,7 @@ func validateHostConfigs(hosts []HostConfig) error {
 			Roots:      h.Roots,
 		})
 		hosts[i].SSH = entry.SSH
+		hosts[i].Name = entry.Name
 		hosts[i].User = entry.User
 		hosts[i].EvenerPath = entry.EvenerPath
 		hosts[i].ConfigPath = entry.ConfigPath

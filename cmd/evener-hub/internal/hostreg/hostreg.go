@@ -93,6 +93,7 @@ func ValidateName(name string) error {
 // that validates through this package must apply the same normalization to the
 // values it keeps, or it hands consumers what the registry refused to store.
 func Normalize(entry Host) Host {
+	entry.Name = strings.TrimSpace(entry.Name)
 	entry.SSH = strings.TrimSpace(entry.SSH)
 	entry.User = strings.TrimSpace(entry.User)
 	entry.EvenerPath = strings.TrimSpace(entry.EvenerPath)
@@ -176,6 +177,10 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	if err := validateEntry(entry); err != nil {
 		return err
 	}
+	upstreamNames, err := normalizeUpstreams(upstreamNames)
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.hosts[entry.Name]; ok {
@@ -195,6 +200,10 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 // component 05 records what the attach handshake learned about them. A refusal
 // leaves the recorded edges unchanged.
 func (r *Registry) SetUpstreams(name string, upstreamNames []string) error {
+	upstreamNames, err := normalizeUpstreams(upstreamNames)
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.hosts[name]; !ok {
@@ -205,6 +214,25 @@ func (r *Registry) SetUpstreams(name string, upstreamNames []string) error {
 	}
 	r.edges[name] = append([]string(nil), upstreamNames...)
 	return nil
+}
+
+// normalizeUpstreams trims upstream names and refuses ones that are empty after
+// trimming. Storing them verbatim made " b " a key distinct from "b", so the
+// padded spelling looked like a host with no edges and a cycle through it went
+// undetected — while recording an edge nothing could ever resolve.
+func normalizeUpstreams(names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%w: empty upstream name", ErrInvalidName)
+		}
+		out = append(out, trimmed)
+	}
+	return out, nil
 }
 
 // checkCycleLocked walks upstream edges from the candidate. It refuses if it

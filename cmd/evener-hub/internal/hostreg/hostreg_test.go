@@ -272,6 +272,33 @@ func TestSetUpstreamsRefusalLeavesEdgesUnchanged(t *testing.T) {
 	}
 }
 
+// Upstream names are normalized like everything else: a padded spelling stored
+// verbatim would be a key distinct from its trimmed form, so the edge would look
+// like a leaf and a cycle through it would go undetected.
+func TestUpstreamNamesAreNormalized(t *testing.T) {
+	r, err := New([]Host{host("a"), host("b")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.SetUpstreams("b", []string{"  a  "}); err != nil {
+		t.Fatalf("SetUpstreams: %v", err)
+	}
+	// The edge is live under the trimmed name, so closing the cycle is refused.
+	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
+		t.Fatalf("cycle through a padded upstream = %v, want ErrHostCycle", err)
+	}
+}
+
+func TestUpstreamNamesRejectBlank(t *testing.T) {
+	r, err := New([]Host{host("a")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.SetUpstreams("a", []string{"   "}); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("SetUpstreams with a blank upstream = %v, want ErrInvalidName", err)
+	}
+}
+
 // An upstream the registry has no entry for is a leaf: nothing beyond it can be
 // traversed, which is the documented v1 limit on cross-hub cycle detection.
 func TestUnknownUpstreamIsALeaf(t *testing.T) {
