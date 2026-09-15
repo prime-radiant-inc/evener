@@ -67,8 +67,22 @@ func (s *RemoteHubSource) ID() string { return s.id }
 // RelayOnThreadRead reports that a plain thread/read must not start a relay.
 // SubscribeThread is staged until 05b, and the hub's default relay policy is
 // true, so without this override every successful remote read would be
-// discarded by startRelay's notImplemented SubscribeThread call.
+// discarded by startRelay's notImplemented SubscribeThread call. It is deleted
+// when 05b wires a real subscription.
 func (s *RemoteHubSource) RelayOnThreadRead() bool { return false }
+
+// SupportsThreadRelay reports that this source has no relay fan-out at all, so
+// the web client's subscribe:true first-hydration read is not relayed either;
+// startRelay would call the notImplemented SubscribeThread and fail the read.
+// It is deleted when 05b wires a real subscription.
+func (s *RemoteHubSource) SupportsThreadRelay() bool { return false }
+
+// EnrichThreadFileBackedImages reports that this source's threads name files on
+// the remote host, not this one. The hub's file-backed output-image pass reads
+// the thread's CWD on the local filesystem, so running it on a remote thread
+// would probe controller-local paths named by remote data; the remote hub has
+// already enriched its own replies.
+func (s *RemoteHubSource) EnrichThreadFileBackedImages() bool { return false }
 
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace.
@@ -224,11 +238,24 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 	remote := params
 	remote.Ref = ref.String()
 	remote.ThreadID = ref.ThreadID
+	remote = stripRemoteSubscription(remote)
 	var out appwire.ThreadReadResponse
 	if err := s.call(ctx, appwire.MethodThreadRead, remote, &out); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
 	return out, nil
+}
+
+// stripRemoteSubscription removes the controller's subscription intent from a
+// remote read. Subscription fan-out is staged until 05b (SubscribeThread is not
+// implemented), so forwarding Subscribe would make the remote hub register a
+// persistent subscription the controller can never manage or retire — an
+// orphan that outlives the read. The controller-side relay gate is
+// RelayOnThreadRead; this only keeps the intent off the wire.
+func stripRemoteSubscription(params appwire.ThreadReadParams) appwire.ThreadReadParams {
+	params.Subscribe = false
+	params.ReplaceSubscription = false
+	return params
 }
 
 func (s *RemoteHubSource) ListTurns(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
@@ -265,6 +292,20 @@ var remoteHubItemIncarnationSequence atomic.Uint64
 type remoteItemPagingState struct {
 	identity appitempaging.CursorIdentity
 	native   string
+	// candidates is the page the state was recorded from. It is retained only
+	// for a complete page (native == "") so the hub's size packer can still mint
+	// a continuable cursor: when packing drops the oldest selected items it mints
+	// one from identity, and that continuation must be answered locally from
+	// these candidates rather than rejected as stale.
+	candidates []appitempaging.TranscriptItemCandidate
+	// complete marks a page the remote hub returned in full (it named no older
+	// cursor).
+	complete bool
+	// head is the newest position observed for this thread at the last fresh
+	// page, so a later fresh page whose newest position precedes it is
+	// recognized as a divergent transcript and the incarnation rotates.
+	head    appwire.ThreadItemPosition
+	hasHead bool
 }
 
 // remoteItemPagingCapacity bounds retained continuations. An evicted entry
@@ -292,21 +333,6 @@ func (c *remoteItemPagingCache) put(key string, state remoteItemPagingState) {
 		oldest := c.order[0]
 		c.order = c.order[1:]
 		delete(c.entries, oldest)
-	}
-}
-
-func (c *remoteItemPagingCache) evict(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, exists := c.entries[key]; !exists {
-		return
-	}
-	delete(c.entries, key)
-	for index, candidate := range c.order {
-		if candidate == key {
-			c.order = append(c.order[:index], c.order[index+1:]...)
-			return
-		}
 	}
 }
 
@@ -349,12 +375,16 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
-		return s.recordRemoteItemPage(key, s.mintRemoteItemIdentity(key), candidates, native)
+		identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
+		return s.recordRemoteItemPage(key, identity, candidates, native, head, hasHead)
 	}
 
 	state, ok := s.itemPaging.peek(key)
-	if !ok || state.native == "" {
+	if !ok {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	if state.complete {
+		return continueCompleteRemoteItemPage(params.Cursor, state, itemLimit)
 	}
 	before, err := appitempaging.DecodeCursor(params.Cursor, state.identity)
 	if err != nil {
@@ -373,7 +403,7 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	return s.recordRemoteItemPage(key, state.identity, candidates, next)
+	return s.recordRemoteItemPage(key, state.identity, candidates, next, state.head, state.hasHead)
 }
 
 // ReadItemCandidates materializes a remote item-mode thread read into the
@@ -388,6 +418,7 @@ func (s *RemoteHubSource) ReadItemCandidates(ctx context.Context, params appwire
 	remote.Ref = ref.String()
 	remote.ThreadID = ref.ThreadID
 	remote.IncludeTurns = true
+	remote = stripRemoteSubscription(remote)
 	var out appwire.ThreadReadResponse
 	if err := s.call(ctx, appwire.MethodThreadRead, remote, &out); err != nil {
 		return ItemCandidateResult{}, err
@@ -412,7 +443,8 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	return s.recordRemoteItemPage(key, s.mintRemoteItemIdentity(key), candidates, response.OlderCursor)
+	identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
+	return s.recordRemoteItemPage(key, identity, candidates, response.OlderCursor, head, hasHead)
 }
 
 // remoteItemPage issues one remote item-mode turn page and returns its
@@ -429,15 +461,92 @@ func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.Thr
 	return candidates, out.NextCursor, nil
 }
 
+// continueCompleteRemoteItemPage answers a continuation of a page the remote hub
+// returned in full. No older remote page exists, so the retained candidate
+// snapshot is re-served locally before the caller's boundary, exactly as the
+// local daemon source does for a complete snapshot. The remote hub is not
+// called; the same identity and snapshot keep further continuations answerable.
+func continueCompleteRemoteItemPage(cursor string, state remoteItemPagingState, itemLimit int) (ItemCandidateResult, error) {
+	before, err := appitempaging.DecodeCursor(cursor, state.identity)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	selected, hasOlder, err := appitempaging.SelectCandidates(state.candidates, &before, itemLimit)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if len(selected) == 0 {
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	window := appitempaging.TranscriptItemWindow{Candidates: selected}
+	if hasOlder {
+		window.OlderCursor, err = appitempaging.EncodeCursor(state.identity, selected[0].Position)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+	}
+	return ItemCandidateResult{Candidates: window, Identity: state.identity, Exhausted: !hasOlder}, nil
+}
+
+// remoteItemPageHead returns the newest position of an item page, which is the
+// last candidate of the strictly chronological window.
+func remoteItemPageHead(candidates []appitempaging.TranscriptItemCandidate) (appwire.ThreadItemPosition, bool) {
+	if len(candidates) == 0 {
+		return appwire.ThreadItemPosition{}, false
+	}
+	return candidates[len(candidates)-1].Position, true
+}
+
+// remotePositionCompare orders two positions the way the paging package does:
+// negative when a is older, zero when equal, positive when newer.
+func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
+	if a.Entry < b.Entry || (a.Entry == b.Entry && a.Item < b.Item) {
+		return -1
+	}
+	if a == b {
+		return 0
+	}
+	return 1
+}
+
+// remoteItemPageIdentity chooses the controller-owned identity for a fresh
+// remote page. The incarnation is reused while the page's newest position is
+// not older than the retained one: an untouched or appended transcript keeps
+// outstanding cursors valid, so a re-read between a page and a scroll no longer
+// invalidates them. A page that starts before the retained head is a rewrite or
+// truncation, so the incarnation rotates and outstanding cursors fail closed.
+// The remote hub stays the authority for its own opaque cursor; this fence only
+// stops the controller's cursor namespace from churning on every read.
+func (s *RemoteHubSource) remoteItemPageIdentity(key string, candidates []appitempaging.TranscriptItemCandidate) (appitempaging.CursorIdentity, appwire.ThreadItemPosition, bool) {
+	head, hasHead := remoteItemPageHead(candidates)
+	if !hasHead {
+		return s.mintRemoteItemIdentity(key), appwire.ThreadItemPosition{}, false
+	}
+	if state, ok := s.itemPaging.peek(key); ok && state.hasHead && remotePositionCompare(head, state.head) >= 0 {
+		return state.identity, head, true
+	}
+	return s.mintRemoteItemIdentity(key), head, true
+}
+
 // recordRemoteItemPage builds the controller window for one remote page and
 // retains the remote cursor behind the controller identity.
-func (s *RemoteHubSource) recordRemoteItemPage(key string, identity appitempaging.CursorIdentity, candidates []appitempaging.TranscriptItemCandidate, native string) (ItemCandidateResult, error) {
+func (s *RemoteHubSource) recordRemoteItemPage(
+	key string,
+	identity appitempaging.CursorIdentity,
+	candidates []appitempaging.TranscriptItemCandidate,
+	native string,
+	head appwire.ThreadItemPosition,
+	hasHead bool,
+) (ItemCandidateResult, error) {
 	window := appitempaging.TranscriptItemWindow{Candidates: candidates}
+	state := remoteItemPagingState{identity: identity, native: native, complete: native == "", head: head, hasHead: hasHead}
 	if native == "" {
-		s.itemPaging.evict(key)
 		// The identity is returned even when the page is complete: packing can
 		// still drop the oldest item for size and needs an identity to mint a
-		// continuation cursor from, exactly as the local-daemon source does.
+		// continuation cursor from, exactly as the local-daemon source does. The
+		// candidates are retained so that continuation can be served locally.
+		state.candidates = candidates
+		s.itemPaging.put(key, state)
 		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true}, nil
 	}
 	if len(candidates) == 0 {
@@ -448,7 +557,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(key string, identity appitempagin
 		return ItemCandidateResult{}, err
 	}
 	window.OlderCursor = cursor
-	s.itemPaging.put(key, remoteItemPagingState{identity: identity, native: native})
+	s.itemPaging.put(key, state)
 	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: false}, nil
 }
 

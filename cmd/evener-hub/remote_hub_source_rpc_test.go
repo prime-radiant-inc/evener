@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"net"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -12,6 +16,67 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appitempaging"
 )
+
+type remoteHubCall struct {
+	method string
+	params json.RawMessage
+}
+
+// newScriptedRemoteHub wires an initialized AppWire client to an in-memory
+// server whose replies the caller scripts, recording every request. No SSH, no
+// network, no host.
+func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.RawMessage) any) (*appwire.Client, func() []remoteHubCall) {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	server := appwire.NewStreamTransport(serverConn)
+
+	var mu sync.Mutex
+	var calls []remoteHubCall
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			msg, err := server.Recv(ctx)
+			if err != nil {
+				return
+			}
+			if msg.Request == nil {
+				continue
+			}
+			mu.Lock()
+			calls = append(calls, remoteHubCall{method: msg.Request.Method, params: msg.Request.Params})
+			mu.Unlock()
+			reply := handle(msg.Request.Method, msg.Request.Params)
+			data, err := json.Marshal(reply)
+			if err != nil {
+				return
+			}
+			if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+				return
+			}
+		}
+	}()
+
+	client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+		cancel()
+		t.Fatalf("initialize scripted remote: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = client.Close()
+		<-done
+	})
+	return client, func() []remoteHubCall {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]remoteHubCall, len(calls))
+		copy(out, calls)
+		return out
+	}
+}
 
 // remoteHubPageCursor mints the kind of opaque cursor a real remote hub
 // returns: an itempaging cursor carrying the remote hub's own identity.
@@ -151,5 +216,223 @@ func TestHubRPCThreadReadServesRemoteHubSource(t *testing.T) {
 	}
 	if turns.NextCursor == "" {
 		t.Fatalf("turns = %+v, want a controller-owned continuation cursor", turns)
+	}
+}
+
+// The web client hydrates a thread with subscribe:true. Remote subscription
+// fan-out is staged until 05b, so that read must still return its snapshot (the
+// hub must not start a relay whose SubscribeThread is unimplemented) and the
+// subscribe intent must not reach the remote hub, where it would register a
+// subscription the controller can never retire.
+func TestHubRPCThreadReadSubscribeServesRemoteSnapshot(t *testing.T) {
+	remoteOlder := remoteHubPageCursor(t, 10)
+	remote, calls := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{
+				Thread: appwire.Thread{
+					ID:     "t1",
+					Source: "local",
+					Evener: appwire.EvenerThread{Ref: "local:t1"},
+					Turns:  remoteHubItemPage(10, "").Data,
+				},
+				OlderCursor: remoteOlder,
+			}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return remote, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          "h1:t1",
+		IncludeTurns: true,
+		Subscribe:    true,
+	})
+	if err != nil {
+		t.Fatalf("subscribed ThreadRead: %v", err)
+	}
+	if resp.Thread.Source != "h1" || resp.Thread.Evener.Ref != "h1:t1" {
+		t.Fatalf("thread = %+v, want source h1 ref h1:t1", resp.Thread)
+	}
+	if resp.OlderCursor == "" {
+		t.Fatalf("read response = %+v, want a controller-owned continuation cursor", resp)
+	}
+	for _, call := range calls() {
+		if call.method != appwire.MethodThreadRead {
+			continue
+		}
+		var remoteParams appwire.ThreadReadParams
+		if err := json.Unmarshal(call.params, &remoteParams); err != nil {
+			t.Fatalf("decode remote read params: %v", err)
+		}
+		if remoteParams.Subscribe || remoteParams.ReplaceSubscription {
+			t.Fatalf("remote read received subscription intent: %+v", remoteParams)
+		}
+	}
+}
+
+// A remote item page the remote hub returned in full can still be too large for
+// the controller's soft result limit. The hub's size packer then drops the
+// oldest selected items and mints a continuation cursor; that cursor must be
+// served from the retained page rather than failing as stale, and the remote
+// hub must not be asked for a page it already said does not exist.
+func TestHubRPCThreadReadPagesSizeTruncatedCompleteRemotePage(t *testing.T) {
+	largeText := strings.Repeat("x", 700*1024)
+	completePage := appwire.ThreadTurnsListResponse{Data: []appwire.Turn{{
+		ID: "turn-1",
+		Items: []appwire.ThreadItem{
+			{Type: "text", ID: "item-0", TranscriptKey: "key-0", Position: &appwire.ThreadItemPosition{Entry: 0}, Text: largeText},
+			{Type: "text", ID: "item-1", TranscriptKey: "key-1", Position: &appwire.ThreadItemPosition{Entry: 1}, Text: largeText},
+		},
+	}}}
+	client, recorded := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{
+				Thread: appwire.Thread{
+					ID:     "t1",
+					Source: "local",
+					Evener: appwire.EvenerThread{Ref: "local:t1"},
+					Turns:  completePage.Data,
+				},
+			}
+		case appwire.MethodThreadTurnsList:
+			return completePage
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	read, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true, ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if read.OlderCursor == "" {
+		t.Fatalf("read = %+v, want a continuation cursor from the size-truncated page", read)
+	}
+
+	turns, err := rpc.ThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{
+		Ref:       "h1:t1",
+		Cursor:    read.OlderCursor,
+		ItemsView: "fragment",
+	})
+	if err != nil {
+		t.Fatalf("ThreadTurnsList: %v", err)
+	}
+	if len(turns.Data) != 1 || len(turns.Data[0].Items) != 1 || turns.Data[0].Items[0].ID != "item-0" {
+		t.Fatalf("continuation page = %+v, want the dropped oldest item", turns.Data)
+	}
+	for _, call := range recorded() {
+		if call.method == appwire.MethodThreadTurnsList {
+			t.Fatalf("complete remote page was continued remotely: %+v", call)
+		}
+	}
+}
+
+// A remote thread's CWD and tool-argument paths name the remote host's
+// filesystem. The hub's file-backed output-image pass must not run against them
+// as if they were controller-local: here the remote CWD coincides with a real
+// local directory holding a matching image, and no descriptor may be invented
+// from it.
+func TestHubRPCThreadReadDoesNotEnrichRemoteFilesAsLocal(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remoteThread := appwire.Thread{
+		ID:        "t1",
+		SessionID: "t1",
+		CWD:       cwd,
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: "local:t1"},
+		Turns: []appwire.Turn{{
+			ID: "turn-1",
+			Items: []appwire.ThreadItem{{
+				Type:          "commandExecution",
+				ID:            "item-shell",
+				TranscriptKey: "key-shell",
+				Position:      &appwire.ThreadItemPosition{Entry: 0},
+				ToolName:      "shell",
+				CallID:        "call-shell",
+				ArgumentsJSON: `{}`,
+				Output:        "created plot.png",
+				Status:        appwire.TurnStatusCompleted,
+			}},
+			Status: appwire.TurnStatusCompleted,
+		}},
+	}
+	client, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{Thread: remoteThread}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true, ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns = %+v, want the single remote command item", resp.Thread.Turns)
+	}
+	if images := resp.Thread.Turns[0].Items[0].OutputImages; len(images) != 0 {
+		t.Fatalf("remote thread gained controller-local output images: %+v", images)
 	}
 }

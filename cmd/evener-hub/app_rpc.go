@@ -101,7 +101,46 @@ var (
 )
 
 type threadReadRelayPolicy interface {
+	// RelayOnThreadRead reports whether a plain (non-Subscribe) thread/read
+	// starts a relay. A Subscribe read still overrides it.
 	RelayOnThreadRead() bool
+}
+
+// threadRelayCapableSource reports whether a source can serve thread relays at
+// all. A source that cannot is never relayed, even for a Subscribe read:
+// startRelay calls SubscribeThread, so relaying it would fail the read instead
+// of returning the snapshot. Sources that implement only RelayOnThreadRead keep
+// the Subscribe-overrides-plain-read policy.
+type threadRelayCapableSource interface {
+	SupportsThreadRelay() bool
+}
+
+func sourceSupportsThreadRelay(source appsource.Source) bool {
+	if capable, ok := source.(threadRelayCapableSource); ok {
+		return capable.SupportsThreadRelay()
+	}
+	return true
+}
+
+// threadReadLocalImagePolicy reports whether a source's threads describe files
+// on this hub's own filesystem. A remote hub source serves its transcript but
+// not its filesystem, so its CWDs and tool-argument paths name another machine.
+type threadReadLocalImagePolicy interface {
+	EnrichThreadFileBackedImages() bool
+}
+
+// enrichSourcedThreadImages stamps fetchable image URLs and, for a source whose
+// files live on this hub, adds file-backed output-image descriptors by reading
+// the session's working directory. A remote hub source is stamped but not
+// enriched: running the local file pass on a remote CWD would probe unrelated
+// controller-local paths and could attach descriptors for files the thread
+// never wrote.
+func enrichSourcedThreadImages(source appsource.Source, thread appwire.Thread) appwire.Thread {
+	thread = stampThreadImageURLs(thread)
+	if policy, ok := source.(threadReadLocalImagePolicy); ok && !policy.EnrichThreadFileBackedImages() {
+		return thread
+	}
+	return enrichThreadFileBackedOutputImages(thread)
 }
 
 func relayOnThreadRead(source appsource.Source) bool {
@@ -157,7 +196,7 @@ func listItemTurns(
 				CWD:       meta.Thread.CWD,
 				Turns:     response.Data,
 			}
-			thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(thread))
+			thread = enrichSourcedThreadImages(source, thread)
 			response.Data = thread.Turns
 		}
 		return response, nil
@@ -506,7 +545,7 @@ func registerThreadHandlers(
 				if ok {
 					resp.Thread.Turns = past.Thread.Turns
 					resp.OlderCursor = past.OlderCursor
-					resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
+					resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 					annotateThreadProjects([]appwire.Thread{resp.Thread})
 					usedPastItemPage = true
 				}
@@ -526,7 +565,7 @@ func registerThreadHandlers(
 					// A live daemon's turns carry sha-addressed tool-result descriptors
 					// with no route on them (the daemon does not serve the bytes; this
 					// hub does), so route stamping stays inside the final packer.
-					response.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(response.Thread))
+					response.Thread = enrichSourcedThreadImages(source, response.Thread)
 					annotateThreadProjects([]appwire.Thread{response.Thread})
 					return response, nil
 				}, itemLimit)
@@ -541,7 +580,7 @@ func registerThreadHandlers(
 			// no route on them (the daemon does not serve the bytes; this hub does),
 			// so the route is stamped here before the file-backed pass adds any
 			// /doc/image descriptors of its own.
-			resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
+			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 			annotateThreadProjects([]appwire.Thread{resp.Thread})
 		}
 		// Local forks copy persisted history in the hub. A live daemon's
@@ -556,7 +595,10 @@ func registerThreadHandlers(
 			if !relays.captureThreadRead(ctx, params, read) {
 				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
 			}
-		} else if params.Subscribe || relayOnThreadRead(source) {
+		} else if sourceSupportsThreadRelay(source) && (params.Subscribe || relayOnThreadRead(source)) {
+			// A source with no relay fan-out is never relayed, even for a
+			// Subscribe read: startRelay calls SubscribeThread, so relaying one
+			// would fail the read. Subscribing callers still get the snapshot.
 			if err := relays.startRelay(ctx, source, params, resp.Thread); err != nil {
 				return appwire.ThreadReadResponse{}, err
 			}
@@ -617,12 +659,12 @@ func registerThreadHandlers(
 					// File-backed output-image enrichment is intentionally page-local
 					// here: args can only be correlated from command-call items present
 					// in this returned page (or on the completed item itself).
-					thread := enrichThreadFileBackedOutputImages(stampThreadImageURLs(appwire.Thread{
+					thread := enrichSourcedThreadImages(source, appwire.Thread{
 						ID:        meta.Thread.ID,
 						SessionID: meta.Thread.SessionID,
 						CWD:       meta.Thread.CWD,
 						Turns:     live.Data,
-					}))
+					})
 					live.Data = thread.Turns
 				}
 				return live, nil
