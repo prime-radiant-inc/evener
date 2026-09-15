@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -52,7 +54,10 @@ func TestRemoteHubSourceHostCapabilities(t *testing.T) {
 		t.Fatalf("HostCapabilities: %v", err)
 	}
 
-	assertCallParams(t, calls(), appwire.MethodEvenerLaunchGetLayer, `{"cwd":"","layer":"global"}`)
+	// "/" is the placeholder the web and mobile clients send for the global
+	// layer: GetLayer canonicalizes CWD before it dispatches on the layer, so an
+	// empty CWD is rejected with InvalidParams before the global branch runs.
+	assertCallParams(t, calls(), appwire.MethodEvenerLaunchGetLayer, `{"cwd":"/","layer":"global"}`)
 	assertCallParams(t, calls(), appwire.MethodModelList, `{}`)
 	assertCallParams(t, calls(), appwire.MethodEvenerPluginList, `{}`)
 	assertCallParams(t, calls(), appwire.MethodEvenerAuthList, `{}`)
@@ -237,5 +242,131 @@ func TestRemoteHubSourceHostCapabilitiesClosedTransport(t *testing.T) {
 	}
 	if info := wireErrorInfo(wire); info != string(appwire.ErrorSessionUnavailable) {
 		t.Fatalf("evenerErrorInfo = %q, want %q", info, appwire.ErrorSessionUnavailable)
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesMapsFactsError pins that a transport
+// failure from the preflight facts seam goes through mapCallError like every
+// wire call does, so it surfaces as SessionUnavailable with the host named
+// rather than as a raw error the auto-resume gate cannot attribute.
+func TestRemoteHubSourceHostCapabilitiesMapsFactsError(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", capabilityReply("gpt-x", "pl"))
+	source.SetHostFacts(func(context.Context, string) (HostFacts, error) {
+		return HostFacts{}, io.EOF
+	})
+
+	_, err := source.HostCapabilities(t.Context())
+	if err == nil {
+		t.Fatal("HostCapabilities succeeded despite a facts transport failure")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("code = %d, want %d", wire.Code, appwire.CodeUnavailable)
+	}
+	if info := wireErrorInfo(wire); info != string(appwire.ErrorSessionUnavailable) {
+		t.Fatalf("evenerErrorInfo = %q, want %q", info, appwire.ErrorSessionUnavailable)
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesPreservesFactsWireError pins that a
+// semantic wire error from the facts seam keeps its code, matching how the
+// AppWire probe errors are mapped.
+func TestRemoteHubSourceHostCapabilitiesPreservesFactsWireError(t *testing.T) {
+	semantic := appwire.InvalidParams("bad facts")
+	source, _ := newScriptedRemote(t, "host", capabilityReply("gpt-x", "pl"))
+	source.SetHostFacts(func(context.Context, string) (HostFacts, error) {
+		return HostFacts{}, semantic
+	})
+
+	_, err := source.HostCapabilities(t.Context())
+	if err == nil {
+		t.Fatal("HostCapabilities succeeded despite a facts wire error")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error = %T %v, want InvalidParams WireError", err, err)
+	}
+}
+
+// TestRemoteHubSourceSetHostFactsSynchronizesWithProbe pins that SetHostFacts
+// takes the same lock HostCapabilities reads the facts seam under. Without it
+// the install races every in-flight probe's read of s.facts.
+func TestRemoteHubSourceSetHostFactsSynchronizesWithProbe(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", capabilityReply("gpt-x", "pl"))
+
+	source.probeMu.Lock()
+	installed := make(chan struct{})
+	go func() {
+		source.SetHostFacts(func(context.Context, string) (HostFacts, error) { return HostFacts{}, nil })
+		close(installed)
+	}()
+
+	select {
+	case <-installed:
+		source.probeMu.Unlock()
+		t.Fatal("SetHostFacts completed while probeMu was held; the write is unsynchronized")
+	case <-time.After(50 * time.Millisecond):
+	}
+	source.probeMu.Unlock()
+
+	select {
+	case <-installed:
+	case <-time.After(time.Second):
+		t.Fatal("SetHostFacts did not complete after probeMu was released")
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesDoesNotHoldLockAcrossWire pins that
+// probeMu guards only the cache and the facts seam, never the wire calls. If a
+// probe held it across the five reads, another caller could not even reach the
+// cache check — nor install facts — until an unresponsive hub answered.
+func TestRemoteHubSourceHostCapabilitiesDoesNotHoldLockAcrossWire(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	reply := capabilityReply("gpt-x", "pl")
+	source, _ := newScriptedRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
+		if method == appwire.MethodEvenerLaunchGetLayer {
+			close(entered)
+			<-release
+		}
+		return reply(method, params)
+	})
+
+	probed := make(chan error, 1)
+	go func() {
+		_, err := source.HostCapabilities(context.Background())
+		probed <- err
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("probe never reached the launch read")
+	}
+
+	// The launch read is parked in the wire call; probeMu must already be free.
+	locked := make(chan struct{})
+	go func() {
+		source.probeMu.Lock()
+		close(locked)
+		source.probeMu.Unlock()
+	}()
+	select {
+	case <-locked:
+	case <-time.After(time.Second):
+		t.Fatal("probeMu was held across the wire call")
+	}
+
+	close(release)
+	select {
+	case err := <-probed:
+		if err != nil {
+			t.Fatalf("HostCapabilities: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HostCapabilities did not return after the wire call was released")
 	}
 }

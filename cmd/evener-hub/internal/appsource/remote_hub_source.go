@@ -74,8 +74,9 @@ type RemoteHubSource struct {
 	// cannot report on an already-initialized connection (see HostFacts).
 	facts HostFactsFunc
 
-	// probeMu serializes HostCapabilities and guards probe, the last successful
-	// probe cached against the client it ran on.
+	// probeMu guards probe (the last successful probe, cached against the
+	// client it ran on) and facts (the preflight seam HostCapabilities reads
+	// while probing). It is never held across a wire call.
 	probeMu sync.Mutex
 	probe   *remoteHubProbe
 }
@@ -117,7 +118,15 @@ func (s *RemoteHubSource) EnrichThreadFileBackedImages() bool { return false }
 // capability probe. It is optional and expected to be called once at
 // registration before the source serves. With no facts seam a probe leaves
 // ProtocolVersion, HubVersion, OS, Arch, and Features zero-valued.
-func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) { s.facts = fn }
+//
+// The write is guarded by probeMu, the same lock HostCapabilities reads the
+// seam under, so a caller that installs facts while a probe is in flight does
+// not race the read.
+func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	s.facts = fn
+}
 
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace.
